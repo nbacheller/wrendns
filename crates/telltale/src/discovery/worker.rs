@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use telltale_net::worker::WorkerLimits;
 
 use super::frames::{self, Frame, FrameError};
+use super::snmp_job::{self, OP_POLL, OP_PROBE, SnmpRequest, SnmpResult};
+use super::snmp_poll;
+use super::snmp_tables::Row;
 
 /// The wire protocol version. Bumped when a frame or message changes meaning (ADR-908).
 pub(crate) const PROTOCOL: u32 = 1;
@@ -46,6 +49,16 @@ pub(crate) enum Msg {
     Hello(Hello),
     Job(Job),
     Result(JobResult),
+    /// REQ: DSC-004 (ADR-908 "large results split across frames") — rows a job found, before its
+    /// result. The main process takes them up to a cap.
+    Rows(RowsMsg),
+}
+
+/// A batch of rows for the job `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RowsMsg {
+    pub(crate) id: u64,
+    pub(crate) rows: Vec<Row>,
 }
 
 /// The handshake, in both directions. The worker's reply carries what it reports about itself.
@@ -77,6 +90,22 @@ pub(crate) struct Job {
     pub(crate) op: String,
     #[serde(default)]
     pub(crate) kind: String,
+    /// REQ: DSC-004, DSC-007 — the SNMP request of an `snmp_probe` or `snmp_poll` job. It carries
+    /// the credential, so it is on the SNMP worker's channel only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) snmp: Option<SnmpRequest>,
+}
+
+impl Job {
+    /// A job with no SNMP request (a ping, a fault).
+    pub(crate) fn plain(id: u64, op: &str, kind: &str) -> Self {
+        Self {
+            id,
+            op: op.to_owned(),
+            kind: kind.to_owned(),
+            snmp: None,
+        }
+    }
 }
 
 /// The answer to one job.
@@ -88,6 +117,9 @@ pub(crate) struct JobResult {
     pub(crate) op: String,
     #[serde(default)]
     pub(crate) error: Option<String>,
+    /// REQ: DSC-004 — what an SNMP job found out (its rows came before this message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) snmp: Option<SnmpResult>,
 }
 
 /// Decodes a JSON frame into a message.
@@ -180,14 +212,85 @@ where
                 return EXIT_PROTOCOL;
             }
         };
-        let Ok(Msg::Job(job)) = decode(&frame) else {
+        let decoded = decode(&frame);
+        // REQ: DSC-007 — the frame may hold a credential: its bytes are wiped once it is decoded.
+        wipe(frame);
+        let Ok(Msg::Job(job)) = decoded else {
             eprintln!("discovery worker: a frame that isn't a job");
             return EXIT_PROTOCOL;
         };
+        if job.op == OP_PROBE || job.op == OP_POLL {
+            if mode != "snmp" {
+                // REQ: DSC-007 (`dsc_007_import_worker_gets_no_credentials`) — the import worker
+                // runs no SNMP job: it refuses the job without reading its request.
+                let refused = JobResult {
+                    id: job.id,
+                    ok: false,
+                    op: job.op.clone(),
+                    error: Some("unknown op".to_owned()),
+                    snmp: None,
+                };
+                if write_msg(output, &Msg::Result(refused)).is_err() {
+                    return EXIT_PROTOCOL;
+                }
+                continue;
+            }
+            if run_snmp(&job, output).is_err() {
+                return EXIT_PROTOCOL;
+            }
+            continue;
+        }
         let result = run_job(&job);
         if write_msg(output, &Msg::Result(result)).is_err() {
             return EXIT_PROTOCOL;
         }
+    }
+}
+
+/// Overwrites a frame's payload before it is dropped.
+fn wipe(frame: Frame) {
+    use zeroize::Zeroize;
+    match frame {
+        Frame::Json(mut b) | Frame::Chunk(mut b) => b.zeroize(),
+    }
+}
+
+/// REQ: DSC-004 — runs an `snmp_probe` or `snmp_poll` job: the rows go out in batches, then the
+/// result. A failure to build the agent (a refused protocol, a socket) is an `ok: false` result.
+fn run_snmp<W: Write>(job: &Job, output: &mut W) -> Result<(), String> {
+    let probe_only = job.op == OP_PROBE;
+    let fail = |why: &str| JobResult {
+        id: job.id,
+        ok: false,
+        op: job.op.clone(),
+        error: Some(why.to_owned()),
+        snmp: None,
+    };
+    let Some(req) = &job.snmp else {
+        return write_msg(output, &Msg::Result(fail("an SNMP job without a request")));
+    };
+    match snmp_poll::run_real(req, probe_only) {
+        Ok(outcome) => {
+            for batch in outcome.rows.chunks(snmp_job::ROWS_PER_FRAME) {
+                let m = Msg::Rows(RowsMsg {
+                    id: job.id,
+                    rows: batch.to_vec(),
+                });
+                write_msg(output, &m)?;
+            }
+            let ok = outcome.result.aborted.is_none();
+            write_msg(
+                output,
+                &Msg::Result(JobResult {
+                    id: job.id,
+                    ok,
+                    op: job.op.clone(),
+                    error: outcome.result.aborted.clone(),
+                    snmp: Some(outcome.result),
+                }),
+            )
+        }
+        Err(why) => write_msg(output, &Msg::Result(fail(&why))),
     }
 }
 
@@ -200,12 +303,14 @@ pub(crate) fn run_job(job: &Job) -> JobResult {
         ok: true,
         op: op.to_owned(),
         error: None,
+        snmp: None,
     };
     let unknown = || JobResult {
         id: job.id,
         ok: false,
         op: job.op.clone(),
         error: Some("unknown op".to_owned()),
+        snmp: None,
     };
     match job.op.as_str() {
         "ping" => ok("ping"),
@@ -281,11 +386,7 @@ mod tests {
 
     fn job_bytes(id: u64, op: &str, kind: &str) -> Vec<u8> {
         let mut out = Vec::new();
-        let job = Msg::Job(Job {
-            id,
-            op: op.into(),
-            kind: kind.into(),
-        });
+        let job = Msg::Job(Job::plain(id, op, kind));
         write_msg(&mut out, &job).unwrap();
         out
     }
@@ -349,7 +450,8 @@ mod tests {
                 id: 7,
                 ok: true,
                 op: "ping".into(),
-                error: None
+                error: None,
+                snmp: None,
             }
         );
     }
@@ -418,11 +520,7 @@ mod tests {
     #[cfg(not(debug_assertions))]
     #[test]
     fn dsc_002_release_has_no_fault_ops() {
-        let r = run_job(&Job {
-            id: 1,
-            op: "fault".into(),
-            kind: "panic".into(),
-        });
+        let r = run_job(&Job::plain(1, "fault", "panic"));
         assert!(!r.ok);
     }
 }

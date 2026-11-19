@@ -66,6 +66,9 @@ const READABLE: Record<string, (detail: string) => string> = {
   primary_unreachable: () => "This node can't reach the cluster's primary to record the change, so it wasn't kept.",
   not_primary: (d) => `Only the primary forwards a change for another node. ${d}`,
   lists_not_here: () => "This node doesn't download lists. Ask a node that does.",
+  // REQ: DSC-004 (T25.6) — the SNMP Test runs on the designated node.
+  discovery_not_here: () =>
+    "This node doesn't run the network inventory's SNMP poller. Open this page on the designated node to test an agent.",
 };
 
 /** An API error (RFC 9457 problem+json). `message` reads as a sentence; `detail` is the server's text. */
@@ -553,6 +556,14 @@ export const api = {
   configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
   // REQ: DSC-014 (T25.3) — the network inventory's status and its discovery workers.
   discoveryStatus: () => get<S['DiscoveryStatus']>('/discovery/status'),
+  // REQ: DSC-004 (T25.6, ADR-1002) — Test one configured SNMP agent (by name, never an address). A dry
+  // run lists the OIDs and sends nothing; a test waits 60 s after the last one.
+  snmpTest: (agent: string, dryRun: boolean) =>
+    call<S['SnmpTestResult']>('POST', '/discovery/snmp/test', {
+      body: { agent },
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
   putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/${path}/${encodeURIComponent(name)}`, {
       body,

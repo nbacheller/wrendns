@@ -299,7 +299,7 @@ pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
         o.ip = v4_of(d, &["ip"]).map(IpAddr::V4);
         o.name = Some((NameKind::RouterAlias, dev_name.clone()));
         o.name_origin = Some(router.to_owned());
-        o.lldp = Some(lldp_list(d));
+        o.router_lldp = Some(lldp_list(d));
         out.observations.push(o);
         let uplink_port = d
             .get("uplink")

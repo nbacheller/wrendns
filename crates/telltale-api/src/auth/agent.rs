@@ -106,6 +106,12 @@ pub const SCOPES: &[(&str, &str)] = &[
         "ops:drill",
         "start and end failover drills (a node stops answering chosen devices for up to five minutes)",
     ),
+    // REQ: DSC-004 (T25.6, ADR-1002) - the SNMP Test of the network inventory: one probe of a
+    // configured agent (never an address). An admin's scope: it sends packets to a device.
+    (
+        "ops:discovery_test",
+        "test a configured SNMP agent of the network inventory (a short read-only probe, once a minute)",
+    ),
     (
         "cluster:admin",
         "promote a node to primary; change the staged-rollout settings; promote or abort a rollout; pin and unpin the cluster",
@@ -117,7 +123,7 @@ pub const DEFAULT_SCOPES: &[&str] = &["analytics:read", "config:read"];
 
 /// The role a scope needs from the token's owner (a token never exceeds its owner).
 fn scope_role(scope: &str) -> Role {
-    if scope == "cluster:admin" {
+    if scope == "cluster:admin" || scope == "ops:discovery_test" {
         Role::Admin
     } else if scope.starts_with("config:write:") || scope.starts_with("ops:") {
         Role::Operator
@@ -476,6 +482,8 @@ fn post_need(p: &str) -> Option<Need> {
             Need::Scope("ops:anomalies")
         }
         "/api/v1/cluster/promote" => Need::Scope("cluster:admin"),
+        // REQ: DSC-004 (T25.6, ADR-1002) - the SNMP Test of one configured agent.
+        "/api/v1/discovery/snmp/test" => Need::Scope("ops:discovery_test"),
         // REQ: OBS-033 — a note on the time charts is an immediate, append-only op.
         "/api/v1/annotations" => Need::Scope("ops:annotate"),
         // REQ: CLU-013 — rollouts and pins change what every node serves.

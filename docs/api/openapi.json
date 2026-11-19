@@ -4221,6 +4221,110 @@
         }
       }
     },
+    "/api/v1/discovery/snmp/test": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Test an SNMP agent.",
+        "description": "Probes the agent named in the body, the way the poller's first poll does: one GETNEXT on the\nroot of each table it is configured for, and one GET of sysObjectID. The answer is the agent's\ncapability record: the security level reached, the engine ID (v3), and for each part of each\ntable, the MIB table that answered (or none). A table that did not answer is skipped by the\npoller until the next test. Read-only: the client has no write PDU (ADR-908).\n\nThe body is `{\"agent\": \"<name>\"}` and nothing else: an address is refused (ADR-907).\n`?dryRun=true` sends no packet and lists the OIDs a test would query. A test waits 60 seconds\nafter the previous test of the same agent (429 with `Retry-After`). It runs on the designated\nnode: a cluster replica forwards the request to the primary. `Idempotency-Key` replays the\nfirst answer for 24 hours. Needs the admin role (agents: `ops:discovery_test` and a reason);\naudit-logged as `discovery.snmp_test`.",
+        "operationId": "snmp_test",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The agent's name, and nothing else.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnmpTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The capability record (or, with dryRun, the OIDs a test would query).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnmpTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body, an unknown field, or an address where a name belongs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs the admin role (agents: ops:discovery_test and a reason).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No SNMP agent by that name (the hint lists them).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The inventory is off, this node isn't the designated one (`discovery_not_here`), or an Idempotency-Key reused for another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The agent was tested less than 60 seconds ago (Retry-After says how long).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The SNMP worker is down or busy, or a replica that can't reach the primary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/discovery/status": {
       "get": {
         "tags": [
@@ -12149,6 +12253,73 @@
           }
         }
       },
+      "AgentCapability": {
+        "type": "object",
+        "description": "REQ: DSC-004 (ADR-908 \"Capability record\") — what an agent answered when it was probed.",
+        "required": [
+          "probedUnix",
+          "level",
+          "parts"
+        ],
+        "properties": {
+          "engineId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The v3 engine ID, in hex."
+          },
+          "level": {
+            "type": "string",
+            "description": "The security level reached: `v2c`, `authNoPriv` or `authPriv`."
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCapabilityPart"
+            },
+            "description": "One entry per part of every configured table."
+          },
+          "probedUnix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was probed (Unix seconds).",
+            "minimum": 0
+          },
+          "sysObjectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "sysObjectID, when the agent answered it (device-supplied)."
+          }
+        }
+      },
+      "AgentCapabilityPart": {
+        "type": "object",
+        "description": "REQ: DSC-004 — one part of a table group and the MIB table that answered it.",
+        "required": [
+          "table",
+          "part"
+        ],
+        "properties": {
+          "part": {
+            "type": "string",
+            "description": "The part: `arp`, `interfaces`, `addresses`, `forwarding`, `ports`, `vlans`, `neighbours`\nor `local_ports`."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MIB table that answered (`ipNetToPhysicalTable`, `ipNetToMediaTable`, ...); none when\nno alternative did."
+          },
+          "table": {
+            "type": "string",
+            "description": "`arp`, `ifmib`, `bridge` or `lldp`."
+          }
+        }
+      },
       "AlertDelivery": {
         "type": "object",
         "description": "REQ: OBS-010 (T9.6) — the last delivery to a destination.",
@@ -15287,6 +15458,7 @@
           "node_is_primary",
           "node_is_up",
           "lists_not_here",
+          "discovery_not_here",
           "credential_reentry_required",
           "secrets_locked",
           "upgrade_required",
@@ -15929,6 +16101,260 @@
           }
         }
       },
+      "DiscoveryAgent": {
+        "type": "object",
+        "description": "REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that\ncame from the device (names, the sysObjectID) is device-supplied text, cut and cleaned.",
+        "required": [
+          "name",
+          "address",
+          "credential",
+          "intervalSecs",
+          "state",
+          "consecutiveFailures",
+          "polls",
+          "failures",
+          "tables"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The address it is polled at (RFC 1918 only).",
+            "example": "192.0.2.1"
+          },
+          "capability": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentCapability",
+                "description": "What the agent answered when it was last probed (the first poll, or **Test**). Never\nassumed: a table that did not answer is skipped until the next test."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Polls that failed in a row.",
+            "minimum": 0
+          },
+          "credential": {
+            "type": "string",
+            "description": "The credential it uses (by name; the secret is never shown)."
+          },
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Polls that failed since start.",
+            "minimum": 0
+          },
+          "intervalSecs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds between polls.",
+            "minimum": 0
+          },
+          "lastCounts": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiscoveryAgentCounts",
+                "description": "What the last poll's rows meant."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastDurationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the last poll took, in milliseconds.",
+            "minimum": 0
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last poll failed, in words. Carries no address, credential or reply byte."
+          },
+          "lastPollUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the last poll ended (Unix seconds).",
+            "minimum": 0
+          },
+          "lastRequests": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "SNMP requests the last poll sent.",
+            "minimum": 0
+          },
+          "lastSuccessUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When a poll last succeeded (Unix seconds).",
+            "minimum": 0
+          },
+          "lastTestUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When **Test** last ran for this agent (Unix seconds); a new test waits 60 s after it.",
+            "minimum": 0
+          },
+          "lastTimeouts": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Exchanges of the last poll that timed out.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "The agent's name, as `[[discovery.snmp_agent]]` gives it.",
+            "example": "gateway"
+          },
+          "polls": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Polls made since start.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`waiting` (no poll yet), `ok`, `error` (the last poll failed), `failing` (three polls in a\nrow failed) or `skipped` (its credential can't be read, or its address is refused)."
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryAgentTable"
+            },
+            "description": "One entry per configured table."
+          }
+        }
+      },
+      "DiscoveryAgentCounts": {
+        "type": "object",
+        "description": "REQ: DSC-004, DSC-014 — what the last poll's rows meant.",
+        "required": [
+          "arpMerged",
+          "arpOutsideSubnets",
+          "ipv6Ignored",
+          "ownMerged",
+          "fdbLocated",
+          "fdbUplink",
+          "uplinkPorts",
+          "lldpMerged"
+        ],
+        "properties": {
+          "arpMerged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "ARP entries merged into the inventory.",
+            "minimum": 0
+          },
+          "arpOutsideSubnets": {
+            "type": "integer",
+            "format": "int32",
+            "description": "ARP entries outside every `[[discovery.subnet]]` (or naming no host).",
+            "minimum": 0
+          },
+          "fdbLocated": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Forwarding entries that gave a device a port and a VLAN.",
+            "minimum": 0
+          },
+          "fdbUplink": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Forwarding entries left out because they were learned on an uplink or trunk port.",
+            "minimum": 0
+          },
+          "ipv6Ignored": {
+            "type": "integer",
+            "format": "int32",
+            "description": "IPv6 entries counted and left out (M25 is IPv4 only).",
+            "minimum": 0
+          },
+          "lldpMerged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "LLDP neighbours merged.",
+            "minimum": 0
+          },
+          "ownMerged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The agent's own addresses merged.",
+            "minimum": 0
+          },
+          "uplinkPorts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Ports counted as uplinks (more than 8 learned MACs, or a listed agent or UniFi device as\nthe LLDP neighbour).",
+            "minimum": 0
+          }
+        }
+      },
+      "DiscoveryAgentTable": {
+        "type": "object",
+        "description": "REQ: DSC-004 — a configured table of an agent and what is known of it.",
+        "required": [
+          "table",
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last error of the table, in words."
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The rows the last poll read from the table, over every part and column.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`unprobed`, `answered`, or `unanswered` (skipped until the next test)."
+          },
+          "stop": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`."
+          },
+          "table": {
+            "type": "string",
+            "description": "`arp`, `ifmib`, `bridge` or `lldp`."
+          }
+        }
+      },
       "DiscoveryRead": {
         "type": "object",
         "description": "REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw\nit. Read-only: nothing here changes a console.",
@@ -15993,6 +16419,13 @@
           "reads"
         ],
         "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryAgent"
+            },
+            "description": "REQ: DSC-004, DSC-014 (T25.6) — each `[[discovery.snmp_agent]]` the poller runs on this\nnode: its last poll, its tables and its capability record."
+          },
           "designated": {
             "type": "boolean",
             "description": "Whether this node is the designated one (it runs the inventory and its workers)."
@@ -18056,7 +18489,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`guarded_ignored`, `guarded_bind_fallback`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`.",
             "example": "upstream_down"
           },
           "level": {
@@ -26550,6 +26983,127 @@
             "format": "int32",
             "description": "Days each error budget covers (`[slo] window_days`).",
             "minimum": 0
+          }
+        }
+      },
+      "SnmpTestOid": {
+        "type": "object",
+        "description": "REQ: DSC-004 — one table root a test would query (or did).",
+        "required": [
+          "table",
+          "part",
+          "alternative",
+          "probeOid",
+          "columns"
+        ],
+        "properties": {
+          "alternative": {
+            "type": "string",
+            "description": "The MIB table (an alternative; the first that answers is used)."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The column OIDs a poll walks when this alternative answers."
+          },
+          "part": {
+            "type": "string",
+            "description": "The part of the table group."
+          },
+          "probeOid": {
+            "type": "string",
+            "description": "The OID the probe's one GETNEXT starts from."
+          },
+          "table": {
+            "type": "string",
+            "description": "`arp`, `ifmib`, `bridge` or `lldp`."
+          }
+        }
+      },
+      "SnmpTestRequest": {
+        "type": "object",
+        "description": "REQ: DSC-004 (T25.6, ADR-908, ADR-1002) — `POST /api/v1/discovery/snmp/test`: the agent to\ntest, by name. No address is ever accepted (ADR-907).",
+        "required": [
+          "agent"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "The agent's name, from `[[discovery.snmp_agent]]` (`GET /api/v1/discovery/status` lists them).",
+            "example": "gateway"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SnmpTestResult": {
+        "type": "object",
+        "description": "REQ: DSC-004 — the answer of **Test** (`POST /api/v1/discovery/snmp/test`).",
+        "required": [
+          "agent",
+          "dryRun",
+          "ok",
+          "oids",
+          "note"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "The agent tested."
+          },
+          "capability": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentCapability",
+                "description": "What the agent answered (not for a dry run, or a test that failed)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "True when no packet was sent (`?dryRun=true`): `oids` is what a test would query."
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the test took, in milliseconds.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the test failed, in words."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that ran the test (the designated node, which may not be the one asked)."
+          },
+          "note": {
+            "type": "string",
+            "description": "What happens next, in a sentence."
+          },
+          "oids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnmpTestOid"
+            },
+            "description": "The OIDs a test queries: one GETNEXT on each probe root, one GET of sysObjectID."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the agent answered (a dry run is always `true`)."
           }
         }
       },

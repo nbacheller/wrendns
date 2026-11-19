@@ -42,6 +42,9 @@ const DISCOVERY_KEYS: &[&str] = &[
     "node",
     "worker_memory_mib",
     "subnet",
+    // REQ: DSC-004 (T25.6) - the SNMP agents and the credentials they name.
+    "snmp_agent",
+    "snmp_credential",
     // REQ: DSC-009 (T25.10, ADR-912) — the extra UniFi and Home Assistant reads.
     "unifi_reads",
     "unifi_all_users_within_hours",
@@ -96,10 +99,14 @@ pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
     .unwrap_or(Value::Null);
     let mut out = Map::new();
     for k in keys(kind) {
-        out.insert(
-            (*k).to_owned(),
-            full.get(*k).cloned().unwrap_or(Value::Null),
-        );
+        // REQ: DSC-004 - the two lists are left out of a serialization while empty (a node that never
+        // set them sends nothing new, CLU-010); the entry shows them as empty lists.
+        let missing = if matches!(*k, "snmp_agent" | "snmp_credential") {
+            Value::Array(Vec::new())
+        } else {
+            Value::Null
+        };
+        out.insert((*k).to_owned(), full.get(*k).cloned().unwrap_or(missing));
     }
     Value::Object(out)
 }

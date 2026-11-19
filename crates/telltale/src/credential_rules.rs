@@ -51,6 +51,10 @@ pub(crate) struct PathRules {
     /// The credential files this node's own configuration names: no path that isn't a
     /// credential's may name one (a CA or list read from it would show its content back).
     credential_files: Vec<PathBuf>,
+    /// REQ: DSC-004 (review of T25.6) - the files the node's SNMP credentials name. No other field
+    /// may name one, and an SNMP credential may not name any of `credential_files`: a file naming
+    /// another stored secret's file would send it as a v2c community in clear text.
+    snmp_files: Vec<PathBuf>,
 }
 
 /// REQ: API-014 (review of T23.2, ADR-903 note 21) — the Kubernetes service-account token (and
@@ -140,6 +144,22 @@ impl PathRules {
             denied,
             secret_dirs,
             credential_files: credential_files(node),
+            snmp_files: node
+                .discovery
+                .snmp_credentials
+                .iter()
+                .flat_map(|c| {
+                    [
+                        &c.community_file,
+                        &c.auth_password_file,
+                        &c.priv_password_file,
+                    ]
+                })
+                .filter_map(|f| f.as_ref())
+                .map(|f| f.as_str().trim())
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+                .collect(),
         }
     }
 
@@ -162,6 +182,7 @@ impl PathRules {
         if self
             .credential_files
             .iter()
+            .chain(self.snmp_files.iter())
             .any(|f| forms(f).contains(&real))
         {
             return Err(format!(
@@ -179,6 +200,44 @@ impl PathRules {
                 "`{path}` is in `{}` ([node] secret_file_dirs, where credentials are kept), which a list's path may not name",
                 d.display()
             ));
+        }
+        Ok(())
+    }
+
+    /// REQ: DSC-004 (review of T25.6) - the path rules for the credential files of the `discovery`
+    /// section's SNMP credentials that `after` sets differently from `before`: each must pass
+    /// [`Self::check`] as a credential's, and none may name another credential's file.
+    pub(crate) fn check_snmp_credentials(
+        &self,
+        before: &Value,
+        after: &Value,
+    ) -> Result<(), String> {
+        const FIELDS: [&str; 3] = ["community_file", "auth_password_file", "priv_password_file"];
+        let list = |v: &Value| v.get("snmp_credential").and_then(Value::as_array).cloned();
+        let old = list(before).unwrap_or_default();
+        for cred in list(after).unwrap_or_default() {
+            let name = cred.get("name");
+            let was = old.iter().find(|o| o.get("name") == name);
+            for f in FIELDS {
+                let v = cred.get(f);
+                let Some(path) = v.and_then(Value::as_str).filter(|s| !s.trim().is_empty()) else {
+                    continue;
+                };
+                if was.and_then(|o| o.get(f)) == v {
+                    continue;
+                }
+                self.check(path, true)?;
+                let real = resolve(path)?;
+                if self
+                    .credential_files
+                    .iter()
+                    .any(|c| forms(c).contains(&real))
+                {
+                    return Err(format!(
+                        "`{path}` is a file holding another credential in this node's configuration, which `{f}` may not name"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -633,6 +692,38 @@ pub(crate) fn confine(cfg: &mut Config, file: &Config, e: &Entries) -> Vec<Issue
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DSC-004 (review of T25.6) - an SNMP credential's file must be in `secret_file_dirs`
+    /// and may not name another credential's file (it would go out as a community in clear text).
+    #[test]
+    fn dsc_004_snmp_credential_files_follow_the_path_rules() {
+        let rules = PathRules {
+            denied: Vec::new(),
+            secret_dirs: vec![PathBuf::from("/run/secrets")],
+            credential_files: vec![PathBuf::from("/run/secrets/ntfy-token")],
+            snmp_files: Vec::new(),
+        };
+        let before = json!({"snmp_credential": []});
+        let with = |f: &str| json!({"snmp_credential": [{"name": "c", "community_file": f}]});
+        assert!(
+            rules
+                .check_snmp_credentials(&before, &with("/run/secrets/community"))
+                .is_ok()
+        );
+        assert!(
+            rules
+                .check_snmp_credentials(&before, &with("/run/secrets/ntfy-token"))
+                .is_err()
+        );
+        assert!(
+            rules
+                .check_snmp_credentials(&before, &with("/etc/hostname"))
+                .is_err()
+        );
+        // Unchanged is not re-checked.
+        let kept = with("/etc/hostname");
+        assert!(rules.check_snmp_credentials(&kept, &kept).is_ok());
+    }
 
     /// Every path field the rules know has a slot to refuse it in.
     #[test]

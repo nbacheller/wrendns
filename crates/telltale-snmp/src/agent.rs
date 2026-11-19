@@ -111,6 +111,9 @@ pub struct Agent {
     trusted: Option<Engine>,
     gate: ResyncGate,
     keys: Option<RoundKeys>,
+    /// When the last datagram went out: no two leave less than 50 ms apart (ADR-908), engine
+    /// discovery and a time-window resend included.
+    last_send: std::cell::Cell<Option<Instant>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -142,11 +145,43 @@ impl Agent {
     /// (`dest`). A v3 user without an authentication password is refused: noAuthNoPriv is not
     /// a mode this client uses.
     pub fn new(target: SocketAddr, security: Security, timing: Timing) -> Result<Self, AgentError> {
-        if matches!(&security, Security::V3 { user } if user.auth.is_none()) {
+        Self::check_security(&security)?;
+        let bind: SocketAddr = match target.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let socket = UdpSocket::bind(bind).map_err(|e| AgentError::Io(e.kind()))?;
+        socket
+            .connect(target)
+            .map_err(|e| AgentError::Io(e.kind()))?;
+        Ok(Self::from_connected(target, socket, security, timing))
+    }
+
+    /// REQ: DSC-003 (ADR-1001) - the same as [`Agent::new`] with a socket the caller already
+    /// connected to `target`. A discovery worker's seccomp filter refuses `bind`, so it makes the
+    /// socket with `socket` and `connect` alone (`telltale_net::worker::connected_udp_socket`) and
+    /// hands it in; this crate holds no `unsafe` and makes no socket call of its own on this path.
+    /// A socket not connected to `target` is refused.
+    pub fn with_socket(
+        target: SocketAddr,
+        socket: UdpSocket,
+        security: Security,
+        timing: Timing,
+    ) -> Result<Self, AgentError> {
+        Self::check_security(&security)?;
+        if socket.peer_addr().ok() != Some(target) {
             return Err(AgentError::BadRequest);
         }
-        // REQ: DSC-003. RFC 3414 §11.2: passwords under 8 octets are refused up front.
-        if let Security::V3 { user } = &security {
+        Ok(Self::from_connected(target, socket, security, timing))
+    }
+
+    /// A v3 user without an authentication password is refused: noAuthNoPriv is not a mode this
+    /// client uses (REQ: DSC-003), and passwords under 8 octets are refused up front (RFC 3414 §11.2).
+    fn check_security(security: &Security) -> Result<(), AgentError> {
+        if matches!(security, Security::V3 { user } if user.auth.is_none()) {
+            return Err(AgentError::BadRequest);
+        }
+        if let Security::V3 { user } = security {
             let short = user
                 .auth
                 .iter()
@@ -157,15 +192,16 @@ impl Agent {
                 return Err(AgentError::Usm(UsmError::ShortPassword));
             }
         }
-        let bind: SocketAddr = match target.ip() {
-            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
-        };
-        let socket = UdpSocket::bind(bind).map_err(|e| AgentError::Io(e.kind()))?;
-        socket
-            .connect(target)
-            .map_err(|e| AgentError::Io(e.kind()))?;
-        Ok(Self {
+        Ok(())
+    }
+
+    fn from_connected(
+        target: SocketAddr,
+        socket: UdpSocket,
+        security: Security,
+        timing: Timing,
+    ) -> Self {
+        Self {
             target,
             socket,
             buf: vec![0u8; MAX_MESSAGE],
@@ -177,7 +213,8 @@ impl Agent {
             trusted: None,
             gate: ResyncGate::default(),
             keys: None,
-        })
+            last_send: std::cell::Cell::new(None),
+        }
     }
 
     pub fn target(&self) -> SocketAddr {
@@ -187,6 +224,16 @@ impl Agent {
     /// The engine learned so far (v3), for the capability record.
     pub fn engine(&self) -> Option<&Engine> {
         self.engine.as_ref()
+    }
+
+    /// REQ: DSC-004 — the security level this agent uses, for the capability record: `v2c`,
+    /// `authNoPriv` or `authPriv`.
+    pub fn level(&self) -> &'static str {
+        match &self.security {
+            Security::V2c { .. } => "v2c",
+            Security::V3 { user } if user.privacy.is_some() => "authPriv",
+            Security::V3 { .. } => "authNoPriv",
+        }
     }
 
     /// Moves the learned engine's clock origin back by `by`, as if that much local time had
@@ -486,6 +533,15 @@ impl Agent {
     }
 
     fn send(&self, msg: &[u8]) -> Result<(), AgentError> {
+        // REQ: DSC-004 (ADR-908) - at least 50 ms between any two datagrams to one agent.
+        if let Some(t) = self.last_send.get() {
+            let gap = Duration::from_millis(50);
+            let since = t.elapsed();
+            if since < gap {
+                std::thread::sleep(gap.saturating_sub(since));
+            }
+        }
+        self.last_send.set(Some(Instant::now()));
         self.socket
             .send(msg)
             .map(|_| ())

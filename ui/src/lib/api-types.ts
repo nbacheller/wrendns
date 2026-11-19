@@ -1803,6 +1803,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/discovery/snmp/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test an SNMP agent.
+         * @description Probes the agent named in the body, the way the poller's first poll does: one GETNEXT on the
+         *     root of each table it is configured for, and one GET of sysObjectID. The answer is the agent's
+         *     capability record: the security level reached, the engine ID (v3), and for each part of each
+         *     table, the MIB table that answered (or none). A table that did not answer is skipped by the
+         *     poller until the next test. Read-only: the client has no write PDU (ADR-908).
+         *
+         *     The body is `{"agent": "<name>"}` and nothing else: an address is refused (ADR-907).
+         *     `?dryRun=true` sends no packet and lists the OIDs a test would query. A test waits 60 seconds
+         *     after the previous test of the same agent (429 with `Retry-After`). It runs on the designated
+         *     node: a cluster replica forwards the request to the primary. `Idempotency-Key` replays the
+         *     first answer for 24 hours. Needs the admin role (agents: `ops:discovery_test` and a reason);
+         *     audit-logged as `discovery.snmp_test`.
+         */
+        post: operations["snmp_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/discovery/status": {
         parameters: {
             query?: never;
@@ -4278,6 +4309,37 @@ export interface components {
             /** Format: double */
             topSharePercent: number;
         };
+        /** @description REQ: DSC-004 (ADR-908 "Capability record") — what an agent answered when it was probed. */
+        AgentCapability: {
+            /** @description The v3 engine ID, in hex. */
+            engineId?: string | null;
+            /** @description The security level reached: `v2c`, `authNoPriv` or `authPriv`. */
+            level: string;
+            /** @description One entry per part of every configured table. */
+            parts: components["schemas"]["AgentCapabilityPart"][];
+            /**
+             * Format: int64
+             * @description When it was probed (Unix seconds).
+             */
+            probedUnix: number;
+            /** @description sysObjectID, when the agent answered it (device-supplied). */
+            sysObjectId?: string | null;
+        };
+        /** @description REQ: DSC-004 — one part of a table group and the MIB table that answered it. */
+        AgentCapabilityPart: {
+            /**
+             * @description The part: `arp`, `interfaces`, `addresses`, `forwarding`, `ports`, `vlans`, `neighbours`
+             *     or `local_ports`.
+             */
+            part: string;
+            /**
+             * @description The MIB table that answered (`ipNetToPhysicalTable`, `ipNetToMediaTable`, ...); none when
+             *     no alternative did.
+             */
+            source?: string | null;
+            /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
+            table: string;
+        };
         /** @description REQ: OBS-010 (T9.6) — the last delivery to a destination. */
         AlertDelivery: {
             destination: string;
@@ -5622,7 +5684,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "discovery_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -5892,6 +5954,145 @@ export interface components {
             source: string;
         };
         /**
+         * @description REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that
+         *     came from the device (names, the sysObjectID) is device-supplied text, cut and cleaned.
+         */
+        DiscoveryAgent: {
+            /**
+             * @description The address it is polled at (RFC 1918 only).
+             * @example 192.0.2.1
+             */
+            address: string;
+            capability?: components["schemas"]["AgentCapability"] | null;
+            /**
+             * Format: int32
+             * @description Polls that failed in a row.
+             */
+            consecutiveFailures: number;
+            /** @description The credential it uses (by name; the secret is never shown). */
+            credential: string;
+            /**
+             * Format: int64
+             * @description Polls that failed since start.
+             */
+            failures: number;
+            /**
+             * Format: int32
+             * @description Seconds between polls.
+             */
+            intervalSecs: number;
+            lastCounts?: components["schemas"]["DiscoveryAgentCounts"] | null;
+            /**
+             * Format: int64
+             * @description How long the last poll took, in milliseconds.
+             */
+            lastDurationMs?: number | null;
+            /** @description Why the last poll failed, in words. Carries no address, credential or reply byte. */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description When the last poll ended (Unix seconds).
+             */
+            lastPollUnix?: number | null;
+            /**
+             * Format: int32
+             * @description SNMP requests the last poll sent.
+             */
+            lastRequests?: number | null;
+            /**
+             * Format: int64
+             * @description When a poll last succeeded (Unix seconds).
+             */
+            lastSuccessUnix?: number | null;
+            /**
+             * Format: int64
+             * @description When **Test** last ran for this agent (Unix seconds); a new test waits 60 s after it.
+             */
+            lastTestUnix?: number | null;
+            /**
+             * Format: int32
+             * @description Exchanges of the last poll that timed out.
+             */
+            lastTimeouts?: number | null;
+            /**
+             * @description The agent's name, as `[[discovery.snmp_agent]]` gives it.
+             * @example gateway
+             */
+            name: string;
+            /**
+             * Format: int64
+             * @description Polls made since start.
+             */
+            polls: number;
+            /**
+             * @description `waiting` (no poll yet), `ok`, `error` (the last poll failed), `failing` (three polls in a
+             *     row failed) or `skipped` (its credential can't be read, or its address is refused).
+             */
+            state: string;
+            /** @description One entry per configured table. */
+            tables: components["schemas"]["DiscoveryAgentTable"][];
+        };
+        /** @description REQ: DSC-004, DSC-014 — what the last poll's rows meant. */
+        DiscoveryAgentCounts: {
+            /**
+             * Format: int32
+             * @description ARP entries merged into the inventory.
+             */
+            arpMerged: number;
+            /**
+             * Format: int32
+             * @description ARP entries outside every `[[discovery.subnet]]` (or naming no host).
+             */
+            arpOutsideSubnets: number;
+            /**
+             * Format: int32
+             * @description Forwarding entries that gave a device a port and a VLAN.
+             */
+            fdbLocated: number;
+            /**
+             * Format: int32
+             * @description Forwarding entries left out because they were learned on an uplink or trunk port.
+             */
+            fdbUplink: number;
+            /**
+             * Format: int32
+             * @description IPv6 entries counted and left out (M25 is IPv4 only).
+             */
+            ipv6Ignored: number;
+            /**
+             * Format: int32
+             * @description LLDP neighbours merged.
+             */
+            lldpMerged: number;
+            /**
+             * Format: int32
+             * @description The agent's own addresses merged.
+             */
+            ownMerged: number;
+            /**
+             * Format: int32
+             * @description Ports counted as uplinks (more than 8 learned MACs, or a listed agent or UniFi device as
+             *     the LLDP neighbour).
+             */
+            uplinkPorts: number;
+        };
+        /** @description REQ: DSC-004 — a configured table of an agent and what is known of it. */
+        DiscoveryAgentTable: {
+            /** @description The last error of the table, in words. */
+            error?: string | null;
+            /**
+             * Format: int32
+             * @description The rows the last poll read from the table, over every part and column.
+             */
+            rows?: number | null;
+            /** @description `unprobed`, `answered`, or `unanswered` (skipped until the next test). */
+            state: string;
+            /** @description Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`. */
+            stop?: string | null;
+            /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
+            table: string;
+        };
+        /**
          * @description REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
          *     it. Read-only: nothing here changes a console.
          */
@@ -5931,6 +6132,11 @@ export interface components {
          *     and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
          */
         DiscoveryStatus: {
+            /**
+             * @description REQ: DSC-004, DSC-014 (T25.6) — each `[[discovery.snmp_agent]]` the poller runs on this
+             *     node: its last poll, its tables and its capability record.
+             */
+            agents?: components["schemas"]["DiscoveryAgent"][];
             /** @description Whether this node is the designated one (it runs the inventory and its workers). */
             designated: boolean;
             /** @description `[discovery] enabled`. */
@@ -6793,6 +6999,7 @@ export interface components {
              *     `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
              *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
+             *     `discovery_agent_failing`,
              *     `guarded_ignored`, `guarded_bind_fallback`.
              * @example upstream_down
              */
@@ -10316,6 +10523,53 @@ export interface components {
              * @description Days each error budget covers (`[slo] window_days`).
              */
             windowDays: number;
+        };
+        /** @description REQ: DSC-004 — one table root a test would query (or did). */
+        SnmpTestOid: {
+            /** @description The MIB table (an alternative; the first that answers is used). */
+            alternative: string;
+            /** @description The column OIDs a poll walks when this alternative answers. */
+            columns: string[];
+            /** @description The part of the table group. */
+            part: string;
+            /** @description The OID the probe's one GETNEXT starts from. */
+            probeOid: string;
+            /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
+            table: string;
+        };
+        /**
+         * @description REQ: DSC-004 (T25.6, ADR-908, ADR-1002) — `POST /api/v1/discovery/snmp/test`: the agent to
+         *     test, by name. No address is ever accepted (ADR-907).
+         */
+        SnmpTestRequest: {
+            /**
+             * @description The agent's name, from `[[discovery.snmp_agent]]` (`GET /api/v1/discovery/status` lists them).
+             * @example gateway
+             */
+            agent: string;
+        };
+        /** @description REQ: DSC-004 — the answer of **Test** (`POST /api/v1/discovery/snmp/test`). */
+        SnmpTestResult: {
+            /** @description The agent tested. */
+            agent: string;
+            capability?: components["schemas"]["AgentCapability"] | null;
+            /** @description True when no packet was sent (`?dryRun=true`): `oids` is what a test would query. */
+            dryRun: boolean;
+            /**
+             * Format: int64
+             * @description How long the test took, in milliseconds.
+             */
+            durationMs?: number | null;
+            /** @description Why the test failed, in words. */
+            error?: string | null;
+            /** @description The node that ran the test (the designated node, which may not be the one asked). */
+            node?: string | null;
+            /** @description What happens next, in a sentence. */
+            note: string;
+            /** @description The OIDs a test queries: one GETNEXT on each probe root, one GET of sysObjectID. */
+            oids: components["schemas"]["SnmpTestOid"][];
+            /** @description Whether the agent answered (a dry run is always `true`). */
+            ok: boolean;
         };
         /**
          * @description Time-bucket size for [`TimeseriesParams`].
@@ -14271,6 +14525,88 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    snmp_test: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The agent's name, and nothing else. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnmpTestRequest"];
+            };
+        };
+        responses: {
+            /** @description The capability record (or, with dryRun, the OIDs a test would query). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnmpTestResult"];
+                };
+            };
+            /** @description A malformed body, an unknown field, or an address where a name belongs. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Needs the admin role (agents: ops:discovery_test and a reason). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No SNMP agent by that name (the hint lists them). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The inventory is off, this node isn't the designated one (`discovery_not_here`), or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The agent was tested less than 60 seconds ago (Retry-After says how long). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The SNMP worker is down or busy, or a replica that can't reach the primary. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
