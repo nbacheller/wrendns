@@ -9,6 +9,9 @@
 #   e. a router added on the primary appears on all nodes; the [discovery] first write goes
 #      through with all three up, and a stopped member doesn't refuse it (ADR-928's rule); replica-b
 #      then reads back a non-default [discovery] value (48 MiB);
+#   e2. (T24.41) a fake UniFi read with a stored key by the primary only: both replicas list its networks
+#       (VLAN, domain), its clients and its state (labelled as read by the primary), the fake source saw
+#       no poll from a replica, and a paused primary is named in missingNodes, not an error;
 #   f. queries sent to each node show up in the primary's query log, labelled by node, and in
 #      the per-node top clients;
 #   g. upstream #7 on the 2-CPU replica: with the primary paused, 20 concurrent reads each return
@@ -350,6 +353,59 @@ call replica-b GET "/api/v1/config/entries?kind=discovery"
 [ "$RS" = 200 ] || bad "replica-b's configuration read answered $RS: ${RB:0:300}"
 has '"worker_memory_mib":48' || bad "replica-b doesn't read the [discovery] value it was given (48 MiB)"
 pass "router on all three; first write accepted with all up and with replica-b stopped; replica-b reads 48 MiB"
+
+step "e2. a replica shows the primary's router data (T24.41): networks, clients and state, read by the primary only"
+# A fake UniFi (the fake source serves its stat/sta and networkconf answers over plain http) read with a
+# stored key: only the primary polls it. A replica's pages come from the primary through the cluster.
+put_json router2.json '{"type":"unifi","url":"http://fake-source:8080","api_key_ref":"cluster3-router-key"}'
+call primary PUT /api/v1/routers/fake-udm "$E/router2.json"
+[ "$RS" = 200 ] || bad "the fake UniFi's write on the primary answered $RS: $RB"
+for _ in $(seq 90); do
+  call primary GET /api/v1/routers
+  [ "$(jget 'next((r["status"]["state"] for r in d["items"] if r["name"] == "fake-udm"), "")')" = ok ] && break
+  sleep 1
+done
+[ "$(jget 'next((r["status"]["state"] for r in d["items"] if r["name"] == "fake-udm"), "")')" = ok ] \
+  || bad "the primary never read the fake UniFi: ${RB:0:600}"
+for n in replica-a replica-b; do
+  for _ in $(seq 60); do call "$n" GET /api/v1/networks && has vlan-30 && break; sleep 1; done
+  [ "$RS" = 200 ] || bad "$n's /networks answered $RS"
+  for want in LAN-c3 vlan-30 vlan-40; do has "$want" || bad "$n's /networks doesn't list $want: ${RB:0:600}"; done
+  [ "$(jget 'next((i["vlan"] for i in d["items"] if i["name"] == "vlan-30"), 0)')" = 30 ] || bad "$n shows no VLAN 30 for vlan-30"
+  [ "$(jget 'next((i["domain"] for i in d["items"] if i["name"] == "LAN-c3"), "")')" = lan.c3.test ] || bad "$n shows no domain for LAN-c3"
+  call "$n" GET /api/v1/dhcp/leases
+  [ "$RS" = 200 ] || bad "$n's /dhcp/leases answered $RS"
+  has kids-tablet || bad "$n's /dhcp/leases doesn't list the primary's router clients: ${RB:0:400}"
+  call "$n" GET /api/v1/routers
+  [ "$(jget 'next((r["status"]["state"] for r in d["items"] if r["name"] == "fake-udm"), "")')" = ok ] \
+    || bad "$n doesn't show the primary's state of fake-udm: ${RB:0:600}"
+  [ "$(jget 'next((r["status"]["devices"] for r in d["items"] if r["name"] == "fake-udm"), 0)')" -ge 3 ] \
+    || bad "$n shows fewer than 3 devices for fake-udm"
+  [ "$(jget 'next((r["status"].get("readBy", "") for r in d["items"] if r["name"] == "fake-udm"), "")')" != "" ] \
+    || bad "$n doesn't label fake-udm's status as read by the primary"
+  has "$SECRET" && bad "$n's /routers shows the router key's value"
+done
+FS=$("${COMPOSE[@]}" logs --no-color fake-source 2>&1)
+pip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container primary)" | tr -d '\r')
+printf '%s\n' "$FS" | grep -F 'stat/sta' | grep -qF "$pip" || bad "the primary's read of the fake UniFi isn't in its log: ${FS:0:400}"
+for r in replica-a replica-b; do
+  rip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container "$r")" | tr -d '\r')
+  printf '%s\n' "$FS" | grep -F 'stat/sta' | grep -qF "[::ffff:$rip]" && bad "$r ($rip) polled the fake UniFi: ${FS:0:400}"
+done
+# With the primary away a replica answers from its own data, names the primary, and never errors.
+docker pause "$(container primary)" >/dev/null
+call replica-a GET /api/v1/networks
+rs_n=$RS; has missingNodes && miss_n=yes || miss_n=no
+call replica-a GET /api/v1/routers
+rs_r=$RS; has missingNodes && miss_r=yes || miss_r=no
+docker unpause "$(container primary)" >/dev/null
+[ "$rs_n" = 200 ] && [ "$rs_r" = 200 ] || bad "a replica answered $rs_n/$rs_r while the primary was paused"
+[ "$miss_n" = yes ] && [ "$miss_r" = yes ] || bad "a replica didn't name the paused primary ($miss_n/$miss_r)"
+for _ in $(seq 120); do primary_linked replica-a && break; sleep 0.5; done
+primary_linked replica-a || bad "replica-a doesn't see the primary again after the unpause"
+call primary DELETE /api/v1/routers/fake-udm
+[ "$RS" = 200 ] || [ "$RS" = 204 ] || bad "removing the fake UniFi answered $RS: $RB"
+pass "both replicas list the router's networks, clients and state; only the primary polled; a paused primary is named, not an error"
 
 step "f. queries sent to each node show up on the primary, labelled by node"
 for n in "${NODES[@]}"; do

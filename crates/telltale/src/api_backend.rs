@@ -5266,6 +5266,7 @@ fn router_entry(
         devices: 0,
         networks: 0,
         interval_secs: r.interval_secs,
+        read_by: None,
     });
     telltale_api::model::RouterEntry {
         name: r.name.to_string(),

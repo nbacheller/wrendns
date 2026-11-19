@@ -2595,9 +2595,17 @@ async fn anomalies(
 #[utoipa::path(get, path = "/api/v1/dhcp/leases", tag = "config",
     responses((status = 200, body = Items<DhcpLease>, description = "The result.")))]
 async fn dhcp_leases(State(b): State<Shared>) -> Json<Items<DhcpLease>> {
+    // REQ: API-010, CLU-002 (T24.41) - a replica asks the primary, which reads the routers.
+    let b = request_backend(&b);
+    let (items, missing_nodes) = tokio::task::spawn_blocking(move || {
+        let items = b.dhcp_leases();
+        (items, b.missing_nodes())
+    })
+    .await
+    .unwrap_or_default();
     Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.dhcp_leases(),
+        items,
+        missing_nodes,
     })
 }
 
@@ -2607,13 +2615,22 @@ async fn dhcp_leases(State(b): State<Shared>) -> Json<Items<DhcpLease>> {
 /// domain), then any client group's `networks` that no router reported. Each with the group
 /// that covers it and how many known devices are in it (the routers' DHCP clients, Home
 /// Assistant's devices, and mDNS names), so you can see which networks are filling up. Read
-/// on this node (the one that reads the routers).
+/// where the routers are read: a replica asks the primary and adds the networks it is directly
+/// on; with the primary away it answers from its own data and `missingNodes` names the primary.
 #[utoipa::path(get, path = "/api/v1/networks", tag = "config",
     responses((status = 200, body = Items<model::NetworkInfo>, description = "The result.")))]
 async fn networks(State(b): State<Shared>) -> Json<Items<model::NetworkInfo>> {
+    // REQ: API-013 (T24.41) - a replica asks the primary, which reads the routers.
+    let b = request_backend(&b);
+    let (items, missing_nodes) = tokio::task::spawn_blocking(move || {
+        let items = b.networks();
+        (items, b.missing_nodes())
+    })
+    .await
+    .unwrap_or_default();
     Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.networks(),
+        items,
+        missing_nodes,
     })
 }
 
