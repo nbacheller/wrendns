@@ -12,6 +12,10 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import BackupCard from '../lib/components/BackupCard.svelte';
+  // REQ: OPS-011, OPS-012 (T27.11) — this node's support-log and update switches (admins).
+  import NodeSwitches from '../lib/components/NodeSwitches.svelte';
+  // REQ: DNS-011 (T27.11) — DNSSEC mode and negative trust anchors, under Query handling.
+  import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
@@ -855,6 +859,7 @@
       </p>
     {/if}
   {:else if tab === 'system'}
+    <NodeSwitches />
     <section class="card">
       <h2>System<HelpButton id="system" /></h2>
       {#if info}
@@ -1000,6 +1005,7 @@
       <SupportPackage />
     {/if}
   {:else if tab === 'queries'}
+    <DnssecCard />
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
       <h2>Cache</h2>

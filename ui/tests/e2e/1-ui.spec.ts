@@ -2303,7 +2303,8 @@ test('flt_004 prune lists that add little, then undo', async () => {
 
   await page.goto('/#/lists');
   await page.reload(); // the page may already be on /#/lists, with the lists read before these two existed
-  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  // The name is the first cell's own strong: a "Every name in it is also in <strong>…" note in another row's first cell must not match too.
+  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('td:first-child > strong', { hasText: new RegExp(`^${name}$`) }) });
   await expect(row('prune-small').getByTestId('list-adds')).toHaveText('adds 0%');
   await expect(row('prune-small').getByTestId('list-covered-by')).toContainText('100% also in prune-big');
   // prune-small's row names prune-big too ("also in prune-big"), so look for the figure, not the row's only cell.
@@ -2367,7 +2368,8 @@ test('flt_004 prune lists that add little, then undo', async () => {
   const done = page.getByTestId('prune-done');
   await expect(done).toContainText('prune-small');
   await expect(panel).toHaveCount(0);
-  await expect(row('prune-small')).toContainText('off');
+  // The state badge ("off"), not the "Turn it off" button of a redundant list.
+  await expect(row('prune-small').locator('span.badge', { hasText: /^off$/ })).toHaveCount(1);
   expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(false);
   expect((await listed()).find((l) => l.name === 'prune-big')?.enabled).toBe(true);
   const audit = (await (await page.request.get('/api/v1/audit?action=lists.prune')).json()).items;
@@ -2377,7 +2379,7 @@ test('flt_004 prune lists that add little, then undo', async () => {
   await done.getByTestId('prune-undo').click();
   await expect(done).toHaveCount(0);
   await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
-  await expect(row('prune-small').getByText('off', { exact: true })).toHaveCount(0); // the "Turn it off" button is not the badge
+  await expect(row('prune-small').locator('span.badge', { hasText: /^off$/ })).toHaveCount(0); // the "Turn it off" button is not the badge
   const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
   expect(def.definition.rules).toHaveLength(10);
 

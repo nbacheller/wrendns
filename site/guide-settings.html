@@ -227,6 +227,19 @@ telltale ctl secrets clear unifi                              # refused while a 
 </section>
 
 <section>
+  <h2>The cache, list limits, DNSSEC and the small switches</h2>
+  <p>Most of these are a form on the page they belong to, with a check before the change is saved:</p>
+  <ul>
+    <li><strong>Cache</strong> (the Cache page): memory, how long answers are kept, stale answers, prefetch and the warm start for each node. Operators change them; each node applies its own, when it restarts.</li>
+    <li><strong>Lists</strong>: a largest download and a stale age for each list, and the refresh interval for all of them (after a restart).</li>
+    <li><strong>DNSSEC</strong> (Query handling): the validation mode and the domains not validated.</li>
+    <li><strong>Drills</strong> (the Cluster page): whether the failover drills run each month, and on which nodes.</li>
+    <li><strong>System</strong>: this node's support-log and update-check switches (admins).</li>
+  </ul>
+  <p class="muted">Each control has a ? beside it that explains what the setting does, and the API has the same change: see the reference on the developers' pages.</p>
+</section>
+
+<section>
   <div class="guide-nav">
     <a class="btn" href="guides.html">← All guides</a>
     <a class="btn primary" href="guide-cluster.html">Next: Build a cluster →</a>

@@ -24,15 +24,55 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cache => "cache",
+        ManagedKind::Support => "support",
+        ManagedKind::Updates => "updates",
+        ManagedKind::Dnssec => "dnssec",
+        ManagedKind::Filter => "filter",
+        ManagedKind::Drill => "drill",
         _ => "clients",
     }
+}
+
+/// REQ: DNS-006 (T27.2, ADR-1006) - the fifteen fields of `[cache]`, in the order of `CacheConfig`.
+const CACHE_KEYS: &[&str] = &[
+    "max_bytes",
+    "max_entries",
+    "min_ttl",
+    "max_ttl",
+    "negative_ttl_max",
+    "servfail_ttl",
+    "serve_stale",
+    "stale_max_age",
+    "stale_answer_client_timeout_ms",
+    "stale_answer_ttl",
+    "prefetch",
+    "prefetch_threshold_pct",
+    "prefetch_min_hits",
+    "persist",
+    "warm_names",
+];
+
+/// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) - the kinds that hold one section per
+/// node (`node_settings.rs` plans and stores them; they are not singletons).
+pub(crate) fn is_node_kind(kind: ManagedKind) -> bool {
+    matches!(
+        kind,
+        ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates
+    )
 }
 
 /// True for the three kinds in this module.
 pub(crate) fn is_settings(kind: ManagedKind) -> bool {
     matches!(
         kind,
-        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery
+        ManagedKind::Special
+            | ManagedKind::Local
+            | ManagedKind::Clients
+            | ManagedKind::Discovery
+            | ManagedKind::Dnssec
+            | ManagedKind::Filter
+            | ManagedKind::Drill
     )
 }
 
@@ -71,6 +111,12 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "default_ttl",
         ],
         ManagedKind::Discovery => DISCOVERY_KEYS,
+        ManagedKind::Cache => CACHE_KEYS,
+        ManagedKind::Support => &["persist_logs"],
+        ManagedKind::Updates => &["check"],
+        ManagedKind::Dnssec => &["mode", "negative_trust_anchors"],
+        ManagedKind::Filter => &["refresh_secs", "stale_after_days"],
+        ManagedKind::Drill => &["schedule", "nodes"],
         _ => &["mdns"],
     }
 }
@@ -83,6 +129,8 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
         ManagedKind::Clients => &["mdns"],
         // REQ: DSC-001 (T25.2, ADR-907) — every field of the network inventory is admin-only.
         ManagedKind::Discovery => DISCOVERY_KEYS,
+        // REQ: CLU-014 (T27.11, ADR-1006) - the drill schedule starts drills on the cluster's nodes.
+        ManagedKind::Drill => &["schedule", "nodes"],
         _ => &[],
     }
 }
@@ -90,13 +138,7 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
 /// The editable fields of a kind as the configuration holds them now, as JSON: every key of
 /// [`keys`] is present (`null` when unset), so a stored entry replaces every field.
 pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
-    let full = match kind {
-        ManagedKind::Special => serde_json::to_value(&cfg.special),
-        ManagedKind::Local => serde_json::to_value(&cfg.local),
-        ManagedKind::Discovery => serde_json::to_value(&cfg.discovery),
-        _ => serde_json::to_value(&cfg.clients),
-    }
-    .unwrap_or(Value::Null);
+    let full = section_full(kind, cfg);
     let mut out = Map::new();
     for k in keys(kind) {
         // REQ: DSC-004 - the two lists are left out of a serialization while empty (a node that never
@@ -109,6 +151,39 @@ pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
         out.insert((*k).to_owned(), full.get(*k).cloned().unwrap_or(missing));
     }
     Value::Object(out)
+}
+
+/// The whole section a kind edits, as the configuration holds it (every field).
+fn section_full(kind: ManagedKind, cfg: &Config) -> Value {
+    match kind {
+        ManagedKind::Special => serde_json::to_value(&cfg.special),
+        ManagedKind::Local => serde_json::to_value(&cfg.local),
+        ManagedKind::Discovery => serde_json::to_value(&cfg.discovery),
+        ManagedKind::Cache => serde_json::to_value(&cfg.cache),
+        ManagedKind::Support => serde_json::to_value(&cfg.support),
+        ManagedKind::Updates => serde_json::to_value(&cfg.updates),
+        ManagedKind::Dnssec => serde_json::to_value(&cfg.dnssec),
+        ManagedKind::Filter => serde_json::to_value(&cfg.filter),
+        ManagedKind::Drill => serde_json::to_value(&cfg.drill),
+        _ => serde_json::to_value(&cfg.clients),
+    }
+    .unwrap_or(Value::Null)
+}
+
+/// REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) - sets the
+/// section of `cfg` from `v`, the whole section as [`section_full`] lays it out.
+fn set_section(cfg: &mut Config, kind: ManagedKind, v: Value) -> Result<(), String> {
+    let bad = |e: serde_json::Error| e.to_string();
+    match kind {
+        ManagedKind::Cache => cfg.cache = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Support => cfg.support = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Updates => cfg.updates = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Dnssec => cfg.dnssec = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Filter => cfg.filter = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Drill => cfg.drill = serde_json::from_value(v).map_err(bad)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The dotted keys the files set for this kind's section (`special.ddr_name`), from
@@ -143,6 +218,24 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
                 body["device_domain"] = Value::Null;
             }
             cfg.local = serde_json::from_value::<LocalConfig>(body).map_err(bad)?;
+        }
+        ManagedKind::Cache
+        | ManagedKind::Support
+        | ManagedKind::Updates
+        | ManagedKind::Dnssec
+        | ManagedKind::Filter
+        | ManagedKind::Drill => {
+            if let Value::Object(o) = body
+                && let Some(k) = o.keys().find(|k| !keys(kind).contains(&k.as_str()))
+            {
+                return Err(Problem::invalid(format!(
+                    "`{k}` isn't a field of `{}` that the API sets",
+                    section(kind)
+                ))
+                .hint(format!("The fields are: {}.", keys(kind).join(", "))));
+            }
+            set_section(&mut cfg, kind, body.clone())
+                .map_err(|e| Problem::new(Code::InvalidConfig, e))?;
         }
         _ => {
             #[derive(Deserialize, Default)]
@@ -224,16 +317,21 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Local, &e.local),
         (ManagedKind::Clients, &e.clients_settings),
         (ManagedKind::Discovery, &e.discovery),
+        (ManagedKind::Dnssec, &e.dnssec),
+        (ManagedKind::Filter, &e.filter),
+        (ManagedKind::Drill, &e.drill),
     ] {
         let Some(stored) = stored else { continue };
         if let Err(why) = overlay(cfg, own, kind, stored) {
             errs.push(format!("{}: {why}", section(kind)));
         }
     }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's own per-node sections.
+    errs.extend(crate::node_settings::apply_stored(cfg, own, e));
     errs
 }
 
-fn overlay(
+pub(crate) fn overlay(
     cfg: &mut Config,
     own: &Config,
     kind: ManagedKind,
@@ -266,6 +364,20 @@ fn overlay(
             }
             cfg.local = serde_json::from_value(lj).map_err(|e| e.to_string())?;
         }
+        ManagedKind::Cache
+        | ManagedKind::Support
+        | ManagedKind::Updates
+        | ManagedKind::Dnssec
+        | ManagedKind::Filter
+        | ManagedKind::Drill => {
+            let mut full = section_full(kind, cfg);
+            if let (Value::Object(f), Value::Object(c)) = (&mut full, &cur) {
+                for k in keys(kind) {
+                    f.insert((*k).to_owned(), c.get(*k).cloned().unwrap_or(Value::Null));
+                }
+            }
+            set_section(cfg, kind, full)?;
+        }
         _ => {
             cfg.clients.mdns = cur.get("mdns").and_then(Value::as_bool).unwrap_or(false);
         }
@@ -283,6 +395,25 @@ pub(crate) fn check_admin_fields(
     role: Option<Role>,
     agent: Option<&str>,
 ) -> Result<(), Problem> {
+    // REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) - no
+    // agent changes these sections (the agents' scopes don't cover them).
+    if agent.is_some()
+        && matches!(
+            kind,
+            ManagedKind::Cache
+                | ManagedKind::Support
+                | ManagedKind::Updates
+                | ManagedKind::Dnssec
+                | ManagedKind::Filter
+                | ManagedKind::Drill
+        )
+    {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            format!("agents can't change [{}]", section(kind)),
+        )
+        .hint("Ask an admin to make this change in the UI."));
+    }
     if kind == ManagedKind::Clients && agent.is_some() {
         return Err(Problem::new(
             Code::AgentNotAllowed,
@@ -309,6 +440,7 @@ pub(crate) fn check_admin_fields(
         ManagedKind::Discovery => {
             "the network inventory reads the devices on the LAN, from one node"
         }
+        ManagedKind::Drill => "the drill schedule starts failover drills on the cluster's nodes",
         _ => "it is one name for the whole cluster, tied to every node's certificates",
     };
     if agent.is_some() {
@@ -372,6 +504,9 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::Special => entries.special.is_none(),
         ManagedKind::Local => entries.local.is_none(),
         ManagedKind::Discovery => entries.discovery.is_none(),
+        ManagedKind::Dnssec => entries.dnssec.is_none(),
+        ManagedKind::Filter => entries.filter.is_none(),
+        ManagedKind::Drill => entries.drill.is_none(),
         _ => entries.clients_settings.is_none(),
     }
 }
@@ -382,6 +517,9 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::Special => entries.special = v,
         ManagedKind::Local => entries.local = v,
         ManagedKind::Discovery => entries.discovery = v,
+        ManagedKind::Dnssec => entries.dnssec = v,
+        ManagedKind::Filter => entries.filter = v,
+        ManagedKind::Drill => entries.drill = v,
         _ => entries.clients_settings = v,
     }
 }
@@ -392,6 +530,9 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special names",
         ManagedKind::Local => "device-name settings",
         ManagedKind::Discovery => "network inventory settings",
+        ManagedKind::Dnssec => "DNSSEC settings",
+        ManagedKind::Filter => "list settings",
+        ManagedKind::Drill => "drill schedule",
         _ => "clients settings",
     }
 }
@@ -406,6 +547,15 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         (ManagedKind::Discovery, false) => "The config file's network inventory settings (or the defaults: off) apply again on the designated node within a few seconds.".into(),
         (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
+        // REQ: DNS-011 (T27.11) - the validator's mode and trust anchors are read on a reload.
+        (ManagedKind::Dnssec, true) => "Applies on every node within a few seconds (the next reload), with no restart. Answers already cached keep their status until they expire.".into(),
+        (ManagedKind::Dnssec, false) => "The config file's DNSSEC settings (or the defaults) apply again on every node within a few seconds.".into(),
+        // REQ: FLT-004 (T27.11) - the list fetcher reads [filter] at start (restart_only_changes).
+        (ManagedKind::Filter, true) => "Takes effect after a restart of every node: the list fetcher reads these settings at start.".into(),
+        (ManagedKind::Filter, false) => "The config file's list settings (or the defaults) apply again after a restart of every node.".into(),
+        // REQ: CLU-014 (T27.11) - the drill scheduler reads the schedule on each check.
+        (ManagedKind::Drill, true) => "Applies without a restart: the drill schedule is read again at each check (within a minute).".into(),
+        (ManagedKind::Drill, false) => "The config file's drill schedule (or off) applies again without a restart.".into(),
         // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up (`restart_only_changes`):
         // a change here takes effect after a restart on every node.
         (_, true) => "Takes effect after a restart on every node: the mDNS listener starts once, at start-up, and device names only follow mDNS while it runs.".into(),

@@ -1008,6 +1008,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cache-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * The `[cache]` section of one node (DNS-006, T27.2): the 15 fields, admins only.
+         * @description Every field takes effect after a restart of that node; the files' fields win (`set_by_file`).
+         */
+        put: operations["put_cache_settings"];
+        post?: never;
+        /**
+         * Removes the `[cache]` section the API set for one node (the files' apply again).
+         * @description The node then runs with the config files' cache settings, or the defaults, after a restart.
+         */
+        delete: operations["delete_cache_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cache/entries": {
         parameters: {
             query?: never;
@@ -1904,6 +1928,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dnssec-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+         * @description The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
+         */
+        put: operations["put_dnssec_settings"];
+        post?: never;
+        /**
+         * Removes the `[dnssec]` settings the API set (the files' apply again).
+         * @description The config files' DNSSEC settings, or the defaults, apply again on every node.
+         */
+        delete: operations["delete_dnssec_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drill-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`. Admins only.
+         * @description The schedule and the nodes that drill themselves apply without a restart; the files' fields win.
+         */
+        put: operations["put_drill_settings"];
+        post?: never;
+        /**
+         * Removes the drill schedule the API set (the files' apply again).
+         * @description The config files' drill schedule, or off, applies again without a restart.
+         */
+        delete: operations["delete_drill_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/drills": {
         parameters: {
             query?: never;
@@ -2003,6 +2075,30 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/filter-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` `refresh_secs` and `stale_after_days`.
+         * @description The list refresh interval and the stale-list age apply after a restart of every node; the files' fields win.
+         */
+        put: operations["put_filter_settings"];
+        post?: never;
+        /**
+         * Removes the `[filter]` settings the API set (the files' apply again).
+         * @description The config files' list settings, or the defaults, apply again after a restart of every node.
+         */
+        delete: operations["delete_filter_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2730,6 +2826,48 @@ export interface paths {
          *     on this node (the one that reads the routers).
          */
         get: operations["networks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/node-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The per-node sections of this node.
+         * @description The cache, support and updates settings it runs with, the fields the files set, and whether a
+         *     restart is still pending for them. Its `node` is the name the `*-settings/{node}` routes take.
+         */
+        get: operations["get_this_node_settings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/node-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The per-node sections of `node`.
+         * @description The cache, support and updates settings in effect there, the fields the files set, and whether a
+         *     restart is still pending for them. 404 when no node of the cluster has that ID.
+         */
+        get: operations["get_node_settings"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3827,6 +3965,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/support-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node. Admins only.
+         * @description The node's log files are kept on disk (or not) from its next start; the files' value wins.
+         */
+        put: operations["put_support_settings"];
+        post?: never;
+        /**
+         * Removes the `[support]` setting the API set for one node.
+         * @description The node then runs with the config files' setting, or the default, after a restart.
+         */
+        delete: operations["delete_support_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/health": {
         parameters: {
             query?: never;
@@ -4033,6 +4195,30 @@ export interface paths {
          * @description By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         delete: operations["delete_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/updates-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node. Admins only.
+         * @description The node checks for a newer build once a day (or not), from its next start; the files' value wins.
+         */
+        put: operations["put_updates_settings"];
+        post?: never;
+        /**
+         * Removes the `[updates]` setting the API set for one node.
+         * @description The node then runs with the config files' setting, or the default, after a restart.
+         */
+        delete: operations["delete_updates_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -9241,6 +9427,24 @@ export interface components {
             witness: boolean;
         };
         /**
+         * @description One per-node section: the fields in effect, which of them the files set, and whether a restart
+         *     is still pending for it.
+         */
+        NodeSection: {
+            /** @description The fields in effect, with the same names as in `telltale.toml`. */
+            fields: Record<string, never>;
+            /** @description The section differs from what the node started with: it applies after a restart. */
+            pendingRestart: boolean;
+            /** @description Whether every field of the section applies only after a restart of the node. */
+            restartOnly: boolean;
+            /** @description `cache`, `support` or `updates` (the names the `*-settings` routes use). */
+            section: string;
+            /** @description The fields the configuration files set: the API can't change them (409 `set_by_file`). */
+            setByFile: string[];
+            /** @description Whether the API set this section for the node (`false`: the files' values apply). */
+            stored: boolean;
+        };
+        /**
          * @description One node's ratios over time, for the sparklines (at most 240 points: buckets summed into
          *     spans). A span without a base (no answers, no upstream exchanges) is null.
          */
@@ -9253,6 +9457,15 @@ export interface components {
             /** @description Each span's start, Unix seconds. */
             start: number[];
             upstreamFailPct: (number | null)[];
+        };
+        /**
+         * @description REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — `GET /api/v1/node-settings/{node}`:
+         *     the per-node sections of one node (`cache`, `support`, `updates`).
+         */
+        NodeSettings: {
+            /** @description The node the sections belong to. */
+            node: string;
+            sections: components["schemas"]["NodeSection"][];
         };
         /** @description REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart. */
         NoteRequest: {
@@ -13033,6 +13246,140 @@ export interface operations {
             };
         };
     };
+    put_cache_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID the settings apply to. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a node's cache settings. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_cache_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a node's cache settings. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no cache settings on that node. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     entries: {
         parameters: {
             query?: {
@@ -14746,6 +15093,226 @@ export interface operations {
             };
         };
     };
+    put_dnssec_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_dnssec_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The API sets no DNSSEC settings. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_drill_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the drill schedule. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_drill_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the drill schedule. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no drill schedule. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     drills: {
         parameters: {
             query?: {
@@ -14945,6 +15512,107 @@ export interface operations {
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_filter_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_filter_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The API sets no list settings. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16640,6 +17308,58 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_NetworkInfo"];
+                };
+            };
+        };
+    };
+    get_this_node_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description This node's sections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeSettings"];
+                };
+            };
+        };
+    };
+    get_node_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The node's sections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeSettings"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -19421,6 +20141,140 @@ export interface operations {
             };
         };
     };
+    put_support_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID the settings apply to. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_support_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets nothing on that node. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     system_health: {
         parameters: {
             query?: never;
@@ -19664,6 +20518,140 @@ export interface operations {
                 content?: never;
             };
             /** @description Not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_updates_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID the settings apply to. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_updates_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets nothing on that node. */
             404: {
                 headers: {
                     [name: string]: unknown;

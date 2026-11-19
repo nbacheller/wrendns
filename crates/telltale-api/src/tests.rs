@@ -1918,11 +1918,14 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
     // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
-    // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28);
-    // 162 with FLT-006's /clients/{id}/policy (T24.30);
-    // 163 with UPS-004's /upstream-presets (T24.36);
-    // 164 with DSC-004's /discovery/snmp/test (T25.6).
-    assert_eq!(paths.len(), 164);
+    // 170 with DNS-006's /node-settings, /node-settings/{node} and /cache-settings/{node}, OPS-011's
+    // /support-settings/{node}, OPS-012's /updates-settings/{node}, and DNS-011's, FLT-004's and
+    // CLU-014's /dnssec-settings/default, /filter-settings/default and /drill-settings/default
+    // (T27.2, T27.11), plus FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28) and
+    // FLT-006's /clients/{id}/policy (T24.30), which the merge of feat/ipam-integrations adds.
+    // 171 with UPS-004's /upstream-presets (T24.36), from the same merge.
+    // 172 with DSC-004's /discovery/snmp/test (T25.6).
+    assert_eq!(paths.len(), 172);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

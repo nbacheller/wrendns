@@ -79,6 +79,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     drill(cfg, &mut r);
     rollout(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
+    dnssec(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     secret_references(cfg, &mut r);
@@ -2479,6 +2480,37 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: DNS-011 (T27.11, ADR-1006) — a negative trust anchor is a domain name. A malformed one would
+/// match no name, so the operator would think a domain is exempt when it isn't.
+fn dnssec(cfg: &Config, r: &mut Report<'_>) {
+    for (i, a) in cfg.dnssec.negative_trust_anchors.iter().enumerate() {
+        if !valid_domain_name(a.as_str()) {
+            r.err(
+                format!("dnssec.negative_trust_anchors[{i}]"),
+                "must be a domain name, such as lab.example",
+            );
+        }
+    }
+}
+
+/// A DNS name: labels of letters, digits, `-` and `_` (not at a label's edge for `-`), each at most
+/// 63 bytes, at most 253 in all, with an optional trailing dot. The root (empty) is not accepted.
+fn valid_domain_name(name: &str) -> bool {
+    let n = name.strip_suffix('.').unwrap_or(name);
+    if n.is_empty() || n.len() > 253 {
+        return false;
+    }
+    n.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
 fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     let c = &cfg.cache;
     if c.min_ttl > c.max_ttl {
@@ -2667,7 +2699,23 @@ fn map(cfg: &Config, r: &mut Report<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_pem_certificate;
+    use super::{valid_domain_name, valid_pem_certificate};
+
+    /// REQ: DNS-011 (T27.11) — negative trust anchors are domain names: a trailing dot is fine, a
+    /// label that starts or ends with `-`, an empty label, the root, and spaces are not.
+    #[test]
+    fn dns_011_trust_anchor_must_be_a_domain_name() {
+        assert!(valid_domain_name("lab.example"));
+        assert!(valid_domain_name("lab.example."));
+        assert!(valid_domain_name("my_host.internal"));
+        assert!(!valid_domain_name(""));
+        assert!(!valid_domain_name("."));
+        assert!(!valid_domain_name("lab..example"));
+        assert!(!valid_domain_name("-lab.example"));
+        assert!(!valid_domain_name("lab-.example"));
+        assert!(!valid_domain_name("lab example"));
+        assert!(!valid_domain_name(&format!("{}.example", "a".repeat(64))));
+    }
 
     /// REQ: API-016 (review of T23.7, ADR-921) — a router's certificate must be PEM that decodes to
     /// at least one certificate: the BEGIN marker alone, or a body that isn't base64, is refused.

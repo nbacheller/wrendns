@@ -38,6 +38,7 @@ pub mod map;
 pub mod map_api;
 pub mod mcp;
 pub mod model;
+pub mod node_settings_api;
 pub mod oidc_providers_api;
 pub mod pihole_api;
 mod pihole_import_api;
@@ -537,6 +538,14 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: API-016 (T23.11) — the OTLP export in effect on this node.
     fn otlp_entry(&self) -> model::OtlpEntry {
         model::OtlpEntry::default()
+    }
+    /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections of `node`
+    /// (`[cache]`, `[support]`, `[updates]`) in effect there.
+    fn node_settings(&self, node: Option<&str>) -> Result<model::NodeSettings, problem::Problem> {
+        let _ = node;
+        Err(problem::Problem::not_found(
+            "the node settings aren't available here",
+        ))
     }
     /// REQ: AGT-012 — runs a parsed `vqlog` query over `[from_us, to_us)` (or only
     /// estimates its cost).
@@ -1182,6 +1191,24 @@ pub enum ManagedKind {
     /// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` (`/discovery-settings/default`): the network
     /// inventory's switch, node and subnets; admin-only, no agent scope; one entry, the files' fields win.
     Discovery,
+    /// REQ: DNS-006 (T27.2, ADR-914, ADR-1006) — `[cache]` for one node (`/cache-settings/{node}`):
+    /// a node-managed kind named by the node it applies to; admins only.
+    Cache,
+    /// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node
+    /// (`/support-settings/{node}`): node-managed, admins only.
+    Support,
+    /// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node (`/updates-settings/{node}`):
+    /// node-managed, admins only.
+    Updates,
+    /// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and negative trust anchors
+    /// (`/dnssec-settings/default`): one entry, the files' fields win.
+    Dnssec,
+    /// REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` `refresh_secs` and `stale_after_days`
+    /// (`/filter-settings/default`): one entry, the files' fields win.
+    Filter,
+    /// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule` (`/drill-settings/default`): one
+    /// entry, the files' fields win; admins only.
+    Drill,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -1421,6 +1448,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(lists_overlap::read_routes(Arc::clone(&backend)))
         // REQ: API-016 (T23.11) — event sinks and the OTLP export (read: any signed-in role).
         .merge(sinks_api::read_routes(Arc::clone(&backend)))
+        .merge(node_settings_api::read_routes(Arc::clone(&backend)))
         // REQ: API-902 (T27.13) — what is guarded and what is pending (no value, ever).
         .merge(guarded_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
@@ -1429,6 +1457,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: API-002, API-010 — configuration changes need operator (or a `write` token).
         .merge(
             config_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2, T27.11, ADR-1006) — the
+        // per-node sections and the small settings: operators at least (the plans refuse the rest).
+        .merge(
+            config_api::node_settings_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         // REQ: FLT-004 — "update lists now" needs operator (agents: config:write:lists).
@@ -1619,7 +1653,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, discovery_api::snmp_test, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, upstream_presets, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, discovery_api::snmp_test, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, upstream_presets, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, node_settings_api::get_node_settings, node_settings_api::get_this_node_settings, config_api::put_cache_settings, config_api::delete_cache_settings, config_api::put_support_settings, config_api::delete_support_settings, config_api::put_updates_settings, config_api::delete_updates_settings, config_api::put_dnssec_settings, config_api::delete_dnssec_settings, config_api::put_filter_settings, config_api::delete_filter_settings, config_api::put_drill_settings, config_api::delete_drill_settings, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(

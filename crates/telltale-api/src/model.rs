@@ -4492,3 +4492,33 @@ pub struct OtlpEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
+
+/// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — `GET /api/v1/node-settings/{node}`:
+/// the per-node sections of one node (`cache`, `support`, `updates`).
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeSettings {
+    /// The node the sections belong to.
+    pub node: String,
+    pub sections: Vec<NodeSection>,
+}
+
+/// One per-node section: the fields in effect, which of them the files set, and whether a restart
+/// is still pending for it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeSection {
+    /// `cache`, `support` or `updates` (the names the `*-settings` routes use).
+    pub section: String,
+    /// The fields in effect, with the same names as in `telltale.toml`.
+    #[schema(value_type = Object)]
+    pub fields: serde_json::Value,
+    /// The fields the configuration files set: the API can't change them (409 `set_by_file`).
+    pub set_by_file: Vec<String>,
+    /// Whether the API set this section for the node (`false`: the files' values apply).
+    pub stored: bool,
+    /// The section differs from what the node started with: it applies after a restart.
+    pub pending_restart: bool,
+    /// Whether every field of the section applies only after a restart of the node.
+    pub restart_only: bool,
+}
