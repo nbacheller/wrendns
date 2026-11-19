@@ -8,6 +8,9 @@
   import { can } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import SnmpAgents from '../lib/components/SnmpAgents.svelte';
+  import SnmpCredentials from '../lib/components/SnmpCredentials.svelte';
+  import { type AgentDraft, type CredDraft, agentBody, agentsOf, credBody, credsOf } from '../lib/snmp';
 
   type Entry = S['ConfigEntry'];
 
@@ -21,6 +24,9 @@
   let node = $state('');
   let memory = $state(64);
   let subnets = $state('');
+  // REQ: DSC-004 (T25.6) — the SNMP agents and the credentials they name, edited with the rest.
+  let agents = $state<AgentDraft[]>([]);
+  let credentials = $state<CredDraft[]>([]);
   // REQ: DSC-009 (T25.10, ADR-912) — the extra reads. UniFi's are off until turned on; Home
   // Assistant's is on. Each is read-only and adds to the inventory only.
   let unifiClientFields = $state(false);
@@ -41,7 +47,9 @@
   const fileSet = $derived(entry?.setByFile ?? []);
   const setByFile = (k: string) => fileSet.includes(k);
   const snapshot = () =>
-    JSON.stringify([enabled, node, memory, subnets, unifiClientFields, unifiAllUsers, unifiDevices, withinHours, haAll]);
+    JSON.stringify([enabled, node, memory, subnets, agents, credentials, unifiClientFields, unifiAllUsers, unifiDevices, withinHours, haAll]);
+  // The agents as stored, so the Test button knows which agent is already saved.
+  const storedAgents = $derived(agentsOf((entry?.definition ?? {}) as Record<string, unknown>));
   const previewCurrent = $derived(preview !== null && previewedWith === snapshot());
   // The stored settings are in use and an override of the files' settings (DSC-001).
   const overridden = $derived(entry?.source === 'override');
@@ -53,6 +61,8 @@
     memory = Number(d.worker_memory_mib ?? 64);
     const list = Array.isArray(d.subnet) ? (d.subnet as { cidr: string }[]) : [];
     subnets = list.map((s) => s.cidr).join('\n');
+    agents = agentsOf(d);
+    credentials = credsOf(d);
     const reads = (d.unifi_reads ?? {}) as Record<string, unknown>;
     unifiClientFields = reads.client_fields === true;
     unifiAllUsers = reads.all_users === true;
@@ -93,6 +103,8 @@
         .map((s) => s.trim())
         .filter(Boolean)
         .map((cidr) => ({ cidr })),
+      snmp_agent: agents.map(agentBody),
+      snmp_credential: credentials.map(credBody),
       unifi_reads: { client_fields: unifiClientFields, all_users: unifiAllUsers, devices: unifiDevices },
       unifi_all_users_within_hours: Number(withinHours),
       home_assistant_all_devices: haAll,
@@ -285,6 +297,8 @@
       {#if setByFile('worker_memory_mib')}<span class="muted small" data-testid="set-by-file">(set by file)</span>{/if}
     </label>
 
+    <SnmpCredentials bind:credentials {agents} {writable} fileSet={setByFile('snmp_credential')} />
+    <SnmpAgents bind:agents {credentials} {writable} fileSet={setByFile('snmp_agent')} status={status?.agents ?? []} saved={storedAgents} />
     <h3>More from the routers<HelpButton id="inventory-unifi-reads" /></h3>
     <p class="muted small">
       Read-only. These add to the inventory only: they never name a device in DNS, and a console that

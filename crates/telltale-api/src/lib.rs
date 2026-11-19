@@ -20,6 +20,7 @@ pub mod categories_api;
 pub mod cluster_nodes_api;
 pub mod compare;
 pub mod config_api;
+pub mod discovery_api;
 pub mod drill_api;
 pub mod federation;
 pub mod flow;
@@ -38,6 +39,7 @@ pub mod map;
 pub mod map_api;
 pub mod mcp;
 pub mod model;
+pub mod node_settings_api;
 pub mod oidc_providers_api;
 pub mod pihole_api;
 mod pihole_import_api;
@@ -378,6 +380,13 @@ pub trait Backend: Send + Sync + 'static {
         let _ = w;
         Box::pin(async { Err(lists_api::not_here()) })
     }
+    /// REQ: DSC-004 (T25.6, ADR-1002) — probes one configured SNMP agent (`w.agent` is a name, never
+    /// an address) on the node that runs the poller, or with `w.dry_run` lists the OIDs it would
+    /// query. A node that doesn't run the poller says so (`discovery_not_here`).
+    fn snmp_test(&self, w: SnmpTestWrite) -> BoxFuture<Result<model::SnmpTestResult, Problem>> {
+        let _ = w;
+        Box::pin(async { Err(discovery_api::not_here(false, None)) })
+    }
     /// REQ: OBS-020 (ADR-107) — the synthetic probes' latest results (every node, in a
     /// cluster).
     fn probes(&self) -> Vec<model::ProbeResult> {
@@ -543,6 +552,14 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: API-016 (T23.11) — the OTLP export in effect on this node.
     fn otlp_entry(&self) -> model::OtlpEntry {
         model::OtlpEntry::default()
+    }
+    /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections of `node`
+    /// (`[cache]`, `[support]`, `[updates]`) in effect there.
+    fn node_settings(&self, node: Option<&str>) -> Result<model::NodeSettings, problem::Problem> {
+        let _ = node;
+        Err(problem::Problem::not_found(
+            "the node settings aren't available here",
+        ))
     }
     /// REQ: AGT-012 — runs a parsed `vqlog` query over `[from_us, to_us)` (or only
     /// estimates its cost).
@@ -1137,9 +1154,6 @@ pub enum ManagedKind {
     List,
     /// A client group (`/groups/{name}`).
     Group,
-    /// REQ: FLT-901 (T24.29) — the two `[filter]` settings that bound the category selection
-    /// (`/filter-settings/default`): `entry_budget` and `ads_tier`.
-    Filter,
     /// REQ: FLT-902, API-010 (T24.29) — who a group applies to (`/groups/{name}/sources`): its
     /// networks and router names and the devices that name it, written as one change.
     GroupSources,
@@ -1194,6 +1208,25 @@ pub enum ManagedKind {
     /// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` (`/discovery-settings/default`): the network
     /// inventory's switch, node and subnets; admin-only, no agent scope; one entry, the files' fields win.
     Discovery,
+    /// REQ: DNS-006 (T27.2, ADR-914, ADR-1006) — `[cache]` for one node (`/cache-settings/{node}`):
+    /// a node-managed kind named by the node it applies to; admins only.
+    Cache,
+    /// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node
+    /// (`/support-settings/{node}`): node-managed, admins only.
+    Support,
+    /// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node (`/updates-settings/{node}`):
+    /// node-managed, admins only.
+    Updates,
+    /// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and negative trust anchors
+    /// (`/dnssec-settings/default`): one entry, the files' fields win.
+    Dnssec,
+    /// REQ: FLT-004 (T27.11, ADR-1006), FLT-901 (T24.29) — `[filter]` `refresh_secs`,
+    /// `stale_after_days`, `entry_budget` and `ads_tier` (`/filter-settings/default`): one entry,
+    /// the files' fields win.
+    Filter,
+    /// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule` (`/drill-settings/default`): one
+    /// entry, the files' fields win; admins only.
+    Drill,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -1257,6 +1290,21 @@ pub struct ListsRefreshWrite {
     /// Who asked: the actor's name.
     pub by: String,
     /// Why, as the user gave it (`X-Telltale-Reason`), for the primary's audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// REQ: DSC-004 (ADR-1002) — an SNMP agent test, as the API checked it (and as it crosses the
+/// cluster channel to the primary).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SnmpTestWrite {
+    /// The agent's name (checked: never an address).
+    pub agent: String,
+    /// List the OIDs a test would query; send no packet.
+    pub dry_run: bool,
+    /// Who asked: the actor's name.
+    pub by: String,
+    /// Why, as the user gave it (`X-Telltale-Reason`), for the audit entry (AGT-005).
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -1421,6 +1469,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(lists_overlap::read_routes(Arc::clone(&backend)))
         // REQ: API-016 (T23.11) — event sinks and the OTLP export (read: any signed-in role).
         .merge(sinks_api::read_routes(Arc::clone(&backend)))
+        .merge(node_settings_api::read_routes(Arc::clone(&backend)))
         // REQ: API-902 (T27.13) — what is guarded and what is pending (no value, ever).
         .merge(guarded_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
@@ -1429,6 +1478,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: API-002, API-010 — configuration changes need operator (or a `write` token).
         .merge(
             config_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2, T27.11, ADR-1006) — the
+        // per-node sections and the small settings: operators at least (the plans refuse the rest).
+        .merge(
+            config_api::node_settings_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         // REQ: FLT-004 — "update lists now" needs operator (agents: config:write:lists).
@@ -1440,6 +1495,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(
             categories_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: DSC-004 (T25.6, ADR-1002) — the SNMP test sends packets to a device: admin (agents:
+        // ops:discovery_test).
+        .merge(
+            discovery_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
         )
         // REQ: FLT-004 (T24.28) — turning the lists a prune plan names off needs operator, and a
         // person: agent tokens only read the plan.
@@ -1618,7 +1679,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_filter_settings, config_api::delete_filter_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp, upstream_presets,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, discovery_api::snmp_test, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, upstream_presets, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, node_settings_api::get_node_settings, node_settings_api::get_this_node_settings, config_api::put_cache_settings, config_api::delete_cache_settings, config_api::put_support_settings, config_api::delete_support_settings, config_api::put_updates_settings, config_api::delete_updates_settings, config_api::put_dnssec_settings, config_api::delete_dnssec_settings, config_api::put_filter_settings, config_api::delete_filter_settings, config_api::put_drill_settings, config_api::delete_drill_settings, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
@@ -1628,7 +1689,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, pihole_api::PiholeApiStatus, pihole_api::PiholeApiSettings, pihole_api::PiholeApiToken, pihole_api::LoginBody, pihole_api::BlockingBody, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, categories_api::CategoryEnv, categories_api::GroupContentInfo, categories_api::ContentInput, categories_api::TierView, categories_api::CategoryView, categories_api::CategoryGroupView, categories_api::SourceState, categories_api::SourceView, categories_api::PresetView, categories_api::NotOfferedView, categories_api::GroupSelection, categories_api::CategoriesView, categories_api::BudgetView, categories_api::GroupContentView, categories_api::ProfileSource, categories_api::ProfileKey, categories_api::ProfileDevices, model::ListOwner, policy_api::ClientPolicy, policy_api::PolicySection, policy_api::PolicyItem, policy_api::PolicyLink, policy_api::PolicyRung, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::DiscoveryStatus, model::DiscoveryWorker, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind, model::UpstreamPresets, model::UpstreamPreset, model::UpstreamPresetEndpoint,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, pihole_api::PiholeApiStatus, pihole_api::PiholeApiSettings, pihole_api::PiholeApiToken, pihole_api::LoginBody, pihole_api::BlockingBody, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, categories_api::CategoryEnv, categories_api::GroupContentInfo, categories_api::ContentInput, categories_api::TierView, categories_api::CategoryView, categories_api::CategoryGroupView, categories_api::SourceState, categories_api::SourceView, categories_api::PresetView, categories_api::NotOfferedView, categories_api::GroupSelection, categories_api::CategoriesView, categories_api::BudgetView, categories_api::GroupContentView, categories_api::ProfileSource, categories_api::ProfileKey, categories_api::ProfileDevices, model::ListOwner, policy_api::ClientPolicy, policy_api::PolicySection, policy_api::PolicyItem, policy_api::PolicyLink, policy_api::PolicyRung, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::DiscoveryStatus, model::DiscoveryWorker, model::DiscoveryRead, model::DiscoveryAgent, model::DiscoveryAgentTable, model::AgentCapability, model::AgentCapabilityPart, model::DiscoveryAgentCounts, model::SnmpTestRequest, model::SnmpTestOid, model::SnmpTestResult, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, model::UpstreamPresets, model::UpstreamPreset, model::UpstreamPresetEndpoint, UpstreamInfo, Step, TopKind,
         Hour, model::TopHour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,

@@ -12,9 +12,14 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import BackupCard from '../lib/components/BackupCard.svelte';
+  // REQ: OPS-011, OPS-012 (T27.11) — this node's support-log and update switches (admins).
+  import NodeSwitches from '../lib/components/NodeSwitches.svelte';
+  // REQ: DNS-011 (T27.11) — DNSSEC mode and negative trust anchors, under Query handling.
+  import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
+  import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
   import OidcProviders from '../lib/components/OidcProviders.svelte';
   import TelemetryOutputs from '../lib/components/TelemetryOutputs.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
@@ -77,14 +82,6 @@
       help: 'Addresses, networks or device names (as named under Clients), one per line, kept out of the query log, the live view and event sinks. Still counted in the dashboard and top lists.' },
     { key: 'log.domains', label: 'Log only: domains', type: 'lines', placeholder: 'localhost\n*.lan',
       help: 'One per line. localhost is that name only; *.lan is every name under lan (not lan itself). Still counted in the dashboard and top lists.' },
-  ];
-  // REQ: FLT-901 (T24.29) — `[filter]`'s two category settings: how many entries the selection may add before
-  // the Categories view warns, and the size of the Ad Block list.
-  const filterFields: Field[] = [
-    { key: 'entry_budget', label: 'Entry budget', type: 'number', placeholder: '1000000', min: 1, helpTopic: 'category-budget',
-      help: 'The most distinct blocklist entries the selected categories may add before the Categories view warns. A node too small for a selection refuses it whatever this says.' },
-    { key: 'ads_tier', label: 'Ad block size', type: 'select', options: ['light', 'pro', 'pro_plus', 'ultimate'], initial: 'pro',
-      help: "Which of HaGeZi's ad and tracker lists the Ad Block checkbox of every profile uses: light, pro (the default, balanced), pro_plus or ultimate." },
   ];
   // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
   const simulateFields: Field[] = [
@@ -243,6 +240,7 @@
     ['config:write:forwards', 'Send domains to other servers'],
     ['ops:pause', 'Pause and resume blocking'],
     ['ops:anomalies', 'Acknowledge device anomalies (and take it back)'],
+    ['ops:discovery_test', 'Test an SNMP agent of the network inventory (admin only)'],
     ['cluster:admin', 'Promote a node; staged rollouts and pins'],
   ];
   // REQ: API-005 (T22.4, AGT-004) — scope presets: the scopes an integration's README asks for.
@@ -862,6 +860,7 @@
       </p>
     {/if}
   {:else if tab === 'system'}
+    <NodeSwitches />
     <section class="card">
       <h2>System<HelpButton id="system" /></h2>
       {#if info}
@@ -1007,19 +1006,17 @@
       <SupportPackage />
     {/if}
   {:else if tab === 'queries'}
+    <DnssecCard />
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
       <h2>Cache</h2>
       <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
     </section>
-    <!-- REQ: FLT-901 (T24.29) — Filtering: the category entry budget and the ad block size. -->
-    <ConfigEditor kind="filter" path="filter-settings" singleton title="Filtering" noun="filtering settings" fields={filterFields}
-      help="category-budget"
-      summary={(d) => `entry budget ${Number(d.entry_budget ?? 1000000).toLocaleString('en-US')}, ad block size ${String(d.ads_tier ?? 'pro').replace('_', '+')}`} />
-    <p class="muted small">
-      The Categories view (Lists, Categories, and each profile) warns when the selected categories hold more entries than the budget, and a node
-      too small for a selection refuses it. The ad block size is the list every profile's Ad Block checkbox downloads.<HelpButton id="category-budget" />
-    </p>
+    <!-- REQ: FLT-901 (T24.29) — the category entry budget and the ad block size are in the list settings (Lists page). -->
+    <section class="card" data-testid="filtering-moved">
+      <h2>Filtering</h2>
+      <p class="small">The category entry budget and the ad block size are with the other list settings on the <a href="#/lists">Lists page</a>.<HelpButton id="category-budget" /></p>
+    </section>
     <!-- REQ: DNS-019 (T24.12, ADR-904, ADR-914) — the special names: switches, and the DDR name (admin). -->
     <ConfigEditor kind="special" path="special-names" singleton title="Special names" noun="special names" fields={specialFields}
       help="special-names" note={ddrNote}
@@ -1064,6 +1061,8 @@
       A simulation replays the query log with and without a change and shows what would have been answered differently. It never
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
+    <!-- REQ: OBS-901 (T26.6, ADR-958) — the live network map's sampling and thresholds. -->
+    <MapSettingsCard />
   {/if}
   </TabPanel>
 </div>

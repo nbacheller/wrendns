@@ -671,6 +671,10 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.support != new.support {
         v.push("[support]");
     }
+    // REQ: OPS-012 (T27.11, ADR-1006) — the update check's loop starts with the value it had.
+    if old.updates != new.updates {
+        v.push("[updates]");
+    }
     // REQ: OPS-012 — the watchdog thread reads its settings once, at start.
     if old.watchdog != new.watchdog {
         v.push("[watchdog]");
@@ -678,7 +682,17 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.node != new.node {
         v.push("[node]");
     }
-    if old.filter != new.filter {
+    // REQ: FLT-901 (T24.29): `entry_budget` and `ads_tier` apply on a reload (the category lists
+    // are derived from the configuration each time); the rest of `[filter]` is read at start.
+    let fixed = |f: &telltale_config::FilterConfig| {
+        let d = telltale_config::FilterConfig::default();
+        telltale_config::FilterConfig {
+            entry_budget: d.entry_budget,
+            ads_tier: d.ads_tier,
+            ..f.clone()
+        }
+    };
+    if fixed(&old.filter) != fixed(&new.filter) {
         v.push("[filter]");
     }
     if old.dns != new.dns {
@@ -1197,6 +1211,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cluster.clone(),
         crate::maintenance::now_ms(),
     ));
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — what this node runs with, for a change
+    // to its per-node sections that waits for a restart.
+    crate::node_settings::remember_start(&cfg);
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache: Arc::clone(&cache),

@@ -35,9 +35,14 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::KubernetesMap => "kubernetes_map",
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
-        ManagedKind::Filter => "filter_settings",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cache => "cache",
+        ManagedKind::Support => "support",
+        ManagedKind::Updates => "updates",
+        ManagedKind::Dnssec => "dnssec",
+        ManagedKind::Filter => "filter",
+        ManagedKind::Drill => "drill",
     }
 }
 

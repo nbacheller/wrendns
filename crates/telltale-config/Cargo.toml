@@ -26,6 +26,7 @@ rustls-pki-types = "1.16"
 toml = "1.1.6"
 # REQ: FLT-010 (T7.10) — schedule time zones from the system tz database (/usr/share/zoneinfo;
 # the image ships it). Small, no bundled tzdb.
+telltale-snmp = { path = "../telltale-snmp" }
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 
 [features]

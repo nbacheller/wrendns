@@ -2757,8 +2757,10 @@ impl Backend for ApiBackend {
             unknown_categories: &telltale_config::categories::unknown_ids(&self.src.config.load()),
         });
         // REQ: DSC-002 (T25.3) — a discovery worker that is refused or keeps crashing: degraded.
+        let inventory = self.src.discovery.status();
         reasons.extend(crate::health::discovery_reasons(
-            &self.src.discovery.status().workers,
+            &inventory.workers,
+            &inventory.agents,
         ));
         // REQ: OPS-014 (ADR-903 §3) — a locked store, or secrets on a data directory that isn't
         // kept: degraded, DNS unaffected.
@@ -2964,6 +2966,36 @@ impl Backend for ApiBackend {
     fn otlp_entry(&self) -> telltale_api::model::OtlpEntry {
         crate::sink_settings::otlp_entry(&self.src)
     }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's per-node sections, or
+    // another member's (the primary's rows for it).
+    fn node_settings(
+        &self,
+        node: Option<&str>,
+    ) -> Result<telltale_api::model::NodeSettings, telltale_api::problem::Problem> {
+        let cfg = self.src.config.load();
+        let file = self.src.file_config.load();
+        let me = crate::node_settings::node_name(&cfg);
+        let node = node.map_or_else(|| me.clone(), |n| n.trim().to_owned());
+        if node != me && !crate::node_settings::members(&self.src).contains(&node) {
+            return Err(telltale_api::problem::Problem::not_found(format!(
+                "no node of this cluster has the ID `{node}`"
+            )));
+        }
+        let e = self
+            .src
+            .auth
+            .get()
+            .map(|a| crate::managed::entries(a.state()))
+            .unwrap_or_default();
+        Ok(crate::node_settings::describe(
+            &file,
+            &cfg,
+            &e,
+            &node,
+            &me,
+            crate::node_settings::started(),
+        ))
+    }
     // REQ: API-016 (T23.8) — one read of a draft, without saving it (admin; see the route).
     fn check_router(
         &self,
@@ -3165,6 +3197,15 @@ impl Backend for ApiBackend {
     /// REQ: DSC-014 (T25.3) — the network inventory's status on this node.
     fn discovery_status(&self) -> telltale_api::model::DiscoveryStatus {
         self.src.discovery.status()
+    }
+
+    // REQ: DSC-004 (T25.6, ADR-1002) - **Test** of one SNMP agent, run by this node's poller.
+    fn snmp_test(
+        &self,
+        w: telltale_api::SnmpTestWrite,
+    ) -> BoxFuture<Result<telltale_api::model::SnmpTestResult, Problem>> {
+        let rt = Arc::clone(&self.src.discovery);
+        Box::pin(async move { rt.snmp_test(w).await })
     }
 
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
@@ -3713,8 +3754,10 @@ impl Backend for ApiBackend {
             ),
             // REQ: DSC-001 (T25.2) — `[discovery]`.
             (ManagedKind::Discovery, "discovery", e.discovery.is_some()),
-            // REQ: FLT-901 (T24.29) — `[filter]` entry_budget and ads_tier.
-            (ManagedKind::Filter, "filter", e.filter_settings.is_some()),
+            // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — `[dnssec]`, `[filter]`, `[drill]`.
+            (ManagedKind::Dnssec, "dnssec", e.dnssec.is_some()),
+            (ManagedKind::Filter, "filter", e.filter.is_some()),
+            (ManagedKind::Drill, "drill", e.drill.is_some()),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4758,9 +4801,14 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::KubernetesMap => crate::managed::KUBERNETES_MAP,
         ManagedKind::Special => crate::managed::SPECIAL,
         ManagedKind::Local => crate::managed::LOCAL,
-        ManagedKind::Filter => crate::managed::FILTER_SETTINGS,
         ManagedKind::Clients => crate::managed::CLIENTS,
         ManagedKind::Discovery => crate::managed::DISCOVERY,
+        ManagedKind::Cache => crate::managed::CACHE,
+        ManagedKind::Support => crate::managed::SUPPORT,
+        ManagedKind::Updates => crate::managed::UPDATES,
+        ManagedKind::Dnssec => crate::managed::DNSSEC,
+        ManagedKind::Filter => crate::managed::FILTER,
+        ManagedKind::Drill => crate::managed::DRILL,
         ManagedKind::Router => crate::managed::ROUTER,
         ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
         ManagedKind::Sink => crate::managed::SINK,
@@ -5202,7 +5250,8 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Forward, false) => format!(
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
         ),
-        (ManagedKind::Rule, _) => String::new(), // rule_impact says it better
+        // The plans of the kinds added by T27.2 and T27.11 (ADR-1006) write their own impact.
+        (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill, _) => String::new(), // rule_impact says it better
         (ManagedKind::Sink, _) => {
             "Started, changed or stopped on every node within seconds, without a restart: a removed sink sends what it holds and ends, and the batches it kept on disk go.".into()
         }
@@ -5273,8 +5322,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             ManagedKind::Special
             | ManagedKind::Local
             | ManagedKind::Clients
-            | ManagedKind::Discovery
-            | ManagedKind::Filter,
+            | ManagedKind::Discovery,
             put,
         ) => crate::settings_kinds::impact(kind, put),
         (ManagedKind::KubernetesMap, true) => {
@@ -5311,6 +5359,10 @@ fn plan_managed(
     }
     if crate::settings_kinds::is_settings(w.kind) {
         return plan_settings(src, state, w);
+    }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections.
+    if crate::settings_kinds::is_node_kind(w.kind) {
+        return crate::node_settings::plan(src, state, w);
     }
     // REQ: API-016 (T23.7, ADR-921) — routers have their own plan (admin-only, file-read-only).
     if w.kind == ManagedKind::Router {
@@ -5654,6 +5706,13 @@ fn plan_settings(
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
     let stored = if let Some(v) = &w.body {
         let s = crate::settings_kinds::prepare(w.kind, v, &file_section, &file)?;
+        // REQ: DSC-004 (review of T25.6, ADR-903 §4) - an SNMP credential's files are held to the
+        // path rules as every credential file is.
+        if w.kind == ManagedKind::Discovery {
+            crate::credential_rules::PathRules::of(&file)
+                .check_snmp_credentials(&before, &s)
+                .map_err(Problem::invalid)?;
+        }
         crate::settings_kinds::set_stored(&mut entries, w.kind, Some(s.clone()));
         Some(s)
     } else {
@@ -7209,7 +7268,12 @@ fn keep_in_git(
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cache => "cache",
+        ManagedKind::Support => "support",
+        ManagedKind::Updates => "updates",
+        ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
+        ManagedKind::Drill => "drill",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.

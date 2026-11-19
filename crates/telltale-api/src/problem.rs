@@ -89,6 +89,9 @@ pub enum Code {
     /// REQ: FLT-004 — this node doesn't download lists (role `resolver`, or the list fetcher
     /// didn't start): ask a node that does.
     ListsNotHere,
+    /// REQ: DSC-004 (T25.6, ADR-1002) - this node doesn't run the network inventory's SNMP poller:
+    /// the inventory is off, or another node is the designated one.
+    DiscoveryNotHere,
     /// REQ: API-014 (ADR-903 §4) — a write sent `<redacted>` back for a credential whose entry
     /// now points somewhere else (or that has no stored value): enter the credential again.
     CredentialReentryRequired,
@@ -205,6 +208,7 @@ impl Code {
             Self::NodeIsPrimary => "https://telltaledns.dev/problems/node_is_primary",
             Self::NodeIsUp => "https://telltaledns.dev/problems/node_is_up",
             Self::ListsNotHere => "https://telltaledns.dev/problems/lists_not_here",
+            Self::DiscoveryNotHere => "https://telltaledns.dev/problems/discovery_not_here",
             Self::CredentialReentryRequired => {
                 "https://telltaledns.dev/problems/credential_reentry_required"
             }
@@ -282,6 +286,7 @@ impl Code {
             Self::NodeIsPrimary => "The node is the primary",
             Self::NodeIsUp => "The node is up",
             Self::ListsNotHere => "Lists aren't downloaded here",
+            Self::DiscoveryNotHere => "The network inventory doesn't run here",
             Self::CredentialReentryRequired => "Enter the credential again",
             Self::SecretsLocked => "Secrets key unavailable",
             Self::UpgradeRequired => "Upgrade needed",
@@ -343,6 +348,7 @@ impl Code {
             | Self::NodeIsPrimary
             | Self::NodeIsUp
             | Self::ListsNotHere
+            | Self::DiscoveryNotHere
             | Self::UpgradeRequired
             | Self::MembersTooOld
             | Self::SetByFile

@@ -10,6 +10,8 @@
 
   type Series = { label: string; color: string; values: number[] };
   import CacheCard from '../lib/components/CacheCard.svelte';
+  // REQ: DNS-006 (T27.2) — the node's `[cache]` settings: a form for operators, read-only for viewers.
+  import CacheSettingsForm from '../lib/components/CacheSettingsForm.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ShareBar from '../lib/components/ShareBar.svelte';
@@ -220,25 +222,7 @@
             </dd>
           {/if}
         </dl>
-        {#if s.settings}
-          {@const c = s.settings}
-          <details class="settings">
-            <summary class="small">Settings</summary>
-            <dl class="facts small" data-testid="cache-settings">
-              <dt>Memory</dt><dd>{bytes(c.maxBytes)}{#if c.maxEntries}{`, at most ${num(c.maxEntries)} answers`}{/if}</dd>
-              <dt>TTL</dt><dd>{duration(c.minTtlSeconds)} to {duration(c.maxTtlSeconds)}; negative answers up to {duration(c.negativeTtlMaxSeconds)}; SERVFAIL {duration(c.servfailTtlSeconds)}</dd>
-              <dt>Serve stale</dt>
-              <dd>
-                {#if !c.serveStale}off
-                {:else if c.staleAnswerWaitMs === 0}answered at once and refreshed in the background, for up to {duration(c.staleMaxAgeSeconds)} after expiry
-                {:else}when upstreams don't answer{c.staleAnswerWaitMs != null ? ` within ${(c.staleAnswerWaitMs / 1000).toFixed(1)} s` : ''}, for up to {duration(c.staleMaxAgeSeconds)} after expiry{/if}
-              </dd>
-              <dt>Prefetch</dt><dd>{c.prefetch ? `on, with under ${c.prefetchThresholdPercent}% of the TTL left, after ${c.prefetchMinHits} hits` : 'off'}</dd>
-              <dt>Across restarts</dt><dd>{c.persist ? 'kept' : 'not kept'}</dd>
-            </dl>
-            <p class="muted small">Change these under <span class="mono">[cache]</span> in the configuration.</p>
-          </details>
-        {/if}
+        <CacheSettingsForm node={s.node ?? null} />
       </section>
     {/each}
   </section>

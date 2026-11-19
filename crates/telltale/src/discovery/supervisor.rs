@@ -24,6 +24,8 @@ use tokio::io::BufReader;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::frames::{self, Frame, FrameError};
+use super::snmp_job::{MAX_ROWS_PER_JOB, OP_POLL, OP_PROBE};
+use super::snmp_tables::Row;
 use super::worker::{self, Hello, Job, JobResult, Msg};
 
 /// The first wait after a crash; it doubles each time (ADR-908).
@@ -59,8 +61,26 @@ type Reader = BufReader<ChildStdout>;
 /// The shared board the workers write and the API reads: one entry per worker.
 pub(crate) type Board = Arc<ArcSwap<Vec<DiscoveryWorker>>>;
 
-/// Jobs queued for the running worker (the SNMP job from T25.4 joins here; tests queue fault jobs).
-pub(crate) type Requests = Arc<Mutex<VecDeque<Job>>>;
+/// REQ: DSC-004 (T25.6) — what a job found: its result, and the rows that came before it.
+#[derive(Debug)]
+pub(crate) struct Reply {
+    pub(crate) result: JobResult,
+    pub(crate) rows: Vec<Row>,
+}
+
+/// The channel an answer comes back on. An error is the reason the worker could not answer (it
+/// crashed, hung, or sent more than it may); a dropped sender means the supervisor stopped.
+pub(crate) type ReplyTx = tokio::sync::oneshot::Sender<Result<Reply, String>>;
+
+/// One queued job, and where its answer goes (none: it is only logged).
+pub(crate) struct Request {
+    pub(crate) job: Job,
+    pub(crate) reply: Option<ReplyTx>,
+}
+
+/// Jobs queued for the running worker: the SNMP jobs of the poller and of the Test button, and the
+/// fault jobs the tests queue. The supervisor numbers them itself.
+pub(crate) type Requests = Arc<Mutex<VecDeque<Request>>>;
 
 /// What to run and how to watch it.
 #[derive(Debug, Clone)]
@@ -98,11 +118,13 @@ impl Spec {
     }
 }
 
-/// The time a job of `op` may take: a `ping` has its own, and every other op has the job timeout.
-/// Each op that needs longer (a T25.4 walk, say) gets its own limit here.
+/// The time a job of `op` may take: a `ping` has its own, an SNMP probe or poll has five times the
+/// job timeout (150 s: the worker ends a poll at 100 s, and one exchange can run its retries past
+/// that), and every other op has the job timeout.
 pub(crate) fn timeout_for(spec: &Spec, op: &str) -> Duration {
     match op {
         "ping" => spec.ping_timeout,
+        OP_PROBE | OP_POLL => spec.job_timeout.saturating_mul(5),
         _ => spec.job_timeout,
     }
 }
@@ -368,33 +390,53 @@ async fn run_once(spec: &Spec, board: &Board, requests: &Requests, stop: &Atomic
             return Outcome::Crashed(format!("the worker exited ({status})"));
         }
         // Queued jobs first, then the periodic ping that proves the worker still answers.
-        let queued = requests.lock().map(|mut q| q.pop_front()).ok().flatten();
-        let job = match queued {
-            Some(j) => j,
+        let queued = next_request(requests);
+        let (mut job, reply) = match queued {
+            Some(Request { job, reply }) => (job, reply),
             None if last_ping.elapsed() >= spec.ping_every => {
                 last_ping = Instant::now();
-                let id = next_id;
-                next_id = next_id.saturating_add(1);
-                Job {
-                    id,
-                    op: "ping".to_owned(),
-                    kind: String::new(),
-                }
+                (Job::plain(0, "ping", ""), None)
             }
             None => {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 continue;
             }
         };
+        // The supervisor numbers every job, so an answer is always matched to its own request.
+        job.id = next_id;
+        next_id = next_id.saturating_add(1);
         let limit = timeout_for(spec, &job.op);
         match run_job(&mut stdin, &mut stdout, &job, limit).await {
-            Ok(r) if r.ok => {}
-            Ok(r) => {
-                tracing::debug!(worker = spec.name, op = %r.op, error = ?r.error, "discovery job refused");
+            Ok((r, rows)) => {
+                if !r.ok {
+                    tracing::debug!(worker = spec.name, op = %r.op, error = ?r.error, "discovery job refused");
+                }
+                if let Some(tx) = reply {
+                    let _ = tx.send(Ok(Reply { result: r, rows }));
+                }
             }
-            Err(e) => return fail(&mut child, format!("job {}: {e}", job.op)).await,
+            Err(e) => {
+                if let Some(tx) = reply {
+                    let _ = tx.send(Err(e.clone()));
+                }
+                return fail(&mut child, format!("job {}: {e}", job.op)).await;
+            }
         }
     }
+}
+
+/// The next queued request that somebody still waits for. One whose answer nobody waits for any
+/// more (its caller timed out) is dropped, so a worker that was down doesn't run a backlog of stale
+/// polls when it comes back.
+fn next_request(requests: &Requests) -> Option<Request> {
+    let mut q = requests.lock().ok()?;
+    while let Some(r) = q.pop_front() {
+        if r.reply.as_ref().is_some_and(ReplyTx::is_closed) {
+            continue;
+        }
+        return Some(r);
+    }
+    None
 }
 
 async fn fail(child: &mut Child, why: String) -> Outcome {
@@ -402,28 +444,62 @@ async fn fail(child: &mut Child, why: String) -> Outcome {
     Outcome::Crashed(why)
 }
 
-/// Sends one job and waits for its result, within `timeout`.
+/// Sends one job and waits for its result within `timeout`, taking the rows that come first. The
+/// rows are capped ([`MAX_ROWS_PER_JOB`]): a worker that sends more is a failed job (ADR-908).
 async fn run_job(
     stdin: &mut ChildStdin,
     stdout: &mut Reader,
     job: &Job,
     timeout: Duration,
-) -> Result<JobResult, String> {
+) -> Result<(JobResult, Vec<Row>), String> {
     send(stdin, &Msg::Job(job.clone())).await?;
-    let answer = tokio::time::timeout(timeout, recv(stdout))
+    let id = job.id;
+    let answer = async {
+        let mut rows: Vec<Row> = Vec::new();
+        loop {
+            match recv(stdout).await? {
+                Msg::Result(r) if r.id == id => return Ok((r, rows)),
+                Msg::Rows(batch) if batch.id == id => {
+                    if rows.len().saturating_add(batch.rows.len()) > MAX_ROWS_PER_JOB {
+                        return Err("more rows than a job may return".to_owned());
+                    }
+                    rows.extend(batch.rows);
+                }
+                _ => return Err("an answer that isn't this job's".to_owned()),
+            }
+        }
+    };
+    tokio::time::timeout(timeout, answer)
         .await
-        .map_err(|_| "no answer in time".to_owned())??;
-    match answer {
-        Msg::Result(r) if r.id == job.id => Ok(r),
-        _ => Err("an answer that isn't this job's".to_owned()),
-    }
+        .map_err(|_| "no answer in time".to_owned())?
 }
 
+/// Sends one message. The frame may hold a credential (an SNMP job), so both buffers it passes
+/// through are overwritten once the frame is written (ADR-908: credentials over stdin only).
 async fn send(stdin: &mut ChildStdin, msg: &Msg) -> Result<(), String> {
+    use zeroize::Zeroize;
     let f = worker::encode(msg)?;
-    write_frame_async(stdin, &f)
+    let bytes = frames::encode(&f).map_err(|e| e.to_string());
+    let (Frame::Json(mut body) | Frame::Chunk(mut body)) = f;
+    body.zeroize();
+    let mut bytes = bytes?;
+    let written = write_bytes_async(stdin, &bytes)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    bytes.zeroize();
+    written
+}
+
+/// Writes bytes to an async stream and flushes it.
+async fn write_bytes_async<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    bytes: &[u8],
+) -> Result<(), FrameError> {
+    use tokio::io::AsyncWriteExt;
+    w.write_all(bytes)
+        .await
+        .map_err(|e| FrameError::Io(e.to_string()))?;
+    w.flush().await.map_err(|e| FrameError::Io(e.to_string()))
 }
 
 async fn recv(stdout: &mut Reader) -> Result<Msg, String> {
@@ -431,19 +507,6 @@ async fn recv(stdout: &mut Reader) -> Result<Msg, String> {
         .await
         .map_err(|e: FrameError| e.to_string())?;
     worker::decode(&f)
-}
-
-/// Writes one frame to an async stream and flushes it.
-pub(crate) async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
-    w: &mut W,
-    frame: &Frame,
-) -> Result<(), FrameError> {
-    use tokio::io::AsyncWriteExt;
-    let bytes = frames::encode(frame)?;
-    w.write_all(&bytes)
-        .await
-        .map_err(|e| FrameError::Io(e.to_string()))?;
-    w.flush().await.map_err(|e| FrameError::Io(e.to_string()))
 }
 
 /// REQ: DSC-002 (ADR-908) — reads one line of a worker's stderr, keeping at most `keep` bytes of it.

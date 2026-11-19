@@ -24,12 +24,45 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cache => "cache",
+        ManagedKind::Support => "support",
+        ManagedKind::Updates => "updates",
+        ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
+        ManagedKind::Drill => "drill",
         _ => "clients",
     }
 }
 
-/// True for the kinds in this module.
+/// REQ: DNS-006 (T27.2, ADR-1006) - the fifteen fields of `[cache]`, in the order of `CacheConfig`.
+const CACHE_KEYS: &[&str] = &[
+    "max_bytes",
+    "max_entries",
+    "min_ttl",
+    "max_ttl",
+    "negative_ttl_max",
+    "servfail_ttl",
+    "serve_stale",
+    "stale_max_age",
+    "stale_answer_client_timeout_ms",
+    "stale_answer_ttl",
+    "prefetch",
+    "prefetch_threshold_pct",
+    "prefetch_min_hits",
+    "persist",
+    "warm_names",
+];
+
+/// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) - the kinds that hold one section per
+/// node (`node_settings.rs` plans and stores them; they are not singletons).
+pub(crate) fn is_node_kind(kind: ManagedKind) -> bool {
+    matches!(
+        kind,
+        ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates
+    )
+}
+
+/// True for the three kinds in this module.
 pub(crate) fn is_settings(kind: ManagedKind) -> bool {
     matches!(
         kind,
@@ -37,7 +70,9 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Dnssec
             | ManagedKind::Filter
+            | ManagedKind::Drill
     )
 }
 
@@ -47,6 +82,9 @@ const DISCOVERY_KEYS: &[&str] = &[
     "node",
     "worker_memory_mib",
     "subnet",
+    // REQ: DSC-004 (T25.6) - the SNMP agents and the credentials they name.
+    "snmp_agent",
+    "snmp_credential",
     // REQ: DSC-009 (T25.10, ADR-912) — the extra UniFi and Home Assistant reads.
     "unifi_reads",
     "unifi_all_users_within_hours",
@@ -73,8 +111,19 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "default_ttl",
         ],
         ManagedKind::Discovery => DISCOVERY_KEYS,
-        // REQ: FLT-901 (T24.29) - the two `[filter]` fields that bound the category selection.
-        ManagedKind::Filter => &["entry_budget", "ads_tier"],
+        ManagedKind::Cache => CACHE_KEYS,
+        ManagedKind::Support => &["persist_logs"],
+        ManagedKind::Updates => &["check"],
+        ManagedKind::Dnssec => &["mode", "negative_trust_anchors"],
+        // REQ: FLT-004 (T27.11), FLT-901 (T24.29) - the list refresh settings and the two fields
+        // that bound the category selection.
+        ManagedKind::Filter => &[
+            "refresh_secs",
+            "stale_after_days",
+            "entry_budget",
+            "ads_tier",
+        ],
+        ManagedKind::Drill => &["schedule", "nodes"],
         _ => &["mdns"],
     }
 }
@@ -87,6 +136,8 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
         ManagedKind::Clients => &["mdns"],
         // REQ: DSC-001 (T25.2, ADR-907) — every field of the network inventory is admin-only.
         ManagedKind::Discovery => DISCOVERY_KEYS,
+        // REQ: CLU-014 (T27.11, ADR-1006) - the drill schedule starts drills on the cluster's nodes.
+        ManagedKind::Drill => &["schedule", "nodes"],
         _ => &[],
     }
 }
@@ -94,22 +145,52 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
 /// The editable fields of a kind as the configuration holds them now, as JSON: every key of
 /// [`keys`] is present (`null` when unset), so a stored entry replaces every field.
 pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
-    let full = match kind {
+    let full = section_full(kind, cfg);
+    let mut out = Map::new();
+    for k in keys(kind) {
+        // REQ: DSC-004 - the two lists are left out of a serialization while empty (a node that never
+        // set them sends nothing new, CLU-010); the entry shows them as empty lists.
+        let missing = if matches!(*k, "snmp_agent" | "snmp_credential") {
+            Value::Array(Vec::new())
+        } else {
+            Value::Null
+        };
+        out.insert((*k).to_owned(), full.get(*k).cloned().unwrap_or(missing));
+    }
+    Value::Object(out)
+}
+
+/// The whole section a kind edits, as the configuration holds it (every field).
+fn section_full(kind: ManagedKind, cfg: &Config) -> Value {
+    match kind {
         ManagedKind::Special => serde_json::to_value(&cfg.special),
         ManagedKind::Local => serde_json::to_value(&cfg.local),
         ManagedKind::Discovery => serde_json::to_value(&cfg.discovery),
+        ManagedKind::Cache => serde_json::to_value(&cfg.cache),
+        ManagedKind::Support => serde_json::to_value(&cfg.support),
+        ManagedKind::Updates => serde_json::to_value(&cfg.updates),
+        ManagedKind::Dnssec => serde_json::to_value(&cfg.dnssec),
         ManagedKind::Filter => serde_json::to_value(&cfg.filter),
+        ManagedKind::Drill => serde_json::to_value(&cfg.drill),
         _ => serde_json::to_value(&cfg.clients),
     }
-    .unwrap_or(Value::Null);
-    let mut out = Map::new();
-    for k in keys(kind) {
-        out.insert(
-            (*k).to_owned(),
-            full.get(*k).cloned().unwrap_or(Value::Null),
-        );
+    .unwrap_or(Value::Null)
+}
+
+/// REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) - sets the
+/// section of `cfg` from `v`, the whole section as [`section_full`] lays it out.
+fn set_section(cfg: &mut Config, kind: ManagedKind, v: Value) -> Result<(), String> {
+    let bad = |e: serde_json::Error| e.to_string();
+    match kind {
+        ManagedKind::Cache => cfg.cache = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Support => cfg.support = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Updates => cfg.updates = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Dnssec => cfg.dnssec = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Filter => cfg.filter = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Drill => cfg.drill = serde_json::from_value(v).map_err(bad)?,
+        _ => {}
     }
-    Value::Object(out)
+    Ok(())
 }
 
 /// The dotted keys the files set for this kind's section (`special.ddr_name`), from
@@ -131,42 +212,6 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value::<DiscoveryConfig>(body.clone()).map_err(bad)?;
         }
-        ManagedKind::Filter => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields, default)]
-            struct FilterOnly {
-                entry_budget: u64,
-                ads_tier: telltale_config::AdsTier,
-            }
-            impl Default for FilterOnly {
-                fn default() -> Self {
-                    let f = telltale_config::FilterConfig::default();
-                    Self {
-                        entry_budget: f.entry_budget,
-                        ads_tier: f.ads_tier,
-                    }
-                }
-            }
-            let f = serde_json::from_value::<FilterOnly>(body.clone()).map_err(|e| {
-                let text = e.to_string();
-                if text.contains("unknown field") {
-                    Problem::invalid(format!(
-                        "{text}: only `entry_budget` and `ads_tier` can be changed here"
-                    ))
-                    .hint("The other `[filter]` settings are in the configuration file.")
-                } else {
-                    bad(e)
-                }
-            })?;
-            if f.entry_budget == 0 {
-                return Err(Problem::new(
-                    Code::InvalidConfig,
-                    "`entry_budget` must be at least 1",
-                ));
-            }
-            cfg.filter.entry_budget = f.entry_budget;
-            cfg.filter.ads_tier = f.ads_tier;
-        }
         ManagedKind::Local => {
             if body.get("hosts_files").is_some() {
                 return Err(Problem::invalid(
@@ -180,6 +225,24 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
                 body["device_domain"] = Value::Null;
             }
             cfg.local = serde_json::from_value::<LocalConfig>(body).map_err(bad)?;
+        }
+        ManagedKind::Cache
+        | ManagedKind::Support
+        | ManagedKind::Updates
+        | ManagedKind::Dnssec
+        | ManagedKind::Filter
+        | ManagedKind::Drill => {
+            if let Value::Object(o) = body
+                && let Some(k) = o.keys().find(|k| !keys(kind).contains(&k.as_str()))
+            {
+                return Err(Problem::invalid(format!(
+                    "`{k}` isn't a field of `{}` that the API sets",
+                    section(kind)
+                ))
+                .hint(format!("The fields are: {}.", keys(kind).join(", "))));
+            }
+            set_section(&mut cfg, kind, body.clone())
+                .map_err(|e| Problem::new(Code::InvalidConfig, e))?;
         }
         _ => {
             #[derive(Deserialize, Default)]
@@ -261,17 +324,21 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Local, &e.local),
         (ManagedKind::Clients, &e.clients_settings),
         (ManagedKind::Discovery, &e.discovery),
-        (ManagedKind::Filter, &e.filter_settings),
+        (ManagedKind::Dnssec, &e.dnssec),
+        (ManagedKind::Filter, &e.filter),
+        (ManagedKind::Drill, &e.drill),
     ] {
         let Some(stored) = stored else { continue };
         if let Err(why) = overlay(cfg, own, kind, stored) {
             errs.push(format!("{}: {why}", section(kind)));
         }
     }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's own per-node sections.
+    errs.extend(crate::node_settings::apply_stored(cfg, own, e));
     errs
 }
 
-fn overlay(
+pub(crate) fn overlay(
     cfg: &mut Config,
     own: &Config,
     kind: ManagedKind,
@@ -295,15 +362,6 @@ fn overlay(
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value(cur).map_err(|e| e.to_string())?;
         }
-        ManagedKind::Filter => {
-            if let Some(n) = cur.get("entry_budget").and_then(Value::as_u64) {
-                cfg.filter.entry_budget = n;
-            }
-            if let Some(t) = cur.get("ads_tier") {
-                cfg.filter.ads_tier =
-                    serde_json::from_value(t.clone()).map_err(|e| e.to_string())?;
-            }
-        }
         ManagedKind::Local => {
             let mut lj = serde_json::to_value(&cfg.local).map_err(|e| e.to_string())?;
             if let (Value::Object(l), Value::Object(c)) = (&mut lj, &cur) {
@@ -312,6 +370,20 @@ fn overlay(
                 }
             }
             cfg.local = serde_json::from_value(lj).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::Cache
+        | ManagedKind::Support
+        | ManagedKind::Updates
+        | ManagedKind::Dnssec
+        | ManagedKind::Filter
+        | ManagedKind::Drill => {
+            let mut full = section_full(kind, cfg);
+            if let (Value::Object(f), Value::Object(c)) = (&mut full, &cur) {
+                for k in keys(kind) {
+                    f.insert((*k).to_owned(), c.get(*k).cloned().unwrap_or(Value::Null));
+                }
+            }
+            set_section(cfg, kind, full)?;
         }
         _ => {
             cfg.clients.mdns = cur.get("mdns").and_then(Value::as_bool).unwrap_or(false);
@@ -330,20 +402,31 @@ pub(crate) fn check_admin_fields(
     role: Option<Role>,
     agent: Option<&str>,
 ) -> Result<(), Problem> {
+    // REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) - no
+    // agent changes these sections (the agents' scopes don't cover them).
+    if agent.is_some()
+        && matches!(
+            kind,
+            ManagedKind::Cache
+                | ManagedKind::Support
+                | ManagedKind::Updates
+                | ManagedKind::Dnssec
+                | ManagedKind::Filter
+                | ManagedKind::Drill
+        )
+    {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            format!("agents can't change [{}]", section(kind)),
+        )
+        .hint("Ask an admin to make this change in the UI."));
+    }
     if kind == ManagedKind::Clients && agent.is_some() {
         return Err(Problem::new(
             Code::AgentNotAllowed,
             "no agent can change `[clients]` (mdns turns on multicast listening on every node)",
         )
         .hint("Ask an admin to make this change in the UI."));
-    }
-    // REQ: FLT-901 (T24.29) — the budget decides what a node will download and hold.
-    if kind == ManagedKind::Filter && agent.is_some() {
-        return Err(Problem::new(
-            Code::AgentNotAllowed,
-            "no agent can change `[filter]` entry_budget or ads_tier: they decide what the node downloads and holds",
-        )
-        .hint("Ask an operator to make this change in the UI (Settings, Filtering)."));
     }
     // REQ: DSC-001 (T25.2, ADR-907) — no agent writes the network inventory's settings.
     if kind == ManagedKind::Discovery && agent.is_some() {
@@ -364,6 +447,7 @@ pub(crate) fn check_admin_fields(
         ManagedKind::Discovery => {
             "the network inventory reads the devices on the LAN, from one node"
         }
+        ManagedKind::Drill => "the drill schedule starts failover drills on the cluster's nodes",
         _ => "it is one name for the whole cluster, tied to every node's certificates",
     };
     if agent.is_some() {
@@ -427,7 +511,9 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::Special => entries.special.is_none(),
         ManagedKind::Local => entries.local.is_none(),
         ManagedKind::Discovery => entries.discovery.is_none(),
-        ManagedKind::Filter => entries.filter_settings.is_none(),
+        ManagedKind::Dnssec => entries.dnssec.is_none(),
+        ManagedKind::Filter => entries.filter.is_none(),
+        ManagedKind::Drill => entries.drill.is_none(),
         _ => entries.clients_settings.is_none(),
     }
 }
@@ -438,7 +524,9 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::Special => entries.special = v,
         ManagedKind::Local => entries.local = v,
         ManagedKind::Discovery => entries.discovery = v,
-        ManagedKind::Filter => entries.filter_settings = v,
+        ManagedKind::Dnssec => entries.dnssec = v,
+        ManagedKind::Filter => entries.filter = v,
+        ManagedKind::Drill => entries.drill = v,
         _ => entries.clients_settings = v,
     }
 }
@@ -449,7 +537,9 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special names",
         ManagedKind::Local => "device-name settings",
         ManagedKind::Discovery => "network inventory settings",
-        ManagedKind::Filter => "category settings",
+        ManagedKind::Dnssec => "DNSSEC settings",
+        ManagedKind::Filter => "list settings",
+        ManagedKind::Drill => "drill schedule",
         _ => "clients settings",
     }
 }
@@ -462,10 +552,17 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.
         (ManagedKind::Discovery, true) => "Applies on the designated node within a few seconds, with no restart: the network inventory starts or stops there. Other nodes change nothing, and no device is read until it is on.".into(),
         (ManagedKind::Discovery, false) => "The config file's network inventory settings (or the defaults: off) apply again on the designated node within a few seconds.".into(),
-        (ManagedKind::Filter, true) => "Applies within a few seconds on every node: the entry budget is what the Categories view warns against, and a new ad block size makes the primary download that list and compile it in the background.".into(),
-        (ManagedKind::Filter, false) => "The config file's [filter] entry_budget and ads_tier (or the defaults: 1,000,000 and pro) apply again.".into(),
         (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
+        // REQ: DNS-011 (T27.11) - the validator's mode and trust anchors are read on a reload.
+        (ManagedKind::Dnssec, true) => "Applies on every node within a few seconds (the next reload), with no restart. Answers already cached keep their status until they expire.".into(),
+        (ManagedKind::Dnssec, false) => "The config file's DNSSEC settings (or the defaults) apply again on every node within a few seconds.".into(),
+        // REQ: FLT-004 (T27.11) - the list fetcher reads [filter] at start (restart_only_changes).
+        (ManagedKind::Filter, true) => "The entry budget and the ad block size apply on every node within seconds (a new size downloads the other list); the refresh and stale settings take effect after a restart of every node: the list fetcher reads them at start.".into(),
+        (ManagedKind::Filter, false) => "The config file's list settings (or the defaults) apply again after a restart of every node.".into(),
+        // REQ: CLU-014 (T27.11) - the drill scheduler reads the schedule on each check.
+        (ManagedKind::Drill, true) => "Applies without a restart: the drill schedule is read again at each check (within a minute).".into(),
+        (ManagedKind::Drill, false) => "The config file's drill schedule (or off) applies again without a restart.".into(),
         // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up (`restart_only_changes`):
         // a change here takes effect after a restart on every node.
         (_, true) => "Takes effect after a restart on every node: the mDNS listener starts once, at start-up, and device names only follow mDNS while it runs.".into(),
@@ -492,6 +589,49 @@ mod tests {
 
     fn cfg(toml: &str, path: &str) -> Config {
         Loader::new().toml_str(path, toml).load().unwrap().config
+    }
+
+    /// REQ: FLT-901 (T24.29), FLT-004 (T27.11) - `[filter]` carries the category budget and the ad block
+    /// size next to the refresh settings: the stored section lays over the file's, a field the file
+    /// sets wins, an unknown field and a bad size are refused.
+    #[test]
+    fn flt_901_filter_settings_carry_the_category_budget() {
+        let file = cfg(
+            "[filter]
+entry_budget = 500000
+",
+            "file",
+        );
+        let stored = normalize(
+            ManagedKind::Filter,
+            &body_of(&[
+                ("entry_budget", Value::from(2_000_000u64)),
+                ("ads_tier", Value::from("ultimate")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(stored["ads_tier"], Value::from("ultimate"));
+        let mut merged = file.clone();
+        overlay(&mut merged, &file, ManagedKind::Filter, &stored).unwrap();
+        assert_eq!(
+            merged.filter.entry_budget, 500_000,
+            "the file's budget wins"
+        );
+        assert_eq!(merged.filter.ads_tier, telltale_config::AdsTier::Ultimate);
+        assert!(
+            normalize(
+                ManagedKind::Filter,
+                &body_of(&[("ads_tier", Value::from("huge"))])
+            )
+            .is_err()
+        );
+        assert!(
+            normalize(
+                ManagedKind::Filter,
+                &body_of(&[("max_list_bytes", Value::from(1))])
+            )
+            .is_err()
+        );
     }
 
     /// REQ: DNS-019 (T24.12) — the stored `[special]` section lays over the defaults, a field
@@ -728,85 +868,6 @@ mod tests {
         assert!(
             check_admin_fields(ManagedKind::Clients, &before, &after, None, Some("bot")).is_err(),
             "no agent scope writes mdns"
-        );
-    }
-    /// REQ: FLT-901 (T24.29) - `[filter]` `entry_budget` and `ads_tier`: stored as one section, laid over
-    /// the files' values field by field, a field the files set can't be changed (409), a zero budget
-    /// or another `[filter]` key is refused, and no agent changes it.
-    #[test]
-    fn flt_901_filter_settings_overlay_and_refusals() {
-        let own = cfg(
-            "[filter]
-ads_tier = \"light\"
-",
-            "t.toml",
-        );
-        let file = section_json(ManagedKind::Filter, &own);
-        assert_eq!(file["entry_budget"], 1_000_000);
-        // A body that leaves `ads_tier` out keeps the file's; one that changes it is refused.
-        let ok = prepare(
-            ManagedKind::Filter,
-            &serde_json::json!({"entry_budget": 3_000_000}),
-            &file,
-            &own,
-        )
-        .unwrap();
-        assert_eq!(ok["entry_budget"], 3_000_000);
-        assert_eq!(ok["ads_tier"], "light");
-        let e = prepare(
-            ManagedKind::Filter,
-            &serde_json::json!({"entry_budget": 3_000_000, "ads_tier": "ultimate"}),
-            &file,
-            &own,
-        )
-        .unwrap_err();
-        assert_eq!(e.code, Code::SetByFile);
-        // Laid over the files: the budget changes, the file's tier stays.
-        let mut c = own.clone();
-        overlay(&mut c, &own, ManagedKind::Filter, &ok).unwrap();
-        assert_eq!(c.filter.entry_budget, 3_000_000);
-        assert_eq!(c.filter.ads_tier, telltale_config::AdsTier::Light);
-        // Refusals.
-        let plain = Config::default();
-        let none = section_json(ManagedKind::Filter, &plain);
-        let zero = prepare(
-            ManagedKind::Filter,
-            &serde_json::json!({"entry_budget": 0}),
-            &none,
-            &plain,
-        )
-        .unwrap_err();
-        assert!(zero.detail.contains("at least 1"), "{}", zero.detail);
-        let other = prepare(
-            ManagedKind::Filter,
-            &serde_json::json!({"refresh_secs": 5}),
-            &none,
-            &plain,
-        )
-        .unwrap_err();
-        assert!(other.detail.contains("entry_budget"), "{}", other.detail);
-        let tier = prepare(
-            ManagedKind::Filter,
-            &serde_json::json!({"ads_tier": "huge"}),
-            &none,
-            &plain,
-        )
-        .unwrap_err();
-        assert_eq!(
-            tier.code_status(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        let e = check_admin_fields(
-            ManagedKind::Filter,
-            &none,
-            &ok,
-            Some(Role::Operator),
-            Some("bot"),
-        )
-        .unwrap_err();
-        assert_eq!(e.code, Code::AgentNotAllowed);
-        assert!(
-            check_admin_fields(ManagedKind::Filter, &none, &ok, Some(Role::Operator), None).is_ok()
         );
     }
 }

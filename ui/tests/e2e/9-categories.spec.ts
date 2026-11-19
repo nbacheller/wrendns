@@ -337,29 +337,29 @@ test('flt_901 a category on a profile makes an owned list the node downloads onc
   await expect.poll(async () => (await queryDetail('x.blocked-by-category.e2e.test')).address, { timeout: 30_000 }).not.toBe('0.0.0.0');
 });
 
-test('flt_901 Settings, Filtering: the entry budget and the ad block size, with the category-budget help topic', async () => {
+test('flt_901 the list settings card: the entry budget and the ad block size, with the category-budget help topic', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto('/#/settings?tab=queries');
-  const editor = page.getByTestId('editor-filter');
-  const row = editor.getByTestId('entry-row');
-  await expect(row).toContainText('entry budget 1,000,000, ad block size pro');
-  await expect(row).toContainText('config file');
-  await editor.locator('[data-help="category-budget"]').first().click();
+  await page.goto('/#/lists');
+  const card = page.getByTestId('filter-settings-card');
+  await expect(card.getByTestId('filter-entry-budget')).toContainText('1,000,000');
+  await expect(card.getByTestId('filter-ads-tier')).toHaveText('pro');
+  await card.locator('[data-help="category-budget"]').first().click();
   await expect(page.getByTestId('help-panel')).toContainText('about 12 bytes');
   await page.keyboard.press('Escape');
-  await row.getByRole('button', { name: 'Edit' }).click();
-  const budget = page.getByRole('spinbutton', { name: 'Entry budget' });
-  await budget.fill('2000000');
+  await card.getByTestId('filter-settings-edit').click();
+  await page.getByRole('spinbutton', { name: 'Entry budget' }).fill('2000000');
   await page.getByLabel('Ad block size').selectOption('ultimate');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
-  await expect(page.getByTestId('entry-preview')).toContainText('entry budget');
+  await expect(card.getByTestId('filter-settings-preview')).toBeVisible();
   await page.getByRole('button', { name: 'Apply' }).click();
-  await expect(row).toContainText('entry budget 2,000,000, ad block size ultimate');
-  await expect(row).toContainText('overrides the file');
+  await expect(card.getByTestId('filter-entry-budget')).toContainText('2,000,000');
+  await expect(card.getByTestId('filter-ads-tier')).toHaveText('ultimate');
   const view = await (await page.request.get('/api/v1/categories')).json();
   expect(view.node).toMatchObject({ entryBudget: 2_000_000, adsTier: 'ultimate' });
-  await row.getByRole('button', { name: 'Revert to the file' }).click();
-  await expect(row).toContainText('entry budget 1,000,000, ad block size pro');
+  // Back to the file's values (the card has no revert; the API does).
+  expect((await page.request.delete('/api/v1/filter-settings/default', { headers: h() })).status()).toBe(200);
+  await page.reload();
+  await expect(page.getByTestId('filter-settings-card').getByTestId('filter-entry-budget')).toContainText('1,000,000');
 });
 
 test('flt_902 saving a profile writes its content only when it changed, and a refused new profile leaves no group', async () => {

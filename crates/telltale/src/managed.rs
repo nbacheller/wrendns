@@ -54,14 +54,24 @@ pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
 /// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]`: one entry, `default`, whose fields
 /// the files win over (see `settings_kinds`).
 pub(crate) const SPECIAL: &str = "special";
-/// REQ: FLT-901 (T24.29) — `[filter]`'s `entry_budget` and `ads_tier`: one entry, `default`.
-pub(crate) const FILTER_SETTINGS: &str = "filter_settings";
 /// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]` without `hosts_files`.
 pub(crate) const LOCAL: &str = "local";
 /// REQ: DNS-023 (T24.13, ADR-914) — `[clients]`, which takes only `mdns` in M24.
 pub(crate) const CLIENTS: &str = "clients";
 /// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: the network inventory's settings, one entry.
 pub(crate) const DISCOVERY: &str = "discovery";
+/// REQ: DNS-006 (T27.2, ADR-1006) — `[cache]` for one node, named by the node (node-managed).
+pub(crate) const CACHE: &str = "cache";
+/// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node (node-managed).
+pub(crate) const SUPPORT: &str = "support";
+/// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node (node-managed).
+pub(crate) const UPDATES: &str = "updates";
+/// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` mode and trust anchors, one entry.
+pub(crate) const DNSSEC: &str = "dnssec";
+/// REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` refresh and stale settings, one entry.
+pub(crate) const FILTER: &str = "filter";
+/// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`, one entry.
+pub(crate) const DRILL: &str = "drill";
 /// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
 /// files define is read-only through the API (ADR-040), so these never override the files.
 pub(crate) const ROUTER: &str = "router";
@@ -200,14 +210,20 @@ pub(crate) struct Entries {
     /// REQ: DNS-019 (T24.12) — the stored `[special]` section (every editable key), if the API
     /// or UI set one. The files' fields win over it (ADR-914).
     pub(crate) special: Option<serde_json::Value>,
-    /// REQ: FLT-901 (T24.29) — the stored `entry_budget` and `ads_tier`, if the API or UI set them.
-    pub(crate) filter_settings: Option<serde_json::Value>,
     /// REQ: DNS-023 (T24.13) — the stored `[local]` fields, likewise.
     pub(crate) local: Option<serde_json::Value>,
     /// REQ: DNS-023 (T24.13) — the stored `[clients]` fields (`mdns`), likewise.
     pub(crate) clients_settings: Option<serde_json::Value>,
     /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
     pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections stored
+    /// through the API or UI: (kind, node, body) for every node. A node applies its own rows.
+    pub(crate) node_settings: Vec<(String, String, serde_json::Value)>,
+    /// REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the stored `[dnssec]`, `[filter]` and
+    /// `[drill]` sections, likewise (one entry each).
+    pub(crate) dnssec: Option<serde_json::Value>,
+    pub(crate) filter: Option<serde_json::Value>,
+    pub(crate) drill: Option<serde_json::Value>,
     /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
     pub(crate) guarded: Vec<crate::guarded::store::Stored>,
 }
@@ -421,10 +437,6 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, v)| v),
-        filter_settings: decode::<serde_json::Value>(state, FILTER_SETTINGS)
-            .into_iter()
-            .next()
-            .map(|(_, v)| v),
         local: decode::<serde_json::Value>(state, LOCAL)
             .into_iter()
             .next()
@@ -434,6 +446,26 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, v)| v),
         discovery: decode::<serde_json::Value>(state, DISCOVERY)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        node_settings: [CACHE, SUPPORT, UPDATES]
+            .into_iter()
+            .flat_map(|k| {
+                decode::<serde_json::Value>(state, k)
+                    .into_iter()
+                    .map(move |(n, v)| (k.to_owned(), n, v))
+            })
+            .collect(),
+        dnssec: decode::<serde_json::Value>(state, DNSSEC)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        filter: decode::<serde_json::Value>(state, FILTER)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        drill: decode::<serde_json::Value>(state, DRILL)
             .into_iter()
             .next()
             .map(|(_, v)| v),

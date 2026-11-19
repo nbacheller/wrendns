@@ -2336,6 +2336,26 @@ impl Backend for Federated {
             None => self.local.lists_refresh(w),
         }
     }
+    // REQ: DSC-004 (ADR-1002) - the SNMP poller runs on the designated node: this one when it runs
+    // the inventory; else, with no `[discovery] node` named, the primary (a replica forwards). A
+    // node that isn't designated and can't forward answers `discovery_not_here` itself.
+    fn snmp_test(
+        &self,
+        w: telltale_api::SnmpTestWrite,
+    ) -> BoxFuture<Result<telltale_api::model::SnmpTestResult, Problem>> {
+        let st = self.local.discovery_status();
+        if st.designated || !st.enabled || self.cluster.is_primary() || st.node.is_some() {
+            return self.local.snmp_test(w);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::snmp_test(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                w,
+            )),
+            None => self.local.snmp_test(w),
+        }
+    }
     // REQ: OBS-901 (ADR-958) — `[map]` and this node's own part are the local backend's.
     fn map_settings(&self) -> Option<telltale_api::map::MapSettings> {
         self.local.map_settings()
@@ -2737,6 +2757,14 @@ impl Backend for Federated {
     }
     fn otlp_entry(&self) -> telltale_api::model::OtlpEntry {
         self.local.otlp_entry()
+    }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — each node's sections are read from
+    // the node that runs them (this one, or a member through the primary's rows).
+    fn node_settings(
+        &self,
+        node: Option<&str>,
+    ) -> Result<telltale_api::model::NodeSettings, telltale_api::problem::Problem> {
+        self.local.node_settings(node)
     }
     // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
     fn check_router(

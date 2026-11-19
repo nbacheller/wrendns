@@ -714,6 +714,24 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("caches".into(), "/api/v1/cache/stats".into())]),
         },
+        // REQ: DNS-006, DNS-011, FLT-004, CLU-014, OPS-011, OPS-012 (ADR-1006) — read-only; the
+        // writes behind these settings refuse agents.
+        Tool {
+            name: "node_settings",
+            description: "Read-only. The settings that operators change from the UI, per node (this node when none is named): the cache sizing and TTLs, the list refresh and stale settings, DNSSEC mode and negative trust anchors, the drill schedule, and the support and update switches. Each section lists its fields, the fields the configuration files set (setByFile), and whether a restart is pending. Agents can read these but not change them.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node's name (default: this node)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let path = match s(a, "node") {
+                    Some(n) => format!("/api/v1/node-settings/{}", enc(&n)),
+                    None => "/api/v1/node-settings".into(),
+                };
+                Ok(vec![("node_settings".into(), path)])
+            },
+        },
         // REQ: OBS-016 (ADR-105)
         Tool {
             name: "slo_status",

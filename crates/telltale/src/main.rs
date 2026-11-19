@@ -57,6 +57,9 @@ mod node_managed;
 #[cfg(test)]
 mod node_managed_tests;
 mod node_removal;
+mod node_settings;
+#[cfg(test)]
+mod node_settings_tests;
 mod oidc_settings;
 mod otlp;
 mod own_networks;
