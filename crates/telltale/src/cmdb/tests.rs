@@ -1,3 +1,15 @@
+#![allow(
+    clippy::redundant_closure_for_method_calls,
+    clippy::manual_assert,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::explicit_counter_loop,
+    clippy::collapsible_if,
+    clippy::map_unwrap_or,
+    clippy::type_complexity,
+    clippy::items_after_statements,
+    dead_code
+)]
 //! REQ: DSC-902, DSC-903, DSC-906 (T31.2) - the engine against a real database: each reconciliation
 //! rule, ambiguity, the level disagreement, ports and aliases, the caps, retention and the
 //! property that the same batches in any order give the same links.
@@ -18,7 +30,9 @@ fn rec_of(e: &Engine, source: &str, key: &str) -> RecordRow {
 }
 
 fn devices(e: &Engine) -> Vec<CiRow> {
-    e.db().read(|o| o.ci_list(Some("device"), None, None, 500)).unwrap()
+    e.db()
+        .read(|o| o.ci_list(Some("device"), None, None, 500))
+        .unwrap()
 }
 
 fn children(e: &Engine, device: &str) -> Vec<CiRow> {
@@ -48,9 +62,24 @@ fn ingest(e: &mut Engine, source: &str, records: Vec<Record>, at: i64) {
 #[test]
 fn dsc_903_r2_mac_links_sources_to_one_interface() {
     let (_d, mut e) = engine();
-    ingest(&mut e, "unifi:home", vec![host("unifi:home", "c1", "AA:BB:CC:00:00:01", T0)], T0);
-    ingest(&mut e, "neighbor", vec![host("neighbor", "n1", "aa:bb:cc:00:00:01", T0)], T0);
-    ingest(&mut e, "neighbor", vec![host("neighbor", "n2", "aa:bb:cc:00:00:02", T0)], T0 + 1);
+    ingest(
+        &mut e,
+        "unifi:home",
+        vec![host("unifi:home", "c1", "AA:BB:CC:00:00:01", T0)],
+        T0,
+    );
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![host("neighbor", "n1", "aa:bb:cc:00:00:01", T0)],
+        T0,
+    );
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![host("neighbor", "n2", "aa:bb:cc:00:00:02", T0)],
+        T0 + 1,
+    );
     let a = rec_of(&e, "unifi:home", "c1");
     let b = rec_of(&e, "neighbor", "n1");
     assert_eq!(a.ici, b.ici, "one MAC, one interface CI");
@@ -70,8 +99,16 @@ fn dsc_903_r3_serial_joins_interfaces_into_one_device() {
         &mut e,
         "unifi:home",
         vec![
-            with(host("unifi:home", "w", "aa:bb:cc:00:00:01", T0), "serial", "SN-LAPTOP-1"),
-            with(host("unifi:home", "e", "aa:bb:cc:00:00:02", T0), "serial", "sn-laptop-1"),
+            with(
+                host("unifi:home", "w", "aa:bb:cc:00:00:01", T0),
+                "serial",
+                "SN-LAPTOP-1",
+            ),
+            with(
+                host("unifi:home", "e", "aa:bb:cc:00:00:02", T0),
+                "serial",
+                "sn-laptop-1",
+            ),
         ],
         T0,
     );
@@ -91,23 +128,39 @@ fn dsc_903_r3_serial_joins_interfaces_into_one_device() {
 fn dsc_903_r4_stable_key_survives_a_mac_change() {
     let (_d, mut e) = engine();
     let ha = |key: &str, mac: &str| {
-        with(host("home_assistant:ha", key, mac, T0), "device_key", "ha:ha|dev-tv")
+        with(
+            host("home_assistant:ha", key, mac, T0),
+            "device_key",
+            "ha:ha|dev-tv",
+        )
     };
     ingest(
         &mut e,
         "home_assistant:ha",
-        vec![ha("tv-wifi", "aa:bb:cc:00:00:11"), ha("tv-eth", "aa:bb:cc:00:00:12")],
+        vec![
+            ha("tv-wifi", "aa:bb:cc:00:00:11"),
+            ha("tv-eth", "aa:bb:cc:00:00:12"),
+        ],
         T0,
     );
     let w = rec_of(&e, "home_assistant:ha", "tv-wifi");
     let eth = rec_of(&e, "home_assistant:ha", "tv-eth");
-    assert_eq!(w.dci, eth.dci, "a Home Assistant device with two MACs is one device");
+    assert_eq!(
+        w.dci, eth.dci,
+        "a Home Assistant device with two MACs is one device"
+    );
     assert_eq!(w.link, "auto:R4");
     let dev = w.dci.clone().unwrap();
     assert_eq!(children(&e, &dev).len(), 2);
 
     // An SNMP agent's chassis shows up under a new MAC.
-    let snmp = |mac: &str| with(host("snmp:sw1", "chassis", mac, T0), "device_key", "snmp:sw1|chassis");
+    let snmp = |mac: &str| {
+        with(
+            host("snmp:sw1", "chassis", mac, T0),
+            "device_key",
+            "snmp:sw1|chassis",
+        )
+    };
     ingest(&mut e, "snmp:sw1", vec![snmp("aa:bb:cc:00:00:21")], T0 + 10);
     let first = rec_of(&e, "snmp:sw1", "chassis");
     let sw = first.dci.clone().unwrap();
@@ -122,7 +175,10 @@ fn dsc_903_r4_stable_key_survives_a_mac_change() {
         .iter()
         .filter_map(|c| e.db().read(|o| o.mac_of(&c.id)).unwrap())
         .collect();
-    assert!(macs.contains(&"aa:bb:cc:00:00:21".to_owned()) && macs.contains(&"aa:bb:cc:00:00:22".to_owned()));
+    assert!(
+        macs.contains(&"aa:bb:cc:00:00:21".to_owned())
+            && macs.contains(&"aa:bb:cc:00:00:22".to_owned())
+    );
 }
 
 /// REQ: DSC-903 (level disagreement) - a record whose MAC and serial point at different devices
@@ -134,15 +190,27 @@ fn dsc_903_level_disagreement_proposes_merge() {
         &mut e,
         "unifi:home",
         vec![
-            with(host("unifi:home", "a", "aa:bb:cc:00:00:01", T0), "serial", "SN-AAAA-1"),
-            with(host("unifi:home", "b", "aa:bb:cc:00:00:02", T0 + 1), "serial", "SN-BBBB-2"),
+            with(
+                host("unifi:home", "a", "aa:bb:cc:00:00:01", T0),
+                "serial",
+                "SN-AAAA-1",
+            ),
+            with(
+                host("unifi:home", "b", "aa:bb:cc:00:00:02", T0 + 1),
+                "serial",
+                "SN-BBBB-2",
+            ),
         ],
         T0,
     );
     ingest(
         &mut e,
         "snmp:sw",
-        vec![with(host("snmp:sw", "z", "aa:bb:cc:00:00:01", T0 + 5), "serial", "SN-BBBB-2")],
+        vec![with(
+            host("snmp:sw", "z", "aa:bb:cc:00:00:01", T0 + 5),
+            "serial",
+            "SN-BBBB-2",
+        )],
         T0 + 5,
     );
     let a = rec_of(&e, "unifi:home", "a");
@@ -150,7 +218,11 @@ fn dsc_903_level_disagreement_proposes_merge() {
     let z = rec_of(&e, "snmp:sw", "z");
     assert_ne!(a.dci, b.dci, "two devices stay two");
     assert_eq!(z.dci, a.dci, "the record stays on its interface's device");
-    assert_eq!(proposals(&e, "level_disagreement"), 1, "and a proposal is raised");
+    assert_eq!(
+        proposals(&e, "level_disagreement"),
+        1,
+        "and a proposal is raised"
+    );
     assert_eq!(devices(&e).len(), 2);
 }
 
@@ -160,7 +232,11 @@ fn dsc_903_level_disagreement_proposes_merge() {
 fn dsc_903_r5_hostname_and_network_only_proposes() {
     let (_d, mut e) = engine();
     let h = |src: &str, key: &str, mac: &str, host_: &str| {
-        with(with(host(src, key, mac, T0), "hostname", host_), "network", "Lan")
+        with(
+            with(host(src, key, mac, T0), "hostname", host_),
+            "network",
+            "Lan",
+        )
     };
     ingest(
         &mut e,
@@ -179,7 +255,11 @@ fn dsc_903_r5_hostname_and_network_only_proposes() {
         T0 + 1,
     );
     assert_eq!(devices(&e).len(), 4, "nothing was merged");
-    assert_eq!(proposals(&e, "host_network"), 1, "one proposal, for the host name");
+    assert_eq!(
+        proposals(&e, "host_network"),
+        1,
+        "one proposal, for the host name"
+    );
 }
 
 /// REQ: DSC-903 - a keyless record whose address two devices hold stays unlinked with a proposal; one
@@ -195,16 +275,28 @@ fn dsc_903_keyless_records_attach_or_stay_unlinked() {
         &mut e,
         "neighbor",
         vec![
-            with_ip(host("neighbor", "n1", "aa:bb:cc:00:00:01", T0), "192.168.1.10"),
-            with_ip(host("neighbor", "n2", "aa:bb:cc:00:00:02", T0), "192.168.1.11"),
-            with_ip(host("neighbor", "n3", "aa:bb:cc:00:00:03", T0), "192.168.1.12"),
+            with_ip(
+                host("neighbor", "n1", "aa:bb:cc:00:00:01", T0),
+                "192.168.1.10",
+            ),
+            with_ip(
+                host("neighbor", "n2", "aa:bb:cc:00:00:02", T0),
+                "192.168.1.11",
+            ),
+            with_ip(
+                host("neighbor", "n3", "aa:bb:cc:00:00:03", T0),
+                "192.168.1.12",
+            ),
         ],
         T0,
     );
     ingest(
         &mut e,
         "unifi:home",
-        vec![with_ip(host("unifi:home", "u3", "aa:bb:cc:00:00:04", T0), "192.168.1.12")],
+        vec![with_ip(
+            host("unifi:home", "u3", "aa:bb:cc:00:00:04", T0),
+            "192.168.1.12",
+        )],
         T0,
     );
     let keyless = |src: &str, key: &str, ip: &str| {
@@ -221,14 +313,29 @@ fn dsc_903_keyless_records_attach_or_stay_unlinked() {
         T0 + 5,
     );
     let one = rec_of(&e, "queries", "192.168.1.10");
-    assert_eq!(one.dci, rec_of(&e, "neighbor", "n1").dci, "attached through its address");
+    assert_eq!(
+        one.dci,
+        rec_of(&e, "neighbor", "n1").dci,
+        "attached through its address"
+    );
     assert_eq!(one.link, "auto:addr");
     let two = rec_of(&e, "queries", "192.168.1.12");
-    assert_eq!(two.dci, None, "two devices hold it: unlinked, never a guess");
+    assert_eq!(
+        two.dci, None,
+        "two devices hold it: unlinked, never a guess"
+    );
     assert_eq!(proposals(&e, "ambiguous_record"), 1);
     let own = rec_of(&e, "queries", "192.168.1.99");
-    let own_ci = e.db().read(|o| o.ci_get(own.dci.as_deref().unwrap())).unwrap().unwrap();
-    assert_eq!(own_ci.flags & telltale_store::cmdb::FLAG_UNCONFIRMED, 1, "unconfirmed");
+    let own_ci = e
+        .db()
+        .read(|o| o.ci_get(own.dci.as_deref().unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        own_ci.flags & telltale_store::cmdb::FLAG_UNCONFIRMED,
+        1,
+        "unconfirmed"
+    );
 }
 
 /// REQ: DSC-903 - a port seen by SNMP `ifName` and by UniFi `port_idx` is one port CI once aliased
@@ -238,12 +345,20 @@ fn dsc_903_ports_alias_across_sources_or_stay_unmapped() {
     let (_d, mut e) = engine();
     // The switch: a UniFi device record with a serial and a key, an SNMP agent with the same serial.
     let sw_unifi = with(
-        with(host("unifi:home", "sw", "aa:bb:cc:00:01:00", T0), "serial", "SN-SWITCH-1"),
+        with(
+            host("unifi:home", "sw", "aa:bb:cc:00:01:00", T0),
+            "serial",
+            "SN-SWITCH-1",
+        ),
         "device_key",
         "unifi:home|sw",
     );
     let sw_snmp = with(
-        with(host("snmp:core", "device", "aa:bb:cc:00:01:00", T0), "serial", "SN-SWITCH-1"),
+        with(
+            host("snmp:core", "device", "aa:bb:cc:00:01:00", T0),
+            "serial",
+            "SN-SWITCH-1",
+        ),
         "device_key",
         "snmp:core|device",
     );
@@ -257,25 +372,46 @@ fn dsc_903_ports_alias_across_sources_or_stay_unmapped() {
     ingest(
         &mut e,
         "snmp:core",
-        vec![port("snmp:core", "p5", "snmp:core|device", "Gi1/0/5"), port("snmp:core", "p6", "snmp:core|device", "Gi1/0/6")],
+        vec![
+            port("snmp:core", "p5", "snmp:core|device", "Gi1/0/5"),
+            port("snmp:core", "p6", "snmp:core|device", "Gi1/0/6"),
+        ],
         T0 + 1,
     );
     ingest(
         &mut e,
         "unifi:home",
-        vec![port("unifi:home", "port5", "unifi:home|sw", "port5"), port("unifi:home", "port9", "unifi:home|sw", "port9")],
+        vec![
+            port("unifi:home", "port5", "unifi:home|sw", "port5"),
+            port("unifi:home", "port9", "unifi:home|sw", "port9"),
+        ],
         T0 + 2,
     );
     let snmp5 = rec_of(&e, "snmp:core", "p5");
     let unifi5 = rec_of(&e, "unifi:home", "port5");
     assert_eq!(snmp5.ici, unifi5.ici, "one port CI once aliased");
     let dev = snmp5.dci.clone().unwrap();
-    assert_eq!(rec_of(&e, "unifi:home", "port5").dci.as_deref(), Some(dev.as_str()));
+    assert_eq!(
+        rec_of(&e, "unifi:home", "port5").dci.as_deref(),
+        Some(dev.as_str())
+    );
     let unifi9 = rec_of(&e, "unifi:home", "port9");
-    let p9 = e.db().read(|o| o.ci_get(unifi9.ici.as_deref().unwrap())).unwrap().unwrap();
-    assert_eq!(p9.flags & telltale_store::cmdb::FLAG_UNMAPPED_PORT, 2, "unaliased: unmapped_port");
+    let p9 = e
+        .db()
+        .read(|o| o.ci_get(unifi9.ici.as_deref().unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        p9.flags & telltale_store::cmdb::FLAG_UNMAPPED_PORT,
+        2,
+        "unaliased: unmapped_port"
+    );
     let snmp6 = rec_of(&e, "snmp:core", "p6");
-    let p6 = e.db().read(|o| o.ci_get(snmp6.ici.as_deref().unwrap())).unwrap().unwrap();
+    let p6 = e
+        .db()
+        .read(|o| o.ci_get(snmp6.ici.as_deref().unwrap()))
+        .unwrap()
+        .unwrap();
     assert_eq!(p6.flags & telltale_store::cmdb::FLAG_UNMAPPED_PORT, 2);
     assert!(proposals(&e, "level_disagreement") == 0, "never a conflict");
 }
@@ -290,14 +426,32 @@ fn dsc_902_natural_key_cis() {
         r.text("key", "network:192.168.1.0/24|0").text("name", name);
         r
     };
-    ingest(&mut e, "config", vec![net("config", "subnet-1", "Home")], T0);
-    ingest(&mut e, "unifi:home", vec![net("unifi:home", "lan", "Default LAN")], T0);
+    ingest(
+        &mut e,
+        "config",
+        vec![net("config", "subnet-1", "Home")],
+        T0,
+    );
+    ingest(
+        &mut e,
+        "unifi:home",
+        vec![net("unifi:home", "lan", "Default LAN")],
+        T0,
+    );
     let a = rec_of(&e, "config", "subnet-1");
     let b = rec_of(&e, "unifi:home", "lan");
     assert_eq!(a.dci, b.dci);
-    let ci = e.db().read(|o| o.ci_get(a.dci.as_deref().unwrap())).unwrap().unwrap();
+    let ci = e
+        .db()
+        .read(|o| o.ci_get(a.dci.as_deref().unwrap()))
+        .unwrap()
+        .unwrap();
     assert_eq!(ci.ty, "network");
-    assert_eq!(ci.name.as_deref(), Some("Home"), "the configured name ranks first");
+    assert_eq!(
+        ci.name.as_deref(),
+        Some("Home"),
+        "the configured name ranks first"
+    );
 }
 
 /// REQ: DSC-902 (ADR-924) - a record a complete batch no longer lists goes absent after two missed
@@ -306,12 +460,28 @@ fn dsc_902_natural_key_cis() {
 fn dsc_902_absent_after_two_missed_complete_batches() {
     let (_d, mut e) = engine();
     let r = host("neighbor", "n1", "aa:bb:cc:00:00:01", T0);
-    ingest(&mut e, "neighbor", vec![r.clone(), host("neighbor", "n2", "aa:bb:cc:00:00:02", T0)], T0);
-    let again = e.ingest(batch("neighbor", vec![r.clone()], true, T0 + 60), T0 + 60).unwrap();
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![r.clone(), host("neighbor", "n2", "aa:bb:cc:00:00:02", T0)],
+        T0,
+    );
+    let again = e
+        .ingest(batch("neighbor", vec![r.clone()], true, T0 + 60), T0 + 60)
+        .unwrap();
     assert_eq!(again.written, 0, "unchanged: no row written");
-    assert_eq!(rec_of(&e, "neighbor", "n2").state, "present", "one miss is not absent");
+    assert_eq!(
+        rec_of(&e, "neighbor", "n2").state,
+        "present",
+        "one miss is not absent"
+    );
     ingest(&mut e, "neighbor", vec![r.clone()], T0 + 120);
     assert_eq!(rec_of(&e, "neighbor", "n2").state, "absent");
-    ingest(&mut e, "neighbor", vec![r, host("neighbor", "n2", "aa:bb:cc:00:00:02", T0 + 180)], T0 + 180);
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![r, host("neighbor", "n2", "aa:bb:cc:00:00:02", T0 + 180)],
+        T0 + 180,
+    );
     assert_eq!(rec_of(&e, "neighbor", "n2").state, "present");
 }

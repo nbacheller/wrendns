@@ -187,7 +187,10 @@ mod tests {
                 "{field}: {errs:?}"
             );
         }
-        assert!(load("[cmdb]\nunknown = 1\n").is_err(), "unknown fields are refused");
+        assert!(
+            load("[cmdb]\nunknown = 1\n").is_err(),
+            "unknown fields are refused"
+        );
     }
 
     /// REQ: DSC-906 (ADR-1005 section 12; owner question 7) — `enabled` is a validation error at

@@ -3291,7 +3291,12 @@ impl Backend for ApiBackend {
     /// REQ: DSC-902 (T31.2) — one CI with its records.
     fn cmdb_ci(&self, id: &str) -> Result<telltale_api::cmdb_api::CmdbCiDetail, Problem> {
         let db = self.src.cmdb.db_or_503()?;
-        crate::cmdb::view::detail(&db, id, i64::try_from(self.now_unix_seconds()).unwrap_or(i64::MAX), self.src.cmdb.level())
+        crate::cmdb::view::detail(
+            &db,
+            id,
+            i64::try_from(self.now_unix_seconds()).unwrap_or(i64::MAX),
+            self.src.cmdb.level(),
+        )
     }
 
     /// REQ: DSC-903 (T31.2) — the open merge proposals.

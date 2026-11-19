@@ -1,3 +1,15 @@
+#![allow(
+    clippy::redundant_closure_for_method_calls,
+    clippy::manual_assert,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::explicit_counter_loop,
+    clippy::collapsible_if,
+    clippy::map_unwrap_or,
+    clippy::type_complexity,
+    clippy::items_after_statements,
+    dead_code
+)]
 //! REQ: DSC-901, DSC-906 (T31.2) - the caps and the eviction rules, retention, the write volume of a
 //! stable network, and the containment of the CMDB's data (no policy, matching, `identify` or DNS
 //! naming code reads it). The memory and disk figures at the caps are the ignored test
@@ -19,7 +31,12 @@ fn ci_count(e: &Engine) -> i64 {
 }
 
 fn mac(n: u32) -> String {
-    format!("aa:00:00:{:02x}:{:02x}:{:02x}", (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff)
+    format!(
+        "aa:00:00:{:02x}:{:02x}:{:02x}",
+        (n >> 16) & 0xff,
+        (n >> 8) & 0xff,
+        n & 0xff
+    )
 }
 
 fn ingest(e: &mut Engine, source: &str, recs: Vec<super::model::Record>, at: i64) {
@@ -41,15 +58,35 @@ fn dsc_906_ci_cap_evicts_derived_cis_with_no_present_record() {
         cis: 4,
         ..Caps::default()
     };
-    ingest(&mut e, "neighbor", vec![host("neighbor", "a", &mac(1), T0), host("neighbor", "b", &mac(2), T0)], T0);
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![
+            host("neighbor", "a", &mac(1), T0),
+            host("neighbor", "b", &mac(2), T0),
+        ],
+        T0,
+    );
     assert_eq!(ci_count(&e), 4);
     make_absent(&mut e, "neighbor", T0 + 60);
     // A new device arrives at the cap: the oldest absent-only CIs make room.
-    ingest(&mut e, "unifi:home", vec![host("unifi:home", "c", &mac(3), T0 + 200)], T0 + 200);
+    ingest(
+        &mut e,
+        "unifi:home",
+        vec![host("unifi:home", "c", &mac(3), T0 + 200)],
+        T0 + 200,
+    );
     assert_eq!(e.counters.dropped_ci, 0, "nothing was refused");
     assert_eq!(ci_count(&e), 4, "the cap holds");
-    let c = e.db().read(|o| o.record_get("unifi:home", "c")).unwrap().unwrap();
-    assert!(c.dci.is_some() && c.ici.is_some(), "the new record is linked");
+    let c = e
+        .db()
+        .read(|o| o.record_get("unifi:home", "c"))
+        .unwrap()
+        .unwrap();
+    assert!(
+        c.dci.is_some() && c.ici.is_some(),
+        "the new record is linked"
+    );
 }
 
 /// REQ: DSC-906 (AC 5) - when every CI left is authored (a pin names it) a new CI is refused and
@@ -61,12 +98,24 @@ fn dsc_906_ci_cap_refuses_a_new_ci_when_the_rest_are_authored() {
         cis: 4,
         ..Caps::default()
     };
-    ingest(&mut e, "neighbor", vec![host("neighbor", "a", &mac(1), T0), host("neighbor", "b", &mac(2), T0)], T0);
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![
+            host("neighbor", "a", &mac(1), T0),
+            host("neighbor", "b", &mac(2), T0),
+        ],
+        T0,
+    );
     // Authored: both interfaces are pinned to their devices (an owner's decision).
     let pairs: Vec<(String, String)> = ["a", "b"]
         .iter()
         .map(|k| {
-            let r = e.db().read(|o| o.record_get("neighbor", k)).unwrap().unwrap();
+            let r = e
+                .db()
+                .read(|o| o.record_get("neighbor", k))
+                .unwrap()
+                .unwrap();
             (r.mac.unwrap(), r.dci.unwrap())
         })
         .collect();
@@ -86,10 +135,19 @@ fn dsc_906_ci_cap_refuses_a_new_ci_when_the_rest_are_authored() {
         })
         .unwrap();
     make_absent(&mut e, "neighbor", T0 + 60);
-    ingest(&mut e, "unifi:home", vec![host("unifi:home", "c", &mac(3), T0 + 200)], T0 + 200);
+    ingest(
+        &mut e,
+        "unifi:home",
+        vec![host("unifi:home", "c", &mac(3), T0 + 200)],
+        T0 + 200,
+    );
     assert!(e.counters.dropped_ci >= 1, "refused and counted");
     assert_eq!(ci_count(&e), 4);
-    let c = e.db().read(|o| o.record_get("unifi:home", "c")).unwrap().unwrap();
+    let c = e
+        .db()
+        .read(|o| o.record_get("unifi:home", "c"))
+        .unwrap()
+        .unwrap();
     assert_eq!(c.dci, None, "the record is left unlinked");
 }
 
@@ -102,24 +160,48 @@ fn dsc_906_record_cap_evicts_absent_then_drops_new() {
         records: 4,
         ..Caps::default()
     };
-    let four: Vec<_> = (1..=4).map(|n| host("neighbor", &format!("n{n}"), &mac(n), T0)).collect();
+    let four: Vec<_> = (1..=4)
+        .map(|n| host("neighbor", &format!("n{n}"), &mac(n), T0))
+        .collect();
     ingest(&mut e, "neighbor", four, T0);
     assert_eq!(e.record_counts().0, 4);
     // Two of them go absent (a complete batch lists the other two twice).
-    let keep: Vec<_> = (3..=4).map(|n| host("neighbor", &format!("n{n}"), &mac(n), T0)).collect();
+    let keep: Vec<_> = (3..=4)
+        .map(|n| host("neighbor", &format!("n{n}"), &mac(n), T0))
+        .collect();
     ingest(&mut e, "neighbor", keep.clone(), T0 + 60);
     ingest(&mut e, "neighbor", keep, T0 + 120);
     ingest(
         &mut e,
         "unifi:home",
-        vec![host("unifi:home", "x", &mac(5), T0 + 130), host("unifi:home", "y", &mac(6), T0 + 130)],
+        vec![
+            host("unifi:home", "x", &mac(5), T0 + 130),
+            host("unifi:home", "y", &mac(6), T0 + 130),
+        ],
         T0 + 130,
     );
     assert_eq!(e.record_counts().0, 4, "the two absent records made room");
     assert_eq!(e.counters.dropped_record, 0);
-    ingest(&mut e, "unifi:home", vec![host("unifi:home", "x", &mac(5), T0 + 190), host("unifi:home", "y", &mac(6), T0 + 190), host("unifi:home", "z", &mac(7), T0 + 190)], T0 + 190);
-    assert_eq!(e.counters.dropped_record, 1, "no absent record left: the new one is dropped");
-    assert!(e.db().read(|o| o.record_get("unifi:home", "z")).unwrap().is_none());
+    ingest(
+        &mut e,
+        "unifi:home",
+        vec![
+            host("unifi:home", "x", &mac(5), T0 + 190),
+            host("unifi:home", "y", &mac(6), T0 + 190),
+            host("unifi:home", "z", &mac(7), T0 + 190),
+        ],
+        T0 + 190,
+    );
+    assert_eq!(
+        e.counters.dropped_record, 1,
+        "no absent record left: the new one is dropped"
+    );
+    assert!(
+        e.db()
+            .read(|o| o.record_get("unifi:home", "z"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// REQ: DSC-906 (AC 5) - a CI keeps at most 8 records at its own level: past it the oldest `absent`
@@ -132,7 +214,16 @@ fn dsc_906_per_ci_cap_counts_at_the_cis_own_level() {
         ..Caps::default()
     };
     // One interface seen by five sources: three fit.
-    for (i, src) in ["unifi:home", "neighbor", "snmp:core", "home_assistant:ha", "mdns"].iter().enumerate() {
+    for (i, src) in [
+        "unifi:home",
+        "neighbor",
+        "snmp:core",
+        "home_assistant:ha",
+        "mdns",
+    ]
+    .iter()
+    .enumerate()
+    {
         let at = T0 + i64::try_from(i).unwrap();
         ingest(&mut e, src, vec![host(src, "k", &mac(1), at)], at);
     }
@@ -158,7 +249,11 @@ fn dsc_906_per_ci_cap_counts_at_the_cis_own_level() {
             .collect(),
         T0,
     );
-    assert_eq!(e2.record_counts().0, 5, "five interfaces of one device are not capped at the device");
+    assert_eq!(
+        e2.record_counts().0,
+        5,
+        "five interfaces of one device are not capped at the device"
+    );
     assert_eq!(e2.counters.dropped_record, 0);
 }
 
@@ -175,13 +270,33 @@ fn dsc_906_retention_expires_records_and_unconfirmed_cis_but_not_authored_ones()
         r.list("addresses", vec![ip.to_owned()]);
         r
     };
-    ingest(&mut e, "mdns", vec![weak("mdns", "printer", "192.168.1.50")], T0);
-    ingest(&mut e, "import:scan", vec![weak("import:scan", "row1", "192.168.1.60")], T0);
-    ingest(&mut e, "neighbor", vec![host("neighbor", "n1", &mac(1), T0)], T0);
-    let printer = e.db().read(|o| o.record_get("mdns", "printer")).unwrap().unwrap();
+    ingest(
+        &mut e,
+        "mdns",
+        vec![weak("mdns", "printer", "192.168.1.50")],
+        T0,
+    );
+    ingest(
+        &mut e,
+        "import:scan",
+        vec![weak("import:scan", "row1", "192.168.1.60")],
+        T0,
+    );
+    ingest(
+        &mut e,
+        "neighbor",
+        vec![host("neighbor", "n1", &mac(1), T0)],
+        T0,
+    );
+    let printer = e
+        .db()
+        .read(|o| o.record_get("mdns", "printer"))
+        .unwrap()
+        .unwrap();
     let ci = printer.dci.clone().unwrap();
     assert_eq!(
-        e.db().read(|o| o.ci_get(&ci)).unwrap().unwrap().flags & telltale_store::cmdb::FLAG_UNCONFIRMED,
+        e.db().read(|o| o.ci_get(&ci)).unwrap().unwrap().flags
+            & telltale_store::cmdb::FLAG_UNCONFIRMED,
         1
     );
     for s in ["mdns", "import:scan", "neighbor"] {
@@ -189,16 +304,38 @@ fn dsc_906_retention_expires_records_and_unconfirmed_cis_but_not_authored_ones()
     }
     // Eight days on: the weak record is gone, the import is not (30 days), the CI stays until 30.
     e.maintain(T0 + 8 * day).unwrap();
-    assert!(e.db().read(|o| o.record_get("mdns", "printer")).unwrap().is_none());
-    assert!(e.db().read(|o| o.record_get("import:scan", "row1")).unwrap().is_some());
+    assert!(
+        e.db()
+            .read(|o| o.record_get("mdns", "printer"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        e.db()
+            .read(|o| o.record_get("import:scan", "row1"))
+            .unwrap()
+            .is_some()
+    );
     assert!(e.db().read(|o| o.ci_get(&ci)).unwrap().is_some());
     e.maintain(T0 + 31 * day).unwrap();
-    assert!(e.db().read(|o| o.record_get("import:scan", "row1")).unwrap().is_none(), "imports after 30 days");
-    assert!(e.db().read(|o| o.ci_get(&ci)).unwrap().is_none(), "the unconfirmed CI went");
+    assert!(
+        e.db()
+            .read(|o| o.record_get("import:scan", "row1"))
+            .unwrap()
+            .is_none(),
+        "imports after 30 days"
+    );
+    assert!(
+        e.db().read(|o| o.ci_get(&ci)).unwrap().is_none(),
+        "the unconfirmed CI went"
+    );
     // The neighbour's device (confirmed by a presence source) stays in the registry with its times.
     let n1 = e.db().read(|o| o.record_get("neighbor", "n1")).unwrap();
     assert!(n1.is_none(), "its record aged out");
-    let devs = e.db().read(|o| o.ci_list(Some("device"), None, None, 10)).unwrap();
+    let devs = e
+        .db()
+        .read(|o| o.ci_list(Some("device"), None, None, 10))
+        .unwrap();
     assert_eq!(devs.len(), 1, "the registry row stays");
     let seen = e.db().read(|o| o.seen_get(&devs[0].id)).unwrap();
     assert!(seen.is_some(), "its last_seen outlives the record");
@@ -211,7 +348,7 @@ fn dsc_906_retention_expires_records_and_unconfirmed_cis_but_not_authored_ones()
 fn dsc_906_write_volume_of_a_stable_network() {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(CmdbDb::open(&dir.path().join("cmdb.db")).unwrap());
-    let mut e = Engine::open(Arc::clone(&db), T0).unwrap();
+    let mut e = Engine::open(&db, T0).unwrap();
     // 1,000 present records: 4 sources of 250 hosts, one device per MAC.
     let sources = ["unifi:home", "neighbor", "snmp:core", "home_assistant:ha"];
     let batches: Vec<(String, Vec<super::model::Record>)> = sources
@@ -242,13 +379,25 @@ fn dsc_906_write_volume_of_a_stable_network() {
                 })
                 .collect();
             let rep = e
-                .ingest(SourceBatch { source: s.clone(), complete: true, records: recs, at }, at)
+                .ingest(
+                    SourceBatch {
+                        source: s.clone(),
+                        complete: true,
+                        records: recs,
+                        at,
+                    },
+                    at,
+                )
                 .unwrap();
             written += rep.written;
         }
         written
     };
-    assert_eq!(feed(&mut e, T0), 1000, "the first sighting writes every record");
+    assert_eq!(
+        feed(&mut e, T0),
+        1000,
+        "the first sighting writes every record"
+    );
     assert_eq!(e.record_counts(), (1000, 1000));
     db.checkpoint().unwrap();
     db.set_autocheckpoint(0).unwrap();
@@ -265,7 +414,10 @@ fn dsc_906_write_volume_of_a_stable_network() {
     let wal_after = db.disk_bytes();
     let changes = db.total_changes() - changes_before;
     let wal_bytes = wal_after - wal_before;
-    eprintln!("write volume: {changes} row changes ({} flushed rows), {wal_bytes} WAL bytes per day for 1,000 present records", e.counters.flushed_rows);
+    eprintln!(
+        "write volume: {changes} row changes ({} flushed rows), {wal_bytes} WAL bytes per day for 1,000 present records",
+        e.counters.flushed_rows
+    );
     assert!(
         wal_bytes <= 1024 * 1024,
         "{wal_bytes} bytes written in a day exceed 1 MiB per 1,000 present records"
@@ -355,10 +507,13 @@ fn dsc_901_no_policy_code_reads_the_cmdb() {
         let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
         // A test file may name it (this one does not live there); forward.rs only forwards settings
         // writes of the `cmdb` kind, which is not CMDB data.
-        let text = std::fs::read_to_string(f).unwrap_or_default().to_ascii_lowercase();
+        let text = std::fs::read_to_string(f)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let allowed_kind_only = name == "forward.rs";
         let hits = text.matches("cmdb").count();
-        let kind_hits = text.matches("managedkind::cmdb").count() + text.matches("\"cmdb\"").count();
+        let kind_hits =
+            text.matches("managedkind::cmdb").count() + text.matches("\"cmdb\"").count();
         if hits > 0 && !(allowed_kind_only && hits == kind_hits) {
             bad.push(f.display().to_string());
         }
@@ -369,7 +524,11 @@ fn dsc_901_no_policy_code_reads_the_cmdb() {
     rust_files(&src, &mut all);
     let mut readers: Vec<String> = Vec::new();
     for f in all {
-        let rel = f.strip_prefix(&src).unwrap_or(&f).to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(&src)
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .replace('\\', "/");
         if rel.starts_with("cmdb/") {
             continue;
         }
@@ -378,7 +537,10 @@ fn dsc_901_no_policy_code_reads_the_cmdb() {
             readers.push(rel);
         }
     }
-    assert!(readers.is_empty(), "these files read the CMDB store: {readers:?}");
+    assert!(
+        readers.is_empty(),
+        "these files read the CMDB store: {readers:?}"
+    );
 }
 
 // -- the figures at the caps (run by hand) -----------------------------------------------------
@@ -388,14 +550,17 @@ fn top_maps(label: &str) {
     let mut rows: Vec<(u64, String)> = Vec::new();
     let mut cur = String::new();
     for l in text.lines() {
-        if l.chars().next().is_some_and(|c| c.is_ascii_hexdigit()) && l.contains('-') && l.split_whitespace().count() >= 5 {
+        if l.chars().next().is_some_and(|c| c.is_ascii_hexdigit())
+            && l.contains('-')
+            && l.split_whitespace().count() >= 5
+        {
             cur = l.to_owned();
         } else if let Some(v) = l.strip_prefix("Rss:") {
             let kb: u64 = v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0);
             rows.push((kb, cur.clone()));
         }
     }
-    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
     for (kb, m) in rows.iter().take(6) {
         eprintln!("{label}: {kb} KiB {m}");
     }
@@ -436,18 +601,32 @@ fn dsc_906_figures_at_the_caps() {
     {
         let c = rusqlite::Connection::open_in_memory().unwrap();
         c.execute_batch("CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT); INSERT INTO t (b) VALUES ('x'), ('y');").unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 2);
     }
     let before = rss_kib();
     let db = Arc::new(CmdbDb::open(&path).unwrap());
     let opened = rss_kib();
-    let mut e = Engine::open(Arc::clone(&db), T0).unwrap();
-    eprintln!("stages: start {before} KiB, database opened {opened} KiB, index read {} KiB", rss_kib());
+    let mut e = Engine::open(&db, T0).unwrap();
+    eprintln!(
+        "stages: start {before} KiB, database opened {opened} KiB, index read {} KiB",
+        rss_kib()
+    );
     if !populated {
         // 8,192 MACs (an interface CI and a device CI each: 16,384 CIs) seen by 8 sources
         // (65,536 records).
-        let sources = ["unifi:home", "neighbor", "snmp:core", "home_assistant:ha", "mdns", "lease", "opnsense:fw", "import:scan"];
+        let sources = [
+            "unifi:home",
+            "neighbor",
+            "snmp:core",
+            "home_assistant:ha",
+            "mdns",
+            "lease",
+            "opnsense:fw",
+            "import:scan",
+        ];
         for (si, s) in sources.iter().enumerate() {
             let mut at = T0 + i64::try_from(si).unwrap();
             for chunk in 0..16u32 {
@@ -456,12 +635,29 @@ fn dsc_906_figures_at_the_caps() {
                         let i = chunk * 512 + n;
                         let m = mac(i);
                         let mut r = host(s, &m, &m, at);
-                        r.list("addresses", vec![format!("10.{}.{}.{}", 1 + ((i >> 16) & 0xff), (i >> 8) & 0xff, i & 0xff)]);
+                        r.list(
+                            "addresses",
+                            vec![format!(
+                                "10.{}.{}.{}",
+                                1 + ((i >> 16) & 0xff),
+                                (i >> 8) & 0xff,
+                                i & 0xff
+                            )],
+                        );
                         r.text("name", format!("host-{i}"));
                         r
                     })
                     .collect();
-                e.ingest(SourceBatch { source: (*s).to_owned(), complete: false, records: recs, at }, at).unwrap();
+                e.ingest(
+                    SourceBatch {
+                        source: (*s).to_owned(),
+                        complete: false,
+                        records: recs,
+                        at,
+                    },
+                    at,
+                )
+                .unwrap();
                 at += 1;
             }
         }
@@ -469,7 +665,16 @@ fn dsc_906_figures_at_the_caps() {
     }
     // A restart at the caps: the sources report everything again, unchanged, in the batches they
     // come in (the steady state of the thread: probe, compare, write nothing).
-    let sources = ["unifi:home", "neighbor", "snmp:core", "home_assistant:ha", "mdns", "lease", "opnsense:fw", "import:scan"];
+    let sources = [
+        "unifi:home",
+        "neighbor",
+        "snmp:core",
+        "home_assistant:ha",
+        "mdns",
+        "lease",
+        "opnsense:fw",
+        "import:scan",
+    ];
     let mut cycle_written = 0usize;
     if populated {
         for cycle in 0..3i64 {
@@ -481,12 +686,30 @@ fn dsc_906_figures_at_the_caps() {
                             let i = chunk * 512 + n;
                             let m = mac(i);
                             let mut r = host(s, &m, &m, at);
-                            r.list("addresses", vec![format!("10.{}.{}.{}", 1 + ((i >> 16) & 0xff), (i >> 8) & 0xff, i & 0xff)]);
+                            r.list(
+                                "addresses",
+                                vec![format!(
+                                    "10.{}.{}.{}",
+                                    1 + ((i >> 16) & 0xff),
+                                    (i >> 8) & 0xff,
+                                    i & 0xff
+                                )],
+                            );
                             r.text("name", format!("host-{i}"));
                             r
                         })
                         .collect();
-                    let rep = e.ingest(SourceBatch { source: (*s).to_owned(), complete: false, records: recs, at }, at).unwrap();
+                    let rep = e
+                        .ingest(
+                            SourceBatch {
+                                source: (*s).to_owned(),
+                                complete: false,
+                                records: recs,
+                                at,
+                            },
+                            at,
+                        )
+                        .unwrap();
                     cycle_written += rep.written;
                 }
                 if cycle == 0 {
@@ -502,7 +725,11 @@ fn dsc_906_figures_at_the_caps() {
     let disk = db.disk_bytes();
     eprintln!(
         "{}: {total} records, {cis} CIs; RSS {before} KiB -> {after} KiB (+{} KiB); {} KiB on disk; the engine keeps about {} KiB; {cycle_written} records rewritten in 3 unchanged cycles",
-        if populated { "restart at the caps, then 3 full unchanged cycles" } else { "bulk load to the caps" },
+        if populated {
+            "restart at the caps, then 3 full unchanged cycles"
+        } else {
+            "bulk load to the caps"
+        },
         after.saturating_sub(before),
         disk / 1024,
         e.index_bytes() / 1024
@@ -512,6 +739,9 @@ fn dsc_906_figures_at_the_caps() {
     assert!(disk <= 64 * 1024 * 1024, "more than 64 MiB on disk");
     if populated {
         assert_eq!(cycle_written, 0, "an unchanged cycle writes no record");
-        assert!(after.saturating_sub(before) <= 8 * 1024, "more than 8 MiB extra RSS");
+        assert!(
+            after.saturating_sub(before) <= 8 * 1024,
+            "more than 8 MiB extra RSS"
+        );
     }
 }

@@ -2706,6 +2706,29 @@ impl Backend for Federated {
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
         self.local.alerts_status()
     }
+    // REQ: DSC-906 (T31.2) — the CMDB runs on the node `[discovery]` designates only; any other node
+    // answers 503 naming that node (and the status says where it runs).
+    fn cmdb_status(&self) -> telltale_api::cmdb_api::CmdbStatus {
+        self.local.cmdb_status()
+    }
+    fn cmdb_cis(
+        &self,
+        q: &telltale_api::cmdb_api::CmdbQuery,
+    ) -> Result<telltale_api::cmdb_api::CmdbCiPage, Problem> {
+        self.local.cmdb_cis(q)
+    }
+    fn cmdb_ci(&self, id: &str) -> Result<telltale_api::cmdb_api::CmdbCiDetail, Problem> {
+        self.local.cmdb_ci(id)
+    }
+    fn cmdb_proposals(&self) -> Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem> {
+        self.local.cmdb_proposals()
+    }
+    fn cmdb_manual(
+        &self,
+        w: telltale_api::cmdb_api::CmdbWrite,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::cmdb_api::CmdbChange, Problem>> {
+        self.local.cmdb_manual(w)
+    }
     // REQ: DSC-014 (T25.3) — this node's own inventory status: each node runs its own workers.
     fn discovery_status(&self) -> telltale_api::model::DiscoveryStatus {
         self.local.discovery_status()

@@ -19,8 +19,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use telltale_config::Config;
 
 use super::model::{RecKind, Record, SourceBatch, norm_port};
-use crate::discovery::inventory::{NameKind, Observation, Source};
 use crate::devices::Leases;
+use crate::discovery::inventory::{NameKind, Observation, Source};
 
 /// The kind of each configured router (`unifi`, `opnsense`, `home_assistant`), by name.
 pub(crate) fn router_kinds(cfg: &Config) -> HashMap<String, &'static str> {
@@ -67,7 +67,11 @@ fn merge_list(into: &mut Vec<String>, more: &[String]) {
 /// facts of several observations of the same thing merged. A structured place (`hint.port_ref`)
 /// also makes a port record under the switch it names, so port CIs exist for the ports clients are
 /// seen on.
-pub(crate) fn records_from_observations(obs: &[Observation], source: &str, now: i64) -> Vec<Record> {
+pub(crate) fn records_from_observations(
+    obs: &[Observation],
+    source: &str,
+    now: i64,
+) -> Vec<Record> {
     let mut by_key: BTreeMap<String, Record> = BTreeMap::new();
     let mut ports: BTreeMap<String, Record> = BTreeMap::new();
     for o in obs {
@@ -170,7 +174,11 @@ pub(crate) fn from_lease_view(
     kinds: &HashMap<String, &'static str>,
     now: i64,
 ) -> Vec<SourceBatch> {
-    let obs = crate::discovery::sources::lease_observations(view, Source::Router, u64::try_from(now).unwrap_or(0));
+    let obs = crate::discovery::sources::lease_observations(
+        view,
+        Source::Router,
+        u64::try_from(now).unwrap_or(0),
+    );
     let mut by_router: BTreeMap<String, Vec<Observation>> = BTreeMap::new();
     for (name, kind) in kinds {
         if *kind != "home_assistant" {
@@ -228,7 +236,12 @@ fn is_container_range(ip: Ipv4Addr) -> bool {
 pub(crate) fn from_config(cfg: &Config, node: &str, now: i64) -> SourceBatch {
     let mut records: Vec<Record> = Vec::new();
     for c in &cfg.client {
-        let mut r = Record::new("config", &format!("client:{}", c.name), RecKind::Device, now);
+        let mut r = Record::new(
+            "config",
+            &format!("client:{}", c.name),
+            RecKind::Device,
+            now,
+        );
         r.text("name", c.name.as_str());
         let mut addrs: Vec<String> = Vec::new();
         let mut ids: Vec<String> = Vec::new();
@@ -361,7 +374,12 @@ pub(crate) fn from_networks(rows: &[NetRow], now: i64) -> Vec<SourceBatch> {
     let mut by: BTreeMap<String, Vec<Record>> = BTreeMap::new();
     for n in rows {
         let key = format!("network:{}|{}", n.cidr, n.vlan.unwrap_or(0));
-        let mut r = Record::new(&n.source, &format!("net:{}|{}", n.cidr, n.name), RecKind::Network, now);
+        let mut r = Record::new(
+            &n.source,
+            &format!("net:{}|{}", n.cidr, n.name),
+            RecKind::Network,
+            now,
+        );
         r.text("key", key)
             .text("name", n.name.clone())
             .text("cidr", n.cidr.clone());
@@ -390,11 +408,7 @@ pub(crate) fn from_networks(rows: &[NetRow], now: i64) -> Vec<SourceBatch> {
 /// address outside the configured discovery subnets is left out; with none configured only a
 /// private IPv4 address outside the container and overlay ranges is kept (as the inventory does,
 /// ADR-910). A record carries no count: a count that changes every minute would write every minute.
-pub(crate) fn from_queries(
-    clients: &[([u8; 16], u64)],
-    cfg: &Config,
-    now: i64,
-) -> SourceBatch {
+pub(crate) fn from_queries(clients: &[([u8; 16], u64)], cfg: &Config, now: i64) -> SourceBatch {
     let subnets: Vec<crate::discovery::sources::Ipv4Subnet> = cfg
         .discovery
         .subnets
@@ -503,7 +517,10 @@ mod tests {
             "a client has no device key: UniFi keys a client by MAC (a client `_id` is never used)"
         );
         let port = recs.iter().find(|r| r.kind == RecKind::Port).unwrap();
-        assert_eq!(port.attrs["owner"], serde_json::json!("unifi:home#devices|abc123"));
+        assert_eq!(
+            port.attrs["owner"],
+            serde_json::json!("unifi:home#devices|abc123")
+        );
         assert_eq!(port.attrs["port_id"], serde_json::json!("port5"));
     }
 
@@ -531,7 +548,10 @@ mod tests {
         assert_eq!(m.attrs["name"], serde_json::json!("printer"));
         assert_eq!(m.attrs["hostname"], serde_json::json!("printer"));
         assert_eq!(m.seen, secs(NOW + 5));
-        assert!(recs.iter().any(|r| r.key == "ip:192.168.1.9" && !r.attrs.contains_key("mac")));
+        assert!(
+            recs.iter()
+                .any(|r| r.key == "ip:192.168.1.9" && !r.attrs.contains_key("mac"))
+        );
     }
 
     /// REQ: DSC-903 (R4) - Home Assistant's device id scopes to the instance, so two instances never
@@ -544,9 +564,13 @@ mod tests {
             device_key: Some("devid1".into()),
             ..Hint::default()
         }));
-        let a = records_from_observations(std::slice::from_ref(&o), "home_assistant:ha1", secs(NOW));
+        let a =
+            records_from_observations(std::slice::from_ref(&o), "home_assistant:ha1", secs(NOW));
         let b = records_from_observations(&[o], "home_assistant:ha2", secs(NOW));
-        assert_eq!(a[0].attrs["device_key"], serde_json::json!("home_assistant:ha1|devid1"));
+        assert_eq!(
+            a[0].attrs["device_key"],
+            serde_json::json!("home_assistant:ha1|devid1")
+        );
         assert_ne!(a[0].attrs["device_key"], b[0].attrs["device_key"]);
     }
 
@@ -577,7 +601,11 @@ cidr = "192.168.1.0/24"
         let b = from_config(&cfg, "dns1", secs(NOW));
         assert_eq!(b.source, "config");
         assert!(b.complete);
-        let c = b.records.iter().find(|r| r.key == "client:anna-laptop").unwrap();
+        let c = b
+            .records
+            .iter()
+            .find(|r| r.key == "client:anna-laptop")
+            .unwrap();
         assert_eq!(c.attrs["mac"], serde_json::json!("aa:bb:cc:00:00:09"));
         assert_eq!(c.attrs["addresses"], serde_json::json!(["192.168.1.30"]));
         assert_eq!(c.attrs["member_of"], serde_json::json!(["kids"]));

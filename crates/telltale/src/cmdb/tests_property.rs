@@ -1,3 +1,15 @@
+#![allow(
+    clippy::redundant_closure_for_method_calls,
+    clippy::manual_assert,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::explicit_counter_loop,
+    clippy::collapsible_if,
+    clippy::map_unwrap_or,
+    clippy::type_complexity,
+    clippy::items_after_statements,
+    dead_code
+)]
 //! REQ: DSC-903 (T31.2, AC 3) - reconciling the same batches in any order gives the same links.
 //!
 //! A seeded generator makes a small world (devices with one to three MACs, some with a serial or
@@ -46,7 +58,9 @@ fn world(seed: u64) -> Vec<SourceBatch> {
     for d in 0..ndev {
         let nmac = 1 + rng.below(3);
         devs.push(Dev {
-            macs: (0..nmac).map(|m| format!("aa:00:00:00:{d:02x}:{m:02x}")).collect(),
+            macs: (0..nmac)
+                .map(|m| format!("aa:00:00:00:{d:02x}:{m:02x}"))
+                .collect(),
             serial: rng.chance(60).then(|| format!("sn-dev-{d:04}")),
             key: rng.chance(40).then(|| format!("ha:home|dev{d}")),
         });
@@ -69,7 +83,14 @@ fn world(seed: u64) -> Vec<SourceBatch> {
                 if rng.chance(55) {
                     if let Some(s) = &dev.serial {
                         let wrong = rng.chance(8);
-                        r.text("serial", if wrong { "sn-dev-wrong".to_owned() } else { s.clone() });
+                        r.text(
+                            "serial",
+                            if wrong {
+                                "sn-dev-wrong".to_owned()
+                            } else {
+                                s.clone()
+                            },
+                        );
                     }
                 }
                 if rng.chance(40)
@@ -77,7 +98,10 @@ fn world(seed: u64) -> Vec<SourceBatch> {
                 {
                     r.text("device_key", k.clone());
                 }
-                r.list("addresses", vec![format!("192.168.{si}.{}", 10 + di * 4 + mi)]);
+                r.list(
+                    "addresses",
+                    vec![format!("192.168.{si}.{}", 10 + di * 4 + mi)],
+                );
                 records.push(r);
             }
         }
@@ -116,13 +140,25 @@ fn shuffled(mut b: Vec<SourceBatch>, rng: &mut Rng) -> Vec<SourceBatch> {
 
 /// The links as sets of record keys: which records share a device, which share an interface, and
 /// the proposals as pairs of such sets.
-fn links(e: &Engine) -> (BTreeSet<BTreeSet<String>>, BTreeSet<BTreeSet<String>>, BTreeSet<String>) {
+fn links(
+    e: &Engine,
+) -> (
+    BTreeSet<BTreeSet<String>>,
+    BTreeSet<BTreeSet<String>>,
+    BTreeSet<String>,
+) {
     let db = e.db();
     let mut by_dev: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut by_ici: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut unlinked: BTreeSet<String> = BTreeSet::new();
     let mut names: BTreeMap<String, String> = BTreeMap::new();
-    for src in ["unifi:home", "neighbor", "snmp:core", "home_assistant:ha", "queries"] {
+    for src in [
+        "unifi:home",
+        "neighbor",
+        "snmp:core",
+        "home_assistant:ha",
+        "queries",
+    ] {
         for r in db.read(|o| o.records_of_source(src)).unwrap() {
             let name = format!("{}/{}", r.source, r.skey);
             match &r.dci {
@@ -159,7 +195,13 @@ fn links(e: &Engine) -> (BTreeSet<BTreeSet<String>>, BTreeSet<BTreeSet<String>>,
     (dev_sets, ici_sets, props)
 }
 
-fn run(batches: &[SourceBatch]) -> (BTreeSet<BTreeSet<String>>, BTreeSet<BTreeSet<String>>, BTreeSet<String>) {
+fn run(
+    batches: &[SourceBatch],
+) -> (
+    BTreeSet<BTreeSet<String>>,
+    BTreeSet<BTreeSet<String>>,
+    BTreeSet<String>,
+) {
     let (_d, mut e) = engine();
     for b in batches {
         let at = b.at;
@@ -181,13 +223,20 @@ fn dsc_903_any_order_gives_the_same_links() {
             let order = shuffled(base.clone(), &mut rng);
             let got = run(&order);
             assert_eq!(got.0, want.0, "seed {seed} round {round}: devices differ");
-            assert_eq!(got.1, want.1, "seed {seed} round {round}: interfaces differ");
+            assert_eq!(
+                got.1, want.1,
+                "seed {seed} round {round}: interfaces differ"
+            );
             assert_eq!(got.2, want.2, "seed {seed} round {round}: proposals differ");
         }
         let mut twice = base.clone();
         if let Some(first) = base.first() {
             twice.push(first.clone());
         }
-        assert_eq!(run(&twice).0, want.0, "seed {seed}: a repeated batch changes the devices");
+        assert_eq!(
+            run(&twice).0,
+            want.0,
+            "seed {seed}: a repeated batch changes the devices"
+        );
     }
 }

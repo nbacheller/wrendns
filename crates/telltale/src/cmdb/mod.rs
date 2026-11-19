@@ -17,8 +17,6 @@ pub(crate) mod model;
 pub(crate) mod replication;
 pub(crate) mod resolve;
 pub(crate) mod runtime;
-pub(crate) mod thread;
-pub(crate) mod view;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -27,3 +25,5 @@ mod tests_caps;
 mod tests_manual;
 #[cfg(test)]
 mod tests_property;
+pub(crate) mod thread;
+pub(crate) mod view;

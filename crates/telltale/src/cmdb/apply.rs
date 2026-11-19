@@ -298,7 +298,10 @@ fn component(
                     pm.insert(cm);
                 }
             }
-            for p in all_pins.iter().filter(|p| p.kind == "nic_device" && &p.b == target) {
+            for p in all_pins
+                .iter()
+                .filter(|p| p.kind == "nic_device" && &p.b == target)
+            {
                 pm.insert(p.a.clone());
             }
         }
@@ -414,12 +417,7 @@ fn resolve_devices(cx: &mut Cx<'_>, seeds: &Seeds) -> Result<()> {
     let mut done_s: BTreeSet<String> = BTreeSet::new();
     let mut done_k: BTreeSet<String> = BTreeSet::new();
     loop {
-        let m: BTreeSet<String> = seeds
-            .macs
-            .difference(&done_m)
-            .take(128)
-            .cloned()
-            .collect();
+        let m: BTreeSet<String> = seeds.macs.difference(&done_m).take(128).cloned().collect();
         let s: BTreeSet<String> = seeds
             .serials
             .difference(&done_s)
@@ -454,6 +452,7 @@ fn resolve_devices(cx: &mut Cx<'_>, seeds: &Seeds) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines, clippy::single_match_else)] // one pass over the groups
 fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<()> {
     let now = cx.now;
     let mut plans: Vec<Plan> = Vec::new();
@@ -541,11 +540,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
         let (Some(plan), Some(group)) = (plans.get(gi), res.groups.get(gi)) else {
             continue;
         };
-        let members: Vec<&RecordRow> = group
-            .rids
-            .iter()
-            .filter_map(|r| comp.recs.get(r))
-            .collect();
+        let members: Vec<&RecordRow> = group.rids.iter().filter_map(|r| comp.recs.get(r)).collect();
         // The survivor: the pinned device, else the oldest candidate nobody else took.
         let survivor: Option<String> = if let Some(f) = &plan.forced {
             Some(f.clone())
@@ -554,8 +549,8 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             for c in &plan.cands {
                 // A device the owner pinned interfaces to may still take an interface that a
                 // serial or a key points at (a new interface of that device).
-                let open = !claimed.contains(c)
-                    || (claimed_forced.contains(c) && plan.keyed.contains(c));
+                let open =
+                    !claimed.contains(c) || (claimed_forced.contains(c) && plan.keyed.contains(c));
                 if open && let Some(row) = cx.ops.ci_get(c)? {
                     avail.push(row);
                 }
@@ -563,11 +558,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             avail.sort_by(|a, b| (a.first_seen, &a.id).cmp(&(b.first_seen, &b.id)));
             avail.first().map(|c| c.id.clone())
         };
-        let first_seen = members
-            .iter()
-            .map(|r| r.first_seen)
-            .min()
-            .unwrap_or(now);
+        let first_seen = members.iter().map(|r| r.first_seen).min().unwrap_or(now);
         let name = best_name(&members);
         let unconfirmed = !members.iter().any(|r| confirming(&r.source));
         let survivor = match survivor {
@@ -582,9 +573,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
                     id: new_ci_id(),
                     ty: "device".to_owned(),
                     kind: None,
-                    name: name
-                        .clone()
-                        .or_else(|| group.macs.iter().next().cloned()),
+                    name: name.clone().or_else(|| group.macs.iter().next().cloned()),
                     parent: None,
                     flags: if unconfirmed { FLAG_UNCONFIRMED } else { 0 },
                     first_seen,
@@ -659,10 +648,11 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
         let dci = group
             .and_then(|g| survivors.get(&g))
             .and_then(|s| s.as_deref());
-        let rule = res
-            .rule_of
-            .get(rid)
-            .map_or("auto:R2", |r| if dci.is_some() { r.label() } else { "none" });
+        let rule =
+            res.rule_of.get(rid).map_or(
+                "auto:R2",
+                |r| if dci.is_some() { r.label() } else { "none" },
+            );
         cx.ops.record_link(*rid, ici, dci, rule)?;
     }
     // Disagreements: proposed, never applied.
@@ -679,13 +669,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
                 r.source, r.skey
             )
         });
-        let rule = rec.map_or("R3", |r| {
-            if r.serial.is_some() {
-                "R3"
-            } else {
-                "R4"
-            }
-        });
+        let rule = rec.map_or("R3", |r| if r.serial.is_some() { "R3" } else { "R4" });
         for (i, a) in ids.iter().enumerate() {
             for b in ids.iter().skip(i.saturating_add(1)) {
                 proposal(cx, "level_disagreement", a, b, rule, &detail)?;
@@ -759,6 +743,7 @@ fn host_network_proposals(
 
 // -- natural-key CIs ---------------------------------------------------------------------------
 
+#[allow(clippy::single_match_else)] // the None arm makes the CI
 fn apply_natural(cx: &mut Cx<'_>, keys: &BTreeSet<String>) -> Result<()> {
     for key in keys {
         let recs = records_with_devkey(cx.ops, key)?;
@@ -793,8 +778,8 @@ fn apply_natural(cx: &mut Cx<'_>, keys: &BTreeSet<String>) -> Result<()> {
                 row.id
             }
         };
-        let refs: Vec<&RecordRow> = recs.iter().collect();
-        let name = best_name(&refs).or_else(|| Some(key.clone()));
+        let named: Vec<&RecordRow> = recs.iter().collect();
+        let name = best_name(&named).or_else(|| Some(key.clone()));
         if let Some(row) = cx.ops.ci_get(&ci)?
             && row.name != name
         {
@@ -819,6 +804,7 @@ fn records_with_devkey(ops: &Ops<'_>, key: &str) -> Result<Vec<RecordRow>> {
 
 /// A record with no MAC, serial or device key attaches through a class 1 to 3 address binding, or
 /// becomes a CI of its own that is `unconfirmed` (ADR-1004 section 4, ADR-923). A pin overrides.
+#[allow(clippy::single_match_else)] // the None arm makes the CI
 fn attach_keyless(cx: &mut Cx<'_>, rid: i64) -> Result<()> {
     let Some(rec) = cx.ops.record_by_id(rid)? else {
         return Ok(());
@@ -952,6 +938,7 @@ fn drop_if_empty_unconfirmed(cx: &mut Cx<'_>, ci: &str) -> Result<()> {
 /// Port records resolve by (device CI, normalised port id) and the alias table; a port seen by one
 /// source that no alias joins to another source's port is its own CI marked `unmapped_port`, never
 /// a conflict (docs/design/cmdb.md, Port identity).
+#[allow(clippy::single_match_else)] // the None arm makes the port CI
 fn apply_ports(cx: &mut Cx<'_>, owners: &BTreeSet<String>) -> Result<()> {
     let owner_list: Vec<String> = owners.iter().cloned().collect();
     if owner_list.is_empty() {
@@ -1023,11 +1010,7 @@ fn apply_ports(cx: &mut Cx<'_>, owners: &BTreeSet<String>) -> Result<()> {
 /// An alias is learned only from evidence on the same device: an SNMP `ifName` whose trailing
 /// number equals a UniFi `port<idx>`, on a device matched by a serial or a manual link.
 fn learn_port_aliases(cx: &mut Cx<'_>, device: &str) -> Result<()> {
-    let has_serial = cx
-        .ops
-        .keys_of(device)?
-        .iter()
-        .any(|(k, _)| k == "serial");
+    let has_serial = cx.ops.keys_of(device)?.iter().any(|(k, _)| k == "serial");
     let pinned = cx.ops.ci_authored(device)?;
     if !has_serial && !pinned {
         return Ok(());

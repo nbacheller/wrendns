@@ -39,7 +39,10 @@ pub(crate) enum ManualOp {
     /// Fold a device into another.
     Merge { from: String, into: String },
     /// Move chosen records of a device to a new device.
-    Split { device: String, records: Vec<RecRef> },
+    Split {
+        device: String,
+        records: Vec<RecRef>,
+    },
 }
 
 impl ManualOp {
@@ -196,7 +199,9 @@ fn plan(ops: &Ops<'_>, op: &ManualOp, by: &str, reason: &str, now: i64) -> Resul
                 // A MAC identifies an interface: the interface moves, with every record of it.
                 for x in records_on_mac(ops, mac)? {
                     if x.dci.as_deref() != Some(target.id.as_str()) {
-                        p.preview.moves.push(mv(&x, Some(&target.id), "its interface"));
+                        p.preview
+                            .moves
+                            .push(mv(&x, Some(&target.id), "its interface"));
                     }
                 }
                 p.pins
@@ -207,14 +212,8 @@ fn plan(ops: &Ops<'_>, op: &ManualOp, by: &str, reason: &str, now: i64) -> Resul
                 ));
             } else if rec.serial.is_none() && rec.devkey.is_none() {
                 p.preview.moves.push(mv(&rec, Some(&target.id), "chosen"));
-                p.pins.push(pin(
-                    "rec_device",
-                    &r.pin_key(),
-                    &target.id,
-                    by,
-                    reason,
-                    now,
-                ));
+                p.pins
+                    .push(pin("rec_device", &r.pin_key(), &target.id, by, reason, now));
                 p.keyless.insert(rec.rid);
             } else {
                 return Err(ManualError::Invalid(
@@ -279,7 +278,9 @@ fn plan(ops: &Ops<'_>, op: &ManualOp, by: &str, reason: &str, now: i64) -> Resul
             let a = device(ops, from, now)?;
             let b = device(ops, into, now)?;
             if a.id == b.id {
-                return Err(ManualError::Invalid("a device cannot be merged into itself".into()));
+                return Err(ManualError::Invalid(
+                    "a device cannot be merged into itself".into(),
+                ));
             }
             for x in ops.records_of_ci(&a.id)? {
                 if x.dci.as_deref() == Some(a.id.as_str()) {
@@ -458,7 +459,11 @@ impl Engine {
                 }
                 for (kind, a, b) in &plan.drop_pins {
                     if b.is_empty() {
-                        for old in ops.pins()?.into_iter().filter(|q| &q.kind == kind && &q.a == a) {
+                        for old in ops
+                            .pins()?
+                            .into_iter()
+                            .filter(|q| &q.kind == kind && &q.a == a)
+                        {
                             ops.pin_del(&old.kind, &old.a, &old.b)?;
                         }
                     } else {

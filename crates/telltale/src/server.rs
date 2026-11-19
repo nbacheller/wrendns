@@ -1674,7 +1674,7 @@ fn save_cache(cfg: &Config, cache: &Cache) {
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the
 /// running configuration.
 // Everything a reload swaps; grouping it would only rename the parameters.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn reload(
     files: &[PathBuf],
     current: &mut Config,
@@ -1915,30 +1915,32 @@ fn reconcile_cmdb(sources: &http::Sources, pipeline: &Pipeline, cfg: &Config) {
                 })
                 .collect()
         })),
-        nodes: cluster.map(|c| -> Arc<dyn Fn() -> Vec<crate::cmdb::adapters::NodeRow> + Send + Sync> {
-            Arc::new(move || {
-                let mut rows: Vec<crate::cmdb::adapters::NodeRow> = c
-                    .members()
-                    .into_iter()
-                    .map(|m| crate::cmdb::adapters::NodeRow {
-                        id: m.node_id,
-                        address: m.advertise.first().cloned().unwrap_or_default(),
-                        primary: m.primary,
-                        version: m.version,
-                    })
-                    .collect();
-                let me = c.identity.meta.node_id.clone();
-                if !rows.iter().any(|r| r.id == me) {
-                    rows.push(crate::cmdb::adapters::NodeRow {
-                        id: me,
-                        address: String::new(),
-                        primary: c.is_primary(),
-                        version: crate::build_info::VERSION.to_owned(),
-                    });
-                }
-                rows
-            })
-        }),
+        nodes: cluster.map(
+            |c| -> Arc<dyn Fn() -> Vec<crate::cmdb::adapters::NodeRow> + Send + Sync> {
+                Arc::new(move || {
+                    let mut rows: Vec<crate::cmdb::adapters::NodeRow> = c
+                        .members()
+                        .into_iter()
+                        .map(|m| crate::cmdb::adapters::NodeRow {
+                            id: m.node_id,
+                            address: m.advertise.first().cloned().unwrap_or_default(),
+                            primary: m.primary,
+                            version: m.version,
+                        })
+                        .collect();
+                    let me = c.identity.meta.node_id.clone();
+                    if !rows.iter().any(|r| r.id == me) {
+                        rows.push(crate::cmdb::adapters::NodeRow {
+                            id: me,
+                            address: String::new(),
+                            primary: c.is_primary(),
+                            version: crate::build_info::VERSION.to_owned(),
+                        });
+                    }
+                    rows
+                })
+            },
+        ),
         neighbours: true,
         own_networks: true,
         ifindex_root: None,

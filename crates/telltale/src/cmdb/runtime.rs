@@ -126,8 +126,10 @@ impl Runtime {
             node: cfg.discovery.node.as_ref().map(|n| n.as_str().to_owned()),
         }));
         self.cfg.store(Arc::new(cfg.clone()));
-        self.level
-            .store(u64::from(cfg.telemetry.qlog.privacy_level), Ordering::Relaxed);
+        self.level.store(
+            u64::from(cfg.telemetry.qlog.privacy_level),
+            Ordering::Relaxed,
+        );
         let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(r) = running.as_ref()
             && want
@@ -297,9 +299,21 @@ impl Runtime {
             "counter",
             "Things dropped at a cap: a CI refused, a record dropped, a batch the sink dropped.",
         );
-        w.sample("telltale_cmdb_dropped_total", &[("kind", "ci")], s.dropped_ci);
-        w.sample("telltale_cmdb_dropped_total", &[("kind", "record")], s.dropped_record);
-        w.sample("telltale_cmdb_dropped_total", &[("kind", "batch")], s.dropped_batch);
+        w.sample(
+            "telltale_cmdb_dropped_total",
+            &[("kind", "ci")],
+            s.dropped_ci,
+        );
+        w.sample(
+            "telltale_cmdb_dropped_total",
+            &[("kind", "record")],
+            s.dropped_record,
+        );
+        w.sample(
+            "telltale_cmdb_dropped_total",
+            &[("kind", "batch")],
+            s.dropped_batch,
+        );
         w.family(
             "telltale_cmdb_queue_depth",
             "gauge",
@@ -382,8 +396,9 @@ impl Runtime {
                 result: o.result,
             }),
             Err(ManualError::NotFound(s)) => Err(Problem::not_found(s)),
-            Err(ManualError::Invalid(s)) => Err(Problem::new(Code::Conflict, s)
-                .hint("Preview it first with ?dryRun=true, and pick a record or device it applies to.")),
+            Err(ManualError::Invalid(s)) => Err(Problem::new(Code::Conflict, s).hint(
+                "Preview it first with ?dryRun=true, and pick a record or device it applies to.",
+            )),
             Err(ManualError::Db(s)) => Err(Problem::internal(s)),
         }
     }
@@ -418,10 +433,19 @@ mod tests {
         let rt = Runtime::default();
         let dir = tempfile::tempdir().unwrap();
         let g = rt.next_generation();
-        rt.reconcile(g, &Config::default(), dir.path(), &own(true), Feeds::default());
+        rt.reconcile(
+            g,
+            &Config::default(),
+            dir.path(),
+            &own(true),
+            Feeds::default(),
+        );
         let s = rt.status();
         assert!(!s.enabled && !s.running);
-        assert!(s.designated, "the standalone node would run it if it were enabled");
+        assert!(
+            s.designated,
+            "the standalone node would run it if it were enabled"
+        );
         assert!(!dir.path().join("cmdb.db").exists());
         let e = rt.db_or_503().unwrap_err();
         assert_eq!(e.status, 503);
@@ -458,7 +482,10 @@ mod tests {
         assert!(!s.designated && !s.running);
         assert_eq!(s.node.as_deref(), Some("pi-b"));
         let e = rt.db_or_503().unwrap_err();
-        assert!(e.hint.as_deref().is_some_and(|h| h.contains("pi-b")), "{e:?}");
+        assert!(
+            e.hint.as_deref().is_some_and(|h| h.contains("pi-b")),
+            "{e:?}"
+        );
         rt.stop();
     }
 
@@ -469,8 +496,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let g_on = rt.next_generation();
         let g_off = rt.next_generation();
-        rt.reconcile(g_off, &Config::default(), dir.path(), &own(true), Feeds::default());
-        rt.reconcile(g_on, &cfg("[cmdb]\nenabled = true\n"), dir.path(), &own(true), Feeds::default());
+        rt.reconcile(
+            g_off,
+            &Config::default(),
+            dir.path(),
+            &own(true),
+            Feeds::default(),
+        );
+        rt.reconcile(
+            g_on,
+            &cfg("[cmdb]\nenabled = true\n"),
+            dir.path(),
+            &own(true),
+            Feeds::default(),
+        );
         assert!(!rt.status().enabled && !rt.status().running);
         rt.stop();
     }

@@ -273,6 +273,7 @@ struct Place {
 /// A port that is an uplink, or whose table holds more than [`MAX_PORT_MACS`] MACs, gives no
 /// location; static entries are not evidence; a MAC learned on two ports takes the one with the
 /// smaller table.
+#[allow(clippy::too_many_lines)] // one pass over the devices, then their ports
 pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
     let all = rows(v);
     let mut out = Parsed {
@@ -630,7 +631,9 @@ impl Reader {
                 Some(name) => format!("home_assistant:{name}#{feed}"),
                 None => format!("unifi:{}#{feed}", out.router),
             };
-            s.push(crate::cmdb::adapters::batch_from_observations(obs, &source, at));
+            s.push(crate::cmdb::adapters::batch_from_observations(
+                obs, &source, at,
+            ));
         }
     }
 

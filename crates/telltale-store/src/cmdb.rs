@@ -182,11 +182,7 @@ pub const REPLICATED: &[(&str, &[&str], &[&str])] = &[
         &["id"],
     ),
     ("ci_key", &["kind", "value", "ci"], &["kind", "value", "ci"]),
-    (
-        "ci_seen",
-        &["ci", "last_seen", "days_seen", "day"],
-        &["ci"],
-    ),
+    ("ci_seen", &["ci", "last_seen", "days_seen", "day"], &["ci"]),
     (
         "pin",
         &["kind", "a", "b", "at", "by", "reason"],
@@ -487,7 +483,8 @@ impl CmdbDb {
     /// Sets the WAL auto-checkpoint, in pages (0 turns it off). The write-volume test turns it off
     /// so the WAL's size is the bytes written; production keeps SQLite's default.
     pub fn set_autocheckpoint(&self, pages: i64) -> Result<()> {
-        self.wconn().pragma_update(None, "wal_autocheckpoint", pages)?;
+        self.wconn()
+            .pragma_update(None, "wal_autocheckpoint", pages)?;
         Ok(())
     }
 
@@ -510,11 +507,13 @@ impl CmdbDb {
 }
 
 fn meta_i64(c: &Connection, key: &str) -> rusqlite::Result<Option<i64>> {
-    Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
-        r.get::<_, String>(0)
-    })
-    .optional()?
-    .and_then(|v| v.parse().ok()))
+    Ok(
+        c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .and_then(|v| v.parse().ok()),
+    )
 }
 
 fn stamp_of(c: &Connection) -> rusqlite::Result<(i64, i64)> {
@@ -525,7 +524,9 @@ fn stamp_of(c: &Connection) -> rusqlite::Result<(i64, i64)> {
 }
 
 fn like_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// The statements, on a connection: a transaction (writes) or the reader.
@@ -612,7 +613,17 @@ impl Ops<'_> {
              ON CONFLICT(id) DO UPDATE SET ty = excluded.ty, kind = excluded.kind,
                name = excluded.name, parent = excluded.parent, flags = excluded.flags,
                first_seen = excluded.first_seen, epoch = excluded.epoch, seq = excluded.seq",
-            params![ci.id, ci.ty, ci.kind, ci.name, ci.parent, ci.flags, ci.first_seen, e, s],
+            params![
+                ci.id,
+                ci.ty,
+                ci.kind,
+                ci.name,
+                ci.parent,
+                ci.flags,
+                ci.first_seen,
+                e,
+                s
+            ],
         )?;
         self.c
             .execute("DELETE FROM tomb WHERE tbl = 'ci' AND pk = ?1", [&ci.id])?;
@@ -629,18 +640,14 @@ impl Ops<'_> {
         let (e, s) = self.stamp();
         self.c.execute("DELETE FROM ci WHERE id = ?1", [id])?;
         self.tomb(("ci", id), (e, s))?;
-        if self
-            .c
-            .execute("DELETE FROM ci_seen WHERE ci = ?1", [id])?
-            > 0
-        {
+        if self.c.execute("DELETE FROM ci_seen WHERE ci = ?1", [id])? > 0 {
             let (e, s) = self.stamp();
             self.tomb(("ci_seen", id), (e, s))?;
         }
         let aliases: Vec<(String, String, String)> = {
-            let mut st = self
-                .c
-                .prepare("SELECT device, source, raw FROM port_alias WHERE device = ?1 OR port = ?1")?;
+            let mut st = self.c.prepare(
+                "SELECT device, source, raw FROM port_alias WHERE device = ?1 OR port = ?1",
+            )?;
             st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect::<rusqlite::Result<_>>()?
         };
@@ -671,7 +678,9 @@ impl Ops<'_> {
             Some(t) => self
                 .c
                 .query_row("SELECT COUNT(*) FROM ci WHERE ty = ?1", [t], |r| r.get(0))?,
-            None => self.c.query_row("SELECT COUNT(*) FROM ci", [], |r| r.get(0))?,
+            None => self
+                .c
+                .query_row("SELECT COUNT(*) FROM ci", [], |r| r.get(0))?,
         })
     }
 
@@ -862,7 +871,9 @@ impl Ops<'_> {
         Ok(self
             .c
             .query_row(
-                &format!("SELECT {RECORD_COLS} FROM {RECORD_FROM} WHERE r.source = ?1 AND r.skey = ?2"),
+                &format!(
+                    "SELECT {RECORD_COLS} FROM {RECORD_FROM} WHERE r.source = ?1 AND r.skey = ?2"
+                ),
                 params![source, skey],
                 record_of,
             )
@@ -986,9 +997,8 @@ impl Ops<'_> {
         for (col, vals) in [("mac", macs), ("serial", serials), ("devkey", devkeys)] {
             for chunk in vals.chunks(200) {
                 let marks = vec!["?"; chunk.len()].join(",");
-                let sql = format!(
-                    "SELECT {RECORD_COLS} FROM {RECORD_FROM} WHERE r.{col} IN ({marks})"
-                );
+                let sql =
+                    format!("SELECT {RECORD_COLS} FROM {RECORD_FROM} WHERE r.{col} IN ({marks})");
                 let mut st = self.c.prepare(&sql)?;
                 let rows = st.query_map(params_from_iter(chunk.iter()), record_of)?;
                 for r in rows {
@@ -1520,7 +1530,11 @@ impl Ops<'_> {
             let mut st = self.c.prepare(&sql)?;
             let n = cols.len();
             let rows = st.query_map(
-                params![after.0, after.1, i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX)],
+                params![
+                    after.0,
+                    after.1,
+                    i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX)
+                ],
                 |r| {
                     let mut d = serde_json::Map::new();
                     for (i, c) in cols.iter().enumerate() {
@@ -1545,7 +1559,11 @@ impl Ops<'_> {
                  ORDER BY epoch, seq LIMIT ?3",
             )?;
             let rows = st.query_map(
-                params![after.0, after.1, i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX)],
+                params![
+                    after.0,
+                    after.1,
+                    i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX)
+                ],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
@@ -1601,10 +1619,7 @@ impl Ops<'_> {
             let Some((table, cols, keys)) = REPLICATED.iter().find(|(n, _, _)| *n == row.t) else {
                 continue;
             };
-            let key_vals: Vec<SqlValue> = keys
-                .iter()
-                .map(|k| sql_of(row.d.get(*k)))
-                .collect();
+            let key_vals: Vec<SqlValue> = keys.iter().map(|k| sql_of(row.d.get(*k))).collect();
             let where_: String = keys
                 .iter()
                 .enumerate()
@@ -1737,20 +1752,21 @@ fn ci_of(r: &Row<'_>) -> rusqlite::Result<CiRow> {
 
 fn json_of(v: ValueRef<'_>) -> serde_json::Value {
     match v {
-        ValueRef::Null => serde_json::Value::Null,
         ValueRef::Integer(i) => serde_json::Value::from(i),
         ValueRef::Real(f) => serde_json::Value::from(f),
         ValueRef::Text(t) => serde_json::Value::String(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(_) => serde_json::Value::Null,
+        // A blob and a null: no replicated column holds either.
+        ValueRef::Null | ValueRef::Blob(_) => serde_json::Value::Null,
     }
 }
 
 fn sql_of(v: Option<&serde_json::Value>) -> SqlValue {
     match v {
         Some(serde_json::Value::String(s)) => SqlValue::Text(s.clone()),
-        Some(serde_json::Value::Number(n)) => n
-            .as_i64()
-            .map_or_else(|| SqlValue::Real(n.as_f64().unwrap_or(0.0)), SqlValue::Integer),
+        Some(serde_json::Value::Number(n)) => n.as_i64().map_or_else(
+            || SqlValue::Real(n.as_f64().unwrap_or(0.0)),
+            SqlValue::Integer,
+        ),
         Some(serde_json::Value::Bool(b)) => SqlValue::Integer(i64::from(*b)),
         _ => SqlValue::Null,
     }
@@ -1795,9 +1811,9 @@ impl Ops<'_> {
 
     /// The `present` records of a source and how often a complete batch missed them.
     pub fn present_of_source(&self, source: &str) -> Result<Vec<(i64, i64)>> {
-        let mut st = self
-            .c
-            .prepare_cached("SELECT rid, missed FROM record WHERE source = ?1 AND state = 'present'")?;
+        let mut st = self.c.prepare_cached(
+            "SELECT rid, missed FROM record WHERE source = ?1 AND state = 'present'",
+        )?;
         Ok(st
             .query_map([source], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
@@ -1806,8 +1822,10 @@ impl Ops<'_> {
     /// Sets how many complete batches in a row missed a record.
     pub fn record_set_missed(&self, rid: i64, missed: i64) -> Result<()> {
         self.need_write()?;
-        self.c
-            .execute("UPDATE record SET missed = ?2 WHERE rid = ?1", params![rid, missed])?;
+        self.c.execute(
+            "UPDATE record SET missed = ?2 WHERE rid = ?1",
+            params![rid, missed],
+        )?;
         Ok(())
     }
 
@@ -1849,16 +1867,20 @@ impl Ops<'_> {
     /// Moves the records linked to one CI to another (a merge), at the device level.
     pub fn records_relink_device(&self, from: &str, to: &str) -> Result<()> {
         self.need_write()?;
-        self.c
-            .execute("UPDATE record SET dci = ?2 WHERE dci = ?1", params![from, to])?;
+        self.c.execute(
+            "UPDATE record SET dci = ?2 WHERE dci = ?1",
+            params![from, to],
+        )?;
         Ok(())
     }
 
     /// Moves the records linked to one port CI to another.
     pub fn records_relink_interface(&self, from: &str, to: &str) -> Result<()> {
         self.need_write()?;
-        self.c
-            .execute("UPDATE record SET ici = ?2 WHERE ici = ?1", params![from, to])?;
+        self.c.execute(
+            "UPDATE record SET ici = ?2 WHERE ici = ?1",
+            params![from, to],
+        )?;
         Ok(())
     }
 
@@ -1870,10 +1892,8 @@ impl Ops<'_> {
             "DELETE FROM proposal WHERE (a = ?1 AND b = ?2) OR (a = ?2 AND b = ?1)",
             params![from, to],
         )?;
-        self.c.execute(
-            "DELETE FROM proposal WHERE a = ?1 OR b = ?1",
-            [from],
-        )?;
+        self.c
+            .execute("DELETE FROM proposal WHERE a = ?1 OR b = ?1", [from])?;
         Ok(())
     }
 
@@ -1889,10 +1909,8 @@ impl Ops<'_> {
                 let mut st = self.c.prepare(
                     "SELECT id, kind, a, b FROM proposal WHERE state = 'open' AND (a = ?1 OR b = ?1)",
                 )?;
-                st.query_map([ci], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?
-                .collect::<rusqlite::Result<_>>()?
+                st.query_map([ci], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect::<rusqlite::Result<_>>()?
             };
             for (id, kind, a, b) in rows {
                 if !keep.contains(&(kind, a, b)) {

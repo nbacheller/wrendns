@@ -729,6 +729,7 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
 /// so the node's rows are the only source of them. A name `own` (this node's files) also
 /// defines is put back as the files have it, so deleting the row reveals the files' entry; a
 /// section the rows replace as a whole goes back to the files'.
+#[allow(clippy::too_many_lines)] // one line per settings kind
 pub(crate) fn strip(cfg: &mut Config, entries: &[Entry], own: &Config) {
     fn names<'a>(entries: &'a [Entry], kind: &str) -> Vec<&'a str> {
         entries

@@ -70,7 +70,7 @@ impl CiInterner {
         let key = low64(n);
         let hit = self
             .map
-            .get(&key)
+            .get(key)
             .copied()
             .filter(|h| self.ids.get(usize::try_from(*h).unwrap_or(0)) == Some(&n));
         if let Some(h) = hit {
@@ -82,7 +82,7 @@ impl CiInterner {
         let h = u32::try_from(self.ids.len()).unwrap_or(u32::MAX);
         self.ids.push(n);
         // A different id with the same low 64 bits (one in 10^19) gets its own handle, unmapped.
-        if !self.map.contains_key(&key) {
+        if !self.map.contains_key(key) {
             self.map.insert(key, h);
         }
         h
@@ -92,10 +92,7 @@ impl CiInterner {
         if h == 0 {
             return None;
         }
-        self.ids
-            .get(usize::try_from(h).ok()?)
-            .copied()
-            .map(ci_text)
+        self.ids.get(usize::try_from(h).ok()?).copied().map(ci_text)
     }
 }
 
@@ -178,10 +175,10 @@ impl std::fmt::Debug for Engine {
 impl Engine {
     /// Opens the engine over a database and reads the times. An empty database starts the learning
     /// period at `now` (ADR-910, ADR-1004 section 8).
-    pub(crate) fn open(db: Arc<CmdbDb>, now: i64) -> Result<Self> {
+    pub(crate) fn open(db: &Arc<CmdbDb>, now: i64) -> Result<Self> {
         let records = db.read(|o| Ok(o.record_counts()?.0))?;
         let mut e = Self {
-            db: Arc::clone(&db),
+            db: Arc::clone(db),
             times: Table::with_capacity(usize::try_from(records).unwrap_or(0)),
             cis: CiInterner::default(),
             ci_times: Vec::new(),
@@ -192,7 +189,7 @@ impl Engine {
             last_flush: now,
         };
         // Two integers a row, read as they come.
-        let reader = Arc::clone(&db);
+        let reader = Arc::clone(db);
         reader.read(|o| {
             o.seen_each(|rid, last| {
                 e.times.insert(
@@ -205,14 +202,15 @@ impl Engine {
             })
         })?;
         let learning = db.write(|o| {
-            Ok(match o.meta_get("learning_until")?.and_then(|v| v.parse::<i64>().ok()) {
-                Some(t) => t,
-                None => {
-                    let t = now.saturating_add(LEARNING_SECS);
-                    o.meta_set("learning_until", &t.to_string())?;
-                    t
-                }
-            })
+            if let Some(t) = o
+                .meta_get("learning_until")?
+                .and_then(|v| v.parse::<i64>().ok())
+            {
+                return Ok(t);
+            }
+            let t = now.saturating_add(LEARNING_SECS);
+            o.meta_set("learning_until", &t.to_string())?;
+            Ok(t)
         })?;
         e.learning_until = learning;
         Ok(e)
@@ -223,6 +221,7 @@ impl Engine {
     }
 
     /// Whether the 24 h learning period is running (no `add` or `delete` change is raised, T31.4).
+    #[allow(dead_code)] // REQ: DSC-905 - read by T31.4's detector; the status shows the end now.
     pub(crate) fn learning(&self, now: i64) -> bool {
         now < self.learning_until
     }
@@ -232,13 +231,16 @@ impl Engine {
     }
 
     /// Records held, and those present.
+    #[cfg(test)]
     pub(crate) fn record_counts(&self) -> (usize, usize) {
-        self.db.read(|o| o.record_counts()).map_or((0, 0), |(t, p)| {
-            (
-                usize::try_from(t).unwrap_or(0),
-                usize::try_from(p).unwrap_or(0),
-            )
-        })
+        self.db
+            .read(|o: &telltale_store::cmdb::Ops<'_>| o.record_counts())
+            .map_or((0, 0), |(t, p)| {
+                (
+                    usize::try_from(t).unwrap_or(0),
+                    usize::try_from(p).unwrap_or(0),
+                )
+            })
     }
 
     pub(crate) fn sources(&self) -> &BTreeMap<String, SourceStat> {
@@ -259,6 +261,7 @@ impl Engine {
     /// components they touch, marks the records a complete batch no longer lists, and keeps the
     /// times in memory. One write transaction.
     #[allow(clippy::too_many_lines)] // one flow: probe, cap, write, resolve, then update memory
+    #[allow(clippy::needless_pass_by_value)] // the batch is the caller's to give: it is consumed
     pub(crate) fn ingest(&mut self, b: SourceBatch, now: i64) -> Result<IngestReport> {
         let started = std::time::Instant::now();
         let presence = is_presence(&b.source);
@@ -352,7 +355,7 @@ impl Engine {
                     if m >= i64::from(ABSENT_AFTER) {
                         ops.record_state(rid, "absent")?;
                         // The last time it was seen is kept when it leaves `present`.
-                        if let Some(t) = times.get(&u64::try_from(rid).unwrap_or(0)) {
+                        if let Some(t) = times.get(u64::try_from(rid).unwrap_or(0)) {
                             ops.seen_flush(&[(rid, i64::from(t.last))])?;
                         }
                         ap.absent = ap.absent.saturating_add(1);
@@ -424,7 +427,7 @@ impl Engine {
         }
         for (rid, seen, stored, ici, dci) in &applied.unchanged {
             let key = u64::try_from(*rid).unwrap_or(0);
-            match self.times.get_mut(&key) {
+            match self.times.get_mut(key) {
                 Some(t) => t.last = t.last.max(t32(*seen)),
                 None => self.times.insert(
                     key,
@@ -551,8 +554,7 @@ impl Engine {
         let mut cis: Vec<(usize, String, SeenRow)> = Vec::new();
         for (idx, t) in self.ci_times.iter().enumerate() {
             let due = t.dirty
-                || (t.last > t.stored_last
-                    && i64::from(t.last) - i64::from(t.stored_last) > stale);
+                || (t.last > t.stored_last && i64::from(t.last) - i64::from(t.stored_last) > stale);
             if !t.loaded || !due {
                 continue;
             }
@@ -588,7 +590,7 @@ impl Engine {
             Ok(())
         })?;
         for (k, at) in &recs {
-            if let Some(t) = self.times.get_mut(k) {
+            if let Some(t) = self.times.get_mut(*k) {
                 t.stored = *at;
             }
         }
@@ -665,7 +667,7 @@ pub(crate) mod test_support {
     pub(crate) fn engine() -> (tempfile::TempDir, Engine) {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(CmdbDb::open(&dir.path().join("cmdb.db")).unwrap());
-        let e = Engine::open(db, 1_000_000).unwrap();
+        let e = Engine::open(&db, 1_000_000).unwrap();
         (dir, e)
     }
 
@@ -675,7 +677,12 @@ pub(crate) mod test_support {
         r
     }
 
-    pub(crate) fn batch(source: &str, records: Vec<Record>, complete: bool, at: i64) -> SourceBatch {
+    pub(crate) fn batch(
+        source: &str,
+        records: Vec<Record>,
+        complete: bool,
+        at: i64,
+    ) -> SourceBatch {
         SourceBatch {
             source: source.to_owned(),
             complete,

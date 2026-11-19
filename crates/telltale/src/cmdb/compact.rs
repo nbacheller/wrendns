@@ -18,13 +18,6 @@ fn nz(k: u64) -> u64 {
 }
 
 impl<V: Copy + Default> Table<V> {
-    pub(crate) fn new() -> Self {
-        Self {
-            slots: Vec::new(),
-            len: 0,
-        }
-    }
-
     /// A table with room for `n` entries (so a start-up read grows nothing).
     pub(crate) fn with_capacity(n: usize) -> Self {
         Self {
@@ -33,6 +26,7 @@ impl<V: Copy + Default> Table<V> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.len
     }
@@ -65,19 +59,19 @@ impl<V: Copy + Default> Table<V> {
         None
     }
 
-    pub(crate) fn get(&self, key: &u64) -> Option<&V> {
-        self.find(*key)
+    pub(crate) fn get(&self, key: u64) -> Option<&V> {
+        self.find(key)
             .and_then(|i| self.slots.get(i))
             .map(|(_, v)| v)
     }
 
-    pub(crate) fn get_mut(&mut self, key: &u64) -> Option<&mut V> {
-        let i = self.find(*key)?;
+    pub(crate) fn get_mut(&mut self, key: u64) -> Option<&mut V> {
+        let i = self.find(key)?;
         self.slots.get_mut(i).map(|(_, v)| v)
     }
 
-    pub(crate) fn contains_key(&self, key: &u64) -> bool {
-        self.find(*key).is_some()
+    pub(crate) fn contains_key(&self, key: u64) -> bool {
+        self.find(key).is_some()
     }
 
     fn grow(&mut self) {
@@ -133,15 +127,9 @@ impl<V: Copy + Default> Table<V> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn values(&self) -> impl Iterator<Item = &V> {
         self.slots.iter().filter(|(k, _)| *k != 0).map(|(_, v)| v)
-    }
-
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
-        self.slots
-            .iter_mut()
-            .filter(|(k, _)| *k != 0)
-            .map(|(_, v)| v)
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&u64, &V)> {
@@ -160,24 +148,27 @@ mod tests {
     /// about a quarter more slots than entries, not twice as many.
     #[test]
     fn dsc_906_table_is_a_compact_map() {
-        let mut t: Table<u32> = Table::new();
+        let mut t: Table<u32> = Table::default();
         for n in 0..65_536u64 {
-            t.insert(n.wrapping_mul(0x9E37_79B9_7F4A_7C15), u32::try_from(n).unwrap());
+            t.insert(
+                n.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                u32::try_from(n).unwrap(),
+            );
         }
         assert_eq!(t.len(), 65_536);
         assert!(t.capacity() < 65_536 * 3 / 2, "{} slots", t.capacity());
-        assert_eq!(t.get(&5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15)), Some(&5));
+        assert_eq!(t.get(5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15)), Some(&5));
         t.insert(5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15), 7);
         assert_eq!(t.len(), 65_536, "replaced, not added");
-        assert_eq!(t.get(&5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15)), Some(&7));
-        assert!(t.get(&1).is_none() || t.contains_key(&1));
+        assert_eq!(t.get(5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15)), Some(&7));
+        assert!(t.get(1).is_none() || t.contains_key(1));
         t.retain(|_, v| *v % 2 == 0);
         assert_eq!(t.len(), 32_768);
         assert_eq!(t.values().count(), 32_768);
         // The zero key is storable (it becomes one).
-        let mut z: Table<u8> = Table::new();
+        let mut z: Table<u8> = Table::default();
         z.insert(0, 9);
-        assert_eq!(z.get(&0), Some(&9));
+        assert_eq!(z.get(0), Some(&9));
         assert_eq!(z.len(), 1);
     }
 }

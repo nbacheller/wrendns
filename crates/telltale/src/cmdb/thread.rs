@@ -32,6 +32,9 @@ pub(crate) const MAINTAIN_SECS: i64 = 3_600;
 /// How often the status is rebuilt.
 const PUBLISH_SECS: i64 = 5;
 
+/// The aggregator's last-hour client counts, a snapshot (the argument is the time, Unix seconds).
+type ClientsFeed = Arc<dyn Fn(i64) -> Vec<([u8; 16], u64)> + Send + Sync>;
+
 /// What the thread reads, besides the batches pushed to it. A `None` is not read.
 #[derive(Clone, Default)]
 pub(crate) struct Feeds {
@@ -39,7 +42,7 @@ pub(crate) struct Feeds {
     pub(crate) mdns: Option<Arc<ArcSwap<Leases>>>,
     pub(crate) networks: Option<Arc<ArcSwap<Vec<crate::routers::Network>>>>,
     /// The aggregator's last-hour client counts (a snapshot, once a minute).
-    pub(crate) clients: Option<Arc<dyn Fn(i64) -> Vec<([u8; 16], u64)> + Send + Sync>>,
+    pub(crate) clients: Option<ClientsFeed>,
     /// The Kubernetes workload table, when the feature is on.
     pub(crate) workloads: Option<Arc<dyn Fn() -> Vec<WorkloadRow> + Send + Sync>>,
     /// The cluster's members.
@@ -113,43 +116,43 @@ pub(crate) fn spawn(args: Args) -> io::Result<JoinHandle<()>> {
         .name("telltale-cmdb".into())
         .spawn(move || {
             telltale_net::background_thread();
-            run(args);
+            run(&args);
         })
 }
 
-fn run(args: Args) {
+fn run(args: &Args) {
     let now_fn = |a: &Args| a.clock.as_ref().map_or_else(real_now, |c| c());
     let path = args.data_dir.join(FILE_NAME);
     let db = match CmdbDb::open(&path) {
         Ok(d) => Arc::new(d),
         Err(e) => {
             tracing::warn!(error = %e, "the CMDB's database could not be opened; it is not running (DNS is unaffected)");
-            publish_error(&args, &e.to_string());
+            publish_error(args, &e.to_string());
             return;
         }
     };
     // A node that becomes designated seeds its database from the authored data it holds as a
     // standby (ADR-1005 section 6, ADR-1021).
-    if let Err(e) = super::replication::promote(&db, &args.data_dir, now_fn(&args)) {
+    if let Err(e) = super::replication::promote(&db, &args.data_dir, now_fn(args)) {
         tracing::warn!(error = %e, "the CMDB's standby copy could not be applied; the sources rebuild the rest");
     }
-    let mut engine = match Engine::open(Arc::clone(&db), now_fn(&args)) {
+    let mut engine = match Engine::open(&db, now_fn(args)) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, "the CMDB could not read its index; it is not running (DNS is unaffected)");
-            publish_error(&args, &e.to_string());
+            publish_error(args, &e.to_string());
             return;
         }
     };
     args.db.store(Arc::new(Some(Arc::clone(&db))));
     let mut next_tick = 0i64;
-    let mut next_maintain = now_fn(&args).saturating_add(MAINTAIN_SECS);
+    let mut next_maintain = now_fn(args).saturating_add(MAINTAIN_SECS);
     let mut next_publish = 0i64;
     let mut last_error: Option<String> = None;
     let mut last_logged = 0i64;
     loop {
         let taken = args.inbox.take(Duration::from_millis(500));
-        let now = now_fn(&args);
+        let now = now_fn(args);
         let mut note = |what: &str, e: &dyn std::fmt::Display, last_error: &mut Option<String>| {
             *last_error = Some(format!("{what}: {e}"));
             // Logged at most once a minute: a failing disk must not fill the log.
@@ -190,7 +193,7 @@ fn run(args: Args) {
         }
         if now >= next_tick {
             next_tick = now.saturating_add(TICK_SECS);
-            for b in tick_batches(&args, now) {
+            for b in tick_batches(args, now) {
                 if let Err(e) = engine.ingest(b, now) {
                     engine.counters.errors = engine.counters.errors.saturating_add(1);
                     note("a feed could not be ingested", &e, &mut last_error);
@@ -208,8 +211,12 @@ fn run(args: Args) {
         }
         if now >= next_publish {
             next_publish = now.saturating_add(PUBLISH_SECS);
-            args.snapshot
-                .store(Arc::new(snapshot(&engine, &args.inbox, &db, last_error.clone())));
+            args.snapshot.store(Arc::new(snapshot(
+                &engine,
+                &args.inbox,
+                &db,
+                last_error.clone(),
+            )));
         }
     }
 }
@@ -237,7 +244,14 @@ fn snapshot(engine: &Engine, inbox: &Inbox, db: &CmdbDb, last_error: Option<Stri
     };
     let held = db.read(|o| {
         let mut cis = Vec::new();
-        for ty in ["device", "interface", "network", "node", "service", "upstream"] {
+        for ty in [
+            "device",
+            "interface",
+            "network",
+            "node",
+            "service",
+            "upstream",
+        ] {
             cis.push((
                 ty.to_owned(),
                 u64::try_from(o.ci_count(Some(ty))?).unwrap_or(0),
@@ -299,7 +313,9 @@ pub(crate) fn tick_batches(args: &Args, now: i64) -> Vec<super::model::SourceBat
                     .discovery
                     .subnets
                     .iter()
-                    .filter_map(|s| crate::discovery::sources::Ipv4Subnet::parse(&s.cidr.to_string()))
+                    .filter_map(|s| {
+                        crate::discovery::sources::Ipv4Subnet::parse(&s.cidr.to_string())
+                    })
                     .collect();
                 let obs = crate::discovery::sources::neighbour_observations(
                     &neigh, &names, &subnets, unow,
@@ -350,7 +366,7 @@ pub(crate) fn tick_batches(args: &Args, now: i64) -> Vec<super::model::SourceBat
         }
     }
     if feeds.own_networks {
-        for n in crate::own_networks::current().iter() {
+        for n in &crate::own_networks::current() {
             nets.push(NetRow {
                 source: "cluster".to_owned(),
                 name: n.name.clone(),
@@ -383,10 +399,23 @@ fn unow_secs(now: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::redundant_closure_for_method_calls,
+        clippy::manual_assert,
+        clippy::type_complexity
+    )]
     use super::*;
     use crate::cmdb::model::{RecKind, Record, SourceBatch};
 
-    fn args(dir: &std::path::Path, clock: Arc<dyn Fn() -> i64 + Send + Sync>) -> (Args, Arc<Inbox>, Arc<ArcSwap<Snapshot>>, Arc<ArcSwap<Option<Arc<CmdbDb>>>>) {
+    fn args(
+        dir: &std::path::Path,
+        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> (
+        Args,
+        Arc<Inbox>,
+        Arc<ArcSwap<Snapshot>>,
+        Arc<ArcSwap<Option<Arc<CmdbDb>>>>,
+    ) {
         let inbox = Arc::new(Inbox::default());
         let snap = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
         let db = Arc::new(ArcSwap::from_pointee(None));
@@ -422,17 +451,29 @@ mod tests {
         let mut ok = false;
         for _ in 0..100 {
             std::thread::sleep(Duration::from_millis(50));
-            if snap.load().sources.iter().any(|x| x.source == "neighbor" && x.held == 1)
+            if snap
+                .load()
+                .sources
+                .iter()
+                .any(|x| x.source == "neighbor" && x.held == 1)
                 && dbslot.load().is_some()
             {
                 ok = true;
                 break;
             }
         }
-        assert!(ok, "the record was ingested and the status counts it: {:?}", snap.load());
+        assert!(
+            ok,
+            "the record was ingested and the status counts it: {:?}",
+            snap.load()
+        );
         let s = snap.load();
         assert!(s.cis.iter().any(|(t, n)| t == "device" && *n >= 1));
-        assert!(s.sources.iter().any(|x| x.source == "neighbor" && x.held == 1));
+        assert!(
+            s.sources
+                .iter()
+                .any(|x| x.source == "neighbor" && x.held == 1)
+        );
         inbox.stop();
         h.join().unwrap();
     }
@@ -445,11 +486,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(|| 1_000_000);
         let (mut a, ..) = args(dir.path(), clock);
-        let client = std::net::Ipv4Addr::new(192, 168, 1, 20).to_ipv6_mapped().octets();
+        let client = std::net::Ipv4Addr::new(192, 168, 1, 20)
+            .to_ipv6_mapped()
+            .octets();
         a.feeds.clients = Some(Arc::new(move |_| vec![(client, 3)]));
         let b = tick_batches(&a, 1_000_000);
         let sources: Vec<&str> = b.iter().map(|x| x.source.as_str()).collect();
-        assert!(sources.contains(&"config") && sources.contains(&"cluster"), "{sources:?}");
+        assert!(
+            sources.contains(&"config") && sources.contains(&"cluster"),
+            "{sources:?}"
+        );
         assert!(sources.contains(&"queries"), "{sources:?}");
         let node = b.iter().find(|x| x.source == "cluster").unwrap();
         assert_eq!(node.records.len(), 1, "a node alone is its own node");
@@ -461,6 +507,9 @@ mod tests {
                 .config,
         ));
         let b = tick_batches(&a, 1_000_000);
-        assert!(!b.iter().any(|x| x.source == "queries"), "not read at level 2");
+        assert!(
+            !b.iter().any(|x| x.source == "queries"),
+            "not read at level 2"
+        );
     }
 }

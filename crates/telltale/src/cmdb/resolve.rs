@@ -142,7 +142,11 @@ impl Uf {
         if let Some(p) = self.parent.get_mut(gone) {
             *p = keep;
         }
-        let g = self.info.get_mut(gone).map(std::mem::take).unwrap_or_default();
+        let g = self
+            .info
+            .get_mut(gone)
+            .map(std::mem::take)
+            .unwrap_or_default();
         if let Some(k) = self.info.get_mut(keep) {
             if k.serial.is_none() {
                 k.serial = g.serial;
@@ -168,7 +172,12 @@ fn node_of(uf: &mut Uf, ids: &mut HashMap<String, usize>, key: &str) -> usize {
 }
 
 /// Whether the groups `roots` may become one, and a record's new strong claims may join them.
-fn compatible(uf: &Uf, roots: &BTreeSet<usize>, serial: Option<&String>, devkey: Option<&String>) -> bool {
+fn compatible(
+    uf: &Uf,
+    roots: &BTreeSet<usize>,
+    serial: Option<&String>,
+    devkey: Option<&String>,
+) -> bool {
     let infos: Vec<Info> = roots.iter().map(|r| uf.info(*r)).collect();
     if infos.len() >= 2 {
         let anchored = infos.iter().filter(|i| i.anchor.is_some()).count();
@@ -206,6 +215,7 @@ fn compatible(uf: &Uf, roots: &BTreeSet<usize>, serial: Option<&String>, devkey:
 
 /// Resolves `evs` against the owner's pins (`nic_pins`: a MAC to the device CI it is pinned to).
 /// Only the pins of MACs the records carry matter.
+#[allow(clippy::too_many_lines)] // one pass: the pins, the canonical order, then the groups
 pub(crate) fn resolve(evs: &[Ev], nic_pins: &HashMap<String, String>) -> Resolution {
     let mut order: Vec<&Ev> = evs.iter().collect();
     order.sort_by(|a, b| {
@@ -453,7 +463,11 @@ mod tests {
         ];
         let r = resolve(&evs, &HashMap::new());
         assert_eq!(r.groups.len(), 1);
-        assert_eq!(r.groups[0].serials.len(), 1, "the later serial is not taken");
+        assert_eq!(
+            r.groups[0].serials.len(),
+            1,
+            "the later serial is not taken"
+        );
     }
 
     /// REQ: DSC-903 - a stable device key joins a device's interfaces, and a key of the same scope
@@ -463,7 +477,13 @@ mod tests {
         let evs = vec![
             ev(1, 1, Some("aa:00:00:00:00:01"), None, Some("ha:home|dev1")),
             ev(2, 2, Some("aa:00:00:00:00:02"), None, Some("ha:home|dev1")),
-            ev(3, 3, Some("aa:00:00:00:00:03"), None, Some("snmp:sw|device")),
+            ev(
+                3,
+                3,
+                Some("aa:00:00:00:00:03"),
+                None,
+                Some("snmp:sw|device"),
+            ),
             ev(4, 4, Some("aa:00:00:00:00:02"), None, Some("ha:home|dev2")),
         ];
         let r = resolve(&evs, &HashMap::new());
@@ -488,8 +508,14 @@ mod tests {
         assert_eq!(r.groups.len(), 2, "the pinned interface stays apart");
         assert!(r.groups.iter().any(|g| g.anchors.contains("ci_x")));
         assert_eq!(r.rule_of[&2], Rule::Manual);
-        assert!(r.disagreements.is_empty(), "the owner decided: nothing is asked again");
-        assert!(r.groups.iter().any(|g| g.serials.contains("sn-0001")), "the other keeps the serial");
+        assert!(
+            r.disagreements.is_empty(),
+            "the owner decided: nothing is asked again"
+        );
+        assert!(
+            r.groups.iter().any(|g| g.serials.contains("sn-0001")),
+            "the other keeps the serial"
+        );
     }
 
     /// REQ: DSC-903 (`dsc_903_any_order_gives_the_same_links`, the pure half) - the groups do not
@@ -500,7 +526,13 @@ mod tests {
             ev(1, 1, Some("aa:00:00:00:00:01"), None, None),
             ev(2, 2, Some("aa:00:00:00:00:02"), Some("sn-0002"), None),
             ev(3, 3, Some("aa:00:00:00:00:01"), Some("sn-0003"), None),
-            ev(4, 4, Some("aa:00:00:00:00:03"), Some("sn-0003"), Some("k|a")),
+            ev(
+                4,
+                4,
+                Some("aa:00:00:00:00:03"),
+                Some("sn-0003"),
+                Some("k|a"),
+            ),
             ev(5, 5, None, Some("sn-0003"), None),
             ev(6, 6, Some("aa:00:00:00:00:01"), Some("sn-0002"), None),
         ];

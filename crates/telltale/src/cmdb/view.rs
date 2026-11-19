@@ -38,9 +38,7 @@ fn ci_of(ops: &Ops<'_>, row: &CiRow, level: u8) -> Result<CmdbCi, CmdbError> {
     for r in &recs {
         sources.insert(kind_of(&r.source).to_owned());
     }
-    let proposals = ops
-        .proposals(Some("open"), Some(&row.id))?
-        .len();
+    let proposals = ops.proposals(Some("open"), Some(&row.id))?.len();
     Ok(CmdbCi {
         id: row.id.clone(),
         ty: row.ty.clone(),
@@ -198,8 +196,14 @@ pub(crate) fn detail(db: &CmdbDb, id: &str, now: i64, level: u8) -> Result<CmdbC
 
 /// The open proposals.
 pub(crate) fn proposals(db: &CmdbDb) -> Result<Vec<CmdbProposal>, Problem> {
-    db.read(|ops| Ok(ops.proposals(Some("open"), None)?.iter().map(proposal_of).collect()))
-        .map_err(|e| db_problem(&e))
+    db.read(|ops| {
+        Ok(ops
+            .proposals(Some("open"), None)?
+            .iter()
+            .map(proposal_of)
+            .collect())
+    })
+    .map_err(|e| db_problem(&e))
 }
 
 #[cfg(test)]
@@ -220,7 +224,11 @@ mod tests {
         e.ingest(
             batch(
                 "unifi:home",
-                vec![mk("a", "aa:bb:cc:00:00:01"), mk("b", "aa:bb:cc:00:00:02"), mk("c", "aa:bb:cc:00:00:03")],
+                vec![
+                    mk("a", "aa:bb:cc:00:00:01"),
+                    mk("b", "aa:bb:cc:00:00:02"),
+                    mk("c", "aa:bb:cc:00:00:03"),
+                ],
                 true,
                 1_000_000,
             ),
@@ -233,7 +241,10 @@ mod tests {
         };
         let p1 = list(e.db(), &q, 0).unwrap();
         assert_eq!(p1.items.len(), 2);
-        assert!(p1.items.iter().all(|c| c.ty == "device"), "interfaces are not listed by default");
+        assert!(
+            p1.items.iter().all(|c| c.ty == "device"),
+            "interfaces are not listed by default"
+        );
         let p2 = list(
             e.db(),
             &CmdbQuery {
@@ -276,7 +287,12 @@ mod tests {
         let moved = detail(e.db(), &id, 1_000_003, 0).unwrap();
         assert_eq!(moved.ci.id, other, "the alias redirects");
         assert!(moved.aliases.iter().any(|a| a.id == id));
-        assert_eq!(detail(e.db(), &id, 1_000_003 + 91 * 86_400, 0).unwrap_err().status, 404);
+        assert_eq!(
+            detail(e.db(), &id, 1_000_003 + 91 * 86_400, 0)
+                .unwrap_err()
+                .status,
+            404
+        );
     }
 
     /// REQ: DSC-906 (ADR-1005 section 12) - at privacy level 1 a name is one hashed label, the same

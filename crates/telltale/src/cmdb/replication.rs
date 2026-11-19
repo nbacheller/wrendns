@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use telltale_cluster::net::Cluster;
-use telltale_store::cmdb::{CmdbDb, CmdbError, STANDBY_NAME, WireRow};
+use telltale_store::cmdb::{CmdbDb, CmdbError, Ops, STANDBY_NAME, WireRow};
 use tokio::sync::watch;
 
 use crate::http::Sources;
@@ -117,7 +117,7 @@ pub(crate) async fn answer_fetch(
         return Err("this node does not run the CMDB".into());
     };
     tokio::task::spawn_blocking(move || {
-        let head = db.read(|o| o.head()).map_err(|e| e.to_string())?;
+        let head = db.read(|o: &Ops<'_>| o.head()).map_err(|e| e.to_string())?;
         let (rows, more) = db
             .read(|o| o.export_after(req.after, PAGE_ROWS, PAGE_BUDGET))
             .map_err(|e| e.to_string())?;
@@ -149,7 +149,7 @@ pub(crate) async fn pull_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) -> usi
     // says so at once).
     let mut after = {
         let s = Arc::clone(&standby);
-        tokio::task::spawn_blocking(move || s.read(|o| o.head()).unwrap_or((0, 0)))
+        tokio::task::spawn_blocking(move || s.read(|o: &Ops<'_>| o.head()).unwrap_or((0, 0)))
             .await
             .unwrap_or((0, 0))
     };
@@ -204,6 +204,12 @@ pub(crate) fn spawn(src: Arc<Sources>, mut stop: watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::redundant_closure_for_method_calls,
+        clippy::manual_assert,
+        clippy::type_complexity,
+        clippy::assert_is_empty
+    )]
     use super::*;
     use telltale_store::cmdb::{CiRow, Pin};
 
@@ -230,7 +236,11 @@ mod tests {
                 by: "alice".into(),
                 reason: "same".into(),
             })?;
-            o.alias_set(&format!("ci_{:032x}", 9), &format!("ci_{:032x}", 0), 1_000_000)?;
+            o.alias_set(
+                &format!("ci_{:032x}", 9),
+                &format!("ci_{:032x}", 0),
+                1_000_000,
+            )?;
             Ok(())
         })
         .unwrap();
@@ -247,7 +257,9 @@ mod tests {
         let standby = CmdbDb::open(&dir.path().join("s.db")).unwrap();
         let mut after = (0, 0);
         loop {
-            let (rows, more) = primary.read(|o| o.export_after(after, 4, PAGE_BUDGET)).unwrap();
+            let (rows, more) = primary
+                .read(|o| o.export_after(after, 4, PAGE_BUDGET))
+                .unwrap();
             let Some(last) = rows.last().map(|r| (r.e, r.s)) else {
                 break;
             };
@@ -259,15 +271,32 @@ mod tests {
         }
         let counts = |d: &CmdbDb| d.read(|o| o.authored_counts()).unwrap();
         assert_eq!(counts(&primary), counts(&standby));
-        assert_eq!(standby.read(|o| o.head()).unwrap(), primary.read(|o| o.head()).unwrap());
+        assert_eq!(
+            standby.read(|o| o.head()).unwrap(),
+            primary.read(|o| o.head()).unwrap()
+        );
         // A delete on the writer arrives as a tombstone and removes the row and its keys.
-        primary.write(|o| o.ci_delete(&format!("ci_{:032x}", 1))).unwrap();
-        let (rows, _) = primary.read(|o| o.export_after(after, 100, PAGE_BUDGET)).unwrap();
+        primary
+            .write(|o| o.ci_delete(&format!("ci_{:032x}", 1)))
+            .unwrap();
+        let (rows, _) = primary
+            .read(|o| o.export_after(after, 100, PAGE_BUDGET))
+            .unwrap();
         assert!(rows.iter().any(|r| r.del && r.t == "ci"), "{rows:?}");
         let again = standby.write(|o| o.import_rows(&rows)).unwrap();
         assert!(again > 0);
-        assert!(standby.read(|o| o.ci_get(&format!("ci_{:032x}", 1))).unwrap().is_none());
-        assert!(standby.read(|o| o.keys_of(&format!("ci_{:032x}", 1))).unwrap().is_empty());
+        assert!(
+            standby
+                .read(|o| o.ci_get(&format!("ci_{:032x}", 1)))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            standby
+                .read(|o| o.keys_of(&format!("ci_{:032x}", 1)))
+                .unwrap()
+                .is_empty()
+        );
         // The same rows again change nothing.
         assert_eq!(standby.write(|o| o.import_rows(&rows)).unwrap(), 0);
     }
@@ -280,7 +309,9 @@ mod tests {
         let old_writer = seeded(&dir.path().join("w.db"));
         // The standby copy is cmdb-standby.db under the data directory.
         let standby = CmdbDb::open(&dir.path().join(STANDBY_NAME)).unwrap();
-        let (rows, _) = old_writer.read(|o| o.export_after((0, 0), 1000, PAGE_BUDGET)).unwrap();
+        let (rows, _) = old_writer
+            .read(|o| o.export_after((0, 0), 1000, PAGE_BUDGET))
+            .unwrap();
         standby.write(|o| o.import_rows(&rows)).unwrap();
         let (old_epoch, old_seq) = old_writer.read(|o| o.head()).unwrap();
         drop(standby);
@@ -288,15 +319,31 @@ mod tests {
         let n = promote(&fresh, dir.path(), 0).unwrap();
         assert!(n >= 8, "{n}");
         assert_eq!(fresh.read(|o| o.pins()).unwrap().len(), 1);
-        assert!(fresh.read(|o| o.ci_get(&format!("ci_{:032x}", 2))).unwrap().is_some());
+        assert!(
+            fresh
+                .read(|o| o.ci_get(&format!("ci_{:032x}", 2)))
+                .unwrap()
+                .is_some()
+        );
         let (e, s) = fresh.read(|o| o.head()).unwrap();
         assert!(e > old_epoch, "a new epoch: {e} over {old_epoch}");
         assert_eq!(s, old_seq);
         // A write now carries the new epoch and sorts after every old stamp.
         fresh
-            .write(|o| o.pin_set(&Pin { kind: "rec_never".into(), a: "x\x1fy".into(), b: "*".into(), at: 1, by: "b".into(), reason: String::new() }))
+            .write(|o| {
+                o.pin_set(&Pin {
+                    kind: "rec_never".into(),
+                    a: "x\x1fy".into(),
+                    b: "*".into(),
+                    at: 1,
+                    by: "b".into(),
+                    reason: String::new(),
+                })
+            })
             .unwrap();
-        let (rows, _) = fresh.read(|o| o.export_after((old_epoch, old_seq), 10, PAGE_BUDGET)).unwrap();
+        let (rows, _) = fresh
+            .read(|o| o.export_after((old_epoch, old_seq), 10, PAGE_BUDGET))
+            .unwrap();
         assert!(rows.iter().all(|r| (r.e, r.s) > (old_epoch, old_seq)));
         assert!(!rows.is_empty());
     }

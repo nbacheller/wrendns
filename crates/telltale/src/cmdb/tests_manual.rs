@@ -1,3 +1,15 @@
+#![allow(
+    clippy::redundant_closure_for_method_calls,
+    clippy::manual_assert,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::explicit_counter_loop,
+    clippy::collapsible_if,
+    clippy::map_unwrap_or,
+    clippy::type_complexity,
+    clippy::items_after_statements,
+    dead_code
+)]
 //! REQ: DSC-903 (T31.2, rule R1) - the manual link, unlink, merge and split.
 
 use telltale_store::cmdb::{CiRow, RecordRow};
@@ -17,7 +29,9 @@ fn rec_of(e: &Engine, source: &str, key: &str) -> RecordRow {
 }
 
 fn devices(e: &Engine) -> Vec<CiRow> {
-    e.db().read(|o| o.ci_list(Some("device"), None, None, 500)).unwrap()
+    e.db()
+        .read(|o| o.ci_list(Some("device"), None, None, 500))
+        .unwrap()
 }
 
 fn children(e: &Engine, device: &str) -> Vec<CiRow> {
@@ -62,13 +76,24 @@ fn dsc_903_unlink_pins_and_survives_the_next_batch() {
     ingest(
         &mut e,
         "neighbor",
-        vec![with_ip(host("neighbor", "n1", "aa:bb:cc:00:00:01", T0), "192.168.1.10")],
+        vec![with_ip(
+            host("neighbor", "n1", "aa:bb:cc:00:00:01", T0),
+            "192.168.1.10",
+        )],
         T0,
     );
-    let q = || with_ip(Record::new("queries", "192.168.1.10", RecKind::Device, T0 + 5), "192.168.1.10");
+    let q = || {
+        with_ip(
+            Record::new("queries", "192.168.1.10", RecKind::Device, T0 + 5),
+            "192.168.1.10",
+        )
+    };
     ingest(&mut e, "queries", vec![q()], T0 + 5);
     let dev = rec_of(&e, "neighbor", "n1").dci.unwrap();
-    assert_eq!(rec_of(&e, "queries", "192.168.1.10").dci.as_deref(), Some(dev.as_str()));
+    assert_eq!(
+        rec_of(&e, "queries", "192.168.1.10").dci.as_deref(),
+        Some(dev.as_str())
+    );
     let op = ManualOp::Unlink {
         record: rr("queries", "192.168.1.10"),
     };
@@ -90,7 +115,10 @@ fn dsc_903_unlink_pins_and_survives_the_next_batch() {
         &mut e,
         "neighbor",
         vec![with(
-            with_ip(host("neighbor", "n1", "aa:bb:cc:00:00:01", T0 + 70), "192.168.1.10"),
+            with_ip(
+                host("neighbor", "n1", "aa:bb:cc:00:00:01", T0 + 70),
+                "192.168.1.10",
+            ),
             "name",
             "renamed",
         )],
@@ -102,7 +130,10 @@ fn dsc_903_unlink_pins_and_survives_the_next_batch() {
         "the pin survives"
     );
     let pins = e.db().read(|o| o.pins()).unwrap();
-    assert!(pins.iter().any(|p| p.kind == "rec_never" && p.by == "alice" && p.reason == "wrong"));
+    assert!(
+        pins.iter()
+            .any(|p| p.kind == "rec_never" && p.by == "alice" && p.reason == "wrong")
+    );
 }
 
 /// REQ: DSC-903 (AC 2) - a merge leaves the losing id as an alias that redirects, moves every
@@ -131,16 +162,31 @@ fn dsc_903_merge_leaves_a_redirecting_alias() {
     assert_eq!(pv.preview.moves.len(), 1);
     assert!(pv.preview.notes.iter().any(|n| n.contains("alias")));
     e.manual(&op, "bob", "same laptop", T0 + 6, false).unwrap();
-    assert_eq!(rec_of(&e, "unifi:home", "b").dci.as_deref(), Some(da.as_str()));
-    assert_eq!(children(&e, &da).len(), 2, "both interfaces under the survivor");
-    assert!(e.db().read(|o| o.ci_get(&db)).unwrap().is_none(), "the loser is gone");
     assert_eq!(
-        e.db().read(|o| o.resolve_id(&db, T0 + 10)).unwrap().as_deref(),
+        rec_of(&e, "unifi:home", "b").dci.as_deref(),
+        Some(da.as_str())
+    );
+    assert_eq!(
+        children(&e, &da).len(),
+        2,
+        "both interfaces under the survivor"
+    );
+    assert!(
+        e.db().read(|o| o.ci_get(&db)).unwrap().is_none(),
+        "the loser is gone"
+    );
+    assert_eq!(
+        e.db()
+            .read(|o| o.resolve_id(&db, T0 + 10))
+            .unwrap()
+            .as_deref(),
         Some(da.as_str()),
         "its id redirects"
     );
     assert_eq!(
-        e.db().read(|o| o.resolve_id(&db, T0 + 91 * 86_400)).unwrap(),
+        e.db()
+            .read(|o| o.resolve_id(&db, T0 + 91 * 86_400))
+            .unwrap(),
         None,
         "for 90 days"
     );
@@ -164,8 +210,16 @@ fn dsc_903_split_and_interface_unlink_are_pinned() {
     let (_d, mut e) = engine();
     let two = |at: i64| {
         vec![
-            with(host("unifi:home", "w", "aa:bb:cc:00:00:01", at), "serial", "SN-SHARED-1"),
-            with(host("unifi:home", "e", "aa:bb:cc:00:00:02", at), "serial", "SN-SHARED-1"),
+            with(
+                host("unifi:home", "w", "aa:bb:cc:00:00:01", at),
+                "serial",
+                "SN-SHARED-1",
+            ),
+            with(
+                host("unifi:home", "e", "aa:bb:cc:00:00:02", at),
+                "serial",
+                "SN-SHARED-1",
+            ),
         ]
     };
     ingest(&mut e, "unifi:home", two(T0), T0);
@@ -183,7 +237,10 @@ fn dsc_903_split_and_interface_unlink_are_pinned() {
             false,
         )
         .unwrap_err();
-    assert!(matches!(err, ManualError::Invalid(_)), "not every interface: {err:?}");
+    assert!(
+        matches!(err, ManualError::Invalid(_)),
+        "not every interface: {err:?}"
+    );
     let out = e
         .manual(
             &ManualOp::Unlink {
@@ -197,13 +254,25 @@ fn dsc_903_split_and_interface_unlink_are_pinned() {
         .unwrap();
     let new_dev = out.result.unwrap();
     assert_ne!(new_dev, dev);
-    assert_eq!(rec_of(&e, "unifi:home", "e").dci.as_deref(), Some(new_dev.as_str()));
-    assert_eq!(rec_of(&e, "unifi:home", "w").dci.as_deref(), Some(dev.as_str()));
+    assert_eq!(
+        rec_of(&e, "unifi:home", "e").dci.as_deref(),
+        Some(new_dev.as_str())
+    );
+    assert_eq!(
+        rec_of(&e, "unifi:home", "w").dci.as_deref(),
+        Some(dev.as_str())
+    );
     // The same serial again: the pinned interface stays apart, and nothing is asked again (the
     // owner decided).
     ingest(&mut e, "unifi:home", two(T0 + 60), T0 + 60);
-    assert_eq!(rec_of(&e, "unifi:home", "e").dci.as_deref(), Some(new_dev.as_str()));
-    assert_eq!(rec_of(&e, "unifi:home", "w").dci.as_deref(), Some(dev.as_str()));
+    assert_eq!(
+        rec_of(&e, "unifi:home", "e").dci.as_deref(),
+        Some(new_dev.as_str())
+    );
+    assert_eq!(
+        rec_of(&e, "unifi:home", "w").dci.as_deref(),
+        Some(dev.as_str())
+    );
     assert_eq!(devices(&e).len(), 2);
     assert_eq!(proposals(&e, "level_disagreement"), 0);
 }
@@ -225,7 +294,10 @@ fn dsc_903_manual_link_moves_and_refuses() {
     ingest(
         &mut e,
         "mdns",
-        vec![with_ip(Record::new("mdns", "printer", RecKind::Device, T0), "192.168.1.50")],
+        vec![with_ip(
+            Record::new("mdns", "printer", RecKind::Device, T0),
+            "192.168.1.50",
+        )],
         T0,
     );
     let d1 = rec_of(&e, "neighbor", "n1").dci.unwrap();
@@ -241,7 +313,10 @@ fn dsc_903_manual_link_moves_and_refuses() {
         false,
     )
     .unwrap();
-    assert_eq!(rec_of(&e, "mdns", "printer").dci.as_deref(), Some(d1.as_str()));
+    assert_eq!(
+        rec_of(&e, "mdns", "printer").dci.as_deref(),
+        Some(d1.as_str())
+    );
     assert_eq!(rec_of(&e, "mdns", "printer").link, "manual");
     // The interface of n2 moves to d1; d2 is left with nothing and is folded in.
     e.manual(
@@ -255,10 +330,16 @@ fn dsc_903_manual_link_moves_and_refuses() {
         false,
     )
     .unwrap();
-    assert_eq!(rec_of(&e, "neighbor", "n2").dci.as_deref(), Some(d1.as_str()));
+    assert_eq!(
+        rec_of(&e, "neighbor", "n2").dci.as_deref(),
+        Some(d1.as_str())
+    );
     assert_eq!(children(&e, &d1).len(), 2);
     assert_eq!(
-        e.db().read(|o| o.resolve_id(&d2, T0 + 10)).unwrap().as_deref(),
+        e.db()
+            .read(|o| o.resolve_id(&d2, T0 + 10))
+            .unwrap()
+            .as_deref(),
         Some(d1.as_str())
     );
     let err = e

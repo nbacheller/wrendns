@@ -228,19 +228,16 @@ pub(crate) fn norm_mac(s: &str) -> Option<String> {
     )
 }
 
-/// Whether a MAC has the locally administered bit set (a randomised address, ADR-910).
+/// Whether a MAC has the locally administered bit set (a randomised address, ADR-910). R2 matches it
+/// like any other; the detector (T31.4) reads this so a randomised MAC never raises an `add`.
+#[allow(dead_code)] // REQ: DSC-903 - read by T31.4's detector; the tests use it now.
 pub(crate) fn mac_is_randomized(mac: &str) -> bool {
-    crate::discovery::sources::parse_mac(mac).is_some_and(crate::discovery::inventory::is_randomized)
+    crate::discovery::sources::parse_mac(mac)
+        .is_some_and(crate::discovery::inventory::is_randomized)
 }
 
 /// A serial, trimmed and lower-cased. Placeholders and short values are not keys.
 pub(crate) fn norm_serial(s: &str) -> Option<String> {
-    let t: String = s
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect::<String>()
-        .trim()
-        .to_ascii_lowercase();
     const JUNK: [&str; 8] = [
         "none",
         "unknown",
@@ -251,6 +248,12 @@ pub(crate) fn norm_serial(s: &str) -> Option<String> {
         "not specified",
         "0",
     ];
+    let t: String = s
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_ascii_lowercase();
     if t.len() < 4 || JUNK.contains(&t.as_str()) || t.chars().all(|c| c == '0') {
         return None;
     }
@@ -260,8 +263,6 @@ pub(crate) fn norm_serial(s: &str) -> Option<String> {
 /// A host name for rule R5: lower-case, without its domain. Generic names are not keys: two
 /// phones called `iphone` on one VLAN are not one device (ADR-1004 alternatives).
 pub(crate) fn norm_host(s: &str) -> Option<String> {
-    let t = s.trim().to_ascii_lowercase();
-    let first = t.split('.').next().unwrap_or("").trim();
     const GENERIC: [&str; 14] = [
         "iphone",
         "ipad",
@@ -278,6 +279,8 @@ pub(crate) fn norm_host(s: &str) -> Option<String> {
         "esp",
         "wlan0",
     ];
+    let t = s.trim().to_ascii_lowercase();
+    let first = t.split('.').next().unwrap_or("").trim();
     if first.len() < 3
         || GENERIC.contains(&first)
         || !first.chars().any(char::is_alphabetic)
@@ -502,7 +505,11 @@ mod tests {
     /// REQ: DSC-902 - MACs in any common spelling are one key, and the null MAC is none.
     #[test]
     fn dsc_902_mac_spellings_are_one_key() {
-        for s in ["AA:BB:CC:DD:EE:01", "aa-bb-cc-dd-ee-01", " aa:bb:cc:dd:ee:01 "] {
+        for s in [
+            "AA:BB:CC:DD:EE:01",
+            "aa-bb-cc-dd-ee-01",
+            " aa:bb:cc:dd:ee:01 ",
+        ] {
             assert_eq!(norm_mac(s).as_deref(), Some("aa:bb:cc:dd:ee:01"), "{s}");
         }
         assert_eq!(norm_mac("00:00:00:00:00:00"), None);

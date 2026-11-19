@@ -5418,3 +5418,37 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Decision (owner, 2026-11-18):** the budget is **512 KiB gzipped** in total. The per-chunk caps stay as they are (the map chunk at most 30 KiB, lazy pages split out of the main chunk), the main bundle still carries no page-only code, and every task still records its size delta. The image gate (25 MiB per architecture, ADR-916) and the RSS budgets are unchanged: the bundle is embedded gzipped, so 112 KiB more is under 0.5 % of the image gate.
 
 **Consequences:** the build and `obs_901` check 512 KiB; `spec/02` and `spec/07` say so. A first page load on a Pi-served LAN grows by a few milliseconds at most. When the UI nears 512 KiB, the next step is to load help topics from the API on demand and to split the brand icons, not another raise without an ADR.
+
+## ADR-1021 — CMDB replication uses its own fetch RPC, not ADR-917's secret writer (Proposed 2026-11-19, T31.2)
+
+**Context:** T31.2 step 1 asked whether the ADR-917 replication code takes a non-secret writer for the authored tables. It is built around the secret store's rows and its encryption envelope; reusing it would couple the CMDB's schema to the credential path.
+
+**Decision:** the fallback of ADR-1005 §6 applies. The authored tables (`ci`, `ci_key`, `pin`, `alias`, `port_alias`, `tomb`) carry a stamp (epoch, seq) and are replicated by a pull: a standby asks the node that runs the CMDB with the cluster RPC `cmdb.fetch` (pages of rows after its own head, bounded by rows and bytes) and imports them with the stamp rules (newer stamp wins; a tombstone at least as new suppresses a row). Derived tables (`record`, `seen`, `addr`, `proposal`) stay node-local and are rebuilt by whichever node is designated. A newly designated node promotes its replica by raising the epoch. The RPC is read-only, voters and members only, and a failure never touches DNS.
+
+**Alternatives rejected:** extending ADR-917's writer (couples two schemas; its envelope is for secrets); replicating derived tables (a standby would carry stale `last_seen` and doubled write volume).
+
+**Consequences:** one RPC name, one pull task. Tests: `replication::tests` (export, import, tombstones, promote). **Open:** none.
+
+## ADR-1022 — CMDB resolution is a pure, order-independent union-find with compatibility checks (Proposed 2026-11-19, T31.2)
+
+**Context:** ADR-1004 lists rules R1 to R5 but not how conflicting evidence combines.
+
+**Decision:** `resolve` takes the evidence in canonical order and builds groups by union-find over R1 (manual pins), R2 (MAC), R3 (serial) and R4 (stable device key: Home Assistant device id, SNMP chassis id, UniFi infrastructure device id; never a UniFi client `_id`). A join is refused when it would put two different serials, two keys of the same scope, or a pinned group and an unpinned one in one group; the refused join becomes a merge proposal (also for a MAC and serial that point at different devices). R5 (hostname plus network) only proposes. A pinned interface's MAC claims only that MAC. Keyless records attach by a class 1 to 3 address binding or become an unconfirmed CI, and re-attach when their device splits. The per-CI cap of 8 records is counted at the CI's own level. The result does not depend on batch order (property test `dsc_903_resolution_is_order_independent`, which found three order-dependent cases, all fixed).
+
+**Consequences:** deterministic ids need no ordering guarantee from sources. **Open:** none.
+
+## ADR-1023 — The CMDB engine is stateless over SQLite with a compact index; measured memory and disk (Proposed 2026-11-19, T31.2)
+
+**Context:** the first design held every record in a map: 14 MiB at the caps against the 8 MiB budget (AC 5).
+
+**Decision:** the engine probes the database by (source, key) and a content hash, and keeps only a compact open-addressing table (`compact::Table`, u64 key to the times it needs) for batched `last_seen` flushes. Row writes happen only for changed records; `meta seq` is written only when a row is stamped. Eviction and retention run in bounded steps. Measured at the caps (65,536 records, 16,384 CIs, `RssAnon`, two runs): +7.1 MiB RSS after a bulk load (limit 8), the engine keeps about 2.7 MiB, 38.8 MiB on disk (limit 64), 0 rows rewritten in three unchanged cycles. The write-volume test on a stable network writes only changed records and the batched flush.
+
+**Consequences:** query path unchanged; no hot-path crate touched. **Open:** none.
+
+## ADR-1024 — T31.2 adapter and feed conventions, defaults and deviations (Proposed 2026-11-19, T31.2)
+
+**Decision:** (1) Every source pushes `SourceBatch`es into a bounded sink that drops the oldest on overflow (counted); a command queue carries manual changes and an immediate tick when the configuration changes. (2) The in-process feeds (observations, leases, configuration, cluster, networks, `queries` once a minute, workloads when Kubernetes is on) are adapters read on the CMDB thread. (3) Settings kind `Cmdb` is shared, admin-only and has no agent scope; the CMDB runs on the node `[discovery]` designates and `enabled` is a validation error at privacy level 2 and above (names hashed at level 1). (4) No Pi-hole importer source (owner, 2026-11-19). (5) `DSC-901`: no policy, matching, identify or DNS naming code reads a CMDB value (`dsc_901_no_policy_code_reads_the_cmdb`). (6) Health reasons for the CMDB never mark DNS unhealthy.
+
+**Deviations:** `Federated` delegates the CMDB reads to the local backend, so a node that does not run the CMDB answers 503 naming the designated node. The `learning` and `mac_is_randomized` helpers are kept for T31.4's detector.
+
+**Open:** none.

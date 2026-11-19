@@ -21,11 +21,11 @@ use serde::{Deserialize, Serialize};
 use telltale_store::state::Replay;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::Shared;
 use crate::auth::Auth;
 use crate::auth::routes::{principal, reason, remote};
 use crate::config_api::{IDEMPOTENCY_KEY, PlainDryRun};
 use crate::problem::{Code, Problem};
-use crate::Shared;
 
 // -- model -------------------------------------------------------------------------------------
 
@@ -317,10 +317,24 @@ pub struct CmdbChange {
 /// A manual change as the API checked it, ready for the node that runs the CMDB.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CmdbOp {
-    Link { source: String, key: String, to: String },
-    Unlink { source: String, key: String, device: String },
-    Merge { from: String, into: String },
-    Split { device: String, records: Vec<CmdbRecordRef> },
+    Link {
+        source: String,
+        key: String,
+        to: String,
+    },
+    Unlink {
+        source: String,
+        key: String,
+        device: String,
+    },
+    Merge {
+        from: String,
+        into: String,
+    },
+    Split {
+        device: String,
+        records: Vec<CmdbRecordRef>,
+    },
 }
 
 /// A write to the CMDB.
@@ -420,7 +434,15 @@ pub(crate) async fn cmdb_status(State(b): State<Shared>) -> Json<CmdbStatus> {
     ))]
 pub(crate) async fn cmdb_cis(State(b): State<Shared>, Query(q): Query<CmdbQuery>) -> Response {
     if let Some(t) = &q.ty
-        && !["device", "interface", "network", "node", "service", "upstream"].contains(&t.as_str())
+        && ![
+            "device",
+            "interface",
+            "network",
+            "node",
+            "service",
+            "upstream",
+        ]
+        .contains(&t.as_str())
     {
         return Problem::invalid(format!("`type`: `{t}` is not a CI type"))
             .hint("Use device, interface, network, node, service or upstream.")
@@ -475,8 +497,10 @@ fn check_id(id: &str) -> Result<(), Problem> {
     if ok {
         Ok(())
     } else {
-        Err(Problem::invalid("`id` is not a CI id (`ci_` and 32 hex digits)")
-            .hint("Take one from GET /api/v1/cmdb/cis."))
+        Err(
+            Problem::invalid("`id` is not a CI id (`ci_` and 32 hex digits)")
+                .hint("Take one from GET /api/v1/cmdb/cis."),
+        )
     }
 }
 
@@ -486,7 +510,9 @@ fn check_ref(r: &CmdbRecordRef) -> Result<(), Problem> {
             .hint("Take them from GET /api/v1/cmdb/cis/{id}, `records`."));
     }
     if r.source.len() > 128 || r.key.len() > 300 {
-        return Err(Problem::invalid("`record`: the source or the key is too long"));
+        return Err(Problem::invalid(
+            "`record`: the source or the key is too long",
+        ));
     }
     Ok(())
 }
@@ -613,14 +639,20 @@ pub(crate) async fn cmdb_link(
     if let Err(e) = check_id(&id) {
         return e.into_response();
     }
-    let req: CmdbLinkRequest = match body(&b, "Send {\"record\": {\"source\": \"...\", \"key\": \"...\"}}.") {
+    let req: CmdbLinkRequest = match body(
+        &b,
+        "Send {\"record\": {\"source\": \"...\", \"key\": \"...\"}}.",
+    ) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     if let Err(e) = check_ref(&req.record) {
         return e.into_response();
     }
-    let request = format!("POST /cmdb/cis/{id}/link {}", serde_json::to_string(&req).unwrap_or_default());
+    let request = format!(
+        "POST /cmdb/cis/{id}/link {}",
+        serde_json::to_string(&req).unwrap_or_default()
+    );
     run(
         backend,
         auth,
@@ -667,14 +699,20 @@ pub(crate) async fn cmdb_unlink(
     if let Err(e) = check_id(&id) {
         return e.into_response();
     }
-    let req: CmdbUnlinkRequest = match body(&b, "Send {\"record\": {\"source\": \"...\", \"key\": \"...\"}}.") {
+    let req: CmdbUnlinkRequest = match body(
+        &b,
+        "Send {\"record\": {\"source\": \"...\", \"key\": \"...\"}}.",
+    ) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     if let Err(e) = check_ref(&req.record) {
         return e.into_response();
     }
-    let request = format!("POST /cmdb/cis/{id}/unlink {}", serde_json::to_string(&req).unwrap_or_default());
+    let request = format!(
+        "POST /cmdb/cis/{id}/unlink {}",
+        serde_json::to_string(&req).unwrap_or_default()
+    );
     run(
         backend,
         auth,
@@ -727,7 +765,10 @@ pub(crate) async fn cmdb_merge(
     if let Err(e) = check_id(&req.into) {
         return e.into_response();
     }
-    let request = format!("POST /cmdb/cis/{id}/merge {}", serde_json::to_string(&req).unwrap_or_default());
+    let request = format!(
+        "POST /cmdb/cis/{id}/merge {}",
+        serde_json::to_string(&req).unwrap_or_default()
+    );
     run(
         backend,
         auth,
@@ -772,7 +813,10 @@ pub(crate) async fn cmdb_split(
     if let Err(e) = check_id(&id) {
         return e.into_response();
     }
-    let req: CmdbSplitRequest = match body(&b, "Send {\"records\": [{\"source\": \"...\", \"key\": \"...\"}]}.") {
+    let req: CmdbSplitRequest = match body(
+        &b,
+        "Send {\"records\": [{\"source\": \"...\", \"key\": \"...\"}]}.",
+    ) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
@@ -786,7 +830,10 @@ pub(crate) async fn cmdb_split(
             return e.into_response();
         }
     }
-    let request = format!("POST /cmdb/cis/{id}/split {}", serde_json::to_string(&req).unwrap_or_default());
+    let request = format!(
+        "POST /cmdb/cis/{id}/split {}",
+        serde_json::to_string(&req).unwrap_or_default()
+    );
     run(
         backend,
         auth,
@@ -817,7 +864,12 @@ mod tests {
         assert!(off.hint.as_deref().is_some_and(|h| h.contains("[cmdb]")));
         let other = not_here(true, Some("pi-a"));
         assert_eq!(other.status, 503);
-        assert!(other.hint.as_deref().is_some_and(|h| h.contains("pi-a") && h.contains("DNS")));
+        assert!(
+            other
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("pi-a") && h.contains("DNS"))
+        );
     }
 
     /// REQ: DSC-903 - ids and record references are checked before anything else happens, and a body
@@ -825,11 +877,29 @@ mod tests {
     #[test]
     fn dsc_903_requests_are_checked() {
         assert!(check_id("ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21").is_ok());
-        for bad in ["", "ci_", "ci_xyz", "0f3a9c1e5b7d42a8c6e0b1d3f5a79c21", "ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c2"] {
+        for bad in [
+            "",
+            "ci_",
+            "ci_xyz",
+            "0f3a9c1e5b7d42a8c6e0b1d3f5a79c21",
+            "ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c2",
+        ] {
             assert_eq!(check_id(bad).unwrap_err().status, 400, "{bad}");
         }
-        assert!(check_ref(&CmdbRecordRef { source: "unifi:home".into(), key: "k".into() }).is_ok());
-        assert!(check_ref(&CmdbRecordRef { source: " ".into(), key: "k".into() }).is_err());
+        assert!(
+            check_ref(&CmdbRecordRef {
+                source: "unifi:home".into(),
+                key: "k".into()
+            })
+            .is_ok()
+        );
+        assert!(
+            check_ref(&CmdbRecordRef {
+                source: " ".into(),
+                key: "k".into()
+            })
+            .is_err()
+        );
         assert!(
             serde_json::from_str::<CmdbMergeRequest>(r#"{"into":"ci_0","extra":1}"#).is_err(),
             "an unknown field is refused"
