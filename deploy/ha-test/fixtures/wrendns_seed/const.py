@@ -25,19 +25,19 @@ DEVICES: list[dict[str, str | None]] = [
         "mac": "aa:bb:cc:00:00:01",
         "name": "Porch Light",
         "name_by_user": "Porch Light",
-        "address": "192.0.2.31",
+        "address": "192.168.1.31",
     },
     {
         "mac": "aa:bb:cc:00:00:02",
         "name": "Living Room TV",
         "name_by_user": None,
-        "address": "192.0.2.42",
+        "address": "192.168.1.42",
     },
     {
         "mac": "aa:bb:cc:00:00:03",
         "name": "Tablet",
         "name_by_user": "Kitchen Tablet",
-        "address": "192.0.2.43",
+        "address": "192.168.1.43",
     },
     {
         "mac": "aa:bb:cc:00:00:04",
