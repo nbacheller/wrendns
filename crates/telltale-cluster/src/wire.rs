@@ -47,6 +47,11 @@ pub struct Hello {
     /// The Git commit of the configuration it serves (ADR-049).
     #[prost(string, tag = "12")]
     pub source_commit: String,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — a random id of the sending process, new at each start:
+    /// a link that ends and comes back with another id was a restart, not a flapping link.
+    /// Empty from a peer older than this field (prost skips unknown tags, so older peers ignore it).
+    #[prost(string, tag = "13")]
+    pub instance: String,
 }
 
 /// A federated read (CLU-002, T5.6): `kind` names the call, `body` carries its arguments
@@ -415,6 +420,7 @@ mod tests {
                 applied_seq: 9,
                 primary: false,
                 config_source: String::new(),
+                instance: "0123456789abcdef".into(),
             })),
         };
         let hb = Frame {

@@ -7,14 +7,20 @@
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import BackupCard from '../lib/components/BackupCard.svelte';
+  // REQ: OPS-011, OPS-012 (T27.11) — this node's support-log and update switches (admins).
+  import NodeSwitches from '../lib/components/NodeSwitches.svelte';
+  // REQ: DNS-011 (T27.11) — DNSSEC mode and negative trust anchors, under Query handling.
+  import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
+  import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
   import OidcProviders from '../lib/components/OidcProviders.svelte';
   import TelemetryOutputs from '../lib/components/TelemetryOutputs.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
@@ -237,6 +243,7 @@
     ['config:write:forwards', 'Send domains to other servers'],
     ['ops:pause', 'Pause and resume blocking'],
     ['ops:anomalies', 'Acknowledge device anomalies (and take it back)'],
+    ['ops:discovery_test', 'Test an SNMP agent of the network inventory (admin only)'],
     ['cluster:admin', 'Promote a node; staged rollouts and pins'],
   ];
   // REQ: API-005 (T22.4, AGT-004) — scope presets: the scopes an integration's README asks for.
@@ -856,6 +863,7 @@
       </p>
     {/if}
   {:else if tab === 'system'}
+    <NodeSwitches />
     <section class="card">
       <h2>System<HelpButton id="system" /></h2>
       {#if info}
@@ -875,8 +883,12 @@
       <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
     </section>
     <!-- REQ: OBS-020 (ADR-107) — can clients reach each listener? -->
+    <!-- REQ: OBS-005 (T27.5, ADR-1007) — the per-client series, an admin's setting. -->
+    <TuningSettings which="metrics" />
     <section class="card" data-testid="probes">
       <h2>Listener checks<HelpButton id="probes" /></h2>
+      <!-- REQ: OBS-020 (T27.5, ADR-1007) — the probes' interval and targets. -->
+      <TuningSettings which="probe" />
       {#if probes == null}
         <p class="empty">Loading…</p>
       {:else if probes.length === 0}
@@ -1001,6 +1013,7 @@
       <SupportPackage />
     {/if}
   {:else if tab === 'queries'}
+    <DnssecCard />
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
       <h2>Cache</h2>
@@ -1050,6 +1063,8 @@
       A simulation replays the query log with and without a change and shows what would have been answered differently. It never
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
+    <!-- REQ: OBS-901 (T26.6, ADR-958) — the live network map's sampling and thresholds. -->
+    <MapSettingsCard />
     <!-- REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database: everyone sees its status, an admin controls it. -->
     <GeoipCard />
   {/if}

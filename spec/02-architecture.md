@@ -34,7 +34,7 @@ telltale run --role=controller   # control plane only (API, UI, compiler, analyt
 | `telltale-api` | axum REST API, auth, OpenAPI, WebSocket/SSE tail, embedded UI assets | |
 | `telltale-config` | Config schema (serde), validation, env overrides, GitOps mode, migrations | |
 | `telltale` (bin) | CLI, role wiring, signal handling, `ctl` subcommands | |
-| `ui/` | SPA (Svelte 5 + Vite + uPlot); built output embedded with `rust-embed` | Target ≤ 400 KiB gzipped. |
+| `ui/` | SPA (Svelte 5 + Vite + uPlot); built output embedded with `rust-embed` | Target ≤ 512 KiB gzipped (ADR-1020). |
 
 ## 3. Threading and I/O model
 - **Runtime:** tokio multi-thread runtime for control, upstream, TLS, and HTTP work. The UDP fast path runs on **N dedicated worker threads** (N = available cores, configurable). Each worker owns its own SO_REUSEPORT UDP socket per listen address and loops `recvmmsg → process batch → sendmmsg`. That gives no cross-thread contention for the common case.

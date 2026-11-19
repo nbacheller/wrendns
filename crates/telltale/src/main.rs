@@ -49,6 +49,8 @@ mod maintenance;
 mod managed;
 mod managed_adopt;
 #[cfg(test)]
+mod managed_adopt_t2440_tests;
+#[cfg(test)]
 mod managed_adopt_tests;
 mod masking;
 mod mcp_stdio;
@@ -57,6 +59,9 @@ mod node_managed;
 #[cfg(test)]
 mod node_managed_tests;
 mod node_removal;
+mod node_settings;
+#[cfg(test)]
+mod node_settings_tests;
 mod oidc_settings;
 mod otlp;
 mod own_networks;

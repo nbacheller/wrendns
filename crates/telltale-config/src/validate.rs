@@ -79,6 +79,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     drill(cfg, &mut r);
     rollout(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
+    dnssec(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     secret_references(cfg, &mut r);
@@ -2120,6 +2121,225 @@ fn discovery(cfg: &Config, r: &mut Report<'_>) {
             "the network inventory needs client addresses, which telemetry.qlog.privacy_level 2 and 3 hide: set it to 0 or 1 first",
         );
     }
+    snmp_credentials(cfg, r);
+    snmp_agents(cfg, r);
+}
+
+// REQ: DSC-004, DSC-007 (T25.6, ADR-908, ADR-1001) — `[[discovery.snmp_credential]]`: a label name,
+// one version's fields, supported protocols only (the refused ones are named with their reason),
+// and secrets as files (an inline value is an unknown key, so it fails to load).
+#[allow(clippy::too_many_lines)] // one flat check of each credential field
+fn snmp_credentials(cfg: &Config, r: &mut Report<'_>) {
+    use crate::discovery::{CredentialRole, SnmpVersion, valid_label};
+    use telltale_snmp::usm::{AuthProto, PrivProto};
+    let d = &cfg.discovery;
+    if d.snmp_credentials.len() > crate::discovery::MAX_AGENTS {
+        r.err(
+            "discovery.snmp_credential",
+            format!("at most {} credentials", crate::discovery::MAX_AGENTS),
+        );
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, c) in d.snmp_credentials.iter().enumerate() {
+        let p = format!("discovery.snmp_credential[{i}]");
+        let name = c.name.as_str();
+        if !valid_label(name) {
+            r.err(
+                format!("{p}.name"),
+                "1 to 64 letters, digits, `.`, `_` or `-`, and not an IP address",
+            );
+        } else if seen.contains(&name) {
+            r.err(format!("{p}.name"), format!("`{name}` is listed twice"));
+        }
+        seen.push(name);
+        let blank = |v: &Option<crate::SafeString>| v.as_ref().is_none_or(|s| s.trim().is_empty());
+        let files = [
+            ("community_file", &c.community_file),
+            ("auth_password_file", &c.auth_password_file),
+            ("priv_password_file", &c.priv_password_file),
+        ];
+        for (field, v) in files {
+            if let Some(path) = v.as_ref().filter(|s| !s.trim().is_empty()) {
+                let dirs: Vec<&std::path::Path> = cfg
+                    .node
+                    .secret_file_dirs
+                    .iter()
+                    .map(|d| std::path::Path::new(d.as_str()))
+                    .collect();
+                let file = std::path::Path::new(path.as_str());
+                let inside = file.is_absolute()
+                    && !file
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                    && dirs.iter().any(|d| file.starts_with(d));
+                if !inside {
+                    r.warn(format!(
+                        "{p}.{field}: `{path}` isn't under [node] secret_file_dirs, so the poller will refuse to read it"
+                    ));
+                }
+            }
+        }
+        match c.version {
+            SnmpVersion::V2c => {
+                if blank(&c.community_file) {
+                    r.err(
+                        format!("{p}.community_file"),
+                        "a v2c credential names the file that holds its community",
+                    );
+                }
+                for (field, set) in [
+                    ("user", !blank(&c.user)),
+                    ("auth_protocol", !blank(&c.auth_protocol)),
+                    ("auth_password_file", !blank(&c.auth_password_file)),
+                    ("priv_protocol", !blank(&c.priv_protocol)),
+                    ("priv_password_file", !blank(&c.priv_password_file)),
+                ] {
+                    if set {
+                        r.err(format!("{p}.{field}"), "only a v3 credential has this");
+                    }
+                }
+                if c.role == CredentialRole::Host {
+                    r.warn(format!(
+                        "{p}: a v2c host credential sends its community in clear text to every host in the subnet"
+                    ));
+                } else {
+                    r.warn(format!(
+                        "{p}: SNMPv2c sends the community in clear text on the LAN; use v3 where the device has it"
+                    ));
+                }
+            }
+            SnmpVersion::V3 => {
+                if !blank(&c.community_file) {
+                    r.err(
+                        format!("{p}.community_file"),
+                        "only a v2c credential has this",
+                    );
+                }
+                if blank(&c.user) {
+                    r.err(format!("{p}.user"), "a v3 credential names its USM user");
+                }
+                match c.auth_protocol.as_ref().map(crate::SafeString::as_str) {
+                    None | Some("") => r.err(
+                        format!("{p}.auth_protocol"),
+                        "name `sha`, `sha-256`, `sha-384` or `sha-512` (noAuthNoPriv is refused)",
+                    ),
+                    Some(a) => {
+                        if let Err(why) = AuthProto::parse(a) {
+                            r.err(format!("{p}.auth_protocol"), why.reason());
+                        }
+                    }
+                }
+                if blank(&c.auth_password_file) {
+                    r.err(
+                        format!("{p}.auth_password_file"),
+                        "name the file that holds the authentication password",
+                    );
+                }
+                match c.priv_protocol.as_ref().map(crate::SafeString::as_str) {
+                    None | Some("") => {
+                        if !blank(&c.priv_password_file) {
+                            r.err(
+                                format!("{p}.priv_password_file"),
+                                "a privacy password needs `priv_protocol = \"aes-128\"`",
+                            );
+                        }
+                    }
+                    Some(a) => {
+                        if let Err(why) = PrivProto::parse(a) {
+                            r.err(format!("{p}.priv_protocol"), why.reason());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// REQ: DSC-004 (T25.6, ADR-907, ADR-908, ADR-1001) — `[[discovery.snmp_agent]]`: a label that is
+// not an address, an RFC 1918 IPv4 literal, a listed infrastructure credential, an interval of 60 s
+// or more, and 5 to 25 repetitions.
+fn snmp_agents(cfg: &Config, r: &mut Report<'_>) {
+    use crate::discovery::{CredentialRole, valid_label};
+    let d = &cfg.discovery;
+    if d.snmp_agents.len() > crate::discovery::MAX_AGENTS {
+        r.err(
+            "discovery.snmp_agent",
+            format!("at most {} agents", crate::discovery::MAX_AGENTS),
+        );
+    }
+    let mut names: Vec<&str> = Vec::new();
+    let mut addrs: Vec<(std::net::Ipv4Addr, u16)> = Vec::new();
+    for (i, a) in d.snmp_agents.iter().enumerate() {
+        let p = format!("discovery.snmp_agent[{i}]");
+        let name = a.name.as_str();
+        if !valid_label(name) {
+            r.err(
+                format!("{p}.name"),
+                "1 to 64 letters, digits, `.`, `_` or `-`, and not an IP address (the CLI and the API take a name only)",
+            );
+        } else if names.contains(&name) {
+            r.err(format!("{p}.name"), format!("`{name}` is listed twice"));
+        }
+        names.push(name);
+        match a.address.as_str().parse::<std::net::Ipv4Addr>() {
+            Ok(ip) if crate::discovery::is_rfc1918_addr(ip) => {
+                if addrs.contains(&(ip, a.port)) {
+                    r.warn(format!("{p}.address: `{ip}` is listed twice"));
+                }
+                addrs.push((ip, a.port));
+            }
+            Ok(ip) => r.err(
+                format!("{p}.address"),
+                format!("`{ip}` isn't a private (RFC 1918) address: only 10/8, 172.16/12 and 192.168/16 are polled"),
+            ),
+            Err(_) => r.err(
+                format!("{p}.address"),
+                "an IPv4 address as a literal (a host name or an IPv6 address is refused)",
+            ),
+        }
+        if a.port == 0 {
+            r.err(format!("{p}.port"), "1 to 65535");
+        }
+        match d
+            .snmp_credentials
+            .iter()
+            .find(|c| c.name.as_str() == a.credential.as_str())
+        {
+            None => r.warn(format!(
+                "{p}.credential: no `[[discovery.snmp_credential]]` named `{}`, so this agent is skipped",
+                a.credential
+            )),
+            Some(c) if c.role != CredentialRole::Infrastructure => r.err(
+                format!("{p}.credential"),
+                format!(
+                    "`{}` is a host credential: an agent takes an infrastructure credential, so a device on the LAN never receives the gateway's",
+                    a.credential
+                ),
+            ),
+            Some(_) => {}
+        }
+        if !(crate::discovery::AGENT_INTERVAL_MIN_SECS..=crate::discovery::AGENT_INTERVAL_MAX_SECS)
+            .contains(&a.interval_secs)
+        {
+            r.err(format!("{p}.interval_secs"), "from 60 to 86400 seconds");
+        }
+        if !(crate::discovery::MAX_REPETITIONS_MIN..=crate::discovery::MAX_REPETITIONS_MAX)
+            .contains(&a.max_repetitions)
+        {
+            r.err(format!("{p}.max_repetitions"), "from 5 to 25");
+        }
+        if a.tables.is_empty() {
+            r.err(
+                format!("{p}.tables"),
+                "name at least one of arp, ifmib, bridge, lldp",
+            );
+        }
+        let distinct: std::collections::HashSet<_> = a.tables.iter().collect();
+        if distinct.len() != a.tables.len() {
+            r.warn(format!("{p}.tables: a table is listed twice"));
+        }
+    }
+    // A host credential used by no subnet is allowed (T25.7 adds the subnets' side).
 }
 
 /// REQ: API-010 (T24.9, ADR-973) — the groups' router names: label form, and one group each.
@@ -2260,6 +2480,37 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: DNS-011 (T27.11, ADR-1006) — a negative trust anchor is a domain name. A malformed one would
+/// match no name, so the operator would think a domain is exempt when it isn't.
+fn dnssec(cfg: &Config, r: &mut Report<'_>) {
+    for (i, a) in cfg.dnssec.negative_trust_anchors.iter().enumerate() {
+        if !valid_domain_name(a.as_str()) {
+            r.err(
+                format!("dnssec.negative_trust_anchors[{i}]"),
+                "must be a domain name, such as lab.example",
+            );
+        }
+    }
+}
+
+/// A DNS name: labels of letters, digits, `-` and `_` (not at a label's edge for `-`), each at most
+/// 63 bytes, at most 253 in all, with an optional trailing dot. The root (empty) is not accepted.
+fn valid_domain_name(name: &str) -> bool {
+    let n = name.strip_suffix('.').unwrap_or(name);
+    if n.is_empty() || n.len() > 253 {
+        return false;
+    }
+    n.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
 fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     let c = &cfg.cache;
     if c.min_ttl > c.max_ttl {
@@ -2332,6 +2583,41 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     }
     if t.qlog.flush_interval_secs == 0 {
         r.err("telemetry.qlog.flush_interval_secs", "must be at least 1");
+    }
+    // REQ: OBS-003 (T27.5) — the same upper bounds the settings form shows (tuning.ts), so a
+    // direct API write meets them too.
+    if t.qlog.retention_days > 3650 {
+        r.err("telemetry.qlog.retention_days", "at most 3650 days");
+    }
+    if t.qlog.flush_interval_secs > 3600 {
+        r.err("telemetry.qlog.flush_interval_secs", "at most 3600 seconds");
+    }
+    // REQ: OBS-013 (T27.5) — the anomaly settings and the per-client series' cap are bounded like
+    // the form's fields (tuning.ts): a zero or a huge value is refused, not stored.
+    let a = &t.anomaly;
+    if !(1..=90).contains(&a.learning_days) {
+        r.err("telemetry.anomaly.learning_days", "from 1 to 90 days");
+    }
+    if !(1..=100_000).contains(&a.max_clients) {
+        r.err("telemetry.anomaly.max_clients", "from 1 to 100000 devices");
+    }
+    if !(1..=100_000).contains(&a.nxdomain_per_minute) {
+        r.err(
+            "telemetry.anomaly.nxdomain_per_minute",
+            "from 1 to 100000 answers a minute",
+        );
+    }
+    if !(1..=100).contains(&a.nxdomain_percent) {
+        r.err(
+            "telemetry.anomaly.nxdomain_percent",
+            "from 1 to 100 percent",
+        );
+    }
+    if !(1..=10_000).contains(&t.metrics.per_client_cap) {
+        r.err(
+            "telemetry.metrics.per_client_cap",
+            "from 1 to 10000 devices",
+        );
     }
 }
 
@@ -2481,7 +2767,23 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_pem_certificate;
+    use super::{valid_domain_name, valid_pem_certificate};
+
+    /// REQ: DNS-011 (T27.11) — negative trust anchors are domain names: a trailing dot is fine, a
+    /// label that starts or ends with `-`, an empty label, the root, and spaces are not.
+    #[test]
+    fn dns_011_trust_anchor_must_be_a_domain_name() {
+        assert!(valid_domain_name("lab.example"));
+        assert!(valid_domain_name("lab.example."));
+        assert!(valid_domain_name("my_host.internal"));
+        assert!(!valid_domain_name(""));
+        assert!(!valid_domain_name("."));
+        assert!(!valid_domain_name("lab..example"));
+        assert!(!valid_domain_name("-lab.example"));
+        assert!(!valid_domain_name("lab-.example"));
+        assert!(!valid_domain_name("lab example"));
+        assert!(!valid_domain_name(&format!("{}.example", "a".repeat(64))));
+    }
 
     /// REQ: API-016 (review of T23.7, ADR-921) — a router's certificate must be PEM that decodes to
     /// at least one certificate: the BEGIN marker alone, or a body that isn't base64, is refused.

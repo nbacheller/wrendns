@@ -332,6 +332,9 @@ impl Probes {
 /// following configuration reloads, until `stop`.
 pub(crate) fn spawn(src: Arc<crate::http::Sources>, mut stop: tokio::sync::watch::Receiver<bool>) {
     tokio::spawn(async move {
+        // REQ: OBS-020 (T27.5) — until the listeners serve, the loop looks again every second
+        // rather than waiting a whole interval: the first round follows the listeners' start.
+        let mut served = false;
         loop {
             let cfg = src.config.load_full();
             if !cfg.probe.enabled {
@@ -339,8 +342,13 @@ pub(crate) fn spawn(src: Arc<crate::http::Sources>, mut stop: tokio::sync::watch
             } else if src.readiness.serving() {
                 // REQ: OPS-010 — probes keep measuring during maintenance.
                 src.probes.round(&cfg).await;
+                served = true;
             }
-            let wait = Duration::from_secs(u64::from(cfg.probe.interval_secs.max(5)));
+            let wait = if served || !cfg.probe.enabled {
+                Duration::from_secs(u64::from(cfg.probe.interval_secs.max(5)))
+            } else {
+                Duration::from_secs(1)
+            };
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
                 _ = stop.wait_for(|s| *s) => return,

@@ -959,6 +959,7 @@ fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1052,6 +1053,7 @@ fn clu_005_only_voters_can_fence_the_primary() {
             applied_seq: 0,
             primary: true,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1259,6 +1261,7 @@ fn clu_005_an_unknown_member_is_trusted_with_nothing() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1637,6 +1640,7 @@ fn clu_001_primary_urls_leave_out_nodes_known_not_to_be_primary() {
             applied_seq: 0,
             primary,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1807,6 +1811,7 @@ fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
             applied_seq: 0,
             primary: false,
             config_source: source.into(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1888,6 +1893,7 @@ fn clu_005_deference_follows_the_lease_not_a_members_hello_flag() {
                 applied_seq: 0,
                 primary: false,
                 config_source: "gitops".into(),
+                instance: String::new(),
                 source_commit: String::new(),
             })),
         },
@@ -2007,6 +2013,7 @@ fn clu_001_removing_a_node_drops_it_and_refuses_it() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2278,6 +2285,7 @@ fn clu_005_a_promotion_reaches_a_replica_in_the_heartbeats() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2392,6 +2400,7 @@ fn clu_001_a_replica_learns_that_another_replica_is_up_from_the_primarys_heartbe
             applied_seq: 0,
             primary: true,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2577,4 +2586,651 @@ fn clu_005_t24_26_a_primary_reports_its_renewal() {
             .count(),
         1
     );
+}
+
+// REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — three eligible voters in automatic failover keep a
+// link to each other through a rolling restart (replicas first, then the primary), and no
+// replica flaps between the primary and another replica.
+mod voters_linked {
+    use super::*;
+
+    /// One node of the cluster: its data directory, the port it keeps across restarts, and the
+    /// running incarnation.
+    struct Node {
+        dir: tempfile::TempDir,
+        sock: std::net::TcpListener,
+        cluster: Option<Arc<Cluster>>,
+        /// Its own runtime: dropping it ends every task and connection, as a process exit does.
+        rt: Option<tokio::runtime::Runtime>,
+        id: String,
+    }
+
+    impl Drop for Node {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    impl Node {
+        fn start(&mut self) {
+            let id = Identity::load(self.dir.path()).unwrap().unwrap();
+            let c = Cluster::new(id, "0.1.0");
+            // Votes are the only RPC (what the binary's handler does for them).
+            let hc = Arc::clone(&c);
+            c.set_rpc_handler(Arc::new(move |peer, kind, body| {
+                let c = Arc::clone(&hc);
+                Box::pin(async move {
+                    if kind != crate::failover::KIND {
+                        return Err("votes only".to_owned());
+                    }
+                    crate::failover::answer(&c, &peer, &body)
+                })
+            }));
+            let (tx, stop) = watch::channel(false);
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let sock = self.sock.try_clone().unwrap();
+            let c2 = Arc::clone(&c);
+            rt.spawn(async move {
+                let l = TcpListener::from_std(sock).unwrap();
+                tokio::spawn(serve_on(Arc::clone(&c2), l, stop.clone()));
+                tokio::spawn(dial(Arc::clone(&c2), stop.clone()));
+                tokio::spawn(mesh(Arc::clone(&c2), stop.clone()));
+                tokio::spawn(crate::failover::run(c2, stop));
+                let _keep = tx;
+                std::future::pending::<()>().await;
+            });
+            self.cluster = Some(c);
+            self.rt = Some(rt);
+        }
+        fn stop(&mut self) {
+            if let Some(rt) = self.rt.take() {
+                rt.shutdown_background();
+            }
+            self.cluster = None;
+        }
+        fn c(&self) -> &Arc<Cluster> {
+            self.cluster.as_ref().unwrap()
+        }
+        /// How many voters this node counts as reachable (the Cluster page's figure).
+        fn reachable_voters(&self) -> usize {
+            let c = self.c();
+            let id = c.identity.reload();
+            crate::failover::voters(&id)
+                .iter()
+                .filter(|v| {
+                    **v == id.meta.node_id
+                        || c.members().iter().any(|m| m.node_id == **v && m.connected)
+                })
+                .count()
+        }
+    }
+
+    /// Three eligible voters, automatic failover; node 0 is the primary.
+    fn three() -> [Node; 3] {
+        let dirs = [
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        ];
+        let socks: Vec<std::net::TcpListener> = (0..3)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        for s in &socks {
+            s.set_nonblocking(true).unwrap();
+        }
+        let urls: Vec<String> = socks
+            .iter()
+            .map(|s| format!("https://{}", s.local_addr().unwrap()))
+            .collect();
+        let primary = Identity::init(dirs[0].path(), "home", vec![urls[0].clone()], "k8s").unwrap();
+        let token = primary
+            .create_token_for(
+                600,
+                Some(vec![urls[0].clone()]),
+                crate::node::TokenGrants {
+                    eligible: true,
+                    witness: false,
+                },
+            )
+            .unwrap();
+        let mut joined = Vec::new();
+        for i in 1..3 {
+            let key = pki::new_node_key().unwrap();
+            let req = JoinRequest {
+                witness: false,
+                ephemeral: false,
+                secret: token.secret.clone(),
+                csr_pem: key.csr_pem.clone(),
+                advertise: vec![urls[i].clone()],
+                site: format!("n{i}"),
+                eligible: true,
+                version: "0.1.0".into(),
+            };
+            let resp = primary.accept_join(&req, None).unwrap();
+            let id = Identity::save_joined(
+                dirs[i].path(),
+                &key.key_pem,
+                &resp,
+                &format!("n{i}"),
+                true,
+                vec![urls[i].clone()],
+            )
+            .unwrap();
+            joined.push(id);
+        }
+        let reg = primary.registry();
+        primary.save_failover("auto").unwrap();
+        for id in &joined {
+            id.save_registry(&reg).unwrap();
+            id.save_failover("auto").unwrap();
+        }
+        let ids = [
+            primary.meta.node_id.clone(),
+            joined[0].meta.node_id.clone(),
+            joined[1].meta.node_id.clone(),
+        ];
+        let mut it = dirs
+            .into_iter()
+            .zip(socks)
+            .zip(ids)
+            .map(|((dir, sock), id)| Node {
+                dir,
+                sock,
+                cluster: None,
+                rt: None,
+                id,
+            });
+        [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
+    }
+
+    /// Samples for `secs`; returns, per node, the lowest reachable-voter count seen and how
+    /// many times the main link moved to another URL.
+    async fn watch_for(nodes: &[Node; 3], secs: u64) -> Vec<(usize, usize)> {
+        let mut low = vec![3usize; 3];
+        let mut moves = vec![0usize; 3];
+        let mut last: Vec<Option<String>> = vec![None; 3];
+        let mut prev = [3usize; 3];
+        let t0 = std::time::Instant::now();
+        for _ in 0..secs * 4 {
+            for (i, n) in nodes.iter().enumerate() {
+                let rv = n.reachable_voters();
+                if rv != prev[i] {
+                    prev[i] = rv;
+                    let ms: Vec<String> = n
+                        .c()
+                        .members()
+                        .iter()
+                        .map(|m| {
+                            format!(
+                                "{}:{}:{}:{}",
+                                &m.node_id[..4],
+                                m.connected,
+                                m.via,
+                                m.primary
+                            )
+                        })
+                        .collect();
+                    eprintln!(
+                        "t={:?} node {i} ({}) reaches {rv}: {ms:?} reachable={:?}",
+                        t0.elapsed(),
+                        &n.id[..4],
+                        n.c().reachable_peers()
+                    );
+                }
+                low[i] = low[i].min(rv);
+                let now = n.c().connected_primary();
+                if now.is_some() && last[i].is_some() && now != last[i] {
+                    moves[i] += 1;
+                }
+                if now.is_some() {
+                    last[i] = now;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        for (i, n) in nodes.iter().enumerate() {
+            let ms: Vec<String> = n
+                .c()
+                .members()
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{}:{}:{}:{}",
+                        &m.node_id[..4],
+                        m.connected,
+                        m.via,
+                        m.primary
+                    )
+                })
+                .collect();
+            eprintln!(
+                "end: node {i} ({}) main={:?} to_primary={} members={ms:?} reachable={:?}",
+                &n.id[..4],
+                n.c().connected_primary(),
+                n.c().main_link_to_primary(),
+                n.c()
+                    .reachable_peers()
+                    .iter()
+                    .map(|p| p[..4].to_owned())
+                    .collect::<Vec<_>>()
+            );
+        }
+        low.into_iter().zip(moves).collect()
+    }
+
+    async fn settled(nodes: &[Node; 3]) {
+        let primary_id = nodes[0].id.clone();
+        wait_until("every node counts three voters", || {
+            nodes.iter().all(|n| n.reachable_voters() == 3)
+                && nodes[1..].iter().all(|n| n.c().main_link_to_primary())
+                && nodes[0].c().is_primary()
+                && !primary_id.is_empty()
+        })
+        .await;
+    }
+
+    /// A rolling restart, replicas then primary (`order`), then a minute of watching: every
+    /// node counts every voter and no node's main link moves. Then the primary is killed: a
+    /// survivor is elected within the lease time (plus the election's margin) and neither moves
+    /// again.
+    async fn rolling(order: [usize; 3]) {
+        let mut nodes = three();
+        for n in &mut nodes {
+            n.start();
+        }
+        settled(&nodes).await;
+        for i in order {
+            nodes[i].stop();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            nodes[i].start();
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+        let r = watch_for(&nodes, 30).await;
+        eprintln!("after the restarts (lowest reachable, main-link moves): {r:?}");
+        for (i, (low, moves)) in r.iter().enumerate() {
+            // The first seconds after a restart may count fewer; what must hold is the end state.
+            let _ = low;
+            assert_eq!(*moves, 0, "node {i} flapped");
+        }
+        for (i, n) in nodes.iter().enumerate() {
+            assert_eq!(
+                n.reachable_voters(),
+                3,
+                "node {i} doesn't reach every voter"
+            );
+            assert!(
+                n.c()
+                    .link_drops(Duration::from_secs(30))
+                    .values()
+                    .all(|(d, _)| *d <= 1),
+                "node {i}: a link dropped more than once after the restarts"
+            );
+        }
+        for (i, n) in nodes.iter().enumerate() {
+            eprintln!(
+                "before the kill: node {i} role={:?} view={:?} may_publish={}",
+                n.c().role(),
+                n.c().failover_view(),
+                n.c().may_publish()
+            );
+        }
+        // The primary dies: a survivor is elected within the lease time.
+        let primary = nodes
+            .iter()
+            .position(|n| n.c().is_primary())
+            .expect("one node is the primary");
+        nodes[primary].stop();
+        let survivors: Vec<usize> = (0..3).filter(|i| *i != primary).collect();
+        let started = std::time::Instant::now();
+        while !survivors.iter().any(|i| nodes[*i].c().is_primary()) {
+            if started.elapsed() >= Duration::from_secs(60) {
+                for i in &survivors {
+                    let c = nodes[*i].c();
+                    eprintln!(
+                        "survivor {i}: holds_ca={} role={:?} view={:?} reachable={:?}",
+                        c.identity.reload().holds_ca(),
+                        c.role(),
+                        c.failover_view(),
+                        c.reachable_peers().len()
+                    );
+                }
+                panic!("no survivor was elected within 60 s");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let took = started.elapsed();
+        eprintln!("elected after {took:?}");
+        assert!(
+            took < Duration::from_millis(crate::election::LEASE_MS) + Duration::from_secs(20),
+            "the election took {took:?}"
+        );
+        let r = watch_for_two(&nodes, &survivors, 15).await;
+        eprintln!("after the election (main-link moves): {r:?}");
+        let new = survivors
+            .iter()
+            .find(|i| nodes[**i].c().is_primary())
+            .copied();
+        let other = survivors.iter().find(|i| Some(**i) != new).copied();
+        // The other survivor follows the new primary and still reaches both of the two voters
+        // that are up.
+        if let Some(o) = other {
+            assert!(
+                nodes[o]
+                    .c()
+                    .members()
+                    .iter()
+                    .any(|m| m.primary && m.connected),
+                "the other survivor isn't attached to the new primary"
+            );
+        }
+    }
+
+    /// Like [`watch_for`], over the nodes in `which`; returns each one's main-link moves.
+    async fn watch_for_two(nodes: &[Node; 3], which: &[usize], secs: u64) -> Vec<usize> {
+        let mut moves = vec![0usize; which.len()];
+        let mut last: Vec<Option<String>> = vec![None; which.len()];
+        for _ in 0..secs * 4 {
+            for (k, i) in which.iter().enumerate() {
+                let now = nodes[*i].c().connected_primary();
+                if now.is_some() && last[k].is_some() && now != last[k] {
+                    moves[k] += 1;
+                }
+                if now.is_some() {
+                    last[k] = now;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        moves
+    }
+
+    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — the owner's upgrade order.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clu_005_t24_38_replicas_then_primary_restart_keeps_every_voter_linked() {
+        rolling([1, 2, 0]).await;
+    }
+
+    // The old order too: primary first, then the replicas.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clu_005_t24_38_primary_then_replicas_restart_keeps_every_voter_linked() {
+        rolling([0, 1, 2]).await;
+    }
+
+    // REQ: CLU-001, CLU-005 (T24.38) — one drop of a replica's main link to the primary is
+    // followed by a redial of the primary, not a detour through the other replica (which
+    // `primary_is_back` would have to undo: the owner's "linked, leaving this node, linked").
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clu_005_t24_38_one_drop_of_the_primary_link_does_not_detour_through_a_replica() {
+        let mut nodes = three();
+        for n in &mut nodes {
+            n.start();
+        }
+        settled(&nodes).await;
+        // Past the "up for a while" threshold.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let detours_before = nodes[1]
+            .c()
+            .detours
+            .load(std::sync::atomic::Ordering::SeqCst);
+        for round in 0..3 {
+            // The main link to the primary ends once (cut at node 1's end).
+            nodes[1].c().sever_main.notify_one();
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            // Counted, not sampled: a detour is undone within ~100 ms in test builds.
+            assert_eq!(
+                nodes[1]
+                    .c()
+                    .detours
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                detours_before,
+                "round {round}: node 1 dialed a replica after one drop of the primary link"
+            );
+            assert_eq!(
+                nodes[1]
+                    .c()
+                    .severed
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                round + 1,
+                "round {round}: the cut never took effect"
+            );
+            wait_until("node 1 is linked to the primary again", || {
+                nodes[1].c().main_link_to_primary()
+            })
+            .await;
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a stream that never got a Hello accepted (a peer refused
+    // for its protocol) is not a link that dropped, and a heartbeat marks its peer connected.
+    #[test]
+    fn clu_005_t24_38_a_refused_hello_records_no_drop_and_heartbeat_reconnects() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let c = Cluster::new(id, "0.1.0");
+        let mut peer = Some("peer".to_owned());
+        let refused = c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL + 50,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: "peer".into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        );
+        assert!(refused.is_err());
+        drop(StreamCount::new(&c));
+        assert_eq!(c.link_drops(Duration::from_secs(60)).len(), 0);
+        // Accepted, then a stale end of an older stream clears `connected`: a heartbeat sets it.
+        let mut peer = None;
+        c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: "peer".into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        c.members.lock().unwrap().get_mut("peer").unwrap().connected = false;
+        c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Heartbeat(Heartbeat::default())),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        assert!(c.members().iter().all(|m| m.connected));
+    }
+
+    // REQ: CLU-005 (T24.38) — the drop record forgets peers whose newest drop is old, and a
+    // removed node's record goes with it.
+    #[test]
+    fn clu_005_t24_38_link_drops_are_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let c = Cluster::new(id, "0.1.0");
+        let old = std::time::Instant::now()
+            .checked_sub(Duration::from_hours(2))
+            .unwrap();
+        c.link_drops.lock().unwrap().drops.insert(
+            "stale".into(),
+            std::collections::VecDeque::from([LinkDrop {
+                at: old,
+                instance: String::new(),
+                settled: true,
+            }]),
+        );
+        c.note_link_drop("fresh");
+        let map = c.link_drops.lock().unwrap();
+        assert!(!map.drops.contains_key("stale"));
+        assert!(map.drops.contains_key("fresh"));
+        drop(map);
+        c.adopt_removed(&["fresh".to_owned()]);
+        assert!(c.link_drops.lock().unwrap().drops.is_empty());
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a peer's streams are listed side by side: one ending
+    // leaves the peer reachable and connected, and only the last one's end disconnects it and
+    // counts as a link drop.
+    #[test]
+    fn clu_005_t24_38_a_peer_with_two_streams_stays_linked_until_the_last_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let c = Cluster::new(id, "0.1.0");
+        let mut peer = None;
+        c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: "peer".into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        assert!(c.members().iter().all(|m| m.connected));
+        let listed = |c: &Arc<Cluster>| {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Frame>(4);
+            c.outbox
+                .lock()
+                .unwrap()
+                .entry("peer".into())
+                .or_default()
+                .push(tx.clone());
+            (
+                Listed {
+                    cluster: Arc::clone(c),
+                    peer: "peer".into(),
+                    tx,
+                },
+                rx,
+            )
+        };
+        let ((a, _ra), (b, _rb)) = (listed(&c), listed(&c));
+        let mut ca = StreamCount::new(&c);
+        let mut cb = StreamCount::new(&c);
+        ca.count("peer");
+        cb.count("peer");
+        // The newer stream ends: the older one still carries the peer.
+        drop(b);
+        drop(cb);
+        assert_eq!(c.reachable_peers(), vec!["peer".to_owned()]);
+        assert!(c.members().iter().all(|m| m.connected));
+        assert_eq!(c.link_drops(Duration::from_secs(60)).len(), 0);
+        drop(a);
+        drop(ca);
+        assert_eq!(c.reachable_peers().len(), 0);
+        assert!(c.members().iter().all(|m| !m.connected));
+        assert_eq!(c.link_drops(Duration::from_secs(60))["peer"].0, 1);
+    }
+    /// One link from `peer` as process `instance`: its Hello is accepted, the stream is counted,
+    /// and the returned guard ends it (one drop, the peer's last stream) when dropped.
+    fn t24_38_link(c: &Arc<Cluster>, peer: &str, instance: &str) -> StreamCount {
+        let mut id = None;
+        c.on_frame(
+            &mut id,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: peer.into(),
+                    instance: instance.into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        let mut count = StreamCount::new(c);
+        count.count(peer);
+        count
+    }
+
+    fn t24_38_cluster(dir: &std::path::Path) -> Arc<Cluster> {
+        let id = Identity::init(dir, "home", vec!["https://127.0.0.1:1".into()], "k8s").unwrap();
+        Cluster::new(id, "0.1.0")
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a peer restarted three times in ten minutes (a rolling
+    // upgrade, a graceful shutdown) comes back as another process each time: no drop counts, so
+    // it is not an unstable voter. One it hasn't come back from yet counts until it does.
+    #[test]
+    fn clu_005_t24_38_a_restarted_peer_is_not_an_unstable_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = t24_38_cluster(dir.path());
+        for i in 0..3 {
+            drop(t24_38_link(&c, "peer", &format!("proc-{i}")));
+            // Down now (stopped, not back yet): the drop counts until its Hello says otherwise.
+            assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 1);
+        }
+        let up = t24_38_link(&c, "peer", "proc-3");
+        assert_eq!(c.link_drops(Duration::from_secs(600)).len(), 0);
+        // An upgrade from a peer older than the instance field ("" then an id) is a restart too.
+        drop(t24_38_link(&c, "old", ""));
+        let _old = t24_38_link(&c, "old", "new-proc");
+        assert_eq!(c.link_drops(Duration::from_secs(600)).len(), 0);
+        drop(up);
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a live peer (the same process) whose link drops three
+    // times counts three drops; an older peer without the instance field counts as before.
+    #[test]
+    fn clu_005_t24_38_three_drops_of_a_live_peer_are_an_unstable_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = t24_38_cluster(dir.path());
+        for _ in 0..3 {
+            drop(t24_38_link(&c, "peer", "same-proc"));
+        }
+        let up = t24_38_link(&c, "peer", "same-proc");
+        assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 3);
+        for _ in 0..3 {
+            drop(t24_38_link(&c, "legacy", ""));
+        }
+        let _legacy = t24_38_link(&c, "legacy", "");
+        assert_eq!(c.link_drops(Duration::from_secs(600))["legacy"].0, 3);
+        // A settled drop stays counted when the peer later restarts: only the drop it came back
+        // from as another process is forgotten.
+        drop(up);
+        let _restarted = t24_38_link(&c, "peer", "next-proc");
+        assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 3);
+    }
 }

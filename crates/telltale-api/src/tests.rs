@@ -228,6 +228,55 @@ impl Backend for Fake {
         );
         Box::pin(async move { r })
     }
+    // REQ: DSC-004 (ADR-1002) - one agent, "gateway"; a second real test of it is refused.
+    fn snmp_test(
+        &self,
+        w: crate::SnmpTestWrite,
+    ) -> crate::BoxFuture<Result<crate::model::SnmpTestResult, Problem>> {
+        let mut seen = self.seen.lock().unwrap();
+        let again = seen
+            .iter()
+            .any(|s| s.starts_with("snmp_test gateway dry=false"));
+        seen.push(format!(
+            "snmp_test {} dry={} by {}",
+            w.agent, w.dry_run, w.by
+        ));
+        let r = if w.agent != "gateway" {
+            Err(
+                Problem::not_found(format!("no SNMP agent named `{}`", w.agent))
+                    .hint("Agents: gateway."),
+            )
+        } else if again && !w.dry_run {
+            Err(Problem::new(
+                crate::problem::Code::RateLimited,
+                "`gateway` was tested less than a minute ago",
+            )
+            .retry_after(30))
+        } else {
+            Ok(crate::model::SnmpTestResult {
+                agent: w.agent.clone(),
+                dry_run: w.dry_run,
+                ok: true,
+                oids: vec![crate::model::SnmpTestOid {
+                    table: "arp".into(),
+                    part: "arp".into(),
+                    alternative: "ipNetToPhysicalTable".into(),
+                    probe_oid: "1.3.6.1.2.1.4.35.1.4".into(),
+                    columns: vec!["1.3.6.1.2.1.4.35.1.4".into()],
+                }],
+                capability: (!w.dry_run).then(|| crate::model::AgentCapability {
+                    probed_unix: NOW,
+                    level: "authPriv".into(),
+                    ..Default::default()
+                }),
+                error: None,
+                duration_ms: None,
+                node: Some("test".into()),
+                note: "n".into(),
+            })
+        };
+        Box::pin(async move { r })
+    }
     fn system_info(&self) -> SystemInfo {
         SystemInfo {
             version: "0.1.0".into(),
@@ -783,7 +832,9 @@ async fn send(
     let resp = app.router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+    // 4 MiB: the served OpenAPI document passed 1 MiB with the merge of feat/ipam-integrations
+    // into feat/t26.4-t26.5-world (1,052,133 bytes).
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22)
         .await
         .unwrap();
     (
@@ -1918,11 +1969,20 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
     // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
-    // 160 with OBS-902's /map/geoip and /map/geoip/update (T26.4), then upstream's additions:
-    // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28);
-    // 162 with FLT-006's /clients/{id}/policy (T24.30).
-    // 163 with UPS-004's /upstream-presets (T24.36) -> 165 with OBS-902's two (T26.4).
-    assert_eq!(paths.len(), 165);
+    // 170 with DNS-006's /node-settings, /node-settings/{node} and /cache-settings/{node}, OPS-011's
+    // /support-settings/{node}, OPS-012's /updates-settings/{node}, and DNS-011's, FLT-004's and
+    // CLU-014's /dnssec-settings/default, /filter-settings/default and /drill-settings/default
+    // (T27.2, T27.11), plus FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28) and
+    // FLT-006's /clients/{id}/policy (T24.30), which the merge of feat/ipam-integrations adds.
+    // 171 with UPS-004's /upstream-presets (T24.36), from the same merge.
+    // 172 with DSC-004's /discovery/snmp/test (T25.6).
+    // 173 with DNS-010's /zones/{name} (T27.7), from the merge of feat/t27.5-t27.7-settings.
+    // 179 with the tuning sections' /slo-settings/default, /probe-settings/default,
+    // /upstream-check-settings/default, /anomaly-settings/default, /qlog-settings/default and
+    // /metrics-settings/default (T27.5), from the same merge.
+    // 181 with OBS-902's /map/geoip and /map/geoip/update (T26.4), from the merge of
+    // feat/ipam-integrations into feat/t26.4-t26.5-world.
+    assert_eq!(paths.len(), 181);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -3641,7 +3701,178 @@ async fn flt_004_update_lists_now_over_http() {
     );
 }
 
-// REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export is an admin's: a viewer is refused
+/// REQ: DSC-004, AGT-001..005 (T25.6, ADR-1002) - `POST /api/v1/discovery/snmp/test` over HTTP: the
+// admin's call with a name only (an address or another field is a 400), a dry run that is not
+// audited, the audit entry `discovery.snmp_test`, an Idempotency-Key replay, 404 for an unknown
+// agent, 429 with Retry-After for a second test, and the roles and scope: admins, and agents with
+// `ops:discovery_test` and a reason (not operators, viewers or read-only agents).
+#[tokio::test]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one story: test, dry run, replay, refuse
+async fn dsc_004_snmp_test_over_http() {
+    let (app, fake) = app();
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let calls = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("snmp_test"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let url = "/api/v1/discovery/snmp/test";
+    // A dry run lists the OIDs and is not audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            &format!("{url}?dryRun=true"),
+            &app.bearer,
+            r#"{"agent":"gateway"}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["dryRun"].as_bool(), v["ok"].as_bool()),
+        (Some(true), Some(true))
+    );
+    assert_eq!(v["oids"][0]["probeOid"], "1.3.6.1.2.1.4.35.1.4");
+    assert!(v["capability"].is_null());
+    let audit = |app: &TestApp| {
+        app.auth
+            .state()
+            .audit_page(None, 10, Some("discovery.snmp_test"), None)
+            .unwrap()
+    };
+    assert_eq!(audit(&app).len(), 0);
+    // A test answers with the capability record and is audited as `discovery.snmp_test`.
+    let (s, _, v) = send(&app, post(url, &app.bearer, r#"{"agent":"gateway"}"#, &[])).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["capability"]["level"], "authPriv");
+    let a = audit(&app);
+    assert_eq!((a.len(), a[0].target.as_str()), (1, "gateway"), "{a:?}");
+    assert!(
+        calls(&fake)
+            .contains(&"snmp_test gateway dry=false by token:tests (owner: root)".to_owned())
+    );
+    // A second test is refused, with how long to wait.
+    let (s, h, v) = send(&app, post(url, &app.bearer, r#"{"agent":"gateway"}"#, &[])).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert_eq!(h.get("retry-after").unwrap(), "30");
+    // Idempotency: a keyed success replays the first answer without reaching the backend again.
+    let (app2, fake2) = self::app();
+    let key = [("idempotency-key", "t-1")];
+    let (s, _, _) = send(
+        &app2,
+        post(url, &app2.bearer, r#"{"agent":"gateway"}"#, &key),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, h, v) = send(
+        &app2,
+        post(url, &app2.bearer, r#"{"agent":"gateway"}"#, &key),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(h.get("idempotency-replayed").unwrap(), "true");
+    assert_eq!(
+        calls(&fake2).len(),
+        1,
+        "the replay didn't reach the backend"
+    );
+    let (s, _, _) = send(&app2, post(url, &app2.bearer, r#"{"agent":"other"}"#, &key)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // An unknown agent is a 404 that lists the agents.
+    let (s, _, v) = send(&app, post(url, &app.bearer, r#"{"agent":"nope"}"#, &[])).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("gateway"));
+    // A name only: an address, another field, a blank name and bad JSON are 400s.
+    for bad in [
+        r#"{"agent":"192.168.1.1"}"#,
+        r#"{"agent":"10.0.0.1:161"}"#,
+        r#"{"agent":"gateway","address":"10.0.0.1"}"#,
+        r#"{"agent":" "}"#,
+        r#"{"address":"10.0.0.1"}"#,
+        "{",
+    ] {
+        let (s, _, v) = send(&app, post(url, &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+    let before = calls(&fake).len();
+
+    // An operator and a viewer can't: it sends packets to a device.
+    for (name, role) in [("olive", auth::Role::Operator), ("vic", auth::Role::Viewer)] {
+        let u = app
+            .auth
+            .create_user(name, "a long enough password", role, false, NOW)
+            .unwrap();
+        let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+        app.auth
+            .state()
+            .create_token(
+                &tid,
+                u.id,
+                name,
+                &auth::crypto::secret_hash(&secret),
+                "write",
+                None,
+                NOW,
+            )
+            .unwrap();
+        let t = format!("tt_{tid}_{secret}");
+        let (s, _, _) = send(&app, post(url, &t, r#"{"agent":"gateway"}"#, &[])).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{name}");
+    }
+    // Agents: ops:discovery_test and a reason.
+    let token = |name: &str, scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"{name}","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token("reader", r#""config:read""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let reader = v["token"].as_str().unwrap().to_owned();
+    let why = [("x-telltale-reason", "the gateway was replaced")];
+    let (s, _, v) = send(&app, post(url, &reader, r#"{"agent":"gateway"}"#, &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("ops:discovery_test"),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, token("prober", r#""ops:discovery_test""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, _) = send(&app, post(url, &agent, r#"{"agent":"gateway"}"#, &[])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "agents must give a reason");
+    let (s, _, v) = send(
+        &app,
+        post(
+            &format!("{url}?dryRun=true"),
+            &agent,
+            r#"{"agent":"gateway"}"#,
+            &why,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(calls(&fake).len(), before + 1);
+}
+
+/// REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export is an admin's: a viewer is refused
 // on every import route, an agent is refused whatever its scopes, and an admin gets past the
 // role check (the test backend has no import, so it answers unavailable, not forbidden).
 #[tokio::test]

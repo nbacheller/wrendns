@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network map — TelltaleDNS</title>
+<meta name="description" content="A live map of your network drawn from a sample of lookups: gateway, networks, devices, TelltaleDNS nodes and upstreams, coloured green, yellow or red with a shape and a word, and the settings that tune its sampling and thresholds.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="map">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Observability first</p>
+  <h1>See your network, and who is having a bad day</h1>
+  <p class="lede"><b>Monitor → Network map</b> draws your gateway, networks and VLANs, devices, TelltaleDNS nodes and upstreams, joined by the flows between them. Moving dashes show how busy each flow is, and every node says how it is doing in a shape, a word and a colour, so a device that is failing lookups stands out at a glance. Select it for the reasons, then jump to its queries, Explain or anomalies.</p>
+  <ul class="onpage">
+    <li><a href="#reads">How to read it</a></li>
+    <li><a href="#sampling">Sampling and its error</a></li>
+    <li><a href="#thresholds">Thresholds</a></li>
+    <li><a href="#privacy">Privacy and clusters</a></li>
+    <li><a href="#geoip">GeoIP and its licence</a></li>
+  </ul>
+  <div class="callout"><p><b>The map never slows DNS.</b> It is built on the aggregator thread from a bounded sample of lookups, never in the path that answers a query, and it never shows a domain name.</p></div>
+</section>
+
+<section id="reads">
+  <h2>How to read it</h2>
+  <div class="grid">
+    <div class="card"><h3>States</h3><p>A circle with a check is <b>OK</b>, a triangle is <b>Warning</b>, an octagon with a cross is <b>Failing</b>, and a dashed circle is <b>Idle</b>: too few answers in the last minute to say. Colour is never the only sign.</p></div>
+    <div class="card"><h3>Flows</h3><p>One dash per half a query a second, wider as the rate grows. Motion stops when the tab is hidden and, for good, under your system's reduce-motion setting; a <b>Table</b> view shows the same data as text.</p></div>
+    <div class="card"><h3>Filters</h3><p>Network, group, node, state and a device's name or address, kept in the page's address so a view can be linked.</p></div>
+  </div>
+</section>
+
+<section id="sampling">
+  <h2>Sampling and its error</h2>
+  <p>Each node samples up to <code>event_rate</code> lookups a second (10 to 2,000, default 200). Above that it keeps every Nth lookup and counts each for N, and the page says <b>Sampled, 1 in N</b>. A flow with 20 sampled answers is read to within roughly a fifth; with 400, within about 5%. Something is coloured only after <code>min_sample</code> real answers (default 20); until then it is Idle, never green.</p>
+</section>
+
+<section id="thresholds">
+  <h2>Thresholds</h2>
+  <p>In <b>Settings → Query handling → Network map</b>, an operator sets the sampling rate and when a flow turns Warning or Failing. While you type, a sentence says how the current map would change, and the form refuses a value out of range by name.</p>
+  <table>
+    <thead><tr><th>Setting</th><th>Default</th><th>Turns</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>warn_slow_pct</code></td><td>10</td><td>Warning</td><td>this share of answers are slower than <code>warn_latency_ms</code> (default: the <a href="monitoring.html">latency objective</a>)</td></tr>
+      <tr><td><code>warn_error_pct</code></td><td>5</td><td>Warning</td><td>this share are SERVFAIL or time out</td></tr>
+      <tr><td><code>error_pct</code></td><td>25</td><td>Failing</td><td>this share are SERVFAIL or time out (at least <code>warn_error_pct</code>)</td></tr>
+      <tr><td><code>warn_blocked_pct</code></td><td>60</td><td>Warning</td><td>this share of a device's answers are blocked (devices only)</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">The thresholds change only what the map shows, never an answer or an alert. An open breaker, an unreachable node, a rate-limited device and an open anomaly colour the map too. Also available as <code>PUT /api/v1/map-settings/default</code> and the agent tool <code>plan_set_map</code>.</p>
+</section>
+
+<section id="privacy">
+  <h2>Privacy and clusters</h2>
+  <p>At query-log privacy level 0 and 1 devices are shown by address and name; at 2 they are hidden and one node stands for them; at 3 only network and resolver totals show. In a cluster every node samples its own lookups and the node you ask gathers the rest in the background, so a node that is down shows as unreachable and never delays the map.</p>
+</section>
+
+<section id="geoip">
+  <h2>GeoIP and its licence</h2>
+  <p>The world view needs a country database, and it is off until an admin turns it on. It is DB-IP's "IP to Country Lite", published monthly under <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0</a>; each install downloads it from the publisher, nothing is bundled, and the credit "IP geolocation by DB-IP.com" appears with it. The download is checked for damage, not signed by the publisher. An admin turns it on in Settings, Query handling, GeoIP database, and the map is drawn in Monitor, World view. See the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">running guide</a> for details.</p>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

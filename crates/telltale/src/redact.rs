@@ -13,6 +13,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
     match kind {
         ManagedKind::Record => "record",
         ManagedKind::Forward => "forward",
+        ManagedKind::Zone => "zone",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",
@@ -36,6 +37,18 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cache => "cache",
+        ManagedKind::Support => "support",
+        ManagedKind::Updates => "updates",
+        ManagedKind::Dnssec => "dnssec",
+        ManagedKind::Filter => "filter",
+        ManagedKind::Drill => "drill",
+        ManagedKind::Slo => "slo",
+        ManagedKind::Probe => "probe",
+        ManagedKind::UpstreamCheck => "upstream_check",
+        ManagedKind::TelemetryAnomaly => "anomaly_settings",
+        ManagedKind::TelemetryQlog => "qlog_settings",
+        ManagedKind::TelemetryMetrics => "metrics_settings",
     }
 }
 

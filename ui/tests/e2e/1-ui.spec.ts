@@ -1624,6 +1624,9 @@ test('api_011 names on my network: wizards, DNS, and the API', async () => {
 // device for an hour; DNS stops blocking it at once, the Rules page shows it with its
 // countdown, and removing it blocks the name again. No list is recompiled.
 test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
+  // The poll below allows 60 s for the allowed query to be logged; the default 30 s test timeout
+  // would end the test first on a starved runner.
+  test.setTimeout(90_000);
   expect(await query('ads.e2e.test')).toBe(0); // blocked: 0.0.0.0
   await page.goto('/#/queries?status=blocked&name=ads.e2e.test&match=exact');
   await page.getByRole('button', { name: 'Why?' }).first().click();
@@ -1966,6 +1969,59 @@ test('dns_006 cache page', async () => {
   await expect(page.getByTestId('updates')).toContainText('Newer than the published');
 });
 
+// REQ: CLU-005 (T24.38, ADR-1018) — a voter reached only some of the time is a warning on the
+// Failover line (named by site, with its drops) and a failing "voter links" check with its fix;
+// a steady cluster shows neither. The help topic is on the Failover label.
+test('clu_005 a voter whose link comes and goes is a warning on the Cluster page', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.8.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 1, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 5,
+    cacheHitPercent: 80, querySharePercent: 10, ...o,
+  });
+  const view = (flaky: boolean) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-a', newestConfigSeq: 9, healthy: !flaky,
+    checks: [
+      { id: 'peers_up', ok: true, summary: 'All 3 nodes are up' },
+      flaky
+        ? { id: 'voter_links', ok: false, summary: "A voter's link comes and goes: id-b (dropped 5 times in 10 min)", fix: 'Check the network and cluster port between the nodes.' }
+        : { id: 'voter_links', ok: true, summary: "Every voter's link is steady" },
+    ],
+    events: [], conflicts: [], authority: 'primary',
+    failover: {
+      mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: false, votedEpoch: 1,
+      unstableVoters: flaky ? [{ nodeId: 'id-b', drops: 5, windowSeconds: 600, lastDropSecondsAgo: 40 }] : [],
+    },
+    nodes: [
+      node({ nodeId: 'id-a', site: 'replica-a', thisNode: true, link: 'self', rttMs: null }),
+      node({ nodeId: 'id-p', site: 'primary', role: 'primary', link: 'outbound' }),
+      node({ nodeId: 'id-b', site: 'replica-b' }),
+    ],
+  });
+  let current = view(true);
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  try {
+    await page.goto('/#/cluster');
+    const warn = page.getByTestId('cluster-unstable-voters');
+    await expect(warn).toContainText('replica-b');
+    await expect(warn).toContainText('dropped 5 times in the last 10 minutes');
+    await expect(page.getByRole('button', { name: 'Help: Every voter reachable, all the time' })).toBeVisible();
+    // The check, with its fix, on the Health tab.
+    await page.goto('/#/cluster?tab=health');
+    const check = page.getByTestId('cluster-check').filter({ hasText: 'comes and goes' });
+    await expect(check).toContainText('Check the network and cluster port');
+    // Steady again: no warning.
+    current = view(false);
+    await page.goto('/#/cluster');
+    await expect(page.getByTestId('cluster-unstable-voters')).toHaveCount(0, { timeout: 12_000 });
+    await expect(page.getByTestId('cluster-failover')).toContainText('automatic: 3 of 3 voters reachable');
+  } finally {
+    for (const r of ['**/api/v1/cluster', '**/api/v1/cluster/rollout', '**/api/v1/cluster/versions']) await page.unroute(r);
+  }
+});
+
 // REQ: CLU-005 (ADR-960, T21.7) — turning automatic failover on under a running cluster needs no
 // restart: the Cluster page, which polls every 5 s, goes from "manual" to "automatic" with the
 // lease the primary now holds, and the other replica (no stream to this node in manual mode) is
@@ -2303,7 +2359,8 @@ test('flt_004 prune lists that add little, then undo', async () => {
 
   await page.goto('/#/lists');
   await page.reload(); // the page may already be on /#/lists, with the lists read before these two existed
-  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  // The name is the first cell's own strong: a "Every name in it is also in <strong>…" note in another row's first cell must not match too.
+  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('td:first-child > strong', { hasText: new RegExp(`^${name}$`) }) });
   await expect(row('prune-small').getByTestId('list-adds')).toHaveText('adds 0%');
   await expect(row('prune-small').getByTestId('list-covered-by')).toContainText('100% also in prune-big');
   // prune-small's row names prune-big too ("also in prune-big"), so look for the figure, not the row's only cell.
@@ -2367,7 +2424,8 @@ test('flt_004 prune lists that add little, then undo', async () => {
   const done = page.getByTestId('prune-done');
   await expect(done).toContainText('prune-small');
   await expect(panel).toHaveCount(0);
-  await expect(row('prune-small')).toContainText('off');
+  // The state badge ("off"), not the "Turn it off" button of a redundant list.
+  await expect(row('prune-small').locator('span.badge', { hasText: /^off$/ })).toHaveCount(1);
   expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(false);
   expect((await listed()).find((l) => l.name === 'prune-big')?.enabled).toBe(true);
   const audit = (await (await page.request.get('/api/v1/audit?action=lists.prune')).json()).items;
@@ -2377,7 +2435,7 @@ test('flt_004 prune lists that add little, then undo', async () => {
   await done.getByTestId('prune-undo').click();
   await expect(done).toHaveCount(0);
   await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
-  await expect(row('prune-small').getByText('off', { exact: true })).toHaveCount(0); // the "Turn it off" button is not the badge
+  await expect(row('prune-small').locator('span.badge', { hasText: /^off$/ })).toHaveCount(0); // the "Turn it off" button is not the badge
   const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
   expect(def.definition.rules).toHaveLength(10);
 
@@ -4046,6 +4104,167 @@ test('dns_023 viewer sees device-name settings read-only', async () => {
   } finally {
     await v.close();
   }
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — a record's TTL and node-only flag from the local DNS page: the
+// answer on the wire carries the TTL, and the node-only name shows as such in the list.
+test('dns_010 record ttl', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/local-dns');
+  await page.getByRole('button', { name: 'Add a name' }).click();
+  const form = page.locator('form').filter({ has: page.getByLabel('TTL in seconds (optional)') });
+  await form.getByLabel('Name', { exact: true }).fill('ttl010.home.arpa');
+  await form.getByLabel('Address', { exact: true }).fill('192.0.2.10');
+  await form.getByLabel('TTL in seconds (optional)').fill('60');
+  await form.getByLabel('Only on this node (the cluster doesn\'t share it)').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const row = page.locator('tr').filter({ hasText: 'ttl010.home.arpa' });
+  await expect(row).toContainText('60');
+  await expect(row).toContainText('this node only');
+  const answer = await queryDetail('ttl010.home.arpa');
+  expect(answer.address).toBe('192.0.2.10');
+  expect(answer.ttl).toBe(60);
+  await row.getByRole('button', { name: 'Remove ttl010.home.arpa' }).click();
+  await expect(page.locator('tr').filter({ hasText: 'ttl010.home.arpa' })).toHaveCount(0);
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — a conditional-forwarding route limited to a client group and a
+// query type, with the trust anchor and node-only choices, shown in the preview and the list.
+test('dns_010 route by group and type', async () => {
+  await page.goto('/#/local-dns');
+  await page.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+  const form = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+  await form.getByLabel('Domain', { exact: true }).fill('routed010.example');
+  await form.getByLabel('Server address', { exact: true }).fill('10.10.10.53');
+  await form.getByLabel('Only for the devices in these groups (optional)').fill('lab');
+  await form.getByLabel('Only for these query types (optional)').fill('ptr');
+  await expect(form.getByText('for the devices in lab')).toBeVisible();
+  await form.getByLabel('Only on this node (the cluster doesn\'t share it)').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'routed010.example for the devices in lab' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const row = page.locator('tr').filter({ hasText: 'routed010.example' });
+  await expect(row).toContainText('for lab');
+  await expect(row).toContainText('PTR');
+  await expect(row).toContainText('this node only');
+  await row.getByRole('button', { name: 'Stop sending routed010.example' }).click();
+  await expect(page.locator('tr').filter({ hasText: 'routed010.example' })).toHaveCount(0);
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — an authoritative zone made from the local DNS page answers its
+// names itself and gives "no such name" for a name the zone doesn't have.
+test('dns_010 add a zone', async () => {
+  await page.goto('/#/local-dns');
+  await page.getByTestId('zone-add').click();
+  const form = page.getByTestId('zone-form');
+  await form.getByLabel('Zone (its domain)').fill('zone010.e2e.test');
+  await form.getByLabel('Record 1 name').fill('printer.zone010.e2e.test');
+  await form.getByLabel('Record 1 type').selectOption('A');
+  await form.getByLabel('Record 1 value').fill('192.168.11.20');
+  await form.getByLabel('Record 1 TTL').fill('120');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'zone010.e2e.test' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const zoneRow = page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' });
+  await expect(zoneRow).toContainText('the UI / API');
+  const answer = await queryDetail('printer.zone010.e2e.test');
+  expect(answer.address).toBe('192.168.11.20');
+  expect(answer.ttl).toBe(120);
+  // The refusal for a name it doesn't have is expected: the zone answers it itself.
+  expect(await query('ghost.zone010.e2e.test')).toBe(3);
+  // REQ: DNS-010 (T27.7) — an API zone is edited in place: the new address is answered at once.
+  await zoneRow.getByRole('button', { name: 'Edit zone zone010.e2e.test' }).click();
+  await page.getByTestId('zone-form').getByLabel('Record 1 value').fill('192.168.11.21');
+  await page.getByTestId('zone-form').getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'zone010.e2e.test' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  expect((await queryDetail('printer.zone010.e2e.test')).address).toBe('192.168.11.21');
+  await zoneRow.getByRole('button', { name: 'Remove zone zone010.e2e.test' }).click();
+  await expect(page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' })).toHaveCount(0);
+});
+
+// REQ: OBS-020 (T27.5, ADR-1007) — the listener checks' interval is changed from Settings → System,
+// applied with no restart (the card reads it back), and reverted to the file.
+test('obs_020 change probe interval', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  const tuning = page.getByTestId('tuning-probe');
+  await tuning.locator('summary').click();
+  const editor = page.getByTestId('editor-probe');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('Every 30 s');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('spinbutton', { name: 'Seconds between rounds' }).fill('45');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('Every 45 s');
+  await expect(row).toContainText('overrides the file');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('Every 30 s');
+});
+
+// REQ: OBS-003 (T27.5, ADR-1007) — the query log's store is an admin's: an operator sees the
+// settings read-only, and the server refuses the privacy level from an operator (403).
+test('obs_003 operator cannot change privacy level', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: 'olive', password: 'an operator password', role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const o = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await o.newPage();
+    await p.goto('/#/queries');
+    await p.getByLabel('Username', { exact: true }).fill('olive');
+    await p.getByLabel('Password', { exact: true }).fill('an operator password');
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await p.goto('/#/queries');
+    await p.getByTestId('tuning-qlog').locator('summary').click();
+    const row = p.getByTestId('editor-qlog_settings').getByTestId('entry-row');
+    await expect(row).toContainText('Privacy level', { timeout: 30_000 });
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    const token = (await (await o.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const refused = await o.request.put('/api/v1/qlog-settings/default', {
+      headers: { 'x-csrf-token': token, 'content-type': 'application/json' },
+      data: { privacy_level: 2 },
+    });
+    expect(refused.status()).toBe(403);
+  } finally {
+    await o.close();
+  }
+});
+
+// REQ: OBS-020 (T27.5, API-901) — the form refuses a probe timeout the server would refuse (a timeout
+// of whole seconds at or above the interval) before it asks the server, and says why.
+test('obs_020 form refuses a timeout longer than the interval', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // The page may already be on this URL (a hash change does not reload it): reload, so the
+  // disclosure starts closed and the click opens it.
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  await page.getByTestId('tuning-probe').locator('summary').click();
+  const row = page.getByTestId('editor-probe').getByTestId('entry-row');
+  await expect(row).toContainText('Every 30 s');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('spinbutton', { name: 'Seconds between rounds' }).fill('5');
+  await page.getByRole('spinbutton', { name: 'Timeout per check (ms)' }).fill('6000');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText('The timeout must be shorter than the interval')).toBeVisible();
+  await expect(row).not.toContainText('Every 5 s');
+});
+
+// REQ: OBS-003 (T27.5, API-901) — the query log's size is checked in the form: a size the server
+// can't read (`2 gigs`) is refused with the accepted units, not sent.
+test('obs_003 form refuses a size it cannot read', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/queries');
+  await page.getByTestId('tuning-qlog').locator('summary').click();
+  const row = page.getByTestId('editor-qlog_settings').getByTestId('entry-row');
+  await expect(row).toContainText('Privacy level');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('textbox', { name: 'Keep at most (size)' }).fill('2 gigs');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText('Keep at most: a size such as 500MiB or 2GiB')).toBeVisible();
 });
 
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.
@@ -6563,6 +6782,253 @@ test('dsc_001 a poll keeps unsaved edits', async () => {
   await page.waitForTimeout(16_000);
   await expect(node).toHaveValue('pi-unsaved');
   await node.fill('');
+});
+
+// REQ: DSC-004, DSC-007 (T25.6, ADR-908, ADR-1001, ADR-1002) — an admin adds a credential and an agent,
+// checks and applies them (the real server validates and stores them), then tests the saved agent.
+// The test itself is mocked: the e2e node runs no SNMP poller (the inventory is off), so the real
+// answer is `discovery_not_here`; the mock gives the dry run's OIDs, a capability record, and the
+// 60-second cooldown refusal.
+test('dsc_004 add an agent and test it', async () => {
+  // Leave the page first, so it mounts again and reads the stored settings (an earlier test mocked them).
+  await page.goto('/#/');
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  // A credential: the form names files, and holds no secret field.
+  await settings.getByTestId('credential-add').click();
+  const cform = settings.getByTestId('credential-form');
+  await cform.getByLabel('Credential name').fill('gw-v3');
+  await cform.getByLabel('SNMP user').fill('telltale');
+  await cform.getByLabel('Authentication password file').fill('/run/secrets/snmp-auth');
+  await cform.getByTestId('credential-keep').click();
+  await expect(settings.getByTestId('credential-gw-v3')).toContainText('v3 authPriv');
+  // The agent needs a credential and a private address; a bad name is refused in the form.
+  await settings.getByTestId('agent-add').click();
+  const aform = settings.getByTestId('agent-form');
+  await aform.getByLabel('Agent name').fill('192.0.2.1');
+  await aform.getByLabel('Agent address').fill('192.0.2.1');
+  await aform.getByTestId('agent-keep').click();
+  await expect(aform.getByRole('alert')).toContainText('is not an address');
+  await aform.getByLabel('Agent name').fill('gateway');
+  await aform.getByLabel('Agent credential').selectOption('gw-v3');
+  await aform.getByTestId('agent-keep').click();
+  await expect(settings.getByTestId('agent-gateway')).toContainText('192.0.2.1');
+  // An unsaved agent can't be tested yet.
+  await expect(settings.getByRole('button', { name: 'Test agent gateway' })).toBeDisabled();
+  // The real server checks the whole change and stores exactly what was checked.
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(settings.getByTestId('agent-gateway')).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Test agent gateway' })).toBeEnabled();
+
+  let tests = 0;
+  await page.route(/\/api\/v1\/discovery\/snmp\/test/, async (route) => {
+    tests += 1;
+    const body = route.request().postDataJSON() as { agent: string };
+    expect(Object.keys(body)).toEqual(['agent']);
+    const dry = route.request().url().includes('dryRun=true');
+    const base = { agent: 'gateway', dryRun: dry, ok: true, node: 'e2e', durationMs: dry ? null : 412 };
+    if (dry) {
+      return route.fulfill({
+        json: {
+          ...base,
+          note: 'Nothing was sent (dry run).',
+          oids: [{ table: 'arp', part: 'arp', alternative: 'ipNetToPhysicalTable', probeOid: '1.3.6.1.2.1.4.35.1.4', columns: ['1.3.6.1.2.1.4.35.1.4'] }],
+        },
+      });
+    }
+    if (tests > 2) {
+      return route.fulfill({
+        status: 429,
+        headers: { 'retry-after': '42' },
+        json: { type: 'about:blank', title: 'Too many attempts', status: 429, code: 'rate_limited', detail: '`gateway` was tested less than a minute ago', hint: 'Try again in 42 seconds.' },
+      });
+    }
+    return route.fulfill({
+      json: {
+        ...base,
+        note: 'Capabilities updated.',
+        oids: [],
+        capability: {
+          probedUnix: 1_800_000_000, level: 'authPriv', engineId: '80000009030011223344', sysObjectId: '1.3.6.1.4.1.8072.3.2.10',
+          parts: [
+            { table: 'arp', part: 'arp', source: 'ipNetToPhysicalTable' },
+            { table: 'bridge', part: 'forwarding', source: null },
+          ],
+        },
+      },
+    });
+  });
+  try {
+    await settings.getByRole('button', { name: 'Test agent gateway' }).click();
+    const panel = page.getByTestId('snmp-test');
+    await expect(panel).toContainText('Test gateway');
+    await panel.getByTestId('test-dry').click();
+    await expect(panel.getByTestId('test-result')).toContainText('ipNetToPhysicalTable');
+    await expect(panel.getByTestId('test-result')).toContainText('1.3.6.1.2.1.4.35.1.4');
+    await panel.getByTestId('test-now').click();
+    await expect(panel.getByTestId('cap-level')).toHaveText('authPriv');
+    await expect(panel.getByTestId('cap-parts')).toContainText('ipNetToPhysicalTable');
+    await expect(panel.getByTestId('cap-parts')).toContainText('no alternative answered (skipped)');
+    // The cooldown's refusal is shown in words, with its hint.
+    await panel.getByTestId('test-now').click();
+    await expect(panel.getByRole('alert')).toContainText('tested less than a minute ago');
+    await expect(panel.getByRole('alert')).toContainText('Try again in 42 seconds');
+    // The 429 is expected: the browser logs it as a console error, which the test removes.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 429/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/snmp\/test/).catch(() => {});
+  }
+  // Delete both again and apply, then use the file's settings (back to the e2e server's defaults).
+  await settings.getByRole('button', { name: 'Delete agent gateway' }).click();
+  await settings.getByRole('button', { name: 'Delete credential gw-v3' }).click();
+  await expect(settings.getByTestId('agents-empty')).toBeVisible();
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+});
+
+// REQ: DSC-004 (T25.6) — an operator sees the agents and credentials read-only, with the poller's
+// state; no control changes them or tests one, and the server refuses an operator's write and test.
+test('dsc_004 operator sees agents read-only', async () => {
+  const entry = {
+    items: [{
+      kind: 'discovery', name: 'default', source: 'override',
+      definition: {
+        enabled: true, node: null, worker_memory_mib: 64, subnet: [{ cidr: '192.168.1.0/24' }],
+        snmp_credential: [{ name: 'gw-v3', role: 'infrastructure', version: 'v3', user: 'telltale', auth_protocol: 'sha', auth_password_file: '/run/secrets/a', priv_protocol: 'aes-128' }],
+        snmp_agent: [{ name: 'gateway', address: '192.168.1.1', port: 161, credential: 'gw-v3', interval_secs: 300, max_repetitions: 10, tables: ['arp', 'ifmib'] }],
+      },
+      redacted: [], credentialIssues: [], setByFile: [], answering: null,
+    }],
+  };
+  const status = {
+    enabled: true, designated: true, node: null, workers: [],
+    agents: [{
+      name: 'gateway', address: '192.168.1.1', credential: 'gw-v3', intervalSecs: 300, state: 'failing',
+      lastPollUnix: 1_800_000_000, lastSuccessUnix: null, lastDurationMs: null, lastError: 'no reply (timeout)',
+      consecutiveFailures: 3, polls: 3, failures: 3, lastRequests: 3, lastTimeouts: 3,
+      tables: [{ table: 'arp', state: 'unprobed', rows: null, stop: null, error: null }, { table: 'ifmib', state: 'unprobed', rows: null, stop: null, error: null }],
+      capability: null, lastCounts: null, lastTestUnix: null,
+    }],
+  };
+  const mock = async (p: import('@playwright/test').Page) => {
+    await p.route(/\/api\/v1\/config\/entries\?kind=discovery/, (route) => route.fulfill({ json: entry }));
+    await p.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  };
+  const OPERATOR = { user: 'operator2', pass: 'operator long password' };
+  const csrf = await csrfOf(page.request);
+  await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  // The admin sees every control on the same data.
+  await mock(page);
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const mine = page.getByTestId('inventory-settings');
+    await expect(mine.getByTestId('agent-gateway').getByTestId('agent-state')).toHaveText('Failing');
+    await expect(mine.getByTestId('agent-gateway').getByTestId('agent-error')).toHaveText('no reply (timeout)');
+    await expect(mine.getByRole('button', { name: 'Edit agent gateway' })).toBeVisible();
+    await expect(mine.getByRole('button', { name: 'Test agent gateway' })).toBeEnabled();
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=discovery/).catch(() => {});
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await mock(p);
+    await p.goto('/#/network-inventory');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const mine = p.getByTestId('inventory-settings');
+    await expect(mine.getByTestId('agent-gateway')).toBeVisible({ timeout: 30_000 });
+    await expect(mine.getByTestId('agent-gateway').getByTestId('agent-state')).toHaveText('Failing');
+    await expect(mine.getByTestId('credential-gw-v3')).toContainText('v3 authPriv');
+    for (const name of ['Edit agent gateway', 'Delete agent gateway', 'Test agent gateway', 'Edit credential gw-v3', 'Delete credential gw-v3']) {
+      await expect(mine.getByRole('button', { name })).toHaveCount(0);
+    }
+    await expect(mine.getByTestId('agent-add')).toHaveCount(0);
+    await expect(mine.getByTestId('credential-add')).toHaveCount(0);
+    // The server refuses an operator's write and test too, whatever the page shows.
+    const ocsrf = await csrfOf(op.request);
+    const test = await op.request.post('/api/v1/discovery/snmp/test', { headers: { 'x-csrf-token': ocsrf }, data: { agent: 'gateway' } });
+    expect(test.status()).toBe(403);
+    const write = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { snmp_credential: [{ name: 'c', community_file: '/run/secrets/c' }], snmp_agent: [{ name: 'x', address: '10.0.0.1', credential: 'c' }] } });
+    expect(write.status()).toBe(403);
+    expect(await write.text()).toContain('snmp_agent');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: DSC-004 (T25.6, ADR-914) — a list the configuration files set is locked, and labelled as set by
+// file: the Add, Edit, Delete and Test controls are not offered for it.
+test('dsc_004 file-set agents show set by file', async () => {
+  const entry = {
+    items: [{
+      kind: 'discovery', name: 'default', source: 'file',
+      definition: {
+        enabled: true, node: null, worker_memory_mib: 64, subnet: [],
+        snmp_credential: [{ name: 'gw', role: 'infrastructure', version: 'v2c', community_file: '/run/secrets/c' }],
+        snmp_agent: [{ name: 'gateway', address: '192.168.1.1', port: 161, credential: 'gw', interval_secs: 300, max_repetitions: 10, tables: ['arp'] }],
+      },
+      redacted: [], credentialIssues: [], setByFile: ['snmp_agent', 'snmp_credential'], answering: null,
+    }],
+  };
+  await page.route(/\/api\/v1\/config\/entries\?kind=discovery/, (route) => route.fulfill({ json: entry }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await expect(settings.getByTestId('agent-gateway')).toBeVisible();
+    await expect(settings.getByTestId('inventory-agents').getByTestId('set-by-file')).toBeVisible();
+    await expect(settings.getByTestId('inventory-credentials').getByTestId('set-by-file')).toBeVisible();
+    await expect(settings.getByTestId('agent-add')).toHaveCount(0);
+    await expect(settings.getByRole('button', { name: 'Edit agent gateway' })).toHaveCount(0);
+    await expect(settings.getByRole('button', { name: 'Test agent gateway' })).toHaveCount(0);
+    // A v2c credential is flagged: its community crosses the LAN in clear text.
+    await expect(settings.getByTestId('credential-gw')).toContainText('clear text');
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=discovery/).catch(() => {});
+  }
+});
+
+// REQ: DSC-007 (T25.6) — a credential names files, never a secret: the form has no password field, a
+// v2c credential warns that its community is clear text, and the server refuses an inline secret
+// (the key is unknown) without echoing it.
+test('dsc_007 credential form names files and takes no secret', async () => {
+  // Leave the page first, so it mounts again and reads the stored settings (an earlier test mocked them).
+  await page.goto('/#/');
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByTestId('credential-add').click();
+  const form = settings.getByTestId('credential-form');
+  await expect(form.getByLabel('Authentication password file')).toBeVisible();
+  await expect(page.locator('input[type=password]')).toHaveCount(0);
+  await form.getByLabel('SNMP version').selectOption('v2c');
+  await expect(form.getByTestId('v2c-warning')).toContainText('clear text');
+  await expect(form.getByLabel('Community file')).toBeVisible();
+  // The protocols the client refuses are not on offer, and the form says why.
+  await form.getByLabel('SNMP version').selectOption('v3');
+  const auth = await form.getByLabel('Authentication protocol').locator('option').allTextContents();
+  expect(auth.join(' ')).not.toMatch(/MD5|SHA-224/);
+  await expect(form).toContainText('MD5, SHA-224, DES, AES-192, AES-256 and no authentication are refused');
+  await form.getByRole('button', { name: 'Cancel' }).click();
+  // An inline secret is not a key the server knows.
+  const csrf = await csrfOf(page.request);
+  const planted = 'planted-community-9d2f';
+  const res = await page.request.put('/api/v1/discovery-settings/default', {
+    headers: { 'x-csrf-token': csrf },
+    params: { dryRun: 'true' },
+    data: { snmp_credential: [{ name: 'c', community: planted }] },
+  });
+  expect(res.status()).toBe(422);
+  expect(await res.text()).not.toContain(planted);
 });
 
 // REQ: DSC-009 (T25.10, ADR-912) — an admin turns on the extra UniFi reads, sets the history window and

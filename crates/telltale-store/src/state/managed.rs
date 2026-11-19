@@ -281,6 +281,54 @@ impl State {
         Ok(Some(next))
     }
 
+    /// REQ: CLU-015 (T24.40, ADR-1019) — adds `rows` (`(kind, name, body)`) that this node does not
+    /// hold yet, in one transaction, and records `note` in the same step; a row already held is
+    /// left as it is (the node's own row wins), and nothing else is touched. Does nothing
+    /// (`Ok(None)`) when `meta` already holds the note's value. Returns the kinds of the rows added,
+    /// one per row. The version moves once.
+    pub fn insert_missing_managed_noted(
+        &self,
+        rows: &[(&str, &str, &str)],
+        now: u64,
+        by: &str,
+        note: (&str, &str),
+    ) -> std::result::Result<Option<Vec<String>>, ManagedError> {
+        let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        let held: Option<String> = tx
+            .query_row("SELECT value FROM meta WHERE key = ?1", [note.0], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if held.as_deref() == Some(note.1) {
+            return Ok(None);
+        }
+        let current = version(&tx)?;
+        let mut added = Vec::new();
+        for (kind, name, body) in rows {
+            let n = tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO NOTHING",
+                params![kind, name, body, i(now), by],
+            )?;
+            if n > 0 {
+                added.push((*kind).to_owned());
+            }
+        }
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![note.0, note.1],
+        )?;
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(Some(added))
+    }
+
     /// Deletes `name` if the version is still `expect` (when given). Returns the new version.
     pub fn delete_managed(
         &self,

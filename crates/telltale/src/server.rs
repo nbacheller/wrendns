@@ -653,6 +653,12 @@ fn telemetry_at_start(t: &telltale_config::TelemetryConfig) -> telltale_config::
     t.otlp.headers.clear();
     t.otlp.header_refs.clear();
     t.otlp.interval_secs = 0;
+    // REQ: OBS-013, OBS-005, OBS-003 (T27.5, ADR-1007) — anomaly detection, the per-client series
+    // and the query log's privacy level follow a reload; the rest of the query log doesn't.
+    t.anomaly = telltale_config::AnomalyConfig::default();
+    t.metrics.per_client = false;
+    t.metrics.per_client_cap = 0;
+    t.qlog.privacy_level = 0;
     t
 }
 
@@ -670,6 +676,10 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     // REQ: OPS-011 — the log files are opened once, at start.
     if old.support != new.support {
         v.push("[support]");
+    }
+    // REQ: OPS-012 (T27.11, ADR-1006) — the update check's loop starts with the value it had.
+    if old.updates != new.updates {
+        v.push("[updates]");
     }
     // REQ: OPS-012 — the watchdog thread reads its settings once, at start.
     if old.watchdog != new.watchdog {
@@ -1197,6 +1207,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cluster.clone(),
         crate::maintenance::now_ms(),
     ));
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — what this node runs with, for a change
+    // to its per-node sections that waits for a restart.
+    crate::node_settings::remember_start(&cfg);
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache: Arc::clone(&cache),

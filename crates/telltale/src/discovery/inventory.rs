@@ -380,6 +380,11 @@ impl Entry {
         if self.import_bits != 0 {
             sources |= Source::Import.bit();
         }
+        // REQ: DSC-004 - a location or an LLDP neighbour comes from SNMP, so the entry shows that
+        // source even when no address or name does (a MAC the switch learned and nobody else saw).
+        if self.port.is_some() || !self.lldp.is_empty() {
+            sources |= Source::Snmp.bit();
+        }
         self.sources = sources;
     }
 
@@ -451,13 +456,17 @@ pub(crate) struct Observation {
     pub(crate) port: Option<String>,
     /// Open TCP ports (imports).
     pub(crate) ports: Vec<u16>,
+    /// REQ: DSC-004 (T25.6) - where an LLDP neighbour hangs: "<agent> <local port>", for the
+    /// neighbour's entry (at most [`MAX_LLDP`] are kept).
+    pub(crate) lldp: Vec<String>,
     /// REQ: DSC-009 (T25.10) — the LAN or VLAN name the router reports.
     pub(crate) network: Option<String>,
     /// REQ: DSC-009 — the access point a wireless client is on.
     pub(crate) ap: Option<String>,
-    /// REQ: DSC-009 — the LLDP neighbours a switch or access point reports. `Some` replaces the
-    /// entry's list (an empty list clears it); `None` leaves it.
-    pub(crate) lldp: Option<Vec<String>>,
+    /// REQ: DSC-009 — the LLDP neighbours a switch or access point reports (the router's view,
+    /// apart from the SNMP poller's `lldp`). `Some` replaces the entry's list (an empty list
+    /// clears it); `None` leaves it.
+    pub(crate) router_lldp: Option<Vec<String>>,
     /// REQ: DSC-009 — when the router first saw the device (Unix seconds); the entry keeps the
     /// earliest time it has.
     pub(crate) first_seen: Option<u64>,
@@ -477,9 +486,10 @@ impl Observation {
             vlan: None,
             port: None,
             ports: Vec::new(),
+            lldp: Vec::new(),
             network: None,
             ap: None,
-            lldp: None,
+            router_lldp: None,
             first_seen: None,
             seen,
         }
@@ -1037,6 +1047,19 @@ impl Inventory {
                 entry.ports.push(*p);
             }
         }
+        // REQ: DSC-004 - where an LLDP neighbour is seen: "<agent> <port>". A new sighting from an
+        // agent replaces that agent's earlier one (the neighbour moved to another port), so each
+        // agent keeps one place (the list is sorted and capped when the entry is normalized).
+        for l in o.lldp.iter().map(|l| sanitize(l, NAME_MAX)) {
+            if l.is_empty() {
+                continue;
+            }
+            let agent = l.split(' ').next().unwrap_or_default().to_owned();
+            entry
+                .lldp
+                .retain(|x| x.split(' ').next().unwrap_or_default() != agent);
+            entry.lldp.push(l);
+        }
         // REQ: DSC-009 (T25.10) — the router's network, access point and LLDP view, cut as every
         // device string is (DSC-015).
         if let Some(n) = o
@@ -1054,7 +1077,7 @@ impl Inventory {
         {
             entry.ap = Some(a);
         }
-        if let Some(list) = &o.lldp {
+        if let Some(list) = &o.router_lldp {
             entry.lldp = list
                 .iter()
                 .map(|l| sanitize(l, TEXT_MAX))

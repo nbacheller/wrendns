@@ -23,6 +23,9 @@ use tracing::{error, warn};
 pub(crate) const CLIENT: &str = "client";
 pub(crate) const RECORD: &str = "record";
 pub(crate) const FORWARD: &str = "forward";
+/// REQ: DNS-010 (T27.7) — authoritative zones made through the API, by apex: the body is a
+/// `[[zone]]` without its file (the files' zones win).
+pub(crate) const ZONE: &str = "zone";
 /// Quick rules (T6.12, ADR-067), stored by ID.
 pub(crate) const RULE: &str = "rule";
 /// T7.5 (ADR-069): these may override or hide the files' entry of the same name.
@@ -60,6 +63,18 @@ pub(crate) const LOCAL: &str = "local";
 pub(crate) const CLIENTS: &str = "clients";
 /// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: the network inventory's settings, one entry.
 pub(crate) const DISCOVERY: &str = "discovery";
+/// REQ: DNS-006 (T27.2, ADR-1006) — `[cache]` for one node, named by the node (node-managed).
+pub(crate) const CACHE: &str = "cache";
+/// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node (node-managed).
+pub(crate) const SUPPORT: &str = "support";
+/// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node (node-managed).
+pub(crate) const UPDATES: &str = "updates";
+/// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` mode and trust anchors, one entry.
+pub(crate) const DNSSEC: &str = "dnssec";
+/// REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` refresh and stale settings, one entry.
+pub(crate) const FILTER: &str = "filter";
+/// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`, one entry.
+pub(crate) const DRILL: &str = "drill";
 /// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
 /// files define is read-only through the API (ADR-040), so these never override the files.
 pub(crate) const ROUTER: &str = "router";
@@ -70,6 +85,16 @@ pub(crate) const OIDC_PROVIDER: &str = "oidc_provider";
 /// REQ: API-016 (T23.11, ADR-984) — event sinks, by name: a node-managed kind (ADR-903 §6),
 /// admin-only; a sink the files define is read-only through the API.
 pub(crate) const SINK: &str = "sink";
+/// REQ: OBS-016, OBS-020, OBS-019 (T27.5, ADR-1007) — `[slo]`, `[probe]` and `[upstream_check]`:
+/// shared singletons (one entry, `default`), operators write them; the files win field by field.
+pub(crate) const SLO: &str = "slo";
+pub(crate) const PROBE: &str = "probe";
+pub(crate) const UPSTREAM_CHECK: &str = "upstream_check";
+/// REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — `[telemetry.anomaly]`, `[telemetry.qlog]` and
+/// `[telemetry.metrics]`: node-managed singletons (`node-managed.json`), admin-only.
+pub(crate) const ANOMALY_SETTINGS: &str = "anomaly_settings";
+pub(crate) const QLOG_SETTINGS: &str = "qlog_settings";
+pub(crate) const METRICS_SETTINGS: &str = "metrics_settings";
 /// REQ: API-016 (T23.11, ADR-984) — the OTLP export (one row, named `default`): a node-managed
 /// kind, admin-only; the files win when they set a destination.
 pub(crate) const OTLP: &str = "otlp";
@@ -146,6 +171,9 @@ pub(crate) struct RecordValue {
     pub(crate) value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ttl: Option<u32>,
+    /// REQ: CLU-006 (T27.7) — this record stays on this node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) node_only: bool,
 }
 
 /// The servers a domain is sent to.
@@ -157,6 +185,29 @@ pub(crate) struct Forward {
     /// iteratively, and the delegations they give are followed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) stub: bool,
+    /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) match_group: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — only these query types are sent (empty: all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) match_qtype: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor for the domain (on by default, as
+    /// forwards always had it).
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub(crate) dnssec_nta: bool,
+    /// REQ: CLU-006 (T27.7) — the route, its group and its servers stay on this node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) node_only: bool,
+}
+
+/// The serde default of a flag that is on unless stored off.
+fn default_true() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// Everything stored through the API.
@@ -165,6 +216,8 @@ pub(crate) struct Entries {
     pub(crate) clients: Vec<ClientConfig>,
     pub(crate) records: Vec<(String, Vec<RecordValue>)>,
     pub(crate) forwards: Vec<(String, Forward)>,
+    /// REQ: DNS-010 (T27.7) — the zones made through the API, by apex.
+    pub(crate) zones: Vec<(String, telltale_config::ZoneConfig)>,
     pub(crate) rules: Vec<telltale_config::RuleConfig>,
     pub(crate) upstreams: Vec<(String, Ovr<Upstream>)>,
     pub(crate) upstream_groups: Vec<(String, Ovr<UpstreamGroup>)>,
@@ -204,6 +257,23 @@ pub(crate) struct Entries {
     pub(crate) clients_settings: Option<serde_json::Value>,
     /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
     pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections stored
+    /// through the API or UI: (kind, node, body) for every node. A node applies its own rows.
+    pub(crate) node_settings: Vec<(String, String, serde_json::Value)>,
+    /// REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the stored `[dnssec]`, `[filter]` and
+    /// `[drill]` sections, likewise (one entry each).
+    pub(crate) dnssec: Option<serde_json::Value>,
+    pub(crate) filter: Option<serde_json::Value>,
+    pub(crate) drill: Option<serde_json::Value>,
+    /// REQ: OBS-016, OBS-020, OBS-019 (T27.5) — the stored `[slo]`, `[probe]` and
+    /// `[upstream_check]` sections, likewise.
+    pub(crate) slo: Option<serde_json::Value>,
+    pub(crate) probe: Option<serde_json::Value>,
+    pub(crate) upstream_check: Option<serde_json::Value>,
+    /// REQ: OBS-013, OBS-003, OBS-005 (T27.5) — the stored `[telemetry.*]` sections, likewise.
+    pub(crate) telemetry_anomaly: Option<serde_json::Value>,
+    pub(crate) telemetry_qlog: Option<serde_json::Value>,
+    pub(crate) telemetry_metrics: Option<serde_json::Value>,
     /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
     pub(crate) guarded: Vec<crate::guarded::store::Stored>,
 }
@@ -373,6 +443,7 @@ pub(crate) fn entries(state: &State) -> Entries {
             .collect(),
         records: decode(state, RECORD),
         forwards: decode(state, FORWARD),
+        zones: decode(state, ZONE),
         rules: decode::<telltale_config::RuleConfig>(state, RULE)
             .into_iter()
             .map(|(_, r)| r)
@@ -413,24 +484,37 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, x)| x),
         kubernetes_map: decode_ovr(state, KUBERNETES_MAP),
-        special: decode::<serde_json::Value>(state, SPECIAL)
+        special: single(state, SPECIAL),
+        local: single(state, LOCAL),
+        clients_settings: single(state, CLIENTS),
+        discovery: single(state, DISCOVERY),
+        node_settings: [CACHE, SUPPORT, UPDATES]
             .into_iter()
-            .next()
-            .map(|(_, v)| v),
-        local: decode::<serde_json::Value>(state, LOCAL)
-            .into_iter()
-            .next()
-            .map(|(_, v)| v),
-        clients_settings: decode::<serde_json::Value>(state, CLIENTS)
-            .into_iter()
-            .next()
-            .map(|(_, v)| v),
-        discovery: decode::<serde_json::Value>(state, DISCOVERY)
-            .into_iter()
-            .next()
-            .map(|(_, v)| v),
+            .flat_map(|k| {
+                decode::<serde_json::Value>(state, k)
+                    .into_iter()
+                    .map(move |(n, v)| (k.to_owned(), n, v))
+            })
+            .collect(),
+        dnssec: single(state, DNSSEC),
+        filter: single(state, FILTER),
+        drill: single(state, DRILL),
+        slo: single(state, SLO),
+        probe: single(state, PROBE),
+        upstream_check: single(state, UPSTREAM_CHECK),
+        telemetry_anomaly: single(state, ANOMALY_SETTINGS),
+        telemetry_qlog: single(state, QLOG_SETTINGS),
+        telemetry_metrics: single(state, METRICS_SETTINGS),
         guarded: crate::guarded::store::all(state),
     }
+}
+
+/// The one stored row of a singleton section (`default`), as JSON.
+fn single(state: &State, kind: &str) -> Option<serde_json::Value> {
+    decode::<serde_json::Value>(state, kind)
+        .into_iter()
+        .next()
+        .map(|(_, v)| v)
 }
 
 /// REQ: FLT-017 — the API's `[[kubernetes.map]]` rules: each replaces (or hides) the files'
@@ -540,6 +624,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
 /// (a promoted primary's, ADR-051): `own` decides which stored paths are the files' and the path
 /// rules (REQ: API-014, review of T23.2), so a path an older primary published as the API's is
 /// judged, not taken for the files'.
+#[allow(clippy::too_many_lines)] // one step per kind of entry, in the order the files win
 pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let mut cfg = file.clone();
     // ADR-069 — upstreams, upstream groups, lists, and groups made through the API override
@@ -610,7 +695,7 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
                     rtype: t,
                     value: v,
                     ttl: r.ttl,
-                    node_only: false,
+                    node_only: r.node_only,
                 }),
                 _ => errs.push(format!("record `{name}`: invalid characters")),
             }
@@ -627,6 +712,16 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
         }
         let group = forward_group(domain);
         let members = forward_upstreams(&mut cfg, domain, &group, f, &mut errs);
+        if f.node_only {
+            // REQ: CLU-006 (T27.7) — a node-only forward's servers stay on this node with it.
+            for u in cfg
+                .upstream
+                .iter_mut()
+                .filter(|u| members.contains(&u.name))
+            {
+                u.node_only = true;
+            }
+        }
         match (safe(&group), safe(domain)) {
             (Ok(g), Ok(d)) => {
                 cfg.upstream_group.push(UpstreamGroup {
@@ -634,19 +729,35 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
                     members,
                     strategy: telltale_config::Strategy::Failover,
                     parallel_fanout: 2,
-                    node_only: false,
+                    node_only: f.node_only,
                 });
+                let groups = f.match_group.iter().filter_map(|s| safe(s).ok()).collect();
+                let qtypes = f.match_qtype.iter().filter_map(|s| safe(s).ok()).collect();
                 cfg.route.push(Route {
                     match_suffix: vec![d],
-                    match_group: Vec::new(),
-                    match_qtype: Vec::new(),
+                    match_group: groups,
+                    match_qtype: qtypes,
                     upstream_group: g,
-                    dnssec_nta: true,
-                    node_only: false,
+                    dnssec_nta: f.dnssec_nta,
+                    node_only: f.node_only,
                 });
             }
             _ => errs.push(format!("forward `{domain}`: invalid name")),
         }
+    }
+    // REQ: DNS-010 (T27.7) — zones made through the API; a zone the files define wins, and a bad
+    // one is named in the errors (the files alone then apply, CLU-004).
+    for (_, z) in &e.zones {
+        if file
+            .zone
+            .iter()
+            .any(|f| f.name.as_str().eq_ignore_ascii_case(z.name.as_str()))
+        {
+            continue;
+        }
+        let mut z = z.clone();
+        z.file = None;
+        cfg.zone.push(z);
     }
     if let Err(v) = telltale_config::validate_config(&cfg) {
         errs.extend(v.iter().map(ToString::to_string));
@@ -877,6 +988,7 @@ mod tests {
             rtype: t.into(),
             value: v.into(),
             ttl: None,
+            node_only: false,
         }
     }
 
@@ -906,6 +1018,10 @@ mod tests {
                 Forward {
                     servers: vec!["10.0.0.53".into(), "tls://10.0.0.54".into()],
                     stub: false,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -953,6 +1069,10 @@ mod tests {
                 Forward {
                     servers: vec!["ftp://x".into()],
                     stub: false,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -970,6 +1090,10 @@ mod tests {
                 Forward {
                     servers: vec!["10.0.0.53".into(), "udp://10.0.0.54".into()],
                     stub: true,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -995,6 +1119,10 @@ mod tests {
                 Forward {
                     servers: vec!["tls://10.0.0.53".into()],
                     stub: true,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()

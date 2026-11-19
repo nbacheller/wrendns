@@ -20,14 +20,27 @@ use telltale_config::{Config, OidcProvider, OtlpConfig, SinkConfig};
 use telltale_store::state::State;
 use tracing::{info, warn};
 
-use crate::managed::{OIDC_PROVIDER, OTLP, SINK};
+use crate::managed::{CACHE, OIDC_PROVIDER, OTLP, SINK, SUPPORT, UPDATES};
 
 /// The blob's name in the manifest.
 pub(crate) const BLOB: &str = "node-managed.json";
 /// The document's version.
 const VERSION: u32 = 1;
 /// The kinds that are node-managed (the others are the shared configuration's).
-pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER, SINK, OTLP, crate::guarded::KIND];
+pub(crate) const KINDS: &[&str] = &[
+    OIDC_PROVIDER,
+    SINK,
+    OTLP,
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections.
+    CACHE,
+    SUPPORT,
+    UPDATES,
+    // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the node-local telemetry settings.
+    crate::managed::ANOMALY_SETTINGS,
+    crate::managed::QLOG_SETTINGS,
+    crate::managed::METRICS_SETTINGS,
+    crate::guarded::KIND,
+];
 /// REQ: CLU-015 (T24.37, ADR-1016) — the kinds of the shared configuration that the API stores:
 /// the blob also carries their rows, whole, so a replica that is promoted adopts exactly what the
 /// cluster last published. A replica applies the shared configuration, not these rows; a build
@@ -56,6 +69,17 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     crate::managed::CLIENTS,
     crate::managed::DISCOVERY,
     crate::managed::ROUTER,
+    // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the cluster-wide `[dnssec]`, `[filter]`
+    // and `[drill]` sections are shared configuration the API stores.
+    crate::managed::DNSSEC,
+    crate::managed::FILTER,
+    crate::managed::DRILL,
+    // REQ: DNS-010, OBS-016, OBS-020, OBS-019 (T27.5, T27.7, ADR-1007) — the zones and the SLO, probe
+    // and upstream-check sections are shared too.
+    crate::managed::ZONE,
+    crate::managed::SLO,
+    crate::managed::PROBE,
+    crate::managed::UPSTREAM_CHECK,
 ];
 /// The fields that hold or point at a secret outside the store: a provider's `client_secret` and
 /// its file, a sink's `token_file` (and `tls_ca`, a path), OTLP's inline `headers`. A blob never
@@ -389,6 +413,8 @@ pub(crate) fn overlay_blob(cfg: &mut Config, bytes: &[u8]) {
     overlay_providers(cfg, ok);
     overlay_sinks(cfg, sink_ok);
     overlay_otlp(cfg, otlp_ok);
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's per-node sections.
+    crate::node_settings::overlay_blob(cfg, &entries);
     // REQ: API-902 (T27.13, ADR-956 §2) — this node's guarded entries, under its own files.
     overlay_guarded(cfg, &entries);
 }
@@ -484,6 +510,8 @@ pub(crate) fn overlay_own(cfg: &mut Config, state_path: &Path) {
     overlay_providers(cfg, ok);
     overlay_sinks(cfg, sink_ok);
     overlay_otlp(cfg, otlp_ok);
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections it holds.
+    crate::node_settings::overlay_blob(cfg, &entries);
 }
 
 /// A promoted primary's seeding (ADR-903 §6): the entries of the blob it inherited that it has no

@@ -1536,6 +1536,21 @@
         "advertise"
       ]
     },
+    "CredentialRole": {
+      "description": "REQ: DSC-007 (ADR-908 \"Credential roles\") — who may use a credential.",
+      "oneOf": [
+        {
+          "description": "Used by `[[discovery.snmp_agent]]` only: the gateway's and switches' credential.",
+          "type": "string",
+          "const": "infrastructure"
+        },
+        {
+          "description": "Used by a subnet's identity reads (T25.7): a low-value, shared identity.",
+          "type": "string",
+          "const": "host"
+        }
+      ]
+    },
     "DeviceClass": {
       "description": "REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed\nlist, so metrics stay small).",
       "oneOf": [
@@ -1594,6 +1609,20 @@
             "null"
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "snmp_agent": {
+          "description": "REQ: DSC-004 (T25.6, ADR-908) — the infrastructure devices that are polled over SNMP: a\ngateway's ARP table, a switch's forwarding table, LLDP neighbours. Each names a credential.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnmpAgent"
+          }
+        },
+        "snmp_credential": {
+          "description": "REQ: DSC-004, DSC-007 (T25.6, ADR-908) — the SNMP credentials the agents use. A secret is\nonly ever a file under `[node] secret_file_dirs`; an inline value is refused.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnmpCredential"
+          }
         },
         "subnet": {
           "description": "Private IPv4 subnets whose inventory addresses may be read. A filter on addresses the\ninventory already has, never a list of targets (ADR-907).",
@@ -4137,6 +4166,181 @@
         }
       },
       "additionalProperties": false
+    },
+    "SnmpAgent": {
+      "description": "REQ: DSC-004 (ADR-908, ADR-1001) — one `[[discovery.snmp_agent]]`: an infrastructure device\npolled over SNMP on the designated node. The address is an RFC 1918 IPv4 literal (ADR-907),\nand the credential is named, never written here.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "The device's IPv4 address (RFC 1918 only).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "credential": {
+          "description": "The `[[discovery.snmp_credential]]` this agent uses (role `infrastructure`).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "interval_secs": {
+          "description": "Seconds between polls (60 to 86,400; default 300).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "max_repetitions": {
+          "description": "GETBULK `max_repetitions` (5 to 25; default 10).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        },
+        "name": {
+          "description": "The agent's name: letters, digits, `.`, `_` and `-`, and never an IP address (the CLI and\nthe API take a name only, ADR-969).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "port": {
+          "description": "The UDP port (161 unless the device says otherwise).",
+          "type": "integer",
+          "format": "uint16",
+          "default": 161,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "tables": {
+          "description": "The tables to poll. A table the device doesn't answer is skipped until the next test\n(capabilities are probed, never assumed).",
+          "type": "array",
+          "default": [
+            "arp",
+            "ifmib",
+            "bridge",
+            "lldp"
+          ],
+          "items": {
+            "$ref": "#/$defs/SnmpTable"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "address",
+        "credential"
+      ]
+    },
+    "SnmpCredential": {
+      "description": "REQ: DSC-004, DSC-007 (ADR-908) — one `[[discovery.snmp_credential]]`. Secrets are files under\n`[node] secret_file_dirs` (an inline `community` or `*_password` is an unknown key and refuses\nthe load). T25.8 adds `*_ref` to the stored-secret store.",
+      "type": "object",
+      "properties": {
+        "auth_password_file": {
+          "description": "v3: the file that holds the authentication password (8 octets or more).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "auth_protocol": {
+          "description": "v3: `sha`, `sha-256`, `sha-384` or `sha-512`. MD5 and SHA-224 are refused.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "community_file": {
+          "description": "v2c: the file that holds the community.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "name": {
+          "description": "The credential's name, as an agent names it.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "priv_password_file": {
+          "description": "v3: the file that holds the privacy password. Left out, the authentication password is\nused for both (UniFi's single v3 password).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "priv_protocol": {
+          "description": "v3: `aes-128` for authPriv; leave out for authNoPriv. DES, AES-192 and AES-256 are refused.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "role": {
+          "description": "`infrastructure` (agents) or `host` (identity reads, T25.7).",
+          "$ref": "#/$defs/CredentialRole",
+          "default": "infrastructure"
+        },
+        "user": {
+          "description": "v3: the USM user name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "version": {
+          "description": "`v2c` or `v3`.",
+          "$ref": "#/$defs/SnmpVersion",
+          "default": "v2c"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "SnmpTable": {
+      "description": "REQ: DSC-004 — a table group an agent may be polled for (ADR-908 \"Tables\").",
+      "oneOf": [
+        {
+          "description": "`ipNetToPhysicalTable`, else `ipNetToMediaTable`.",
+          "type": "string",
+          "const": "arp"
+        },
+        {
+          "description": "Interface names and the agent's own addresses.",
+          "type": "string",
+          "const": "ifmib"
+        },
+        {
+          "description": "The forwarding table (Q-BRIDGE, else BRIDGE), with ports and VLANs.",
+          "type": "string",
+          "const": "bridge"
+        },
+        {
+          "description": "The LLDP remote table.",
+          "type": "string",
+          "const": "lldp"
+        }
+      ]
+    },
+    "SnmpVersion": {
+      "description": "REQ: DSC-003 — the SNMP version of a credential.",
+      "oneOf": [
+        {
+          "description": "`SNMPv2c`: the community travels in clear text.",
+          "type": "string",
+          "const": "v2c"
+        },
+        {
+          "description": "`SNMPv3` USM at authNoPriv or authPriv.",
+          "type": "string",
+          "const": "v3"
+        }
+      ]
     },
     "SpecialConfig": {
       "description": "Built-in handling of special names (`spec/03` §3 step 4).",

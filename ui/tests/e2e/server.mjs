@@ -118,9 +118,10 @@ type = "ntfy"
 url = "http://127.0.0.1:${PORTS.ntfy}/file"
 token_file = "/run/secrets/e2e-ntfy-token"
 
-# T11.3 — the listener probe runs every 5 s, so the System tab shows it soon.
+# T11.3 — the listener probe's first round runs a few seconds after start. The interval is left to
+# the default so the UI can change it (obs_020 change probe interval, T27.5).
 [probe]
-interval_secs = 5
+enabled = true
 
 # REQ: FLT-017 — Kubernetes workloads, from the fixture below (no API server).
 [kubernetes]

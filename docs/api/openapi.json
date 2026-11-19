@@ -1346,6 +1346,166 @@
         }
       }
     },
+    "/api/v1/anomaly-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set device anomaly detection (`[telemetry.anomaly]`): on or off, the learning period, sensitivity, the device and domain limits and the NXDOMAIN storm thresholds. Admins only: the whole kind is admin-only, and no agent can change it.",
+        "description": "REQ: OBS-013 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.\nThe configuration files win field by field (`set_by_file`), and a field left out takes its default.",
+        "operationId": "put_anomaly_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: a field the configuration files set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the configuration file's `[telemetry.anomaly]` settings (ADR-1007).",
+        "description": "Removes what the API stored, so the file's settings apply again on every node (ADR-1007).",
+        "operationId": "delete_anomaly_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -2205,6 +2365,194 @@
           },
           "400": {
             "description": "An unknown group or node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache-settings/{node}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The `[cache]` section of one node (DNS-006, T27.2): the 15 fields, admins only.",
+        "description": "Every field takes effect after a restart of that node; the files' fields win (`set_by_file`).",
+        "operationId": "put_cache_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID the settings apply to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change a node's cache settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No node of this cluster has that ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set this field, which is read-only here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the `[cache]` section the API set for one node (the files' apply again).",
+        "description": "The node then runs with the config files' cache settings, or the defaults, after a restart.",
+        "operationId": "delete_cache_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change a node's cache settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no cache settings on that node.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4221,6 +4569,110 @@
         }
       }
     },
+    "/api/v1/discovery/snmp/test": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Test an SNMP agent.",
+        "description": "Probes the agent named in the body, the way the poller's first poll does: one GETNEXT on the\nroot of each table it is configured for, and one GET of sysObjectID. The answer is the agent's\ncapability record: the security level reached, the engine ID (v3), and for each part of each\ntable, the MIB table that answered (or none). A table that did not answer is skipped by the\npoller until the next test. Read-only: the client has no write PDU (ADR-908).\n\nThe body is `{\"agent\": \"<name>\"}` and nothing else: an address is refused (ADR-907).\n`?dryRun=true` sends no packet and lists the OIDs a test would query. A test waits 60 seconds\nafter the previous test of the same agent (429 with `Retry-After`). It runs on the designated\nnode: a cluster replica forwards the request to the primary. `Idempotency-Key` replays the\nfirst answer for 24 hours. Needs the admin role (agents: `ops:discovery_test` and a reason);\naudit-logged as `discovery.snmp_test`.",
+        "operationId": "snmp_test",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The agent's name, and nothing else.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnmpTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The capability record (or, with dryRun, the OIDs a test would query).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnmpTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body, an unknown field, or an address where a name belongs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs the admin role (agents: ops:discovery_test and a reason).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No SNMP agent by that name (the hint lists them).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The inventory is off, this node isn't the designated one (`discovery_not_here`), or an Idempotency-Key reused for another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The agent was tested less than 60 seconds ago (Retry-After says how long).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The SNMP worker is down or busy, or a replica that can't reach the primary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/discovery/status": {
       "get": {
         "tags": [
@@ -4360,6 +4812,306 @@
           },
           "404": {
             "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dnssec-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.",
+        "description": "The validation mode and the domains it skips apply on every node within seconds; the files' fields win.",
+        "operationId": "put_dnssec_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set this field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the `[dnssec]` settings the API set (the files' apply again).",
+        "description": "The config files' DNSSEC settings, or the defaults, apply again on every node.",
+        "operationId": "delete_dnssec_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no DNSSEC settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/drill-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`. Admins only.",
+        "description": "The schedule and the nodes that drill themselves apply without a restart; the files' fields win.",
+        "operationId": "put_drill_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the drill schedule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set this field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the drill schedule the API set (the files' apply again).",
+        "description": "The config files' drill schedule, or off, applies again without a restart.",
+        "operationId": "delete_drill_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the drill schedule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no drill schedule.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4667,6 +5419,146 @@
           },
           "400": {
             "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/filter-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` `refresh_secs` and `stale_after_days`.",
+        "description": "The list refresh interval and the stale-list age apply after a restart of every node; the files' fields win.",
+        "operationId": "put_filter_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set this field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the `[filter]` settings the API set (the files' apply again).",
+        "description": "The config files' list settings, or the defaults, apply again after a restart of every node.",
+        "operationId": "delete_filter_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no list settings.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7041,6 +7933,166 @@
         }
       }
     },
+    "/api/v1/metrics-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the per-client metric series (`[telemetry.metrics]`): on or off, and the cap on how many clients get their own series. Admins only; no agent can change it.",
+        "description": "REQ: OBS-005 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.\nThe configuration files win field by field (`set_by_file`), and a field left out takes its default.",
+        "operationId": "put_metrics_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: a field the configuration files set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the configuration file's `[telemetry.metrics]` settings (ADR-1007).",
+        "description": "Removes what the API stored, so the file's settings apply again on every node (ADR-1007).",
+        "operationId": "delete_metrics_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/networks": {
       "get": {
         "tags": [
@@ -7056,6 +8108,71 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_NetworkInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-settings": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The per-node sections of this node.",
+        "description": "The cache, support and updates settings it runs with, the fields the files set, and whether a\nrestart is still pending for them. Its `node` is the name the `*-settings/{node}` routes take.",
+        "operationId": "get_this_node_settings",
+        "responses": {
+          "200": {
+            "description": "This node's sections.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeSettings"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/node-settings/{node}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The per-node sections of `node`.",
+        "description": "The cache, support and updates settings in effect there, the fields the files set, and whether a\nrestart is still pending for them. 404 when no node of the cluster has that ID.",
+        "operationId": "get_node_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node's sections.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeSettings"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No node of this cluster has that ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -8024,6 +9141,326 @@
           },
           "409": {
             "description": "The plan isn't pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/probe-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the listener checks (`[probe]`): on or off, the interval (at least 5 seconds), the timeout, extra targets and the certificate warning. Operators change them; every node applies them with the next round.",
+        "description": "REQ: OBS-020 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.\nThe configuration files win field by field (`set_by_file`), and a field left out takes its default.",
+        "operationId": "put_probe_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: a field the configuration files set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the configuration file's `[probe]` settings (ADR-1007).",
+        "description": "Removes what the API stored, so the file's settings apply again on every node (ADR-1007).",
+        "operationId": "delete_probe_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/qlog-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the query log's store (`[telemetry.qlog]`): on or off, retention, the privacy level, fsync and the flush interval. Admins only, since privacy and retention are at stake; no agent can change it.",
+        "description": "REQ: OBS-003 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.\nThe configuration files win field by field (`set_by_file`), and a field left out takes its default.",
+        "operationId": "put_qlog_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: a field the configuration files set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the configuration file's `[telemetry.qlog]` settings (ADR-1007).",
+        "description": "Removes what the API stored, so the file's settings apply again on every node (ADR-1007).",
+        "operationId": "delete_qlog_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10105,6 +11542,166 @@
         }
       }
     },
+    "/api/v1/slo-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the objectives (`[slo]`): the availability and latency targets, the latency threshold and the window. Operators change them; the error budget and the burn-rate alerts follow on every node within a few seconds.",
+        "description": "REQ: OBS-016 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.\nThe configuration files win field by field (`set_by_file`), and a field left out takes its default.",
+        "operationId": "put_slo_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: a field the configuration files set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the configuration file's `[slo]` settings (ADR-1007).",
+        "description": "Removes what the API stored, so the file's settings apply again on every node (ADR-1007).",
+        "operationId": "delete_slo_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/special-names/default": {
       "put": {
         "tags": [
@@ -11068,6 +12665,194 @@
         }
       }
     },
+    "/api/v1/support-settings/{node}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node. Admins only.",
+        "description": "The node's log files are kept on disk (or not) from its next start; the files' value wins.",
+        "operationId": "put_support_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID the settings apply to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No node of this cluster has that ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set this field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the `[support]` setting the API set for one node.",
+        "description": "The node then runs with the config files' setting, or the default, after a restart.",
+        "operationId": "delete_support_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets nothing on that node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/health": {
       "get": {
         "tags": [
@@ -11365,6 +13150,354 @@
           },
           "404": {
             "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/updates-settings/{node}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node. Admins only.",
+        "description": "The node checks for a newer build once a day (or not), from its next start; the files' value wins.",
+        "operationId": "put_updates_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID the settings apply to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No node of this cluster has that ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set this field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the `[updates]` setting the API set for one node.",
+        "description": "The node then runs with the config files' setting, or the default, after a restart.",
+        "operationId": "delete_updates_settings",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets nothing on that node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/upstream-check-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the second opinions (`[upstream_check]`): one question in `sample_every` (0 is off), the reference group and how many disagreements are kept. Operators change them.",
+        "description": "REQ: OBS-019 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.\nThe configuration files win field by field (`set_by_file`), and a field left out takes its default.",
+        "operationId": "put_upstream_check_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: a field the configuration files set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the configuration file's `[upstream_check]` settings (ADR-1007).",
+        "description": "Removes what the API stored, so the file's settings apply again on every node (ADR-1007).",
+        "operationId": "delete_upstream_check_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed for this role, or an agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12088,6 +14221,194 @@
           }
         }
       }
+    },
+    "/api/v1/zones/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Create or replace an authoritative zone (DNS-010, T27.7, ADR-1007).",
+        "description": "Every name under `name` is answered from the zone's records, for everyone or only `groups`\n(split horizon); a name the zone doesn't have gets \"no such name\". A zone the configuration\nfiles define is read-only here (409 `set_by_file`), and so is its zone file (guarded, T27.17).\nNeeds the operator role (or the `config:write:records` agent scope, with a reason).",
+        "operationId": "put_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The zone's apex, e.g. home.example.com.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZoneInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the configuration files (`set_by_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A name, group, or record is invalid, or the body names a zone file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a zone made through the API (DNS-010, T27.7).",
+        "description": "The names it answered go back to the upstreams. A zone the configuration files define can't be\nremoved here (409).",
+        "operationId": "delete_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The zone's apex.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the configuration files (`set_by_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -12241,6 +14562,73 @@
           "topSharePercent": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "AgentCapability": {
+        "type": "object",
+        "description": "REQ: DSC-004 (ADR-908 \"Capability record\") — what an agent answered when it was probed.",
+        "required": [
+          "probedUnix",
+          "level",
+          "parts"
+        ],
+        "properties": {
+          "engineId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The v3 engine ID, in hex."
+          },
+          "level": {
+            "type": "string",
+            "description": "The security level reached: `v2c`, `authNoPriv` or `authPriv`."
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCapabilityPart"
+            },
+            "description": "One entry per part of every configured table."
+          },
+          "probedUnix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was probed (Unix seconds).",
+            "minimum": 0
+          },
+          "sysObjectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "sysObjectID, when the agent answered it (device-supplied)."
+          }
+        }
+      },
+      "AgentCapabilityPart": {
+        "type": "object",
+        "description": "REQ: DSC-004 — one part of a table group and the MIB table that answered it.",
+        "required": [
+          "table",
+          "part"
+        ],
+        "properties": {
+          "part": {
+            "type": "string",
+            "description": "The part: `arp`, `interfaces`, `addresses`, `forwarding`, `ports`, `vlans`, `neighbours`\nor `local_ports`."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MIB table that answered (`ipNetToPhysicalTable`, `ipNetToMediaTable`, ...); none when\nno alternative did."
+          },
+          "table": {
+            "type": "string",
+            "description": "`arp`, `ifmib`, `bridge` or `lldp`."
           }
         }
       },
@@ -14341,7 +16729,7 @@
           },
           "id": {
             "type": "string",
-            "description": "Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`."
+            "description": "Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,\n`failover`, `voter_links` (a voter reached only some of the time, T24.38)."
           },
           "ok": {
             "type": "boolean"
@@ -14456,6 +16844,13 @@
             "format": "int32",
             "description": "Voters this node has a stream to (itself included).",
             "minimum": 0
+          },
+          "unstableVoters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnstableVoter"
+            },
+            "description": "REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more\ntimes in the last ten minutes while both processes stayed up (a link that comes and goes;\na restart or an upgrade of either node is not counted). Empty when all are steady."
           },
           "votedEpoch": {
             "type": "integer",
@@ -15382,6 +17777,7 @@
           "node_is_primary",
           "node_is_up",
           "lists_not_here",
+          "discovery_not_here",
           "credential_reentry_required",
           "secrets_locked",
           "upgrade_required",
@@ -16024,6 +18420,260 @@
           }
         }
       },
+      "DiscoveryAgent": {
+        "type": "object",
+        "description": "REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that\ncame from the device (names, the sysObjectID) is device-supplied text, cut and cleaned.",
+        "required": [
+          "name",
+          "address",
+          "credential",
+          "intervalSecs",
+          "state",
+          "consecutiveFailures",
+          "polls",
+          "failures",
+          "tables"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The address it is polled at (RFC 1918 only).",
+            "example": "192.0.2.1"
+          },
+          "capability": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentCapability",
+                "description": "What the agent answered when it was last probed (the first poll, or **Test**). Never\nassumed: a table that did not answer is skipped until the next test."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Polls that failed in a row.",
+            "minimum": 0
+          },
+          "credential": {
+            "type": "string",
+            "description": "The credential it uses (by name; the secret is never shown)."
+          },
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Polls that failed since start.",
+            "minimum": 0
+          },
+          "intervalSecs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds between polls.",
+            "minimum": 0
+          },
+          "lastCounts": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DiscoveryAgentCounts",
+                "description": "What the last poll's rows meant."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastDurationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the last poll took, in milliseconds.",
+            "minimum": 0
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last poll failed, in words. Carries no address, credential or reply byte."
+          },
+          "lastPollUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the last poll ended (Unix seconds).",
+            "minimum": 0
+          },
+          "lastRequests": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "SNMP requests the last poll sent.",
+            "minimum": 0
+          },
+          "lastSuccessUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When a poll last succeeded (Unix seconds).",
+            "minimum": 0
+          },
+          "lastTestUnix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When **Test** last ran for this agent (Unix seconds); a new test waits 60 s after it.",
+            "minimum": 0
+          },
+          "lastTimeouts": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Exchanges of the last poll that timed out.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "The agent's name, as `[[discovery.snmp_agent]]` gives it.",
+            "example": "gateway"
+          },
+          "polls": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Polls made since start.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`waiting` (no poll yet), `ok`, `error` (the last poll failed), `failing` (three polls in a\nrow failed) or `skipped` (its credential can't be read, or its address is refused)."
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryAgentTable"
+            },
+            "description": "One entry per configured table."
+          }
+        }
+      },
+      "DiscoveryAgentCounts": {
+        "type": "object",
+        "description": "REQ: DSC-004, DSC-014 — what the last poll's rows meant.",
+        "required": [
+          "arpMerged",
+          "arpOutsideSubnets",
+          "ipv6Ignored",
+          "ownMerged",
+          "fdbLocated",
+          "fdbUplink",
+          "uplinkPorts",
+          "lldpMerged"
+        ],
+        "properties": {
+          "arpMerged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "ARP entries merged into the inventory.",
+            "minimum": 0
+          },
+          "arpOutsideSubnets": {
+            "type": "integer",
+            "format": "int32",
+            "description": "ARP entries outside every `[[discovery.subnet]]` (or naming no host).",
+            "minimum": 0
+          },
+          "fdbLocated": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Forwarding entries that gave a device a port and a VLAN.",
+            "minimum": 0
+          },
+          "fdbUplink": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Forwarding entries left out because they were learned on an uplink or trunk port.",
+            "minimum": 0
+          },
+          "ipv6Ignored": {
+            "type": "integer",
+            "format": "int32",
+            "description": "IPv6 entries counted and left out (M25 is IPv4 only).",
+            "minimum": 0
+          },
+          "lldpMerged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "LLDP neighbours merged.",
+            "minimum": 0
+          },
+          "ownMerged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The agent's own addresses merged.",
+            "minimum": 0
+          },
+          "uplinkPorts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Ports counted as uplinks (more than 8 learned MACs, or a listed agent or UniFi device as\nthe LLDP neighbour).",
+            "minimum": 0
+          }
+        }
+      },
+      "DiscoveryAgentTable": {
+        "type": "object",
+        "description": "REQ: DSC-004 — a configured table of an agent and what is known of it.",
+        "required": [
+          "table",
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last error of the table, in words."
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The rows the last poll read from the table, over every part and column.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`unprobed`, `answered`, or `unanswered` (skipped until the next test)."
+          },
+          "stop": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`."
+          },
+          "table": {
+            "type": "string",
+            "description": "`arp`, `ifmib`, `bridge` or `lldp`."
+          }
+        }
+      },
       "DiscoveryRead": {
         "type": "object",
         "description": "REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw\nit. Read-only: nothing here changes a console.",
@@ -16088,6 +18738,13 @@
           "reads"
         ],
         "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryAgent"
+            },
+            "description": "REQ: DSC-004, DSC-014 (T25.6) — each `[[discovery.snmp_agent]]` the poller runs on this\nnode: its last poll, its tables and its capability record."
+          },
           "designated": {
             "type": "boolean",
             "description": "Whether this node is the designated one (it runs the inventory and its workers)."
@@ -17279,12 +19936,38 @@
           "domain",
           "servers",
           "stub",
-          "source"
+          "source",
+          "matchGroup",
+          "matchQtype",
+          "dnssecNta",
+          "nodeOnly"
         ],
         "properties": {
+          "dnssecNta": {
+            "type": "boolean",
+            "description": "REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain."
+          },
           "domain": {
             "type": "string",
             "example": "corp.example"
+          },
+          "matchGroup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client)."
+          },
+          "matchQtype": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all)."
+          },
+          "nodeOnly": {
+            "type": "boolean",
+            "description": "REQ: CLU-006 (T27.7) — this route stays on this node."
           },
           "servers": {
             "type": "array",
@@ -17310,6 +19993,28 @@
           "servers"
         ],
         "properties": {
+          "dnssecNta": {
+            "type": "boolean",
+            "description": "REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:\nlocal zones are usually unsigned)."
+          },
+          "matchGroup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client)."
+          },
+          "matchQtype": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — only these query types are sent, e.g. `[\"PTR\"]` (empty: all)."
+          },
+          "nodeOnly": {
+            "type": "boolean",
+            "description": "REQ: CLU-006 (T27.7) — keep this route on this node only."
+          },
           "servers": {
             "type": "array",
             "items": {
@@ -18220,7 +20925,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`guarded_ignored`, `guarded_bind_fallback`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`.",
             "example": "upstream_down"
           },
           "level": {
@@ -19557,12 +22262,38 @@
                 "domain",
                 "servers",
                 "stub",
-                "source"
+                "source",
+                "matchGroup",
+                "matchQtype",
+                "dnssecNta",
+                "nodeOnly"
               ],
               "properties": {
+                "dnssecNta": {
+                  "type": "boolean",
+                  "description": "REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain."
+                },
                 "domain": {
                   "type": "string",
                   "example": "corp.example"
+                },
+                "matchGroup": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client)."
+                },
+                "matchQtype": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all)."
+                },
+                "nodeOnly": {
+                  "type": "boolean",
+                  "description": "REQ: CLU-006 (T27.7) — this route stays on this node."
                 },
                 "servers": {
                   "type": "array",
@@ -21302,7 +24033,9 @@
                 "name",
                 "groups",
                 "records",
-                "negativeTtlSeconds"
+                "negativeTtlSeconds",
+                "source",
+                "values"
               ],
               "properties": {
                 "file": {
@@ -21335,6 +24068,17 @@
                   "format": "int64",
                   "description": "Records loaded (from the file and inline).",
                   "minimum": 0
+                },
+                "source": {
+                  "type": "string",
+                  "description": "REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API)."
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ZoneRecordInput"
+                  },
+                  "description": "REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its\nrecords are read-only here, and only the count shows)."
                 }
               }
             }
@@ -23621,6 +26365,47 @@
           }
         }
       },
+      "NodeSection": {
+        "type": "object",
+        "description": "One per-node section: the fields in effect, which of them the files set, and whether a restart\nis still pending for it.",
+        "required": [
+          "section",
+          "fields",
+          "setByFile",
+          "stored",
+          "pendingRestart",
+          "restartOnly"
+        ],
+        "properties": {
+          "fields": {
+            "type": "object",
+            "description": "The fields in effect, with the same names as in `telltale.toml`."
+          },
+          "pendingRestart": {
+            "type": "boolean",
+            "description": "The section differs from what the node started with: it applies after a restart."
+          },
+          "restartOnly": {
+            "type": "boolean",
+            "description": "Whether every field of the section applies only after a restart of the node."
+          },
+          "section": {
+            "type": "string",
+            "description": "`cache`, `support` or `updates` (the names the `*-settings` routes use)."
+          },
+          "setByFile": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The fields the configuration files set: the API can't change them (409 `set_by_file`)."
+          },
+          "stored": {
+            "type": "boolean",
+            "description": "Whether the API set this section for the node (`false`: the files' values apply)."
+          }
+        }
+      },
       "NodeSeries": {
         "type": "object",
         "description": "One node's ratios over time, for the sparklines (at most 240 points: buckets summed into\nspans). A span without a base (no answers, no upstream exchanges) is null.",
@@ -23699,6 +26484,26 @@
                 "null"
               ],
               "format": "double"
+            }
+          }
+        }
+      },
+      "NodeSettings": {
+        "type": "object",
+        "description": "REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — `GET /api/v1/node-settings/{node}`:\nthe per-node sections of one node (`cache`, `support`, `updates`).",
+        "required": [
+          "node",
+          "sections"
+        ],
+        "properties": {
+          "node": {
+            "type": "string",
+            "description": "The node the sections belong to."
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeSection"
             }
           }
         }
@@ -24882,6 +27687,10 @@
           "value"
         ],
         "properties": {
+          "nodeOnly": {
+            "type": "boolean",
+            "description": "REQ: CLU-006 (T27.7) — keep this record on this node only (a cluster doesn't share it)."
+          },
           "ttl": {
             "type": [
               "integer",
@@ -26736,6 +29545,127 @@
           }
         }
       },
+      "SnmpTestOid": {
+        "type": "object",
+        "description": "REQ: DSC-004 — one table root a test would query (or did).",
+        "required": [
+          "table",
+          "part",
+          "alternative",
+          "probeOid",
+          "columns"
+        ],
+        "properties": {
+          "alternative": {
+            "type": "string",
+            "description": "The MIB table (an alternative; the first that answers is used)."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The column OIDs a poll walks when this alternative answers."
+          },
+          "part": {
+            "type": "string",
+            "description": "The part of the table group."
+          },
+          "probeOid": {
+            "type": "string",
+            "description": "The OID the probe's one GETNEXT starts from."
+          },
+          "table": {
+            "type": "string",
+            "description": "`arp`, `ifmib`, `bridge` or `lldp`."
+          }
+        }
+      },
+      "SnmpTestRequest": {
+        "type": "object",
+        "description": "REQ: DSC-004 (T25.6, ADR-908, ADR-1002) — `POST /api/v1/discovery/snmp/test`: the agent to\ntest, by name. No address is ever accepted (ADR-907).",
+        "required": [
+          "agent"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "The agent's name, from `[[discovery.snmp_agent]]` (`GET /api/v1/discovery/status` lists them).",
+            "example": "gateway"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SnmpTestResult": {
+        "type": "object",
+        "description": "REQ: DSC-004 — the answer of **Test** (`POST /api/v1/discovery/snmp/test`).",
+        "required": [
+          "agent",
+          "dryRun",
+          "ok",
+          "oids",
+          "note"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "The agent tested."
+          },
+          "capability": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgentCapability",
+                "description": "What the agent answered (not for a dry run, or a test that failed)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "True when no packet was sent (`?dryRun=true`): `oids` is what a test would query."
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the test took, in milliseconds.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the test failed, in words."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that ran the test (the designated node, which may not be the one asked)."
+          },
+          "note": {
+            "type": "string",
+            "description": "What happens next, in a sentence."
+          },
+          "oids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnmpTestOid"
+            },
+            "description": "The OIDs a test queries: one GETNEXT on each probe root, one GET of sysObjectID."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the agent answered (a dry run is always `true`)."
+          }
+        }
+      },
       "Step": {
         "type": "string",
         "description": "Time-bucket size for [`TimeseriesParams`].",
@@ -27514,6 +30444,38 @@
           "secretBase32": {
             "type": "string",
             "description": "For manual entry in an authenticator app."
+          }
+        }
+      },
+      "UnstableVoter": {
+        "type": "object",
+        "description": "REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time.",
+        "required": [
+          "nodeId",
+          "drops",
+          "windowSeconds",
+          "lastDropSecondsAgo"
+        ],
+        "properties": {
+          "drops": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many times its link dropped within `windowSeconds` (not counting a drop the voter\ncame back from as a restarted process).",
+            "minimum": 0
+          },
+          "lastDropSecondsAgo": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds since the last drop.",
+            "minimum": 0
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -28422,7 +31384,9 @@
           "name",
           "groups",
           "records",
-          "negativeTtlSeconds"
+          "negativeTtlSeconds",
+          "source",
+          "values"
         ],
         "properties": {
           "file": {
@@ -28455,8 +31419,83 @@
             "format": "int64",
             "description": "Records loaded (from the file and inline).",
             "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API)."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ZoneRecordInput"
+            },
+            "description": "REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its\nrecords are read-only here, and only the count shows)."
           }
         }
+      },
+      "ZoneInput": {
+        "type": "object",
+        "description": "REQ: DNS-010 (T27.7) — an authoritative zone made through the API or UI\n(`PUT /api/v1/zones/{name}`). The zone file is set in the configuration file (guarded, T27.17),\nso a body that names one is refused.",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups that see the zone (split horizon); empty: everyone."
+          },
+          "negativeTtlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TTL of its NXDOMAIN and no-data answers (default 300).",
+            "minimum": 0
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ZoneRecordInput"
+            },
+            "description": "The zone's records: names under the zone."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ZoneRecordInput": {
+        "type": "object",
+        "description": "REQ: DNS-010 (T27.7) — one record of an API zone: the owner name, its type and value, and\nan optional TTL.",
+        "required": [
+          "name",
+          "type",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "printer.home.example.com"
+          },
+          "ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TTL in seconds (default: `[local] default_ttl`).",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "description": "`A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX` or `SRV`.",
+            "example": "A"
+          },
+          "value": {
+            "type": "string",
+            "example": "192.168.1.20"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

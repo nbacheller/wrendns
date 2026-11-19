@@ -477,7 +477,7 @@ test('obs_902 admin deletes the database', async ({ browser }) => {
 
 // ================================================================== sizes
 
-test('obs_902 the world chunk is at most 30 KiB and dist at most 400 KiB gzipped', () => {
+test('obs_902 the world chunk is at most 30 KiB and dist at most 512 KiB gzipped', () => {
   const dist = resolve(process.cwd(), 'dist');
   const files: { rel: string; size: number }[] = [];
   const walk = (d: string) => {
@@ -498,7 +498,7 @@ test('obs_902 the world chunk is at most 30 KiB and dist at most 400 KiB gzipped
   console.log(`world chunk ${(chunkBytes / 1024).toFixed(1)} KiB gzipped, world data ${(data / 1024).toFixed(1)} KiB gzipped, dist total ${(total / 1024).toFixed(1)} KiB gzipped`);
   expect(chunkBytes).toBeLessThanOrEqual(30 * 1024);
   expect(data, 'the world data on its own (ADR-958 section 8: at most 12 KiB)').toBeLessThanOrEqual(12 * 1024);
-  expect(total).toBeLessThanOrEqual(400 * 1024);
+  expect(total).toBeLessThanOrEqual(512 * 1024); // ADR-1020
   // The main bundle doesn't carry the page or its data.
   const main = files.find((f) => /^assets\/index-.*\.js\.gz$/.test(f.rel));
   expect(main).toBeTruthy();

@@ -11,7 +11,8 @@
 name: telltale-cluster3
 
 x-telltale: &telltale
-  image: telltale:cluster3-test
+  # TT_IMAGE: e2e.sh's upgrade step (j) runs nodes on an older image, one at a time.
+  image: ${TT_IMAGE:-telltale:cluster3-test}
   pull_policy: never
   restart: "no"
   # The image's unprivileged user; the same hardening as the Docker Desktop bundle.
@@ -40,6 +41,10 @@ services:
         # [discovery] first write, ADR-928) let it through (ADR-948, T21.6).
         PROFILE: bench-fast
         TELLTALE_BUILD_CHANNEL: dev
+        # Its own build cache, not the default one every worktree shares: that one can hold a
+        # crate built from another worktree's sources and fail with a false compile error.
+        # Set CLUSTER3_CACHE_SCOPE (e.g. -mybranch) to keep a worktree's cache apart too.
+        BUILD_CACHE_SCOPE: ${CLUSTER3_CACHE_SCOPE:--cluster3}
     volumes:
       - ./config/primary.toml:/etc/telltale/telltale.toml:ro
       - primary-data:/var/lib/telltale

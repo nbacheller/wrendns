@@ -13,22 +13,28 @@ use telltale_config::Config;
 use crate::credential_tests::{Harness, harness};
 use crate::managed::{RATELIMIT, entries};
 
-fn data_dir(h: &Harness) -> std::path::PathBuf {
+pub(crate) fn data_dir(h: &Harness) -> std::path::PathBuf {
     h.dir_path().to_path_buf()
 }
 
-fn file_of(h: &Harness) -> Config {
+pub(crate) fn file_of(h: &Harness) -> Config {
     (**h.src.file_config.load()).clone()
 }
 
 /// What primary `a` publishes: its effective shared configuration and its blob.
-fn published(a: &Harness) -> (Config, Vec<u8>) {
+pub(crate) fn published(a: &Harness) -> (Config, Vec<u8>) {
     let merged = crate::managed::merge(&file_of(a), &entries(a.auth.state())).unwrap();
     (merged, crate::node_managed::export(a.auth.state()))
 }
 
 /// Makes `h` a member of the cluster as `role` that last applied the version (`merged`, `blob`).
-fn follow(h: &Harness, role: NodeRole, epoch: u64, merged: &Config, blob: &[u8]) -> Config {
+pub(crate) fn follow(
+    h: &Harness,
+    role: NodeRole,
+    epoch: u64,
+    merged: &Config,
+    blob: &[u8],
+) -> Config {
     let dir = data_dir(h);
     let file = file_of(h);
     let mut id = match Identity::load(&dir).unwrap() {
@@ -59,22 +65,22 @@ fn follow(h: &Harness, role: NodeRole, epoch: u64, merged: &Config, blob: &[u8])
     file
 }
 
-fn promote(h: &Harness, epoch: u64) {
+pub(crate) fn promote(h: &Harness, epoch: u64) {
     let mut id = Identity::load(&data_dir(h)).unwrap().unwrap();
     id.save_role(NodeRole::Primary, epoch).unwrap();
 }
 
-async fn ok(h: &Harness, method: &str, uri: &str, body: Option<Value>) -> Value {
+pub(crate) async fn ok(h: &Harness, method: &str, uri: &str, body: Option<Value>) -> Value {
     let (s, _, v) = h.call(method, uri, body.as_ref()).await;
     assert_eq!(s, StatusCode::OK, "{method} {uri}: {v}");
     v
 }
 
-fn upstream_names(c: &Config) -> Vec<String> {
+pub(crate) fn upstream_names(c: &Config) -> Vec<String> {
     c.upstream.iter().map(|u| u.name.to_string()).collect()
 }
 
-fn group_members(c: &Config, group: &str) -> Vec<String> {
+pub(crate) fn group_members(c: &Config, group: &str) -> Vec<String> {
     c.upstream_group
         .iter()
         .find(|g| g.name.as_str() == group)
@@ -83,7 +89,7 @@ fn group_members(c: &Config, group: &str) -> Vec<String> {
 }
 
 /// Node A takes one write of every kind of entry the cluster's shared configuration holds.
-async fn fill(a: &Harness) {
+pub(crate) async fn fill(a: &Harness) {
     ok(
         a,
         "PUT",
@@ -314,55 +320,6 @@ async fn clu_015_readoption_after_a_demotion_even_for_the_same_blob() {
     let cfg = crate::replication::effective(&file);
     assert_eq!(b.auth.state().managed("upstream").unwrap().len(), 2);
     assert!(upstream_names(&cfg).contains(&"pihole-3".to_owned()));
-}
-
-/// REQ: CLU-010 (T24.37) — a version from a primary that doesn't publish the rows changes nothing:
-/// the promoted node keeps its rows and builds on the inherited configuration as before.
-#[tokio::test]
-async fn clu_010_a_blob_without_the_rows_is_left_alone() {
-    let (a, b) = (harness(""), harness(""));
-    fill(&a).await;
-    let (merged, _) = published(&a);
-    let legacy = serde_json::to_vec(&json!({"version": 1, "entries": []})).unwrap();
-    let file = follow(&b, NodeRole::Replica, 1, &merged, &legacy);
-    b.auth
-        .state()
-        .put_managed(
-            "upstream",
-            "mine",
-            r#"{"name":"mine","url":"udp://192.0.2.77"}"#,
-            None,
-            None,
-            1,
-            "t",
-        )
-        .unwrap();
-    promote(&b, 2);
-    let cfg = crate::replication::effective(&file);
-    assert!(
-        upstream_names(&cfg).contains(&"pihole-3".to_owned()),
-        "inherited"
-    );
-    assert!(
-        upstream_names(&cfg).contains(&"mine".to_owned()),
-        "its own row"
-    );
-    assert_eq!(
-        b.auth.state().managed("upstream").unwrap().len(),
-        1,
-        "rows kept"
-    );
-    // An entry it serves but doesn't hold gets a reason, not a bare 404.
-    b.src.config.store(std::sync::Arc::new(cfg));
-    let (s, _, v) = b.call("DELETE", "/api/v1/upstreams/pihole-3", None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(
-        v["detail"]
-            .as_str()
-            .unwrap()
-            .contains("hand its API entries over"),
-        "{v}"
-    );
 }
 
 /// REQ: CLU-015 (T24.37) — a primary publishes the rows of the shared kinds whole, and an older

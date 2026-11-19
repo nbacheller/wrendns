@@ -142,7 +142,7 @@
   {/if}
   <label class="check">
     <input type="checkbox" bind:checked={includeQlog} data-testid="backup-qlog" />
-    Include the query history (can be large; over 256 MiB, run <code>telltale backup create --include-qlog</code> on the server)
+    Include the query history (can be large; over 256 MiB, run <code>telltale backup create --include-qlog</code> on the server) <HelpButton id="backup-query-history" />
   </label>
 
   {#if reauth}
