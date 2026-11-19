@@ -3290,27 +3290,40 @@ impl Backend for ApiBackend {
     /// REQ: DSC-902 (T31.2) — a page of CIs from the CMDB on this node.
     fn cmdb_cis(
         &self,
-        q: &telltale_api::cmdb_api::CmdbQuery,
-    ) -> Result<telltale_api::cmdb_api::CmdbCiPage, Problem> {
-        let db = self.src.cmdb.db_or_503()?;
-        crate::cmdb::view::list(&db, q, self.src.cmdb.level())
+        q: telltale_api::cmdb_api::CmdbQuery,
+    ) -> BoxFuture<Result<telltale_api::cmdb_api::CmdbCiPage, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        Box::pin(async move {
+            let db = rt.db_or_503()?;
+            let level = rt.level();
+            blocking_cmdb(move || crate::cmdb::view::list(&db, &q, level)).await
+        })
     }
 
     /// REQ: DSC-902 (T31.2) — one CI with its records.
-    fn cmdb_ci(&self, id: &str) -> Result<telltale_api::cmdb_api::CmdbCiDetail, Problem> {
-        let db = self.src.cmdb.db_or_503()?;
-        crate::cmdb::view::detail(
-            &db,
-            id,
-            i64::try_from(self.now_unix_seconds()).unwrap_or(i64::MAX),
-            self.src.cmdb.level(),
-        )
+    fn cmdb_ci(
+        &self,
+        id: String,
+    ) -> BoxFuture<Result<telltale_api::cmdb_api::CmdbCiDetail, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        let now = i64::try_from(self.now_unix_seconds()).unwrap_or(i64::MAX);
+        Box::pin(async move {
+            let db = rt.db_or_503()?;
+            let level = rt.level();
+            blocking_cmdb(move || crate::cmdb::view::detail(&db, &id, now, level)).await
+        })
     }
 
     /// REQ: DSC-903 (T31.2) — the open merge proposals.
-    fn cmdb_proposals(&self) -> Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem> {
-        let db = self.src.cmdb.db_or_503()?;
-        crate::cmdb::view::proposals(&db)
+    fn cmdb_proposals(
+        &self,
+    ) -> BoxFuture<Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        Box::pin(async move {
+            let db = rt.db_or_503()?;
+            let level = rt.level();
+            blocking_cmdb(move || crate::cmdb::view::proposals(&db, level)).await
+        })
     }
 
     /// REQ: DSC-903 (T31.2) — a manual change, on the CMDB's thread.
@@ -9496,4 +9509,14 @@ mod group_content_marker_tests {
         assert_eq!(e.code, Code::AgentNotAllowed);
         assert!(plan_override(&src, &state, &write(None)).is_ok());
     }
+}
+
+/// REQ: DSC-902 (T31.2) - the CMDB's reads are synchronous SQLite; they run on the blocking pool,
+/// never on an async worker.
+async fn blocking_cmdb<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, Problem> + Send + 'static,
+) -> Result<T, Problem> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| Problem::internal(format!("the CMDB read stopped: {e}")))?
 }

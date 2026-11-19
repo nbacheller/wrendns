@@ -1376,6 +1376,50 @@ async fn agt_004_agent_tokens_over_http() {
     );
 }
 
+// REQ: AGT-004, DSC-903 (T31.2) - no agent token, whatever its scopes, can link, unlink, merge or split
+// CIs: the CMDB's manual changes are people's (deny by default), reason or not.
+#[tokio::test]
+async fn agt_004_agent_tokens_cannot_change_the_cmdb() {
+    let (app, _) = app();
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "wide", "kind": "agent",
+                "scopes": ["analytics:read", "config:write:clients", "config:write:groups"],
+                "ratePerMinute": 600}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let id = format!("ci_{:032x}", 1);
+    let other = format!("ci_{:032x}", 2);
+    let cases = [
+        ("link", serde_json::json!({"mac": "aa:bb:cc:00:00:01"})),
+        ("unlink", serde_json::json!({"mac": "aa:bb:cc:00:00:01"})),
+        ("merge", serde_json::json!({"into": other})),
+        ("split", serde_json::json!({"mac": "aa:bb:cc:00:00:01"})),
+    ];
+    for (op, body) in cases {
+        let r = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/cmdb/cis/{id}/{op}"))
+            .header("authorization", format!("Bearer {agent}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-client", "test-agent/1.0")
+            .header("x-telltale-reason", "tidy the inventory")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        assert_eq!(
+            send(&app, r).await.0,
+            StatusCode::FORBIDDEN,
+            "an agent token may not {op}"
+        );
+    }
+}
+
 // REQ: AGT-004 — a token restricted to a group: its group's devices only, other views
 // refused.
 #[tokio::test]

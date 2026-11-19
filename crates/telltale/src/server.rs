@@ -1303,6 +1303,37 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: DSC-901 (T31.2, ADR-1005 section 1) — the CMDB starts here only if `[cmdb]` is on and this
     // node is the one `[discovery]` designates (even when discovery itself is off).
     reconcile_cmdb(&sources, &pipeline, &cfg);
+    // REQ: DSC-901, DSC-906 (T31.2) - with no node named, the designated node is the cluster's
+    // primary: when that changes (a failover), the CMDB and the inventory move with it, not only at
+    // the next configuration reload.
+    if sources.cluster.is_some() && !cfg.cluster.ephemeral {
+        let (s, p, mut stop) = (
+            Arc::clone(&sources),
+            Arc::clone(&pipeline),
+            http_stopped.clone(),
+        );
+        tokio::spawn(async move {
+            let designated = |s: &http::Sources| {
+                let cfg = s.config.load_full();
+                let own = crate::discovery::runtime::own_of(s.cluster.as_deref(), &cfg);
+                crate::discovery::gate::designated(&cfg.discovery, own.me())
+            };
+            let mut last = designated(&s);
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_secs(10)) => {}
+                    _ = stop.wait_for(|v| *v) => return,
+                }
+                let now = designated(&s);
+                if now != last {
+                    last = now;
+                    let cfg = s.config.load_full();
+                    reconcile_discovery(&s, &p, &cfg);
+                    reconcile_cmdb(&s, &p, &cfg);
+                }
+            }
+        });
+    }
     // REQ: OPS-014, API-014 (ADR-903 §3) — the store and the node key, at start on full members
     // (the key made on the first one, while the table is empty), so a missing or unreadable key
     // shows in the log at once; then every 30 s it retries a locked store, and a locked replica

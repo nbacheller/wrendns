@@ -262,6 +262,45 @@ fn dsc_903_r5_hostname_and_network_only_proposes() {
     );
 }
 
+/// REQ: DSC-903 (R5) - the proposal does not depend on the order the devices arrive in: the group that
+/// shares a host name and a network is looked at whole, so two devices propose a merge, three are
+/// ambiguous and propose nothing, and the proposal a first pair raised ends when the third arrives.
+#[test]
+fn dsc_903_r5_is_the_same_in_every_arrival_order() {
+    let h = |key: &str, mac: &str| {
+        with(
+            with(host("unifi:home", key, mac, T0), "hostname", "kitchen-hub"),
+            "network",
+            "Lan",
+        )
+    };
+    let macs = [
+        ("1", "aa:bb:cc:00:00:01"),
+        ("2", "aa:bb:cc:00:00:02"),
+        ("3", "aa:bb:cc:00:00:03"),
+    ];
+    for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0], [2, 0, 1]] {
+        let (_d, mut e) = engine();
+        for (step, i) in order.iter().enumerate() {
+            let (k, m) = macs[*i];
+            // One device at a time, in separate (incomplete) batches.
+            e.ingest(
+                batch("unifi:home", vec![h(k, m)], false, T0 + step as i64),
+                T0 + step as i64,
+            )
+            .unwrap();
+            let expect = usize::from(step == 1);
+            assert_eq!(
+                proposals(&e, "host_network"),
+                expect,
+                "order {order:?} after {} devices",
+                step + 1
+            );
+        }
+        assert_eq!(devices(&e).len(), 3);
+    }
+}
+
 /// REQ: DSC-903 - a keyless record whose address two devices hold stays unlinked with a proposal; one
 /// that one device holds attaches to it; one nobody holds becomes an unconfirmed CI of its own.
 #[test]

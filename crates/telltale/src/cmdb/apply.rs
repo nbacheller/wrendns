@@ -702,31 +702,45 @@ fn host_network_proposals(
         else {
             continue;
         };
-        let mut others: BTreeSet<String> = BTreeSet::new();
+        // The whole group of devices that hold this host name on this network (not only the pair
+        // that happened to arrive first): exactly two propose a merge, three or more are
+        // ambiguous and propose nothing, and a proposal an earlier, smaller group raised ends.
+        let mut group: BTreeSet<String> = BTreeSet::new();
+        group.insert(own.clone());
         for o in cx.ops.records_by_hostnet(host, net)? {
-            if let Some(d) = o.dci
-                && d != own
-            {
-                others.insert(d);
+            if let Some(d) = o.dci {
+                group.insert(d);
             }
         }
-        if others.len() != 1 {
+        if group.len() != 2 {
+            let all: Vec<&String> = group.iter().collect();
+            for (i, a) in all.iter().enumerate() {
+                for b in all.iter().skip(i.saturating_add(1)) {
+                    cx.ops.proposal_drop_open("host_network", a, b)?;
+                }
+            }
             continue;
         }
+        let others: BTreeSet<String> = group.into_iter().filter(|d| *d != own).collect();
         let Some(other) = others.into_iter().next() else {
             continue;
         };
-        let serial_of = |ci: &str| -> Result<Option<String>> {
+        // Devices whose records hold different serials are not the same device: no proposal. The
+        // serials are read from the records the device holds now (the whole set), not from the
+        // key table (which keeps a key a device once had) and not the first one found, so the
+        // answer does not depend on the order the evidence arrived in.
+        let serials_of = |ci: &str| -> Result<BTreeSet<String>> {
             Ok(cx
                 .ops
-                .keys_of(ci)?
+                .records_of_ci(ci)?
                 .into_iter()
-                .find(|(k, _)| k == "serial")
-                .map(|(_, v)| v))
+                .filter(|r| r.dci.as_deref() == Some(ci))
+                .filter_map(|r| r.serial)
+                .collect())
         };
-        if let (Some(a), Some(b)) = (serial_of(&own)?, serial_of(&other)?)
-            && a != b
-        {
+        let (a, b) = (serials_of(&own)?, serials_of(&other)?);
+        if !a.is_empty() && !b.is_empty() && a != b {
+            cx.ops.proposal_drop_open("host_network", &own, &other)?;
             continue;
         }
         proposal(

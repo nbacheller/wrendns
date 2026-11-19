@@ -448,7 +448,7 @@ pub(crate) async fn cmdb_cis(State(b): State<Shared>, Query(q): Query<CmdbQuery>
             .hint("Use device, interface, network, node, service or upstream.")
             .into_response();
     }
-    match b.cmdb_cis(&q) {
+    match b.cmdb_cis(q).await {
         Ok(p) => Json(p).into_response(),
         Err(e) => e.into_response(),
     }
@@ -468,7 +468,7 @@ pub(crate) async fn cmdb_cis(State(b): State<Shared>, Query(q): Query<CmdbQuery>
         (status = 503, body = Problem, description = "The CMDB doesn't run on this node."),
     ))]
 pub(crate) async fn cmdb_ci(State(b): State<Shared>, Path(id): Path<String>) -> Response {
-    match b.cmdb_ci(&id) {
+    match b.cmdb_ci(id).await {
         Ok(d) => Json(d).into_response(),
         Err(e) => e.into_response(),
     }
@@ -484,7 +484,7 @@ pub(crate) async fn cmdb_ci(State(b): State<Shared>, Path(id): Path<String>) -> 
         (status = 503, body = Problem, description = "The CMDB doesn't run on this node."),
     ))]
 pub(crate) async fn cmdb_proposals(State(b): State<Shared>) -> Response {
-    match b.cmdb_proposals() {
+    match b.cmdb_proposals().await {
         Ok(p) => Json(p).into_response(),
         Err(e) => e.into_response(),
     }

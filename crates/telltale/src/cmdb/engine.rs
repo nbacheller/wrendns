@@ -25,6 +25,11 @@ type Result<T> = std::result::Result<T, CmdbError>;
 
 /// Derived-only records not seen for this long are removed (ADR-924, ADR-1005 section 5).
 pub(crate) const RETENTION_SECS: i64 = 7 * 86_400;
+/// Records one write transaction takes from a batch (the memory bound of ingest).
+pub(crate) const INGEST_CHUNK: usize = 128;
+/// Tombstones kept for the standbys (the newest ones); older ones are swept and a standby whose head
+/// is behind the swept floor resyncs in full.
+pub(crate) const TOMB_KEEP: i64 = 200_000;
 /// Import rows are kept this long (`[discovery.import]`, ADR-910).
 pub(crate) const IMPORT_RETENTION_SECS: i64 = 30 * 86_400;
 
@@ -260,10 +265,60 @@ impl Engine {
     /// Ingests one batch: probes each record, writes those whose content changed, resolves the
     /// components they touch, marks the records a complete batch no longer lists, and keeps the
     /// times in memory. One write transaction.
-    #[allow(clippy::too_many_lines)] // one flow: probe, cap, write, resolve, then update memory
-    #[allow(clippy::needless_pass_by_value)] // the batch is the caller's to give: it is consumed
-    pub(crate) fn ingest(&mut self, b: SourceBatch, now: i64) -> Result<IngestReport> {
+    ///
+    /// A large batch is taken in parts of [`INGEST_CHUNK`] records, each its own transaction, so the
+    /// memory a batch needs is bounded by the part and not by the source's size (a router with
+    /// thousands of clients); the records the parts listed are remembered, and the last part of a
+    /// complete batch marks what the whole batch did not list.
+    pub(crate) fn ingest(&mut self, mut b: SourceBatch, now: i64) -> Result<IngestReport> {
         let started = std::time::Instant::now();
+        let mut listed: HashSet<i64> = HashSet::new();
+        let mut rep = IngestReport::default();
+        let total = b.records.len();
+        loop {
+            let rest = if b.records.len() > INGEST_CHUNK {
+                b.records.split_off(INGEST_CHUNK)
+            } else {
+                Vec::new()
+            };
+            let last = rest.is_empty();
+            let part = SourceBatch {
+                source: b.source.clone(),
+                complete: b.complete && last,
+                records: std::mem::replace(&mut b.records, rest),
+                at: b.at,
+            };
+            let r = self.ingest_part(part, now, &mut listed)?;
+            rep.unchanged = rep.unchanged.saturating_add(r.unchanged);
+            rep.written = rep.written.saturating_add(r.written);
+            rep.refused = rep.refused.saturating_add(r.refused);
+            rep.cut = rep.cut.saturating_add(r.cut);
+            rep.went_absent = rep.went_absent.saturating_add(r.went_absent);
+            rep.dropped = rep.dropped.saturating_add(r.dropped);
+            if last {
+                break;
+            }
+        }
+        rep.records = total;
+        let c = &mut self.counters;
+        c.batches = c.batches.saturating_add(1);
+        c.batch_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let st = self.sources.entry(b.source.clone()).or_default();
+        st.last_at = now;
+        st.records = total;
+        st.complete = b.complete;
+        st.batches = st.batches.saturating_add(1);
+        Ok(rep)
+    }
+
+    #[allow(clippy::too_many_lines)] // one flow: probe, cap, write, resolve, then update memory
+    #[allow(clippy::needless_pass_by_value)] // the part is the caller's to give: it is consumed
+    fn ingest_part(
+        &mut self,
+        b: SourceBatch,
+        now: i64,
+        listed: &mut HashSet<i64>,
+    ) -> Result<IngestReport> {
         let presence = is_presence(&b.source);
         let mut rep = IngestReport {
             records: b.records.len(),
@@ -286,7 +341,6 @@ impl Engine {
             let mut ap = Applied::default();
             let mut cx = Cx::new(ops, now, caps)?;
             let mut seeds = Seeds::default();
-            let mut listed: HashSet<i64> = HashSet::new();
             let mut revive: Vec<i64> = Vec::new();
             let mut reset: Vec<i64> = Vec::new();
             let mut changed: Vec<(&super::model::Prepared, bool)> = Vec::new();
@@ -476,13 +530,6 @@ impl Engine {
         c.attrs_cut = c
             .attrs_cut
             .saturating_add(u64::try_from(rep.cut).unwrap_or(u64::MAX));
-        c.batches = c.batches.saturating_add(1);
-        c.batch_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let st = self.sources.entry(b.source.clone()).or_default();
-        st.last_at = now;
-        st.records = rep.records;
-        st.complete = b.complete;
-        st.batches = st.batches.saturating_add(1);
         Ok(rep)
     }
 
@@ -644,8 +691,10 @@ impl Engine {
                     removed = removed.saturating_add(1);
                 }
             }
-            let (_, seq) = ops.head()?;
-            ops.tomb_sweep(seq.saturating_sub(10_000))?;
+            // Tombstones go by count, not by a window of sequence numbers (every flush stamps
+            // thousands of `ci_seen` rows, so such a window covers hours): a standby that was off
+            // for longer than the floor resyncs in full.
+            ops.tomb_sweep(TOMB_KEEP)?;
             Ok(expired.len().saturating_add(removed))
         })?;
         if !gone_rids.is_empty() {

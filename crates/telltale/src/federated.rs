@@ -2794,14 +2794,19 @@ impl Backend for Federated {
     }
     fn cmdb_cis(
         &self,
-        q: &telltale_api::cmdb_api::CmdbQuery,
-    ) -> Result<telltale_api::cmdb_api::CmdbCiPage, Problem> {
+        q: telltale_api::cmdb_api::CmdbQuery,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::cmdb_api::CmdbCiPage, Problem>> {
         self.local.cmdb_cis(q)
     }
-    fn cmdb_ci(&self, id: &str) -> Result<telltale_api::cmdb_api::CmdbCiDetail, Problem> {
+    fn cmdb_ci(
+        &self,
+        id: String,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::cmdb_api::CmdbCiDetail, Problem>> {
         self.local.cmdb_ci(id)
     }
-    fn cmdb_proposals(&self) -> Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem> {
+    fn cmdb_proposals(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem>> {
         self.local.cmdb_proposals()
     }
     fn cmdb_manual(

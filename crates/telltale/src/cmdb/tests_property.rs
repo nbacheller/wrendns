@@ -48,6 +48,8 @@ struct Dev {
     macs: Vec<String>,
     serial: Option<String>,
     key: Option<String>,
+    host: String,
+    net: &'static str,
 }
 
 /// Records the generator reports, each tagged with the time it was first seen.
@@ -63,6 +65,11 @@ fn world(seed: u64) -> Vec<SourceBatch> {
                 .collect(),
             serial: rng.chance(60).then(|| format!("sn-dev-{d:04}")),
             key: rng.chance(40).then(|| format!("ha:home|dev{d}")),
+            // A small pool, so devices share a host name and a network (R5).
+            host: ["alpha-box", "beta-box", "gamma-box"]
+                [usize::try_from(rng.below(3)).unwrap_or(0)]
+            .to_owned(),
+            net: ["lan", "iot"][usize::try_from(rng.below(2)).unwrap_or(0)],
         });
     }
     let sources = ["unifi:home", "neighbor", "snmp:core", "home_assistant:ha"];
@@ -97,6 +104,10 @@ fn world(seed: u64) -> Vec<SourceBatch> {
                     && let Some(k) = &dev.key
                 {
                     r.text("device_key", k.clone());
+                }
+                if rng.chance(60) {
+                    r.text("hostname", dev.host.clone());
+                    r.text("network", dev.net);
                 }
                 r.list(
                     "addresses",

@@ -6,6 +6,7 @@
   // wrong link is fixed here: Move a record to another device, Unlink it, Merge two devices, Split
   // records out, each with a preview of the records that would move. It only reads the network and never
   // names a device in DNS (DSC-901).
+  import { untrack } from 'svelte';
   import { api, type S } from '../lib/api';
   import { poll } from '../lib/poll';
   import { can } from '../lib/session.svelte';
@@ -190,8 +191,11 @@
     queryTimer = setTimeout(() => void loadList(), 200);
   }
   // The list loads once the CMDB runs here, and again when the status first says it does.
+  // `untrack`: the load reads and writes its own state (`loadingList`, `items`); tracked here it would
+  // run again after every load, in a loop that keeps replacing the rows under the reader's pointer.
   $effect(() => {
-    if (status?.running) void loadList();
+    const running = status?.running === true;
+    if (running) untrack(() => void loadList());
   });
 
   // -- one CI -------------------------------------------------------------------------------------
@@ -306,7 +310,8 @@
     }
   }
   $effect(() => {
-    if (status?.running) void loadProposals();
+    const running = status?.running === true;
+    if (running) untrack(() => void loadProposals());
   });
   function proposeMerge(p: S['CmdbProposal']) {
     change = { op: 'merge', id: p.a, body: { into: p.b }, title: `Merge ${short(p.a)} into ${short(p.b)}` };
@@ -375,6 +380,10 @@
     <p class="muted small">
       It runs on the node the network inventory is designated to (the primary, or the node `[discovery] node` names), even when the
       inventory itself is off. It cannot be on while the privacy level is 2 or 3.
+    </p>
+    <p class="muted small" data-testid="cmdb-settings-inert">
+      The settings below are saved and checked now. Nothing reads them yet: they take effect when change detection and the
+      value history arrive in a later part of the CMDB.
     </p>
     <label>
       A device is reported gone after (days, 1 to 365)

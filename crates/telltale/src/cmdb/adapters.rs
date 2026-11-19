@@ -67,6 +67,7 @@ fn merge_list(into: &mut Vec<String>, more: &[String]) {
 /// facts of several observations of the same thing merged. A structured place (`hint.port_ref`)
 /// also makes a port record under the switch it names, so port CIs exist for the ports clients are
 /// seen on.
+#[allow(clippy::too_many_lines)] // one flow over an observation's fields
 pub(crate) fn records_from_observations(
     obs: &[Observation],
     source: &str,
@@ -74,7 +75,16 @@ pub(crate) fn records_from_observations(
 ) -> Vec<Record> {
     let mut by_key: BTreeMap<String, Record> = BTreeMap::new();
     let mut ports: BTreeMap<String, Record> = BTreeMap::new();
-    for o in obs {
+    // A fixed order, so a feed read from a hash map yields the same record every time.
+    let mut sorted: Vec<&Observation> = obs.iter().collect();
+    sorted.sort_by(|a, b| {
+        (a.mac, a.ip, a.name.as_ref().map(|n| &n.1)).cmp(&(
+            b.mac,
+            b.ip,
+            b.name.as_ref().map(|n| &n.1),
+        ))
+    });
+    for o in sorted {
         let (key, mac_text) = match (o.mac, o.ip) {
             (Some(m), _) => {
                 let t = m
@@ -104,6 +114,7 @@ pub(crate) fn records_from_observations(
                 _ => Vec::new(),
             };
             merge_list(&mut have, &[ip.to_string()]);
+            have.sort();
             r.list("addresses", have);
         }
         if let Some((kind, name)) = &o.name
@@ -187,6 +198,11 @@ pub(crate) fn from_lease_view(
     }
     for o in obs {
         let router = o.name_origin.clone().unwrap_or_default();
+        // The Home Assistant feed is the discovery poll's (it has the device keys); the lease view
+        // of the same devices would write a second, disagreeing batch under the same source name.
+        if kinds.get(&router).is_some_and(|k| *k == "home_assistant") {
+            continue;
+        }
         by_router.entry(router).or_default().push(o);
     }
     by_router
@@ -650,5 +666,64 @@ cidr = "192.168.1.0/24"
         let keys: Vec<&str> = b.records.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, ["192.168.1.20"], "{keys:?}");
         assert!(!b.records[0].attrs.contains_key("count"));
+    }
+
+    /// REQ: DSC-902, DSC-903 - a Home Assistant router's devices reach the CMDB through the discovery
+    /// poll only: the lease view of the same devices would write a second, disagreeing batch under
+    /// the same source name (records flipping between present and absent every minute). Fed both
+    /// ways into one engine, nothing is rewritten on the second cycle.
+    #[test]
+    fn dsc_902_home_assistant_is_one_feed_not_two() {
+        use crate::cmdb::engine::test_support::engine;
+        let mut view = Leases::new();
+        for (n, ip) in [(1u8, "192.168.1.31"), (2, "192.168.1.32")] {
+            view.insert(
+                ip.parse().unwrap(),
+                crate::devices::Lease {
+                    mac: format!("aa:bb:cc:00:00:{n:02x}"),
+                    ip: ip.parse().unwrap(),
+                    hostname: Some(format!("ha-dev-{n}")),
+                    expires: 0,
+                    router: Some("ha".to_owned()),
+                    offline: false,
+                    ipv6: Vec::new(),
+                },
+            );
+        }
+        let kinds: HashMap<String, &'static str> =
+            HashMap::from([("ha".to_owned(), "home_assistant")]);
+        let batches = from_lease_view(&view, &kinds, secs(NOW));
+        assert!(
+            batches
+                .iter()
+                .all(|b| !b.source.starts_with("home_assistant")),
+            "the lease view writes no batch under the Home Assistant name: {:?}",
+            batches.iter().map(|b| &b.source).collect::<Vec<_>>()
+        );
+        // The poll's batch, then the lease view's, twice: the second pass rewrites nothing.
+        let mut ha = Vec::new();
+        for n in 1u8..=2 {
+            let mut o = Observation::new(Source::HomeAssistant, NOW);
+            o.mac = Some(mac(n));
+            o.hint_mut().device_key = Some(format!("dev{n}"));
+            ha.push(o);
+        }
+        let (_d, mut e) = engine();
+        let mut written = 0;
+        for cycle in 0..3i64 {
+            let at = secs(NOW) + cycle * 60;
+            let b = batch_from_observations(&ha, "home_assistant:ha", at);
+            let r = e.ingest(b, at).unwrap();
+            if cycle > 0 {
+                written += r.written + r.went_absent;
+            }
+            for b in from_lease_view(&view, &kinds, at) {
+                let r = e.ingest(b, at).unwrap();
+                if cycle > 0 {
+                    written += r.written + r.went_absent;
+                }
+            }
+        }
+        assert_eq!(written, 0, "no flapping, no rewrites");
     }
 }

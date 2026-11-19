@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use telltale_store::cmdb::{CmdbDb, Pin};
 
-use super::engine::Engine;
 use super::engine::test_support::{batch, engine, host};
+use super::engine::{Engine, INGEST_CHUNK};
 use super::model::{Caps, SourceBatch};
 
 const T0: i64 = 1_000_000;
@@ -581,6 +581,48 @@ fn rss_kib() -> u64 {
         .unwrap_or(0)
 }
 
+/// A representative record of a real source (a UniFi or SNMP client): about a dozen attributes and
+/// 500 bytes of JSON (addresses, names, a VLAN, the network, an access point or a switch port,
+/// LLDP neighbours, a model, firmware and a role), not the minimum a MAC needs.
+fn rich(r: &mut crate::cmdb::model::Record, i: u32) {
+    r.list(
+        "addresses",
+        vec![
+            format!(
+                "10.{}.{}.{}",
+                1 + ((i >> 16) & 0xff),
+                (i >> 8) & 0xff,
+                i & 0xff
+            ),
+            format!("fd00:{:x}::{:x}", (i >> 8) & 0xff, i & 0xff),
+        ],
+    );
+    r.text("name", format!("host-{i}"));
+    r.text("hostname", format!("host-{i}.home.arpa"));
+    r.text("network", format!("vlan-{}-lan", i % 8));
+    r.num("vlan", i64::from(10 + i % 8));
+    r.text("ap", format!("access-point-living-room-{}", i % 12));
+    r.text(
+        "port",
+        format!("core-switch-24-port-poe port {}", 1 + i % 24),
+    );
+    r.list(
+        "lldp",
+        vec![
+            format!("core-switch-24-port-poe/{}", 1 + i % 24),
+            format!("chassis-{:08x}", i.wrapping_mul(2_654_435_761)),
+            "system-description: managed switch, firmware 7.2.1".to_owned(),
+        ],
+    );
+    r.text("model", "US-24-250W managed PoE switch");
+    r.text("firmware", format!("7.2.{}.15123", i % 10));
+    r.text("role", "client");
+    r.text(
+        "description",
+        format!("wired client {i}, kitchen, seen by the core switch and the access point"),
+    );
+}
+
 /// REQ: DSC-906 (AC 5) - at the caps (16,384 CIs and 65,536 source records) the process holds at
 /// most 8 MiB more than before the CMDB and the database is at most 64 MiB on disk. Run by hand, in
 /// two fresh processes that share a directory, so the second one measures a restart at the caps
@@ -590,6 +632,7 @@ fn rss_kib() -> u64 {
 #[test]
 #[ignore = "builds the database at its caps; run by hand for the figures"]
 fn dsc_906_figures_at_the_caps() {
+    let chunk_len = u32::try_from(INGEST_CHUNK).unwrap();
     let held = std::env::var_os("CMDB_FIG_DIR").map(PathBuf::from);
     let tmp = tempfile::tempdir().unwrap();
     let dir: PathBuf = held.clone().unwrap_or_else(|| tmp.path().to_path_buf());
@@ -629,22 +672,13 @@ fn dsc_906_figures_at_the_caps() {
         ];
         for (si, s) in sources.iter().enumerate() {
             let mut at = T0 + i64::try_from(si).unwrap();
-            for chunk in 0..16u32 {
-                let recs: Vec<_> = (0..512u32)
+            for chunk in 0..64u32 {
+                let recs: Vec<_> = (0..chunk_len)
                     .map(|n| {
-                        let i = chunk * 512 + n;
+                        let i = chunk * chunk_len + n;
                         let m = mac(i);
                         let mut r = host(s, &m, &m, at);
-                        r.list(
-                            "addresses",
-                            vec![format!(
-                                "10.{}.{}.{}",
-                                1 + ((i >> 16) & 0xff),
-                                (i >> 8) & 0xff,
-                                i & 0xff
-                            )],
-                        );
-                        r.text("name", format!("host-{i}"));
+                        rich(&mut r, i);
                         r
                     })
                     .collect();
@@ -680,22 +714,13 @@ fn dsc_906_figures_at_the_caps() {
         for cycle in 0..3i64 {
             for s in &sources {
                 let at = T0 + 100_000 + cycle * 60;
-                for chunk in 0..16u32 {
-                    let recs: Vec<_> = (0..512u32)
+                for chunk in 0..64u32 {
+                    let recs: Vec<_> = (0..chunk_len)
                         .map(|n| {
-                            let i = chunk * 512 + n;
+                            let i = chunk * chunk_len + n;
                             let m = mac(i);
                             let mut r = host(s, &m, &m, at);
-                            r.list(
-                                "addresses",
-                                vec![format!(
-                                    "10.{}.{}.{}",
-                                    1 + ((i >> 16) & 0xff),
-                                    (i >> 8) & 0xff,
-                                    i & 0xff
-                                )],
-                            );
-                            r.text("name", format!("host-{i}"));
+                            rich(&mut r, i);
                             r
                         })
                         .collect();

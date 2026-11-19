@@ -20,6 +20,9 @@ pub(crate) const MAX_ATTRS: usize = 24;
 pub(crate) const VALUE_MAX: usize = 255;
 /// Entries one list value keeps at most.
 pub(crate) const LIST_MAX: usize = 16;
+/// One record's attributes, serialised, are cut to this many bytes: the least useful (and largest)
+/// are dropped first, so the 64 MiB disk figure holds for any record a source can send (AC 5).
+pub(crate) const RECORD_BYTES_MAX: usize = 2048;
 /// Batches the sink holds before it drops the oldest (ADR-1005 section 3).
 pub(crate) const SINK_BATCHES: usize = 64;
 /// `last_seen` is written back only when the stored value is this old (ADR-1005 section 3).
@@ -372,6 +375,52 @@ fn text_attr<'a>(attrs: &'a BTreeMap<String, Value>, name: &str) -> Option<&'a s
     attrs.get(name).and_then(Value::as_str)
 }
 
+/// Attributes that are identities: never dropped for size.
+const KEEP: [&str; 10] = [
+    "name",
+    "mac",
+    "serial",
+    "device_key",
+    "key",
+    "hostname",
+    "network",
+    "owner",
+    "port_id",
+    "addresses",
+];
+
+/// The per-record byte cap: the largest attribute that is not an identity is dropped until the
+/// record fits (then the address list is shortened). Returns how many were cut.
+fn cap_bytes(attrs: &mut BTreeMap<String, Value>) -> usize {
+    let size = |a: &BTreeMap<String, Value>| serde_json::to_string(a).map_or(0, |s| s.len());
+    let mut cut = 0usize;
+    while size(attrs) > RECORD_BYTES_MAX {
+        let victim = attrs
+            .iter()
+            .filter(|(k, _)| !KEEP.contains(&k.as_str()))
+            .max_by_key(|(k, v)| (v.to_string().len(), (*k).clone()))
+            .map(|(k, _)| k.clone());
+        match victim {
+            Some(k) => {
+                attrs.remove(&k);
+                cut = cut.saturating_add(1);
+            }
+            None => {
+                // Only identities are left: shorten the address list.
+                if let Some(Value::Array(a)) = attrs.get_mut("addresses")
+                    && a.len() > 1
+                {
+                    a.pop();
+                    cut = cut.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    cut
+}
+
 /// Cleans a record and extracts its keys (the normalisers above). The content hash covers the type
 /// and the attributes, never a time, so a record that says the same thing again writes nothing.
 /// `None` for a record with no source or key text, a port without its owner, or a natural-key type
@@ -397,6 +446,7 @@ pub(crate) fn prepare(rec: &Record) -> Option<Prepared> {
             attrs.insert(name, c);
         }
     }
+    cut = cut.saturating_add(cap_bytes(&mut attrs));
     let kind = rec.kind;
     let mac = (kind == RecKind::Device)
         .then(|| text_attr(&attrs, "mac").and_then(norm_mac))
@@ -570,5 +620,27 @@ mod tests {
         let b = new_ci_id();
         assert_ne!(a, b);
         assert!(is_ci_id(&a) && ci_num(&a).map(ci_text).as_deref() == Some(a.as_str()));
+    }
+
+    /// REQ: DSC-906 (AC 5) - one record's attributes are cut to a byte cap: the largest attribute that
+    /// is not an identity goes first, so the figure at the caps holds for any record.
+    #[test]
+    fn dsc_906_a_record_is_cut_to_the_byte_cap() {
+        let mut r = Record::new("unifi:home", "aa:bb:cc:00:00:01", RecKind::Device, 1);
+        r.text("mac", "aa:bb:cc:00:00:01");
+        r.text("name", "host");
+        for n in 0..20 {
+            r.text(&format!("extra{n:02}"), "x".repeat(VALUE_MAX));
+        }
+        let p = prepare(&r).unwrap();
+        assert!(p.cut > 0);
+        let attrs: serde_json::Value = serde_json::from_str(&p.write.attrs).unwrap();
+        assert!(
+            p.write.attrs.len() <= RECORD_BYTES_MAX,
+            "{}",
+            p.write.attrs.len()
+        );
+        assert_eq!(attrs["mac"], "aa:bb:cc:00:00:01");
+        assert_eq!(attrs["name"], "host", "identities stay");
     }
 }

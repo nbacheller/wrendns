@@ -29,6 +29,8 @@ pub const STANDBY_NAME: &str = "cmdb-standby.db";
 /// The writer's page cache, in KiB (the RSS budget, ADR-1005 section 2: the whole CMDB gets 8 MiB
 /// at its caps, and the index takes about 4).
 const CACHE_KIB: i64 = 512;
+/// The page size of a new database.
+const PAGE_SIZE: i64 = 16_384;
 /// The reader's page cache, in KiB.
 const READER_CACHE_KIB: i64 = 128;
 
@@ -276,13 +278,74 @@ const RECORD_COLS: &str = "r.rid, r.source, r.skey, r.ty, r.attrs, r.hash, r.fir
      r.host, r.net, r.owner, r.port, r.ici, r.dci, r.link";
 const RECORD_FROM: &str = "record r LEFT JOIN seen s ON s.rid = r.rid";
 
+// -- the attributes' storage form --------------------------------------------------------------
+
+/// The attribute JSON is stored zstd-compressed with a primer of the names it repeats in every
+/// record (a raw-content dictionary, no training), so a record of about 500 bytes of JSON takes
+/// well under that on disk (AC 5, DSC-906). A text value is plain JSON (a row written before this
+/// form, or one that did not shrink) and is read as it is.
+const ATTR_PRIMER: &[u8] = b"{\"addresses\":[\"\"],\"ap\":\"\",\"attached_owner\":\"\",\"attached_port\":\"\",\"client_ids\":[\"\"],\"description\":\"\",\"device_key\":\"\",\"firmware\":\"\",\"hostname\":\"\",\"kind\":\"\",\"lldp\":[\"\"],\"mac\":\"aa:bb:cc:dd:ee:ff\",\"member_of\":[\"\"],\"model\":\"\",\"name\":\"\",\"namespace\":\"\",\"network\":\"\",\"owner\":\"\",\"port\":\"\",\"port_id\":\"\",\"role\":\"client\",\"serial\":\"\",\"vlan\":10,\"workload\",\"primary\",\"replica\",\"switch\",\"access point\",\"gateway\",\"192.168.\",\"10.0.\",\"fd00::\",\"home.arpa\",\".local\"}";
+
+/// The most a record's attributes can inflate to (well above the cap on what is written).
+const ATTRS_INFLATE_MAX: usize = 64 * 1024;
+
+struct Codec {
+    comp: zstd::bulk::Compressor<'static>,
+    decomp: zstd::bulk::Decompressor<'static>,
+}
+
+fn codec() -> &'static Mutex<Option<Codec>> {
+    static CODEC: std::sync::OnceLock<Mutex<Option<Codec>>> = std::sync::OnceLock::new();
+    CODEC.get_or_init(|| {
+        let made = (|| {
+            Some(Codec {
+                comp: zstd::bulk::Compressor::with_dictionary(3, ATTR_PRIMER).ok()?,
+                decomp: zstd::bulk::Decompressor::with_dictionary(ATTR_PRIMER).ok()?,
+            })
+        })();
+        Mutex::new(made)
+    })
+}
+
+/// A record's attributes as stored.
+fn encode_attrs(json: &str) -> SqlValue {
+    let packed = {
+        let mut g = codec().lock().unwrap_or_else(PoisonError::into_inner);
+        g.as_mut()
+            .and_then(|c| c.comp.compress(json.as_bytes()).ok())
+    };
+    match packed {
+        Some(b) if b.len() < json.len() => SqlValue::Blob(b),
+        _ => SqlValue::Text(json.to_owned()),
+    }
+}
+
+/// The attribute JSON of a stored value.
+fn decode_attrs(v: ValueRef<'_>) -> String {
+    match v {
+        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+        ValueRef::Blob(b) => {
+            let out = {
+                let mut g = codec().lock().unwrap_or_else(PoisonError::into_inner);
+                g.as_mut()
+                    .and_then(|c| c.decomp.decompress(b, ATTRS_INFLATE_MAX).ok())
+            };
+            out.map_or_else(
+                || "{}".to_owned(),
+                |o| String::from_utf8_lossy(&o).into_owned(),
+            )
+        }
+        _ => "{}".to_owned(),
+    }
+}
+
 fn record_of(r: &Row<'_>) -> rusqlite::Result<RecordRow> {
     Ok(RecordRow {
         rid: r.get(0)?,
         source: r.get(1)?,
         skey: r.get(2)?,
         ty: r.get(3)?,
-        attrs: r.get(4)?,
+        attrs: decode_attrs(r.get_ref(4)?),
         hash: u64::from_ne_bytes(r.get::<_, i64>(5)?.to_ne_bytes()),
         first_seen: r.get(6)?,
         last_changed: r.get(7)?,
@@ -352,6 +415,9 @@ pub struct CmdbDb {
 
 fn tune(conn: &Connection) -> Result<()> {
     conn.busy_timeout(Duration::from_secs(5))?;
+    // Records are about 800 bytes: bigger pages waste less at the end of each (only a new file
+    // takes the size; an existing one keeps its own).
+    conn.pragma_update(None, "page_size", PAGE_SIZE)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
@@ -704,7 +770,7 @@ impl Ops<'_> {
         after: Option<&str>,
         limit: i64,
     ) -> Result<Vec<CiRow>> {
-        self.ci_list_in(ty, false, q, after, limit)
+        self.ci_list_in(ty, false, true, q, after, limit)
     }
 
     /// [`Ops::ci_list`], optionally leaving the interfaces out (the default list shows a device
@@ -713,6 +779,7 @@ impl Ops<'_> {
         &self,
         ty: Option<&str>,
         top_level: bool,
+        by_name: bool,
         q: Option<&str>,
         after: Option<&str>,
         limit: i64,
@@ -734,16 +801,34 @@ impl Ops<'_> {
         }
         if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
             let like = format!("%{}%", like_escape(&q.to_ascii_lowercase()));
-            sql.push_str(
-                " AND (lower(COALESCE(c.name, '')) LIKE ? ESCAPE '\\' OR c.id LIKE ? ESCAPE '\\'
+            // `by_name` false (privacy level 1): ids, MACs, keys and addresses only, so a search cannot
+            // confirm that a name exists (ADR-1005 section 12).
+            if by_name {
+                sql.push_str(
+                    " AND (lower(COALESCE(c.name, '')) LIKE ? ESCAPE '\\' OR c.id LIKE ? ESCAPE '\\'
                    OR EXISTS (SELECT 1 FROM ci_key k WHERE k.ci = c.id AND k.value LIKE ? ESCAPE '\\')
                    OR EXISTS (SELECT 1 FROM ci i JOIN ci_key k ON k.ci = i.id
                       WHERE i.parent = c.id AND k.value LIKE ? ESCAPE '\\')
                    OR EXISTS (SELECT 1 FROM record r WHERE (r.dci = c.id OR r.ici = c.id)
-                      AND (lower(r.attrs) LIKE ? ESCAPE '\\')))",
-            );
-            for _ in 0..5 {
-                args.push(SqlValue::Text(like.clone()));
+                      AND r.host LIKE ? ESCAPE '\\')
+                   OR EXISTS (SELECT 1 FROM record r JOIN addr a ON a.rid = r.rid
+                      WHERE (r.dci = c.id OR r.ici = c.id) AND a.ip LIKE ? ESCAPE '\\'))",
+                );
+                for _ in 0..6 {
+                    args.push(SqlValue::Text(like.clone()));
+                }
+            } else {
+                sql.push_str(
+                    " AND (c.id LIKE ? ESCAPE '\\'
+                   OR EXISTS (SELECT 1 FROM ci_key k WHERE k.ci = c.id AND k.value LIKE ? ESCAPE '\\')
+                   OR EXISTS (SELECT 1 FROM ci i JOIN ci_key k ON k.ci = i.id
+                      WHERE i.parent = c.id AND k.value LIKE ? ESCAPE '\\')
+                   OR EXISTS (SELECT 1 FROM record r JOIN addr a ON a.rid = r.rid
+                      WHERE (r.dci = c.id OR r.ici = c.id) AND a.ip LIKE ? ESCAPE '\\'))",
+                );
+                for _ in 0..4 {
+                    args.push(SqlValue::Text(like.clone()));
+                }
             }
         }
         sql.push_str(" ORDER BY c.id LIMIT ?");
@@ -905,7 +990,7 @@ impl Ops<'_> {
                    last_changed = ?5, state = 'present', missed = 0, mac = ?6, serial = ?7, devkey = ?8,
                    host = ?9, net = ?10, owner = ?11, port = ?12 WHERE rid = ?1",
                 params![
-                    o.rid, w.ty, w.attrs, hash, w.seen, w.mac, w.serial, w.devkey, w.host, w.net,
+                    o.rid, w.ty, encode_attrs(&w.attrs), hash, w.seen, w.mac, w.serial, w.devkey, w.host, w.net,
                     w.owner, w.port
                 ],
             )?;
@@ -916,7 +1001,7 @@ impl Ops<'_> {
                    mac, serial, devkey, host, net, owner, port)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 'present', ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
-                    w.source, w.skey, w.ty, w.attrs, hash, w.seen, w.mac, w.serial, w.devkey,
+                    w.source, w.skey, w.ty, encode_attrs(&w.attrs), hash, w.seen, w.mac, w.serial, w.devkey,
                     w.host, w.net, w.owner, w.port
                 ],
             )?;
@@ -1439,6 +1524,17 @@ impl Ops<'_> {
         Ok(())
     }
 
+    /// Deletes the open proposal of a pair (reconciliation no longer finds it).
+    pub fn proposal_drop_open(&self, kind: &str, a: &str, b: &str) -> Result<()> {
+        self.need_write()?;
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        self.c.execute(
+            "DELETE FROM proposal WHERE kind = ?1 AND a = ?2 AND b = ?3 AND state = 'open'",
+            params![kind, a, b],
+        )?;
+        Ok(())
+    }
+
     /// Closes the proposals of a pair (a person acted: `applied`, or `dismissed`).
     pub fn proposal_close(&self, kind: &str, a: &str, b: &str, state: &str) -> Result<()> {
         self.need_write()?;
@@ -1645,7 +1741,7 @@ impl Ops<'_> {
                     _ => String::new(),
                 })
                 .collect::<Vec<_>>()
-                .join("");
+                .join("\x1f");
             let tomb: Option<(i64, i64)> = self
                 .c
                 .query_row(
@@ -1729,12 +1825,58 @@ impl Ops<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Drops the tombstones older than `before_seq` (the standbys have long since applied them).
-    pub fn tomb_sweep(&self, before_seq: i64) -> Result<usize> {
+    /// Keeps the `keep` newest tombstones (by stamp) and drops the rest, remembering the stamp of
+    /// the newest one dropped as the floor: a standby whose head is older than the floor missed a
+    /// deletion it can no longer be told about and has to resync in full. Tombstones are few (a
+    /// deletion is rare), so the count bound covers weeks, not the hours a data-row sequence
+    /// window would.
+    pub fn tomb_sweep(&self, keep: i64) -> Result<usize> {
         self.need_write()?;
-        Ok(self
+        let edge: Option<(i64, i64)> = self
             .c
-            .execute("DELETE FROM tomb WHERE seq < ?1", [before_seq])?)
+            .query_row(
+                "SELECT epoch, seq FROM tomb ORDER BY epoch DESC, seq DESC LIMIT 1 OFFSET ?1",
+                [keep.max(0)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((e, s)) = edge else {
+            return Ok(0);
+        };
+        let n = self.c.execute(
+            "DELETE FROM tomb WHERE epoch < ?1 OR (epoch = ?1 AND seq <= ?2)",
+            params![e, s],
+        )?;
+        if (e, s) > self.tomb_floor()? {
+            self.meta_set("tomb_floor", &format!("{e},{s}"))?;
+        }
+        Ok(n)
+    }
+
+    /// The stamp of the newest tombstone that was swept (`(0, 0)` while none was).
+    pub fn tomb_floor(&self) -> Result<(i64, i64)> {
+        Ok(self
+            .meta_get("tomb_floor")?
+            .and_then(|v| {
+                let (e, s) = v.split_once(',')?;
+                Some((e.parse().ok()?, s.parse().ok()?))
+            })
+            .unwrap_or((0, 0)))
+    }
+
+    /// Empties a standby copy (the replicated tables, the tombstones and its stamp) so the next
+    /// fetch starts from nothing. Used when the standby missed swept tombstones.
+    pub fn reset_replica(&self) -> Result<()> {
+        self.need_write()?;
+        for (table, _, _) in REPLICATED {
+            self.c.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        self.c.execute("DELETE FROM tomb", [])?;
+        self.c.execute(
+            "DELETE FROM meta WHERE key IN ('epoch', 'seq', 'tomb_floor')",
+            [],
+        )?;
+        Ok(())
     }
 }
 

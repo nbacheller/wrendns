@@ -268,18 +268,18 @@ pub trait Backend: Send + Sync + 'static {
         cmdb_api::CmdbStatus::default()
     }
     /// REQ: DSC-902 (T31.2) — a page of CIs; a node that doesn't run the CMDB says 503.
-    fn cmdb_cis(&self, q: &cmdb_api::CmdbQuery) -> Result<cmdb_api::CmdbCiPage, Problem> {
+    fn cmdb_cis(&self, q: cmdb_api::CmdbQuery) -> BoxFuture<Result<cmdb_api::CmdbCiPage, Problem>> {
         let _ = q;
-        Err(cmdb_api::not_here(false, None))
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
     }
     /// REQ: DSC-902 (T31.2) — one CI with its records.
-    fn cmdb_ci(&self, id: &str) -> Result<cmdb_api::CmdbCiDetail, Problem> {
+    fn cmdb_ci(&self, id: String) -> BoxFuture<Result<cmdb_api::CmdbCiDetail, Problem>> {
         let _ = id;
-        Err(cmdb_api::not_here(false, None))
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
     }
     /// REQ: DSC-903 (T31.2) — the open merge proposals.
-    fn cmdb_proposals(&self) -> Result<Vec<cmdb_api::CmdbProposal>, Problem> {
-        Err(cmdb_api::not_here(false, None))
+    fn cmdb_proposals(&self) -> BoxFuture<Result<Vec<cmdb_api::CmdbProposal>, Problem>> {
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
     }
     /// REQ: DSC-903 (T31.2) — a manual link, unlink, merge or split (or its dry run), run by the
     /// node that runs the CMDB.

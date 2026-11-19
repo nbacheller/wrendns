@@ -64,6 +64,7 @@ pub(crate) fn list(db: &CmdbDb, q: &CmdbQuery, level: u8) -> Result<CmdbCiPage, 
         let mut rows = ops.ci_list_in(
             q.ty.as_deref(),
             q.ty.is_none(),
+            level == 0,
             q.q.as_deref(),
             q.after.as_deref(),
             limit + 1,
@@ -80,21 +81,88 @@ pub(crate) fn list(db: &CmdbDb, q: &CmdbQuery, level: u8) -> Result<CmdbCiPage, 
     .map_err(|e| db_problem(&e))
 }
 
+/// The attributes whose text is a name a person gave (or one built from it): a host name, an access
+/// point, a switch name with a port, a neighbour's name, the owner of an attached port.
+const NAME_ATTRS: [&str; 8] = [
+    "name",
+    "hostname",
+    "ap",
+    "port",
+    "lldp",
+    "attached_owner",
+    "owner",
+    "namespace",
+];
+
+/// A record key as shown: the keys built from a name (`client:<name>`, the workloads'
+/// `namespace/kind/name`) are hashed at privacy level 1, the others (MACs, device ids) stay.
+fn shown_key(source: &str, key: &str, level: u8) -> String {
+    if level == 0 {
+        return key.to_owned();
+    }
+    if let Some(n) = key.strip_prefix("client:") {
+        return format!("client:{}", shown(n, level));
+    }
+    if source == "k8s" {
+        return shown(key, level);
+    }
+    key.to_owned()
+}
+
+/// A proposal's text with the names in it hidden at privacy level 1: the host names between
+/// backticks are hashed, and a text that names a record key is replaced.
+fn shown_detail(kind: &str, detail: &str, level: u8) -> String {
+    if level == 0 {
+        return detail.to_owned();
+    }
+    if kind != "host_network" {
+        return "the record points at more than one device (its details are hidden at privacy level 1)"
+            .to_owned();
+    }
+    detail
+        .split('`')
+        .enumerate()
+        .map(|(i, part)| {
+            if i % 2 == 1 {
+                shown(part, level)
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("`")
+}
+
 fn record_of(r: &RecordRow, level: u8) -> CmdbRecord {
     let mut attrs: serde_json::Value =
         serde_json::from_str(&r.attrs).unwrap_or(serde_json::Value::Null);
     if level > 0
         && let Some(o) = attrs.as_object_mut()
     {
-        for k in ["name", "hostname"] {
-            if let Some(serde_json::Value::String(s)) = o.get(k).cloned() {
-                o.insert(k.to_owned(), serde_json::Value::String(shown(&s, level)));
+        for k in NAME_ATTRS {
+            match o.get(k).cloned() {
+                Some(serde_json::Value::String(s)) => {
+                    o.insert(k.to_owned(), serde_json::Value::String(shown(&s, level)));
+                }
+                Some(serde_json::Value::Array(a)) => {
+                    let hidden = a
+                        .iter()
+                        .map(|v| match v {
+                            serde_json::Value::String(s) => {
+                                serde_json::Value::String(shown(s, level))
+                            }
+                            other => other.clone(),
+                        })
+                        .collect();
+                    o.insert(k.to_owned(), serde_json::Value::Array(hidden));
+                }
+                _ => {}
             }
         }
     }
     CmdbRecord {
         source: r.source.clone(),
-        key: r.skey.clone(),
+        key: shown_key(&r.source, &r.skey, level),
         ty: r.ty.clone(),
         state: r.state.clone(),
         link: r.link.clone(),
@@ -107,14 +175,14 @@ fn record_of(r: &RecordRow, level: u8) -> CmdbRecord {
     }
 }
 
-fn proposal_of(p: &Proposal) -> CmdbProposal {
+fn proposal_of(p: &Proposal, level: u8) -> CmdbProposal {
     CmdbProposal {
         id: p.id,
         kind: p.kind.clone(),
         a: p.a.clone(),
         b: p.b.clone(),
         rule: p.rule.clone(),
-        detail: p.detail.clone(),
+        detail: shown_detail(&p.kind, &p.detail, level),
         first_seen: p.first_seen,
         last_seen: p.last_seen,
     }
@@ -158,7 +226,7 @@ pub(crate) fn detail(db: &CmdbDb, id: &str, now: i64, level: u8) -> Result<CmdbC
         let proposals = ops
             .proposals(Some("open"), Some(&row.id))?
             .iter()
-            .map(proposal_of)
+            .map(|p| proposal_of(p, level))
             .collect();
         let macs: BTreeSet<String> = ops
             .ci_children(&row.id)?
@@ -195,12 +263,12 @@ pub(crate) fn detail(db: &CmdbDb, id: &str, now: i64, level: u8) -> Result<CmdbC
 }
 
 /// The open proposals.
-pub(crate) fn proposals(db: &CmdbDb) -> Result<Vec<CmdbProposal>, Problem> {
+pub(crate) fn proposals(db: &CmdbDb, level: u8) -> Result<Vec<CmdbProposal>, Problem> {
     db.read(|ops| {
         Ok(ops
             .proposals(Some("open"), None)?
             .iter()
-            .map(proposal_of)
+            .map(|p| proposal_of(p, level))
             .collect())
     })
     .map_err(|e| db_problem(&e))
@@ -304,5 +372,88 @@ mod tests {
         assert_eq!(a, shown("kitchen-hub", 1));
         assert_ne!(a, shown("other", 1));
         assert_eq!(shown("kitchen-hub", 0), "kitchen-hub");
+    }
+
+    /// REQ: DSC-906 (ADR-1005 section 12) - at privacy level 1 no name leaks: not in the proposal's
+    /// text, a record's key, the attributes that carry a name (access point, port, neighbours,
+    /// owner) or a search (which then matches ids and MACs only).
+    #[test]
+    fn dsc_906_level_one_hides_names_everywhere() {
+        let (_d, mut e) = engine();
+        let mk = |k: &str, m: &str| {
+            let mut r = host("unifi:home", k, m, 1_000_000);
+            r.text("name", "secret-host");
+            r.text("hostname", "secret-host");
+            r.text("network", "Lan");
+            r.text("ap", "secret-ap");
+            r.text("port", "secret-switch port 3");
+            r.list("lldp", vec!["secret-neighbour".to_owned()]);
+            r
+        };
+        let mut client = host(
+            "config",
+            "client:secret-laptop",
+            "aa:bb:cc:00:00:09",
+            1_000_000,
+        );
+        client.text("name", "secret-laptop");
+        e.ingest(
+            batch(
+                "unifi:home",
+                vec![mk("a", "aa:bb:cc:00:00:01"), mk("b", "aa:bb:cc:00:00:02")],
+                true,
+                1_000_000,
+            ),
+            1_000_000,
+        )
+        .unwrap();
+        e.ingest(batch("config", vec![client], true, 1_000_000), 1_000_000)
+            .unwrap();
+        let everything = |level: u8| -> String {
+            let page = list(
+                e.db(),
+                &CmdbQuery {
+                    limit: Some(100),
+                    ..CmdbQuery::default()
+                },
+                level,
+            )
+            .unwrap();
+            let mut text = serde_json::to_string(&page).unwrap();
+            for c in &page.items {
+                text += &serde_json::to_string(&detail(e.db(), &c.id, 1_000_001, level).unwrap())
+                    .unwrap();
+            }
+            text += &serde_json::to_string(&proposals(e.db(), level).unwrap()).unwrap();
+            text
+        };
+        let open = everything(0);
+        assert!(open.contains("secret-host") && open.contains("client:secret-laptop"));
+        assert!(
+            serde_json::to_string(&proposals(e.db(), 0).unwrap())
+                .unwrap()
+                .contains("secret-host"),
+            "level 0 keeps the proposal text"
+        );
+        let hidden = everything(1);
+        assert!(!hidden.contains("secret"), "a name leaked: {hidden}");
+        assert!(hidden.contains("client:"), "the key keeps its shape");
+        // A search finds an id or a MAC, never a name.
+        let by = |q: &str, level: u8| {
+            list(
+                e.db(),
+                &CmdbQuery {
+                    q: Some(q.into()),
+                    ..CmdbQuery::default()
+                },
+                level,
+            )
+            .unwrap()
+            .items
+            .len()
+        };
+        assert_eq!(by("secret", 0), 3);
+        assert_eq!(by("secret", 1), 0, "a search cannot confirm a name");
+        assert_eq!(by("00:00:01", 1), 1, "a MAC is still found");
     }
 }

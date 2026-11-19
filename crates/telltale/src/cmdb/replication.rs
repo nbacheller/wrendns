@@ -52,6 +52,9 @@ struct FetchAns {
     rows: Vec<WireRow>,
     #[serde(default)]
     more: bool,
+    /// The newest tombstone the writer has swept: a standby with an older head missed a deletion.
+    #[serde(default)]
+    floor: (i64, i64),
 }
 
 type Result<T> = std::result::Result<T, CmdbError>;
@@ -62,9 +65,15 @@ fn standby_path(data_dir: &Path) -> std::path::PathBuf {
 
 /// A node that becomes designated seeds its database from the standby copy it holds, then starts a
 /// new epoch. Idempotent: a row with a stamp not newer than the local one is skipped.
+#[allow(clippy::redundant_closure_for_method_calls)] // the closures name the lifetime
 pub(crate) fn promote(db: &CmdbDb, data_dir: &Path, _now: i64) -> Result<usize> {
     let path = standby_path(data_dir);
     if !path.exists() {
+        // No standby copy: this node still starts a new epoch above its own.
+        db.write(|o| {
+            let (e, _) = o.head()?;
+            o.set_epoch(e.saturating_add(1))
+        })?;
         return Ok(0);
     }
     let standby = CmdbDb::open(&path)?;
@@ -81,18 +90,23 @@ pub(crate) fn promote(db: &CmdbDb, data_dir: &Path, _now: i64) -> Result<usize> 
             break;
         }
     }
-    if applied > 0 {
-        // The new writer's stamps outrank anything the old one still writes.
-        db.write(|o| {
-            let (e, _) = o.head()?;
-            o.set_epoch(e.saturating_add(1))
-        })?;
-    }
+    // A new writer always starts a new epoch above its own and the standby's, so its stamps outrank
+    // anything the old one still wrote (and sort above every other standby's head).
+    let (se, _) = standby.read(|o| o.head())?;
+    let floor = standby.read(|o| o.tomb_floor())?;
+    db.write(|o| {
+        let (e, _) = o.head()?;
+        if floor > o.tomb_floor()? {
+            o.meta_set("tomb_floor", &format!("{},{}", floor.0, floor.1))?;
+        }
+        o.set_epoch(e.max(se).saturating_add(1))
+    })?;
     Ok(applied)
 }
 
 /// The designated node's answer to `cmdb.fetch`: the authored rows after the asker's head. Only a
 /// full member may ask, and only the node that runs the CMDB answers.
+#[allow(clippy::redundant_closure_for_method_calls)] // the closures name the lifetime
 pub(crate) async fn answer_fetch(
     src: Arc<Sources>,
     cluster: Arc<Cluster>,
@@ -121,14 +135,45 @@ pub(crate) async fn answer_fetch(
         let (rows, more) = db
             .read(|o| o.export_after(req.after, PAGE_ROWS, PAGE_BUDGET))
             .map_err(|e| e.to_string())?;
-        serde_json::to_vec(&FetchAns { head, rows, more }).map_err(|e| e.to_string())
+        let floor = db.read(|o| o.tomb_floor()).map_err(|e| e.to_string())?;
+        serde_json::to_vec(&FetchAns {
+            head,
+            rows,
+            more,
+            floor,
+        })
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("cmdb worker failed: {e}"))?
 }
 
+/// The node ids whose answer is the designated node's: the one `[discovery] node` names, else the
+/// cluster's primary. `None` when that cannot be told (a node named by its name only), which
+/// accepts any answer.
+fn designated_peers(
+    cfg: &telltale_config::Config,
+    cluster: &Cluster,
+) -> Option<std::collections::HashSet<String>> {
+    let members = cluster.members();
+    match cfg.discovery.node.as_ref() {
+        Some(n) => members
+            .iter()
+            .any(|m| m.node_id == n.as_str())
+            .then(|| std::iter::once(n.as_str().to_owned()).collect()),
+        None => Some(
+            members
+                .into_iter()
+                .filter(|m| m.primary)
+                .map(|m| m.node_id)
+                .collect(),
+        ),
+    }
+}
+
 /// One pass of a standby: ask the peers for the rows after this node's head until the designated
 /// one has answered, and keep them. Returns the rows applied.
+#[allow(clippy::redundant_closure_for_method_calls)] // the closures name the lifetime
 pub(crate) async fn pull_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) -> usize {
     let cfg = src.config.load_full();
     let data_dir = std::path::PathBuf::from(cfg.node.data_dir.as_str());
@@ -156,12 +201,43 @@ pub(crate) async fn pull_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) -> usi
     loop {
         let body = serde_json::to_vec(&FetchReq { after }).unwrap_or_default();
         let answers = cluster.call_all(KIND_FETCH, &body, DEADLINE).await;
-        let Some(ans) = answers.into_iter().find_map(|(_, a)| {
+        // Only the designated node's answer counts (a demoted primary may still answer for a while).
+        let designated = designated_peers(&cfg, cluster);
+        let Some(ans) = answers.into_iter().find_map(|(peer, a)| {
+            if !designated.as_ref().is_none_or(|d| d.contains(&peer)) {
+                return None;
+            }
             a.ok()
                 .and_then(|b| serde_json::from_slice::<FetchAns>(&b).ok())
         }) else {
             return total;
         };
+        // The standby is older than the newest swept tombstone: it missed a deletion it can no
+        // longer be told about, so it starts again from nothing.
+        if after != (0, 0) && ans.floor > after {
+            let s = Arc::clone(&standby);
+            let reset = tokio::task::spawn_blocking(move || s.write(|o| o.reset_replica()))
+                .await
+                .ok()
+                .and_then(std::result::Result::ok);
+            if reset.is_some() {
+                after = (0, 0);
+                continue;
+            }
+            return total;
+        }
+        {
+            let (s, f) = (Arc::clone(&standby), ans.floor);
+            let _ = tokio::task::spawn_blocking(move || {
+                s.write(|o| {
+                    if f > o.tomb_floor()? {
+                        o.meta_set("tomb_floor", &format!("{},{}", f.0, f.1))?;
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+        }
         let more = ans.more;
         let last = ans.rows.last().map(|r| (r.e, r.s));
         let s = Arc::clone(&standby);
@@ -346,5 +422,59 @@ mod tests {
             .unwrap();
         assert!(rows.iter().all(|r| (r.e, r.s) > (old_epoch, old_seq)));
         assert!(!rows.is_empty());
+    }
+
+    /// REQ: DSC-906 (ADR-1021) - tombstones are kept by count, not by a window of sequence numbers
+    /// (a stream of `ci_seen` stamps does not push them out), and a sweep leaves a floor: a standby
+    /// whose head is behind it has to resync in full.
+    #[test]
+    fn dsc_906_tombstones_survive_data_stamps_and_the_floor_says_when_they_did_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = seeded(&dir.path().join("w.db"));
+        w.write(|o| o.ci_delete(&format!("ci_{:032x}", 1))).unwrap();
+        // Thousands of data stamps after the delete (every flush stamps the `ci_seen` rows).
+        w.write(|o| o.meta_set("seq", "50000")).unwrap();
+        let swept = w
+            .write(|o| o.tomb_sweep(crate::cmdb::engine::TOMB_KEEP))
+            .unwrap();
+        assert_eq!(swept, 0, "kept by count, not by age of the sequence");
+        assert_eq!(w.read(|o| o.tomb_floor()).unwrap(), (0, 0));
+        // Over the bound the oldest go and the floor moves to the newest one dropped.
+        let n = w.write(|o| o.tomb_sweep(0)).unwrap();
+        assert!(n >= 1);
+        assert!(w.read(|o| o.tomb_floor()).unwrap() > (0, 0));
+        // A standby that is not new enough is reset to nothing.
+        let s = CmdbDb::open(&dir.path().join("s.db")).unwrap();
+        let (rows, _) = w
+            .read(|o| o.export_after((0, 0), 1000, PAGE_BUDGET))
+            .unwrap();
+        s.write(|o| o.import_rows(&rows)).unwrap();
+        s.write(|o| o.reset_replica()).unwrap();
+        assert_eq!(s.read(|o| o.head()).unwrap(), (1, 0));
+        assert!(
+            s.read(|o| o.authored_counts())
+                .unwrap()
+                .iter()
+                .all(|(_, n)| *n == 0)
+        );
+    }
+
+    /// REQ: DSC-906 (ADR-1021) - a node that becomes designated starts a new epoch even when it holds
+    /// no standby copy, above both its own and the standby's.
+    #[test]
+    fn dsc_906_promote_always_starts_a_new_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = CmdbDb::open(&dir.path().join("cmdb.db")).unwrap();
+        let (e0, _) = fresh.read(|o| o.head()).unwrap();
+        assert_eq!(promote(&fresh, dir.path(), 0).unwrap(), 0);
+        let (e1, _) = fresh.read(|o| o.head()).unwrap();
+        assert!(e1 > e0, "no standby file: {e1} over {e0}");
+        // An empty standby copy whose epoch is higher than the local one.
+        let standby = CmdbDb::open(&dir.path().join(STANDBY_NAME)).unwrap();
+        standby.write(|o| o.set_epoch(7)).unwrap();
+        drop(standby);
+        promote(&fresh, dir.path(), 0).unwrap();
+        let (e2, _) = fresh.read(|o| o.head()).unwrap();
+        assert!(e2 > 7, "above the standby's epoch: {e2}");
     }
 }

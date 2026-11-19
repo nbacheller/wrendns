@@ -261,3 +261,49 @@ test('dsc_903 a viewer sees the page but has no controls and cannot change a lin
     await v.c.close();
   }
 });
+
+test('dsc_906 the numeric settings round-trip, the page says nothing reads them yet, and privacy level 2 refuses', async () => {
+  await page.goto('/#/cmdb');
+  const settings = page.getByTestId('cmdb-settings');
+  await expect(settings.getByTestId('cmdb-settings-inert')).toContainText('Nothing reads them yet');
+  // Every field the file does not set: change it, Check, Apply, reload, and it is what was saved.
+  const numbers: [string, string][] = [
+    ['Days before a device is reported gone', '21'],
+    ['Seconds a change must hold', '900'],
+    ['Hours before an unconfirmed change alerts', '48'],
+    ['Days before an approved plan expires', '45'],
+    ['Days of change records', '400'],
+  ];
+  for (const [label, value] of numbers) await settings.getByLabel(label).fill(value);
+  await settings.getByRole('switch', { name: 'Require a second approver' }).check();
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('cmdb-settings-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(settings.getByText('Saved. The CMDB starts or stops')).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('cmdb-settings')).toBeVisible();
+  for (const [label, value] of numbers) await expect(page.getByTestId('cmdb-settings').getByLabel(label)).toHaveValue(value, { timeout: 30_000 });
+  await expect(page.getByTestId('cmdb-settings').getByRole('switch', { name: 'Require a second approver' })).toBeChecked();
+  // A value out of range is refused by the server and the panel shows why (nothing is saved).
+  await settings.getByLabel('Days before a device is reported gone').fill('9999');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(settings.getByRole('alert')).toContainText('disappear_after_days');
+  // At privacy level 2 the CMDB cannot be on: turn it off, raise the level, try to turn it on.
+  await settings.getByLabel('Days before a device is reported gone').fill('14');
+  await settings.getByRole('switch', { name: 'Turn the CMDB on' }).uncheck();
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(settings.getByText('Saved. The CMDB starts or stops')).toBeVisible();
+  try {
+    const raised = await page.request.put('/api/v1/qlog-settings/default', { headers: h(), data: { privacy_level: 2 } });
+    expect(raised.status(), await raised.text()).toBe(200);
+    await page.reload();
+    const again = page.getByTestId('cmdb-settings');
+    await again.getByRole('switch', { name: 'Turn the CMDB on' }).check();
+    await again.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(again.getByRole('alert')).toContainText(/privacy/i);
+    await expect(page.getByTestId('cmdb-settings-preview')).toHaveCount(0);
+  } finally {
+    await page.request.delete('/api/v1/qlog-settings/default', { headers: h() }).catch(() => {});
+  }
+});
