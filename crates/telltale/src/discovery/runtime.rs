@@ -13,8 +13,10 @@ use telltale_api::model::{DiscoveryRead, DiscoveryStatus, DiscoveryWorker};
 use telltale_config::{Config, DiscoveryConfig};
 
 use super::gate::{self, Me};
+use super::poller::{self, AgentsBoard, PollerCtx};
+use super::snmp_job::OP_PROBE;
 use super::supervisor::{Board, Requests, Spec};
-use super::thread::{self, Providers};
+use super::thread::{self, Providers, SnmpSetup};
 use crate::devices::Leases;
 
 /// Who this node is, owned, so the gate can borrow it.
@@ -77,8 +79,12 @@ pub(crate) struct Runtime {
     board: Board,
     /// REQ: DSC-009 - the last result of each extra read, written by the inventory thread.
     reads: Arc<ArcSwap<Vec<DiscoveryRead>>>,
-    /// Jobs queued for the SNMP worker (T25.4 queues its walks here).
+    /// Jobs queued for the SNMP worker (the poller's polls and the Test button's probes).
     requests: Requests,
+    /// REQ: DSC-004 (T25.6) - the SNMP agents' board: each agent's last poll and capability record.
+    agents: Arc<AgentsBoard>,
+    /// The poller's configuration while it runs (the Test button reads agents from it).
+    test_ctx: ArcSwap<Option<Arc<PollerCtx>>>,
     running: Mutex<Option<Running>>,
     /// The last generation handed out by [`Runtime::next_generation`].
     generation: AtomicU64,
@@ -99,6 +105,8 @@ impl Default for Runtime {
             board: Arc::new(ArcSwap::from_pointee(Vec::new())),
             reads: Arc::new(ArcSwap::from_pointee(Vec::new())),
             requests: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            agents: Arc::new(AgentsBoard::default()),
+            test_ctx: ArcSwap::from_pointee(None),
             running: Mutex::new(None),
             generation: AtomicU64::new(0),
             applied: Mutex::new(0),
@@ -115,6 +123,7 @@ impl Runtime {
             designated,
             node,
             workers: (**self.board.load()).clone(),
+            agents: self.agents.snapshot(),
             reads: (**self.reads.load()).clone(),
         }
     }
@@ -125,8 +134,29 @@ impl Runtime {
         Arc::clone(&self.board)
     }
 
-    /// The jobs queue of the SNMP worker, for the tasks that queue jobs (T25.4) and for tests.
-    #[allow(dead_code)] // REQ: DSC-002 — the SNMP walks queue here (T25.4).
+    /// The agents' board, for tests.
+    #[cfg(test)]
+    pub(crate) fn agents_for_tests(&self) -> Arc<AgentsBoard> {
+        Arc::clone(&self.agents)
+    }
+
+    /// Sets the runtime up as a designated node that runs the poller's side, without starting the
+    /// thread or a worker: a test stands in for the worker and answers the queue (T25.6).
+    #[cfg(test)]
+    pub(crate) fn designate_for_tests(&self, cfg: &Config) {
+        self.header.store(Arc::new((true, true, None)));
+        let ctx = Arc::new(PollerCtx::of(cfg));
+        self.agents.configure(&ctx.agents);
+        self.test_ctx.store(Arc::new(Some(ctx)));
+        self.board.store(Arc::new(vec![DiscoveryWorker {
+            worker: "snmp".to_owned(),
+            up: true,
+            ..DiscoveryWorker::default()
+        }]));
+    }
+
+    /// The jobs queue of the SNMP worker, for tests.
+    #[cfg(test)]
     pub(crate) fn requests(&self) -> Requests {
         Arc::clone(&self.requests)
     }
@@ -181,9 +211,20 @@ impl Runtime {
         if let Some(r) = running.take() {
             stop_running(r, &self.board, &self.reads);
         }
+        self.agents.clear();
+        self.test_ctx.store(Arc::new(None));
         if !want {
             return;
         }
+        // REQ: DSC-004 - the poller's configuration and the agents' board, set before the thread
+        // starts so the first status already lists the agents.
+        let ctx = Arc::new(PollerCtx::of(cfg));
+        self.agents.configure(&ctx.agents);
+        self.test_ctx.store(Arc::new(Some(Arc::clone(&ctx))));
+        let snmp = (!ctx.agents.is_empty()).then(|| SnmpSetup {
+            ctx: Arc::clone(&ctx),
+            board: Arc::clone(&self.agents),
+        });
         let stop = Arc::new(AtomicBool::new(false));
         let providers = Providers {
             routers,
@@ -200,6 +241,7 @@ impl Runtime {
             board: Some(Arc::clone(&self.board)),
             requests: Arc::clone(&self.requests),
             workers_stop: Arc::clone(&stop),
+            snmp,
             reads: shared.map(|share| super::reads::ReadsInput {
                 share,
                 cfg: super::reads::ReadsConfig::of(&cfg.discovery),
@@ -224,6 +266,8 @@ impl Runtime {
 
     /// Stops the inventory, if it runs (shutdown).
     pub(crate) fn stop(&self) {
+        self.agents.clear();
+        self.test_ctx.store(Arc::new(None));
         let r = self
             .running
             .lock()
@@ -239,6 +283,7 @@ impl Runtime {
     /// has started on this node.
     pub(crate) fn render_metrics(&self, w: &mut telltale_telemetry::prom::PromWriter) {
         let board = self.board.load();
+        self.render_agent_metrics(w);
         if board.is_empty() {
             return;
         }
@@ -267,6 +312,239 @@ impl Runtime {
             );
         }
     }
+}
+
+impl Runtime {
+    /// REQ: DSC-014 (T25.6) - the infrastructure poller's series, one sample per agent (and per
+    /// table): whether the last poll worked, polls and failures, when it last worked, how long it
+    /// took, and the rows it read. Nothing when no agent is configured.
+    fn render_agent_metrics(&self, w: &mut telltale_telemetry::prom::PromWriter) {
+        let agents = self.agents.snapshot();
+        if agents.is_empty() {
+            return;
+        }
+        w.family(
+            "telltale_discovery_agent_up",
+            "gauge",
+            "Whether the last SNMP poll of an agent worked (1) or failed or hasn't run (0).",
+        );
+        for a in &agents {
+            w.sample(
+                "telltale_discovery_agent_up",
+                &[("agent", &a.name)],
+                u8::from(a.state == "ok"),
+            );
+        }
+        w.family(
+            "telltale_discovery_agent_polls_total",
+            "counter",
+            "SNMP polls made of an agent since start.",
+        );
+        for a in &agents {
+            w.sample(
+                "telltale_discovery_agent_polls_total",
+                &[("agent", &a.name)],
+                a.polls,
+            );
+        }
+        w.family(
+            "telltale_discovery_agent_poll_failures_total",
+            "counter",
+            "SNMP polls of an agent that failed since start.",
+        );
+        for a in &agents {
+            w.sample(
+                "telltale_discovery_agent_poll_failures_total",
+                &[("agent", &a.name)],
+                a.failures,
+            );
+        }
+        w.family(
+            "telltale_discovery_agent_last_success_timestamp_seconds",
+            "gauge",
+            "When an SNMP poll of an agent last worked (Unix seconds); 0 when it never has.",
+        );
+        for a in &agents {
+            w.sample(
+                "telltale_discovery_agent_last_success_timestamp_seconds",
+                &[("agent", &a.name)],
+                a.last_success_unix.unwrap_or(0),
+            );
+        }
+        w.family(
+            "telltale_discovery_agent_poll_duration_seconds",
+            "gauge",
+            "How long the last SNMP poll of an agent took.",
+        );
+        for a in &agents {
+            #[allow(clippy::cast_precision_loss)]
+            let secs = (a.last_duration_ms.unwrap_or(0) as f64) / 1000.0;
+            w.sample(
+                "telltale_discovery_agent_poll_duration_seconds",
+                &[("agent", &a.name)],
+                secs,
+            );
+        }
+        w.family(
+            "telltale_discovery_agent_table_rows",
+            "gauge",
+            "Rows the last SNMP poll read from a table of an agent.",
+        );
+        for a in &agents {
+            for t in &a.tables {
+                w.sample(
+                    "telltale_discovery_agent_table_rows",
+                    &[("agent", &a.name), ("table", &t.table)],
+                    t.rows.unwrap_or(0),
+                );
+            }
+        }
+        if agents
+            .iter()
+            .all(|a| a.tables.iter().all(|t| t.state == "unprobed"))
+        {
+            return;
+        }
+        w.family(
+            "telltale_discovery_agent_table_answered",
+            "gauge",
+            "Whether an agent answered a table when it was probed (1), or not (0); absent until probed.",
+        );
+        for a in &agents {
+            for t in a.tables.iter().filter(|t| t.state != "unprobed") {
+                w.sample(
+                    "telltale_discovery_agent_table_answered",
+                    &[("agent", &a.name), ("table", &t.table)],
+                    u8::from(t.state == "answered"),
+                );
+            }
+        }
+    }
+
+    /// REQ: DSC-004 (T25.6, ADR-1002) - **Test**: probes one configured agent now, or with
+    /// `dry_run` lists the OIDs it would query. The agent is named, never addressed. A test waits
+    /// 60 s after the last test of the same agent. The probe is queued ahead of the polls and run
+    /// by the SNMP worker; its capability record replaces the agent's.
+    #[allow(clippy::too_many_lines)] // one flow: gate, dry run, cooldown, probe, record
+    pub(crate) async fn snmp_test(
+        &self,
+        w: telltale_api::SnmpTestWrite,
+    ) -> Result<telltale_api::model::SnmpTestResult, telltale_api::problem::Problem> {
+        use telltale_api::model::SnmpTestResult;
+        use telltale_api::problem::{Code, Problem};
+        let (enabled, designated, node) = (**self.header.load()).clone();
+        let ctx = self.test_ctx.load_full();
+        let (true, Some(ctx)) = (enabled && designated, ctx.as_ref().as_ref()) else {
+            return Err(telltale_api::discovery_api::not_here(
+                enabled,
+                node.as_deref(),
+            ));
+        };
+        let Some(agent) = ctx.agent(&w.agent) else {
+            let names: Vec<&str> = ctx.agents.iter().map(|a| a.name.as_str()).collect();
+            let hint = if names.is_empty() {
+                "No SNMP agents are configured: add one in Settings, Network inventory.".to_owned()
+            } else {
+                format!("Agents: {}.", names.join(", "))
+            };
+            return Err(
+                Problem::not_found(format!("no SNMP agent named `{}`", w.agent)).hint(hint),
+            );
+        };
+        let made = SnmpTestResult {
+            agent: w.agent.clone(),
+            dry_run: w.dry_run,
+            ok: true,
+            oids: poller::test_oids(agent),
+            capability: None,
+            error: None,
+            duration_ms: None,
+            node: node.clone(),
+            note: String::new(),
+        };
+        if w.dry_run {
+            return Ok(SnmpTestResult {
+                note: "Nothing was sent (dry run). A test sends one GETNEXT on the first column of each table listed, and one GET of sysObjectID; the first alternative of a part that answers is used.".to_owned(),
+                ..made
+            });
+        }
+        if !self.board.load().iter().any(|x| x.worker == "snmp" && x.up) {
+            return Err(Problem::unavailable(
+                "the SNMP worker isn't running (it restarts with a delay after a crash)",
+            )
+            .hint("Settings, Network inventory shows the worker's state."));
+        }
+        let now = unix_now();
+        if let Err(wait) = self.agents.begin_test(&w.agent, now) {
+            return Err(Problem::new(
+                Code::RateLimited,
+                format!("`{}` was tested less than a minute ago", w.agent),
+            )
+            .hint(format!("Try again in {wait} seconds."))
+            .retry_after(wait));
+        }
+        let started = std::time::Instant::now();
+        let ctx = Arc::clone(ctx);
+        let name = w.agent.clone();
+        let req = tokio::task::spawn_blocking(move || {
+            let agent = ctx.agent(&name).cloned();
+            agent.map(|a| ctx.request(&a, None))
+        })
+        .await
+        .ok()
+        .flatten();
+        let ms = |t: std::time::Instant| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let fail = |why: String, t: std::time::Instant| SnmpTestResult {
+            ok: false,
+            error: Some(why),
+            duration_ms: Some(ms(t)),
+            note: "The test failed: the poller keeps its earlier capability record.".to_owned(),
+            ..made.clone()
+        };
+        let req = match req {
+            Some(Ok(r)) => r,
+            Some(Err(why)) => return Ok(fail(why, started)),
+            None => {
+                return Ok(fail(
+                    "the agent is no longer configured".to_owned(),
+                    started,
+                ));
+            }
+        };
+        let reply = match poller::run_job(
+            &self.requests,
+            OP_PROBE,
+            req,
+            true,
+            std::time::Duration::from_secs(90),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(why) => return Ok(fail(why, started)),
+        };
+        let Some(result) = reply.result.snmp.as_ref().filter(|_| reply.result.ok) else {
+            let why = reply
+                .result
+                .error
+                .clone()
+                .unwrap_or_else(|| "the agent did not answer".to_owned());
+            return Ok(fail(why, started));
+        };
+        let capability = self.agents.record_probe(&w.agent, result, unix_now());
+        Ok(SnmpTestResult {
+            capability,
+            duration_ms: Some(ms(started)),
+            note: "Capabilities updated: the poller reads the tables that answered, and skips the others until the next test.".to_owned(),
+            ..made
+        })
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Stops a running inventory: its workers first, then its thread (which saves and exits).

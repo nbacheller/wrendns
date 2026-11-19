@@ -1300,6 +1300,26 @@
       "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {
+      "id": "snmp-agents",
+      "title": "SNMP agents",
+      "term": "SNMP agent",
+      "summary": "An SNMP agent is a device TelltaleDNS may ask what it knows about the network: your gateway's ARP table (which MAC address sits behind each IP address), a switch's forwarding table (which port and VLAN a device is on) and the neighbours each switch port sees. TelltaleDNS only reads: it sends read requests and has no way to change a setting on the device. It asks every few minutes, one request at a time and no more than 20 a second.",
+      "when": "Add your gateway to see every device on every VLAN with its MAC address, and your managed switches to see where each device is plugged in. Press Test to see what a device answers before you rely on it: a table the device doesn't answer is skipped, never assumed.",
+      "example": "Your gateway answers the ARP table over SNMPv3 but has no switch tables, so Test shows ARP and interfaces answering and the bridge and LLDP tables skipped. Your managed switch answers the forwarding table and LLDP, so it is added as a second agent with its own credential.",
+      "caution": "Only a private IPv4 address can be an agent, named by you; the Test button takes the agent's name, never an address. Ports that lead to another switch or the gateway are left out when placing a device, so a device isn't shown on the wrong switch. If a device still answers the default community 'public' once SNMPv3 works, turn that off on the device.",
+      "docs": "snmp-setup-the-gateway-and-the-switches"
+    },
+    {
+      "id": "snmp-setup",
+      "title": "Setting up SNMP on your devices",
+      "term": "SNMP setup",
+      "summary": "Turn SNMP on in your gateway and switches, create a read-only SNMPv3 user (SHA with AES), allow only the DNS host's address, then put the user's password in a file TelltaleDNS can read and add the agent here.",
+      "when": "Do this once per device before you add it as an agent. Prefer SNMPv3: a v2c community crosses your network in clear text.",
+      "example": "On a UniFi gateway, enable SNMPv3 in the controller's SNMP settings with a user and one password (UniFi uses it for both authentication and privacy), and allow the DNS host's address. Save the password in a file under /run/secrets, add a credential with that file, then add the gateway as an agent and press Test.",
+      "caution": "A password lives in a file under the node's secret directories, never in the settings. On Kubernetes outside the host network, devices see the node's address after address translation: allow that address. A v2c host credential tells every device in the subnet the community in clear text.",
+      "docs": "snmp-setup-the-gateway-and-the-switches"
+    },
+    {
       "id": "inventory-unifi-reads",
       "title": "More from your routers",
       "term": "Extra router reads",
@@ -1368,6 +1388,106 @@
       "example": "On Kubernetes, set TELLTALE_IGNORE_GUARDED=1 on the pod and let it restart: it ignores every stored guarded setting and uses its ConfigMap. Fix the setting, remove the variable, and restart again.",
       "caution": "telltale guarded clear needs the node stopped and only clears that node's entries. TELLTALE_IGNORE_GUARDED ignores entries without deleting them, and never ignores the file.",
       "docs": "recovering-from-a-guarded-change"
+    },
+    {
+      "id": "cache-size",
+      "title": "Cache memory",
+      "term": "Memory budget of the DNS cache",
+      "summary": "How much memory a node may use for the answers it keeps, and how many answers it may keep at most.",
+      "when": "The Size line on the Cache page says a bigger cache would answer more lookups from memory, or the node's bar is near full.",
+      "example": "A node with spare memory can take 64 MiB; the Cache page then shows how much of it the answers use.",
+      "caution": "Applies when the node restarts, not at once. The budget is taken from the node's memory, so a big cache on a small Raspberry Pi can crowd out other work.",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "cache-ttl",
+      "title": "How long answers are kept",
+      "term": "Cache time to live (TTL)",
+      "summary": "The shortest and longest time an answer is kept, how long names that don't exist and SERVFAIL are kept, whether old answers are served when upstreams fail, and whether popular answers are refreshed before they expire.",
+      "when": "Answers change often and you want them fresher, or your upstreams are slow or flaky and you want old answers to keep working while they recover.",
+      "example": "A shortest TTL of 60 s makes an answer that says 5 s live for a minute; serve stale keeps the last answer for the first clients when the upstream doesn't reply in time.",
+      "caution": "Applies when the node restarts, not at once. A long TTL means changes to a name reach devices later.",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "cache-persistence",
+      "title": "Keep the cache across restarts",
+      "term": "Warm start",
+      "summary": "The node writes its cache to disk when it stops and reads it back when it starts, so it doesn't start empty; in a cluster it also asks the other nodes for their most-used names.",
+      "when": "After an upgrade or a restart a cold cache means slower first answers for every client.",
+      "example": "With the cache kept, a node that restarts answers its first lookups from the saved answers that are still fresh.",
+      "caution": "The file is owner-only, since it shows what was looked up. Applies when the node restarts.",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "drill-schedule",
+      "title": "Scheduled failover drills",
+      "term": "Failover drill",
+      "summary": "A drill moves the devices of the nodes you name to a standby for a few minutes, to prove the failover works before you need it.",
+      "when": "You want the failover tested every month, without someone remembering to do it.",
+      "example": "Once a month, the node node-b drills itself at night for two minutes; the Cluster page shows the last report.",
+      "caution": "A drill changes where devices get their answers, for a short time. Only admins change the schedule.",
+      "docs": "failover-drills"
+    },
+    {
+      "id": "dnssec-mode",
+      "title": "DNSSEC validation",
+      "term": "DNSSEC",
+      "summary": "DNSSEC lets TelltaleDNS check that an answer was really published by the owner of the name. Off passes answers through, validate refuses bogus ones, and validate-and-count only counts them.",
+      "when": "You want to stop forged answers from reaching your devices, or to see how many would be refused before you turn refusing on.",
+      "example": "A domain whose server is internal and not signed goes in the list of domains not validated, so its answers aren't refused.",
+      "caution": "Validation takes effect on every node within seconds. A wrong trust anchor makes answers for a signed domain fail.",
+      "docs": "dnssec-validation"
+    },
+    {
+      "id": "list-limits",
+      "title": "List size and staleness",
+      "term": "List limits",
+      "summary": "How large a downloaded list may be, how often URL and file lists are refreshed, and when a list nobody has confirmed for a long time is flagged as stale.",
+      "when": "A list is big enough to be refused, or a list's source may have been abandoned and you want to hear about it.",
+      "example": "A list over 64 MiB is refused and the last good copy is kept; a list not confirmed for 30 days shows as stale.",
+      "caution": "The refresh and stale settings apply after a restart. A list's own limit overrides the lists' default.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "update-check",
+      "title": "Checking for new builds",
+      "term": "Update check",
+      "summary": "Once a day this node reads the signed release index of its channel to see whether a newer build exists. Nothing else leaves the node.",
+      "when": "You want to hear about a new build without checking yourself, or you want no outside request at all.",
+      "example": "With the check off, the status says off and no request is made to the release index.",
+      "caution": "Applies after a restart of this node.",
+      "docs": "versions-and-updates"
+    },
+    {
+      "id": "support-logs",
+      "title": "Keeping support logs",
+      "term": "Support logs",
+      "summary": "Whether this node keeps its log files on disk, so a support package made later includes them.",
+      "when": "You are asked for a support package after something went wrong, and the earlier logs are needed.",
+      "example": "With the logs kept, the support package of last night's failure still has its log lines.",
+      "caution": "Applies after a restart of this node. Logs take disk space.",
+      "docs": "support-package"
+    },
+    {
+      "id": "backup-query-history",
+      "title": "Query history in a backup",
+      "term": "Query history",
+      "summary": "Whether the backup includes the query log, the record of every answer this node gave. It can be large.",
+      "when": "You need to move the history to another node, or keep it for a record.",
+      "example": "A backup without the history is small; with it, the file can be over 256 MiB, and the API then refuses it.",
+      "caution": "The history shows what devices looked up. Keep the backup as private as the network it came from.",
+      "docs": "backups-and-moving-to-a-new-machine"
+    },
+    {
+      "id": "map-thresholds",
+      "title": "Tune the network map's colours and sampling",
+      "term": "Map thresholds",
+      "summary": "The map is drawn from a sample of lookups. Each node samples up to N lookups a second (10 to 2,000), and something is coloured only after it has enough answers (the minimum). It turns Warning when a share of its answers are slow, fail or (for a device) are blocked, and Failing when the failures reach the higher threshold. Idle means too few answers to say.",
+      "when": "The map is too jumpy or too calm for your network, shows Idle for quiet devices, or says it is sampled 1 in N on a busy network.",
+      "example": "A home network with a few chatty devices: leave the defaults. A network with one flaky upstream you accept: raise the failing threshold from 25% to 50% so it stays Warning.",
+      "caution": "The preview on the card is an estimate: it reclassifies the flows drawn now, one by one, while the server judges each device or upstream as a whole, so a value right at a threshold can colour differently once applied. The thresholds change only what the map shows, never an answer or an alert (alerts use the service-level objectives). A higher sampling rate costs a little CPU on every node and, above the default, is worth it only on a busy network. Slow means slower than the latency objective unless you set your own.",
+      "docs": "network-map"
     },
     {
       "id": "query-log-clients",

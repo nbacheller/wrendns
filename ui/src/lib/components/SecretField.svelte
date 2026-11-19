@@ -40,6 +40,7 @@
   let {
     label,
     testid = 'secret-field',
+    setting,
     help,
     reference,
     onreference,
@@ -61,6 +62,8 @@
     label: string;
     /** `data-testid` of the wrapper (tests and the Playwright suite find fields by it). */
     testid?: string;
+    /** `data-setting` mark (`kind.key`) so the every-setting-has-a-control check finds the field. */
+    setting?: string;
     /** A sentence about this field, under its label (the `?` topic is `secret-field`). */
     help?: string;
     /** The secret an entry's `*_ref` names, as the form draft holds it (`undefined`: none). When
@@ -247,7 +250,7 @@
   const stamped = $derived(meta?.updated ? new Date(meta.updated).toLocaleString() : '');
 </script>
 
-<div class="secret-field" data-testid={testid} data-mode={mode}>
+<div class="secret-field" data-testid={testid} data-setting={setting} data-mode={mode}>
   <div class="head">
     <span class="label">{label}</span>
     <HelpButton id="secret-field" />

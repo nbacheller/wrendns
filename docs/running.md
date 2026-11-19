@@ -362,6 +362,8 @@ TelltaleDNS never updates itself from the UI. The panel shows the step for your 
 
 In a cluster, upgrade replicas first.
 
+**The check** (T27.11): Settings → System has *Check for new builds once a day* (`[updates] check`) for this node. Admins change it; it applies after a restart of the node. API: `PUT` and `DELETE /api/v1/updates-settings/{node}`, and `GET /api/v1/node-settings` for the state of this node.
+
 ## Backups and moving to a new machine
 ```sh
 telltale backup create -o pi.ttbk               # safe while TelltaleDNS runs
@@ -406,6 +408,8 @@ A backup carries the [stored secrets](#stored-secrets) only when you give a pass
 - **Through the API,** `POST /api/v1/backup` with a passphrase is for an admin's signed-in session that signed in within the last 10 minutes (403 `reauth_required` otherwise; the web UI then asks for the password again), over HTTPS or from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts that), never an agent token. One key derivation runs at a time on a node: a second backup with a passphrase gets 429 until it finishes (before any work is done). On a cluster replica a backup with a passphrase is refused (409): make it on the primary, which holds the same secrets and is the node that raises the alert. An API token, even an admin's, can't make one: run the command on the node.
 - **Audit and alert.** `backup.create {secretsIncluded, count}` (never the passphrase). A backup that carried secrets raises the alert condition `secrets_exported` (once per backup).
 - **Keep the passphrase apart from the file.** Anyone with both can read every secret in it. There is no way to recover the secrets from a backup whose passphrase is lost; the rest of it restores with `--skip-secrets`.
+
+**Query history** (T27.11): the backup page's *Include the query history* choice is the same as `--include-qlog` on the command line. A backup with the history can be over 256 MiB, and the API then refuses it.
 
 ## Guarded changes
 Some settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets, or replace a node's configuration: the listeners (`[[listen]]`), the API address, its TLS certificate and trusted proxies (`[api]`), the secret key and the directories secret files may be read from, `allow_secrets_over_http` and `allow_insecure_basic`, the watchdog and the file paths the server reads, a node's name and data directory, and the cluster actions (init, join, leave, Git source). The web UI changes them only through one framework, **guarded changes** (ADR-914, ADR-956); each setting's own form (Settings, Cluster) uses it, and **Settings → System → Guarded settings** shows what is pending on a node and, where a change needs a restart, **Restart now**.
@@ -466,6 +470,8 @@ In every level **secrets are removed**: passwords and hashes, API and session to
 **The log.** No platform lets a process read its own stderr back (a systemd unit has no journal access, a container's log is outside it, the Helm chart's root file system is read-only), so TelltaleDNS keeps its own small log: the last 2,000 lines at INFO and above in memory from the first line it logs, whatever `TELLTALE_LOG` says, and two rotating files of about 1 MiB under `<data_dir>/logs/` (directory `0750`, files `0640`), so lines from before a restart reach the package. About 21 KB a day on a quiet node. The files are **not** redacted (they hold client addresses): the package redacts when it is made. `[support] persist_logs = false` keeps only the in-memory lines (read at start); a read-only data directory does the same on its own and the manifest says so. Writing the log never blocks DNS: a full queue drops the line and counts it.
 
 **Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
+
+**Keeping logs** (T27.11): Settings → System has *Keep support logs on disk* (`[support] persist_logs`) for this node. Admins change it; it applies after a restart. API: `PUT` and `DELETE /api/v1/support-settings/{node}`.
 
 ## When a node stops answering (the watchdog)
 Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
@@ -1326,6 +1332,8 @@ mode = "shadow"          # enforce (the default) or shadow
 - Names follow the query log's privacy level (hashed at 1 and above); devices aren't counted at 2 and above.
 - Like every list, a shadow list is checked once the snapshot is compiled (a few seconds after start or a change): queries answered before that aren't counted. `telltale explain` marks its rules with `~`.
 
+**Limits** (T27.11): each list takes a largest download (`max_bytes`, for example `64MiB`) and a stale age (`stale_after_days`, 0 for never) in its own form. The Lists page holds the refresh interval and the default stale age (`[filter] refresh_secs` and `stale_after_days`), which apply after a restart. API: `PUT` and `DELETE /api/v1/filter-settings/default`.
+
 ## Groups and devices
 Decide which lists apply to which devices:
 ```toml
@@ -1678,6 +1686,11 @@ Some devices never ask TelltaleDNS for anything: a printer with a fixed address,
 - The inventory runs in its own threads and in separate worker processes, so a worker that crashes, hangs or runs out of memory never slows DNS. The page shows each worker's state; a worker that keeps stopping raises a degraded health reason (`discovery_worker_failing`), and one built from another version is refused (`discovery_worker_version_mismatch`). A worker holds no capability, even under the systemd unit's `CAP_NET_BIND_SERVICE`, and can't gain one. It can't open a listening socket, trace a process or read its parent's memory: a seccomp filter refuses those calls, including the x32 and io_uring routes (ADR-934). It has a cleared environment (one variable stays, `MIMALLOC_ARENA_RESERVE=0`, so the memory limit counts what the worker really holds: ADR-988), and the kernel kills it before DNS when memory runs short. While discovery runs, TelltaleDNS itself is not dumpable, so it refuses core dumps and debugger attach. The cost for an operator: a non-root administrator can't read this process's `/proc/<pid>/io`, `environ` or `mem`, or attach `strace` or `gdb` to it, until it restarts. Root still can. The host's write-rate metric (`telltale_write_bytes_per_second`) is unaffected; it reads `/proc/self/io` through a file opened before the change (ADR-934). It runs as the same user as TelltaleDNS, so the systemd unit, the image and the Helm chart run it unchanged; on 32-bit ARM the filter uses the ARM system-call table (ADR-933).
 - In the file, the section is `[discovery]`, with `[[discovery.subnet]]` entries (see [Sections](configuration.md#sections)). Fields the file sets show "set by file" in the UI.
 
+- **SNMP agents.** The inventory can read your gateway's ARP table, a switch's forwarding table (which port and VLAN each device is on) and its LLDP neighbours over SNMP: add each device under **SNMP agents** with an **SNMP credential** (administrators; everyone can read the list, with each agent's last poll, its tables and its capability record). It only reads: the client has no write request, polls one agent at a time, at most 20 requests a second and at least 50 ms apart, and stops a poll after three timeouts in a row. A credential names files under `[node] secret_file_dirs` that hold the community or the SNMPv3 passwords; it never holds a password itself, and the page has no field for one. Press **Test** on a saved agent to probe it: a table the device doesn't answer is skipped until the next test, never assumed. A poll that fails never affects DNS: three in a row raise the degraded health reason `discovery_agent_failing`, and `telltale_discovery_agent_*` metrics show each agent. ARP entries count only inside the listed subnets. See [SNMP setup](snmp-setup.md).
+
+### SNMP setup (the gateway and the switches)
+Turn on SNMPv3 in the gateway and the managed switches (SHA with AES), allow only the DNS host's address, put each password in a file under the node's secret directories, then add a credential and an agent on the **Network inventory** page and press **Test**. The step-by-step page, with a UniFi gateway, managed switches, the file form and the rules for placing a device on a switch port, is [SNMP setup](snmp-setup.md). A gateway that still answers SNMP v1/v2c with the community `public` once v3 works is a finding to turn off on the device. On Kubernetes outside the host network, devices see the node's address after source translation: allow that address.
+
 ### Names devices announce (mDNS)
 Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). TelltaleDNS can listen and use those names for devices you haven't named:
 ```toml
@@ -2017,6 +2030,14 @@ node; Kubernetes pods are told apart by pod name.
   and how much of its memory budget that uses. The last hour's lookups, prefetches, stale
   answers served, and evictions. Whether it started warm (how many answers it reloaded from
   the dump, or why it didn't). The `[cache]` settings in effect.
+- **Settings:** each node's card has the node's `[cache]` settings. Operators change them: the form
+  checks the change first (what it does, and any warning), then saves it. Every field applies when the
+  node restarts, so the card shows **pending restart** until then. The fields the configuration files
+  set are locked ("set by file"), and a field the form leaves out keeps the file's value. A viewer sees
+  the same values read-only. The API: `GET /api/v1/node-settings` (this node) and
+  `GET /api/v1/node-settings/{node}`, `PUT` and `DELETE /api/v1/cache-settings/{node}` (add `?dryRun=true`
+  to check). The stored change is a node-managed entry, named by the node, that replicates to the cluster's
+  nodes; each node applies its own.
 - **Charts:** the hit rate and the lookups per 15 s over the last hour, one line per node. A
   pod that just started shows a low hit rate while its cache fills.
 - **What's cached:** what each cache holds by kind (answers, names that don't exist, no data,
@@ -2118,6 +2139,8 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   trust_anchors_file = "/etc/telltale/root.key"
   ```
   It replaces the built-in anchors; a file that can't be read or holds no key is logged and the built-in anchors stay. Automatic tracking of key changes (RFC 5011) isn't done (ADR-086).
+
+**The settings** (T27.11): Settings → Query handling shows the validation mode (`[dnssec] mode`: off, validate, or validate and count) and the negative trust anchors (domains not validated, one per line). The change applies on every node within seconds. API: `PUT` and `DELETE /api/v1/dnssec-settings/default`.
 
 ## Clusters
 
@@ -2749,6 +2772,8 @@ pi", "both"; `GET /api/v1/clients/affinity?window=7d`). A device that has only u
 may still have a second one configured; most systems use their first server until it stops
 answering. Run a drill to find out.
 
+**The schedule** (T27.11): the Cluster page shows the scheduled drills (`[drill] schedule`: off, or once a month on the nodes named in `nodes`, at `hour`). Admins change it there; the scheduler reads it at each check, so no restart is needed. API: `PUT` and `DELETE /api/v1/drill-settings/default`.
+
 ## Rolling a change out in stages
 A bad change (a typo in an upstream, a list that blocks the bank) normally reaches every node
 within seconds. With **canary nodes** set, a change reaches them (and the primary) first, and
@@ -2969,6 +2994,31 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - **Table** shows the same flows and nodes as text, for a screen reader or a quick scan.
 - **Banners.** "Sampled, 1 in N" says the rates are estimates; "Partial" lists a cluster node that didn't answer; at privacy level (`telemetry.qlog.privacy_level`) 2 devices are hidden (one node stands for them) and at 3 only totals show. No domain name ever appears on the map.
 - The page loads on its own, so the rest of the console doesn't carry its code; it uses no map tiles, fonts or scripts from outside.
+
+### Network map settings
+**Settings → Query handling → Network map** holds the map's switch, its sampling rate and the thresholds that colour it. Operators change them; viewers see the values and no control (the server refuses a viewer's change too). A change applies to every node within a few seconds, with no restart, and never changes an answer, an alert or a block: it changes only what the map shows. The same settings are `[map]` in the configuration file, `PUT`/`DELETE /api/v1/map-settings/default` (operator; agents with `config:write:map`) and the MCP tool `plan_set_map`; on a node whose configuration comes from Git, the card shows the TOML to add instead. The page's **Map settings** link opens the card.
+- **Run the network map** (`enabled`, default on). Off: nothing is sampled and the map routes answer `404 map_disabled`.
+- **Lookups sampled per second** (`event_rate`, 10 to 2,000, default 200). Each node samples up to this many lookups a second for the map. Above it, the node keeps every Nth lookup and counts each kept lookup for N, so rates are estimates and the page says **Sampled, 1 in N**. The estimate's error shrinks as the sample grows: a device or flow with 20 sampled answers is read to within roughly a fifth, with 400 to within about 5%. The rate is a ceiling for the work a node does for the map, not a target: a quiet home network never reaches it. A higher rate costs a little aggregator CPU on every node.
+- **Answers needed before colouring** (`min_sample`, 1 to 1,000, default 20). It counts real sampled answers in the last 60 seconds, not the scaled estimate. Fewer: the device, flow or upstream is **Idle** (grey, a dashed circle), never green.
+- **Slow above** (`warn_latency_ms`, 1 to 60,000). An answer slower than this is slow. Empty: it follows the latency objective, `[slo] latency_ms` (the dashboard's **Service level** card), so the map and the objective agree.
+- **The thresholds.** All are a percent of the answers in the window, 1 to 100:
+
+| Setting | Default | Turns | When |
+|---|---|---|---|
+| `warn_slow_pct` | 10 | Warning | this share of a flow's answers are slow |
+| `warn_error_pct` | 5 | Warning | this share are SERVFAIL or time out (not for an answer kind such as cache or blocked) |
+| `error_pct` | 25 | Failing | this share are SERVFAIL or time out; at least `warn_error_pct` |
+| `warn_blocked_pct` | 60 | Warning | this share of a device's answers are blocked (devices only: a network full of blocked ads is the filter working) |
+
+Other things colour the map as well, and no threshold changes them: an upstream whose breaker is open or a node that can't be reached is Failing; a breaker half open, a rate-limited device, an open unacknowledged anomaly, and a router integration that reports an error are Warning. A network or resolver takes the worst colour of what it holds; the gateway is never Failing, because DNS doesn't depend on it.
+
+**Preview.** While you type, a sentence under the fields says what the current map would look like with those values ("2 of 14 would change: camera Warning to Failing"). It reclassifies the flows of the map as it is now, so it is the same decision the server makes, with two limits: it can't know about the rate limiter, anomalies or a breaker (they keep their colour), and the slow share it reads was counted with the *current* slow threshold, so a new `warn_latency_ms` shows only after it is applied. Check shows what the change does before Apply; a value outside its range is refused with the field named (`map.event_rate: from 10 to 2000 lookups per second`).
+
+**What the map shows at each privacy level** (`telemetry.qlog.privacy_level`, one setting for the cluster): at 0 and 1 devices are shown by address and name (no domain name ever appears on the map, and the click-through to queries follows the level's own rules); at 2 devices are hidden (the sampler never receives a client key; one node per network stands for them) and flows are per resolver, upstream and answer kind; at 3 there is no per-event data, so only network and resolver totals are shown. Anomaly-based yellow is off at level 1 and above. A banner says why part of the map is missing.
+
+**In a cluster**, every node samples its own lookups and the node you ask gathers the others' maps in the background (a dead node never delays the map). A node that has stopped answering is shown Failing (**unreachable**) once its grace of a few seconds has passed, and listed in the **Partial** banner; until then, and for a node that has just joined, it is **pending** (Idle), not red. Counts for the same device or flow on several nodes are added. The settings are shared by every node.
+
+**GeoIP** (the world view, an admin's) is off by default and fetches nothing until an admin turns it on. It uses DB-IP's "IP to Country Lite" database, published monthly under the Creative Commons Attribution 4.0 licence (https://creativecommons.org/licenses/by/4.0/): each install downloads it from the publisher (nothing is bundled), and the world view carries the credit "IP geolocation by DB-IP.com". The download is checked (a truncated or tampered file is refused and the current database kept) but the publisher gives no signature, so the checks guard against damage, not against a publisher you don't trust. It never runs on the query path. See the world view and its settings when they are enabled in your build.
 
 ### Where does time go?
 The dashboard's **Where time goes** section (Advanced view) has two views:

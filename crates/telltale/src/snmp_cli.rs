@@ -5,16 +5,17 @@
 //! a file under `[node] secret_file_dirs`, and prints no credential. It is read-only like the
 //! crate: GET-class PDUs only. The UI counterpart is T25.6's **Test**.
 //!
-//! Agents come from `[[discovery.snmp_agent]]`, which T25.6 adds. Until then [`lookup`] finds
-//! none, and the command says so; everything after the lookup (destination check, credential
-//! read, table roots with their fallbacks, the bounded walk, printing) is built and tested.
+//! Agents come from `[[discovery.snmp_agent]]` (T25.6): [`lookup`] turns a configured agent's name
+//! into its address and credential files; everything after the lookup (destination check, credential
+//! read, table roots with their fallbacks, the bounded walk, printing) is shared with the poller's
+//! rules.
 
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use telltale_config::Config;
+use telltale_config::{Config, CredentialRole, SnmpVersion};
 use telltale_snmp::agent::{Agent, Security, Timing};
 use telltale_snmp::creds;
 use telltale_snmp::dest;
@@ -59,7 +60,6 @@ impl Table {
 
 /// How an agent signs in. Credentials are named by file, never held inline (ADR-908).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // T25.6 builds the V3 form from `[[discovery.snmp_agent]]`
 pub(crate) enum AgentAuth {
     V2c {
         community_file: PathBuf,
@@ -72,9 +72,8 @@ pub(crate) enum AgentAuth {
     },
 }
 
-/// One configured agent, as T25.6's `[[discovery.snmp_agent]]` will resolve to.
+/// One configured agent, as `[[discovery.snmp_agent]]` and its credential resolve to.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // T25.6 builds it from `[[discovery.snmp_agent]]`
 pub(crate) struct AgentSpec {
     pub(crate) name: String,
     pub(crate) address: SocketAddr,
@@ -107,7 +106,7 @@ impl std::fmt::Display for CliError {
             ),
             Self::NoSuchAgent(n) => write!(
                 f,
-                "no SNMP agent named `{n}` is configured ([[discovery.snmp_agent]] arrives with the infrastructure poller, T25.6)"
+                "no SNMP agent named `{n}` is configured (add one under [[discovery.snmp_agent]], or in Settings, Network inventory)"
             ),
             Self::Destination(m) => write!(f, "destination refused: {m}"),
             Self::Credential(m) => write!(f, "credential: {m}"),
@@ -119,16 +118,81 @@ impl std::fmt::Display for CliError {
 
 /// Finds a configured agent by name. A value that parses as an address is refused first, so a
 /// typed IP never reaches the lookup (and never a socket).
-pub(crate) fn lookup(_cfg: &Config, name: &str) -> Result<AgentSpec, CliError> {
+pub(crate) fn lookup(cfg: &Config, name: &str) -> Result<AgentSpec, CliError> {
     if name.parse::<IpAddr>().is_ok() || name.parse::<SocketAddr>().is_ok() {
         return Err(CliError::AddressNotAName);
     }
-    // REQ: DSC-004 (T25.6) — `[[discovery.snmp_agent]]` is not in the config schema yet.
-    Err(CliError::NoSuchAgent(name.to_owned()))
+    // REQ: DSC-004 (T25.6) - the one place a name becomes an address and credential files.
+    let agent = cfg
+        .discovery
+        .snmp_agents
+        .iter()
+        .find(|a| a.name.as_str() == name)
+        .ok_or_else(|| CliError::NoSuchAgent(name.to_owned()))?;
+    let cred = cfg
+        .discovery
+        .snmp_credentials
+        .iter()
+        .find(|c| c.name.as_str() == agent.credential.as_str())
+        .ok_or_else(|| CliError::Credential("the agent's credential is not configured".into()))?;
+    if cred.role != CredentialRole::Infrastructure {
+        return Err(CliError::Credential(
+            "an agent takes an infrastructure credential".into(),
+        ));
+    }
+    let ip: Ipv4Addr = agent
+        .address
+        .as_str()
+        .parse()
+        .map_err(|_| CliError::Destination("not an IPv4 address".into()))?;
+    let file = |f: &Option<telltale_config::SafeString>| -> Result<PathBuf, CliError> {
+        f.as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| PathBuf::from(s.as_str()))
+            .ok_or_else(|| CliError::Credential("a credential file is not named".into()))
+    };
+    let auth = match cred.version {
+        SnmpVersion::V2c => AgentAuth::V2c {
+            community_file: file(&cred.community_file)?,
+        },
+        SnmpVersion::V3 => {
+            let auth_file = file(&cred.auth_password_file)?;
+            let privacy = match &cred.priv_protocol {
+                Some(p) if !p.as_str().is_empty() => {
+                    let pw = if cred.priv_password_file.is_some() {
+                        file(&cred.priv_password_file)?
+                    } else {
+                        auth_file.clone()
+                    };
+                    Some((p.as_str().to_owned(), pw))
+                }
+                _ => None,
+            };
+            AgentAuth::V3 {
+                user: cred
+                    .user
+                    .as_ref()
+                    .map(|u| u.as_str().to_owned())
+                    .unwrap_or_default(),
+                auth: cred
+                    .auth_protocol
+                    .as_ref()
+                    .map(|p| p.as_str().to_owned())
+                    .unwrap_or_default(),
+                auth_file,
+                privacy,
+            }
+        }
+    };
+    Ok(AgentSpec {
+        name: agent.name.as_str().to_owned(),
+        address: SocketAddr::new(IpAddr::V4(ip), agent.port),
+        auth,
+    })
 }
 
 /// True when `addr` is one of this host's own addresses: a socket can be bound to it.
-fn is_own(addr: Ipv4Addr) -> bool {
+pub(crate) fn is_own(addr: Ipv4Addr) -> bool {
     UdpSocket::bind(SocketAddr::new(IpAddr::V4(addr), 0)).is_ok()
 }
 
@@ -256,6 +320,7 @@ pub(crate) fn print(
             Stop::EndOfView => "end of table",
             Stop::RowCap => "row cap reached",
             Stop::TimeCap => "time cap reached",
+            Stop::ByteCap => "byte cap reached",
         };
         writeln!(out, "# {} rows, {why}", rows.len()).map_err(|_| CliError::Output)?;
     }
@@ -281,6 +346,7 @@ pub(crate) fn run_walk(
         _ => Vec::new(),
     };
     let mut agent = connect(&spec, &dirs, &own)?;
+    writeln!(out, "# agent {}", spec.name).map_err(|_| CliError::Output)?;
     let walked = walk_table(&mut agent, &mut SystemPacer, table, &Limits::default())?;
     print(&walked, out)?;
     Ok(())

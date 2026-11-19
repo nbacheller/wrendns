@@ -218,12 +218,26 @@ telltale ctl secrets clear unifi                              # refused while a 
       <tr><td>Special names (iCloud Private Relay, one-label names, DDR)</td><td>Settings → Query handling (the DDR name is an admin's)</td><td><code>[special]</code></td><td><code>/api/v1/special-names/default</code></td></tr>
       <tr><td>Device names in DNS</td><td>Local DNS → Device names in DNS</td><td><code>[local]</code></td><td><code>/api/v1/local-settings/default</code></td></tr>
       <tr><td>Listening for mDNS announcements (an admin's)</td><td>Local DNS → Listen for mDNS announcements</td><td><code>[clients] mdns</code></td><td><code>/api/v1/clients-settings/default</code></td></tr>
+      <tr><td>Network map (sampling and thresholds)</td><td>Settings → Query handling → Network map</td><td><code>[map]</code></td><td><code>/api/v1/map-settings/default</code></td></tr>
       <tr><td>Alerts</td><td>Alerts</td><td><code>[[alerts.destination]]</code>, <code>[[alerts.rule]]</code></td><td><code>/api/v1/alerts/destinations/{name}</code>, <code>/api/v1/alerts/rules/{name}</code></td></tr>
       <tr><td>Staged rollouts</td><td>Settings → Cluster</td><td><code>[cluster.rollout]</code></td><td><code>/api/v1/cluster/rollout-settings/default</code></td></tr>
       <tr><td>Listeners, the API, sign-in, telemetry, cache, the node</td><td>(config file only)</td><td><code>[[listen]]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, <code>[cache]</code>, <code>[node]</code></td><td>(config file only)</td></tr>
     </tbody>
   </table></div>
   <p class="muted">Every change through the UI or API is checked first, refused if it would leave the configuration invalid, and recorded in the audit log with who made it. The full API is described at <code>/api/v1/openapi.json</code> on every node.</p>
+</section>
+
+<section>
+  <h2>The cache, list limits, DNSSEC and the small switches</h2>
+  <p>Most of these are a form on the page they belong to, with a check before the change is saved:</p>
+  <ul>
+    <li><strong>Cache</strong> (the Cache page): memory, how long answers are kept, stale answers, prefetch and the warm start for each node. Operators change them; each node applies its own, when it restarts.</li>
+    <li><strong>Lists</strong>: a largest download and a stale age for each list, and the refresh interval for all of them (after a restart).</li>
+    <li><strong>DNSSEC</strong> (Query handling): the validation mode and the domains not validated.</li>
+    <li><strong>Drills</strong> (the Cluster page): whether the failover drills run each month, and on which nodes.</li>
+    <li><strong>System</strong>: this node's support-log and update-check switches (admins).</li>
+  </ul>
+  <p class="muted">Each control has a ? beside it that explains what the setting does, and the API has the same change: see the reference on the developers' pages.</p>
 </section>
 
 <section>

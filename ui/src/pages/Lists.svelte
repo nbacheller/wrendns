@@ -10,6 +10,8 @@
   import { currentMode } from '../lib/mode.svelte';
   import { can } from '../lib/session.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  // REQ: FLT-004 (T27.11) — the list refresh and stale settings, above the lists.
+  import FilterSettings from '../lib/components/FilterSettings.svelte';
   import { classifyListError } from '../lib/list-failure';
 
   // REQ: API-002 (T7.5) — add and change lists here.
@@ -21,6 +23,9 @@
     { key: 'match', label: 'Plain names match', type: 'select', options: ['subtree', 'exact'], advanced: true,
       help: 'subtree: the name and everything below it. exact: only the name itself.' },
     { key: 'enabled', label: 'On', type: 'bool', initial: true },
+    // REQ: FLT-004 (T27.11) — the list's own size limit and stale age (empty: the lists' defaults).
+    { key: 'max_bytes', label: 'Largest download', type: 'text', placeholder: '64MiB (empty: the default)', helpTopic: 'list-limits' },
+    { key: 'stale_after_days', label: 'Stale after (days; 0: never)', type: 'number', min: 0, helpTopic: 'list-limits' },
     // REQ: OBS-018 — try a list before it blocks anything.
     { key: 'mode', label: 'Mode', type: 'select', options: ['enforce', 'shadow'], initial: 'enforce',
       help: 'enforce: it blocks. shadow: it never blocks; the page shows what it would have blocked, so you can judge it first.' },
@@ -579,6 +584,7 @@
       <p class="muted small">"Allowed soon after" counts devices that got the name within 10 minutes of a block (a pause or an allow): someone wanted it. Retry bursts are apps asking 10+ times a minute; ad libraries do that too.</p>
     </section>
   {/if}
+  <FilterSettings />
   <ConfigEditor kind="list" path="lists" title="Manage lists" noun="list" fields={listFields}
     summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
     onchanged={async () => (lists = (await api.lists()).items)} formAction={tryList} />
