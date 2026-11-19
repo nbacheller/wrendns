@@ -29,7 +29,7 @@ deploy/grafana/        # dashboards
 presets/               # upstreams.toml, safesearch.toml, services/*.toml, oui.txt, bigrams.bin
 bench/                 # harness, corpora, compare/
 docs/                  # user docs + analysis
-site/                  # GitHub Pages project site (ADR-012)
+site/                  # the project site on wrendns.com (ADR-012, ADR-1030)
 spec/                  # this specification
 ```
 

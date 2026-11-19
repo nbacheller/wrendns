@@ -23,7 +23,10 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
+sys.path.insert(0, SITE)
+import brand  # noqa: E402  (the brand's tokens, fonts and logos, from brand/: checked on every build)
+
+PAGES = ["index.html", "start.html", "download.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
          # ADR-122 — the Guides menu.
          "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html", "guide-upgrades.html",
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",
@@ -38,6 +41,103 @@ STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 def read(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+# REQ: DOC-006 (T33.3, ADR-1030) — the Download page's optional "Support WrenDNS" section. The two Stripe
+# Payment Links come from site/data/site.json; the section is left out while both are empty. A payment link
+# is only a public address: the build refuses anything else, and any Stripe key or secret anywhere in site/.
+STRIPE_PREFIX = "https://buy.stripe.com/"
+STRIPE_SECRET = re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+")
+
+
+def site_config_errors(cfg):
+    errs = []
+    if not isinstance(cfg.get("support", {}).get("note", ""), str):
+        errs.append("site.json: support.note must be a string")
+    for key in ("one_time_url", "monthly_url"):
+        url = cfg.get("support", {}).get(key, "")
+        if not isinstance(url, str):
+            errs.append("site.json: support.{} must be a string".format(key))
+        elif url and (not url.startswith(STRIPE_PREFIX) or len(url) <= len(STRIPE_PREFIX) or re.search(r"[\s\"'<>]", url)):
+            errs.append("site.json: support.{} must be a Stripe Payment Link ({}...), got {!r}".format(key, STRIPE_PREFIX, url))
+    for dirpath, _, names in os.walk(SITE):
+        if "_site" in dirpath.split(os.sep) or "__pycache__" in dirpath:
+            continue
+        for n in names:
+            if n.endswith((".woff2", ".png", ".jpg", ".jpeg", ".pyc")):
+                continue
+            path = os.path.join(dirpath, n)
+            if STRIPE_SECRET.search(read(path)):
+                errs.append("{}: looks like a Stripe key or secret; none belongs in the repository".format(os.path.relpath(path, ROOT)))
+    return errs
+
+
+def render_support(page, cfg):
+    sup = cfg.get("support", {})
+    cards = []
+    if sup.get("one_time_url"):
+        cards.append(
+            '    <article class="card"><h3>Give once</h3><p>Choose your own amount, as small or as large as you like.</p>'
+            '<p><a class="btn primary" href="{}" rel="noopener noreferrer">Give once</a></p></article>'.format(html.escape(sup["one_time_url"], quote=True))
+        )
+    if sup.get("monthly_url"):
+        cards.append(
+            '    <article class="card"><h3>Give monthly</h3><p>Pick a supporter tier and give every month. Stop whenever you like.</p>'
+            '<p><a class="btn primary" href="{}" rel="noopener noreferrer">Give monthly</a></p></article>'.format(html.escape(sup["monthly_url"], quote=True))
+        )
+    if not cards:
+        return page.replace("<!-- @support -->\n\n", "").replace("<!-- @support -->", "")
+    note = sup.get("note", "")
+    note_html = '  <p class="muted small">{}</p>\n'.format(html.escape(note)) if note else ""
+    section = (
+        '<section id="support">\n  <h2>Support WrenDNS</h2>\n'
+        "  <p class=\"lede\">WrenDNS is free and stays free. If it saves you time and you would like to help keep it going, you can chip in. "
+        "It is optional, and nothing changes if you don't.</p>\n  <div class=\"grid\">\n" + "\n".join(cards) + "\n  </div>\n"
+        '  <p class="muted small">Payments are made on Stripe\'s own page: this site never sees your card details, and WrenDNS keeps no record of who gave.</p>\n'
+        + note_html + "</section>"
+    )
+    return page.replace("<!-- @support -->", section)
+
+
+# REQ: DOC-006 (T33.3) — the Content-Security-Policy in staticwebapp.config.json allows no inline script or style,
+# so a page may not carry one. The headers the site is served with are checked here too.
+SWA_HEADERS = ["Content-Security-Policy", "Strict-Transport-Security", "X-Content-Type-Options", "Referrer-Policy"]
+
+
+def swa_errors(cfg):
+    errs = []
+    hdr = cfg.get("globalHeaders", {})
+    for h in SWA_HEADERS:
+        if not hdr.get(h):
+            errs.append("staticwebapp.config.json: globalHeaders lacks {}".format(h))
+    csp = hdr.get("Content-Security-Policy", "")
+    if "unsafe-inline" in csp or "unsafe-eval" in csp:
+        errs.append("staticwebapp.config.json: the global Content-Security-Policy must not allow 'unsafe-inline' or 'unsafe-eval'")
+    if "nosniff" not in hdr.get("X-Content-Type-Options", ""):
+        errs.append("staticwebapp.config.json: X-Content-Type-Options must be nosniff")
+    if "max-age=" not in hdr.get("Strict-Transport-Security", ""):
+        errs.append("staticwebapp.config.json: Strict-Transport-Security needs a max-age")
+    return errs
+
+
+_INLINE = [
+    (re.compile(r"<script(?![^>]*\bsrc=)[^>]*>", re.I), "an inline <script>"),
+    (re.compile(r"<style\b", re.I), "a <style> element"),
+    (re.compile(r"\sstyle=\"", re.I), "a style attribute"),
+    (re.compile(r"\son[a-z]+=\"", re.I), "an inline event handler"),
+    (re.compile(r"(?:src|href)=\"https?://[^\"]*\.(?:js|css|woff2?)\"", re.I), "an external script, stylesheet or font"),
+    (re.compile(r"<img[^>]+src=\"https?://", re.I), "an external image"),
+]
+
+
+def csp_errors(out_dir, names):
+    errs = []
+    for n in names:
+        text = read(os.path.join(out_dir, n))
+        for rx, what in _INLINE:
+            if rx.search(text):
+                errs.append("{}: has {} (the Content-Security-Policy forbids it)".format(n, what))
+    return errs
 
 
 def build_stamp():
@@ -1079,6 +1179,8 @@ def main():
         if s["status"] not in STATUS_ORDER:
             sys.exit("standards.json: bad status {!r} for RFC {}".format(s["status"], s["rfc"]))
     arch = json.loads(read(os.path.join(SITE, "data", "architecture.json")))
+    site_cfg = json.loads(read(os.path.join(SITE, "data", "site.json")))
+    swa_cfg = json.loads(read(os.path.join(SITE, "staticwebapp.config.json")))
     adrs, reqs = repo_ids()
     values_rows = parse_values(read(HELM_VALUES))
     written = []
@@ -1103,6 +1205,8 @@ def main():
                 shutil.copy(os.path.join(BENCH_DIR, bf), os.path.join(out, "data", "bench", bf))
         if name == "standards.html":
             page = render_standards(page, data)
+        if name == "download.html":
+            page = render_support(page, site_cfg)
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
         # The decisions index and its part pages come from one template.
@@ -1113,9 +1217,11 @@ def main():
             with open(os.path.join(out, gname), "w", encoding="utf-8") as f:
                 f.write(gpage)
             written.append(gname)
-    with open(os.path.join(out, ".nojekyll"), "w") as f:
-        f.write("")
-    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
+    shutil.copyfile(os.path.join(SITE, "staticwebapp.config.json"), os.path.join(out, "staticwebapp.config.json"))
+    errors = (
+        coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
+        + ["brand: " + p for p in brand.problems()] + site_config_errors(site_cfg) + swa_errors(swa_cfg) + csp_errors(out, written)
+    )
     for e in errors:
         print("error: " + e, file=sys.stderr)
     if errors:

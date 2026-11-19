@@ -64,7 +64,7 @@ jobs:
           retention-days: 14
       - name: Publish on the project site
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh workflow run pages.yml --ref main -R "$GITHUB_REPOSITORY"
+        run: gh workflow run site.yml --ref main -R "$GITHUB_REPOSITORY"
 
   # REQ: NFR-005 (T10.10) — reproducible builds: two clean builds of this commit's amd64
   # release binary (the Dockerfile's `bin` stage, no cache) must be byte-identical. The build

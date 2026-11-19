@@ -1,0 +1,8 @@
+{
+  "_comment": "The site's own settings (T33.3, ADR-1030). `support` holds the two Stripe Payment Links the owner creates in the Stripe dashboard: a one-time link where the donor chooses the amount, and a monthly one with supporter tiers. Put the public https://buy.stripe.com/... URLs here and the Download page shows its Support WrenDNS section; while a value is empty, that link is left out, and while both are empty the section is hidden. `note` is an optional plain sentence shown under the two links, for what the Stripe page will show the donor (for example the name of the receiving account). No Stripe key, secret or webhook belongs in this repository: a payment link is only a public address, and the site never handles card data.",
+  "support": {
+    "one_time_url": "",
+    "monthly_url": "",
+    "note": ""
+  }
+}
