@@ -139,7 +139,7 @@ impl State {
         by: &str,
     ) -> std::result::Result<u64, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let current = version(&tx)?;
         if let Some(v) = expect
             && v != current
@@ -178,7 +178,7 @@ impl State {
         by: &str,
     ) -> std::result::Result<u64, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let current = version(&tx)?;
         if let Some(v) = expect
             && v != current
@@ -217,7 +217,7 @@ impl State {
         note: Option<(&str, &str)>,
     ) -> std::result::Result<u64, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let current = version(&tx)?;
         if let Some(v) = expect
             && v != current
@@ -282,7 +282,7 @@ impl State {
         note: Option<(&str, &str)>,
     ) -> std::result::Result<Option<u64>, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         if let Some((key, value)) = note {
             let held: Option<String> = tx
                 .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
@@ -356,7 +356,7 @@ impl State {
         note: (&str, &str),
     ) -> std::result::Result<Option<Vec<String>>, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let held: Option<String> = tx
             .query_row("SELECT value FROM meta WHERE key = ?1", [note.0], |r| {
                 r.get(0)
@@ -399,7 +399,7 @@ impl State {
         expect: Option<u64>,
     ) -> std::result::Result<u64, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let current = version(&tx)?;
         if let Some(v) = expect
             && v != current

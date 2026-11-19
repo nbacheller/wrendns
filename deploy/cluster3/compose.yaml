@@ -21,7 +21,9 @@ x-wrendns: &wrendns
   read_only: true
   command: ["run", "-c", "/etc/wrendns/wrendns.toml"]
   environment:
-    WRENDNS_LOG: info
+    # The cluster links and the federated reads at debug level: a failed check names the stream
+    # or the call that didn't come back (a few lines a minute).
+    WRENDNS_LOG: "info,wrendns_cluster::net=debug,wrendns::federated=debug"
     # REQ: FLT-901 (T24.29): the image is built with the `e2e` feature, which lets this fake stand in
     # for the hosts the category lists come from, so the test can see which node fetched what.
     WRENDNS_E2E_CATALOG_BASE: "http://fake-source:8080/"

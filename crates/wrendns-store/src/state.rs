@@ -249,6 +249,14 @@ fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<bool> {
     .map(|busy| busy == 0)
 }
 
+/// REQ: CLU-004, OPS-014 — a write transaction that takes the write lock when it begins
+/// (`BEGIN IMMEDIATE`). A deferred one that reads and then writes gets `SQLITE_BUSY` at once,
+/// without the busy timeout, when another connection committed in between (WAL): a replica's
+/// step-down reload and the identity import then failed with "database is locked".
+fn write_tx(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+}
+
 pub mod acks;
 pub mod audit;
 pub mod identity;
@@ -1363,5 +1371,62 @@ mod tests {
                 .unwrap();
             assert_eq!(v, MIGRATIONS.len().to_string());
         }
+    }
+
+    /// REQ: CLU-004, OPS-014 — writers on separate connections to one file (a replica's
+    /// step-down reload, the identity import, the names repair, the secrets store) that read and
+    /// then write all wait for one another within the busy timeout: none fails with "database is
+    /// locked", and every version bump lands.
+    #[test]
+    fn clu_004_concurrent_read_then_write_transactions_wait_for_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        drop(State::open(&path).unwrap());
+        let start = State::open(&path).unwrap().config_version().unwrap();
+        let threads = 4u64;
+        let rounds = 60u64;
+        let errors: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    let path = &path;
+                    scope.spawn(move || {
+                        let s = State::open(path).unwrap();
+                        let mut errs = Vec::new();
+                        for r in 0..rounds {
+                            let name = format!("n{t}-{r}");
+                            if let Err(e) = s.put_and_remove_managed(
+                                &[("zone", &name, "{}")],
+                                &[],
+                                None,
+                                1,
+                                "test",
+                                Some(("names_repair_test", &name)),
+                            ) {
+                                errs.push(format!("put_and_remove_managed: {e}"));
+                            }
+                            if let Err(e) = s.import_identities(&identity::Identities::default()) {
+                                errs.push(format!("import_identities: {e}"));
+                            }
+                            if let Err(e) = s.next_secret_stamp(1) {
+                                errs.push(format!("next_secret_stamp: {e}"));
+                            }
+                        }
+                        errs
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+        assert!(
+            errors.is_empty(),
+            "{} failed: {:?}",
+            errors.len(),
+            &errors[..errors.len().min(5)]
+        );
+        let end = State::open(&path).unwrap().config_version().unwrap();
+        assert_eq!(end, start + threads * rounds);
     }
 }

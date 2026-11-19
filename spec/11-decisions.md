@@ -5421,7 +5421,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** the build and `obs_901` check 512 KiB; `spec/02` and `spec/07` say so. A first page load on a Pi-served LAN grows by a few milliseconds at most. When the UI nears 512 KiB, the next step is to load help topics from the API on demand and to split the brand icons, not another raise without an ADR.
 
-## ADR-1021 — CMDB replication uses its own fetch RPC, not ADR-917's secret writer (Proposed 2026-11-19, T31.2)
+## ADR-1021 — CMDB replication uses its own fetch RPC, not ADR-917's secret writer (Accepted 2026-11-19, T31.2)
 
 **Context:** T31.2 step 1 asked whether the ADR-917 replication code takes a non-secret writer for the authored tables. It is built around the secret store's rows and its encryption envelope; reusing it would couple the CMDB's schema to the credential path.
 
@@ -5431,7 +5431,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** one RPC name, one pull task. Tests: `replication::tests` (export, import, tombstones, the floor and the reset, promote, a new epoch with no standby file). **Open:** none.
 
-## ADR-1022 — CMDB resolution is a pure, order-independent union-find with compatibility checks (Proposed 2026-11-19, T31.2)
+## ADR-1022 — CMDB resolution is a pure, order-independent union-find with compatibility checks (Accepted 2026-11-19, T31.2)
 
 **Context:** ADR-1004 lists rules R1 to R5 but not how conflicting evidence combines.
 
@@ -5439,7 +5439,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** deterministic ids need no ordering guarantee from sources. **Open:** none.
 
-## ADR-1023 — The CMDB engine is stateless over SQLite with a compact index; measured memory and disk (Proposed 2026-11-19, T31.2)
+## ADR-1023 — The CMDB engine is stateless over SQLite with a compact index; measured memory and disk (Accepted 2026-11-19, T31.2)
 
 **Context:** the first design held every record in a map: 14 MiB at the caps against the 8 MiB budget (AC 5).
 
@@ -5447,7 +5447,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** query path unchanged; no hot-path crate touched. **Open:** none.
 
-## ADR-1024 — T31.2 adapter and feed conventions, defaults and deviations (Proposed 2026-11-19, T31.2)
+## ADR-1024 — T31.2 adapter and feed conventions, defaults and deviations (Accepted 2026-11-19, T31.2)
 
 **Decision:** (1) Every source pushes `SourceBatch`es into a bounded sink that drops the oldest on overflow (counted); a command queue carries manual changes and an immediate tick when the configuration changes. (2) The in-process feeds (observations, leases, configuration, cluster, networks, `queries` once a minute, workloads when Kubernetes is on) are adapters read on the CMDB thread. (3) Settings kind `Cmdb` is shared, admin-only and has no agent scope; the CMDB runs on the node `[discovery]` designates and `enabled` is a validation error at privacy level 2 and above (names hashed at level 1). (4) No Pi-hole importer source (owner, 2026-11-19). (5) `DSC-901`: no policy, matching, identify or DNS naming code reads a CMDB value (`dsc_901_no_policy_code_reads_the_cmdb`). (6) Health reasons for the CMDB never mark DNS unhealthy.
 
@@ -5523,7 +5523,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** the rebrand's replay adds the licence change as its own commit (T33.5). The README's licence section (T33.4) and the site state the licence and the commercial contact. The name is protected by a trademark filing and a trademark policy, not by the licence (owner action).
 
-## ADR-1032 — Names are normalised once, where they enter: HTML entities decoded once, repaired once for what is already stored (Proposed 2026-11-19, records the owner's decision 4 of docs/design/ui-technical-info.md)
+## ADR-1032 — Names are normalised once, where they enter: HTML entities decoded once, repaired once for what is already stored (Accepted 2026-11-19, records the owner's decision 4 of docs/design/ui-technical-info.md)
 
 **Context:** The owner's live data showed a device named `Alex&#039;s PC`. Pi-hole's admin page stores comments escaped with PHP's `htmlspecialchars`, and the importer copied `client.comment` as given (`one_line` only replaced control characters). The web UI prints text literally, so the entity showed on screen. Routers, UniFi and Home Assistant can hand over names the same way. Decoding at display would be a second, different rule in every view (and the API and MCP output would still carry the codes); decoding where a name enters keeps one stored form.
 

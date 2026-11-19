@@ -581,11 +581,17 @@ fn now_secs() -> u64 {
 /// names it stored (the primary publishes the new version to the replicas as for any write).
 pub(crate) async fn run_once(src: &Arc<crate::http::Sources>) {
     let Some(auth) = src.auth.get() else { return };
-    // The health note covers every node, a replica too (it reads the same files).
-    set_file_entries(file_findings(
-        &crate::api_backend::plan_files(src),
-        &src.config_files,
-    ));
+    // The health note covers every node, a replica too (it reads the same files). Merging the
+    // configuration reads files: off the async workers (a Pi has two), like the repair below.
+    let scan = Arc::clone(src);
+    match tokio::task::spawn_blocking(move || {
+        file_findings(&crate::api_backend::plan_files(&scan), &scan.config_files)
+    })
+    .await
+    {
+        Ok(found) => set_file_entries(found),
+        Err(e) => warn!("the names check did not run: {e}"),
+    }
     let backend = crate::api_backend::ApiBackend {
         src: Arc::clone(src),
     };
@@ -601,12 +607,14 @@ pub(crate) async fn run_once(src: &Arc<crate::http::Sources>) {
     if crate::api_backend::refuse_unadopted(src, &state).is_err() {
         return;
     }
-    let file = crate::api_backend::plan_files(src);
-    let files = src.config_files.clone();
-    let result = tokio::task::spawn_blocking(move || repair(&state, &file, &files, now_secs()))
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|r| r);
+    let plan = Arc::clone(src);
+    let result = tokio::task::spawn_blocking(move || {
+        let file = crate::api_backend::plan_files(&plan);
+        repair(&state, &file, &plan.config_files, now_secs())
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
     match result {
         Ok(report) => {
             set_file_entries(report.file_entries.clone());
@@ -632,7 +640,8 @@ pub(crate) async fn run_once(src: &Arc<crate::http::Sources>) {
 }
 
 /// REQ: T35.1 — the repair task: a pass shortly after start, then every minute (a node promoted
-/// to primary runs it at once; a pass that finds nothing writes nothing).
+/// to primary runs it at its next pass, within a minute; a pass that finds nothing writes
+/// nothing).
 pub(crate) fn spawn(src: Arc<crate::http::Sources>, mut stop: tokio::sync::watch::Receiver<bool>) {
     tokio::spawn(async move {
         let mut wait = std::time::Duration::from_secs(15);

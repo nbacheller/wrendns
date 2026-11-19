@@ -200,7 +200,7 @@ impl State {
     /// again (a failed write leaves a gap, never a repeat).
     pub fn next_secret_stamp(&self, epoch: u64) -> Result<Stamp> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             let last = tx
                 .query_row("SELECT value FROM meta WHERE key = ?1", [STAMP_KEY], |r| {
                     r.get::<_, String>(0)
@@ -251,7 +251,7 @@ impl State {
     /// finishing; the caller says so).
     pub fn put_secret_row(&self, s: &SecretRow, now: u64) -> Result<bool> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             upsert(&tx, s)?;
             if s.deleted {
                 prune(&tx, now)?;
@@ -276,7 +276,7 @@ impl State {
         now: u64,
     ) -> Result<bool> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             for s in shadow {
                 upsert_shadow(&tx, s, false)?;
             }
@@ -309,7 +309,7 @@ impl State {
     /// dropped. Returns `(deleted, restored)`.
     pub fn purge_cluster_secrets(&self) -> Result<(usize, usize)> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             let cluster: Vec<String> = {
                 let mut st = tx.prepare("SELECT name FROM secrets WHERE origin = 'cluster'")?;
                 st.query_map([], |r| r.get(0))?
@@ -370,7 +370,7 @@ impl State {
     /// whether the truncation finished.
     pub fn replace_secret_rows(&self, rows: &[SecretRow], shadows: &[SecretRow]) -> Result<bool> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             for s in rows {
                 upsert(&tx, s)?;
             }
