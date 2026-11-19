@@ -2023,6 +2023,12 @@ impl Backend for ApiBackend {
     }
 
     fn groups(&self) -> Vec<GroupInfo> {
+        self.groups_with(&self.networks())
+    }
+
+    // REQ: API-013 (T24.41) - the same list over the networks the caller read (a replica's include
+    // the primary's routers').
+    fn groups_with(&self, networks: &[telltale_api::model::NetworkInfo]) -> Vec<GroupInfo> {
         let cfg = self.src.config.load();
         let now_s = i64::try_from(crate::pipeline::unix_now()).unwrap_or(i64::MAX);
         let now = crate::pipeline::unix_now();
@@ -2031,7 +2037,6 @@ impl Backend for ApiBackend {
         let policy = &self.src.pipeline.current().policy;
         // REQ: FLT-902 (T24.29): the profile list's Source column needs the network names and
         // the devices' icons.
-        let networks = self.networks();
         let identities: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> =
             self.src
                 .identify
@@ -2121,7 +2126,7 @@ impl Backend for ApiBackend {
                 filter_scope: String::new(),
             })
             .map(|info| with_group_config(info, &cfg))
-            .map(|info| self.with_profile_columns(info, &cfg, &networks, &identities))
+            .map(|info| self.with_profile_columns(info, &cfg, networks, &identities))
             .collect()
     }
 
@@ -3124,6 +3129,15 @@ impl Backend for ApiBackend {
 
     // REQ: FLT-902 (T24.29): the picker's networks and devices.
     fn profile_devices(&self) -> telltale_api::categories_api::ProfileDevices {
+        self.profile_devices_with(&self.networks(), &self.dhcp_leases())
+    }
+
+    // REQ: API-010, API-013 (T24.41) - the picker over the rows the caller read.
+    fn profile_devices_with(
+        &self,
+        networks: &[telltale_api::model::NetworkInfo],
+        leases: &[telltale_api::model::DhcpLease],
+    ) -> telltale_api::categories_api::ProfileDevices {
         let cfg = self.src.config.load();
         let managed = managed_names(&self.src);
         let identities: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> =
@@ -3133,22 +3147,16 @@ impl Backend for ApiBackend {
                 .into_iter()
                 .map(|i| (i.client.clone(), i))
                 .collect();
-        crate::profiles::picker(
-            &cfg,
-            &self.networks(),
-            &self.dhcp_leases(),
-            &identities,
-            &|n: &str| {
-                Some(
-                    if managed.iter().any(|m| m == n) {
-                        "api"
-                    } else {
-                        "file"
-                    }
-                    .to_owned(),
-                )
-            },
-        )
+        crate::profiles::picker(&cfg, networks, leases, &identities, &|n: &str| {
+            Some(
+                if managed.iter().any(|m| m == n) {
+                    "api"
+                } else {
+                    "file"
+                }
+                .to_owned(),
+            )
+        })
     }
 
     #[allow(clippy::too_many_lines)] // routers, interfaces and groups, merged into one list
@@ -5266,6 +5274,7 @@ fn router_entry(
         devices: 0,
         networks: 0,
         interval_secs: r.interval_secs,
+        read_by: None,
     });
     telltale_api::model::RouterEntry {
         name: r.name.to_string(),

@@ -46,13 +46,24 @@ fn admin_only(ext: &axum::http::Extensions) -> Result<(), Problem> {
 /// The routers in the configuration, with their status.
 ///
 /// Each router comes with its settings (secrets as names, never values), where it comes from (the
-/// files or the API), and what this node's last read did (API-016, T23.8). A replica answers with
-/// its own reads: the primary is the one that reads a router that stores its credential.
+/// files or the API), and what this node's last read did (API-016, T23.8). The primary is the one
+/// that reads a router that stores its credential, so a replica shows the primary's status of
+/// such a router (`status.readBy` names the node); with the primary away it shows its own, and
+/// `missingNodes` names the primary (API-016, T24.41).
 #[utoipa::path(get, path = "/api/v1/routers", tag = "config",
     responses((status = 200, body = RouterList, description = "The routers, by name.")))]
 pub(crate) async fn list_routers(State(b): State<Shared>) -> Json<RouterList> {
+    // REQ: API-016 (T24.41) - a replica asks the primary, off the runtime worker (CLU-004).
+    let b = crate::request_backend(&b);
+    let (items, missing_nodes) = tokio::task::spawn_blocking(move || {
+        let items = b.router_entries();
+        (items, b.missing_nodes())
+    })
+    .await
+    .unwrap_or_default();
     Json(RouterList {
-        items: b.router_entries(),
+        items,
+        missing_nodes,
     })
 }
 

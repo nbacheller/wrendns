@@ -29,6 +29,8 @@ type RoundAnswer = (usize, String, Vec<u8>);
 const KIND: &str = "api.read";
 /// How long a read waits for peers (CLU-002: a dead node costs at most this).
 const DEADLINE: Duration = Duration::from_secs(2);
+#[path = "federated_routers.rs"]
+mod routers_view;
 #[path = "federated_support.rs"]
 mod support_cluster;
 
@@ -213,6 +215,10 @@ enum Read {
     SecretsStatus,
     /// REQ: API-015 — the peer's own references to stored secrets, for a delete on the primary.
     SecretRefs,
+    /// REQ: API-013, API-016, API-010 (T24.41) - the networks, leases and router states the node
+    /// that reads the routers holds, for a replica's Networks and Routers pages (older peers
+    /// don't know it: the replica shows its own and names the primary as missing).
+    RouterView,
     /// REQ: OBS-901 (ADR-958) — the peer's own part of the live map (older peers do not know it:
     /// they are missing from the map, and the map says so).
     MapPart,
@@ -322,6 +328,7 @@ fn settle_policy(
 }
 
 /// Answers a peer's read from this node's own data.
+#[allow(clippy::too_many_lines)] // one arm per read
 fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
     let text = |p: Problem| p.detail;
     match r {
@@ -420,6 +427,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::SecretsStatus => serde_json::to_vec(&b.secrets_status().map_err(text)?),
         Read::SecretRefs => serde_json::to_vec(&b.secret_refs()),
         Read::MapPart => serde_json::to_vec(&b.map_part()),
+        Read::RouterView => serde_json::to_vec(&routers_view::own_view(b)),
         // REQ: OPS-011 (ADR-172) — already compressed bytes, not a JSON value.
         Read::SupportCollect { req } => return b.support_part(&req).map_err(text),
     }
@@ -886,7 +894,13 @@ pub(crate) struct Federated {
     /// REQ: OBS-901 (ADR-958 section 6) — the live map's per-peer last-good parts and the gather
     /// task that fills them, shared by every handle (each request has its own).
     map: Arc<MapPeers>,
+    /// REQ: API-013 (T24.41) - the primary's last good router read, kept a few seconds so one
+    /// page load or map snapshot makes one call; shared by every handle.
+    router_view: Arc<Mutex<Option<(std::time::Instant, String, routers_view::RouterView)>>>,
 }
+
+/// How long a replica reuses the primary's router read.
+const ROUTER_VIEW_TTL: Duration = Duration::from_secs(5);
 
 /// REQ: OBS-901 — what the cluster read of the map keeps between requests: the cache the gather
 /// task writes and the snapshot reads, and whether somebody asked lately.
@@ -938,6 +952,7 @@ impl Federated {
             missing: Mutex::new(Vec::new()),
             only: None,
             map: Arc::new(MapPeers::new()),
+            router_view: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -958,6 +973,7 @@ impl Federated {
             missing: Mutex::new(Vec::new()),
             only: Some(Only { me, peers }),
             map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
         }
     }
 
@@ -1054,6 +1070,57 @@ impl Federated {
             &rt,
             async move { cluster.call(peer, KIND, body, timeout).await },
         )
+    }
+
+    /// REQ: API-013, API-016, API-010 (T24.41) - on a replica, what the primary's routers
+    /// found, with the primary's label. `None` on the primary itself (its tables are the
+    /// answer) and when the primary can't answer (away, or too old to know the read): the
+    /// replica's own answer stands and the primary is recorded as missing, so the page says so.
+    /// Never an error: DNS and every other read are untouched.
+    fn primary_router_view(&self) -> Option<(String, routers_view::RouterView)> {
+        if self.cluster.is_primary() {
+            return None;
+        }
+        // Only a router the primary reads needs the call (a cluster without routers asks nothing
+        // and never reports the primary as missing).
+        if !self
+            .local
+            .router_entries()
+            .iter()
+            .any(|e| e.status.polled_by == "the primary")
+        {
+            return None;
+        }
+        let known = self.cluster.members().into_iter().find(|m| m.primary);
+        let primary = self.cluster.reachable_primary();
+        if let Some(p) = &primary {
+            let cached = self
+                .router_view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((at, id, v)) = cached.as_ref()
+                && id == p
+                && at.elapsed() < ROUTER_VIEW_TTL
+            {
+                return Some((self.label_of(p), v.clone()));
+            }
+        }
+        let asked = primary.and_then(|primary| {
+            let body = self.call_one(&primary, &Read::RouterView, DEADLINE)?.ok()?;
+            let view: routers_view::RouterView = serde_json::from_slice(&body).ok()?;
+            *self
+                .router_view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((std::time::Instant::now(), primary.clone(), view.clone()));
+            Some((self.label_of(&primary), view))
+        });
+        if asked.is_none() {
+            // No member is primary during an election: the note still names who is missing.
+            let who = known.map_or_else(|| "the primary".to_owned(), |m| self.label_of(&m.node_id));
+            self.record_missing(vec![who]);
+        }
+        asked
     }
 
     fn own_label(&self) -> String {
@@ -1378,6 +1445,7 @@ impl Backend for Federated {
             missing: Mutex::new(Vec::new()),
             only: Some(only),
             map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
         }))
     }
     fn local(&self) -> Option<Shared> {
@@ -1398,6 +1466,7 @@ impl Backend for Federated {
             missing: Mutex::new(Vec::new()),
             only: self.only.clone(),
             map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
         }))
     }
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
@@ -2051,8 +2120,20 @@ impl Backend for Federated {
         parts.extend(self.everyone::<std::collections::BTreeMap<String, u64>>(|| Read::ListHits));
         telltale_api::federation::merge_list_hits(parts)
     }
+    // REQ: API-013 (T24.41) - a caller's own rows are used as given.
+    fn groups_with(&self, networks: &[telltale_api::model::NetworkInfo]) -> Vec<GroupInfo> {
+        self.local.groups_with(networks)
+    }
+    fn profile_devices_with(
+        &self,
+        networks: &[telltale_api::model::NetworkInfo],
+        leases: &[telltale_api::model::DhcpLease],
+    ) -> telltale_api::categories_api::ProfileDevices {
+        self.local.profile_devices_with(networks, leases)
+    }
+    // REQ: API-013 (T24.41) - the Source column's network names include the primary's routers'.
     fn groups(&self) -> Vec<GroupInfo> {
-        self.local.groups()
+        self.local.groups_with(&self.networks())
     }
     // REQ: OBS-025 — each named device with the cluster's most confident identity.
     fn clients(&self) -> Vec<ClientInfo> {
@@ -2745,20 +2826,35 @@ impl Backend for Federated {
         all.retain(|d| seen.insert(d.client.clone()));
         all
     }
+    // REQ: API-010 (T24.41) - the leases come from where the routers are read.
     fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
-        self.local.dhcp_leases()
+        let local = self.local.dhcp_leases();
+        match self.primary_router_view() {
+            Some((_, v)) => routers_view::merge_leases(local, v.leases),
+            None => local,
+        }
     }
-    // REQ: API-013 (T22.2) — read where the routers are read, like the leases.
+    // REQ: API-013 (T22.2, T24.41) — read where the routers are read, like the leases: a replica
+    // asks the primary and keeps its own interface rows for subnets no router reported.
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
-        self.local.networks()
+        let local = self.local.networks();
+        match self.primary_router_view() {
+            Some((_, v)) => routers_view::merge_networks(local, v.networks),
+            None => local,
+        }
     }
     // REQ: UPS-004 (T24.36) — the catalog is the same everywhere; the IPv6 route is this node's.
     fn upstream_presets(&self) -> telltale_api::model::UpstreamPresets {
         self.local.upstream_presets()
     }
     // REQ: API-016 (T23.7) — the settings are the replicated configuration; the status is this node's.
+    // REQ: API-016 (T24.41) - and a router only the primary reads shows the primary's status.
     fn router_entries(&self) -> Vec<telltale_api::model::RouterEntry> {
-        self.local.router_entries()
+        let local = self.local.router_entries();
+        match self.primary_router_view() {
+            Some((by, v)) => routers_view::merge_entries(local, &v.statuses, &by),
+            None => local,
+        }
     }
     // REQ: API-016 (T23.10) — every member holds the node-managed providers; the status is this node's.
     fn oidc_provider_entries(&self) -> telltale_api::model::OidcProviderList {
@@ -3236,8 +3332,17 @@ impl Backend for Federated {
     }
     // REQ: FLT-902 (T24.29) - the picker reads this node's own view (devices are seen by the node
     // that answers them; the networks come from the routers it reads).
+    // REQ: API-010, API-013 (T24.41) - on a replica the picker lists the primary's router
+    // networks and clients (one read serves both).
     fn profile_devices(&self) -> telltale_api::categories_api::ProfileDevices {
-        self.local.profile_devices()
+        match self.primary_router_view() {
+            Some((_, v)) => {
+                let nets = routers_view::merge_networks(self.local.networks(), v.networks);
+                let leases = routers_view::merge_leases(self.local.dhcp_leases(), v.leases);
+                self.local.profile_devices_with(&nets, &leases)
+            }
+            None => self.local.profile_devices(),
+        }
     }
     // REQ: API-014 — the keyed hash is this node's (the entry node keeps the record).
     fn idempotency_request(
