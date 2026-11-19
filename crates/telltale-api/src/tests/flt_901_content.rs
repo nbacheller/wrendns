@@ -632,3 +632,31 @@ async fn flt_902_content_level_defaults_to_off() {
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
 }
+
+/// REQ: API-010 (ADR-040) - a write runs to its end when the client hangs up first (a page
+/// reloading right after Apply): the change is not left stored and not applied.
+#[tokio::test]
+async fn api_010_a_write_survives_the_client_hanging_up() {
+    let (app, fake) = app();
+    with_groups(&fake);
+    fake.slow_ms.store(150, std::sync::atomic::Ordering::SeqCst);
+    let req = Request::put("/api/v1/groups/kids")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("x-telltale-reason", "testing")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"block_mode": "nxdomain"}).to_string()))
+        .unwrap();
+    // The client gives up after 20 ms: the request future is dropped.
+    let hung_up = tokio::time::timeout(
+        std::time::Duration::from_millis(20),
+        app.router.clone().oneshot(req),
+    )
+    .await;
+    assert!(hung_up.is_err(), "the write was still running");
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert_eq!(
+        *fake.slow_done.lock().unwrap(),
+        vec!["kids".to_owned()],
+        "the write ran to its end"
+    );
+}

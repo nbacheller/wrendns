@@ -32,6 +32,10 @@ struct Fake {
     cat_memory: std::sync::atomic::AtomicU64,
     /// REQ: FLT-901 - the group entries `config_entries("group")` answers (when not empty).
     cat_entries: Mutex<Vec<crate::model::ConfigEntry>>,
+    /// REQ: API-010 - a group write that takes this many ms and then records itself in
+    /// `slow_done` (0: it answers at once): the "client hung up" test.
+    slow_ms: std::sync::atomic::AtomicU64,
+    slow_done: Arc<Mutex<Vec<String>>>,
 }
 
 /// The one finding the fake reports.
@@ -131,7 +135,13 @@ impl Backend for Fake {
         ));
         if w.kind == crate::ManagedKind::Group && !self.cat_groups.lock().unwrap().is_empty() {
             let applied = !w.dry_run;
+            let slow = self.slow_ms.load(std::sync::atomic::Ordering::SeqCst);
+            let (done, name) = (Arc::clone(&self.slow_done), w.name.clone());
             return Box::pin(async move {
+                if slow > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(slow)).await;
+                    done.lock().unwrap().push(name);
+                }
                 Ok(crate::model::ConfigChange {
                     applied,
                     config_version: 7,

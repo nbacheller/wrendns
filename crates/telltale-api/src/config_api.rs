@@ -3833,8 +3833,32 @@ pub(crate) async fn delete_rule(
     .await
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one path for every write
+/// REQ: API-002, API-010 (ADR-040) - a configuration write runs to its end (the audit record
+/// included) even when the client hangs up first, as a browser does when the page reloads right
+/// after Apply: stored but not applied is not a state a change may end in.
+#[allow(clippy::too_many_arguments)] // the write's own parts, as `write_inner`
 async fn write(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    dry: WriteOpts,
+    request: String,
+    name: String,
+    op: Op,
+) -> Response {
+    match tokio::spawn(write_inner(
+        backend, auth, headers, ext, dry, request, name, op,
+    ))
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => Problem::internal(format!("the write's worker failed: {e}")).into_response(),
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one path for every write
+async fn write_inner(
     backend: Arc<dyn Backend>,
     auth: Arc<Auth>,
     headers: HeaderMap,

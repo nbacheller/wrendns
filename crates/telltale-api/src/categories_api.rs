@@ -866,20 +866,31 @@ pub(crate) async fn guard_group_put(
     let confirm = wants_confirm(query);
     let dry_run = dry_run || is_dry_run(query);
     let has_content = body.get("content").is_some_and(|c| !c.is_null());
-    let (bk, n) = (Arc::clone(backend), name.to_owned());
-    let current = crate::blocking(move || {
-        Ok(bk
-            .groups()
-            .into_iter()
-            .find(|g| g.name == n)
-            .and_then(|g| g.content))
-    })
-    .await?;
     if !has_content {
         // Left out: the backend keeps the content in the group's own entry (the files' when they
         // set it, else the stored one), never the effective group's, which can be derived.
         return Ok(body);
     }
+    // The group's entry (its effective definition and what its files set): a cheap read, not the
+    // profile list's statistics.
+    let (bk, n) = (Arc::clone(backend), name.to_owned());
+    let (current, file_sets) = crate::blocking(move || {
+        let e = bk
+            .config_entries(Some("group"))
+            .into_iter()
+            .find(|e| e.name == n);
+        let current = e
+            .as_ref()
+            .and_then(|e| e.definition.as_ref())
+            .and_then(|d| d.get("content"))
+            .filter(|c| !c.is_null())
+            .and_then(|c| serde_json::from_value::<GroupContentInfo>(c.clone()).ok());
+        let file_sets = e
+            .as_ref()
+            .is_some_and(|e| e.set_by_file.iter().any(|k| k == "content"));
+        Ok((current, file_sets))
+    })
+    .await?;
     let new: GroupContentInfo = serde_json::from_value(body["content"].clone())
         .map_err(|e| Problem::new(Code::InvalidConfig, format!("content: {e}")))?;
     let before = current.clone().unwrap_or_default();
@@ -900,17 +911,10 @@ pub(crate) async fn guard_group_put(
     }
     agent_gate(&p, ext, dry_run, None)?;
     let (bk, n, nc) = (Arc::clone(backend), name.to_owned(), new.clone());
-    let checked = crate::blocking(move || {
-        let c = check_content(bk.as_ref(), &n, &nc, confirm, dry_run)?;
-        let file_sets = bk
-            .config_entries(Some("group"))
-            .into_iter()
-            .any(|e| e.name == n && e.set_by_file.iter().any(|k| k == "content"));
-        Ok((c, file_sets))
-    })
-    .await?;
-    agent_gate(&p, ext, dry_run, Some(&checked.0.budget))?;
-    if checked.1 {
+    let checked =
+        crate::blocking(move || check_content(bk.as_ref(), &n, &nc, confirm, dry_run)).await?;
+    agent_gate(&p, ext, dry_run, Some(&checked.budget))?;
+    if file_sets {
         return Err(Problem::new(
             Code::SetByFile,
             format!("the config files set `content` for group `{name}`"),
