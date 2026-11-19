@@ -68,6 +68,8 @@ pub(crate) struct Providers {
     /// REQ: DSC-009 (T25.10, ADR-912) - the extra UniFi and Home Assistant reads, run on this
     /// thread with the session the router poll shares (`None`: none).
     pub(crate) reads: Option<ReadsInput>,
+    /// REQ: DSC-902 (T31.2) — the CMDB sink: each SNMP poll is pushed there as a batch.
+    pub(crate) cmdb: Option<Arc<crate::cmdb::inbox::SinkSlot>>,
 }
 
 /// A running inventory thread.
@@ -185,6 +187,14 @@ async fn run(
             while let Ok(out) = rx.try_recv() {
                 let report = inv.apply(&out.observations, now);
                 tracing::debug!(agent = %out.agent, merged = report.merged, "inventory: SNMP poll merged");
+                // REQ: DSC-902 (T31.2) — the same poll, as the CMDB snmp:<agent> source.
+                if let Some(s) = providers.cmdb.as_ref().filter(|s| s.listening()) {
+                    s.push(crate::cmdb::adapters::batch_from_observations(
+                        &out.observations,
+                        &format!("snmp:{}", out.agent),
+                        i64::try_from(now).unwrap_or(i64::MAX),
+                    ));
+                }
                 publish |= report.merged > 0;
             }
         }

@@ -2841,6 +2841,8 @@ impl Backend for ApiBackend {
             &inventory.workers,
             &inventory.agents,
         ));
+        // REQ: DSC-906 (T31.2) — the CMDB at a cap or failing to write: degraded, DNS unaffected.
+        reasons.extend(crate::health::cmdb_reasons(&self.src.cmdb.status()));
         // REQ: OPS-014 (ADR-903 §3) — a locked store, or secrets on a data directory that isn't
         // kept: degraded, DNS unaffected.
         reasons.extend(crate::secrets::store::health_reasons(
@@ -3270,6 +3272,41 @@ impl Backend for ApiBackend {
             }
         }
         out
+    }
+
+    /// REQ: DSC-906 (T31.2) — the CMDB's status on this node.
+    fn cmdb_status(&self) -> telltale_api::cmdb_api::CmdbStatus {
+        self.src.cmdb.status()
+    }
+
+    /// REQ: DSC-902 (T31.2) — a page of CIs from the CMDB on this node.
+    fn cmdb_cis(
+        &self,
+        q: &telltale_api::cmdb_api::CmdbQuery,
+    ) -> Result<telltale_api::cmdb_api::CmdbCiPage, Problem> {
+        let db = self.src.cmdb.db_or_503()?;
+        crate::cmdb::view::list(&db, q, self.src.cmdb.level())
+    }
+
+    /// REQ: DSC-902 (T31.2) — one CI with its records.
+    fn cmdb_ci(&self, id: &str) -> Result<telltale_api::cmdb_api::CmdbCiDetail, Problem> {
+        let db = self.src.cmdb.db_or_503()?;
+        crate::cmdb::view::detail(&db, id, i64::try_from(self.now_unix_seconds()).unwrap_or(i64::MAX), self.src.cmdb.level())
+    }
+
+    /// REQ: DSC-903 (T31.2) — the open merge proposals.
+    fn cmdb_proposals(&self) -> Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem> {
+        let db = self.src.cmdb.db_or_503()?;
+        crate::cmdb::view::proposals(&db)
+    }
+
+    /// REQ: DSC-903 (T31.2) — a manual change, on the CMDB's thread.
+    fn cmdb_manual(
+        &self,
+        w: telltale_api::cmdb_api::CmdbWrite,
+    ) -> BoxFuture<Result<telltale_api::cmdb_api::CmdbChange, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        Box::pin(async move { rt.manual(w).await })
     }
 
     // REQ: OBS-010 (T9.6) — what the alert task last saw and sent.

@@ -61,7 +61,7 @@ pub(crate) const HA_ENTITYLESS_TEMPLATE: &str = r"{%- set ns = namespace(devices
 {%- if c[0] == 'mac' -%}{%- set m.macs = m.macs + [c[1] | string] -%}{%- endif -%}
 {%- endfor -%}
 {%- if m.macs -%}
-{%- set ns.devices = ns.devices + [{'name_by_user': device_attr(d, 'name_by_user') or '', 'name': device_attr(d, 'name') or '', 'macs': m.macs, 'area': area_name(d) or ''}] -%}
+{%- set ns.devices = ns.devices + [{'id': d, 'name_by_user': device_attr(d, 'name_by_user') or '', 'name': device_attr(d, 'name') or '', 'macs': m.macs, 'area': area_name(d) or ''}] -%}
 {%- endif -%}
 {%- endif -%}
 {%- endfor -%}
@@ -107,6 +107,8 @@ pub(crate) struct ReadsInput {
     pub(crate) status: Arc<ArcSwap<Vec<DiscoveryRead>>>,
     /// The resolver the reads connect through. `None`: the system's. Tests set their own.
     pub(crate) resolver: Option<Arc<dyn telltale_filter::fetch::Resolve>>,
+    /// REQ: DSC-902 (T31.2) — the CMDB sink: each read is pushed there as its own feed.
+    pub(crate) cmdb: Option<Arc<crate::cmdb::inbox::SinkSlot>>,
 }
 
 // -- parsing (pure) --------------------------------------------------------------------------
@@ -258,6 +260,9 @@ pub(crate) fn all_users(v: &Value, router: &str, now: u64, within_hours: u32) ->
 /// One place a MAC was learned on: the port's table size says how close to the edge it is.
 struct Place {
     port: String,
+    /// REQ: DSC-903 (T31.2) — the switch's device key and the port as UniFi spells it.
+    owner: String,
+    raw: String,
     vlan: Option<u16>,
     port_macs: usize,
     seen: u64,
@@ -300,6 +305,17 @@ pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
         o.name = Some((NameKind::RouterAlias, dev_name.clone()));
         o.name_origin = Some(router.to_owned());
         o.router_lldp = Some(lldp_list(d));
+        // REQ: DSC-903, DSC-902 (T31.2) — UniFi's own device: its serial, its stable id (never a
+        // client's `_id`: UniFi keys a client by MAC), model, type and firmware.
+        let key = unifi_device_key(d, dev_mac);
+        {
+            let h = o.hint_mut();
+            h.device_key = Some(key.clone());
+            h.serial = first_str(d, &["serial"]);
+            h.model = first_str(d, &["model"]);
+            h.role = first_str(d, &["type"]);
+            h.firmware = first_str(d, &["version"]);
+        }
         out.observations.push(o);
         let uplink_port = d
             .get("uplink")
@@ -336,6 +352,8 @@ pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
                 let seen = now.saturating_sub(num(row, "age").unwrap_or(0));
                 let place = Place {
                     port: format!("{dev_name} port {idx}"),
+                    owner: unifi_device_key(d, dev_mac),
+                    raw: format!("port{idx}"),
                     vlan: num(row, "vlan")
                         .filter(|v| *v > 0)
                         .and_then(|v| u16::try_from(v).ok()),
@@ -358,10 +376,18 @@ pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
         let mut o = Observation::new(Source::Router, place.seen);
         o.mac = Some(mac);
         o.port = Some(place.port);
+        o.hint_mut().port_ref = Some((place.owner, place.raw));
         o.vlan = place.vlan;
         out.observations.push(o);
     }
     out
+}
+
+/// REQ: DSC-903 (T31.2) — a UniFi infrastructure device's key: its `_id` in `stat/device`, else its
+/// MAC (the CMDB scopes it with the router). A client's `_id` is never used (UniFi keys a client by
+/// MAC).
+fn unifi_device_key(d: &Value, mac: [u8; 6]) -> String {
+    first_str(d, &["_id"]).unwrap_or_else(|| mac_text(mac))
 }
 
 /// A device's LLDP neighbours as short labels: who it is, and the remote port.
@@ -430,6 +456,9 @@ struct Outcome {
     at: u64,
     observations: Vec<Observation>,
     results: Vec<ReadResult>,
+    /// REQ: DSC-902 (T31.2) — the same observations by read (devices, history, fields), for
+    /// the CMDB: each read is its own source instance.
+    feeds: Vec<(&'static str, Vec<Observation>)>,
 }
 
 /// REQ: DSC-009 — a refused or failed read is reported once per change. [`Reported::changed`] says
@@ -506,6 +535,7 @@ impl Reader {
         while let Ok(out) = self.rx.try_recv() {
             merged |= !out.observations.is_empty();
             inv.apply(&out.observations, now);
+            self.push_to_cmdb(&out, now);
             if let Some(s) = self.state.get_mut(&out.router) {
                 s.in_flight = false;
                 s.consumed_at = s.consumed_at.max(out.at);
@@ -576,7 +606,32 @@ impl Reader {
         let seen = if h.at == 0 { now } else { h.at.min(now) };
         let obs = ha_observations(devices, trackers, seen);
         inv.apply(&obs, now);
+        // REQ: DSC-902 (T31.2) — the Home Assistant poll as the CMDB home_assistant:<router> source.
+        if let Some(s) = self.input.cmdb.as_ref().filter(|s| s.listening()) {
+            s.push(crate::cmdb::adapters::batch_from_observations(
+                &obs,
+                &format!("home_assistant:{}", h.name),
+                i64::try_from(seen).unwrap_or(i64::MAX),
+            ));
+        }
         !obs.is_empty()
+    }
+
+    /// REQ: DSC-902 (T31.2) — each read of a finished set is one feed of the CMDB, a source instance
+    /// of its own (`unifi:<router>#devices`, `#history`, `#fields`; `home_assistant:<router>#devices`),
+    /// so a complete batch of one never marks the records of another missed.
+    fn push_to_cmdb(&self, out: &Outcome, now: u64) {
+        let Some(s) = self.input.cmdb.as_ref().filter(|s| s.listening()) else {
+            return;
+        };
+        let at = i64::try_from(now).unwrap_or(i64::MAX);
+        for (feed, obs) in &out.feeds {
+            let source = match out.router.strip_prefix("ha:") {
+                Some(name) => format!("home_assistant:{name}#{feed}"),
+                None => format!("unifi:{}#{feed}", out.router),
+            };
+            s.push(crate::cmdb::adapters::batch_from_observations(obs, &source, at));
+        }
     }
 
     fn start_unifi(&mut self, su: &SharedUnifi, now: u64) {
@@ -707,6 +762,7 @@ async fn read_unifi_extras(
         at: su.at,
         observations: Vec::new(),
         results: Vec::new(),
+        feeds: Vec::new(),
     };
     let client = match http_client(&su.config, resolver) {
         Ok(c) => c,
@@ -733,6 +789,7 @@ async fn read_unifi_extras(
                 let p = devices(&v, &su.name, now);
                 let ended = ended_of(&p);
                 device_names = p.device_names;
+                out.feeds.push(("devices", p.observations.clone()));
                 out.observations.extend(p.observations);
                 ended
             }
@@ -754,6 +811,7 @@ async fn read_unifi_extras(
             Ok(v) => {
                 let p = all_users(&v, &su.name, now, cfg.within_hours);
                 let ended = ended_of(&p);
+                out.feeds.push(("history", p.observations.clone()));
                 out.observations.extend(p.observations);
                 ended
             }
@@ -772,6 +830,7 @@ async fn read_unifi_extras(
             read: READ_CLIENT_FIELDS,
             ended: ended_of(&p),
         });
+        out.feeds.push(("fields", p.observations.clone()));
         out.observations.extend(p.observations);
     }
     out
@@ -789,11 +848,13 @@ async fn read_ha_entityless(
         at: h.at,
         observations: Vec::new(),
         results: Vec::new(),
+        feeds: Vec::new(),
     };
     let ended = match ha_get(&h.config, &h.token, resolver).await {
         Ok(v) => {
             let p = ha_entityless(&v, now);
             let ended = ended_of(&p);
+            out.feeds.push(("devices", p.observations.clone()));
             out.observations = p.observations;
             ended
         }

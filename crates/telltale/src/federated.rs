@@ -497,6 +497,14 @@ pub(crate) fn rpc_handler(
                 // primary's rows, or a replica's for the primary's reverse heal). Over mTLS only.
                 return crate::secrets::sync::answer_fetch(src, cluster, peer, body).await;
             }
+            if kind == crate::cmdb::replication::KIND_FETCH {
+                // REQ: DSC-906 (ADR-1021) — a full member copies this node's authored CMDB rows (the
+                // designated node answers; any other says so at once). Over mTLS only.
+                if ephemeral {
+                    return Err("an ephemeral member can't read the CMDB".into());
+                }
+                return crate::cmdb::replication::answer_fetch(src, cluster, peer, body).await;
+            }
             if kind == crate::secrets::sync::KIND_ADOPT {
                 // REQ: CLU-015 — a joining full member hands its own secrets to the primary.
                 return crate::secrets::sync::answer_adopt(src, cluster, peer, body).await;

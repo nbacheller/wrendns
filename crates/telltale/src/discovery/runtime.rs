@@ -86,6 +86,9 @@ pub(crate) struct Runtime {
     /// The poller's configuration while it runs (the Test button reads agents from it).
     test_ctx: ArcSwap<Option<Arc<PollerCtx>>>,
     running: Mutex<Option<Running>>,
+    /// REQ: DSC-902 (T31.2) — where the CMDB sink is: the inventory thread pushes the SNMP,
+    /// UniFi and Home Assistant reads there (and nothing, while the CMDB does not run here).
+    cmdb: ArcSwap<Option<Arc<crate::cmdb::inbox::SinkSlot>>>,
     /// The last generation handed out by [`Runtime::next_generation`].
     generation: AtomicU64,
     /// The newest generation applied so far. A reconcile that started earlier than it is skipped.
@@ -108,6 +111,7 @@ impl Default for Runtime {
             agents: Arc::new(AgentsBoard::default()),
             test_ctx: ArcSwap::from_pointee(None),
             running: Mutex::new(None),
+            cmdb: ArcSwap::from_pointee(None),
             generation: AtomicU64::new(0),
             applied: Mutex::new(0),
         }
@@ -115,6 +119,11 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    /// REQ: DSC-902 (T31.2) — tells the inventory where the CMDB sink is (once, at start).
+    pub(crate) fn set_cmdb_sink(&self, slot: Arc<crate::cmdb::inbox::SinkSlot>) {
+        self.cmdb.store(Arc::new(Some(slot)));
+    }
+
     /// The status the API shows: enabled, designated, and each worker.
     pub(crate) fn status(&self) -> DiscoveryStatus {
         let (enabled, designated, node) = (**self.header.load()).clone();
@@ -242,7 +251,9 @@ impl Runtime {
             requests: Arc::clone(&self.requests),
             workers_stop: Arc::clone(&stop),
             snmp,
+            cmdb: (**self.cmdb.load()).clone(),
             reads: shared.map(|share| super::reads::ReadsInput {
+                cmdb: (**self.cmdb.load()).clone(),
                 share,
                 cfg: super::reads::ReadsConfig::of(&cfg.discovery),
                 status: Arc::clone(&self.reads),

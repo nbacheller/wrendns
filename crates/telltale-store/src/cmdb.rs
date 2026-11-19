@@ -671,6 +671,19 @@ impl Ops<'_> {
         after: Option<&str>,
         limit: i64,
     ) -> Result<Vec<CiRow>> {
+        self.ci_list_in(ty, false, q, after, limit)
+    }
+
+    /// [`Ops::ci_list`], optionally leaving the interfaces out (the default list shows a device
+    /// with its interfaces under it).
+    pub fn ci_list_in(
+        &self,
+        ty: Option<&str>,
+        top_level: bool,
+        q: Option<&str>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<CiRow>> {
         let mut sql = String::from(
             "SELECT c.id, c.ty, c.kind, c.name, c.parent, c.flags, c.first_seen FROM ci c WHERE 1 = 1",
         );
@@ -679,7 +692,9 @@ impl Ops<'_> {
             sql.push_str(" AND c.ty = ?");
             args.push(SqlValue::Text(t.to_owned()));
         }
-        // A device or other top-level CI by default: a nic is shown inside its device.
+        if top_level {
+            sql.push_str(" AND c.ty != 'interface'");
+        }
         if let Some(a) = after {
             sql.push_str(" AND c.id > ?");
             args.push(SqlValue::Text(a.to_owned()));
@@ -1581,6 +1596,26 @@ impl Ops<'_> {
                 )
                 .optional()?;
             if local.is_some_and(|l| l >= (row.e, row.s)) {
+                continue;
+            }
+            // A tombstone at least as new as the row says it was deleted: it stays deleted.
+            let pk_text = keys
+                .iter()
+                .map(|k| match row.d.get(*k) {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            let tomb: Option<(i64, i64)> = self
+                .c
+                .query_row(
+                    "SELECT epoch, seq FROM tomb WHERE tbl = ?1 AND pk = ?2",
+                    params![table, pk_text],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if tomb.is_some_and(|t| t >= (row.e, row.s)) {
                 continue;
             }
             if row.del {

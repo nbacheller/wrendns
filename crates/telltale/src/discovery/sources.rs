@@ -183,6 +183,8 @@ pub(crate) fn ha_observations(
             o.mac = Some(mac);
             o.ip = trackers.get(mac_text).copied().map(IpAddr::V4);
             o.name = Some((kind, d.name.clone()));
+            // REQ: DSC-903 (R4) — Home Assistant's device id joins a device's MACs.
+            o.hint_mut().device_key = d.id.clone();
             out.push(o);
         }
     }

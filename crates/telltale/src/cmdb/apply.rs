@@ -541,9 +541,8 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             .filter_map(|r| comp.recs.get(r))
             .collect();
         // The survivor: the pinned device, else the oldest candidate nobody else took.
-        let mut survivor: Option<String> = None;
-        if let Some(f) = &plan.forced {
-            survivor = Some(f.clone());
+        let survivor: Option<String> = if let Some(f) = &plan.forced {
+            Some(f.clone())
         } else {
             let mut avail: Vec<CiRow> = Vec::new();
             for c in &plan.cands {
@@ -556,8 +555,8 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
                 }
             }
             avail.sort_by(|a, b| (a.first_seen, &a.id).cmp(&(b.first_seen, &b.id)));
-            survivor = avail.first().map(|c| c.id.clone());
-        }
+            avail.first().map(|c| c.id.clone())
+        };
         let first_seen = members
             .iter()
             .map(|r| r.first_seen)

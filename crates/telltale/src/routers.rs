@@ -807,7 +807,7 @@ pub(crate) const HA_TEMPLATE: &str = r"{%- set ns = namespace(devices=[], tracke
 {%- if c[0] == 'mac' -%}{%- set m.macs = m.macs + [c[1] | string] -%}{%- endif -%}
 {%- endfor -%}
 {%- if m.macs -%}
-{%- set ns.devices = ns.devices + [{'name_by_user': device_attr(d, 'name_by_user') or '', 'name': device_attr(d, 'name') or '', 'macs': m.macs, 'area': area_name(d) or ''}] -%}
+{%- set ns.devices = ns.devices + [{'id': d, 'name_by_user': device_attr(d, 'name_by_user') or '', 'name': device_attr(d, 'name') or '', 'macs': m.macs, 'area': area_name(d) or ''}] -%}
 {%- endif -%}
 {%- endfor -%}
 {%- for s in states.device_tracker -%}
@@ -820,6 +820,9 @@ pub(crate) const HA_TEMPLATE: &str = r"{%- set ns = namespace(devices=[], tracke
 /// One device Home Assistant names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HaDevice {
+    /// REQ: DSC-903 (T31.2) — the registry's device id: a key that survives a MAC change (R4).
+    /// Absent from an older answer.
+    pub(crate) id: Option<String>,
     pub(crate) macs: Vec<String>,
     /// The name and whether a person gave it (`name_by_user`) or an integration did.
     pub(crate) name: String,
@@ -846,14 +849,17 @@ pub(crate) fn ha_devices(v: &Value) -> (Vec<HaDevice>, HashMap<String, Ipv4Addr>
                     if macs.is_empty() {
                         return None;
                     }
+                    let id = first_str(d, &["id"]);
                     if let Some(n) = first_str(d, &["name_by_user"]) {
                         return Some(HaDevice {
+                            id,
                             macs,
                             name: n,
                             curated: true,
                         });
                     }
                     first_str(d, &["name"]).map(|n| HaDevice {
+                        id,
                         macs,
                         name: n,
                         curated: false,
@@ -1883,11 +1889,13 @@ mod tests {
             devices,
             vec![
                 HaDevice {
+                    id: None,
                     macs: vec!["a8:03:2a:00:00:01".into()],
                     name: "Porch light".into(),
                     curated: true
                 },
                 HaDevice {
+                    id: None,
                     macs: vec!["a8:03:2a:00:00:02".into(), "a8:03:2a:00:00:03".into()],
                     name: "Living Room TV".into(),
                     curated: false

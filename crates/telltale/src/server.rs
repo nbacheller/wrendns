@@ -999,6 +999,7 @@ async fn start_http(
         // own copy is audited, never `cfg`, which may already hold what the API stored.
         let file = sources.file_config.load_full();
         audit_discovery(sources, None, &file);
+        audit_cmdb(sources, None, &file);
         // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
         crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
         let app = http::api_router(Arc::clone(sources), Arc::clone(&auth));
@@ -1287,6 +1288,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         traces,
         secrets,
         discovery: Arc::default(),
+        cmdb: Arc::default(),
         guarded: crate::guarded::Slot::new(),
         geoip: Arc::new(crate::geoip::GeoIp::new(
             crate::geoip::Options::from_env(),
@@ -1295,7 +1297,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     });
     // REQ: DSC-001 (T25.2, ADR-907) — the network inventory starts here only if `[discovery]` is
     // on and this node is the designated one (ephemeral pods and witnesses never are).
+    // REQ: DSC-902 (T31.2) — the inventory pushes what it reads to the CMDB sink, when one runs.
+    sources.discovery.set_cmdb_sink(sources.cmdb.sink());
     reconcile_discovery(&sources, &pipeline, &cfg);
+    // REQ: DSC-901 (T31.2, ADR-1005 section 1) — the CMDB starts here only if `[cmdb]` is on and this
+    // node is the one `[discovery]` designates (even when discovery itself is off).
+    reconcile_cmdb(&sources, &pipeline, &cfg);
     // REQ: OPS-014, API-014 (ADR-903 §3) — the store and the node key, at start on full members
     // (the key made on the first one, while the table is empty), so a missing or unreadable key
     // shows in the log at once; then every 30 s it retries a locked store, and a locked replica
@@ -1310,6 +1317,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         // REQ: CLU-015 (ADR-903 §6) — the secrets replication task: publishes this node's head,
         // pulls from the primary, refills a locked primary, purges after a removal.
         crate::secrets::sync::spawn(Arc::clone(&sources), http_stopped.clone());
+        // REQ: DSC-906 (T31.2, ADR-1021) — the CMDB's authored data on the standby nodes.
+        crate::cmdb::replication::spawn(Arc::clone(&sources), http_stopped.clone());
     }
     http::serve_peers(&sources);
     // REQ: OBS-025 — device identification, on a thread of its own.
@@ -1524,6 +1533,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: DSC-002 (T25.3) — the network inventory and its workers stop, and the inventory is saved.
     let discovery = Arc::clone(&sources.discovery);
     let _ = tokio::task::spawn_blocking(move || discovery.stop()).await;
+    // REQ: DSC-906 (T31.2) — the CMDB flushes its last-seen times and stops.
+    let cmdb = Arc::clone(&sources.cmdb);
+    let _ = tokio::task::spawn_blocking(move || cmdb.stop()).await;
     // REQ: CLU-009 — a resolver pod leaves the cluster now rather than showing as down until
     // it expires (2 s at most; if the primary can't be reached, expiry still cleans up).
     // Before the stop signal: it closes the stream to the primary that the leave goes over.
@@ -1748,8 +1760,10 @@ async fn reload(
     if !from_api {
         audit_reload(sources, files, current, &new);
         audit_discovery(sources, Some(&current.discovery), &new);
+        audit_cmdb(sources, Some(&current.cmdb), &new);
     }
     reconcile_discovery(sources, pipeline, &new);
+    reconcile_cmdb(sources, pipeline, &new);
     if let Some(a) = &sources.anomalies {
         a.reconfigure(&new);
     }
@@ -1835,6 +1849,106 @@ fn audit_discovery(
             &detail,
         );
     });
+}
+
+/// REQ: DSC-901 (T31.2, ADR-1005 section 1) — the `[cmdb]` section is audited when the files set it: at
+/// start (`old` is `None`), and on a reload that changes it, as `cmdb.config_changed` with
+/// `source = file`. Changes made through the API are audited by the API with their author.
+fn audit_cmdb(sources: &http::Sources, old: Option<&telltale_config::CmdbConfig>, new: &Config) {
+    let Some(auth) = sources.auth.get() else {
+        return;
+    };
+    let changed = match old {
+        Some(o) => *o != new.cmdb,
+        None => !new.cmdb.is_default(),
+    };
+    if !changed {
+        return;
+    }
+    let detail = serde_json::json!({
+        "source": "file",
+        "cmdb": serde_json::to_value(&new.cmdb).unwrap_or(serde_json::Value::Null),
+    });
+    let auth = Arc::clone(auth);
+    tokio::task::spawn_blocking(move || {
+        auth.record(
+            &telltale_api::auth::Actor::system("config"),
+            "cmdb.config_changed",
+            "cmdb",
+            &detail,
+        );
+    });
+}
+
+/// REQ: DSC-901, DSC-906 (T31.2) — the CMDB starts, stops or restarts to match `cfg`, on this node
+/// only when it is the one `[discovery]` designates. Called at start-up and on every reload.
+fn reconcile_cmdb(sources: &http::Sources, pipeline: &Pipeline, cfg: &Config) {
+    let own = crate::discovery::runtime::own_of(sources.cluster.as_deref(), cfg);
+    let data_dir = std::path::PathBuf::from(cfg.node.data_dir.as_str());
+    let (rt, cfg) = (Arc::clone(&sources.cmdb), cfg.clone());
+    let telemetry = Arc::clone(&pipeline.telemetry);
+    let workloads = Arc::clone(&pipeline.workloads);
+    let cluster = sources.cluster.clone();
+    let feeds = crate::cmdb::thread::Feeds {
+        routers: Some(Arc::clone(&pipeline.router_leases)),
+        mdns: Some(Arc::clone(&pipeline.mdns_names)),
+        networks: Some(Arc::clone(&pipeline.router_networks)),
+        clients: Some(Arc::new(move |now| {
+            telemetry
+                .aggregates()
+                .last_hour_counts(u64::try_from(now).unwrap_or(0))
+        })),
+        workloads: Some(Arc::new(move || {
+            workloads
+                .snapshot()
+                .workloads()
+                .iter()
+                .map(|w| crate::cmdb::adapters::WorkloadRow {
+                    namespace: w.namespace.to_string(),
+                    kind: w.kind.to_string(),
+                    name: w.name.to_string(),
+                    addresses: w
+                        .pods
+                        .iter()
+                        .flat_map(|p| p.ips.iter().map(ToString::to_string))
+                        .collect(),
+                })
+                .collect()
+        })),
+        nodes: cluster.map(|c| -> Arc<dyn Fn() -> Vec<crate::cmdb::adapters::NodeRow> + Send + Sync> {
+            Arc::new(move || {
+                let mut rows: Vec<crate::cmdb::adapters::NodeRow> = c
+                    .members()
+                    .into_iter()
+                    .map(|m| crate::cmdb::adapters::NodeRow {
+                        id: m.node_id,
+                        address: m.advertise.first().cloned().unwrap_or_default(),
+                        primary: m.primary,
+                        version: m.version,
+                    })
+                    .collect();
+                let me = c.identity.meta.node_id.clone();
+                if !rows.iter().any(|r| r.id == me) {
+                    rows.push(crate::cmdb::adapters::NodeRow {
+                        id: me,
+                        address: String::new(),
+                        primary: c.is_primary(),
+                        version: crate::build_info::VERSION.to_owned(),
+                    });
+                }
+                rows
+            })
+        }),
+        neighbours: true,
+        own_networks: true,
+        ifindex_root: None,
+    };
+    // REQ: DSC-901 — the generation is taken here, in reload order; the blocking task applies it.
+    let generation = rt.next_generation();
+    // A stopping CMDB flushes and joins its thread: that happens off the runtime's workers.
+    drop(tokio::task::spawn_blocking(move || {
+        rt.reconcile(generation, &cfg, &data_dir, &own, feeds);
+    }));
 }
 
 /// REQ: DSC-001, DSC-002 (T25.2, T25.3, ADR-907, ADR-928) — the network inventory starts, stops or

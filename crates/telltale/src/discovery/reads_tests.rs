@@ -411,6 +411,7 @@ fn input(shared: Shared, cfg: ReadsConfig) -> (ReadsInput, Arc<ArcSwap<Shared>>)
             cfg,
             status: Arc::new(ArcSwap::from_pointee(Vec::new())),
             resolver: None,
+            cmdb: None,
         },
         share,
     )
@@ -659,6 +660,7 @@ fn shared_ha(port: u16, at: u64) -> SharedHa {
         token: Arc::new(zeroize::Zeroizing::new("ha-token".into())),
         raw: Arc::new((
             vec![crate::routers::HaDevice {
+                id: None,
                 macs: vec!["02:00:00:00:00:01".into()],
                 name: "Porch light".into(),
                 curated: true,

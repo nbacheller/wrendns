@@ -124,6 +124,8 @@ pub(crate) struct Sources {
     /// REQ: DSC-001, DSC-002 (T25.2, T25.3) — the network inventory on this node: its thread and
     /// workers, started only where `[discovery]` says this node runs them.
     pub(crate) discovery: Arc<crate::discovery::runtime::Runtime>,
+    /// REQ: DSC-901 (T31.2) — the CMDB, started only where `[cmdb]` and `[discovery]`'s gate say.
+    pub(crate) cmdb: Arc<crate::cmdb::runtime::Runtime>,
     /// REQ: API-902 (T27.13) — the guarded-changes engine, once the API has opened `state.db`.
     pub(crate) guarded: crate::guarded::Slot,
     /// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database on this node: fetched only when an
@@ -787,6 +789,8 @@ pub(crate) fn render(src: &Sources) -> String {
     render_maintenance(src, &mut w);
     // REQ: DSC-014 (T25.3) — the discovery workers, when this node runs them.
     src.discovery.render_metrics(&mut w);
+    // REQ: DSC-906 (T31.2) — the CMDB's series, when this node runs it.
+    src.cmdb.render_metrics(&mut w);
     crate::simulate::render(&mut w);
     src.identify.render(&mut w);
     // REQ: FLT-017 — the workload table's size, age, and the watcher's errors.
