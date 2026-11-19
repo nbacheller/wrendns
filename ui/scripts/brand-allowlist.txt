@@ -2,3 +2,4 @@
 colour | src/lib/icons/map.ts | export const inkFor | the letter on another brand's mark, in that brand's own colour (ADR-167): dark or white for contrast, not a WrenDNS colour
 gradient | src/lib/components/Topology.svelte | repeating-linear-gradient(45deg | the maintenance key's hatch: a stripe pattern matching the SVG pattern on the nodes, not a colour gradient
 gradient | src/pages/Heatmap.svelte | repeating-linear-gradient(135deg | the hatch for buckets with no data: a stripe pattern, not a colour gradient
+colour | src/lib/flock.ts | const DAY = | the flock's Day values the server fills in for a group with no colour (ADR-1040), read so the theme's own token replaces them
