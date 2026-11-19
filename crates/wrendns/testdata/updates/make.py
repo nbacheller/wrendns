@@ -37,7 +37,7 @@ index = {
 }
 data = (json.dumps(index, indent=2) + "\n").encode()
 open(os.path.join(here, "releases.json"), "wb").write(data)
-open(os.path.join(here, "releases.json.minisig"), "w").write(sign(data, "releases.json"))
+open(os.path.join(here, "releases.json.minisig"), "w", newline="\n").write(sign(data, "releases.json"))
 open(os.path.join(here, "releases-tampered.json"), "wb").write(data.replace(b"edge.60", b"edge.99"))
-open(os.path.join(here, "test.pub"), "w").write(base64.b64encode(b"Ed" + key_id + pk).decode() + "\n")
+open(os.path.join(here, "test.pub"), "w", newline="\n").write(base64.b64encode(b"Ed" + key_id + pk).decode() + "\n")
 print("ok")
