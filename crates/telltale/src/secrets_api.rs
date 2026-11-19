@@ -290,6 +290,47 @@ fn stamp_key(s: SecretStamp) -> (u64, u64) {
     (s.epoch, s.seq)
 }
 
+/// The warnings for `with_members`: what a full member lacks, holds older or newer, can't read,
+/// or still holds after the secret was deleted.
+fn member_warnings(st: &SecretsStatus, roster: &[RosterNode]) -> Vec<String> {
+    fn held(n: &RosterNode) -> Option<Vec<&SecretMeta>> {
+        n.items
+            .as_ref()
+            .map(|v| v.iter().filter(|i| i.set).collect())
+    }
+    let mut warnings = Vec::new();
+    for item in st.items.iter().filter(|i| i.set) {
+        for n in &item.nodes {
+            let w = match n.state.as_str() {
+                "missing" => format!("`{}` is missing on {}", item.name, n.node),
+                "behind" => format!("{} holds an older version of `{}`", n.node, item.name),
+                "unreadable" => format!(
+                    "{} holds `{}` but can't read it (another key made it, or it is damaged)",
+                    n.node, item.name
+                ),
+                "ahead" => format!(
+                    "{} holds a newer version of `{}` than this list (the list is stale)",
+                    n.node, item.name
+                ),
+                _ => continue,
+            };
+            warnings.push(w);
+        }
+    }
+    // A member still holding a name the list no longer has set (deleted on the primary).
+    for n in roster.iter().filter(|n| n.kind == MemberKind::Full) {
+        for m in held(n).unwrap_or_default() {
+            if !st.items.iter().any(|i| i.set && i.name == m.name) {
+                warnings.push(format!(
+                    "{} still holds `{}`, which is deleted or not in this list",
+                    n.label, m.name
+                ));
+            }
+        }
+    }
+    warnings
+}
+
 /// REQ: API-015, CLU-002 (T24.42) - the list every node shows: for each stored secret, every full
 /// member of the cluster with the stamp it holds and whether it is `applied`, `unreadable`,
 /// `behind`, `ahead`, `missing` or `unknown`, plus the members, the full ones that did not answer
@@ -370,21 +411,7 @@ pub(crate) fn with_members(mut st: SecretsStatus, roster: &[RosterNode]) -> Secr
         .filter(|m| m.kind == "full" && m.state == "unknown")
         .map(|m| m.node.clone())
         .collect();
-    let mut warnings = Vec::new();
-    for item in st.items.iter().filter(|i| i.set) {
-        for n in &item.nodes {
-            let w = match n.state.as_str() {
-                "missing" => format!("`{}` is missing on {}", item.name, n.node),
-                "behind" => format!("{} holds an older version of `{}`", n.node, item.name),
-                "unreadable" => format!(
-                    "{} holds `{}` but can't read it (another key made it, or it is damaged)",
-                    n.node, item.name
-                ),
-                _ => continue,
-            };
-            warnings.push(w);
-        }
-    }
+    let warnings = member_warnings(&st, roster);
     st.warnings = warnings;
     st
 }

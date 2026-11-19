@@ -542,16 +542,14 @@ fn counting_handler(
 fn api_013_a_failed_primary_router_read_is_cached() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let handler = counting_handler("router_view", Arc::clone(&count), false);
-    let started = std::time::Instant::now();
     let reads = router_reads(handler);
-    let _ = started;
     for v in &reads[..3] {
         assert_eq!(v["missingNodes"].as_array().map(Vec::len), Some(1), "{v}");
     }
     assert_eq!(
         count.load(std::sync::atomic::Ordering::SeqCst),
         1,
-        "four reads, one call to the away primary"
+        "three reads, one call to the away primary"
     );
 }
 
@@ -741,6 +739,17 @@ fn api_015_t24_42_the_list_is_the_same_on_every_node() {
         rows
     };
     assert_eq!(sorted(&from_one), sorted(&from_two));
+    let members = |s: &SecretsStatus| {
+        let mut rows: Vec<(String, String, String, u32)> = s
+            .members
+            .iter()
+            .map(|m| (m.node.clone(), m.kind.clone(), m.state.clone(), m.held))
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(members(&from_one), members(&from_two));
+    assert_eq!(from_one.warnings.len(), from_two.warnings.len());
     assert!(from_one.warnings.is_empty() && from_one.missing_nodes.is_empty());
 }
 
@@ -814,4 +823,35 @@ fn api_015_t24_42_a_member_that_does_not_answer_is_unknown() {
         .find(|m| m["node"] == "k8s")
         .unwrap();
     assert_eq!(primary["state"], "unknown", "{v}");
+}
+
+/// REQ: API-015 (T24.42) - an `ahead` member warns that the list is stale, and a member still
+/// holding a name the list no longer has set is named.
+#[test]
+fn api_015_t24_42_ahead_and_deleted_secrets_warn() {
+    use crate::secrets_api::MemberKind::Full;
+    let canon = SecretsStatus {
+        items: vec![meta("unifi", 3, "readable")],
+        ..SecretsStatus::default()
+    };
+    let out = crate::secrets_api::with_members(
+        canon,
+        &[
+            roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
+            roster(
+                "node-b",
+                Full,
+                Some(vec![
+                    meta("unifi", 4, "readable"),
+                    meta("gone", 1, "readable"),
+                ]),
+            ),
+        ],
+    );
+    let w = out.warnings.join(
+        "
+",
+    );
+    assert!(w.contains("node-b holds a newer version of `unifi`"), "{w}");
+    assert!(w.contains("node-b still holds `gone`"), "{w}");
 }

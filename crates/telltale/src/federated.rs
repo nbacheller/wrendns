@@ -898,6 +898,7 @@ pub(crate) struct Federated {
     /// seconds so one page load or map snapshot makes one call (and waits once while the primary
     /// is away); shared by every handle.
     router_view: Arc<Mutex<RouterViewCache>>,
+    secrets_since: Arc<Mutex<crate::health::SecretsSince>>,
 }
 
 /// When the primary was last asked for its router view, whom, and what it answered (`None`: it
@@ -920,6 +921,19 @@ impl MapPeers {
         Self {
             cache: Arc::new(telltale_api::map_api::PeerCache::new(now)),
             demand: Arc::new(telltale_api::map_api::Demand::new(now)),
+        }
+    }
+}
+
+/// Two roster members never share a label (pods on one site): the node ID tells them apart.
+fn unique_labels(roster: &mut [(String, crate::secrets_api::RosterNode)]) {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for (_, r) in roster.iter() {
+        *counts.entry(r.label.clone()).or_default() += 1;
+    }
+    for (id, r) in roster.iter_mut() {
+        if counts.get(&r.label).copied().unwrap_or(0) > 1 {
+            r.label.clone_from(id);
         }
     }
 }
@@ -958,6 +972,7 @@ impl Federated {
             only: None,
             map: Arc::new(MapPeers::new()),
             router_view: Arc::new(Mutex::new(None)),
+            secrets_since: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -979,6 +994,7 @@ impl Federated {
             only: Some(Only { me, peers }),
             map: Arc::clone(&self.map),
             router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
         }
     }
 
@@ -1456,6 +1472,7 @@ impl Backend for Federated {
             only: Some(only),
             map: Arc::clone(&self.map),
             router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
         }))
     }
     fn local(&self) -> Option<Shared> {
@@ -1477,6 +1494,7 @@ impl Backend for Federated {
             only: self.only.clone(),
             map: Arc::clone(&self.map),
             router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
         }))
     }
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
@@ -2542,9 +2560,10 @@ impl Backend for Federated {
         reasons.extend(crate::health::cluster_reasons(&view));
         // REQ: API-015 (T24.42) - a full member without the cluster's stored secrets.
         {
-            static SINCE: std::sync::LazyLock<Mutex<crate::health::SecretsSince>> =
-                std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
-            let mut since = SINCE.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut since = self
+                .secrets_since
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             reasons.extend(crate::health::secret_reasons(
                 &view,
                 &mut since,
@@ -3466,15 +3485,16 @@ impl Backend for Federated {
                 },
             ));
         }
-        // A live member the registry doesn't list is treated as a resolver pod (as the RPC
-        // handler does), unless it is the primary (a replica's registry can lag its join).
+        // A live member the registry doesn't list is a resolver pod (as the RPC handler treats
+        // it), unless it is the primary or eligible (a registry can lag a join): then it is
+        // asked like any full member, and `unknown` if it doesn't answer.
         for m in &members {
             if !roster.iter().any(|(id, _)| *id == m.node_id) {
                 roster.push((
                     m.node_id.clone(),
                     RosterNode {
                         label: member_label(m),
-                        kind: if m.primary {
+                        kind: if m.primary || m.eligible {
                             MemberKind::Full
                         } else {
                             MemberKind::Resolver
@@ -3484,6 +3504,8 @@ impl Backend for Federated {
                 ));
             }
         }
+        // Two members never share a label (pods on one site): the node ID tells them apart.
+        unique_labels(&mut roster);
         let reachable = self.cluster.reachable_peers();
         let reads: Vec<(String, Read)> = roster
             .iter()

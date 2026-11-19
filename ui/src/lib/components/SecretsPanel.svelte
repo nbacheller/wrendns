@@ -120,7 +120,7 @@
           <p class="notice warn small" data-testid="secrets-warning">{w}</p>
         {/each}
         <ul class="members small">
-          {#each status.members ?? [] as m (m.node)}
+          {#each status.members ?? [] as m, i (`${m.node}#${i}`)}
             <li data-testid="secrets-member" data-kind={m.kind} data-state={m.state}>
               <strong>{m.node}</strong>
               {#if m.state === 'not_held'}
@@ -171,7 +171,7 @@
                     {/each}
                   </td>
                   <td class="small">
-                    {#each s.nodes as n (n.node)}
+                    {#each s.nodes as n, j (`${n.node}#${j}`)}
                       <div data-testid="secret-holder" data-state={n.state || (n.applied ? 'applied' : 'missing')}>
                         {n.node}
                         {#if n.state === 'unknown'}<span class="badge">unknown</span>
