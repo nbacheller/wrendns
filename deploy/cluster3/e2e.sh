@@ -11,7 +11,8 @@
 #      then reads back a non-default [discovery] value (48 MiB);
 #   e2. (T24.41) a fake UniFi read with a stored key by the primary only: both replicas list its networks
 #       (VLAN, domain), its clients and its state (labelled as read by the primary), the fake source saw
-#       no poll from a replica, and a paused primary is named in missingNodes, not an error;
+#       no poll from a replica, and a paused primary is named in missingNodes, not an error
+#       (ONLY=routers stops after it);
 #   f. queries sent to each node show up in the primary's query log, labelled by node, and in
 #      the per-node top clients;
 #   g. upstream #7 on the 2-CPU replica: with the primary paused, 20 concurrent reads each return
@@ -406,6 +407,7 @@ primary_linked replica-a || bad "replica-a doesn't see the primary again after t
 call primary DELETE /api/v1/routers/fake-udm
 [ "$RS" = 200 ] || [ "$RS" = 204 ] || bad "removing the fake UniFi answered $RS: $RB"
 pass "both replicas list the router's networks, clients and state; only the primary polled; a paused primary is named, not an error"
+[ "${ONLY:-}" != routers ] || { echo "== all checks passed (ONLY=routers: the bring-up and a to e2)"; exit 0; }
 
 step "f. queries sent to each node show up on the primary, labelled by node"
 for n in "${NODES[@]}"; do
