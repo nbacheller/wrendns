@@ -1664,6 +1664,46 @@
       "example": "The Kids profile applies to the kids' VLAN and to Maya's iPad, has Basic filtering, Safe Search for Google and YouTube, and a bedtime schedule.",
       "caution": "A device can be in several profiles: the lists are the union and the other settings come from the profile with the higher priority. A device with a private Wi-Fi address may stop matching when the address changes: select it by address or router name instead.",
       "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "cmdb",
+      "title": "CMDB: one record for each thing on your network",
+      "term": "Configuration item (CI)",
+      "summary": "The CMDB keeps one record for each real thing on your network (a laptop, a switch, a camera, a VLAN) and remembers what every source said about it: your router, a managed switch, Home Assistant, the neighbour table, the clients that asked DNS, and your own configuration.",
+      "when": "Turn it on to see everything about a device in one place, and to correct a device the sources get wrong. Leave it off if you don't want TelltaleDNS to keep a record of your devices.",
+      "example": "Your laptop has a Wi-Fi and an Ethernet address. The router sees two clients and Home Assistant knows one device with two MAC addresses. The CMDB shows one device with two interfaces, and the record each source made.",
+      "caution": "It only reads: it never writes to a router or a device, and it never changes a DNS answer, a filtering decision or a device's name in DNS. Only one node runs it, the node the network inventory is designated to, even when the inventory itself is off. It can't be on at privacy level 2 or 3; at level 1 names are hashed. Only an administrator changes its settings.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "cmdb-sources",
+      "title": "What each source said",
+      "term": "Source record",
+      "summary": "A source record is what one source said about one thing, kept as it said it: the router's client, the switch's port, Home Assistant's device, the neighbour table's entry, a query the device made, a name in your configuration. Records are matched to the item they describe by MAC address, serial number or a stable device key.",
+      "when": "Open an item and read its sources side by side when two sources disagree, for example a different name for one laptop.",
+      "example": "The router calls a device \"anna-laptop\", Home Assistant calls it \"Anna's MacBook\" and mDNS says \"macbook.local\". All three records are kept; the item shows its best name and each source's own.",
+      "caution": "A source that stops reporting a thing doesn't remove it at once: its record is marked absent after two missed reports and removed after a week (imports after 30 days). A record that no source confirms makes an unconfirmed item.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "cmdb-proposals",
+      "title": "Merge proposals",
+      "term": "Merge proposal",
+      "summary": "When the sources point at two devices for one record, or two devices share a host name on one network, the CMDB never guesses: it keeps both devices and proposes the merge. A proposal changes nothing until a person applies it.",
+      "when": "Look at the proposals after you add a router or a switch, when new records arrive that name the same thing in different ways.",
+      "example": "A switch's record has a MAC that belongs to one device and a serial number that belongs to another. Both devices stay, and a proposal asks whether they are one.",
+      "caution": "A host name match alone is only a proposal: two phones can share a name on one VLAN. Merging moves the records and leaves the old id as an alias that redirects for 90 days.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "cmdb-changes",
+      "title": "Fixing a wrong link",
+      "term": "Link, unlink, merge, split",
+      "summary": "Move a record to another device, unlink it, merge two devices, or split records out of one. Each shows a preview of the records that would move before anything is written, and each stays after the next report: your decision is kept.",
+      "when": "A record is on the wrong device, or one thing is shown as two, or two things as one.",
+      "example": "A printer's mDNS record attached to the wrong device. Unlink it: it will not be matched to that device again and stands on its own, or Move it to the printer's own item.",
+      "caution": "A MAC address identifies an interface, so moving or unlinking a record with a MAC moves the whole interface with every record of that MAC. Operators and admins may do this; nothing here changes the network.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
     }
   ]
 }

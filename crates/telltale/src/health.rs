@@ -81,6 +81,46 @@ pub(crate) fn discovery_reasons(
     out
 }
 
+/// REQ: DSC-906 (T31.2, ADR-1005 section 13) — the CMDB dropping things at a cap, or failing to write, is
+/// degraded. It never makes DNS unhealthy: the CMDB is not on the query path (CLU-004).
+pub(crate) fn cmdb_reasons(s: &telltale_api::cmdb_api::CmdbStatus) -> Vec<HealthReason> {
+    let mut out = Vec::new();
+    if !s.running {
+        return out;
+    }
+    if s.dropped.ci > 0 {
+        out.push(reason(
+            DEGRADED,
+            "cmdb_ci_cap",
+            format!(
+                "the CMDB refused {} new CIs: it holds the most it keeps and every one is authored. DNS is unaffected",
+                s.dropped.ci
+            ),
+            "#/cmdb",
+        ));
+    }
+    if s.dropped.record > 0 || s.dropped.batch > 0 {
+        out.push(reason(
+            DEGRADED,
+            "cmdb_dropping",
+            format!(
+                "the CMDB dropped {} records and {} batches at its caps. DNS is unaffected",
+                s.dropped.record, s.dropped.batch
+            ),
+            "#/cmdb",
+        ));
+    }
+    if let Some(e) = &s.last_error {
+        out.push(reason(
+            DEGRADED,
+            "cmdb_failing",
+            format!("the CMDB's last error: {e}. DNS is unaffected"),
+            "#/cmdb",
+        ));
+    }
+    out
+}
+
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
         level: level.to_owned(),

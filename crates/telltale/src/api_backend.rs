@@ -2846,6 +2846,8 @@ impl Backend for ApiBackend {
             &inventory.workers,
             &inventory.agents,
         ));
+        // REQ: DSC-906 (T31.2) — the CMDB at a cap or failing to write: degraded, DNS unaffected.
+        reasons.extend(crate::health::cmdb_reasons(&self.src.cmdb.status()));
         // REQ: OPS-014 (ADR-903 §3) — a locked store, or secrets on a data directory that isn't
         // kept: degraded, DNS unaffected.
         reasons.extend(crate::secrets::store::health_reasons(
@@ -3278,6 +3280,59 @@ impl Backend for ApiBackend {
             }
         }
         out
+    }
+
+    /// REQ: DSC-906 (T31.2) — the CMDB's status on this node.
+    fn cmdb_status(&self) -> telltale_api::cmdb_api::CmdbStatus {
+        self.src.cmdb.status()
+    }
+
+    /// REQ: DSC-902 (T31.2) — a page of CIs from the CMDB on this node.
+    fn cmdb_cis(
+        &self,
+        q: telltale_api::cmdb_api::CmdbQuery,
+    ) -> BoxFuture<Result<telltale_api::cmdb_api::CmdbCiPage, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        Box::pin(async move {
+            let db = rt.db_or_503()?;
+            let level = rt.level();
+            blocking_cmdb(move || crate::cmdb::view::list(&db, &q, level)).await
+        })
+    }
+
+    /// REQ: DSC-902 (T31.2) — one CI with its records.
+    fn cmdb_ci(
+        &self,
+        id: String,
+    ) -> BoxFuture<Result<telltale_api::cmdb_api::CmdbCiDetail, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        let now = i64::try_from(self.now_unix_seconds()).unwrap_or(i64::MAX);
+        Box::pin(async move {
+            let db = rt.db_or_503()?;
+            let level = rt.level();
+            blocking_cmdb(move || crate::cmdb::view::detail(&db, &id, now, level)).await
+        })
+    }
+
+    /// REQ: DSC-903 (T31.2) — the open merge proposals.
+    fn cmdb_proposals(
+        &self,
+    ) -> BoxFuture<Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        Box::pin(async move {
+            let db = rt.db_or_503()?;
+            let level = rt.level();
+            blocking_cmdb(move || crate::cmdb::view::proposals(&db, level)).await
+        })
+    }
+
+    /// REQ: DSC-903 (T31.2) — a manual change, on the CMDB's thread.
+    fn cmdb_manual(
+        &self,
+        w: telltale_api::cmdb_api::CmdbWrite,
+    ) -> BoxFuture<Result<telltale_api::cmdb_api::CmdbChange, Problem>> {
+        let rt = Arc::clone(&self.src.cmdb);
+        Box::pin(async move { rt.manual(w).await })
     }
 
     // REQ: OBS-010 (T9.6) — what the alert task last saw and sent.
@@ -3870,6 +3925,8 @@ impl Backend for ApiBackend {
             ),
             // REQ: DSC-001 (T25.2) — `[discovery]`.
             (ManagedKind::Discovery, "discovery", e.discovery.is_some()),
+            // REQ: DSC-901 (T31.2) — `[cmdb]`.
+            (ManagedKind::Cmdb, "cmdb", e.cmdb.is_some()),
             // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — `[dnssec]`, `[filter]`, `[drill]`.
             (ManagedKind::Dnssec, "dnssec", e.dnssec.is_some()),
             (ManagedKind::Filter, "filter", e.filter.is_some()),
@@ -4955,6 +5012,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Local => crate::managed::LOCAL,
         ManagedKind::Clients => crate::managed::CLIENTS,
         ManagedKind::Discovery => crate::managed::DISCOVERY,
+        ManagedKind::Cmdb => crate::managed::CMDB,
         ManagedKind::Cache => crate::managed::CACHE,
         ManagedKind::Support => crate::managed::SUPPORT,
         ManagedKind::Updates => crate::managed::UPDATES,
@@ -5558,6 +5616,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
             | ManagedKind::UpstreamCheck
@@ -5946,7 +6005,7 @@ fn plan_settings(
     let mut entries = crate::managed::entries(state);
     // REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the first write of `[discovery]` waits until no member
     // runs an older version: an older member can't read the section.
-    if w.kind == ManagedKind::Discovery
+    if matches!(w.kind, ManagedKind::Discovery | ManagedKind::Cmdb)
         && w.body.is_some()
         && crate::settings_kinds::none_stored(&entries, w.kind)
         && let Some(c) = &src.cluster
@@ -5959,9 +6018,16 @@ fn plan_settings(
         // This node is a member of its own cluster, and its own version is the gate's too.
         let me = c.identity.meta.node_id.clone();
         members.push((me, crate::build_info::VERSION.to_owned()));
-        if let Some(problem) =
+        if let Some(mut problem) =
             crate::settings_kinds::members_too_old(&members, crate::forward::DISCOVERY_SINCE)
         {
+            if w.kind == ManagedKind::Cmdb {
+                // REQ: DSC-901 (T31.2) - the same gate, said for `[cmdb]`.
+                problem.detail = problem
+                    .detail
+                    .replace("the network inventory", "the CMDB")
+                    .replace("[discovery]", "[cmdb]");
+            }
             return Err(problem);
         }
     }
@@ -7646,6 +7712,7 @@ fn keep_in_git(
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cmdb => "cmdb",
         ManagedKind::Cache => "cache",
         ManagedKind::Support => "support",
         ManagedKind::Updates => "updates",
@@ -7694,6 +7761,7 @@ fn keep_in_git(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
             | ManagedKind::UpstreamCheck
@@ -9441,4 +9509,14 @@ mod group_content_marker_tests {
         assert_eq!(e.code, Code::AgentNotAllowed);
         assert!(plan_override(&src, &state, &write(None)).is_ok());
     }
+}
+
+/// REQ: DSC-902 (T31.2) - the CMDB's reads are synchronous SQLite; they run on the blocking pool,
+/// never on an async worker.
+async fn blocking_cmdb<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, Problem> + Send + 'static,
+) -> Result<T, Problem> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| Problem::internal(format!("the CMDB read stopped: {e}")))?
 }

@@ -136,6 +136,14 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
             merged.insert("discovery".to_owned(), d);
         }
     }
+    // REQ: CLU-010, DSC-901 — `[cmdb]` is left out at its defaults, as `[discovery]` is.
+    if let Ok(d) = serde_json::to_value(crate::cmdb::CmdbConfig::default()) {
+        if shared.contains_key("cmdb") {
+            merged.entry("cmdb".to_owned()).or_insert(d);
+        } else {
+            merged.insert("cmdb".to_owned(), d);
+        }
+    }
     for (k, v) in shared {
         if NODE_LOCAL.contains(&k.as_str()) {
             continue;

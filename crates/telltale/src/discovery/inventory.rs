@@ -442,6 +442,24 @@ pub(crate) struct ImportRecord {
     pub(crate) label: String,
 }
 
+/// REQ: DSC-902, DSC-903 (T31.2, ADR-1004 section 3) — what a source says beyond the claim the inventory
+/// merges: the keys the CMDB reconciles on (a serial, a stable device key) and a structured place.
+/// The inventory ignores it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Hint {
+    pub(crate) serial: Option<String>,
+    /// A key that survives a MAC change, as the source spells it. The CMDB scopes it with the
+    /// source instance (`<source>|<id>`, R4).
+    pub(crate) device_key: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) role: Option<String>,
+    pub(crate) firmware: Option<String>,
+    pub(crate) hostname: Option<String>,
+    /// Where a client plugs in: the switch's device key (as `device_key`) and the port as the source
+    /// names it.
+    pub(crate) port_ref: Option<(String, String)>,
+}
+
 /// One claim from a source, ready to merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Observation {
@@ -472,6 +490,8 @@ pub(crate) struct Observation {
     pub(crate) first_seen: Option<u64>,
     /// Unix seconds.
     pub(crate) seen: u64,
+    /// REQ: DSC-902 (T31.2) — what only the CMDB reads.
+    pub(crate) hint: Option<Box<Hint>>,
 }
 
 impl Observation {
@@ -492,7 +512,13 @@ impl Observation {
             router_lldp: None,
             first_seen: None,
             seen,
+            hint: None,
         }
+    }
+
+    /// The hint, made if there is none.
+    pub(crate) fn hint_mut(&mut self) -> &mut Hint {
+        self.hint.get_or_insert_with(Box::default)
     }
 }
 

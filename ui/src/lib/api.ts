@@ -157,7 +157,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'cmdb-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -596,6 +596,19 @@ export const api = {
   configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
   // REQ: DSC-014 (T25.3) — the network inventory's status and its discovery workers.
   discoveryStatus: () => get<S['DiscoveryStatus']>('/discovery/status'),
+  // REQ: DSC-906, DSC-902, DSC-903 (T31.2) — the CMDB: its status, a page of CIs, one CI with its records
+  // side by side, the merge proposals, and the manual link, unlink, merge and split (each with a dry
+  // run that previews the records that would move).
+  cmdbStatus: () => get<S['CmdbStatus']>('/cmdb/status'),
+  cmdbCis: (q: { type?: string; q?: string; after?: string; limit?: number } = {}) => get<S['CmdbCiPage']>('/cmdb/cis', q),
+  cmdbCi: (id: string) => get<S['CmdbCiDetail']>(`/cmdb/cis/${encodeURIComponent(id)}`),
+  cmdbProposals: () => get<S['CmdbProposal'][]>('/cmdb/proposals'),
+  cmdbChange: (op: 'link' | 'unlink' | 'merge' | 'split', id: string, body: Record<string, unknown>, dryRun: boolean, reason?: string) =>
+    call<S['CmdbChange']>('POST', `/cmdb/cis/${encodeURIComponent(id)}/${op}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: { ...(reason ? { 'x-telltale-reason': reason } : {}), ...(dryRun ? {} : { 'idempotency-key': newKey() }) },
+    }),
   // REQ: DSC-004 (T25.6, ADR-1002) — Test one configured SNMP agent (by name, never an address). A dry
   // run lists the OIDs and sends nothing; a test waits 60 s after the last one.
   snmpTest: (agent: string, dryRun: boolean) =>

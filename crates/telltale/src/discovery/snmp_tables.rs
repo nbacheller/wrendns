@@ -980,6 +980,8 @@ pub(crate) fn interpret(rows: &[Row], cx: &Context<'_>) -> Outcome {
                 o.mac = Some(mac.0);
                 o.ip = Some(IpAddr::V4(*ip));
                 o.name = Some((NameKind::Snmp, cx.agent.to_owned()));
+                // REQ: DSC-903 (R4) — the agent is one device whatever its interfaces' MACs.
+                o.hint_mut().device_key = Some("device".to_owned());
                 out.observations.push(o);
                 out.counts.own_merged = out.counts.own_merged.saturating_add(1);
             }
@@ -1105,6 +1107,8 @@ pub(crate) fn interpret(rows: &[Row], cx: &Context<'_>) -> Outcome {
         let mut o = Observation::new(Source::Snmp, cx.now);
         o.mac = Some(mac.0);
         o.port = Some(located(&port_label(*port)));
+        // REQ: DSC-903 (T31.2) — the same place, structured: the agent's device and the port.
+        o.hint_mut().port_ref = Some(("device".to_owned(), port_label(*port)));
         o.vlan = fdb
             .and_then(|f| vlan_of_fdb.get(&f).copied())
             .and_then(|v| u16::try_from(v).ok());

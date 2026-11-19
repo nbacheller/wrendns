@@ -505,6 +505,14 @@ pub(crate) fn rpc_handler(
                 // primary's rows, or a replica's for the primary's reverse heal). Over mTLS only.
                 return crate::secrets::sync::answer_fetch(src, cluster, peer, body).await;
             }
+            if kind == crate::cmdb::replication::KIND_FETCH {
+                // REQ: DSC-906 (ADR-1021) — a full member copies this node's authored CMDB rows (the
+                // designated node answers; any other says so at once). Over mTLS only.
+                if ephemeral {
+                    return Err("an ephemeral member can't read the CMDB".into());
+                }
+                return crate::cmdb::replication::answer_fetch(src, cluster, peer, body).await;
+            }
             if kind == crate::secrets::sync::KIND_ADOPT {
                 // REQ: CLU-015 — a joining full member hands its own secrets to the primary.
                 return crate::secrets::sync::answer_adopt(src, cluster, peer, body).await;
@@ -2822,6 +2830,34 @@ impl Backend for Federated {
     // REQ: OBS-010 (T9.6) — alerts are evaluated here (the primary) or nowhere: this node's.
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
         self.local.alerts_status()
+    }
+    // REQ: DSC-906 (T31.2) — the CMDB runs on the node `[discovery]` designates only; any other node
+    // answers 503 naming that node (and the status says where it runs).
+    fn cmdb_status(&self) -> telltale_api::cmdb_api::CmdbStatus {
+        self.local.cmdb_status()
+    }
+    fn cmdb_cis(
+        &self,
+        q: telltale_api::cmdb_api::CmdbQuery,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::cmdb_api::CmdbCiPage, Problem>> {
+        self.local.cmdb_cis(q)
+    }
+    fn cmdb_ci(
+        &self,
+        id: String,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::cmdb_api::CmdbCiDetail, Problem>> {
+        self.local.cmdb_ci(id)
+    }
+    fn cmdb_proposals(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<Vec<telltale_api::cmdb_api::CmdbProposal>, Problem>> {
+        self.local.cmdb_proposals()
+    }
+    fn cmdb_manual(
+        &self,
+        w: telltale_api::cmdb_api::CmdbWrite,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::cmdb_api::CmdbChange, Problem>> {
+        self.local.cmdb_manual(w)
     }
     // REQ: DSC-014 (T25.3) — this node's own inventory status: each node runs its own workers.
     fn discovery_status(&self) -> telltale_api::model::DiscoveryStatus {

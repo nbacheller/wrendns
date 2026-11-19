@@ -33,6 +33,7 @@
   import Networks from './pages/Networks.svelte';
   // REQ: DSC-001 (T25.2) — the network inventory's settings and status, a lazy chunk.
   import NetworkInventoryRoute from './pages/NetworkInventoryRoute.svelte';
+  import CmdbRoute from './pages/CmdbRoute.svelte';
   // REQ: OBS-901 (T26.3, ADR-958) — the live network map, a lazy chunk.
   import MapRoute from './pages/MapRoute.svelte';
   // REQ: OBS-902 (T26.5, ADR-958) — the world view, a lazy chunk with its map data.
@@ -65,6 +66,9 @@
     { path: '/networks', label: 'Networks', page: Networks, icon: 'networks', section: 'Devices' },
     // REQ: DSC-001 (T25.2, ADR-907) — the network inventory: its settings (admins) and status.
     { path: '/network-inventory', label: 'Network inventory', page: NetworkInventoryRoute, icon: 'networks', section: 'Devices' },
+    // REQ: DSC-901, DSC-902, DSC-903 (T31.2) — the CMDB: one record for each thing on the network, its sources
+    // side by side, and the link, unlink, merge and split that fix a wrong one.
+    { path: '/cmdb', label: 'CMDB', page: CmdbRoute, icon: 'clients', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
     // REQ: API-016 (T23.8) — router integrations: the devices' names come from them.
     { path: '/routers', label: 'Routers', page: Routers, icon: 'cluster', section: 'Devices' },

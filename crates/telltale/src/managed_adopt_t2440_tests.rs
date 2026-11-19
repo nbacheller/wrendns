@@ -614,6 +614,7 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
         ("local", K::Local),
         ("clients", K::Clients),
         ("discovery", K::Discovery),
+        ("cmdb", K::Cmdb),
         ("dnssec", K::Dnssec),
         ("filter", K::Filter),
         ("drill", K::Drill),

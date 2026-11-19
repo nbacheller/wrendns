@@ -94,6 +94,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         traces: Arc::default(),
         discovery: Arc::default(),
+        cmdb: Arc::default(),
         guarded: crate::guarded::Slot::new(),
         geoip: Arc::default(),
         secrets: Arc::new(crate::secrets::SecretStore::with_env(

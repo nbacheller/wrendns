@@ -4466,6 +4466,726 @@
         }
       }
     },
+    "/api/v1/cmdb-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the CMDB's settings (DSC-901, DSC-906, T31.2, ADR-1005): whether it runs, how long a device\nmust be gone before a delete is raised, the settle time, the alert and plan times, and how long\nhistory and change records are kept.",
+        "description": "Admin only: an operator's change is 403, and no agent can change it. The CMDB runs on the node\n`[discovery]` designates, and `enabled` is refused at privacy level 2 and above. The first write\nis refused with 409 `members_too_old` while any member runs a version older than this one. The\nconfiguration files win field by field (`set_by_file`).",
+        "operationId": "put_cmdb_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin may change the CMDB's settings; agents never.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`, or `members_too_old`: a member runs an older version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown or out of range, or `enabled` at privacy level 2 or more.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's `[cmdb]` section (DSC-901).",
+        "description": "Removes what the API stored, so the file's settings apply again. Admin only; no agent.",
+        "operationId": "delete_cmdb_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin may change the CMDB's settings; agents never.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/cis": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "CIs.",
+        "description": "A page of configuration items, ordered by id. `type` limits it to one type, `q` finds text in a\nname, an id, a MAC, a serial or a linked record. A device is shown with its interfaces on its own\npage (`GET /api/v1/cmdb/cis/{id}`); pass `type=interface` to list those. Runs on the designated\nnode: another node answers 503 with a hint.",
+        "operationId": "cmdb_cis",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Only CIs of this type: `device`, `interface`, `network`, `node`, `service` or `upstream`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Text to find in a name, an id, a MAC, a serial or a source record.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The cursor: the `next` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 500 (default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbCiPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An unknown `type`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/cis/{id}": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "One CI.",
+        "description": "The CI with the interfaces under it, every source record linked to it side by side (what each\nsource said, as it said it), the merge proposals that name it, the manual decisions pinned to it\nand the ids merged into it that still redirect. A merged-away id answers with the CI it became.\nDevice-supplied text is untrusted.",
+        "operationId": "cmdb_ci",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The CI id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The CI.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbCiDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such CI, or its alias expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/cis/{id}/link": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Link a record to a device.",
+        "description": "Puts the record under the device in the path. A record with a MAC moves its interface, with every\nrecord of that MAC (a MAC identifies an interface), and pins it there: a serial or a device key\nwill not move it. A record with no key moves alone. With `?dryRun=true` nothing is written and the\nanswer lists the records that would move. Operators; audit-logged as `cmdb.link` with the reason\n(`X-Telltale-Reason`); `Idempotency-Key` replays the first answer for 24 hours.",
+        "operationId": "cmdb_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device the record goes to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CmdbLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What moved, or with dryRun what would.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body or id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such device or record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The record is on that device already, or an Idempotency-Key reused for another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/cis/{id}/merge": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Merge a device into another.",
+        "description": "Moves every interface and record of the device in the path to `into`, pins them there, and leaves\nthe losing id as an alias that redirects for 90 days. With `?dryRun=true` nothing is written and\nthe answer lists the records that would move. Operators; audit-logged as `cmdb.merge`;\n`Idempotency-Key` replays the first answer.",
+        "operationId": "cmdb_merge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device that goes away.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CmdbMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What moved, or with dryRun what would.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body or id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such device.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A device cannot be merged into itself.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/cis/{id}/split": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Split a device.",
+        "description": "Moves the chosen records (a record with a MAC takes its interface and all its records) to a new\ndevice and pins them there, so a serial or a device key does not join them back. At least one\ninterface stays. With `?dryRun=true` nothing is written. Operators; audit-logged as `cmdb.split`;\n`Idempotency-Key` replays the first answer.",
+        "operationId": "cmdb_split",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device to split.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CmdbSplitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What moved, or with dryRun what would.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body or id, or no record chosen.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such device or record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A record is not on this device, or every interface would move.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/cis/{id}/unlink": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Unlink a record from a device.",
+        "description": "Takes the record away from the device in the path and writes a never-match pin, so the next batch\ndoes not link it back. A record with no key may match another device, or stay on its own as an\nunconfirmed CI. A record with a MAC leaves with its interface, which gets a device of its own (a\nMAC identifies an interface). With `?dryRun=true` nothing is written. Operators; audit-logged as\n`cmdb.unlink`; `Idempotency-Key` replays the first answer.",
+        "operationId": "cmdb_unlink",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device the record is on.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CmdbUnlinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What moved, or with dryRun what would.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body or id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The record is not linked, or is the only interface of its device.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/proposals": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Merge proposals.",
+        "description": "The disagreements and the host name matches that reconciliation raised and never applies: two\ndevices that may be one. Apply one with `POST /api/v1/cmdb/cis/{id}/merge`.",
+        "operationId": "cmdb_proposals",
+        "responses": {
+          "200": {
+            "description": "The open proposals, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CmdbProposal"
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The CMDB doesn't run on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cmdb/status": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "CMDB status.",
+        "description": "Whether the CMDB runs on this node, what it holds (CIs by type, source records, open merge\nproposals), the last batch of each source, what it dropped at a cap, and its size on disk.",
+        "operationId": "cmdb_status",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CmdbStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/config/entries": {
       "get": {
         "tags": [
@@ -18463,6 +19183,736 @@
             "minimum": 0
           }
         }
+      },
+      "CmdbAlias": {
+        "type": "object",
+        "description": "A merged-away id that redirects for 90 days.",
+        "required": [
+          "id",
+          "until"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "until": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CmdbCaps": {
+        "type": "object",
+        "description": "The caps (ADR-1005 section 3).",
+        "required": [
+          "cis",
+          "records",
+          "recordsPerCi"
+        ],
+        "properties": {
+          "cis": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "records": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "recordsPerCi": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "CmdbChange": {
+        "type": "object",
+        "description": "What a link, unlink, merge or split would do, or did.",
+        "required": [
+          "op",
+          "applied",
+          "moves",
+          "devices",
+          "notes"
+        ],
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "description": "Whether it was applied (`false` for `?dryRun=true`)."
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The devices it touches."
+          },
+          "moves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbMove"
+            },
+            "description": "The records that move."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What else follows: an alias that redirects, a pin that is written."
+          },
+          "op": {
+            "type": "string",
+            "description": "`link`, `unlink`, `merge` or `split`."
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The device the records went to when it is new (a split or an unlink), or the one that\nstayed (a merge)."
+          }
+        }
+      },
+      "CmdbCi": {
+        "type": "object",
+        "description": "One CI in a list.",
+        "required": [
+          "id",
+          "ty",
+          "unconfirmed",
+          "unmappedPort",
+          "firstSeen",
+          "records",
+          "sources",
+          "proposals"
+        ],
+        "properties": {
+          "daysSeen": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Distinct days a presence source saw it, at most 32."
+          },
+          "firstSeen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the CMDB first saw it (Unix seconds)."
+          },
+          "id": {
+            "type": "string",
+            "description": "`ci_` and 32 hex digits, random and never reused.",
+            "example": "ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an interface: `nic` or `port`."
+          },
+          "lastSeen": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The newest time a presence source saw it, when known."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name shown. Device-supplied text (cut and cleaned)."
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an interface: the device it belongs to."
+          },
+          "proposals": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Open merge proposals that name it.",
+            "minimum": 0
+          },
+          "records": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many source records are linked to it.",
+            "minimum": 0
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The source kinds that report it."
+          },
+          "ty": {
+            "type": "string",
+            "description": "`device`, `interface`, `network`, `node`, `service` or `upstream`."
+          },
+          "unconfirmed": {
+            "type": "boolean",
+            "description": "No source confirms it yet (a query-only or import-only record)."
+          },
+          "unmappedPort": {
+            "type": "boolean",
+            "description": "A port that no alias joins to another source's port."
+          }
+        }
+      },
+      "CmdbCiDetail": {
+        "type": "object",
+        "description": "`GET /api/v1/cmdb/cis/{id}`: a CI with its interfaces, its records side by side and what\nreconciliation decided.",
+        "required": [
+          "ci",
+          "interfaces",
+          "records",
+          "proposals",
+          "pins",
+          "aliases"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbAlias"
+            },
+            "description": "Ids merged into this CI that still redirect."
+          },
+          "ci": {
+            "$ref": "#/components/schemas/CmdbCi"
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbCi"
+            },
+            "description": "The interfaces and ports under a device."
+          },
+          "pins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbPin"
+            }
+          },
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbProposal"
+            }
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbRecord"
+            }
+          }
+        }
+      },
+      "CmdbCiPage": {
+        "type": "object",
+        "description": "A page of CIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbCi"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass this as `after` for the next page; absent on the last."
+          }
+        }
+      },
+      "CmdbCount": {
+        "type": "object",
+        "description": "A count of CIs of one type.",
+        "required": [
+          "ty",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "ty": {
+            "type": "string",
+            "description": "`device`, `interface`, `network`, `node`, `service` or `upstream`."
+          }
+        }
+      },
+      "CmdbDropped": {
+        "type": "object",
+        "description": "What the CMDB dropped at a cap (`telltale_cmdb_dropped_total`).",
+        "required": [
+          "ci",
+          "record",
+          "batch"
+        ],
+        "properties": {
+          "batch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Batches the sink dropped because it was full.",
+            "minimum": 0
+          },
+          "ci": {
+            "type": "integer",
+            "format": "int64",
+            "description": "New CIs refused because every CI left is authored (at the cap).",
+            "minimum": 0
+          },
+          "record": {
+            "type": "integer",
+            "format": "int64",
+            "description": "New records dropped at the record caps.",
+            "minimum": 0
+          }
+        }
+      },
+      "CmdbLinkRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/cmdb/cis/{id}/link`: put a record (its interface, when it has a MAC) under\nthe device in the path.",
+        "required": [
+          "record"
+        ],
+        "properties": {
+          "record": {
+            "$ref": "#/components/schemas/CmdbRecordRef"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CmdbMergeRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/cmdb/cis/{id}/merge`: fold the device in the path into another.",
+        "required": [
+          "into"
+        ],
+        "properties": {
+          "into": {
+            "type": "string",
+            "description": "The device that stays; the one in the path becomes an alias of it for 90 days.",
+            "example": "ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CmdbMove": {
+        "type": "object",
+        "description": "One record a change moves.",
+        "required": [
+          "source",
+          "key",
+          "why"
+        ],
+        "properties": {
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The device it is on now."
+          },
+          "key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The device it goes to; absent for a new device."
+          },
+          "why": {
+            "type": "string",
+            "description": "`its interface` (a MAC identifies an interface, so all its records go), `chosen` or `device`."
+          }
+        }
+      },
+      "CmdbPin": {
+        "type": "object",
+        "description": "A manual decision pinned to a CI.",
+        "required": [
+          "kind",
+          "subject",
+          "target",
+          "at",
+          "by",
+          "reason"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "by": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`nic_device`, `rec_device` or `rec_never`."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        }
+      },
+      "CmdbProposal": {
+        "type": "object",
+        "description": "A merge proposal: raised, never applied (ADR-1004 section 4).",
+        "required": [
+          "id",
+          "kind",
+          "a",
+          "b",
+          "rule",
+          "detail",
+          "firstSeen",
+          "lastSeen"
+        ],
+        "properties": {
+          "a": {
+            "type": "string",
+            "description": "The two CIs it names."
+          },
+          "b": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "firstSeen": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`level_disagreement`, `host_network` or `ambiguous_record`."
+          },
+          "lastSeen": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rule": {
+            "type": "string",
+            "description": "The rule that raised it: `R3`, `R4`, `R5` or `addr`."
+          }
+        }
+      },
+      "CmdbRecord": {
+        "type": "object",
+        "description": "One source record, as the source reported it.",
+        "required": [
+          "source",
+          "key",
+          "ty",
+          "state",
+          "link",
+          "firstSeen",
+          "lastChanged",
+          "lastSeen",
+          "attrs"
+        ],
+        "properties": {
+          "attrs": {
+            "type": "object",
+            "description": "The attributes as reported: device-supplied text, untrusted."
+          },
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "firstSeen": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "interface": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The interface and the device it is linked to."
+          },
+          "key": {
+            "type": "string",
+            "description": "The thing's identity in that source."
+          },
+          "lastChanged": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lastSeen": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "link": {
+            "type": "string",
+            "description": "`auto:R2`, `auto:R3`, `auto:R4`, `auto:addr`, `auto:key`, `auto:port`, `auto:own`, `manual`\nor `none`."
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`present`, or `absent` after two missed complete batches."
+          },
+          "ty": {
+            "type": "string",
+            "description": "`device`, `port`, `network`, `node`, `service` or `upstream`."
+          }
+        }
+      },
+      "CmdbRecordRef": {
+        "type": "object",
+        "description": "A record by its source and key.",
+        "required": [
+          "source",
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The record's key in that source.",
+            "example": "aa:bb:cc:00:00:01"
+          },
+          "source": {
+            "type": "string",
+            "description": "The source instance, as `GET /api/v1/cmdb/cis/{id}` shows it.",
+            "example": "unifi:home"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CmdbSourceStatus": {
+        "type": "object",
+        "description": "One source instance's last batch.",
+        "required": [
+          "source",
+          "records",
+          "held",
+          "lastBatchUnix",
+          "complete",
+          "batches"
+        ],
+        "properties": {
+          "batches": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "Whether the batch listed everything the instance reports."
+          },
+          "held": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Records it holds in the database.",
+            "minimum": 0
+          },
+          "lastBatchUnix": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When its last batch was ingested (Unix seconds)."
+          },
+          "records": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Records in its last batch.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "The source instance (`unifi:home`, `snmp:core`, `neighbor`, ...)."
+          }
+        }
+      },
+      "CmdbSplitRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/cmdb/cis/{id}/split`: move chosen records of the device in the path to a\nnew device.",
+        "required": [
+          "records"
+        ],
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbRecordRef"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CmdbStatus": {
+        "type": "object",
+        "description": "`GET /api/v1/cmdb/status`: whether the CMDB runs on this node, what it holds, and what it\ndropped. Health reasons never mark DNS unhealthy.",
+        "required": [
+          "enabled",
+          "designated",
+          "running",
+          "cis",
+          "records",
+          "recordsPresent",
+          "proposalsOpen",
+          "sources",
+          "queueDepth",
+          "dropped",
+          "caps",
+          "diskBytes",
+          "indexBytes",
+          "headEpoch",
+          "headSeq"
+        ],
+        "properties": {
+          "caps": {
+            "$ref": "#/components/schemas/CmdbCaps",
+            "description": "The caps (ADR-1005 section 3)."
+          },
+          "cis": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbCount"
+            },
+            "description": "CIs by type."
+          },
+          "designated": {
+            "type": "boolean",
+            "description": "Whether this node is the designated one (the node `[discovery]` designates)."
+          },
+          "diskBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The database and its WAL on disk, in bytes.",
+            "minimum": 0
+          },
+          "dropped": {
+            "$ref": "#/components/schemas/CmdbDropped",
+            "description": "What was dropped at a cap."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "`[cmdb] enabled`."
+          },
+          "headEpoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The newest authored-row stamp: what a standby copies."
+          },
+          "headSeq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "indexBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The in-memory index, an estimate in bytes.",
+            "minimum": 0
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last error the CMDB logged, when it had one (it never touches DNS)."
+          },
+          "learningUntil": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The end of the 24 h learning period (Unix seconds), while it runs."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The designated node's name, when `[discovery] node` names one."
+          },
+          "proposalsOpen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Merge proposals waiting for a person.",
+            "minimum": 0
+          },
+          "queueDepth": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Batches waiting in the sink.",
+            "minimum": 0
+          },
+          "records": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Source records kept, and those `present`.",
+            "minimum": 0
+          },
+          "recordsPresent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "running": {
+            "type": "boolean",
+            "description": "Whether the CMDB's thread runs here."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CmdbSourceStatus"
+            },
+            "description": "The last batch of each source instance."
+          }
+        }
+      },
+      "CmdbUnlinkRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/cmdb/cis/{id}/unlink`: take a record away from the device in the path.",
+        "required": [
+          "record"
+        ],
+        "properties": {
+          "record": {
+            "$ref": "#/components/schemas/CmdbRecordRef"
+          }
+        },
+        "additionalProperties": false
       },
       "Code": {
         "type": "string",

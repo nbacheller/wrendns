@@ -1820,6 +1820,217 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cmdb-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the CMDB's settings (DSC-901, DSC-906, T31.2, ADR-1005): whether it runs, how long a device
+         *     must be gone before a delete is raised, the settle time, the alert and plan times, and how long
+         *     history and change records are kept.
+         * @description Admin only: an operator's change is 403, and no agent can change it. The CMDB runs on the node
+         *     `[discovery]` designates, and `enabled` is refused at privacy level 2 and above. The first write
+         *     is refused with 409 `members_too_old` while any member runs a version older than this one. The
+         *     configuration files win field by field (`set_by_file`).
+         */
+        put: operations["put_cmdb_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's `[cmdb]` section (DSC-901).
+         * @description Removes what the API stored, so the file's settings apply again. Admin only; no agent.
+         */
+        delete: operations["delete_cmdb_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * CIs.
+         * @description A page of configuration items, ordered by id. `type` limits it to one type, `q` finds text in a
+         *     name, an id, a MAC, a serial or a linked record. A device is shown with its interfaces on its own
+         *     page (`GET /api/v1/cmdb/cis/{id}`); pass `type=interface` to list those. Runs on the designated
+         *     node: another node answers 503 with a hint.
+         */
+        get: operations["cmdb_cis"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One CI.
+         * @description The CI with the interfaces under it, every source record linked to it side by side (what each
+         *     source said, as it said it), the merge proposals that name it, the manual decisions pinned to it
+         *     and the ids merged into it that still redirect. A merged-away id answers with the CI it became.
+         *     Device-supplied text is untrusted.
+         */
+        get: operations["cmdb_ci"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link a record to a device.
+         * @description Puts the record under the device in the path. A record with a MAC moves its interface, with every
+         *     record of that MAC (a MAC identifies an interface), and pins it there: a serial or a device key
+         *     will not move it. A record with no key moves alone. With `?dryRun=true` nothing is written and the
+         *     answer lists the records that would move. Operators; audit-logged as `cmdb.link` with the reason
+         *     (`X-Telltale-Reason`); `Idempotency-Key` replays the first answer for 24 hours.
+         */
+        post: operations["cmdb_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Merge a device into another.
+         * @description Moves every interface and record of the device in the path to `into`, pins them there, and leaves
+         *     the losing id as an alias that redirects for 90 days. With `?dryRun=true` nothing is written and
+         *     the answer lists the records that would move. Operators; audit-logged as `cmdb.merge`;
+         *     `Idempotency-Key` replays the first answer.
+         */
+        post: operations["cmdb_merge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/split": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Split a device.
+         * @description Moves the chosen records (a record with a MAC takes its interface and all its records) to a new
+         *     device and pins them there, so a serial or a device key does not join them back. At least one
+         *     interface stays. With `?dryRun=true` nothing is written. Operators; audit-logged as `cmdb.split`;
+         *     `Idempotency-Key` replays the first answer.
+         */
+        post: operations["cmdb_split"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/unlink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unlink a record from a device.
+         * @description Takes the record away from the device in the path and writes a never-match pin, so the next batch
+         *     does not link it back. A record with no key may match another device, or stay on its own as an
+         *     unconfirmed CI. A record with a MAC leaves with its interface, which gets a device of its own (a
+         *     MAC identifies an interface). With `?dryRun=true` nothing is written. Operators; audit-logged as
+         *     `cmdb.unlink`; `Idempotency-Key` replays the first answer.
+         */
+        post: operations["cmdb_unlink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Merge proposals.
+         * @description The disagreements and the host name matches that reconciliation raised and never applies: two
+         *     devices that may be one. Apply one with `POST /api/v1/cmdb/cis/{id}/merge`.
+         */
+        get: operations["cmdb_proposals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * CMDB status.
+         * @description Whether the CMDB runs on this node, what it holds (CIs by type, source records, open merge
+         *     proposals), the last batch of each source, what it dropped at a cap, and its size on disk.
+         */
+        get: operations["cmdb_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/config/entries": {
         parameters: {
             query?: never;
@@ -6357,6 +6568,322 @@ export interface components {
              * @description The epoch it reported in its last reply (the epoch it voted in).
              */
             votedEpoch?: number | null;
+        };
+        /** @description A merged-away id that redirects for 90 days. */
+        CmdbAlias: {
+            id: string;
+            /** Format: int64 */
+            until: number;
+        };
+        /** @description The caps (ADR-1005 section 3). */
+        CmdbCaps: {
+            /** Format: int64 */
+            cis: number;
+            /** Format: int64 */
+            records: number;
+            /** Format: int64 */
+            recordsPerCi: number;
+        };
+        /** @description What a link, unlink, merge or split would do, or did. */
+        CmdbChange: {
+            /** @description Whether it was applied (`false` for `?dryRun=true`). */
+            applied: boolean;
+            /** @description The devices it touches. */
+            devices: string[];
+            /** @description The records that move. */
+            moves: components["schemas"]["CmdbMove"][];
+            /** @description What else follows: an alias that redirects, a pin that is written. */
+            notes: string[];
+            /** @description `link`, `unlink`, `merge` or `split`. */
+            op: string;
+            /**
+             * @description The device the records went to when it is new (a split or an unlink), or the one that
+             *     stayed (a merge).
+             */
+            result?: string | null;
+        };
+        /** @description One CI in a list. */
+        CmdbCi: {
+            /**
+             * Format: int64
+             * @description Distinct days a presence source saw it, at most 32.
+             */
+            daysSeen?: number | null;
+            /**
+             * Format: int64
+             * @description When the CMDB first saw it (Unix seconds).
+             */
+            firstSeen: number;
+            /**
+             * @description `ci_` and 32 hex digits, random and never reused.
+             * @example ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21
+             */
+            id: string;
+            /** @description For an interface: `nic` or `port`. */
+            kind?: string | null;
+            /**
+             * Format: int64
+             * @description The newest time a presence source saw it, when known.
+             */
+            lastSeen?: number | null;
+            /** @description The name shown. Device-supplied text (cut and cleaned). */
+            name?: string | null;
+            /** @description For an interface: the device it belongs to. */
+            parent?: string | null;
+            /**
+             * Format: int64
+             * @description Open merge proposals that name it.
+             */
+            proposals: number;
+            /**
+             * Format: int64
+             * @description How many source records are linked to it.
+             */
+            records: number;
+            /** @description The source kinds that report it. */
+            sources: string[];
+            /** @description `device`, `interface`, `network`, `node`, `service` or `upstream`. */
+            ty: string;
+            /** @description No source confirms it yet (a query-only or import-only record). */
+            unconfirmed: boolean;
+            /** @description A port that no alias joins to another source's port. */
+            unmappedPort: boolean;
+        };
+        /**
+         * @description `GET /api/v1/cmdb/cis/{id}`: a CI with its interfaces, its records side by side and what
+         *     reconciliation decided.
+         */
+        CmdbCiDetail: {
+            /** @description Ids merged into this CI that still redirect. */
+            aliases: components["schemas"]["CmdbAlias"][];
+            ci: components["schemas"]["CmdbCi"];
+            /** @description The interfaces and ports under a device. */
+            interfaces: components["schemas"]["CmdbCi"][];
+            pins: components["schemas"]["CmdbPin"][];
+            proposals: components["schemas"]["CmdbProposal"][];
+            records: components["schemas"]["CmdbRecord"][];
+        };
+        /** @description A page of CIs. */
+        CmdbCiPage: {
+            items: components["schemas"]["CmdbCi"][];
+            /** @description Pass this as `after` for the next page; absent on the last. */
+            next?: string | null;
+        };
+        /** @description A count of CIs of one type. */
+        CmdbCount: {
+            /** Format: int64 */
+            count: number;
+            /** @description `device`, `interface`, `network`, `node`, `service` or `upstream`. */
+            ty: string;
+        };
+        /** @description What the CMDB dropped at a cap (`telltale_cmdb_dropped_total`). */
+        CmdbDropped: {
+            /**
+             * Format: int64
+             * @description Batches the sink dropped because it was full.
+             */
+            batch: number;
+            /**
+             * Format: int64
+             * @description New CIs refused because every CI left is authored (at the cap).
+             */
+            ci: number;
+            /**
+             * Format: int64
+             * @description New records dropped at the record caps.
+             */
+            record: number;
+        };
+        /**
+         * @description Body of `POST /api/v1/cmdb/cis/{id}/link`: put a record (its interface, when it has a MAC) under
+         *     the device in the path.
+         */
+        CmdbLinkRequest: {
+            record: components["schemas"]["CmdbRecordRef"];
+        };
+        /** @description Body of `POST /api/v1/cmdb/cis/{id}/merge`: fold the device in the path into another. */
+        CmdbMergeRequest: {
+            /**
+             * @description The device that stays; the one in the path becomes an alias of it for 90 days.
+             * @example ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21
+             */
+            into: string;
+        };
+        /** @description One record a change moves. */
+        CmdbMove: {
+            /** @description The device it is on now. */
+            from?: string | null;
+            key: string;
+            source: string;
+            /** @description The device it goes to; absent for a new device. */
+            to?: string | null;
+            /** @description `its interface` (a MAC identifies an interface, so all its records go), `chosen` or `device`. */
+            why: string;
+        };
+        /** @description A manual decision pinned to a CI. */
+        CmdbPin: {
+            /** Format: int64 */
+            at: number;
+            by: string;
+            /** @description `nic_device`, `rec_device` or `rec_never`. */
+            kind: string;
+            reason: string;
+            subject: string;
+            target: string;
+        };
+        /** @description A merge proposal: raised, never applied (ADR-1004 section 4). */
+        CmdbProposal: {
+            /** @description The two CIs it names. */
+            a: string;
+            b: string;
+            detail: string;
+            /** Format: int64 */
+            firstSeen: number;
+            /** Format: int64 */
+            id: number;
+            /** @description `level_disagreement`, `host_network` or `ambiguous_record`. */
+            kind: string;
+            /** Format: int64 */
+            lastSeen: number;
+            /** @description The rule that raised it: `R3`, `R4`, `R5` or `addr`. */
+            rule: string;
+        };
+        /** @description One source record, as the source reported it. */
+        CmdbRecord: {
+            /** @description The attributes as reported: device-supplied text, untrusted. */
+            attrs: Record<string, never>;
+            device?: string | null;
+            /** Format: int64 */
+            firstSeen: number;
+            /** @description The interface and the device it is linked to. */
+            interface?: string | null;
+            /** @description The thing's identity in that source. */
+            key: string;
+            /** Format: int64 */
+            lastChanged: number;
+            /** Format: int64 */
+            lastSeen: number;
+            /**
+             * @description `auto:R2`, `auto:R3`, `auto:R4`, `auto:addr`, `auto:key`, `auto:port`, `auto:own`, `manual`
+             *     or `none`.
+             */
+            link: string;
+            source: string;
+            /** @description `present`, or `absent` after two missed complete batches. */
+            state: string;
+            /** @description `device`, `port`, `network`, `node`, `service` or `upstream`. */
+            ty: string;
+        };
+        /** @description A record by its source and key. */
+        CmdbRecordRef: {
+            /**
+             * @description The record's key in that source.
+             * @example aa:bb:cc:00:00:01
+             */
+            key: string;
+            /**
+             * @description The source instance, as `GET /api/v1/cmdb/cis/{id}` shows it.
+             * @example unifi:home
+             */
+            source: string;
+        };
+        /** @description One source instance's last batch. */
+        CmdbSourceStatus: {
+            /** Format: int64 */
+            batches: number;
+            /** @description Whether the batch listed everything the instance reports. */
+            complete: boolean;
+            /**
+             * Format: int64
+             * @description Records it holds in the database.
+             */
+            held: number;
+            /**
+             * Format: int64
+             * @description When its last batch was ingested (Unix seconds).
+             */
+            lastBatchUnix: number;
+            /**
+             * Format: int64
+             * @description Records in its last batch.
+             */
+            records: number;
+            /** @description The source instance (`unifi:home`, `snmp:core`, `neighbor`, ...). */
+            source: string;
+        };
+        /**
+         * @description Body of `POST /api/v1/cmdb/cis/{id}/split`: move chosen records of the device in the path to a
+         *     new device.
+         */
+        CmdbSplitRequest: {
+            records: components["schemas"]["CmdbRecordRef"][];
+        };
+        /**
+         * @description `GET /api/v1/cmdb/status`: whether the CMDB runs on this node, what it holds, and what it
+         *     dropped. Health reasons never mark DNS unhealthy.
+         */
+        CmdbStatus: {
+            /** @description The caps (ADR-1005 section 3). */
+            caps: components["schemas"]["CmdbCaps"];
+            /** @description CIs by type. */
+            cis: components["schemas"]["CmdbCount"][];
+            /** @description Whether this node is the designated one (the node `[discovery]` designates). */
+            designated: boolean;
+            /**
+             * Format: int64
+             * @description The database and its WAL on disk, in bytes.
+             */
+            diskBytes: number;
+            /** @description What was dropped at a cap. */
+            dropped: components["schemas"]["CmdbDropped"];
+            /** @description `[cmdb] enabled`. */
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description The newest authored-row stamp: what a standby copies.
+             */
+            headEpoch: number;
+            /** Format: int64 */
+            headSeq: number;
+            /**
+             * Format: int64
+             * @description The in-memory index, an estimate in bytes.
+             */
+            indexBytes: number;
+            /** @description The last error the CMDB logged, when it had one (it never touches DNS). */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description The end of the 24 h learning period (Unix seconds), while it runs.
+             */
+            learningUntil?: number | null;
+            /** @description The designated node's name, when `[discovery] node` names one. */
+            node?: string | null;
+            /**
+             * Format: int64
+             * @description Merge proposals waiting for a person.
+             */
+            proposalsOpen: number;
+            /**
+             * Format: int64
+             * @description Batches waiting in the sink.
+             */
+            queueDepth: number;
+            /**
+             * Format: int64
+             * @description Source records kept, and those `present`.
+             */
+            records: number;
+            /** Format: int64 */
+            recordsPresent: number;
+            /** @description Whether the CMDB's thread runs here. */
+            running: boolean;
+            /** @description The last batch of each source instance. */
+            sources: components["schemas"]["CmdbSourceStatus"][];
+        };
+        /** @description Body of `POST /api/v1/cmdb/cis/{id}/unlink`: take a record away from the device in the path. */
+        CmdbUnlinkRequest: {
+            record: components["schemas"]["CmdbRecordRef"];
         };
         /**
          * @description Stable error codes.
@@ -15790,6 +16317,526 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_cmdb_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the CMDB's settings; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, or `members_too_old`: a member runs an older version. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range, or `enabled` at privacy level 2 or more. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_cmdb_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the CMDB's settings; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_cis: {
+        parameters: {
+            query?: {
+                /** @description Only CIs of this type: `device`, `interface`, `network`, `node`, `service` or `upstream`. */
+                type?: string;
+                /** @description Text to find in a name, an id, a MAC, a serial or a source record. */
+                q?: string;
+                /** @description The cursor: the `next` of the previous page. */
+                after?: string;
+                /** @description Page size, 1 to 500 (default 100). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbCiPage"];
+                };
+            };
+            /** @description An unknown `type`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_ci: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The CI id. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The CI. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbCiDetail"];
+                };
+            };
+            /** @description No such CI, or its alias expired. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_link: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device the record goes to. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbLinkRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such device or record. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The record is on that device already, or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_merge: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device that goes away. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbMergeRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such device. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A device cannot be merged into itself. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_split: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device to split. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbSplitRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id, or no record chosen. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such device or record. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A record is not on this device, or every interface would move. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_unlink: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device the record is on. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbUnlinkRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such record. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The record is not linked, or is the only interface of its device. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_proposals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The open proposals, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbProposal"][];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbStatus"];
                 };
             };
         };
