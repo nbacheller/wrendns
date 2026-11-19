@@ -86,7 +86,7 @@ No method of transmission or storage is 100% secure.
 
 ## 8. Your rights and choices
 
-You may ask us to give you a copy of, correct, or delete the personal information we hold about you, or to provide it in a structured, machine-readable format. Email support@wrendns.com. We respond to verifiable requests within forty-five (45) days, extendable by another forty-five (45) days with notice. You may appeal a denial by replying to our response. We will not discriminate against you for exercising these rights. We may keep payment records that the law requires us to keep.
+You may ask us to give you a copy of, correct, or delete the personal information we hold about you, or to provide it in a structured, machine-readable format. Email privacy@wrendns.com. We respond to verifiable requests within forty-five (45) days, extendable by another forty-five (45) days with notice. You may appeal a denial by replying to our response. We will not discriminate against you for exercising these rights. We may keep payment records that the law requires us to keep.
 
 Depending on where you live, you may have more rights under a state privacy law, for example in California, Virginia, Colorado, Connecticut, Texas, Oregon or Florida. We grant these rights to every U.S. consumer, whatever their state, and you may complain to your state's Attorney General where the law allows.
 
@@ -112,4 +112,5 @@ MySummitKeep LLC (WrenDNS), Attn: Privacy
 5005 W Laurel St, Ste 100 #3250
 Tampa, FL 33607
 Phone: (813) 418-6800
-Email: support@wrendns.com
+Privacy: privacy@wrendns.com
+General: support@wrendns.com
