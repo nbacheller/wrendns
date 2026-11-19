@@ -50,8 +50,18 @@ test('api_013 a forwarded domain reads as words on the map, in the policy route 
   expect((await r.put(`/api/v1/forwards/${STUB}`, { headers: h(), data: { servers: ['192.0.2.53'], stub: true } })).status()).toBe(200);
 
   // The map's upstream nodes (the server's own: every configured upstream has one, idle or not).
-  const map = await (await r.get('/api/v1/map')).json();
-  const nodes = map.nodes as { id: string; kind: string; label: string; address?: string }[];
+  // (The snapshot follows a reload and a sampling tick, so it is polled until the upstreams are in.)
+  type MapNode = { id: string; kind: string; label: string; address?: string };
+  let nodes: MapNode[] = [];
+  await expect
+    .poll(
+      async () => {
+        nodes = ((await (await r.get('/api/v1/map')).json()).nodes ?? []) as MapNode[];
+        return nodes.some((n) => n.id === `up:forward:${REVERSE}#1`) && nodes.some((n) => n.id === `up:forward:${STUB}#stub`);
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
   const rev = nodes.find((n) => n.id === `up:forward:${REVERSE}#1`);
   expect(rev, JSON.stringify(nodes.filter((n) => n.kind === 'upstream'))).toBeTruthy();
   expect(rev!.label).toBe('Reverse lookups, 192.168.x.x');
