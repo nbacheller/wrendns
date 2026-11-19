@@ -21,7 +21,9 @@ x-telltale: &telltale
   read_only: true
   command: ["run", "-c", "/etc/telltale/telltale.toml"]
   environment:
-    TELLTALE_LOG: info
+    # The cluster links and the federated reads at debug level: a failed check names the stream
+    # or the call that didn't come back (a few lines a minute).
+    TELLTALE_LOG: "info,telltale_cluster::net=debug,telltale::federated=debug"
     # REQ: FLT-901 (T24.29): the image is built with the `e2e` feature, which lets this fake stand in
     # for the hosts the category lists come from, so the test can see which node fetched what.
     TELLTALE_E2E_CATALOG_BASE: "http://fake-source:8080/"

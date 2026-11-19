@@ -81,6 +81,19 @@ cleanup() {
   trap - EXIT
   set +e
   if [ "$rc" -ne 0 ]; then
+    # Each node's own view of the cluster (members, links, failover), whole.
+    for n in "${NODES[@]}"; do
+      call "$n" GET /api/v1/cluster
+      echo "--- $n: GET /api/v1/cluster answered $RS"
+      printf '%s
+' "$RB" | sed 's/^/    /'
+    done
+    # C3_LOG_DIR=<dir> keeps every node's whole log there (the tail below can miss the start).
+    if [ -n "${C3_LOG_DIR:-}" ]; then
+      mkdir -p "$C3_LOG_DIR"
+      for n in "${NODES[@]}"; do "${COMPOSE[@]}" logs --no-color "$n" >"$C3_LOG_DIR/$n.log" 2>&1; done
+      echo "--- the whole node logs are in $C3_LOG_DIR"
+    fi
     echo "--- the node logs (last 150 lines each)"
     for n in "${NODES[@]}"; do
       echo "--- $n"
