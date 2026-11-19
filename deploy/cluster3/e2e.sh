@@ -570,6 +570,9 @@ else
   call "$N1" PUT "/api/v1/lists/t2440-edit?dryRun=true" "$E/l-edit.json"
   [ "$RS" = 200 ] || bad "a dry-run write of an inherited list on $N1 answered $RS: $RB"
   [ "$(jget 'd["before"] is None')" = False ] || bad "the dry run on $N1 shows no 'before' for an entry it serves: $RB"
+  # Which path ran: the node adopted what it serves (an older primary's version has no rows). A
+  # promotion from replica takes the same code; the unit tests (clu_015_t24_40_*) cover that entry.
+  "${COMPOSE[@]}" logs --no-color "$N1" 2>&1 | grep -qF "it adopted them as its own"     || bad "$N1 served the inherited entries but its log doesn't say it adopted them as its own"
   docker kill "$(container "$N1")" >/dev/null
   N2=$(wait_primary 90 "$N1") || bad "no survivor was promoted after the upgrade"
   for n in "${NODES[@]}"; do

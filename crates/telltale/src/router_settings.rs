@@ -21,7 +21,8 @@ use crate::http::Sources;
 use crate::managed::{Entries, Ovr};
 
 /// The body fields an API router must not carry (the files set them).
-const FILE_FIELDS: [&str; 4] = ["api_key_file", "api_secret_file", "password_file", "tls_ca"];
+pub(crate) const FILE_FIELDS: [&str; 4] =
+    ["api_key_file", "api_secret_file", "password_file", "tls_ca"];
 
 /// Who may change a router: an admin, through the API (never an agent). A write whose role an
 /// older node didn't send is refused until that node is upgraded.

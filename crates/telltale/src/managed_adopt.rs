@@ -30,6 +30,10 @@ use crate::node_managed::{Entry, SHARED_KINDS, parse_shared};
 /// the same transaction as the rows, so the rows and the record of them never part.
 const SEEDED: &str = "managed-seeded";
 
+/// The `meta` key prefix of the entries a served-version adoption derived (T24.40): after a
+/// restart those names are stripped, not whatever the files derive to then.
+const ADOPTED_NAMES: &str = "managed-adopted-names";
+
 /// The blob adopted in this process: (state path, hash, entries). A call for the same blob
 /// answers from here without reading the blob or the store (the publish loop calls every 500 ms).
 /// The lock is held for a whole adoption, so a write plan, a reload and the publish loop never
@@ -175,7 +179,6 @@ pub(crate) fn adopt_served(
     {
         return Some(entries.clone());
     }
-    let derived = derive(served, own);
     let state = match State::open(state_path) {
         Ok(s) => s,
         Err(e) => {
@@ -183,6 +186,53 @@ pub(crate) fn adopt_served(
             return None;
         }
     };
+    let marker = format!("served:{key}");
+    let record = format!("{ADOPTED_NAMES}:{key}");
+    // Adopted before (this process or an earlier one): what was adopted is what the meta says,
+    // not what the caller's `served` derives to now (the files may have changed since, and a
+    // caller without the real version must not decide it).
+    let done = state.meta_get(SEEDED).ok().flatten().as_deref() == Some(marker.as_str());
+    let stored: Option<Vec<Entry>> = if done {
+        state
+            .meta_get(&record)
+            .ok()
+            .flatten()
+            .and_then(|j| serde_json::from_str(&j).ok())
+    } else {
+        None
+    };
+    let derived = match stored {
+        Some(d) => d,
+        None if done => derive(served, own),
+        None => {
+            let derived = derive(served, own);
+            let entries = with_held(&state, derived.clone());
+            // REQ: CLU-004 - validate the whole candidate first: a row that would not merge
+            // would send the node back to the stripped files and drop every adopted entry.
+            if let Err(why) = candidate_merges(&state, served, own, &derived, &entries) {
+                warn!("the served cluster entries are not adopted: {why}");
+                return None;
+            }
+            let Ok(json) = serde_json::to_string(&derived) else {
+                return None;
+            };
+            if let Err(e) = state.meta_set(&record, Some(&json)) {
+                warn!("the served cluster entries can't be adopted: {e}");
+                return None;
+            }
+            insert_derived(&state, &derived, seq, &marker)?;
+            derived
+        }
+    };
+    // What the version no longer provides: the entries it was derived from (so a row deleted
+    // since stays deleted, after a restart too) and every row the node holds.
+    let entries = with_held(&state, derived);
+    *held = Some((state_path.to_path_buf(), key.to_owned(), entries.clone()));
+    Some(entries)
+}
+
+/// Inserts the rows of `derived` the node does not hold, with the marker, in one transaction.
+fn insert_derived(state: &State, derived: &[Entry], seq: u64, marker: &str) -> Option<()> {
     let rows: Vec<(String, String, String)> = derived
         .iter()
         .filter_map(|e| {
@@ -197,12 +247,11 @@ pub(crate) fn adopt_served(
         .iter()
         .map(|(k, n, b)| (k.as_str(), n.as_str(), b.as_str()))
         .collect();
-    let marker = format!("served:{key}");
     match state.insert_missing_managed_noted(
         &refs,
         now_secs(),
         &format!("adopted:{seq}"),
-        (SEEDED, &marker),
+        (SEEDED, marker),
     ) {
         Ok(Some(added)) => {
             let mut counts: std::collections::BTreeMap<String, usize> =
@@ -220,16 +269,18 @@ pub(crate) fn adopt_served(
                 kinds = %by_kind,
                 "this node serves entries from a primary that did not hand over its API entries: it adopted them as its own"
             );
+            Some(())
         }
-        Ok(None) => {}
+        Ok(None) => Some(()),
         Err(e) => {
             warn!("the served cluster entries can't be adopted: {e}");
-            return None;
+            None
         }
     }
-    // What the version no longer provides: the entries it was derived from (so a row deleted
-    // since stays deleted, after a restart too) and every row the node holds.
-    let mut entries = derived;
+}
+
+/// `derived` plus every row of the shared kinds the node holds that it does not name.
+fn with_held(state: &State, mut entries: Vec<Entry>) -> Vec<Entry> {
     for kind in SHARED_KINDS {
         for m in state.managed(kind).unwrap_or_default() {
             if entries.iter().any(|e| e.kind == *kind && e.name == m.name) {
@@ -244,8 +295,42 @@ pub(crate) fn adopt_served(
             }
         }
     }
-    *held = Some((state_path.to_path_buf(), key.to_owned(), entries.clone()));
-    Some(entries)
+    entries
+}
+
+/// Whether `served`, stripped of `entries`, merges with the rows the node would hold after
+/// adopting `derived`: checked on a scratch store, so nothing is written.
+fn candidate_merges(
+    state: &State,
+    served: &Config,
+    own: &Config,
+    derived: &[Entry],
+    entries: &[Entry],
+) -> Result<(), String> {
+    let scratch = State::in_memory().map_err(|e| e.to_string())?;
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for kind in SHARED_KINDS {
+        for m in state.managed(kind).unwrap_or_default() {
+            rows.push(((*kind).to_owned(), m.name, m.body));
+        }
+    }
+    for e in derived {
+        if let Ok(b) = serde_json::to_string(&e.body) {
+            rows.push((e.kind.clone(), e.name.clone(), b));
+        }
+    }
+    let refs: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .map(|(k, n, b)| (k.as_str(), n.as_str(), b.as_str()))
+        .collect();
+    scratch
+        .insert_missing_managed_noted(&refs, 0, "check", ("check", "1"))
+        .map_err(|e| e.to_string())?;
+    let mut stripped = served.clone();
+    strip(&mut stripped, entries, own);
+    managed::merge_on(&stripped, own, &managed::entries(&scratch))
+        .map(|_| ())
+        .map_err(|errs| errs.join("; "))
 }
 
 /// Whether `state` holds a row `kind`/`name`.
@@ -253,6 +338,25 @@ pub(crate) fn held(state: &State, kind: &str, name: &str) -> bool {
     state
         .managed(kind)
         .is_ok_and(|rows| rows.iter().any(|m| m.name == name))
+}
+
+/// Whether an entry's body holds a credential (inline or by file path), a reference to a stored
+/// secret excepted, or a file path a router entry may not carry.
+fn holds_secret(kind: &str, body: &serde_json::Value) -> bool {
+    let mut probe = body.clone();
+    if let Some(o) = probe.as_object_mut() {
+        o.retain(|k, _| !(k.ends_with("_ref") || k.ends_with("_refs")));
+    }
+    if telltale_config::credentials::holds_credential(kind, &probe) {
+        return true;
+    }
+    kind == managed::ROUTER
+        && crate::router_settings::FILE_FIELDS.iter().any(|f| {
+            probe
+                .get(*f)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+        })
 }
 
 /// The upstream group and upstream name prefix of a forwarded domain (`managed::forward_group`).
@@ -269,6 +373,17 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
     use serde_json::Value;
     fn push(out: &mut Vec<Entry>, kind: &str, name: &str, body: Value) {
         if body.get("node_only") == Some(&Value::Bool(true)) {
+            return;
+        }
+        // REQ: API-014, API-016 (ADR-921) - a credential, or a path to one, that the old
+        // primary's files set is not copied into a row: the entry stays in the version the node
+        // builds on.
+        if holds_secret(kind, &body) {
+            warn!(
+                kind,
+                name,
+                "this served entry holds a credential or a path to one: it stays in the cluster version and is not adopted as an API entry"
+            );
             return;
         }
         out.push(Entry {

@@ -435,3 +435,117 @@ async fn clu_015_t24_40_a_standalone_node_is_not_affected() {
 fn harness_() -> crate::credential_tests::Harness {
     crate::credential_tests::harness("")
 }
+
+/// REQ: CLU-015, CLU-004 (T24.40 review, HIGH) - the publish loop's adoption on promotion runs
+/// before the reload (`managed_base_state`, on the real merged base): the entries are adopted from
+/// what the node serves, and a restart afterwards keeps every one of them.
+#[tokio::test]
+async fn clu_015_t24_40_the_publish_loop_adopting_first_loses_nothing_after_a_restart() {
+    let (a, b) = (harness_(), harness_());
+    fill_all(&a).await;
+    let merged = crate::managed::merge(
+        &crate::managed_adopt_tests::file_of(&a),
+        &entries(a.auth.state()),
+    )
+    .unwrap();
+    let file = follow(&b, NodeRole::Replica, 1, &merged, &old_blob());
+    let _ = crate::replication::effective(&file);
+    promote(&b, 2);
+    // The publish loop's first gather, before any reload.
+    assert!(matches!(
+        crate::replication::managed_base_state(&file),
+        crate::replication::Base::Adopted(_)
+    ));
+    crate::managed_adopt::reset_cache();
+    let cfg = crate::replication::effective(&file);
+    assert_eq!(cfg.special, merged.special);
+    assert_eq!(upstream_names(&cfg), upstream_names(&merged));
+    assert_eq!(cfg.list.len(), merged.list.len());
+    assert_eq!(cfg.record.len(), merged.record.len());
+}
+
+/// REQ: CLU-015 (T24.40 review, HIGH) - once adopted, the names that were adopted are the ones
+/// stripped: a caller whose `served` has nothing in it (or whose files now define a name) can't
+/// change them.
+#[tokio::test]
+async fn clu_015_t24_40_the_adopted_names_are_remembered_not_rederived() {
+    let (a, b) = (harness_(), harness_());
+    fill_all(&a).await;
+    let merged = crate::managed::merge(
+        &crate::managed_adopt_tests::file_of(&a),
+        &entries(a.auth.state()),
+    )
+    .unwrap();
+    let file = crate::managed_adopt_tests::file_of(&b);
+    let path = crate::managed::state_path(&file);
+    let first = crate::managed_adopt::adopt_served(&path, "none:1", 1, &merged, &file).unwrap();
+    assert!(first.len() > 10, "{}", first.len());
+    crate::managed_adopt::reset_cache();
+    let again =
+        crate::managed_adopt::adopt_served(&path, "none:1", 1, &Config::default(), &file).unwrap();
+    let names = |v: &[crate::node_managed::Entry]| {
+        let mut n: Vec<String> = v.iter().map(|e| format!("{}/{}", e.kind, e.name)).collect();
+        n.sort();
+        n
+    };
+    assert_eq!(names(&first), names(&again));
+}
+
+/// REQ: API-014, API-016 (ADR-921; T24.40 review) - a served entry holding a credential, or a path
+/// to one, is not copied into a row; a reference to a stored secret is fine.
+#[test]
+fn clu_015_t24_40_credentials_are_not_copied_into_rows() {
+    let own = Config::default();
+    let mut served = Config::default();
+    let cfg: Config = toml::from_str(
+        r#"
+[[upstream]]
+name = "mtls"
+url = "https://dns.example/dns-query"
+tls_client_cert = "/etc/telltale/c.pem"
+tls_client_key = "/etc/telltale/k.pem"
+
+[[upstream]]
+name = "plain"
+url = "https://plain.example/dns-query"
+
+[[router]]
+name = "gw"
+type = "unifi"
+url = "https://192.0.2.1"
+api_key_file = "/etc/telltale/gw.key"
+"#,
+    )
+    .unwrap();
+    served.upstream = cfg.upstream;
+    served.router = cfg.router;
+    let derived = crate::managed_adopt::derive(&served, &own);
+    let names: Vec<_> = derived.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"plain"), "{names:?}");
+    assert!(!names.contains(&"mtls"), "{names:?}");
+    assert!(!names.contains(&"gw"), "{names:?}");
+}
+
+/// REQ: CLU-004 (T24.40 review, MEDIUM) - a candidate that would not merge is not adopted: nothing
+/// is inserted and the node refuses writes, instead of falling back to the stripped files.
+#[tokio::test]
+async fn clu_015_t24_40_a_row_that_would_not_merge_blocks_the_adoption() {
+    let (a, b) = (harness_(), harness_());
+    fill_all(&a).await;
+    let merged = crate::managed::merge(
+        &crate::managed_adopt_tests::file_of(&a),
+        &entries(a.auth.state()),
+    )
+    .unwrap();
+    let file = crate::managed_adopt_tests::file_of(&b);
+    put_row(
+        &b,
+        "upstream_group",
+        "broken",
+        &json!({"name": "broken", "members": ["no-such-upstream"]}),
+    );
+    let path = crate::managed::state_path(&file);
+    let before = rows(&b, "list");
+    assert!(crate::managed_adopt::adopt_served(&path, "none:1", 1, &merged, &file).is_none());
+    assert_eq!(rows(&b, "list"), before);
+}

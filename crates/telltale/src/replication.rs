@@ -1387,8 +1387,8 @@ impl Primary {
             if let Some(m) = inherited {
                 seed_node_managed(&cfg, m);
                 // REQ: CLU-015 (T24.37) — adopted before this node exports its own rows.
-                let mut scratch = Config::default();
-                adopt_shared(&cfg, m, &mut scratch);
+                // REQ: CLU-015 (T24.40) - on the real merged base, never an empty config.
+                let _ = managed_base_state(&cfg);
             }
             let h = export_node_managed(&self.sources, &mut self.nm_cache)
                 .await
