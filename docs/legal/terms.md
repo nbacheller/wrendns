@@ -77,7 +77,7 @@ We respond to clear notices of alleged copyright infringement that comply with t
 - a statement that you have a good-faith belief that the use is not authorised; and
 - a statement, under penalty of perjury, that the information in the notice is accurate and that you are the copyright owner or authorised to act on the owner's behalf.
 
-DMCA Designated Agent: MySummitKeep LLC, Attn: DMCA Designated Agent, 5005 W Laurel St, Ste 100 #3250, Tampa, FL 33607. Phone: (813) 418-6800. Email: dmca@wrendns.com. <!-- owner: add WrenDNS and wrendns.com to MySummitKeep LLC's entry in the Copyright Office's DMCA agent directory -->
+DMCA Designated Agent: MySummitKeep LLC, Attn: DMCA Designated Agent, 5005 W Laurel St, Ste 100 #3250, Tampa, FL 33607. Phone: (813) 418-6800. Email: dmca@mysummitkeep.com, the address registered with the U.S. Copyright Office's DMCA Designated Agent Directory, which lists WrenDNS and wrendns.com under MySummitKeep LLC. Notices sent to dmca@wrendns.com also reach the agent.
 
 ## 7. Third-party services and content
 
