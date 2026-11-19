@@ -122,7 +122,10 @@ jobs:
           python3 deploy/release/sbom_check.py dist/wrendns-*-linux.cdx.json
 
       - name: Checksums
-        run: (cd dist && sha256sum wrendns-* > SHA256SUMS && cat SHA256SUMS)
+        # ADR-1028: the pre-rename asset names too, for one release (deploy/release/legacy-assets.sh).
+        run: |
+          legacy="$(sh deploy/release/legacy-assets.sh dist)"
+          (cd dist && sha256sum wrendns-* $legacy > SHA256SUMS && cat SHA256SUMS)
 
       - uses: actions/upload-artifact@v7
         with:

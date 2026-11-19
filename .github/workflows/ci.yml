@@ -285,6 +285,12 @@ jobs:
         run: bash deploy/systemd/guided-e2e.sh target/bench-fast/wrendns
       - name: install.sh + systemd unit
         run: sudo bash deploy/systemd/e2e.sh target/bench-fast/wrendns
+      # REQ: OPS-004 (ADR-1028, T33.2) — the migration of a pre-rename native install, and the
+      # release's pre-rename asset names (a fake root; no root or systemd needed).
+      - name: pre-rename install migration and asset names
+        run: |
+          sh deploy/systemd/tests/migrate-test.sh
+          sh deploy/release/tests/legacy-assets-test.sh
       # REQ: CLU-003, CLU-004 (T5.2/T5.3 AC) — a primary and a replica as real processes:
       # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms;
       # OPS-010 (T13.4): maintenance on the replica from the primary, restarts, a stopped node.

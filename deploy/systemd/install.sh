@@ -74,7 +74,7 @@ fi
 
 # Questions only for a new install, and only in a terminal (or with --interactive).
 ASK=no
-if [ -n "$CONFIG_ONLY" ] || [ ! -f /etc/wrendns/wrendns.toml ]; then
+if [ -n "$CONFIG_ONLY" ] || { [ ! -f /etc/wrendns/wrendns.toml ] && [ ! -f /etc/telltale/telltale.toml ]; }; then # rebrand:keep
   case "$INTERACTIVE" in
     yes) ASK=yes ;;
     auto) if [ -t 0 ]; then ASK=yes; fi ;;
@@ -495,16 +495,28 @@ chmod 755 "$TMP/$ASSET"
 "$TMP/$ASSET" --version >/dev/null || die "the downloaded binary doesn't run on this machine"
 say "Verified $("$TMP/$ASSET" --version) (signature and SHA-256)"
 
+install -d -m 0755 "$PREFIX/bin"
+install -m 0755 "$TMP/$ASSET" "$PREFIX/bin/wrendns.new"
+mv -f "$PREFIX/bin/wrendns.new" "$PREFIX/bin/wrendns"   # atomic swap
+
+# ADR-1028 (T33.2): an install made before the rename is moved to the new names first: paths,
+# unit, user, and the old command as a link. Running it again changes nothing.
+MIGRATE="$HERE/migrate-from-telltale.sh" # rebrand:keep
+if [ ! -f "$MIGRATE" ]; then
+  MIGRATE="$TMP/migrate.sh"
+  fetch "$REPO_RAW/deploy/systemd/migrate-from-telltale.sh" "$MIGRATE" 2>/dev/null || MIGRATE= # rebrand:keep
+fi
+if [ -n "$MIGRATE" ] && sh "$MIGRATE" --detect; then
+  say "Migrating the TelltaleDNS install to WrenDNS" # rebrand:keep
+  sh "$MIGRATE"
+fi
+
 if ! id wrendns >/dev/null 2>&1; then
   say "Creating the wrendns system user"
   useradd --system --home-dir /var/lib/wrendns --no-create-home --shell /usr/sbin/nologin wrendns 2>/dev/null \
     || adduser --system --home /var/lib/wrendns --no-create-home --shell /usr/sbin/nologin --group wrendns
 fi
 getent group wrendns >/dev/null || groupadd --system wrendns
-
-install -d -m 0755 "$PREFIX/bin"
-install -m 0755 "$TMP/$ASSET" "$PREFIX/bin/wrendns.new"
-mv -f "$PREFIX/bin/wrendns.new" "$PREFIX/bin/wrendns"   # atomic swap
 
 install -d -m 0750 -o root -g wrendns /etc/wrendns
 if [ ! -f /etc/wrendns/wrendns.toml ]; then
