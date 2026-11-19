@@ -635,9 +635,10 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     apply_ovr(&mut cfg.group, &e.groups);
     // REQ: FLT-901 (T24.29) - a group whose config file sets `content` keeps the file's: an
     // override (one stored before the file set it, or by a client that sent the whole group)
-    // never freezes it, so a later edit to the file takes effect.
+    // never freezes it, so a later edit to the file takes effect. The base `file` decides, not
+    // `own`: on a promoted primary the cluster version's content beats its own files'.
     for g in &mut cfg.group {
-        if let Some(fc) = own
+        if let Some(fc) = file
             .group
             .iter()
             .find(|f| f.name == g.name)
