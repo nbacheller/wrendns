@@ -176,3 +176,15 @@ fn ops_014_self_update_commands_have_no_secrets_key() {
         assert!(removed.iter().any(|r| r == k), "{k}: {removed:?}");
     }
 }
+
+/// The key built into the binary, the published `.pub` file and `install.sh`'s default are one
+/// key (ADR-1034): a rotation that misses one of them fails here, not on a user's node.
+#[test]
+fn ops_004_release_key_is_the_same_in_all_three_places() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let pubfile = std::fs::read_to_string(root.join("deploy/release/wrendns-release.pub")).unwrap();
+    assert_eq!(pubfile.lines().nth(1), Some(RELEASE_KEY));
+    let install = std::fs::read_to_string(root.join("deploy/systemd/install.sh")).unwrap();
+    assert!(install.contains(&format!("PUBKEY_DEFAULT=\"{RELEASE_KEY}\"")));
+    assert!(minisign_verify::PublicKey::from_base64(RELEASE_KEY).is_ok());
+}

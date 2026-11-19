@@ -34,7 +34,7 @@ set -eu
 REPO_RAW="https://raw.githubusercontent.com/nbacheller/telltaledns/main"
 # Run from a checkout (or the tests), the unit and starter config come from next to this script.
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PUBKEY_DEFAULT="RWQSVukPYI4mZximvuqnLSiH56cyTwz6uEWQEFyWDhqvpBHC8DdyYK5T"
+PUBKEY_DEFAULT="RWRXU7+PSlC/THqf7tUqrCWT0rNnxIU3Z+bxy85CoSNkTzYQzOa+qMln"
 PUBKEY="${WRENDNS_RELEASE_PUBKEY:-$PUBKEY_DEFAULT}"
 PREFIX="${WRENDNS_PREFIX:-/usr/local}"
 CHANNEL=stable

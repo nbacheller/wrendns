@@ -16,7 +16,7 @@ use std::time::Duration;
 use wrendns_filter::fetch::{Client, Conditional, Response, SystemResolver};
 
 /// The release signing key (`deploy/release/wrendns-release.pub`).
-pub(crate) const RELEASE_KEY: &str = "RWQSVukPYI4mZximvuqnLSiH56cyTwz6uEWQEFyWDhqvpBHC8DdyYK5T";
+pub(crate) const RELEASE_KEY: &str = "RWRXU7+PSlC/THqf7tUqrCWT0rNnxIU3Z+bxy85CoSNkTzYQzOa+qMln";
 const RELEASES: &str = "https://github.com/nbacheller/telltaledns/releases";
 const MAX_SUMS: u64 = 64 * 1024;
 const MAX_BINARY: u64 = 128 * 1024 * 1024;

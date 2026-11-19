@@ -106,6 +106,6 @@ check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
 - **Signing needs the `MINISIGN_SECRET_KEY` secret.** Without it the build warns and
   publishes nothing. The public half lives in `deploy/release/wrendns-release.pub`,
   `crates/wrendns/src/selfupdate.rs`, and `deploy/systemd/install.sh`. A new key means
-  updating all three.
+  updating all three (the test `ops_004_release_key_is_the_same_in_all_three_places` checks they agree; ADR-1034).
 - **The `edge` prerelease is deleted and re-created** by each push to `main`. A superseded
   run steps aside instead of racing the newer one. It never affects "latest".

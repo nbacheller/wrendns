@@ -5585,3 +5585,15 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 9. **Left for the owner:** the Stripe account's own settings (branding colour `#22609c`, accent `#16273a`, the icon, the statement descriptor, the support URL `https://www.wrendns.com/support`, the receipts) are set in the Stripe dashboard, not here; the site cannot check them. The footer still says the licence is "Apache-2.0 OR MIT": T33.5 (ADR-1033) changes it with the licence.
 
 **Consequences:** `docs/releasing.md` and the site's own pages are unchanged in structure; the site gained `site/brand.py`, `site/test_site.py` (22 checks), `site/data/site.json`, the Download, Support and Thank-you pages, `site/staticwebapp.config.json` and `assets/fonts`, `assets/brand`.
+
+## ADR-1034 — WrenDNS signs its releases with its own minisign key (Accepted 2026-11-19, owner step, OPS-004)
+
+**Context:** `wrendns self-update`, the daily update check and `install.sh` trust only releases whose `SHA256SUMS` and `releases.json` are signed with the key built into the binary. That key was upstream's (`67268E600FE95612`), and the fork never had its private half, so no WrenDNS release could be published (ADR-1026, T33.2).
+
+**Decision:**
+1. A new Ed25519 minisign key pair, key ID `4CBF504A8FBF5357`, public key `RWRXU7+PSlC/THqf7tUqrCWT0rNnxIU3Z+bxy85CoSNkTzYQzOa+qMln`. The owner generated it in a throwaway container, so the private key never passed through an agent.
+2. The private key has no password, because the tag build signs without a prompt. It is held as the CI secret `MINISIGN_SECRET_KEY`, with an offline backup.
+3. The public half is in `deploy/release/wrendns-release.pub`, `RELEASE_KEY` in `crates/wrendns/src/selfupdate.rs` and `PUBKEY_DEFAULT` in `deploy/systemd/install.sh`. The test `ops_004_release_key_is_the_same_in_all_three_places` fails if they disagree.
+4. Nodes that still run an upstream TelltaleDNS build trust only upstream's key and cannot self-update to WrenDNS. They move by `install.sh` or the migration script (ADR-1028), which is the path the rename already requires.
+
+**Rotation:** a new key means a new pair, updating the three places and the secret in one commit, and noting it in the release notes. Nodes on the old key are moved by `install.sh`, as in point 4.
