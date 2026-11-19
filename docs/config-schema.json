@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "Root of `telltale.toml`.",
+  "description": "Root of `wrendns.toml`.",
   "type": "object",
   "properties": {
     "access": {
@@ -129,7 +129,7 @@
         "init": null,
         "join_url": null,
         "listen": "0.0.0.0:8443",
-        "name": "telltale",
+        "name": "wrendns",
         "rollout": {
           "bake_secs": 300,
           "canaries": [],
@@ -239,7 +239,7 @@
         "default_group": "",
         "enabled": false,
         "exclude_namespaces": [],
-        "label": "telltaledns.io/group",
+        "label": "wrendns.com/group",
         "map": [],
         "namespaces": []
       }
@@ -312,7 +312,7 @@
       "description": "This node's role and local settings.",
       "$ref": "#/$defs/NodeConfig",
       "default": {
-        "data_dir": "/var/lib/telltale",
+        "data_dir": "/var/lib/wrendns",
         "drain_delay_secs": 0,
         "maintenance_default_secs": 3600,
         "name": "",
@@ -785,7 +785,7 @@
           "const": "servfail_rate"
         },
         {
-          "description": "A newer TelltaleDNS build is available (once per version).",
+          "description": "A newer WrenDNS build is available (once per version).",
           "type": "string",
           "const": "update_available"
         },
@@ -800,7 +800,7 @@
           "const": "primary_unreachable"
         },
         {
-          "description": "A device TelltaleDNS has never seen starts asking (once per device; quiet for the\nfirst day after a fresh start, while every device is new).",
+          "description": "A device WrenDNS has never seen starts asking (once per device; quiet for the\nfirst day after a fresh start, while every device is new).",
           "type": "string",
           "const": "new_device"
         },
@@ -1117,7 +1117,7 @@
       "additionalProperties": false
     },
     "ApiTls": {
-      "description": "REQ: API-003 (ADR-149) — the API listener's certificate: made by TelltaleDNS, or yours.",
+      "description": "REQ: API-003 (ADR-149) — the API listener's certificate: made by WrenDNS, or yours.",
       "type": "object",
       "properties": {
         "cert": {
@@ -1145,7 +1145,7 @@
       "additionalProperties": false
     },
     "AuthConfig": {
-      "description": "Sign-in settings (API-003, `spec/08` §6). Users, sessions, and tokens live in\n`<data_dir>/state.db`. The first admin comes from the one-time setup token (in\n`<data_dir>/setup-token`; the log names the file) or from `TELLTALE_BOOTSTRAP_ADMIN_USER` with\n`TELLTALE_BOOTSTRAP_ADMIN_PASSWORD` or `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.",
+      "description": "Sign-in settings (API-003, `spec/08` §6). Users, sessions, and tokens live in\n`<data_dir>/state.db`. The first admin comes from the one-time setup token (in\n`<data_dir>/setup-token`; the log names the file) or from `WRENDNS_BOOTSTRAP_ADMIN_USER` with\n`WRENDNS_BOOTSTRAP_ADMIN_PASSWORD` or `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH`.",
       "type": "object",
       "properties": {
         "allow_insecure_basic": {
@@ -1381,7 +1381,7 @@
       "type": "object",
       "properties": {
         "infrastructure": {
-          "description": "Addresses that are infrastructure, not devices: Kubernetes node and pod networks, a\nDocker bridge, a forwarding router. When > 90% of queries come from ≤ 3 of them, the\nUI warns that client IPs appear masked (OPS-003). Loopback, this host's default\ngateways, and `TELLTALE_NODE_IPS` (set by the Helm chart) are always included.",
+          "description": "Addresses that are infrastructure, not devices: Kubernetes node and pod networks, a\nDocker bridge, a forwarding router. When > 90% of queries come from ≤ 3 of them, the\nUI warns that client IPs appear masked (OPS-003). Loopback, this host's default\ngateways, and `WRENDNS_NODE_IPS` (set by the Helm chart) are always included.",
           "type": "array",
           "default": [],
           "items": {
@@ -1474,7 +1474,7 @@
           "default": null
         },
         "init": {
-          "description": "Create a cluster on first start when this node isn't in one (CLU-009; the Helm chart's\ncontroller). Same as `telltale cluster init`.",
+          "description": "Create a cluster on first start when this node isn't in one (CLU-009; the Helm chart's\ncontroller). Same as `wrendns cluster init`.",
           "anyOf": [
             {
               "$ref": "#/$defs/ClusterInitConfig"
@@ -1495,7 +1495,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "listen": {
-          "description": "The cluster port (mTLS, node-to-node; REQ: CLU-001). Opened only once this node has\njoined or created a cluster (`telltale cluster init|join`). Peers dial the URLs given\nwith `--advertise`, so map this port to those.",
+          "description": "The cluster port (mTLS, node-to-node; REQ: CLU-001). Opened only once this node has\njoined or created a cluster (`wrendns cluster init|join`). Peers dial the URLs given\nwith `--advertise`, so map this port to those.",
           "type": "string",
           "default": "0.0.0.0:8443",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
@@ -1503,7 +1503,7 @@
         "name": {
           "description": "Cluster name.",
           "type": "string",
-          "default": "telltale",
+          "default": "wrendns",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "rollout": {
@@ -1768,7 +1768,7 @@
       ]
     },
     "DnsConfig": {
-      "description": "REQ: DNS-005 (review 01-12) — what TelltaleDNS advertises in its answers.",
+      "description": "REQ: DNS-005 (review 01-12) — what WrenDNS advertises in its answers.",
       "type": "object",
       "properties": {
         "edns_payload": {
@@ -2121,7 +2121,7 @@
           ]
         },
         "max_regexes": {
-          "description": "Most regex rules a compiled snapshot keeps (default 1,000; 0 = no limit). Every query\nthat no exact or suffix rule settles is tried against all of them, about a microsecond\nper thousand, and a few thousand that share a prefix can overwhelm the matcher's\nautomaton: in a synthetic test of patterns sharing a prefix, 1,500 cost 1.6 µs per query\nand 41 MiB, while 2,000 grew past 5 GiB in a minute. The rules past the limit, in list\norder, are left out and reported on the Lists page (and by `telltale lists compile`).",
+          "description": "Most regex rules a compiled snapshot keeps (default 1,000; 0 = no limit). Every query\nthat no exact or suffix rule settles is tried against all of them, about a microsecond\nper thousand, and a few thousand that share a prefix can overwhelm the matcher's\nautomaton: in a synthetic test of patterns sharing a prefix, 1,500 cost 1.6 µs per query\nand 41 MiB, while 2,000 grew past 5 GiB in a minute. The rules past the limit, in list\norder, are left out and reported on the Lists page (and by `wrendns lists compile`).",
           "type": "integer",
           "format": "uint32",
           "default": 1000,
@@ -2297,7 +2297,7 @@
           ]
         },
         "path": {
-          "description": "The TelltaleDNS file with the shared settings, e.g. `telltale/shared.toml`.",
+          "description": "The WrenDNS file with the shared settings, e.g. `wrendns/shared.toml`.",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
@@ -2381,7 +2381,7 @@
           "minimum": 0
         },
         "blocked_services": {
-          "description": "REQ: FLT-012 (T7.9) — services this group blocks (`tiktok`, `fortnite`, ...: see\n`telltale services list`), on top of its lists.",
+          "description": "REQ: FLT-012 (T7.9) — services this group blocks (`tiktok`, `fortnite`, ...: see\n`wrendns services list`), on top of its lists.",
           "type": "array",
           "items": {
             "type": "string",
@@ -2642,7 +2642,7 @@
         "label": {
           "description": "The pod or namespace label that names a workload's group.",
           "type": "string",
-          "default": "telltaledns.io/group",
+          "default": "wrendns.com/group",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "map": {
@@ -2824,7 +2824,7 @@
           "minimum": 0
         },
         "device_domain": {
-          "description": "REQ: DNS-023 (T22.1) — answer A and PTR records for the devices TelltaleDNS knows by\nname (named devices with one address, routers' DHCP clients, Home Assistant, and with\n`device_mdns` the names devices announce) as `<name>.<device_domain>`, such as\n`kitchen-tablet.home.arpa`. Off when unset. Records in `[[record]]`, hosts files, and\nzones win over these.",
+          "description": "REQ: DNS-023 (T22.1) — answer A and PTR records for the devices WrenDNS knows by\nname (named devices with one address, routers' DHCP clients, Home Assistant, and with\n`device_mdns` the names devices announce) as `<name>.<device_domain>`, such as\n`kitchen-tablet.home.arpa`. Off when unset. Records in `[[record]]`, hosts files, and\nzones win over these.",
           "type": [
             "string",
             "null"
@@ -3039,7 +3039,7 @@
           "default": true
         },
         "exemplars": {
-          "description": "REQ: OBS-017 (T11.6) — a scraper that asks for OpenMetrics gets it, with an exemplar\n(a recent query's trace ID) on each `telltale_query_duration_seconds` bucket. `false`:\nalways the plain Prometheus text format.",
+          "description": "REQ: OBS-017 (T11.6) — a scraper that asks for OpenMetrics gets it, with an exemplar\n(a recent query's trace ID) on each `wrendns_query_duration_seconds` bucket. `false`:\nalways the plain Prometheus text format.",
           "type": "boolean",
           "default": true
         },
@@ -3068,7 +3068,7 @@
         "data_dir": {
           "description": "The only writable directory (snapshots, state.db, query log).",
           "type": "string",
-          "default": "/var/lib/telltale",
+          "default": "/var/lib/wrendns",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "drain_delay_secs": {
@@ -3079,7 +3079,7 @@
           "minimum": 0
         },
         "maintenance_default_secs": {
-          "description": "REQ: OPS-010 (T13.4) — how long maintenance lasts when a request doesn't say, in\nseconds: 60 to 86400 (a day). Maintenance itself is started from the Cluster page,\n`telltale ctl maintenance start`, or the API; it's the node's state, not configuration.",
+          "description": "REQ: OPS-010 (T13.4) — how long maintenance lasts when a request doesn't say, in\nseconds: 60 to 86400 (a day). Maintenance itself is started from the Cluster page,\n`wrendns ctl maintenance start`, or the API; it's the node's state, not configuration.",
           "type": "integer",
           "format": "uint32",
           "default": 3600,
@@ -3110,13 +3110,13 @@
           }
         },
         "secrets_key_file": {
-          "description": "REQ: OPS-014, API-014 (ADR-903 §3) — a file holding this node's secrets key\n(`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for\n`Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else\n`<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as\n`TELLTALE_NODE_SECRETS_KEY_FILE`.",
+          "description": "REQ: OPS-014, API-014 (ADR-903 §3) — a file holding this node's secrets key\n(`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for\n`Idempotency-Key` retries. Empty: the `WRENDNS_SECRETS_KEY` variable, else\n`<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as\n`WRENDNS_NODE_SECRETS_KEY_FILE`.",
           "type": "string",
           "default": "",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "secrets_previous_key_file": {
-          "description": "REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).",
+          "description": "REQ: OPS-014 — the key before a rotation, in a file (or `WRENDNS_SECRETS_PREVIOUS_KEY`).",
           "type": "string",
           "default": "",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
@@ -3159,7 +3159,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "mcp_provider": {
-          "description": "REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its\n`id`) with OAuth 2.1: TelltaleDNS accepts the provider's JWT access tokens issued for\n`mcp_audience`, as an agent with the scopes the user consented to. Empty: off.",
+          "description": "REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its\n`id`) with OAuth 2.1: WrenDNS accepts the provider's JWT access tokens issued for\n`mcp_audience`, as an agent with the scopes the user consented to. Empty: off.",
           "type": "string",
           "default": "",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
@@ -3275,7 +3275,7 @@
           }
         },
         "username_claim": {
-          "description": "Claim that becomes the TelltaleDNS username (dotted paths reach into objects).\nDefault `preferred_username`; falls back to `email`, then `sub`.",
+          "description": "Claim that becomes the WrenDNS username (dotted paths reach into objects).\nDefault `preferred_username`; falls back to `email`, then `sub`.",
           "type": "string",
           "default": "preferred_username",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
@@ -3365,7 +3365,7 @@
       "additionalProperties": false
     },
     "ProbeConfig": {
-      "description": "REQ: OBS-020 (T11.3, ADR-107, `spec/06` §9) — synthetic probes: every `interval_secs`,\neach DNS listener is asked `probe.telltale.invalid` through its own protocol (UDP, TCP, DoT,\nDoH, DoH3, DoQ) from this node, and so is every extra target; each TLS listener's\ncertificate expiry is read from its file. Probes don't show in the query log or analytics.",
+      "description": "REQ: OBS-020 (T11.3, ADR-107, `spec/06` §9) — synthetic probes: every `interval_secs`,\neach DNS listener is asked `probe.wrendns.invalid` through its own protocol (UDP, TCP, DoT,\nDoH, DoH3, DoQ) from this node, and so is every extra target; each TLS listener's\ncertificate expiry is read from its file. Probes don't show in the query log or analytics.",
       "type": "object",
       "properties": {
         "cert_warn_days": {
@@ -3969,7 +3969,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "services": {
-          "description": "`block_services`: these services (`telltale services list`) are blocked during the\nwindows.",
+          "description": "`block_services`: these services (`wrendns services list`) are blocked during the\nwindows.",
           "type": "array",
           "items": {
             "type": "string",
@@ -4302,7 +4302,7 @@
           "default": true
         },
         "latency_ms": {
-          "description": "The latency objective's threshold: one of 1, 5, 10, 25, 50, 100, 250, 500, 1000,\n2500, 5000 ms (the bucket bounds of `telltale_query_duration_seconds`). Default 250.",
+          "description": "The latency objective's threshold: one of 1, 5, 10, 25, 50, 100, 250, 500, 1000,\n2500, 5000 ms (the bucket bounds of `wrendns_query_duration_seconds`). Default 250.",
           "type": "integer",
           "format": "uint32",
           "default": 250,
@@ -4556,7 +4556,7 @@
       ]
     },
     "SupportConfig": {
-      "description": "REQ: OPS-011 (ADR-156) — the support package (`telltale support-package`, System page). No\nplatform lets the process read its own stderr back, so it keeps a small log of its own: the\nlast 2,000 lines (INFO and up) in memory, and, unless turned off here, two rotating files of\nabout 1 MiB each under `<data_dir>/logs/`, so lines from before a restart reach the package.\nThe files are not redacted (they hold client addresses; mode 0640): the package redacts when\nit is made. Node-local.",
+      "description": "REQ: OPS-011 (ADR-156) — the support package (`wrendns support-package`, System page). No\nplatform lets the process read its own stderr back, so it keeps a small log of its own: the\nlast 2,000 lines (INFO and up) in memory, and, unless turned off here, two rotating files of\nabout 1 MiB each under `<data_dir>/logs/`, so lines from before a restart reach the package.\nThe files are not redacted (they hold client addresses; mode 0640): the package redacts when\nit is made. Node-local.",
       "type": "object",
       "properties": {
         "persist_logs": {

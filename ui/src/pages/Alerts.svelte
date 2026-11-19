@@ -48,7 +48,7 @@
     { key: 'token_ref', label: 'Token (ntfy, Gotify)', type: 'secret', fileKey: 'token_file', advanced: true, admin: true,
       secretName: (e) => secretNameFor('alert', e, 'token'),
       help: 'The access token of your ntfy or Gotify server, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
-    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
+    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/wrendns/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
   // REQ: OBS-010 (T27.1) — every condition the server accepts; the list is checked against the enum.
   const conditions = alertConditions;

@@ -100,8 +100,8 @@ On the primary (where alerts and the health level are evaluated) and on any node
 - **Audit:** `node.maintenance.start` (until, reason) and `node.maintenance.end` (by whom, or
   `expired`) on the target node (and, as every forwarded write, the entry node's audit line names
   the forward).
-- **CLI:** `telltale ctl maintenance start --for 2h --reason "SD swap" [--node <id>]`,
-  `telltale ctl maintenance end [--node <id>]`, `telltale ctl maintenance status`.
+- **CLI:** `wrendns ctl maintenance start --for 2h --reason "SD swap" [--node <id>]`,
+  `wrendns ctl maintenance end [--node <id>]`, `wrendns ctl maintenance status`.
 - **MCP:** `start_maintenance { node, forSecs, reason }` and `end_maintenance { node, reason }`:
   immediate ops (like `pause_blocking`), scope `ops:maintenance`, agents capped at **2 h**
   (`422` with the cap in the hint), audited with the agent's reason. `cluster_status` shows each
@@ -141,10 +141,10 @@ maintenance_default_secs = 3600   # 60..86400
 Keep it; don't add more. The feature is a verb, not a section.
 
 ## 9. Metrics
-`telltale_node_maintenance` (0/1), `telltale_node_maintenance_until_seconds` (Unix time, 0 when
-none), `telltale_node_maintenance_total` (starts). Per node; the Grafana cluster row gets a state
+`wrendns_node_maintenance` (0/1), `wrendns_node_maintenance_until_seconds` (Unix time, 0 when
+none), `wrendns_node_maintenance_total` (starts). Per node; the Grafana cluster row gets a state
 timeline. Chart alert rules are deliberately **not** added for maintenance itself; instead the
-existing `TelltaleDNSNodeDown`-style rules should `unless on(node) telltale_node_maintenance == 1`
+existing `WrenDNSNodeDown`-style rules should `unless on(node) wrendns_node_maintenance == 1`
 — add that to the chart's rules and to `deploy/prometheus/` and test with promtool.
 
 ## 10. Performance
@@ -166,7 +166,7 @@ timer per node.
   the old primary follows; with `handover = false` or in manual mode it stays primary and the
   response carries the note. Simulator: a stepping-down primary never publishes in the new epoch
   (mutation-check the `stepping_down` flag like the other election properties).
-- Promtool: the chart's node rules stay quiet with `telltale_node_maintenance == 1`.
+- Promtool: the chart's node rules stay quiet with `wrendns_node_maintenance == 1`.
 - Playwright: Cluster page start → banner, badge, health note → end.
 
 ## 12. Implementation order

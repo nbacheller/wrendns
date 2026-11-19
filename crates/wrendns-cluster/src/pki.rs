@@ -1,0 +1,389 @@
+//! The cluster PKI (REQ: CLU-001; `spec/12` §3, ADR-044): an Ed25519 CA per cluster and node
+//! certificates it issues from the node's certificate signing request.
+//!
+//! Every node certificate carries two names: [`CLUSTER_NAME`] (what peers verify, so a node is
+//! trusted because the cluster CA signed it, whatever address it was dialed at) and
+//! `<node-id>.node.<legacy zone>` (who it is; the zone keeps its pre-WrenDNS spelling during the
+//! rolling-upgrade window, ADR-1028). `.invalid` names can never resolve or be
+//! issued by a public CA.
+
+use rcgen::{
+    BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
+    DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData,
+    SanType,
+};
+use time::{Duration, OffsetDateTime};
+
+/// The name every node certificate carries and every peer verifies.
+pub const CLUSTER_NAME: &str = "cluster.telltale.invalid"; // rebrand:keep
+/// Node certificates last this long; nodes renew at two thirds of it.
+pub const NODE_CERT_DAYS: i64 = 90;
+/// The CA lasts this long.
+const CA_YEARS: i64 = 10;
+
+/// A PKI failure.
+#[derive(Debug, thiserror::Error)]
+pub enum PkiError {
+    #[error("certificate: {0}")]
+    Rcgen(#[from] rcgen::Error),
+    #[error("{0}")]
+    Invalid(String),
+}
+
+/// The CA certificate and its private key (only on the primary and eligible nodes).
+pub struct Ca {
+    pub cert_pem: String,
+    pub key_pem: String,
+}
+
+impl std::fmt::Debug for Ca {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ca").finish_non_exhaustive()
+    }
+}
+
+/// A new CA for cluster `name`.
+pub fn new_ca(name: &str) -> Result<Ca, PkiError> {
+    new_ca_labeled(name, "")
+}
+
+/// A new CA whose name carries `label` (a rotation's date), so two CAs of one cluster never
+/// share a subject while both are trusted (T5.4c).
+pub fn new_ca_labeled(name: &str, label: &str) -> Result<Ca, PkiError> {
+    let key = KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
+    let mut p = CertificateParams::new(Vec::<String>::new())?;
+    let mut dn = DistinguishedName::new();
+    let cn = if label.is_empty() {
+        format!("WrenDNS cluster {name} CA")
+    } else {
+        format!("WrenDNS cluster {name} CA ({label})")
+    };
+    dn.push(DnType::CommonName, cn);
+    p.distinguished_name = dn;
+    p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let now = OffsetDateTime::now_utc();
+    p.not_before = now - Duration::hours(1);
+    p.not_after = now + Duration::days(365 * CA_YEARS);
+    let cert = p.self_signed(&key)?;
+    Ok(Ca {
+        cert_pem: cert.pem(),
+        key_pem: key.serialize_pem(),
+    })
+}
+
+/// A node's key pair and the CSR to send when joining.
+#[derive(Debug)]
+pub struct NodeKey {
+    pub key_pem: String,
+    pub csr_pem: String,
+}
+
+/// A new node key and a CSR for it.
+pub fn new_node_key() -> Result<NodeKey, PkiError> {
+    let key = KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
+    let p = CertificateParams::new(vec![CLUSTER_NAME.to_owned()])?;
+    let csr = p.serialize_request(&key)?;
+    Ok(NodeKey {
+        key_pem: key.serialize_pem(),
+        csr_pem: csr.pem()?,
+    })
+}
+
+/// A CSR for an existing node key (certificate renewal keeps the key, so the node ID stays).
+pub fn csr_for(key_pem: &str) -> Result<String, PkiError> {
+    let key = KeyPair::from_pem(key_pem)?;
+    let p = CertificateParams::new(vec![CLUSTER_NAME.to_owned()])?;
+    Ok(p.serialize_request(&key)?.pem()?)
+}
+
+/// The certificates of a CA bundle (`ca.crt` holds two during a rotation), as PEM.
+pub fn certs_of(bundle: &str) -> Vec<String> {
+    use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
+    CertificateDer::pem_slice_iter(bundle.as_bytes())
+        .filter_map(Result::ok)
+        .map(|c| {
+            let b64 = base64_lines(c.as_ref());
+            format!("-----BEGIN CERTIFICATE-----\n{b64}-----END CERTIFICATE-----\n")
+        })
+        .collect()
+}
+
+fn base64_lines(der: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut line = 0;
+    for chunk in der.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+        line += 4;
+        if line == 64 {
+            out.push('\n');
+            line = 0;
+        }
+    }
+    if line != 0 {
+        out.push('\n');
+    }
+    out
+}
+
+/// An order-independent fingerprint of the set of CAs in a bundle: two nodes with the same
+/// trust report the same value (T5.4c readiness).
+pub fn trust_fp(bundle: &str) -> String {
+    let mut fps: Vec<[u8; 32]> = certs_of(bundle)
+        .iter()
+        .filter_map(|c| fingerprint(c).ok())
+        .collect();
+    fps.sort_unstable();
+    let joined: Vec<u8> = fps.concat();
+    hex(&ring::digest::digest(&ring::digest::SHA256, &joined).as_ref()[..16])
+}
+
+/// The fingerprint (hex) of the CA in `bundle` that issued `cert_pem`, if any.
+pub fn issuer_fp(cert_pem: &str, bundle: &str) -> Option<String> {
+    certs_of(bundle)
+        .into_iter()
+        .find(|ca| verify_one(cert_pem, ca).is_ok())
+        .and_then(|ca| fingerprint(&ca).ok())
+        .map(|f| hex(&f))
+}
+
+/// Checks that `cert_pem` was signed by a CA in `ca_pem` (one CA, or a bundle during a
+/// rotation; Ed25519) and is valid now.
+pub fn verify_issued(cert_pem: &str, ca_pem: &str) -> Result<(), PkiError> {
+    let cas = certs_of(ca_pem);
+    if cas.is_empty() {
+        return Err(PkiError::Invalid("no CA certificate".into()));
+    }
+    let mut last = None;
+    for ca in &cas {
+        match verify_one(cert_pem, ca) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| PkiError::Invalid("not issued by this cluster's CA".into())))
+}
+
+fn verify_one(cert_pem: &str, ca_pem: &str) -> Result<(), PkiError> {
+    let bad = |m: &str| PkiError::Invalid(m.to_owned());
+    let der = der_of(cert_pem)?;
+    let ca_der = der_of(ca_pem)?;
+    let (_, cert) =
+        x509_parser::parse_x509_certificate(&der).map_err(|e| bad(&format!("certificate: {e}")))?;
+    let (_, ca) =
+        x509_parser::parse_x509_certificate(&ca_der).map_err(|e| bad(&format!("CA: {e}")))?;
+    if cert.issuer() != ca.subject() {
+        return Err(bad("not issued by this cluster's CA"));
+    }
+    let key = ring::signature::UnparsedPublicKey::new(
+        &ring::signature::ED25519,
+        ca.public_key().subject_public_key.data.as_ref(),
+    );
+    key.verify(
+        cert.tbs_certificate.as_ref(),
+        cert.signature_value.data.as_ref(),
+    )
+    .map_err(|_| bad("the CA's signature doesn't verify"))?;
+    if !cert.validity().is_valid() {
+        return Err(bad("the certificate isn't valid now"));
+    }
+    Ok(())
+}
+
+/// The node ID for a public key: the first 16 hex digits of its SHA-256.
+pub fn node_id(public_key_der: &[u8]) -> String {
+    hex(&ring::digest::digest(&ring::digest::SHA256, public_key_der).as_ref()[..8])
+}
+
+/// Signs a node's CSR: the names are chosen here (cluster name, node ID name, and the node's
+/// advertised hosts), never taken from the request. Returns `(node_id, cert_pem)`.
+pub fn issue(
+    ca: &Ca,
+    csr_pem: &str,
+    advertise_hosts: &[String],
+) -> Result<(String, String), PkiError> {
+    let mut csr = CertificateSigningRequestParams::from_pem(csr_pem)?;
+    let id = node_id(csr.public_key.der_bytes());
+    let mut sans = vec![
+        SanType::DnsName(CLUSTER_NAME.try_into()?),
+        SanType::DnsName(format!("{id}.node.telltale.invalid").try_into()?), // rebrand:keep
+    ];
+    for h in advertise_hosts {
+        match h.parse::<std::net::IpAddr>() {
+            Ok(ip) => sans.push(SanType::IpAddress(ip)),
+            Err(_) => {
+                if let Ok(n) = h.as_str().try_into() {
+                    sans.push(SanType::DnsName(n));
+                }
+            }
+        }
+    }
+    let p = &mut csr.params;
+    p.subject_alt_names = sans;
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, format!("{id}.node.telltale.invalid")); // rebrand:keep
+    p.distinguished_name = dn;
+    p.is_ca = IsCa::ExplicitNoCa;
+    p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    p.extended_key_usages = vec![
+        ExtendedKeyUsagePurpose::ServerAuth,
+        ExtendedKeyUsagePurpose::ClientAuth,
+    ];
+    let now = OffsetDateTime::now_utc();
+    p.not_before = now - Duration::hours(1);
+    p.not_after = now + Duration::days(NODE_CERT_DAYS);
+    let ca_key = KeyPair::from_pem(&ca.key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(&ca.cert_pem, ca_key)?;
+    let cert = csr.signed_by(&issuer)?;
+    Ok((id, cert.pem()))
+}
+
+/// SHA-256 of a PEM certificate's DER (what join tokens pin).
+pub fn fingerprint(cert_pem: &str) -> Result<[u8; 32], PkiError> {
+    let der = der_of(cert_pem)?;
+    let d = ring::digest::digest(&ring::digest::SHA256, &der);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(d.as_ref());
+    Ok(out)
+}
+
+/// The DER of the first certificate in `pem`.
+pub fn der_of(pem: &str) -> Result<Vec<u8>, PkiError> {
+    use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
+    CertificateDer::from_pem_slice(pem.as_bytes())
+        .map(|c| c.to_vec())
+        .map_err(|e| PkiError::Invalid(format!("not a PEM certificate: {e}")))
+}
+
+/// Seconds until a PEM certificate expires, and its total lifetime (for renewal at 2/3).
+pub fn validity(cert_pem: &str) -> Result<(i64, i64), PkiError> {
+    let der = der_of(cert_pem)?;
+    let (_, cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| PkiError::Invalid(format!("certificate: {e}")))?;
+    let v = cert.validity();
+    let (nb, na) = (v.not_before.timestamp(), v.not_after.timestamp());
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    Ok((na - now, na - nb))
+}
+
+/// The DNS names and IP addresses a PEM certificate covers (its subject alternative names);
+/// REQ: API-003 (ADR-149), for the listener checks.
+pub fn names(cert_pem: &str) -> Result<Vec<String>, PkiError> {
+    use x509_parser::extensions::GeneralName;
+    let der = der_of(cert_pem)?;
+    let (_, cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| PkiError::Invalid(format!("certificate: {e}")))?;
+    let Ok(Some(san)) = cert.subject_alternative_name() else {
+        return Ok(Vec::new());
+    };
+    Ok(san
+        .value
+        .general_names
+        .iter()
+        .filter_map(|n| match n {
+            GeneralName::DNSName(d) => Some((*d).to_owned()),
+            GeneralName::IPAddress(b) => match b.len() {
+                4 => <[u8; 4]>::try_from(*b)
+                    .ok()
+                    .map(|a| std::net::IpAddr::from(a).to_string()),
+                16 => <[u8; 16]>::try_from(*b)
+                    .ok()
+                    .map(|a| std::net::IpAddr::from(a).to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect())
+}
+
+pub(crate) fn hex(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clu_001_ca_issues_node_certs_with_chosen_names() {
+        let ca = new_ca("home").unwrap();
+        let k = new_node_key().unwrap();
+        let (id, cert) = issue(&ca, &k.csr_pem, &["pi.lan".into(), "10.30.3.2".into()]).unwrap();
+        assert_eq!(id.len(), 16);
+        let der = der_of(&cert).unwrap();
+        let (_, c) = x509_parser::parse_x509_certificate(&der).unwrap();
+        let sans: Vec<String> = c
+            .subject_alternative_name()
+            .unwrap()
+            .unwrap()
+            .value
+            .general_names
+            .iter()
+            .map(|n| format!("{n}"))
+            .collect();
+        assert!(sans.iter().any(|s| s.contains(CLUSTER_NAME)), "{sans:?}");
+        assert!(
+            sans.iter()
+                .any(|s| s.contains(&format!("{id}.node.telltale.invalid"))) // rebrand:keep
+        );
+        assert!(sans.iter().any(|s| s.contains("pi.lan")));
+        assert!(sans.iter().any(|s| s.contains("c0:a8:03:02")), "{sans:?}");
+        // The issuer is the cluster CA, and the lifetime is 90 days.
+        let ca_der = der_of(&ca.cert_pem).unwrap();
+        let (_, cac) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
+        assert_eq!(c.issuer(), cac.subject());
+        let (left, total) = validity(&cert).unwrap();
+        assert!((total - (NODE_CERT_DAYS * 86_400 + 3600)).abs() < 5);
+        assert!(left > 89 * 86_400);
+        // Same key, same ID.
+        let csr = CertificateSigningRequestParams::from_pem(&k.csr_pem).unwrap();
+        assert_eq!(node_id(csr.public_key.der_bytes()), id);
+        assert_eq!(fingerprint(&ca.cert_pem).unwrap().len(), 32);
+    }
+
+    // REQ: CLU-001 (T5.4c) — a bundle of two CAs: certificates from either verify, the issuer
+    // is found, and the trust fingerprint ignores order.
+    #[test]
+    fn clu_001_ca_bundles_during_rotation() {
+        let (old, new) = (
+            new_ca("home").unwrap(),
+            new_ca_labeled("home", "2026-10-05").unwrap(),
+        );
+        let k = new_node_key().unwrap();
+        let (_, a) = issue(&old, &k.csr_pem, &[]).unwrap();
+        let (_, b) = issue(&new, &k.csr_pem, &[]).unwrap();
+        let bundle = format!("{}{}", old.cert_pem, new.cert_pem);
+        let flipped = format!("{}{}", new.cert_pem, old.cert_pem);
+        assert_eq!(certs_of(&bundle).len(), 2);
+        assert_eq!(
+            der_of(&certs_of(&bundle)[1]).unwrap(),
+            der_of(&new.cert_pem).unwrap()
+        );
+        assert!(verify_issued(&a, &bundle).is_ok() && verify_issued(&b, &bundle).is_ok());
+        assert!(verify_issued(&b, &old.cert_pem).is_err());
+        assert_eq!(
+            issuer_fp(&b, &bundle),
+            Some(hex(&fingerprint(&new.cert_pem).unwrap()))
+        );
+        assert_eq!(trust_fp(&bundle), trust_fp(&flipped));
+        assert_ne!(trust_fp(&bundle), trust_fp(&old.cert_pem));
+    }
+}

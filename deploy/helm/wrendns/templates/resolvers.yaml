@@ -1,0 +1,167 @@
+{{- if include "wrendns.scaled" . }}
+# REQ: CLU-009 — resolver pods: they join the controller on start (ephemeral members), serve
+# its configuration and lists, ship their query log to it, and turn ready only once synced.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wrendns.fullname" . }}-resolver
+  labels:
+    {{- include "wrendns.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.resolvers.replicas }}
+  selector:
+    matchLabels:
+      {{- include "wrendns.resolverLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels:
+        {{- include "wrendns.resolverLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.resolvers.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with include "wrendns.podDns" . | trim }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: wrendns
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "-c", "/etc/wrendns/00-chart.toml", "-c", "/etc/wrendns/10-values.toml", "-c", "/etc/wrendns/20-resolver.toml"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: WRENDNS_LOG
+              value: info
+            # REQ: OPS-004 (ADR-046) — how this node updates (shown with the update status).
+            - name: WRENDNS_INSTALL
+              value: helm
+            - name: WRENDNS_NODE_IPS
+              valueFrom:
+                fieldRef: { fieldPath: status.hostIP }
+            # REQ: CLU-008 (T6.14) — the Cluster page groups pods by Kubernetes node.
+            - name: WRENDNS_KUBE_NODE
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            - name: WRENDNS_POD
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            # REQ: OPS-007 — keep answering briefly on shutdown while the Service moves away.
+            # An environment variable, not a config key: an older image only warns about it.
+            - name: WRENDNS_DRAIN_DELAY_SECS
+              value: {{ .Values.drainDelaySeconds | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: dns-udp
+              containerPort: {{ include "wrendns.dnsPort" . }}
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: {{ include "wrendns.dnsPort" . }}
+              protocol: TCP
+            {{- if .Values.encrypted.dot.enabled }}
+            - name: dns-dot
+              containerPort: {{ include "wrendns.dotPort" . }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.encrypted.doh.enabled }}
+            - name: dns-doh
+              containerPort: {{ include "wrendns.dohPort" . }}
+              protocol: TCP
+            {{- end }}
+            {{- if and .Values.encrypted.doh.enabled .Values.encrypted.doh.http3 }}
+            - name: dns-doh3
+              containerPort: {{ include "wrendns.dohPort" . }}
+              protocol: UDP
+            {{- end }}
+            {{- if .Values.encrypted.doq.enabled }}
+            - name: dns-doq
+              containerPort: {{ include "wrendns.doqPort" . }}
+              protocol: UDP
+            {{- end }}
+            - name: metrics
+              containerPort: {{ .Values.service.metrics.port }}
+              protocol: TCP
+          # Ready once joined and synced (it never serves unfiltered); joining retries for
+          # two minutes, then the pod exits and Kubernetes restarts it. REQ: OPS-010 — the
+          # startup probe leaves maintenance out (`startup=1`), so a pod restarted inside its
+          # window isn't killed; readiness keeps it out of the Service until the window ends.
+          startupProbe:
+            httpGet: { path: "/readyz?startup=1", port: metrics }
+            periodSeconds: 2
+            failureThreshold: 150
+          # Leaves the Service within about 4 s of turning not ready (maintenance, a drill, a
+          # failure); at 5 s × 3 a live drill measured 13 s of queries still sent to it.
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /livez, port: metrics }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resolvers.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/wrendns
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/wrendns
+            - name: cluster-secret
+              mountPath: /etc/wrendns-cluster
+              readOnly: true
+            {{- if include "wrendns.encrypted" . }}
+            - name: dns-tls
+              mountPath: /etc/wrendns-tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wrendns.fullname" . }}
+        # A fresh identity per pod: it joins as a new ephemeral member each start.
+        - name: data
+          emptyDir: {}
+        - name: cluster-secret
+          secret:
+            secretName: {{ include "wrendns.clusterSecret" . }}
+        {{- if include "wrendns.encrypted" . }}
+        - name: dns-tls
+          secret:
+            secretName: {{ include "wrendns.tlsSecret" . }}
+        {{- end }}
+      {{- with .Values.resolvers.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.resolvers.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.resolvers.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

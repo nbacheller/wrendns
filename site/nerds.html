@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>For nerds: architecture and tech stack — TelltaleDNS</title>
-<meta name="description" content="An interactive look inside TelltaleDNS: every crate and how they connect, a query stage by stage, the cluster, the agent surface, the tech stack, data formats, and performance budgets.">
+<title>For nerds: architecture and tech stack — WrenDNS</title>
+<meta name="description" content="An interactive look inside WrenDNS: every crate and how they connect, a query stage by stage, the cluster, the agent surface, the tech stack, data formats, and performance budgets.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -15,7 +15,7 @@
 
 <section>
   <p class="eyebrow">For nerds</p>
-  <h1>Inside TelltaleDNS</h1>
+  <h1>Inside WrenDNS</h1>
   <p class="lede">Every crate, how a query moves through them, and why each piece of the stack was chosen. Generated from the repository on every site build, so it can't drift from the code.</p>
   <p class="muted"><!-- @arch-stats --></p>
   <ul class="toc">
@@ -51,7 +51,7 @@
 <section id="pipeline">
   <p class="eyebrow">The hot path</p>
   <h2>A query, stage by stage</h2>
-  <p class="muted">The order in <code>crates/telltale/src/pipeline.rs</code>. Everything up to the cache is synchronous and allocation-free on the worker thread that received the packet; only a cache miss goes async. Open a stage for details.</p>
+  <p class="muted">The order in <code>crates/wrendns/src/pipeline.rs</code>. Everything up to the cache is synchronous and allocation-free on the worker thread that received the packet; only a cache miss goes async. Open a stage for details.</p>
   <ol class="pipe">
 <!-- @arch-pipeline -->
   </ol>
@@ -91,7 +91,7 @@
 <section id="budgets">
   <p class="eyebrow">Measured, not hoped for</p>
   <h2>The 1.0 budgets</h2>
-  <p class="muted">The release gates from <a href="https://github.com/paimonsoror/telltaledns/blob/main/spec/00-overview.md">the specification</a>. Current measurements are on the <a href="performance.html">Performance</a> page.</p>
+  <p class="muted">The release gates from <a href="https://github.com/nbacheller/telltaledns/blob/main/spec/00-overview.md">the specification</a>. Current measurements are on the <a href="performance.html">Performance</a> page.</p>
   <div class="table-wrap">
     <table><thead><tr><th>Metric</th><th>Target</th></tr></thead><tbody>
 <!-- @arch-gates -->

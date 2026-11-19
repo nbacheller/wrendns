@@ -1,5 +1,5 @@
 # REQ: CLU-008 (T6.11) — host-resource alerts, run by deploy/helm/alerts-test.sh with
-# `promtool test rules` against the rules the chart renders (release "telltale").
+# `promtool test rules` against the rules the chart renders (release "wrendns").
 rule_files: [rules.yml]
 evaluation_interval: 1m
 
@@ -8,108 +8,108 @@ tests:
   # a peer with an old table (it doesn't watch) and a fresh watcher don't.
   - interval: 1m
     input_series:
-      - series: 'telltale_kubernetes_table_age_seconds{job="telltale-metrics",instance="ctrl"}'
+      - series: 'wrendns_kubernetes_table_age_seconds{job="wrendns-metrics",instance="ctrl"}'
         values: "1200x20"
-      - series: 'telltale_kubernetes_watching{job="telltale-metrics",instance="ctrl"}'
+      - series: 'wrendns_kubernetes_watching{job="wrendns-metrics",instance="ctrl"}'
         values: "1x20"
-      - series: 'telltale_kubernetes_table_age_seconds{job="telltale-metrics",instance="pi"}'
+      - series: 'wrendns_kubernetes_table_age_seconds{job="wrendns-metrics",instance="pi"}'
         values: "1200x20"
-      - series: 'telltale_kubernetes_watching{job="telltale-metrics",instance="pi"}'
+      - series: 'wrendns_kubernetes_watching{job="wrendns-metrics",instance="pi"}'
         values: "0x20"
-      - series: 'telltale_kubernetes_table_age_seconds{job="telltale-metrics",instance="fresh"}'
+      - series: 'wrendns_kubernetes_table_age_seconds{job="wrendns-metrics",instance="fresh"}'
         values: "30x20"
-      - series: 'telltale_kubernetes_watching{job="telltale-metrics",instance="fresh"}'
+      - series: 'wrendns_kubernetes_watching{job="wrendns-metrics",instance="fresh"}'
         values: "1x20"
     alert_rule_test:
       - eval_time: 3m
-        alertname: TelltaleDNSKubernetesWatchStale
+        alertname: WrenDNSKubernetesWatchStale
         exp_alerts: []
       - eval_time: 10m
-        alertname: TelltaleDNSKubernetesWatchStale
+        alertname: WrenDNSKubernetesWatchStale
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: ctrl }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: ctrl }
             exp_annotations:
               summary: "ctrl hasn't heard from the Kubernetes API server for 20m 0s: new pods are named by address until it's reachable (its RBAC, or the API server). DNS answers regardless."
 
   # The data disk: 5% free fires after 10 minutes; 50% free on another node doesn't.
   - interval: 1m
     input_series:
-      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="free"}'
+      - series: 'wrendns_data_filesystem_bytes{job="wrendns-metrics",instance="pi",kind="free"}'
         values: "5x20"
-      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="total"}'
+      - series: 'wrendns_data_filesystem_bytes{job="wrendns-metrics",instance="pi",kind="total"}'
         values: "100x20"
-      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pod",kind="free"}'
+      - series: 'wrendns_data_filesystem_bytes{job="wrendns-metrics",instance="pod",kind="free"}'
         values: "50x20"
-      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pod",kind="total"}'
+      - series: 'wrendns_data_filesystem_bytes{job="wrendns-metrics",instance="pod",kind="total"}'
         values: "100x20"
     alert_rule_test:
       - eval_time: 5m
-        alertname: TelltaleDNSDataDiskLow
+        alertname: WrenDNSDataDiskLow
         exp_alerts: []
       - eval_time: 15m
-        alertname: TelltaleDNSDataDiskLow
+        alertname: WrenDNSDataDiskLow
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: pi }
             exp_annotations:
               summary: "Under 10% free on pi's data disk; when it fills, the query log stops recording (DNS keeps answering). Shorten [telemetry.qlog] retention or add space."
 
   # Memory: 95% of the container limit fires; 50% doesn't.
   - interval: 1m
     input_series:
-      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="pod",kind="current"}'
+      - series: 'wrendns_cgroup_memory_bytes{job="wrendns-metrics",instance="pod",kind="current"}'
         values: "95x20"
-      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="pod",kind="limit"}'
+      - series: 'wrendns_cgroup_memory_bytes{job="wrendns-metrics",instance="pod",kind="limit"}'
         values: "100x20"
-      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="calm",kind="current"}'
+      - series: 'wrendns_cgroup_memory_bytes{job="wrendns-metrics",instance="calm",kind="current"}'
         values: "50x20"
-      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="calm",kind="limit"}'
+      - series: 'wrendns_cgroup_memory_bytes{job="wrendns-metrics",instance="calm",kind="limit"}'
         values: "100x20"
     alert_rule_test:
       - eval_time: 15m
-        alertname: TelltaleDNSMemoryPressure
+        alertname: WrenDNSMemoryPressure
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: pod }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: pod }
             exp_annotations:
               summary: "pod uses over 90% of its memory limit; a list compile could get it killed. Raise resources.limits.memory or use fewer lists."
 
   # An OOM kill within the hour fires at once; a steady counter doesn't.
   - interval: 1m
     input_series:
-      - series: 'telltale_cgroup_oom_kills_total{job="telltale-metrics",instance="pod"}'
+      - series: 'wrendns_cgroup_oom_kills_total{job="wrendns-metrics",instance="pod"}'
         values: "0x10 1x10"
-      - series: 'telltale_cgroup_oom_kills_total{job="telltale-metrics",instance="calm"}'
+      - series: 'wrendns_cgroup_oom_kills_total{job="wrendns-metrics",instance="calm"}'
         values: "3x20"
     alert_rule_test:
       - eval_time: 5m
-        alertname: TelltaleDNSOutOfMemoryKill
+        alertname: WrenDNSOutOfMemoryKill
         exp_alerts: []
       - eval_time: 15m
-        alertname: TelltaleDNSOutOfMemoryKill
+        alertname: WrenDNSOutOfMemoryKill
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: pod }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: pod }
             exp_annotations:
               summary: "The kernel killed a process in pod's container for lack of memory in the last hour."
 
   # Throttling over 25% for 15 minutes; heat at 80 °C for 10 minutes.
   - interval: 1m
     input_series:
-      - series: 'telltale_cgroup_throttled_ratio{job="telltale-metrics",instance="pod"}'
+      - series: 'wrendns_cgroup_throttled_ratio{job="wrendns-metrics",instance="pod"}'
         values: "0.4x30"
-      - series: 'telltale_host_temperature_celsius{job="telltale-metrics",instance="pi"}'
+      - series: 'wrendns_host_temperature_celsius{job="wrendns-metrics",instance="pi"}'
         values: "82x30"
-      - series: 'telltale_host_temperature_celsius{job="telltale-metrics",instance="cool"}'
+      - series: 'wrendns_host_temperature_celsius{job="wrendns-metrics",instance="cool"}'
         values: "55x30"
     alert_rule_test:
       - eval_time: 20m
-        alertname: TelltaleDNSCpuThrottled
+        alertname: WrenDNSCpuThrottled
         exp_alerts:
-          - exp_labels: { severity: info, job: telltale-metrics, instance: pod }
+          - exp_labels: { severity: info, job: wrendns-metrics, instance: pod }
             exp_annotations:
               summary: "pod is throttled by its CPU limit in over 25% of periods; answers may slow down. Raise resources.limits.cpu."
       - eval_time: 20m
-        alertname: TelltaleDNSRunningHot
+        alertname: WrenDNSRunningHot
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: pi }
             exp_annotations:
               summary: "pi has been at 80 °C or more for 10 minutes; check its cooling."
 
@@ -118,25 +118,25 @@ tests:
   # bad answers reach 10, nothing fires.
   - interval: 1m
     input_series:
-      - series: 'telltale_responses_total{job="telltale-metrics",instance="pi",rcode="NOERROR"}'
+      - series: 'wrendns_responses_total{job="wrendns-metrics",instance="pi",rcode="NOERROR"}'
         values: "0+485x70"
-      - series: 'telltale_responses_total{job="telltale-metrics",instance="pod",rcode="NOERROR"}'
+      - series: 'wrendns_responses_total{job="wrendns-metrics",instance="pod",rcode="NOERROR"}'
         values: "0+485x70"
-      - series: 'telltale_responses_total{job="telltale-metrics",instance="pod",rcode="SERVFAIL"}'
+      - series: 'wrendns_responses_total{job="wrendns-metrics",instance="pod",rcode="SERVFAIL"}'
         values: "0+30x70"
-      - series: 'telltale_query_duration_seconds_count{job="telltale-metrics",instance="pod",path="upstream"}'
+      - series: 'wrendns_query_duration_seconds_count{job="wrendns-metrics",instance="pod",path="upstream"}'
         values: "0+1000x70"
-      - series: 'telltale_query_duration_seconds_bucket{job="telltale-metrics",instance="pod",path="upstream",le="0.25"}'
+      - series: 'wrendns_query_duration_seconds_bucket{job="wrendns-metrics",instance="pod",path="upstream",le="0.25"}'
         values: "0+700x70"
     alert_rule_test:
       - eval_time: 65m
-        alertname: TelltaleDNSSLOAvailabilityBurnFast
+        alertname: WrenDNSSLOAvailabilityBurnFast
         exp_alerts:
           - exp_labels: { severity: critical, slo: availability }
             exp_annotations:
               summary: "The availability objective (99.9%) is spending its error budget over 14.4x too fast (SERVFAIL answers over the last 1h and 5m); see the dashboard's Service level card."
       - eval_time: 65m
-        alertname: TelltaleDNSSLOLatencyBurnFast
+        alertname: WrenDNSSLOLatencyBurnFast
         exp_alerts:
           - exp_labels: { severity: critical, slo: latency }
             exp_annotations:
@@ -146,39 +146,39 @@ tests:
   # last 5 minutes hold fewer than 50 answers, so the fast alert stays quiet (as in the web UI).
   - interval: 1m
     input_series:
-      - series: 'telltale_responses_total{job="telltale-metrics",instance="pi",rcode="NOERROR"}'
+      - series: 'wrendns_responses_total{job="wrendns-metrics",instance="pi",rcode="NOERROR"}'
         values: "0+5x70"
-      - series: 'telltale_responses_total{job="telltale-metrics",instance="pi",rcode="SERVFAIL"}'
+      - series: 'wrendns_responses_total{job="wrendns-metrics",instance="pi",rcode="SERVFAIL"}'
         values: "0+0.2x70"
     alert_rule_test:
       - eval_time: 65m
-        alertname: TelltaleDNSSLOAvailabilityBurnFast
+        alertname: WrenDNSSLOAvailabilityBurnFast
         exp_alerts: []
 
   # REQ: OBS-020 (T11.3) — a listener that stops answering its probe for 2 minutes fires; one
   # that answers doesn't. A certificate 5 days from expiry fires after an hour.
   - interval: 1m
     input_series:
-      - series: 'telltale_probe_success{job="telltale-metrics",instance="pi",target="tls://127.0.0.1:853",proto="dot"}'
+      - series: 'wrendns_probe_success{job="wrendns-metrics",instance="pi",target="tls://127.0.0.1:853",proto="dot"}'
         values: "1x5 0x10"
-      - series: 'telltale_probe_success{job="telltale-metrics",instance="pi",target="udp://127.0.0.1:53",proto="udp"}'
+      - series: 'wrendns_probe_success{job="wrendns-metrics",instance="pi",target="udp://127.0.0.1:53",proto="udp"}'
         values: "1x15"
-      - series: 'telltale_listener_cert_expiry_timestamp_seconds{job="telltale-metrics",instance="pi",target="tls://127.0.0.1:853",proto="dot"}'
+      - series: 'wrendns_listener_cert_expiry_timestamp_seconds{job="wrendns-metrics",instance="pi",target="tls://127.0.0.1:853",proto="dot"}'
         values: "432000x90"
     alert_rule_test:
       - eval_time: 6m
-        alertname: TelltaleDNSListenerNotAnswering
+        alertname: WrenDNSListenerNotAnswering
         exp_alerts: []
       - eval_time: 10m
-        alertname: TelltaleDNSListenerNotAnswering
+        alertname: WrenDNSListenerNotAnswering
         exp_alerts:
-          - exp_labels: { severity: critical, job: telltale-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
+          - exp_labels: { severity: critical, job: wrendns-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
             exp_annotations:
               summary: "pi can't get an answer from tls://127.0.0.1:853 (dot) through its own probe; see Settings → System → Listener checks."
       - eval_time: 70m
-        alertname: TelltaleDNSListenerCertExpiring
+        alertname: WrenDNSListenerCertExpiring
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
             exp_annotations:
               summary: "The certificate of tls://127.0.0.1:853 on pi expires in under 14 days; DoT/DoH/DoQ clients stop connecting when it does."
 
@@ -186,34 +186,34 @@ tests:
   # pin alerts after an hour and stops when unpinned.
   - interval: 1m
     input_series:
-      - series: 'telltale_cluster_rollouts_total{job="telltale-metrics",instance="ctl",outcome="failed"}'
+      - series: 'wrendns_cluster_rollouts_total{job="wrendns-metrics",instance="ctl",outcome="failed"}'
         values: "0x10 1x60"
-      - series: 'telltale_cluster_pinned{job="telltale-metrics",instance="ctl"}'
+      - series: 'wrendns_cluster_pinned{job="wrendns-metrics",instance="ctl"}'
         values: "0x10 1x80 0x10"
     alert_rule_test:
       - eval_time: 5m
-        alertname: TelltaleDNSRolloutFailed
+        alertname: WrenDNSRolloutFailed
         exp_alerts: []
       - eval_time: 15m
-        alertname: TelltaleDNSRolloutFailed
+        alertname: WrenDNSRolloutFailed
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: ctl, outcome: failed }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: ctl, outcome: failed }
             exp_annotations:
               summary: "A staged rollout failed its guard (ctl): the cluster is pinned to the version before it. The Cluster page shows the reason; unpin once the change is fixed."
       - eval_time: 40m
-        alertname: TelltaleDNSRolloutFailed
+        alertname: WrenDNSRolloutFailed
         exp_alerts: []
       - eval_time: 40m
-        alertname: TelltaleDNSClusterPinned
+        alertname: WrenDNSClusterPinned
         exp_alerts: []
       - eval_time: 75m
-        alertname: TelltaleDNSClusterPinned
+        alertname: WrenDNSClusterPinned
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: ctl }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: ctl }
             exp_annotations:
               summary: "The cluster has been pinned to an older version for over an hour, so configuration changes wait. The Cluster page says why and what the pin holds back."
       - eval_time: 95m
-        alertname: TelltaleDNSClusterPinned
+        alertname: WrenDNSClusterPinned
         exp_alerts: []
 
   # REQ: OPS-010 (T13.4) — a node in maintenance stays quiet, even once it stops reporting (its
@@ -221,57 +221,57 @@ tests:
   # alerts again. The same for a peer the cluster reports down.
   - interval: 1m
     input_series:
-      - series: 'up{job="telltale-metrics",instance="pi"}'
+      - series: 'up{job="wrendns-metrics",instance="pi"}'
         values: "0x90"
-      - series: 'telltale_node_maintenance_until_seconds{job="telltale-metrics",instance="pi"}'
+      - series: 'wrendns_node_maintenance_until_seconds{job="wrendns-metrics",instance="pi"}'
         values: "3600x4 _x86"
-      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="free"}'
+      - series: 'wrendns_data_filesystem_bytes{job="wrendns-metrics",instance="pi",kind="free"}'
         values: "5x90"
-      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="total"}'
+      - series: 'wrendns_data_filesystem_bytes{job="wrendns-metrics",instance="pi",kind="total"}'
         values: "100x90"
-      - series: 'up{job="telltale-metrics",instance="k3s"}'
+      - series: 'up{job="wrendns-metrics",instance="k3s"}'
         values: "0x90"
-      - series: 'telltale_node_maintenance_until_seconds{job="telltale-metrics",instance="k3s"}'
+      - series: 'wrendns_node_maintenance_until_seconds{job="wrendns-metrics",instance="k3s"}'
         values: "0x90"
-      - series: 'telltale_cluster_peer_up{job="telltale-metrics",instance="k3s",node="b2",site="pi"}'
+      - series: 'wrendns_cluster_peer_up{job="wrendns-metrics",instance="k3s",node="b2",site="pi"}'
         values: "0x90"
-      - series: 'telltale_cluster_peer_maintenance_until_seconds{job="telltale-metrics",instance="k3s",node="b2",site="pi"}'
+      - series: 'wrendns_cluster_peer_maintenance_until_seconds{job="wrendns-metrics",instance="k3s",node="b2",site="pi"}'
         values: "3600x90"
-      - series: 'telltale_cluster_peer_up{job="telltale-metrics",instance="k3s",node="c3",site="lab"}'
+      - series: 'wrendns_cluster_peer_up{job="wrendns-metrics",instance="k3s",node="c3",site="lab"}'
         values: "0x90"
-      - series: 'telltale_cluster_peer_maintenance_until_seconds{job="telltale-metrics",instance="k3s",node="c3",site="lab"}'
+      - series: 'wrendns_cluster_peer_maintenance_until_seconds{job="wrendns-metrics",instance="k3s",node="c3",site="lab"}'
         values: "0x90"
     alert_rule_test:
       - eval_time: 15m
-        alertname: TelltaleDNSDown
+        alertname: WrenDNSDown
         exp_alerts:
-          - exp_labels: { severity: critical, job: telltale-metrics, instance: k3s }
+          - exp_labels: { severity: critical, job: wrendns-metrics, instance: k3s }
             exp_annotations:
-              summary: TelltaleDNS k3s is not being scraped (down or unreachable).
+              summary: WrenDNS k3s is not being scraped (down or unreachable).
       - eval_time: 15m
-        alertname: TelltaleDNSDataDiskLow
+        alertname: WrenDNSDataDiskLow
         exp_alerts: []
       - eval_time: 15m
-        alertname: TelltaleDNSClusterPeerDown
+        alertname: WrenDNSClusterPeerDown
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: c3, site: lab }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: k3s, node: c3, site: lab }
             exp_annotations:
               summary: Cluster node c3 (lab) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
       - eval_time: 70m
-        alertname: TelltaleDNSDown
+        alertname: WrenDNSDown
         exp_alerts:
-          - exp_labels: { severity: critical, job: telltale-metrics, instance: k3s }
+          - exp_labels: { severity: critical, job: wrendns-metrics, instance: k3s }
             exp_annotations:
-              summary: TelltaleDNS k3s is not being scraped (down or unreachable).
-          - exp_labels: { severity: critical, job: telltale-metrics, instance: pi }
+              summary: WrenDNS k3s is not being scraped (down or unreachable).
+          - exp_labels: { severity: critical, job: wrendns-metrics, instance: pi }
             exp_annotations:
-              summary: TelltaleDNS pi is not being scraped (down or unreachable).
+              summary: WrenDNS pi is not being scraped (down or unreachable).
       - eval_time: 70m
-        alertname: TelltaleDNSClusterPeerDown
+        alertname: WrenDNSClusterPeerDown
         exp_alerts:
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: b2, site: pi }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: k3s, node: b2, site: pi }
             exp_annotations:
               summary: Cluster node b2 (pi) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
-          - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: c3, site: lab }
+          - exp_labels: { severity: warning, job: wrendns-metrics, instance: k3s, node: c3, site: lab }
             exp_annotations:
               summary: Cluster node c3 (lab) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.

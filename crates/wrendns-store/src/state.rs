@@ -1,0 +1,1367 @@
+//! `state.db` (`spec/02` §6): users, sessions, API tokens, and recovery codes (API-003), and
+//! the audit log (API-006).
+//!
+//! Pure persistence: secrets arrive already hashed, and policy (password hashing, expiry,
+//! roles) lives in `wrendns-api`. One connection behind a mutex in WAL mode; every call is
+//! a short statement, made from a blocking thread.
+
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
+
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+
+/// Schema migrations, applied in order; `meta.schema` records how many ran.
+const MIGRATIONS: &[&str] = &[
+    // 1: authentication (T3.5).
+    "CREATE TABLE users (
+        id INTEGER PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        totp_secret BLOB,
+        totp_enabled INTEGER NOT NULL DEFAULT 0,
+        totp_last_step INTEGER NOT NULL DEFAULT 0,
+        allow_basic_api INTEGER NOT NULL DEFAULT 0,
+        disabled INTEGER NOT NULL DEFAULT 0,
+        created INTEGER NOT NULL,
+        password_changed INTEGER NOT NULL
+    );
+    CREATE TABLE recovery_codes (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code_hash BLOB NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE sessions (
+        id_hash BLOB PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        csrf TEXT NOT NULL,
+        created INTEGER NOT NULL,
+        expires INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL,
+        remote TEXT
+    );
+    CREATE TABLE tokens (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        secret_hash BLOB NOT NULL,
+        scope TEXT NOT NULL,
+        expires INTEGER,
+        created INTEGER NOT NULL,
+        last_used INTEGER
+    );",
+    // 2: audit log (T3.8, API-006): append-only, hash-chained.
+    "CREATE TABLE audit (
+        seq INTEGER PRIMARY KEY,
+        ts INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        actor_kind TEXT NOT NULL,
+        remote TEXT,
+        action TEXT NOT NULL,
+        target TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        reason TEXT,
+        prev_hash BLOB NOT NULL,
+        hash BLOB NOT NULL
+    );
+    CREATE INDEX audit_action ON audit(action);
+    CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit
+        BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
+    CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit
+        BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;",
+    // 3: OIDC sign-in (T3.6, API-004): users linked to a provider's subject; which provider
+    // a session came from (for sign-out at the provider).
+    "ALTER TABLE users ADD COLUMN oidc_provider TEXT;
+    ALTER TABLE users ADD COLUMN oidc_subject TEXT;
+    CREATE UNIQUE INDEX users_oidc ON users(oidc_provider, oidc_subject)
+        WHERE oidc_subject IS NOT NULL;
+    ALTER TABLE sessions ADD COLUMN oidc_provider TEXT;",
+    // 4: config made in the UI/API (T3.10, API-002/010, ADR-040): entries merged with the
+    // config files by name; a version for If-Match; replayable responses for Idempotency-Key.
+    "CREATE TABLE managed (
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        body TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        PRIMARY KEY (kind, name)
+    );
+    CREATE TABLE idempotency (
+        key TEXT PRIMARY KEY,
+        request BLOB NOT NULL,
+        status INTEGER NOT NULL,
+        response TEXT NOT NULL,
+        created INTEGER NOT NULL
+    );
+    INSERT INTO meta (key, value) VALUES ('config_version', '0')
+        ON CONFLICT(key) DO NOTHING;",
+    // 5: agent tokens (T6.5, AGT-004, ADR-064): fine-grained scopes, an optional group
+    // restriction, and a rate limit. User tokens keep `scope` and leave these NULL.
+    "ALTER TABLE tokens ADD COLUMN agent_scopes TEXT;
+    ALTER TABLE tokens ADD COLUMN agent_group TEXT;
+    ALTER TABLE tokens ADD COLUMN agent_rate_per_minute INTEGER;",
+    // 6: identity replication (T9.1, ADR-045): where a user or token came from — `local`
+    // (made on this node) or `cluster` (the primary's, replicated).
+    "ALTER TABLE users ADD COLUMN origin TEXT NOT NULL DEFAULT 'local';
+    ALTER TABLE tokens ADD COLUMN origin TEXT NOT NULL DEFAULT 'local';",
+    // 7: audit retention (review 06 q2): the last entry removed by a trim, so the chain
+    // still verifies from there.
+    "CREATE TABLE audit_checkpoint (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        seq INTEGER NOT NULL,
+        hash BLOB NOT NULL,
+        ts INTEGER NOT NULL
+    );",
+    // 8: acknowledged device anomalies (OBS-014, ADR-103): the primary's set travels to every
+    // node with the configuration.
+    "CREATE TABLE anomaly_acks (
+        id TEXT PRIMARY KEY,
+        by TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        note TEXT,
+        window_start INTEGER NOT NULL
+    );",
+    // 9: display tokens for the wall (OBS-035, T14.13, ADR-140): a token whose agent scopes are
+    // `display`, optionally limited to some networks, exchanged once for a display session.
+    "ALTER TABLE tokens ADD COLUMN display_networks TEXT;
+    ALTER TABLE sessions ADD COLUMN display_token TEXT;",
+    // 10: REQ: API-014 (ADR-903 §4) — idempotency records used to keep the request's text, which
+    // could hold an upstream's headers; they now keep a keyed hash. The old ones go (with
+    // `secure_delete` on, their pages are overwritten; `init` then truncates the WAL).
+    "DELETE FROM idempotency;",
+    // 11: REQ: OPS-014 (ADR-903 §2) — secrets entered in the UI, encrypted under the node's key
+    // (`key_id`), stamped `(epoch, seq)`; a deleted one is a tombstone without ciphertext.
+    "CREATE TABLE secrets (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL
+    );",
+    // 12: REQ: CLU-015 (ADR-903 §6) — replication: a cluster row the new primary doesn't hold
+    // is flagged `orphaned` (never deleted); a standalone or local row a cluster row of the same
+    // name displaced is kept in `secrets_shadow` (never dropped), and comes back when the
+    // cluster rows are purged.
+    "ALTER TABLE secrets ADD COLUMN orphaned INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE secrets_shadow (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0
+    );",
+    // 13: REQ: CLU-015 (ADR-917 point 4) — a shadow slot is per name and origin: a `local` row a
+    // cluster row displaced, and a `cluster` row (an older copy, or a tombstone) a newer listing
+    // displaced. A stale copy can no longer replace a user's local shadow. The rows move over.
+    "CREATE TABLE secrets_shadow_v13 (
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (name, origin)
+    );
+    INSERT INTO secrets_shadow_v13 SELECT * FROM secrets_shadow;
+    DROP TABLE secrets_shadow;
+    ALTER TABLE secrets_shadow_v13 RENAME TO secrets_shadow;",
+    // 14: REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API: one row, off by default,
+    // a hashed token (never the token), and the longest pause it may ask for. Node-local.
+    "CREATE TABLE pihole_api (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        token_hash BLOB,
+        token_created INTEGER,
+        last_used INTEGER,
+        max_pause_minutes INTEGER NOT NULL DEFAULT 60,
+        changed INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO pihole_api (id) VALUES (1);",
+    // 15: REQ: API-016 (T23.10, ADR-967 point 7) — the issuer a user is linked at and a session
+    // was opened through, so a provider repointed to another issuer neither keeps the old
+    // issuer's sessions nor maps its subjects onto existing users. NULL: made before this.
+    "ALTER TABLE users ADD COLUMN oidc_issuer TEXT;
+    ALTER TABLE sessions ADD COLUMN oidc_issuer TEXT;",
+];
+
+/// REQ: API-014 — the migration that purges the old idempotency records.
+const PURGE_IDEMPOTENCY: usize = 10;
+
+/// REQ: OPS-014 — serializes `State::init` across threads of this process.
+static FIRST_OPEN: Mutex<()> = Mutex::new(());
+
+/// REQ: OPS-014 — `journal_mode=WAL` needs the write lock, and SQLite does not always run the
+/// busy handler for it, so a busy answer is retried with a bounded backoff (50 × 20 ms).
+fn enable_wal(conn: &Connection) -> Result<()> {
+    const TRIES: u32 = 50;
+    for attempt in 1..=TRIES {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if attempt < TRIES
+                    && matches!(
+                        e.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// REQ: OBS-035 (T14.13) — the pseudo agent scope that marks a display token. An older node
+/// reads it as an agent scope that allows nothing, so a display token can't act as a token there.
+pub const DISPLAY_SCOPE: &str = "display";
+
+/// Stored for OIDC users: no password matches it (they sign in at their provider).
+pub const NO_PASSWORD: &str = "!oidc";
+
+/// `PRAGMA wal_checkpoint(TRUNCATE)` (a no-op on a database in memory). `false` when another
+/// connection kept it from finishing within the busy timeout (`busy` = 1): pages of the WAL may
+/// then survive until a later checkpoint (REQ: OPS-014, ADR-903 §3).
+fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|busy| busy == 0)
+}
+
+pub mod acks;
+pub mod audit;
+pub mod identity;
+pub mod managed;
+pub mod secrets;
+pub use acks::AnomalyAck;
+pub use audit::{AuditEntry, NewAudit, Verify};
+pub use identity::{IdRecovery, IdToken, IdUser, Identities, ImportReport};
+pub use managed::{Managed, ManagedError, Replay};
+pub use secrets::{SecretRow, Stamp};
+
+/// A user row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct User {
+    pub id: i64,
+    pub username: String,
+    /// PHC-format Argon2id hash.
+    pub password_hash: String,
+    /// `viewer`, `operator`, or `admin`.
+    pub role: String,
+    /// TOTP secret (also set while enrollment is pending).
+    pub totp_secret: Option<Vec<u8>>,
+    pub totp_enabled: bool,
+    /// Last accepted TOTP time step (codes from it or earlier are replays).
+    pub totp_last_step: u64,
+    pub allow_basic_api: bool,
+    pub disabled: bool,
+    pub created: u64,
+    pub password_changed: u64,
+    /// The OIDC provider this user signs in with (no local password), if any.
+    pub oidc_provider: Option<String>,
+    /// The issuer that link was made at (`None`: made before issuers were recorded).
+    pub oidc_issuer: Option<String>,
+}
+
+/// A session row (the session ID itself is never stored, only its hash).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    pub user_id: i64,
+    pub csrf: String,
+    pub created: u64,
+    pub expires: u64,
+    pub last_seen: u64,
+    /// The OIDC provider this session came from, if any.
+    pub oidc_provider: Option<String>,
+    /// REQ: OBS-035 (T14.13) — a display session: the display token it was opened with.
+    pub display_token: Option<String>,
+}
+
+/// An API token row (the secret is never stored, only its hash).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    pub id: String,
+    pub user_id: i64,
+    pub name: String,
+    pub secret_hash: Vec<u8>,
+    /// `read`, `write`, or `admin`.
+    pub scope: String,
+    pub expires: Option<u64>,
+    pub created: u64,
+    pub last_used: Option<u64>,
+    /// An agent token (AGT-004): its scopes, space-separated. `None` for user tokens.
+    pub agent_scopes: Option<String>,
+    /// An agent token restricted to one client group.
+    pub agent_group: Option<String>,
+    /// An agent token's own request limit.
+    pub agent_rate_per_minute: Option<u32>,
+    /// REQ: OBS-035 (T14.13) — a display token's networks (space-separated CIDRs; `None`:
+    /// anywhere).
+    pub display_networks: Option<String>,
+}
+
+impl Token {
+    /// REQ: OBS-035 (T14.13) — a display token (opens the wall, nothing else).
+    pub fn is_display(&self) -> bool {
+        self.agent_scopes.as_deref() == Some(DISPLAY_SCOPE)
+    }
+}
+
+/// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiholeApiRow {
+    pub enabled: bool,
+    /// BLAKE3 of the token; the token itself is shown once and never stored.
+    pub token_hash: Option<Vec<u8>>,
+    pub token_created: Option<u64>,
+    pub last_used: Option<u64>,
+    /// The longest pause a request may ask for, in minutes (1 to 1,440).
+    pub max_pause_minutes: u32,
+}
+
+/// Errors from the state database.
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error("state database: {0}")]
+    Db(#[from] rusqlite::Error),
+    #[error("a user named `{0}` already exists")]
+    Duplicate(String),
+}
+
+pub type Result<T> = std::result::Result<T, StateError>;
+
+/// The node's `state.db`.
+#[derive(Debug)]
+pub struct State {
+    conn: Mutex<Connection>,
+}
+
+fn u(v: i64) -> u64 {
+    u64::try_from(v).unwrap_or(0)
+}
+
+fn i(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+impl State {
+    /// Opens (creating if needed) `path` and applies pending migrations.
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        Self::init(conn)
+    }
+
+    /// A database in memory (tests).
+    pub fn in_memory() -> Result<Self> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(mut conn: Connection) -> Result<Self> {
+        // REQ: OPS-014 — one first open at a time in this process (the secrets store and the user
+        // database open the same file from different threads at start). The busy timeout is set
+        // before any statement: a journal-mode change can return SQLITE_BUSY without the handler.
+        let _first_open = FIRST_OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        conn.busy_timeout(Duration::from_secs(5))?;
+        enable_wal(&conn)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // ADR-124 — no temp files (read-only root filesystems have nowhere to put them).
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        // REQ: API-014 (ADR-903 §4) — deleted rows are overwritten, not left in free pages.
+        conn.pragma_update(None, "secure_delete", "ON")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )?;
+        // REQ: OPS-014, API-003 — each migration reads the schema version and applies itself in
+        // one immediate transaction: the secrets store and the user database open this file from
+        // different threads at start, and a read taken outside the write lock let both apply
+        // migration 1 (`table users already exists`, and the API stayed off).
+        loop {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let done: usize = tx
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let Some(sql) = MIGRATIONS.get(done) else {
+                break;
+            };
+            tx.execute_batch(sql)?;
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [(done + 1).to_string()],
+            )?;
+            tx.commit()?;
+            // REQ: API-014 — and their old page images leave the WAL too.
+            if done + 1 == PURGE_IDEMPOTENCY {
+                checkpoint_truncate(&conn)?;
+            }
+        }
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// REQ: API-014 (ADR-903 §4) — copies the WAL into the database and truncates it, so pages
+    /// overwritten by `secure_delete` don't survive there (after the idempotency purge; the
+    /// secrets store's rotation and deletes use it too). `false`: another connection kept it from
+    /// finishing.
+    pub fn checkpoint(&self) -> Result<bool> {
+        self.with(checkpoint_truncate)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
+        let conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(f(&conn)?)
+    }
+
+    // ---- the Pi-hole compatible API (REQ: API-005, T24.10, ADR-961)
+
+    pub fn pihole_api(&self) -> Result<PiholeApiRow> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT enabled, token_hash, token_created, last_used, max_pause_minutes
+                 FROM pihole_api WHERE id = 1",
+                [],
+                |r| {
+                    Ok(PiholeApiRow {
+                        enabled: r.get::<_, i64>(0)? != 0,
+                        token_hash: r.get(1)?,
+                        token_created: r.get::<_, Option<i64>>(2)?.map(u),
+                        last_used: r.get::<_, Option<i64>>(3)?.map(u),
+                        max_pause_minutes: u32::try_from(r.get::<_, i64>(4)?).unwrap_or(60),
+                    })
+                },
+            )
+        })
+    }
+
+    pub fn set_pihole_enabled(&self, enabled: bool, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET enabled = ?1, changed = ?2 WHERE id = 1",
+                rusqlite::params![i64::from(enabled), i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn set_pihole_max_pause(&self, minutes: u32, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET max_pause_minutes = ?1, changed = ?2 WHERE id = 1",
+                rusqlite::params![i64::from(minutes), i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    /// Stores a new token's hash (`None` revokes the token).
+    pub fn set_pihole_token(&self, hash: Option<&[u8]>, now: u64) -> Result<()> {
+        let now = i64::try_from(now).unwrap_or(0);
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET token_hash = ?1, token_created = ?2, last_used = NULL,
+                 changed = ?3 WHERE id = 1",
+                rusqlite::params![hash, hash.map(|_| now), now],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn touch_pihole(&self, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET last_used = ?1 WHERE id = 1",
+                [i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    // ---- users
+
+    pub fn user_count(&self) -> Result<u64> {
+        self.with(|c| c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get::<_, i64>(0)))
+            .map(u)
+    }
+
+    /// Enabled admins (the last one can't be removed or demoted).
+    pub fn admin_count(&self) -> Result<u64> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .map(u)
+    }
+
+    pub fn create_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: &str,
+        allow_basic_api: bool,
+        now: u64,
+    ) -> Result<User> {
+        let id = self.with(|c| {
+            c.execute(
+                "INSERT INTO users (username, password_hash, role, allow_basic_api, created, password_changed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![username, password_hash, role, allow_basic_api, i(now)],
+            )
+            .map(|_| c.last_insert_rowid())
+        });
+        match id {
+            Ok(id) => self
+                .user(id)?
+                .ok_or(StateError::Db(rusqlite::Error::QueryReturnedNoRows)),
+            Err(StateError::Db(rusqlite::Error::SqliteFailure(e, _)))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(StateError::Duplicate(username.to_owned()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    const USER_COLS: &'static str = "id, username, password_hash, role, totp_secret, totp_enabled, \
+        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider, oidc_issuer";
+
+    fn row_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
+        Ok(User {
+            id: r.get(0)?,
+            username: r.get(1)?,
+            password_hash: r.get(2)?,
+            role: r.get(3)?,
+            totp_secret: r.get(4)?,
+            totp_enabled: r.get(5)?,
+            totp_last_step: u(r.get(6)?),
+            allow_basic_api: r.get(7)?,
+            disabled: r.get(8)?,
+            created: u(r.get(9)?),
+            password_changed: u(r.get(10)?),
+            oidc_provider: r.get(11)?,
+            oidc_issuer: r.get(12)?,
+        })
+    }
+
+    /// The user linked to an OIDC provider's subject.
+    pub fn user_by_oidc(&self, provider: &str, subject: &str) -> Result<Option<User>> {
+        self.with(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {} FROM users WHERE oidc_provider = ?1 AND oidc_subject = ?2",
+                    Self::USER_COLS
+                ),
+                [provider, subject],
+                Self::row_user,
+            )
+            .optional()
+        })
+    }
+
+    /// Creates a user who signs in through `provider` (no usable password).
+    pub fn create_oidc_user(
+        &self,
+        username: &str,
+        role: &str,
+        provider: &str,
+        subject: &str,
+        now: u64,
+    ) -> Result<User> {
+        let user = self.create_user(username, NO_PASSWORD, role, false, now)?;
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET oidc_provider = ?2, oidc_subject = ?3 WHERE id = ?1",
+                params![user.id, provider, subject],
+            )
+        })?;
+        self.user(user.id)?
+            .ok_or(StateError::Db(rusqlite::Error::QueryReturnedNoRows))
+    }
+
+    pub fn user(&self, id: i64) -> Result<Option<User>> {
+        self.with(|c| {
+            c.query_row(
+                &format!("SELECT {} FROM users WHERE id = ?1", Self::USER_COLS),
+                [id],
+                Self::row_user,
+            )
+            .optional()
+        })
+    }
+
+    /// By username, case-insensitively.
+    pub fn user_by_name(&self, username: &str) -> Result<Option<User>> {
+        self.with(|c| {
+            c.query_row(
+                &format!("SELECT {} FROM users WHERE username = ?1", Self::USER_COLS),
+                [username],
+                Self::row_user,
+            )
+            .optional()
+        })
+    }
+
+    pub fn users(&self) -> Result<Vec<User>> {
+        self.with(|c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {} FROM users ORDER BY id",
+                Self::USER_COLS
+            ))?;
+            st.query_map([], Self::row_user)?.collect()
+        })
+    }
+
+    /// Updates role, disabled, and the HTTP Basic opt-in (whichever are given).
+    pub fn update_user(
+        &self,
+        id: i64,
+        role: Option<&str>,
+        disabled: Option<bool>,
+        allow_basic_api: Option<bool>,
+    ) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET role = COALESCE(?2, role), disabled = COALESCE(?3, disabled),
+                 allow_basic_api = COALESCE(?4, allow_basic_api) WHERE id = ?1",
+                params![id, role, disabled, allow_basic_api],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    pub fn set_password(&self, id: i64, password_hash: &str, now: u64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET password_hash = ?2, password_changed = ?3 WHERE id = ?1",
+                params![id, password_hash, i(now)],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// Sets (or clears) the TOTP secret and whether it's enforced.
+    pub fn set_totp(&self, id: i64, secret: Option<&[u8]>, enabled: bool) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET totp_secret = ?2, totp_enabled = ?3, totp_last_step = 0 WHERE id = ?1",
+                params![id, secret, enabled],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// Records an accepted TOTP step; false if `step` isn't newer (a replay).
+    pub fn advance_totp_step(&self, id: i64, step: u64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET totp_last_step = ?2 WHERE id = ?1 AND totp_last_step < ?2",
+                params![id, i(step)],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    pub fn delete_user(&self, id: i64) -> Result<bool> {
+        self.with(|c| {
+            c.execute("DELETE FROM users WHERE id = ?1", [id])
+                .map(|n| n == 1)
+        })
+    }
+
+    // ---- recovery codes
+
+    /// Replaces a user's recovery codes (hashes).
+    pub fn set_recovery_codes(&self, user_id: i64, hashes: &[Vec<u8>]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM recovery_codes WHERE user_id = ?1", [user_id])?;
+        for h in hashes {
+            tx.execute(
+                "INSERT INTO recovery_codes (user_id, code_hash) VALUES (?1, ?2)",
+                params![user_id, h],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Uses up a recovery code; true if it existed and wasn't used before.
+    pub fn use_recovery_code(&self, user_id: i64, hash: &[u8]) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE recovery_codes SET used = 1 WHERE user_id = ?1 AND code_hash = ?2 AND used = 0",
+                params![user_id, hash],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    pub fn recovery_codes_left(&self, user_id: i64) -> Result<u64> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM recovery_codes WHERE user_id = ?1 AND used = 0",
+                [user_id],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .map(u)
+    }
+
+    // ---- sessions
+
+    pub fn create_session(
+        &self,
+        id_hash: &[u8],
+        user_id: i64,
+        csrf: &str,
+        now: u64,
+        expires: u64,
+        remote: Option<&str>,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO sessions (id_hash, user_id, csrf, created, expires, last_seen, remote)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?6)",
+                params![id_hash, user_id, csrf, i(now), i(expires), remote],
+            )
+            .map(|_| ())
+        })
+    }
+
+    pub fn session(&self, id_hash: &[u8]) -> Result<Option<Session>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT user_id, csrf, created, expires, last_seen, oidc_provider, display_token
+                 FROM sessions WHERE id_hash = ?1",
+                [id_hash],
+                |r| {
+                    Ok(Session {
+                        user_id: r.get(0)?,
+                        csrf: r.get(1)?,
+                        created: u(r.get(2)?),
+                        expires: u(r.get(3)?),
+                        last_seen: u(r.get(4)?),
+                        oidc_provider: r.get(5)?,
+                        display_token: r.get(6)?,
+                    })
+                },
+            )
+            .optional()
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — marks a session as a display session of `token`.
+    pub fn set_session_display(&self, id_hash: &[u8], token: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE sessions SET display_token = ?2 WHERE id_hash = ?1",
+                params![id_hash, token],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — ends every session opened with display token `token`.
+    pub fn delete_display_sessions(&self, token: &str) -> Result<u64> {
+        self.with(|c| c.execute("DELETE FROM sessions WHERE display_token = ?1", [token]))
+            .map(|n| n as u64)
+    }
+
+    /// Marks a session as started through an OIDC provider.
+    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str, issuer: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE sessions SET oidc_provider = ?2, oidc_issuer = ?3 WHERE id_hash = ?1",
+                params![id_hash, provider, issuer],
+            )
+            .map(|_| ())
+        })
+    }
+
+    pub fn touch_session(&self, id_hash: &[u8], now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE sessions SET last_seen = ?2 WHERE id_hash = ?1",
+                params![id_hash, i(now)],
+            )
+            .map(|_| ())
+        })
+    }
+
+    pub fn delete_session(&self, id_hash: &[u8]) -> Result<()> {
+        self.with(|c| {
+            c.execute("DELETE FROM sessions WHERE id_hash = ?1", [id_hash])
+                .map(|_| ())
+        })
+    }
+
+    /// Ends a user's sessions, except `keep` (the one changing the password, say).
+    pub fn delete_user_sessions(&self, user_id: i64, keep: Option<&[u8]>) -> Result<u64> {
+        self.with(|c| {
+            c.execute(
+                // A display session belongs to its token (revoke that to end it), not the user's
+                // sign-ins.
+                "DELETE FROM sessions WHERE user_id = ?1 AND (?2 IS NULL OR id_hash != ?2)
+                     AND display_token IS NULL",
+                params![user_id, keep],
+            )
+        })
+        .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 (T23.10) — ends every session that was opened through OIDC provider
+    /// `provider` (it was removed). The users stay.
+    pub fn delete_provider_sessions(&self, provider: &str) -> Result<u64> {
+        self.with(|c| c.execute("DELETE FROM sessions WHERE oidc_provider = ?1", [provider]))
+            .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — settles the issuers of `provider`, now at `issuer`. `was` is the issuer it
+    /// was served at before this rebuild, when this process knew one. Rows made before issuers
+    /// were recorded (NULL) belong to `was`, or, with no earlier issuer known, to `issuer`.
+    /// When the provider was repointed (`was` differs), the sessions opened at any other issuer
+    /// (NULL ones included) end, and a user keeps the issuer it was linked at, so its `sub`
+    /// isn't mapped at the new one. Returns the number of sessions ended.
+    pub fn reconcile_provider_issuer(
+        &self,
+        provider: &str,
+        issuer: &str,
+        was: Option<&str>,
+    ) -> Result<u64> {
+        self.with(|c| {
+            let owner = was.unwrap_or(issuer);
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE oidc_provider = ?1 AND oidc_issuer IS NULL",
+                [provider, owner],
+            )?;
+            if was.is_none_or(|w| w == issuer) {
+                c.execute(
+                    "UPDATE sessions SET oidc_issuer = ?2 WHERE oidc_provider = ?1 AND oidc_issuer IS NULL",
+                    [provider, issuer],
+                )?;
+            }
+            c.execute(
+                "DELETE FROM sessions WHERE oidc_provider = ?1
+                   AND (oidc_issuer IS NULL OR oidc_issuer != ?2)",
+                [provider, issuer],
+            )
+        })
+        .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — records the issuer a user's OIDC link was made at.
+    pub fn set_user_issuer(&self, id: i64, issuer: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE id = ?1",
+                params![id, issuer],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Deletes sessions that expired or were idle since before `idle_before`.
+    pub fn purge_sessions(&self, now: u64, idle_before: u64) -> Result<u64> {
+        self.with(|c| {
+            c.execute(
+                // A display session has no idle limit: a wall is unattended.
+                "DELETE FROM sessions WHERE expires <= ?1 OR (last_seen < ?2 AND display_token IS NULL)",
+                params![i(now), i(idle_before)],
+            )
+        })
+        .map(|n| n as u64)
+    }
+
+    // ---- tokens
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_token(
+        &self,
+        id: &str,
+        user_id: i64,
+        name: &str,
+        secret_hash: &[u8],
+        scope: &str,
+        expires: Option<u64>,
+        now: u64,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO tokens (id, user_id, name, secret_hash, scope, expires, created)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    user_id,
+                    name,
+                    secret_hash,
+                    scope,
+                    expires.map(i),
+                    i(now)
+                ],
+            )
+            .map(|_| ())
+        })
+    }
+
+    fn row_token(r: &rusqlite::Row<'_>) -> rusqlite::Result<Token> {
+        Ok(Token {
+            id: r.get(0)?,
+            user_id: r.get(1)?,
+            name: r.get(2)?,
+            secret_hash: r.get(3)?,
+            scope: r.get(4)?,
+            expires: r.get::<_, Option<i64>>(5)?.map(u),
+            created: u(r.get(6)?),
+            last_used: r.get::<_, Option<i64>>(7)?.map(u),
+            agent_scopes: r.get(8)?,
+            agent_group: r.get(9)?,
+            agent_rate_per_minute: r
+                .get::<_, Option<i64>>(10)?
+                .and_then(|n| u32::try_from(n).ok()),
+            display_networks: r.get(11)?,
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — makes a token a display token. Called right after `create_token`.
+    pub fn set_token_display(&self, id: &str, networks: Option<&str>) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE tokens SET agent_scopes = ?2, display_networks = ?3 WHERE id = ?1",
+                params![id, DISPLAY_SCOPE, networks],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — every display token, whoever made it, oldest first.
+    pub fn display_tokens(&self) -> Result<Vec<Token>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
+                 FROM tokens WHERE agent_scopes = ?1 ORDER BY created",
+            )?;
+            st.query_map([DISPLAY_SCOPE], Self::row_token)?.collect()
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — revokes a display token, whoever made it.
+    pub fn delete_display_token(&self, id: &str) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM tokens WHERE id = ?1 AND agent_scopes = ?2",
+                params![id, DISPLAY_SCOPE],
+            )
+            .map(|n| n == 1)
+        })
+    }
+
+    /// Makes a token an agent token (AGT-004). Called right after `create_token`.
+    pub fn set_token_agent(
+        &self,
+        id: &str,
+        scopes: &str,
+        group: Option<&str>,
+        rate_per_minute: Option<u32>,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE tokens SET agent_scopes = ?2, agent_group = ?3, agent_rate_per_minute = ?4
+                 WHERE id = ?1",
+                params![id, scopes, group, rate_per_minute.map(i64::from)],
+            )
+            .map(|_| ())
+        })
+    }
+
+    pub fn token(&self, id: &str) -> Result<Option<Token>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
+                 FROM tokens WHERE id = ?1",
+                [id],
+                Self::row_token,
+            )
+            .optional()
+        })
+    }
+
+    pub fn tokens_for(&self, user_id: i64) -> Result<Vec<Token>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
+                 FROM tokens WHERE user_id = ?1 ORDER BY created",
+            )?;
+            st.query_map([user_id], Self::row_token)?.collect()
+        })
+    }
+
+    pub fn touch_token(&self, id: &str, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE tokens SET last_used = ?2 WHERE id = ?1",
+                params![id, i(now)],
+            )
+            .map(|_| ())
+        })
+    }
+
+    pub fn delete_token(&self, id: &str, user_id: i64) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM tokens WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map(|n| n == 1)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ: CLU-015 (T24.40, ADR-1019) - `insert_missing_managed_noted` adds only the rows a node
+    /// does not hold, leaves its own rows and every other kind alone, records the note in the same
+    /// step, and does nothing the second time.
+    #[test]
+    fn clu_015_t24_40_insert_missing_keeps_own_rows_and_runs_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        s.put_managed("list", "own", "{\"v\":1}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed(
+            "upstream",
+            "lan",
+            "{\"node_only\":true}",
+            None,
+            None,
+            1,
+            "t",
+        )
+        .unwrap();
+        let before = s.config_version().unwrap();
+        let rows = [
+            ("list", "own", "{\"v\":2}"),
+            ("list", "new", "{}"),
+            ("client", "tv", "{}"),
+        ];
+        let added = s
+            .insert_missing_managed_noted(&rows, 5, "adopted:7", ("managed-seeded", "served:x"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(added, ["list", "client"]);
+        assert_eq!(s.config_version().unwrap(), before + 1);
+        let by = |k: &str| {
+            s.managed(k)
+                .unwrap()
+                .into_iter()
+                .map(|m| (m.name, m.body, m.updated_by))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(by("list").len(), 2);
+        assert!(by("list").contains(&("own".into(), "{\"v\":1}".into(), "t".into())));
+        assert!(by("list").contains(&("new".into(), "{}".into(), "adopted:7".into())));
+        assert_eq!(by("upstream").len(), 1, "another kind is untouched");
+        assert_eq!(
+            s.meta_get("managed-seeded").unwrap().as_deref(),
+            Some("served:x")
+        );
+        // Again: the note matches, nothing happens.
+        assert!(
+            s.insert_missing_managed_noted(&rows, 6, "adopted:7", ("managed-seeded", "served:x"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(s.config_version().unwrap(), before + 1);
+    }
+
+    /// REQ: CLU-015 (T24.37) - `replace_managed` makes the named kinds exactly the rows given,
+    /// leaves other kinds alone, and moves the version once.
+    #[test]
+    fn clu_015_replace_managed_is_exact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        s.put_managed("upstream", "old", "{}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed("upstream", "keep", "{\"v\":1}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed("oidc_provider", "sso", "{}", None, None, 1, "t")
+            .unwrap();
+        let before = s.config_version().unwrap();
+        let v = s
+            .replace_managed(
+                &["upstream", "list"],
+                &[
+                    ("upstream", "keep", "{\"v\":2}"),
+                    ("list", "ads", "{}"),
+                    ("group", "x", "{}"),
+                ],
+                5,
+                "promotion",
+            )
+            .unwrap();
+        assert_eq!(v, before + 1);
+        let names = |k: &str| {
+            s.managed(k)
+                .unwrap()
+                .into_iter()
+                .map(|m| (m.name, m.body))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names("upstream"),
+            [("keep".to_owned(), "{\"v\":2}".to_owned())]
+        );
+        assert_eq!(names("list").len(), 1);
+        assert_eq!(names("group").len(), 0, "a kind not named is not written");
+        assert_eq!(
+            names("oidc_provider").len(),
+            1,
+            "a kind not named is left alone"
+        );
+    }
+
+    /// REQ: API-014 (ADR-903 §4) — a `state.db` from before migration 10 had idempotency records
+    /// holding request text (an upstream's headers): after the upgrade, neither the database nor
+    /// its WAL holds a byte of it, and replays start over. Deletes overwrite from then on.
+    #[test]
+    fn api_014_idempotency_purge_leaves_no_residue() {
+        const PLANTED: &str = "Bearer planted-s3cret-0123456789";
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            for sql in &MIGRATIONS[..PURGE_IDEMPOTENCY - 1] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema', '9')", [])
+                .unwrap();
+            let body =
+                format!("PUT /upstreams/x {{\"headers\":{{\"Authorization\":\"{PLANTED}\"}}}}");
+            for i in 0..50 {
+                conn.execute(
+                    "INSERT INTO idempotency (key, request, status, response, created) VALUES (?1, ?2, 200, ?3, 1)",
+                    params![format!("1:k{i}"), body.as_bytes(), body],
+                )
+                .unwrap();
+            }
+        }
+        let raw = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let wal = tmp.path().join("state.db-wal");
+        let has = |b: &[u8]| b.windows(PLANTED.len()).any(|w| w == PLANTED.as_bytes());
+        assert!(
+            has(&raw(&path)) || has(&raw(&wal)),
+            "planted before the upgrade"
+        );
+        let s = State::open(&path).unwrap();
+        assert!(!has(&raw(&path)), "state.db holds the old request");
+        assert!(!has(&raw(&wal)), "the WAL holds the old request");
+        assert_eq!(s.idempotent("1:k0", 2).unwrap(), None);
+        let secure: i64 = s
+            .lock()
+            .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secure, 1);
+        s.checkpoint().unwrap();
+    }
+
+    /// REQ: API-016 (ADR-967 point 7) — users and sessions from before issuers were recorded
+    /// (NULL) are settled: with no earlier issuer known they take the current one; when the
+    /// provider is repointed they belong to the old one, so their sessions end and the user is
+    /// not adopted by the new issuer.
+    #[test]
+    fn api_016_null_issuer_rows_follow_the_old_issuer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        let make = |name: &str| {
+            let u = s.create_user(name, "h", "viewer", false, 1).unwrap();
+            s.lock()
+                .execute(
+                    "UPDATE users SET oidc_provider = 'p', oidc_subject = ?2 WHERE id = ?1",
+                    params![u.id, name],
+                )
+                .unwrap();
+            s.create_session(name.as_bytes(), u.id, "c", 1, 9_999_999_999, None)
+                .unwrap();
+            s.set_session_provider(name.as_bytes(), "p", "https://a.test")
+                .unwrap();
+            s.lock()
+                .execute("UPDATE sessions SET oidc_issuer = NULL", [])
+                .unwrap();
+            u.id
+        };
+        let issuer_of = |id: i64| -> Option<String> {
+            s.lock()
+                .query_row("SELECT oidc_issuer FROM users WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let sessions = || -> i64 {
+            s.lock()
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .unwrap()
+        };
+        // First rebuild after the upgrade: the rows take the current issuer and stay.
+        let a = make("ana");
+        assert_eq!(
+            s.reconcile_provider_issuer("p", "https://a.test", None)
+                .unwrap(),
+            0
+        );
+        assert_eq!(issuer_of(a).as_deref(), Some("https://a.test"));
+        assert_eq!(sessions(), 1);
+        // A user and session still NULL when the provider is repointed in process: they belong to
+        // the old issuer, the session ends, and the user keeps the old issuer.
+        let b = make("bob");
+        assert_eq!(
+            s.reconcile_provider_issuer("p", "https://b.test", Some("https://a.test"))
+                .unwrap(),
+            2
+        );
+        assert_eq!(issuer_of(b).as_deref(), Some("https://a.test"));
+        assert_eq!(issuer_of(a).as_deref(), Some("https://a.test"));
+        assert_eq!(sessions(), 0);
+    }
+
+    // REQ: OPS-001, ADR-124 — no temp files: the image's root filesystem is read-only.
+    #[test]
+    fn ops_001_state_db_keeps_temporary_data_in_memory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        let conn = s.conn.lock().unwrap();
+        let store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(store, 2, "temp_store = MEMORY");
+    }
+
+    #[test]
+    fn api_003_users_sessions_tokens_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.db");
+        let s = State::open(&path).unwrap();
+        assert_eq!(s.user_count().unwrap(), 0);
+        let a = s
+            .create_user("Admin", "$argon2id$x", "admin", false, 100)
+            .unwrap();
+        assert_eq!((a.id, a.role.as_str(), a.created), (1, "admin", 100));
+        assert!(
+            matches!(
+                s.create_user("admin", "h", "viewer", false, 1),
+                Err(StateError::Duplicate(_))
+            ),
+            "usernames are case-insensitive"
+        );
+        let v = s.create_user("viewer1", "h", "viewer", true, 100).unwrap();
+        assert_eq!(s.user_by_name("ADMIN").unwrap().unwrap().id, a.id);
+        assert_eq!(s.admin_count().unwrap(), 1);
+        assert!(
+            s.update_user(v.id, Some("operator"), None, Some(false))
+                .unwrap()
+        );
+        let v = s.user(v.id).unwrap().unwrap();
+        assert_eq!(
+            (v.role.as_str(), v.allow_basic_api, v.disabled),
+            ("operator", false, false)
+        );
+
+        // TOTP steps only move forward.
+        s.set_totp(a.id, Some(b"secret"), true).unwrap();
+        assert!(s.advance_totp_step(a.id, 10).unwrap());
+        assert!(!s.advance_totp_step(a.id, 10).unwrap(), "replay");
+        assert!(!s.advance_totp_step(a.id, 9).unwrap());
+        s.set_recovery_codes(a.id, &[vec![1], vec![2]]).unwrap();
+        assert!(s.use_recovery_code(a.id, &[1]).unwrap());
+        assert!(!s.use_recovery_code(a.id, &[1]).unwrap(), "single use");
+        assert_eq!(s.recovery_codes_left(a.id).unwrap(), 1);
+
+        s.create_session(b"h1", a.id, "csrf", 100, 200, Some("10.0.0.1"))
+            .unwrap();
+        s.create_session(b"h2", a.id, "csrf2", 100, 200, None)
+            .unwrap();
+        assert_eq!(s.session(b"h1").unwrap().unwrap().csrf, "csrf");
+        assert_eq!(s.delete_user_sessions(a.id, Some(b"h1")).unwrap(), 1);
+        assert!(s.session(b"h2").unwrap().is_none());
+        assert_eq!(s.purge_sessions(201, 0).unwrap(), 1, "expired");
+
+        s.create_token("t1", v.id, "grafana", b"hash", "read", None, 100)
+            .unwrap();
+        assert_eq!(s.tokens_for(v.id).unwrap().len(), 1);
+        assert!(!s.delete_token("t1", a.id).unwrap(), "only the owner's");
+        // Deleting a user cascades to its tokens and sessions.
+        assert!(s.delete_user(v.id).unwrap());
+        assert!(s.token("t1").unwrap().is_none());
+        drop(s);
+        // Reopening keeps data and doesn't re-run migrations.
+        let s = State::open(&path).unwrap();
+        assert_eq!(s.user_count().unwrap(), 1);
+    }
+
+    /// REQ: OPS-014, API-003 — connections opened on a fresh file at the same time (the secrets
+    /// store and the user database at start) all come up, and the schema is the latest once.
+    #[test]
+    fn ops_014_concurrent_first_open_migrates_once() {
+        for _ in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let opened: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| scope.spawn(|| State::open(&path).map(drop)))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(opened.iter().all(Result::is_ok), "{opened:?}");
+            let conn = Connection::open(&path).unwrap();
+            let v: String = conn
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(v, MIGRATIONS.len().to_string());
+        }
+    }
+}

@@ -1,4 +1,4 @@
-# Releasing TelltaleDNS
+# Releasing WrenDNS
 
 How stable releases are cut. Written for maintainers and for agents: follow it as is. The
 **release** workflow does the steps the same way every time; this page explains what it
@@ -6,18 +6,18 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 
 ## Versions and channels
 
-| | Built from | Binaries (`telltale --version`) | Container image | Helm chart | GitHub |
+| | Built from | Binaries (`wrendns --version`) | Container image | Helm chart | GitHub |
 |---|---|---|---|---|---|
 | **edge** | every push to `main` | `X.Y.Z-edge.N`, channel `edge` | `:edge`, `:sha-<7 chars>` | `X.Y.Z-edge.N` (appVersion `edge`) | the `edge` prerelease, replaced each time |
 | **stable** | a `vX.Y.Z` tag | `X.Y.Z`, channel `stable` | `:X.Y.Z`, `:X.Y`, `:X`, `:latest` | `X.Y.Z` (appVersion `X.Y.Z`) | release `vX.Y.Z`, marked latest |
 
 - `X.Y.Z` on `main` is the version being worked toward: `[workspace.package] version` in
-  `Cargo.toml` and `version` in `deploy/helm/telltale/Chart.yaml` (always equal). `N` is the
+  `Cargo.toml` and `version` in `deploy/helm/wrendns/Chart.yaml` (always equal). `N` is the
   image workflow's run number.
 - Semver sorts `X.Y.Z-edge.N` **below** `X.Y.Z`. So the moment `X.Y.Z` is released, `main`
   moves to the next version (`X.Y+1.0` by default). Otherwise edge builds would look older than
   the release, and `helm --devel` and update checks would never offer them.
-- `install.sh` and `telltale self-update` take the **latest release** for `stable` (GitHub's
+- `install.sh` and `wrendns self-update` take the **latest release** for `stable` (GitHub's
   `releases/latest`, which skips prereleases) and the `edge` prerelease for `--edge` /
   `--channel edge`. Both verify `SHA256SUMS` against the release key; an unsigned release
   isn't installable.
@@ -56,9 +56,9 @@ the version is `X.Y.Z` (no suffix); `Cargo.toml` and `Chart.yaml` say `X.Y.Z`; t
 
 `deploy/release/verify.sh X.Y.Z` (run by the tag build, or by hand with `curl`, `minisign`,
 `helm`, and `docker`):
-`SHA256SUMS` and `releases.json` are signed with `deploy/release/telltale-release.pub`; the
+`SHA256SUMS` and `releases.json` are signed with `deploy/release/wrendns-release.pub`; the
 x86_64 binary matches its sum and reports `X.Y.Z … channel stable`; all three architectures
-are listed with their SBOM and their debug file (`telltale-<arch>-linux.debug.zst`, the symbols
+are listed with their SBOM and their debug file (`wrendns-<arch>-linux.debug.zst`, the symbols
 that make a stack from the stripped binary readable); `releases/latest` points at `vX.Y.Z`; `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` are
 the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `X.Y.Z`.
 
@@ -79,7 +79,7 @@ the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `
 
 ## Without the workflow
 
-From a machine with push access: `git tag -a vX.Y.Z -m "TelltaleDNS X.Y.Z"` on a commit
+From a machine with push access: `git tag -a vX.Y.Z -m "WrenDNS X.Y.Z"` on a commit
 whose CI passed, then `git push origin vX.Y.Z`. A tag pushed by a person starts the image
 workflow by itself. Then run `deploy/release/bump.sh <next>` on `main`, commit, push, and
 check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
@@ -90,7 +90,7 @@ check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
   release workflow starts the tag's build, and CI and edge for its version commit, explicitly
   (`gh workflow run`). `ci.yml` and `image.yml` accept `workflow_dispatch` for this. The
   image workflow's publish steps run for pushes *and* dispatches on `main` or `v*` tags.
-- **Workspace crates name each other's version** (`telltale-proto = { version = "X.Y.Z",
+- **Workspace crates name each other's version** (`wrendns-proto = { version = "X.Y.Z",
   path = … }`). A version change has to update them and `Cargo.lock` too: use
   `deploy/release/bump.sh`, never a hand edit. The committed OpenAPI document
   (`docs/api/openapi.json`, `info.version`) carries the version too; CI fails if it's stale,
@@ -98,8 +98,8 @@ check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
 - **`Chart.yaml` says `appVersion: "edge"`** on `main`. The tag's build packages the chart
   with appVersion `X.Y.Z`, so a stable chart installs the matching stable image.
 - **Signing needs the `MINISIGN_SECRET_KEY` secret.** Without it the build warns and
-  publishes nothing. The public half lives in `deploy/release/telltale-release.pub`,
-  `crates/telltale/src/selfupdate.rs`, and `deploy/systemd/install.sh`. A new key means
+  publishes nothing. The public half lives in `deploy/release/wrendns-release.pub`,
+  `crates/wrendns/src/selfupdate.rs`, and `deploy/systemd/install.sh`. A new key means
   updating all three.
 - **The `edge` prerelease is deleted and re-created** by each push to `main`. A superseded
   run steps aside instead of racing the newer one. It never affects "latest".

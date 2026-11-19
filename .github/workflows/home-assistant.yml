@@ -1,12 +1,12 @@
-# REQ: T22.4 — the Home Assistant integration's tests against a real TelltaleDNS build and a
+# REQ: T22.4 — the Home Assistant integration's tests against a real WrenDNS build and a
 # real Home Assistant core (fork addition).
 name: home-assistant
 on:
   push:
     branches: [main, feat/ipam-integrations]
-    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
+    paths: ["integrations/home-assistant/**", "crates/wrendns/src/routers.rs", "crates/wrendns/src/device_dns.rs", "deploy/ha-test/**", "crates/wrendns-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
   pull_request:
-    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
+    paths: ["integrations/home-assistant/**", "crates/wrendns/src/routers.rs", "crates/wrendns/src/device_dns.rs", "deploy/ha-test/**", "crates/wrendns-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
   workflow_dispatch:
 # A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
 # the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
@@ -25,8 +25,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Build TelltaleDNS (debug)
-        run: cargo build -p telltale
+      - name: Build WrenDNS (debug)
+        run: cargo build -p wrendns
       - name: Install Home Assistant's test harness
         run: pip install pytest-homeassistant-custom-component ruff
       - name: Lint
@@ -35,7 +35,7 @@ jobs:
       - name: Test
         working-directory: integrations/home-assistant
         run: pytest -q -p no:cacheprovider
-  # REQ: T24.21 — the TelltaleDNS Home Assistant source and integration against a throwaway
+  # REQ: T24.21 — the WrenDNS Home Assistant source and integration against a throwaway
   # Home Assistant (deploy/ha-test): devices named and addressed, the names in DNS, the sensors;
   # T24.10: and the Home Assistant Pi-hole integration against the Pi-hole compatible API.
   ha-test:
@@ -45,6 +45,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p telltale
+      - run: cargo build -p wrendns
       - name: Home Assistant source against a throwaway Home Assistant
-        run: bash deploy/ha-test/e2e.sh target/debug/telltale
+        run: bash deploy/ha-test/e2e.sh target/debug/wrendns

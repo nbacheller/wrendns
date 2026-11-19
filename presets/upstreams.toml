@@ -1,7 +1,7 @@
-# TelltaleDNS upstream preset catalog (REQ: UPS-004, spec/04 §3).
+# WrenDNS upstream preset catalog (REQ: UPS-004, spec/04 §3).
 #
 # Data, not code: compiled into the binary and expanded into explicit [[upstream]] entries by
-# `telltale presets show <id>` (and later the UI), so a running config never depends on this file.
+# `wrendns presets show <id>` (and later the UI), so a running config never depends on this file.
 #
 # Fields:
 #   id, name, homepage   identity
@@ -15,7 +15,7 @@
 #   [[preset.endpoint]]  url (+ tls_server_name for IP-literal TLS endpoints)
 #
 # Addresses come from each provider's public documentation. The nightly online smoke test
-# (crates/telltale-upstream/tests/presets_online.rs) resolves example.com through every entry.
+# (crates/wrendns-upstream/tests/presets_online.rs) resolves example.com through every entry.
 
 # ---------------------------------------------------------------- Pi-hole presets (all of them)
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # REQ: OPS-001 (T7.6 AC) — install.sh's questions, without installing anything: answers fed on
-# stdin with --interactive --config-only, and every resulting config passes `telltale config
+# stdin with --interactive --config-only, and every resulting config passes `wrendns config
 # check`. Also: Enter at the first question gives the usual starter config, and without a
 # terminal nothing is asked.
-# Usage: deploy/systemd/guided-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/systemd/guided-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 E=$(mktemp -d)
 trap 'rm -rf "$E"' EXIT
 fail() {
@@ -28,7 +28,7 @@ run() { # name answers
 
 # Enter at the first question: the usual starter config.
 f=$(run defaults '\n')
-cmp -s "$f" deploy/compose/telltale.toml || fail "Enter at the first question didn't give the starter config"
+cmp -s "$f" deploy/compose/wrendns.toml || fail "Enter at the first question didn't give the starter config"
 
 # The guided path. Answers in order: walk (2), builds, upstreams [+ address [+ TLS name]],
 # lists, listen [+ address], resolved, admin [+ user, password, again], days, detail, confirm.
@@ -62,7 +62,7 @@ grep -q 'Nothing was installed' "$E/no.out" || fail "no 'Nothing was installed'"
 # Without a terminal (piped or automated) nothing is asked: the starter config.
 sh deploy/systemd/install.sh --config-only "$E/piped.toml" < /dev/null > "$E/piped.out" 2>&1
 grep -q 'Which' "$E/piped.out" && fail "asked a question without a terminal"
-cmp -s "$E/piped.toml" deploy/compose/telltale.toml || fail "the piped install's config isn't the starter"
+cmp -s "$E/piped.toml" deploy/compose/wrendns.toml || fail "the piped install's config isn't the starter"
 printf '2\n' | sh deploy/systemd/install.sh --yes --config-only "$E/yes.toml" > "$E/yes.out" 2>&1
 grep -q 'Which' "$E/yes.out" && fail "--yes asked a question"
 echo "PASS ($(find "$E" -name '*.check' | wc -l) configs checked)"

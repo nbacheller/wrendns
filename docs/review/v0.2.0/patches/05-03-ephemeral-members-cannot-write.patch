@@ -1,7 +1,7 @@
-diff --git a/crates/telltale/src/federated.rs b/crates/telltale/src/federated.rs
+diff --git a/crates/wrendns/src/federated.rs b/crates/wrendns/src/federated.rs
 index e4b445c..0e07104 100644
---- a/crates/telltale/src/federated.rs
-+++ b/crates/telltale/src/federated.rs
+--- a/crates/wrendns/src/federated.rs
++++ b/crates/wrendns/src/federated.rs
 @@ -107,6 +107,15 @@ enum Read {
      },
  }
@@ -33,7 +33,7 @@ index e4b445c..0e07104 100644
 +            if ephemeral && kind == crate::forward::KIND {
 +                return Err("an ephemeral member can't forward configuration writes".into());
 +            }
-             if kind == telltale_cluster::failover::KIND {
+             if kind == wrendns_cluster::failover::KIND {
                  // REQ: CLU-005 — a vote request (ADR-056); the ballot is written to disk first.
                  return tokio::task::spawn_blocking(move || {
 @@ -222,6 +242,9 @@ pub(crate) fn rpc_handler(

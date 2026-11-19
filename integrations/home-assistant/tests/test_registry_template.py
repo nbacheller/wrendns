@@ -1,9 +1,9 @@
 """The fork's Home Assistant naming source, against a real Home Assistant.
 
-1. The template TelltaleDNS sends (copied out of `crates/telltale/src/routers.rs`, so the two
+1. The template WrenDNS sends (copied out of `crates/wrendns/src/routers.rs`, so the two
    can't drift) renders through Home Assistant's real `/api/template` endpoint to the JSON the
    Rust side parses.
-2. A real TelltaleDNS process reads this Home Assistant test server as a `[[router]]` and names
+2. A real WrenDNS process reads this Home Assistant test server as a `[[router]]` and names
    the devices: a name given in Home Assistant, at the address a device tracker reports.
 """
 
@@ -27,7 +27,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from .conftest import BIN, ROOT
 
-ROUTERS_RS = ROOT / "crates" / "telltale" / "src" / "routers.rs"
+ROUTERS_RS = ROOT / "crates" / "wrendns" / "src" / "routers.rs"
 
 
 def ha_template() -> str:
@@ -103,18 +103,18 @@ async def test_template_needs_an_administrator(hass: HomeAssistant, hass_client,
     assert resp.status == 401
 
 
-async def test_telltale_reads_home_assistant(
+async def test_wrendns_reads_home_assistant(
     hass: HomeAssistant, hass_client, hass_access_token, socket_enabled
 ) -> None:
     if not BIN.exists():
-        pytest.skip(f"no TelltaleDNS binary at {BIN}")
+        pytest.skip(f"no WrenDNS binary at {BIN}")
     assert await async_setup_component(hass, "api", {})
     await _devices(hass)
     client = await hass_client()
     ha_url = str(client.make_url("")).rstrip("/")
     tmp = Path(tempfile.mkdtemp(prefix="tt-ha-src-"))
     (tmp / "ha-token").write_text(hass_access_token)
-    (tmp / "telltale.toml").write_text(
+    (tmp / "wrendns.toml").write_text(
         f"""
 [node]
 data_dir = "{tmp / "data"}"
@@ -135,9 +135,9 @@ device_domain = "home.arpa"
 """
     )
     log = open(tmp / "node.log", "w")  # noqa: SIM115 (open for the process's lifetime; closed below)
-    proc = subprocess.Popen([str(BIN), "run", "-c", str(tmp / "telltale.toml")], stdout=log, stderr=log)
+    proc = subprocess.Popen([str(BIN), "run", "-c", str(tmp / "wrendns.toml")], stdout=log, stderr=log)
     try:
-        # TelltaleDNS reads Home Assistant in its own process while this test's event loop
+        # WrenDNS reads Home Assistant in its own process while this test's event loop
         # serves the requests, so wait without blocking the loop.
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:

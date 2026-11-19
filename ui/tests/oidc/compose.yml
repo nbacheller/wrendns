@@ -2,13 +2,13 @@
 #   docker compose -f ui/tests/oidc/compose.yml up -d --wait
 #   OIDC_E2E=keycloak,authentik npm --prefix ui run test:e2e
 # Test-only credentials; never expose these containers.
-name: telltale-oidc-test
+name: wrendns-oidc-test
 
 x-authentik: &authentik
   image: ghcr.io/goauthentik/server:2025.10.1
   environment:
-    AUTHENTIK_SECRET_KEY: telltale-e2e-only-secret-key-0123456789abcdefghijkl
-    AUTHENTIK_BOOTSTRAP_PASSWORD: telltale-e2e-admin
+    AUTHENTIK_SECRET_KEY: wrendns-e2e-only-secret-key-0123456789abcdefghijkl
+    AUTHENTIK_BOOTSTRAP_PASSWORD: wrendns-e2e-admin
     AUTHENTIK_BOOTSTRAP_EMAIL: admin@example.test
     AUTHENTIK_POSTGRESQL__HOST: authentik-db
     AUTHENTIK_POSTGRESQL__USER: authentik
@@ -19,7 +19,7 @@ x-authentik: &authentik
     AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
     AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
   volumes:
-    - ./authentik-blueprint.yaml:/blueprints/custom/telltale.yaml:ro
+    - ./authentik-blueprint.yaml:/blueprints/custom/wrendns.yaml:ro
   depends_on:
     authentik-db:
       condition: service_healthy
@@ -32,9 +32,9 @@ services:
     command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: telltale-e2e-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: wrendns-e2e-admin
     volumes:
-      - ./keycloak-realm.json:/opt/keycloak/data/import/telltale.json:ro
+      - ./keycloak-realm.json:/opt/keycloak/data/import/wrendns.json:ro
     ports: ["8080:8080"]
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]

@@ -2,7 +2,7 @@
 
   # 1. A production-sized database (about 600,000 rows, 3 to 5 MiB), written by an ignored test that
   #    also does 2,000,000 lookups and prints the resident set before and after:
-  GEOIP_PROBE_OUT=/tmp/geoip-db cargo test -p telltale obs_902_geoip_probe_database -- --ignored --nocapture
+  GEOIP_PROBE_OUT=/tmp/geoip-db cargo test -p wrendns obs_902_geoip_probe_database -- --ignored --nocapture
   # 2. The node, with and without it (the Pi profile: 2 workers):
   python3 bench/geoipprobe.py --geoip off
   python3 bench/geoipprobe.py --geoip on --db /tmp/geoip-db
@@ -33,7 +33,7 @@ URL = gate.URL
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--geoip", choices=["on", "off"], required=True)
     ap.add_argument("--db", default="/tmp/geoip-db", help="the directory the ignored test wrote country.ttgeo to")
     ap.add_argument("--workers", type=int, default=2, help="the Pi profile: 2 workers")
@@ -51,7 +51,7 @@ def main():
     URL = f"http://127.0.0.1:{bench.METRICS_PORT}"
     gate.URL = URL
 
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-geoip-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-geoip-")
     d = pathlib.Path(tmp.name)
     st = gate.Stack(args, d)
     extra = "[map]\nenabled = true\n"

@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-cache/src/entry.rs b/crates/telltale-cache/src/entry.rs
+diff --git a/crates/wrendns-cache/src/entry.rs b/crates/wrendns-cache/src/entry.rs
 index ae209cb..e0e4ea6 100644
---- a/crates/telltale-cache/src/entry.rs
-+++ b/crates/telltale-cache/src/entry.rs
+--- a/crates/wrendns-cache/src/entry.rs
++++ b/crates/wrendns-cache/src/entry.rs
 @@ -248,7 +248,7 @@ fn finish(
          if r.is_opt() {
              seen_opt = true;
@@ -11,10 +11,10 @@ index ae209cb..e0e4ea6 100644
              continue;
          }
          offsets.push(u16::try_from(r.ttl_off).map_err(|_| Uncacheable::Malformed)?);
-diff --git a/crates/telltale-cache/tests/cache.rs b/crates/telltale-cache/tests/cache.rs
+diff --git a/crates/wrendns-cache/tests/cache.rs b/crates/wrendns-cache/tests/cache.rs
 index 40d28f1..caa788c 100644
---- a/crates/telltale-cache/tests/cache.rs
-+++ b/crates/telltale-cache/tests/cache.rs
+--- a/crates/wrendns-cache/tests/cache.rs
++++ b/crates/wrendns-cache/tests/cache.rs
 @@ -692,3 +692,25 @@ fn dns_015_ecs_scoped_keys() {
          Lookup::Miss
      ));
@@ -41,10 +41,10 @@ index 40d28f1..caa788c 100644
 +        Err(Uncacheable::Malformed)
 +    );
 +}
-diff --git a/crates/telltale-proto/src/record.rs b/crates/telltale-proto/src/record.rs
+diff --git a/crates/wrendns-proto/src/record.rs b/crates/wrendns-proto/src/record.rs
 index 8525eea..e6f43c8 100644
---- a/crates/telltale-proto/src/record.rs
-+++ b/crates/telltale-proto/src/record.rs
+--- a/crates/wrendns-proto/src/record.rs
++++ b/crates/wrendns-proto/src/record.rs
 @@ -153,7 +153,9 @@ pub fn summarize(msg: &[u8]) -> Result<ResponseSummary, ParseError> {
      for r in records(msg)? {
          let r = r?;
@@ -56,12 +56,12 @@ index 8525eea..e6f43c8 100644
                  return Err(ParseError::BadOpt);
              }
              let e = Edns::from_parts(r.rclass, r.ttl, r.rdata(msg))?;
-diff --git a/crates/telltale-proto/tests/proto.rs b/crates/telltale-proto/tests/proto.rs
+diff --git a/crates/wrendns-proto/tests/proto.rs b/crates/wrendns-proto/tests/proto.rs
 index 403f9f8..4d43e0c 100644
---- a/crates/telltale-proto/tests/proto.rs
-+++ b/crates/telltale-proto/tests/proto.rs
+--- a/crates/wrendns-proto/tests/proto.rs
++++ b/crates/wrendns-proto/tests/proto.rs
 @@ -358,3 +358,22 @@ fn flt_007_cname_targets_readable_from_hickory_response() {
-     telltale_proto::read_name(&bytes, cname.rdata_off, &mut target).unwrap();
+     wrendns_proto::read_name(&bytes, cname.rdata_off, &mut target).unwrap();
      assert_eq!(target.display().to_string(), "tracker.ads.example.net");
  }
 +
@@ -80,6 +80,6 @@ index 403f9f8..4d43e0c 100644
 +    out[11] = 0; // ARCOUNT = 0
 +    assert_eq!(
 +        summarize(&out[..len]),
-+        Err(telltale_proto::ParseError::BadOpt)
++        Err(wrendns_proto::ParseError::BadOpt)
 +    );
 +}

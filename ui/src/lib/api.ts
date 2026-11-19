@@ -23,9 +23,9 @@ function reentry(d: string): string {
     return "A check can't use a stored credential. Enter it in the draft to check it, or save the upstream unchanged and check it from the Upstreams page.";
   }
   const field = fieldIn(d);
-  // Headers and arguments have no field in the forms: only telltale ctl or the file can enter them.
+  // Headers and arguments have no field in the forms: only wrendns ctl or the file can enter them.
   const how = /`(headers|args)/.test(d)
-    ? "This form can't enter it: change it with telltale ctl, or in the configuration file."
+    ? "This form can't enter it: change it with wrendns ctl, or in the configuration file."
     : 'Enter it again on this form (an admin does this).';
   if (/no stored value to keep/.test(d)) return `The stored credential${field} has no value to keep. ${how}`;
   return `The stored credential${field} isn't kept, because this entry now points somewhere else. ${how}`;
@@ -38,7 +38,7 @@ function reentry(d: string): string {
  */
 const READABLE: Record<string, (detail: string) => string> = {
   path_not_allowed: (d) =>
-    `That file path can't be used${fieldIn(d)}: TelltaleDNS won't read from there. Pick another path, or set it in the configuration file on this node.`,
+    `That file path can't be used${fieldIn(d)}: WrenDNS won't read from there. Pick another path, or set it in the configuration file on this node.`,
   set_by_file: (d) =>
     `The configuration file sets${fieldIn(d) || ' this credential'}, and it wins over the UI and the API. Change it in the file.`,
   credential_reentry_required: (d) => reentry(d),
@@ -220,11 +220,11 @@ const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: 
 /** REQ: API-007 (T24.18, ADR-940) — one Pi-hole import item: what it would do, and why not. */
 export type PiholeItem = { kind: string; name: string; action: 'add' | 'change' | 'skip'; reason: string; detail: string };
 
-/** REQ: API-007, ADR-941 — the comparison of a sample through a Pi-hole and TelltaleDNS. */
+/** REQ: API-007, ADR-941 — the comparison of a sample through a Pi-hole and WrenDNS. */
 export type PiholeCompare = {
   names: number;
   agree: number;
-  differences: { name: string; qtype: string; pihole: { rcode: string; values: string[] }; telltale: { rcode: string; values: string[] } }[];
+  differences: { name: string; qtype: string; pihole: { rcode: string; values: string[] }; wrendns: { rcode: string; values: string[] } }[];
   errors: string[];
 };
 
@@ -263,7 +263,7 @@ export const api = {
   revokePiholeToken: () => call<S['PiholeApiStatus']>('DELETE', '/pihole-api/token'),
   // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export: admins only. The file is the body;
   // nothing changes until its plan is applied.
-  piholePreview: (file: Blob, q: { compare?: string; telltale?: string; samples?: string } = {}) =>
+  piholePreview: (file: Blob, q: { compare?: string; wrendns?: string; samples?: string } = {}) =>
     call<PiholePreview>('POST', '/import/pihole', { raw: file, query: q }),
   piholeApply: (planId: string) => post<PiholeApplied>(`/import/pihole/plans/${encodeURIComponent(planId)}/apply`),
   piholeDiscard: (planId: string) => call<{ discarded: boolean }>('DELETE', `/import/pihole/plans/${encodeURIComponent(planId)}`),
@@ -329,7 +329,7 @@ export const api = {
     call<SupportManifest>('POST', '/system/support-package', { body: b, query: { dryRun: true } }),
   supportPackage: async (b: S['SupportPackageRequest']) => {
     const res = await callFile('POST', '/system/support-package', b);
-    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'telltale-support.tar.gz';
+    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'wrendns-support.tar.gz';
     const blob = await res.blob();
     return { blob, name, id: res.headers.get('x-support-package-id') ?? undefined, manifest: await manifestOf(blob) };
   },
@@ -338,9 +338,9 @@ export const api = {
   // encrypted; the answer says how many went in, or were left out, and what to know.
   backup: async (b: { includeQlog?: boolean; passphrase?: string }): Promise<BackupResult> => {
     const res = await callFile('POST', '/backup', b);
-    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'telltale.ttbk';
-    const m = /^(included|omitted); count=(\d+)$/.exec(res.headers.get('x-telltale-backup-secrets') ?? '');
-    const warnings = (res.headers.get('x-telltale-backup-warnings') ?? '').split(' | ').filter(Boolean);
+    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'wrendns.ttbk';
+    const m = /^(included|omitted); count=(\d+)$/.exec(res.headers.get('x-wrendns-backup-secrets') ?? '');
+    const warnings = (res.headers.get('x-wrendns-backup-warnings') ?? '').split(' | ').filter(Boolean);
     return { blob: await res.blob(), name, secrets: (m?.[1] as 'included' | 'omitted' | undefined) ?? 'omitted', count: Number(m?.[2] ?? 0), warnings };
   },
   // REQ: API-902 (T27.13, ADR-956) — guarded changes: what is guarded and pending (no value is in it),
@@ -607,7 +607,7 @@ export const api = {
     call<S['CmdbChange']>('POST', `/cmdb/cis/${encodeURIComponent(id)}/${op}`, {
       body,
       query: { dryRun: dryRun || undefined },
-      headers: { ...(reason ? { 'x-telltale-reason': reason } : {}), ...(dryRun ? {} : { 'idempotency-key': newKey() }) },
+      headers: { ...(reason ? { 'x-wrendns-reason': reason } : {}), ...(dryRun ? {} : { 'idempotency-key': newKey() }) },
     }),
   // REQ: DSC-004 (T25.6, ADR-1002) — Test one configured SNMP agent (by name, never an address). A dry
   // run lists the OIDs and sends nothing; a test waits 60 s after the last one.

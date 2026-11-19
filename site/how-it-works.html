@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How it works — TelltaleDNS</title>
-<meta name="description" content="TelltaleDNS architecture: the query pipeline, threading model, cache, hedged upstreams, and clustering.">
+<title>How it works — WrenDNS</title>
+<meta name="description" content="WrenDNS architecture: the query pipeline, threading model, cache, hedged upstreams, and clustering.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -139,7 +139,7 @@
     <div>
       <p class="eyebrow">Cache</p>
       <h2>Store the reply, patch the bytes</h2>
-      <p class="muted">Instead of decoding and re-encoding, TelltaleDNS keeps the upstream's reply as raw bytes and remembers where each TTL lives. A hit is a copy plus a handful of small writes.</p>
+      <p class="muted">Instead of decoding and re-encoding, WrenDNS keeps the upstream's reply as raw bytes and remembers where each TTL lives. A hit is a copy plus a handful of small writes.</p>
     </div>
   </div>
 </section>
@@ -198,7 +198,7 @@
       <p class="eyebrow">Blocking</p>
       <h2>Blocking you can explain</h2>
       <p class="muted">Hosts files, AdBlock-style lists, and Pi-hole regexes are compiled in the background into one compact snapshot: about 9 bytes per blocked name, and a lookup takes under a microsecond. A new snapshot replaces the old one atomically, without pausing a query, and a recompile under load left p99 latency unchanged in our tests.</p>
-      <p class="muted">Every decision names its rule. <code>telltale explain</code> shows who a device is, its groups, every rule in every list that matches (with its line number), and which one decides.</p>
+      <p class="muted">Every decision names its rule. <code>wrendns explain</code> shows who a device is, its groups, every rule in every list that matches (with its line number), and which one decides.</p>
     </div>
   </div>
 </section>
@@ -262,7 +262,7 @@
     <div>
       <p class="eyebrow">Sign-in</p>
       <h2>Locked until you set it up</h2>
-      <p class="muted">There is no default password. On first start TelltaleDNS creates a one-time setup token, readable only by its own user, and whoever has it creates the first admin. Kubernetes and Ansible installs can create that admin from a secret instead.</p>
+      <p class="muted">There is no default password. On first start WrenDNS creates a one-time setup token, readable only by its own user, and whoever has it creates the first admin. Kubernetes and Ansible installs can create that admin from a secret instead.</p>
       <p class="muted">The web UI is part of the binary, about 90 KiB compressed: a dashboard, a searchable query log with a "Why?" button on every row and a live view that streams queries as they happen, and pages for lists, devices and groups, upstreams, names on your network, the cluster, users, and API tokens. It follows your light or dark theme and works on a phone. Charts reach back 400 days from a small on-disk history, and a ready-made Grafana dashboard covers the Prometheus metrics.</p>
       <p class="muted">People sign in with a password and, if they like, an authenticator app, or with the identity provider they already use (Keycloak, Authentik, any OpenID Connect provider), which also decides their role. Scripts, dashboards, and AI agents get their own tokens, limited to reading if that is all they need. Prometheus and home dashboards can use HTTP Basic, but only for accounts where an admin turned it on. Each user is a viewer, an operator, or an admin, and every change they make lands in a tamper-evident audit log.</p>
     </div>
@@ -278,7 +278,7 @@
       <rect x="20" y="30" width="300" height="170" rx="16" class="svg-box"/>
       <text x="40" y="58" class="svg-text">🏠 Raspberry Pi</text>
       <rect x="40" y="76" width="260" height="56" rx="10" class="svg-brand"/>
-      <text x="170" y="108" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">TelltaleDNS (all-in-one)</text>
+      <text x="170" y="108" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">WrenDNS (all-in-one)</text>
       <text x="40" y="160" class="svg-sub">local snapshot · keeps answering offline</text>
       <rect x="560" y="30" width="320" height="170" rx="16" class="svg-box"/>
       <text x="580" y="58" class="svg-text">☸️ Kubernetes</text>
@@ -301,7 +301,7 @@
     <div class="card"><h3>DNSSEC</h3><p>Validates signatures itself, with negative trust anchors for broken domains, and says why a lookup failed (extended DNS errors).</p></div>
     <div class="card"><h3>Serve-stale and prefetch</h3><p>Popular names are refreshed before they expire, expired answers keep flowing while upstreams are down, and the cache survives a restart.</p></div>
     <div class="card"><h3>Encrypted DNS for devices</h3><p>DNS over TLS and HTTPS listeners with certificates reloaded on the fly, and PROXY protocol v2 so a load balancer doesn't hide clients.</p></div>
-    <div class="card"><h3>Moving in</h3><p><code>telltale import pihole</code> reads a Teleporter export; <code>telltale import technitium</code> reads a live server. Both write a config file with notes on what didn't carry over.</p></div>
+    <div class="card"><h3>Moving in</h3><p><code>wrendns import pihole</code> reads a Teleporter export; <code>wrendns import technitium</code> reads a live server. Both write a config file with notes on what didn't carry over.</p></div>
     <div class="card"><h3>Backups</h3><p>One <code>.ttbk</code> archive with your configuration, users, devices, audit log, and statistics history (the query log optional), checksummed so a restore verifies every file before it writes any.</p></div>
     <div class="card"><h3>AI agents</h3><p>Agent tokens with narrow scopes, a reason on every change, rate limits, and a kill switch. An MCP server (<code>/mcp</code>) gives assistants tools to look around and to plan changes, which take effect only when applied, and only after you approve them if you want that.</p></div>
     <div class="card"><h3>Versions and updates</h3><p>Every build knows its version and commit, checks a signed release index daily (optional), and tells you how to update for the way you installed it.</p></div>

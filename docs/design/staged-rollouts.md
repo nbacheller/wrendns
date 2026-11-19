@@ -9,7 +9,7 @@ ask the owner. Read ADR-047 (manifests), ADR-048 (authority), ADR-051 (epochs, o
 not weaken any.
 
 ## 1. What it is
-Today `publish_loop` (`crates/telltale/src/replication.rs`) signs this node's shared configuration and
+Today `publish_loop` (`crates/wrendns/src/replication.rs`) signs this node's shared configuration and
 newest filter snapshot as version `(epoch, seq)` and every replica applies anything newer. A rollout
 splits that into two steps: **canary** nodes get the new version first; after a bake under a guard,
 everyone else gets it. If the guard fails, the cluster is **pinned** to the previous version and the
@@ -146,8 +146,8 @@ group `default` members changed"). Keep it as JSON Patch in the API and a senten
   `GET /api/v1/cluster/versions`, `POST /api/v1/cluster/versions/{epoch}.{seq}/pin`,
   `DELETE /api/v1/cluster/pin`. Problem codes `cluster_pinned`, `no_rollout`, `version_unknown`,
   `version_blobs_missing`. Audited: `rollout.promote|abort`, `cluster.pin|unpin`.
-- **CLI:** `telltale cluster rollout status|promote|abort`, `telltale cluster versions`,
-  `telltale cluster pin <epoch>.<seq> --reason …`, `telltale cluster unpin`.
+- **CLI:** `wrendns cluster rollout status|promote|abort`, `wrendns cluster versions`,
+  `wrendns cluster pin <epoch>.<seq> --reason …`, `wrendns cluster unpin`.
 - **Cluster page:** a **Rollout** card (stage, version, canaries with ✓/… per node, bake countdown,
   guard readings before/after, Promote/Abort); a **pin banner** above everything while pinned (version,
   since, by, reason, the diff sentences, Unpin); a **Versions** table (Pin action per row, outcome
@@ -159,9 +159,9 @@ group `default` members changed"). Keep it as JSON Patch in the API and a senten
 - **Helm:** `cluster.rollout.{canaries, bakeSeconds, servfailPct, requireTraffic, history}` rendered
   into the controller's `[cluster.rollout]`; default `canaries: []` (off). `values.yaml` comments
   recommend `[ephemeral]` for `mode: scaled` and explain what it does. PrometheusRule
-  `TelltaleDNSRolloutFailed`, `TelltaleDNSClusterPinned`.
-- **Metrics:** `telltale_cluster_rollout_stage` (0 none, 1 canary), `telltale_cluster_rollout_info{version,started}`,
-  `telltale_cluster_pinned`, `telltale_cluster_pinned_to{version}`; per node (already): applied
+  `WrenDNSRolloutFailed`, `WrenDNSClusterPinned`.
+- **Metrics:** `wrendns_cluster_rollout_stage` (0 none, 1 canary), `wrendns_cluster_rollout_info{version,started}`,
+  `wrendns_cluster_pinned`, `wrendns_cluster_pinned_to{version}`; per node (already): applied
   version.
 - **Health/alerts:** reasons `cluster_pinned` (degraded), `rollout_stuck` (degraded; canaries
   configured, none online for > 10 min while a change waits). Alert rules `rollout_failed`,

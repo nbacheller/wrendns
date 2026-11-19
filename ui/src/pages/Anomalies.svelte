@@ -75,7 +75,7 @@
     try {
       await api.deleteEntry('anomaly-mutes', name);
       reloadTick++;
-      window.dispatchEvent(new Event('telltale:anomalies-changed'));
+      window.dispatchEvent(new Event('wrendns:anomalies-changed'));
     } catch (e) {
       actionError = e;
     } finally {
@@ -91,7 +91,7 @@
       await (ack ? api.acknowledgeAnomalies(ids) : api.unacknowledgeAnomalies(ids));
       reloadTick++;
       // The sidebar badge counts unacknowledged findings: let it refresh now.
-      window.dispatchEvent(new Event('telltale:anomalies-changed'));
+      window.dispatchEvent(new Event('wrendns:anomalies-changed'));
     } catch (e) {
       actionError = e;
     } finally {
@@ -164,7 +164,7 @@
   {#if loaded && items.length === 0}
     <section class="card">
       <p class="empty">
-        {#if ackedCount > 0}Nothing new: every finding in this period is acknowledged.{:else if mutedCount > 0}Nothing unusual: {mutedCount} muted {mutedCount === 1 ? 'finding is' : 'findings are'} hidden.{:else}Nothing unusual. New devices are quiet here for their first 7 days while TelltaleDNS learns them.{/if}
+        {#if ackedCount > 0}Nothing new: every finding in this period is acknowledged.{:else if mutedCount > 0}Nothing unusual: {mutedCount} muted {mutedCount === 1 ? 'finding is' : 'findings are'} hidden.{:else}Nothing unusual. New devices are quiet here for their first 7 days while WrenDNS learns them.{/if}
       </p>
     </section>
   {/if}
@@ -233,7 +233,7 @@
             muted = change;
             muteFor = null;
             reloadTick++;
-            window.dispatchEvent(new Event('telltale:anomalies-changed'));
+            window.dispatchEvent(new Event('wrendns:anomalies-changed'));
           }}
         />
       {/if}

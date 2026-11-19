@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TelltaleDNS performance harness (spec/09 §2, NFR-001).
+"""WrenDNS performance harness (spec/09 §2, NFR-001).
 
   bench.py run smoke            quick gate: cache-hot + miss-heavy, one run each
   bench.py run full             every available corpus, 3 runs each, medians reported
@@ -8,7 +8,7 @@
   bench.py run smoke --corpus device-names --devices 1000     ask for those names
   bench.py compare base.json new.json           regression gate (default ±5%)
 
-By default the harness starts the stub upstream (stub_upstream.py) and a telltale server
+By default the harness starts the stub upstream (stub_upstream.py) and a wrendns server
 on loopback, drives it with dnsperf, and writes results JSON to bench/results/.
 """
 
@@ -275,7 +275,7 @@ def wait_filter(url, proc, timeout=300.0):
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 body = r.read().decode()
-            m = re.search(r"^telltale_filter_lookup_index_bytes (\d+)", body, re.M)
+            m = re.search(r"^wrendns_filter_lookup_index_bytes (\d+)", body, re.M)
             if m and int(m.group(1)) > 0:
                 return time.monotonic()
         except OSError:
@@ -587,7 +587,7 @@ def cmd_run(args):
               file=sys.stderr)
 
     stub = server = None
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-bench-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-bench-")
     try:
         if args.target:
             host, _, port = args.target.rpartition(":")
@@ -601,7 +601,7 @@ def cmd_run(args):
                                      "--delay-ms", str(args.upstream_delay_ms)],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             wait_port(STUB_PORT)
-            cfg = pathlib.Path(tmp.name) / "telltale.toml"
+            cfg = pathlib.Path(tmp.name) / "wrendns.toml"
             # The blocked corpus needs the lists loaded; then every corpus runs with them.
             lists = sorted((HERE / "lists").glob("*.txt")) if "blocked" in files else []
             tls = tls_cert(tmp.name) if {"dot", "doh"} & set(transports) else None
@@ -687,10 +687,10 @@ def cmd_run(args):
             final = proc_stats(server.pid) or {}
             result["server"]["peak_rss_kib"] = final.get("hwm_kib")
     finally:
-        stop(server, "telltale")
+        stop(server, "wrendns")
         stop(stub, "stub upstream")
         if server and server.returncode not in (0, None):
-            print(f"telltale exited with {server.returncode}; log:", file=sys.stderr)
+            print(f"wrendns exited with {server.returncode}; log:", file=sys.stderr)
             print((pathlib.Path(tmp.name) / "server.log").read_text()[-4000:], file=sys.stderr)
         tmp.cleanup()
 
@@ -798,8 +798,8 @@ def cmd_sustain(args):
         sys.exit("dnsperf not found")
     lists = sorted((HERE / "lists").glob("*.txt")) if args.corpus in ("blocked", "realistic-home") else []
     path, digest = corpus.generate(args.corpus, HERE / "corpora", HERE / "lists")
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-sustain-")
-    cfg = pathlib.Path(tmp.name) / "telltale.toml"
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-sustain-")
+    cfg = pathlib.Path(tmp.name) / "wrendns.toml"
     cfg.write_text(server_config(args.workers, tmp.name, f"udp://127.0.0.1:{STUB_PORT}", lists))
     url = f"http://127.0.0.1:{METRICS_PORT}/metrics"
     target = ("127.0.0.1", DNS_PORT)
@@ -816,20 +816,20 @@ def cmd_sustain(args):
         if lists:
             wait_filter(url, server)
         dnsperf(target, path, 5, **common, max_qps=args.rate)  # warm the cache
-        before = (metric_sum(url, "telltale_telemetry_events_total") or 0,
-                  metric_sum(url, "telltale_telemetry_dropped_total") or 0,
-                  metric_sum(url, "telltale_queries_total") or 0)
+        before = (metric_sum(url, "wrendns_telemetry_events_total") or 0,
+                  metric_sum(url, "wrendns_telemetry_dropped_total") or 0,
+                  metric_sum(url, "wrendns_queries_total") or 0)
         cpu_before = (proc_stats(server.pid) or {}).get("cpu_s", 0.0)
         run = parse_dnsperf(dnsperf(target, path, args.duration, **common, max_qps=args.rate))
         time.sleep(0.5)  # let deferred answers and the aggregator catch up
-        after = (metric_sum(url, "telltale_telemetry_events_total") or 0,
-                 metric_sum(url, "telltale_telemetry_dropped_total") or 0,
-                 metric_sum(url, "telltale_queries_total") or 0)
+        after = (metric_sum(url, "wrendns_telemetry_events_total") or 0,
+                 metric_sum(url, "wrendns_telemetry_dropped_total") or 0,
+                 metric_sum(url, "wrendns_queries_total") or 0)
         stats = proc_stats(server.pid) or {}
         if server.poll() is not None:
             raise RuntimeError(f"server exited with {server.returncode}")
     finally:
-        stop(server, "telltale")
+        stop(server, "wrendns")
         stop(stub, "stub upstream")
         tmp.cleanup()
     events, dropped, queries = (a - b for a, b in zip(after, before))
@@ -861,8 +861,8 @@ def cmd_swap(args):
     if not lists:
         sys.exit("swap needs lists in bench/lists/")
     path, digest = corpus.generate("realistic-home", HERE / "corpora", HERE / "lists")
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-swap-")
-    cfg = pathlib.Path(tmp.name) / "telltale.toml"
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-swap-")
+    cfg = pathlib.Path(tmp.name) / "wrendns.toml"
     # A small path list the "list" trigger rewrites: a list update, as the fetcher would see.
     swap_list = pathlib.Path(tmp.name) / "swap.txt"
     swap_list.write_text("||swap-initial.example^\n")
@@ -899,7 +899,7 @@ def cmd_swap(args):
                     out = dnsperf(target, path, args.duration, **common, max_qps=args.rate)
                     result["quiet"] = parse_dnsperf(out)
                     continue
-                v0 = metric(metrics_url, "telltale_filter_snapshot_version") or 0
+                v0 = metric(metrics_url, "wrendns_filter_snapshot_version") or 0
                 cmd = ["dnsperf", "-s", target[0], "-p", str(target[1]), "-d", str(path), "-l", str(args.duration),
                        "-T", str(args.threads), "-c", str(args.clients), "-q", str(args.outstanding), "-t", "2",
                        "-Q", str(args.rate), "-O", "latency-histogram", "-O", "suppress=timeout,unexpected"]
@@ -916,10 +916,10 @@ def cmd_swap(args):
                     server.send_signal(signal.SIGHUP)
                 swapped = indexed = None
                 while load.poll() is None:
-                    v = metric(metrics_url, "telltale_filter_snapshot_version") or 0
+                    v = metric(metrics_url, "wrendns_filter_snapshot_version") or 0
                     if swapped is None and v > v0:
                         swapped = round(time.monotonic() - t0, 2)
-                    if swapped is not None and indexed is None and (metric(metrics_url, "telltale_filter_lookup_index_bytes") or 0) > 0:
+                    if swapped is not None and indexed is None and (metric(metrics_url, "wrendns_filter_lookup_index_bytes") or 0) > 0:
                         indexed = round(time.monotonic() - t0, 2)
                     time.sleep(0.1)
                 stdout, _ = load.communicate()
@@ -940,7 +940,7 @@ def cmd_swap(args):
                   f"rcodes {s['rcodes']}", file=sys.stderr)
     finally:
         alive = server is not None and server.poll() is None
-        stop(server, "telltale")
+        stop(server, "wrendns")
         stop(stub, "stub upstream")
         # Keep the server log with the results: it's the evidence when something goes wrong.
         out_dir = pathlib.Path(args.out)
@@ -989,7 +989,7 @@ def main():
 
     r = sub.add_parser("run", help="run a benchmark mode")
     r.add_argument("mode", choices=sorted(MODES))
-    r.add_argument("--bin", default=str(ROOT / "target/bench-fast/telltale"), help="telltale binary")
+    r.add_argument("--bin", default=str(ROOT / "target/bench-fast/wrendns"), help="wrendns binary")
     r.add_argument("--target", help="bench an already-running server at HOST:PORT instead")
     r.add_argument("--corpus", action="append", choices=sorted(corpus.CORPORA), help="override the mode's corpora")
     r.add_argument("--duration", type=int, help="seconds per measured run")
@@ -1016,7 +1016,7 @@ def main():
     r.set_defaults(func=cmd_run)
 
     w = sub.add_parser("swap", help="T2.7: recompile + swap the filter under realistic-home load")
-    w.add_argument("--bin", default=str(ROOT / "target/bench-fast/telltale"))
+    w.add_argument("--bin", default=str(ROOT / "target/bench-fast/wrendns"))
     w.add_argument("--rate", type=int, default=20_000, help="fixed query rate (qps)")
     w.add_argument("--duration", type=int, default=20, help="seconds per run")
     w.add_argument("--at", type=float, default=4.0, help="seconds into the swap run to trigger the recompile")
@@ -1035,7 +1035,7 @@ def main():
     w.set_defaults(func=cmd_swap)
 
     s = sub.add_parser("sustain", help="T3.1: fixed-rate load; telemetry must drop nothing")
-    s.add_argument("--bin", default=str(ROOT / "target/bench-fast/telltale"))
+    s.add_argument("--bin", default=str(ROOT / "target/bench-fast/wrendns"))
     s.add_argument("--corpus", choices=sorted(corpus.CORPORA), default="cache-hot")
     s.add_argument("--rate", type=int, default=100_000, help="fixed query rate (qps)")
     s.add_argument("--duration", type=int, default=60, help="seconds")

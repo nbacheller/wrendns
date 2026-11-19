@@ -6,7 +6,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
-helm template telltale "$here/telltale" --set prometheusRule.enabled=true \
+helm template wrendns "$here/wrendns" --set prometheusRule.enabled=true \
   --show-only templates/monitoring.yaml > "$out/rendered.yaml"
 # The PrometheusRule's `spec` is a plain Prometheus rules file, indented by two.
 python3 - "$out/rendered.yaml" "$out/rules.yml" <<'PY'

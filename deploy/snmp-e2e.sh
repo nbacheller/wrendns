@@ -59,8 +59,8 @@ export TT_SNMPD_USER=ttauth
 export TT_SNMPD_AUTH=SHA
 export TT_SNMPD_AUTH_FILE="$WORK/auth"
 export TT_SNMPD_PRIV_FILE="$WORK/priv"
-cargo test -p telltale-snmp --test snmpd_interop dsc_003_net_snmp_v2c -- --ignored
-cargo test -p telltale-snmp --test snmpd_interop dsc_003_net_snmp_auth_priv -- --ignored
+cargo test -p wrendns-snmp --test snmpd_interop dsc_003_net_snmp_v2c -- --ignored
+cargo test -p wrendns-snmp --test snmpd_interop dsc_003_net_snmp_auth_priv -- --ignored
 export TT_SNMPD_USER=ttnopriv
-cargo test -p telltale-snmp --test snmpd_interop dsc_003_net_snmp_auth_no_priv -- --ignored
+cargo test -p wrendns-snmp --test snmpd_interop dsc_003_net_snmp_auth_no_priv -- --ignored
 echo "snmp-e2e: ok"

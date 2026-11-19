@@ -1,11 +1,11 @@
-//! ADR-002 differential fuzz: when both telltale-proto and hickory-proto accept a query, they
+//! ADR-002 differential fuzz: when both wrendns-proto and hickory-proto accept a query, they
 //! must agree on header, question, and EDNS.
 #![no_main]
 
 use hickory_proto::op::{Message, MessageType};
 use hickory_proto::serialize::binary::BinEncodable;
 use libfuzzer_sys::fuzz_target;
-use telltale_proto::parse_query;
+use wrendns_proto::parse_query;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(ours) = parse_query(data) else { return };

@@ -3,7 +3,7 @@ resolver's resident memory, in the resolver's own configuration, and whether it 
 
   # A release-profile binary with the bench hook (it trusts the fake source's certificate, nothing
   # else changes: the production limits, mimalloc's default arena, the purge at once of main.rs):
-  cargo build --profile bench-fast -p telltale --features geoip-probe
+  cargo build --profile bench-fast -p wrendns --features geoip-probe
   python3 bench/geoipbuild.py                       # real-sized file, the 64 MiB gate set-up
   python3 bench/geoipbuild.py --scale 2             # twice the real file
   python3 bench/geoipbuild.py --names 0 --fill 0    # the build alone, on an idle node
@@ -14,7 +14,7 @@ What it does, one node per run (`VmHWM` is per process):
      default, about the real file) of random length over 20 x 20 country codes, so few merge and
      the tables are near their largest;
   2. serves it over HTTPS from 127.0.0.1 with a throwaway certificate (openssl) the node is told to
-     trust (`TELLTALE_GEOIP_TEST_CA`);
+     trust (`WRENDNS_GEOIP_TEST_CA`);
   3. starts the node with `--names` blocked names (the first of `bench/lists/*.txt`, or synthetic
      names when the lists are not here), `[map] enabled`, telemetry on and `[map.geoip]` pointed at
      the source but off, waits for the filter, fills the cache with `--fill` unique misses
@@ -201,7 +201,7 @@ def status(pid):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--v4", type=int, default=300_000)
     ap.add_argument("--v6", type=int, default=300_000)
     ap.add_argument("--scale", type=float, default=1.0, help="multiplies --v4 and --v6")
@@ -228,7 +228,7 @@ def main():
     gate.TARGET = ("127.0.0.1", bench.DNS_PORT)
     v4, v6 = int(args.v4 * args.scale), int(args.v6 * args.scale)
 
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-geoipbuild-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-geoipbuild-")
     d = pathlib.Path(tmp.name)
     gz = d / "db.csv.gz"
     write_csv(gz, v4, v6)
@@ -247,7 +247,7 @@ def main():
     st.cfg.write_text(st.cfg.read_text() + "\n[map]\nenabled = true\n[map.geoip]\nenabled = false\n"
                       f'source_url = "https://127.0.0.1:{args.port + 9}/db.csv.gz"\n'
                       f'sha256 = "{hashlib.sha256(body).hexdigest()}"\n')
-    os.environ["TELLTALE_GEOIP_TEST_CA"] = str(cert)
+    os.environ["WRENDNS_GEOIP_TEST_CA"] = str(cert)
     r = {"synthetic_names": synthetic, "control": args.control, "v4": v4, "v6": v6, "compressed_mib": round(len(body) / 1048576, 2), "names": args.names,
          "bin": args.bin, "workers": args.workers}
     try:
@@ -259,7 +259,7 @@ def main():
             miss, _ = corpus.generate("miss-heavy", d / "corpora")
             fill = gate.write_lines(d / "fill.txt", miss.read_text().splitlines()[:args.fill])
             gate.perf(fill, args.fill_seconds, args, max_qps=args.fill_rate, once=True)
-        r["cache_entries"] = bench.metric_sum(f"{gate.URL}/metrics", "telltale_cache_entries")
+        r["cache_entries"] = bench.metric_sum(f"{gate.URL}/metrics", "wrendns_cache_entries")
         time.sleep(args.settle)
         if "watchdog wrote its dump" in (data / "server.log").read_text(errors="replace"):
             raise RuntimeError("the watchdog restarted the node during the fill: lower --fill-rate")

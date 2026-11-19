@@ -1,6 +1,6 @@
 // REQ: OBS-902, NFR-001 (T26.4, T26.5, ADR-958, ADR-959, ADR-970) - the GeoIP database's card in
 // Settings and the world view. The GeoIP card runs against the real node and a fake HTTPS source
-// the harness trusts (`TELLTALE_GEOIP_TEST`, a debug build only); the world view's data is mocked
+// the harness trusts (`WRENDNS_GEOIP_TEST`, a debug build only); the world view's data is mocked
 // with `page.route` (the node records no answer address yet, ADR-970, and the e2e server has no
 // real traffic), and the pure parts are tested without a browser. These tests sign in as the admin
 // `1-ui.spec.ts` created, so run the whole suite, not this file alone.

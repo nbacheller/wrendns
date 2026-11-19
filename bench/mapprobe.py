@@ -73,7 +73,7 @@ def rss_mib(pid):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--map", choices=["on", "off"], required=True)
     ap.add_argument("--workers", type=int, default=2, help="the Pi profile: 2 workers")
     ap.add_argument("--server-cpus", default="0-3")
@@ -91,7 +91,7 @@ def main():
     URL = f"http://127.0.0.1:{bench.METRICS_PORT}"
     gate.URL = URL
 
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-map-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-map-")
     d = pathlib.Path(tmp.name)
     st = gate.Stack(args, d)
     extra = "[map]\nenabled = true\nevent_rate = 2000\n" if args.map == "on" else "[map]\nenabled = false\n"
@@ -106,7 +106,7 @@ def main():
         n = flood(socks, args.flood, args.rate, bench.DNS_PORT)
         time.sleep(2)
         after = rss_mib(st.server.pid)
-        dropped = bench.metric_sum(f"{URL}/metrics", "telltale_telemetry_dropped_total")
+        dropped = bench.metric_sum(f"{URL}/metrics", "wrendns_telemetry_dropped_total")
         print(f"map {args.map}: after {n:,} lookups from distinct devices: {after[0]} MiB (peak {after[1]}); "
               f"events dropped: {dropped}", flush=True)
         t0 = time.monotonic()

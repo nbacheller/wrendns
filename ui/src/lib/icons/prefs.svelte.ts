@@ -5,7 +5,7 @@ import { session } from '../session.svelte';
 import { DEFAULT_PREFS, parsePrefs, type IconPrefs } from './prefs';
 
 function key(): string {
-  return `telltale.icons.${session.user?.username ?? ''}`;
+  return `wrendns.icons.${session.user?.username ?? ''}`;
 }
 
 export const iconPrefs = $state<IconPrefs>({ ...DEFAULT_PREFS });

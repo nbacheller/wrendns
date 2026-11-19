@@ -32,7 +32,7 @@
 #       downloads its list from the fake source once; every node blocks the list's names from the
 #       compiled snapshot, and the fake source saw no request from a replica.
 #   j. (T24.40, ADR-1019) a cluster upgraded from an older version keeps its API entries: nodes on an
-#      older image (OLD_IMAGE, default telltale:lapse-base, a build before ADR-1016) take entries
+#      older image (OLD_IMAGE, default wrendns:lapse-base, a build before ADR-1016) take entries
 #      through the API and fail over once, every node is then upgraded, and after two more failovers
 #      the new primary dry-runs, edits and deletes the entries the old primary's API added, the others
 #      stay served, and the edit and the delete stick. Skipped when OLD_IMAGE isn't there
@@ -47,7 +47,7 @@
 # primary adopts it without a restart and no replica deposes it (T21.7, ADR-960).
 #
 # It never touches the single-node bundle (deploy/docker-desktop): its own compose project
-# (telltale-cluster3), its own volumes, and host ports 2153-2353 (DNS), 8153-8353 (API), 9163-9363
+# (wrendns-cluster3), its own volumes, and host ports 2153-2353 (DNS), 8153-8353 (API), 9163-9363
 # (metrics). Every credential is made here, in a temp directory that is removed at exit.
 #
 # Usage: deploy/cluster3/e2e.sh            (needs Docker with Compose v2, and python3)
@@ -62,8 +62,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Docker and Python on Windows (Git Bash) need the Windows form of the same path.
 HERE_W=$HERE
 if command -v cygpath >/dev/null 2>&1; then HERE_W=$(cygpath -m "$HERE"); fi
-PROJECT=telltale-cluster3
-IMAGE=telltale:cluster3-test
+PROJECT=wrendns-cluster3
+IMAGE=wrendns:cluster3-test
 COMPOSE=(docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml")
 PY=(python3 "$HERE_W/probe.py")
 NODES=(primary replica-a replica-b)
@@ -177,8 +177,8 @@ login() { # node [setup-token]
 
 # A join token from the primary, for a replica to join with (reusable until it expires).
 join_token() {
-  "${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster token create --ttl 30m --eligible \
-    -c /etc/telltale/telltale.toml | tr -d '\r' | grep '^tt_join_'
+  "${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster token create --ttl 30m --eligible \
+    -c /etc/wrendns/wrendns.toml | tr -d '\r' | grep '^tt_join_'
 }
 
 container() { "${COMPOSE[@]}" ps -q "$1"; }
@@ -198,11 +198,11 @@ TOKEN=$(join_token)
 [ -n "$TOKEN" ] || bad "no join token from the primary"
 for r in replica-a replica-b; do
   "${COMPOSE[@]}" run --rm -T --no-deps "$r" cluster join "$TOKEN" --site "$r" --eligible \
-    --advertise "https://$r:8443" -c /etc/telltale/telltale.toml >"$E/join-$r.log" 2>&1 \
+    --advertise "https://$r:8443" -c /etc/wrendns/wrendns.toml >"$E/join-$r.log" 2>&1 \
     || { cat "$E/join-$r.log"; bad "$r couldn't join the cluster"; }
   "${COMPOSE[@]}" up -d --wait "$r" >/dev/null 2>&1 || bad "$r didn't come up healthy after joining"
 done
-SETUP=$("${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml \
+SETUP=$("${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns auth setup-token -c /etc/wrendns/wrendns.toml \
   | tr -d '\r' | sed -n 1p)
 [ -n "$SETUP" ] || bad "no setup token on the primary"
 login primary "$SETUP" || bad "the primary's first admin couldn't be created"
@@ -229,34 +229,34 @@ for n in replica-a replica-b; do
   done
   [ -n "$ok" ] || bad "$n doesn't report all three nodes up in manual mode: $(jget '[(x["site"], x["up"], x["link"]) for x in d["nodes"]]')"
 done
-epoch0=$(metric "${MET[primary]}" telltale_cluster_epoch)
-[ "$(metric "${MET[primary]}" telltale_cluster_primary)" = 1 ] || bad "the primary isn't primary before the switch"
-"${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null   || bad "couldn't turn automatic failover on"
+epoch0=$(metric "${MET[primary]}" wrendns_cluster_epoch)
+[ "$(metric "${MET[primary]}" wrendns_cluster_primary)" = 1 ] || bad "the primary isn't primary before the switch"
+"${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null   || bad "couldn't turn automatic failover on"
 for n in "${NODES[@]}"; do
   ok=
   for _ in $(seq 60); do
-    [ "$(metric "${MET[$n]}" telltale_cluster_failover_auto)" = 1 ] && { ok=1; break; }
+    [ "$(metric "${MET[$n]}" wrendns_cluster_failover_auto)" = 1 ] && { ok=1; break; }
     sleep 0.5
   done
   [ -n "$ok" ] || bad "$n never adopted automatic failover"
 done
 ok=
 for _ in $(seq 40); do
-  [ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] && { ok=1; break; }
+  [ "$(metric "${MET[primary]}" wrendns_cluster_lease_held)" = 1 ] && { ok=1; break; }
   sleep 0.5
 done
 [ -n "$ok" ] || bad "the running primary never held a lease after the switch"
 # 45 s: longer than a replica's wait (15 s) plus a lease (15 s). The primary stays primary, in the
 # same epoch, with its lease; the replicas never become primary.
 for i in $(seq 45); do
-  [ "$(metric "${MET[primary]}" telltale_cluster_primary)" = 1 ] || bad "the primary was deposed ($i s after the switch)"
-  [ "$(metric "${MET[primary]}" telltale_cluster_epoch)" = "$epoch0" ] || bad "the epoch moved ($i s after the switch)"
+  [ "$(metric "${MET[primary]}" wrendns_cluster_primary)" = 1 ] || bad "the primary was deposed ($i s after the switch)"
+  [ "$(metric "${MET[primary]}" wrendns_cluster_epoch)" = "$epoch0" ] || bad "the epoch moved ($i s after the switch)"
   for n in replica-a replica-b; do
-    [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 0 ] || bad "$n stood for election ($i s after the switch)"
+    [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 0 ] || bad "$n stood for election ($i s after the switch)"
   done
   sleep 1
 done
-[ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] || bad "the primary's lease isn't held after 45 s"
+[ "$(metric "${MET[primary]}" wrendns_cluster_lease_held)" = 1 ] || bad "the primary's lease isn't held after 45 s"
 pass "epoch $epoch0 kept; the primary holds its lease"
 
 step "b. a config edit on the primary answers on all three nodes' DNS within 5 s"
@@ -313,7 +313,7 @@ done
 # A replica's copy arrives by the cluster's replication (ADR-917), a few heartbeats after the write.
 for n in replica-a replica-b; do
   for _ in $(seq 60); do
-    "${COMPOSE[@]}" exec -T "$n" /usr/local/bin/telltale secrets status -c /etc/telltale/telltale.toml \
+    "${COMPOSE[@]}" exec -T "$n" /usr/local/bin/wrendns secrets status -c /etc/wrendns/wrendns.toml \
       >"$E/secrets-$n.txt" 2>&1 && grep -q '1 readable' "$E/secrets-$n.txt" && break
     sleep 0.5
   done
@@ -480,8 +480,8 @@ done
 killed=
 for _ in $(seq 120); do
   for n in "${NODES[@]}"; do
-    if [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] \
-      && [ "$(metric "${MET[$n]}" telltale_cluster_lease_held)" = 1 ]; then killed=$n; fi
+    if [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] \
+      && [ "$(metric "${MET[$n]}" wrendns_cluster_lease_held)" = 1 ]; then killed=$n; fi
   done
   [ -n "$killed" ] && break
   sleep 0.5
@@ -491,7 +491,7 @@ survivors=()
 fo=()
 for n in "${NODES[@]}"; do
   [ "$n" = "$killed" ] && continue
-  [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 0 ] || bad "$n is primary before the kill"
+  [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 0 ] || bad "$n is primary before the kill"
   survivors+=("$n")
   fo+=("$n" "http://127.0.0.1:${API[$n]}" "${DNS[$n]}" "$E_PY/jar-$n.json")
 done
@@ -623,7 +623,7 @@ step "k. replicas stay linked (T24.38): after a rolling restart (replicas, then 
 # replicas for good (one stream's end marked the peer disconnected and took the other's place in the
 # outbox), so reachableVoters stayed at 2 and the replicas moved between the primary and each other.
 cur=
-for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] && cur=$n; done
+for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] && cur=$n; done
 [ -n "$cur" ] || bad "no node is primary before the restart"
 order=()
 for n in "${NODES[@]}"; do [ "$n" = "$cur" ] || order+=("$n"); done
@@ -667,7 +667,7 @@ done
 echo "   $samples samples, every node reached 3 of 3 voters each time; no link churn"
 # The primary dies: an election within the lease time, and nobody flaps afterwards.
 killed=
-for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] && killed=$n; done
+for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] && killed=$n; done
 [ -n "$killed" ] || bad "no node is primary before the kill"
 survivors=()
 fo=()
@@ -699,7 +699,7 @@ fi
 # without ADR-1016, a failover in that state, then every node upgraded: the primary then holds
 # entries it serves but has no rows for, and used to answer a dry-run write with before: null and to
 # publish a candidate without the other entries.
-OLD_IMAGE=${OLD_IMAGE:-telltale:lapse-base}
+OLD_IMAGE=${OLD_IMAGE:-wrendns:lapse-base}
 
 # Recreates one node on an image (its data volume stays) and waits until it is healthy.
 at_image() { # image node
@@ -722,8 +722,8 @@ wait_primary() { # budget [excluded-node...]
   while [ "$(date +%s)" -lt "$end" ]; do
     for n in "${NODES[@]}"; do
       case " $* " in *" $n "*) continue ;; esac
-      if [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] \
-        && [ "$(metric "${MET[$n]}" telltale_cluster_lease_held)" = 1 ]; then
+      if [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] \
+        && [ "$(metric "${MET[$n]}" wrendns_cluster_lease_held)" = 1 ]; then
         echo "$n"
         return 0
       fi
@@ -747,14 +747,14 @@ list_is() { # node present|absent name
 step "j. a cluster upgraded from an older version keeps its API entries (T24.40)"
 if ! docker image inspect "$OLD_IMAGE" >/dev/null 2>&1; then
   if [ "${REQUIRE_UPGRADE:-}" = 1 ]; then bad "the older image $OLD_IMAGE is not here (build one from a commit before ADR-1016)"; fi
-  echo "SKIP: the older image $OLD_IMAGE is not here (set OLD_IMAGE, or build telltale:lapse-base from a commit before ADR-1016)"
+  echo "SKIP: the older image $OLD_IMAGE is not here (set OLD_IMAGE, or build wrendns:lapse-base from a commit before ADR-1016)"
 else
   # Automatic failover on (check a2 did it in a full run; ONLY=upgrade skips a2): the failovers below
   # are leases running out.
-  if [ "$(metric "${MET[primary]}" telltale_cluster_failover_auto)" != 1 ]; then
-    "${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null       || bad "couldn't turn automatic failover on"
+  if [ "$(metric "${MET[primary]}" wrendns_cluster_failover_auto)" != 1 ]; then
+    "${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null       || bad "couldn't turn automatic failover on"
     for _ in $(seq 60); do
-      [ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] && break
+      [ "$(metric "${MET[primary]}" wrendns_cluster_lease_held)" = 1 ] && break
       sleep 0.5
     done
   fi

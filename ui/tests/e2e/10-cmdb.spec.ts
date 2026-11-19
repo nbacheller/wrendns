@@ -38,7 +38,7 @@ test.beforeAll(async ({ browser }) => {
     if (m.type() === 'error' && !/status of (40[0134]|409|422|429|503) \(/.test(m.text())) problems.push(`console: ${m.text()} ${m.location().url}`);
   });
   await page.goto('/');
-  const welcome = page.getByRole('heading', { name: 'Welcome to TelltaleDNS' });
+  const welcome = page.getByRole('heading', { name: 'Welcome to WrenDNS' });
   const signInHeading = page.getByRole('heading', { name: 'Sign in' });
   await expect(welcome.or(signInHeading)).toBeVisible();
   if (await welcome.isVisible()) {

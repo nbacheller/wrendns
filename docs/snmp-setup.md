@@ -1,19 +1,19 @@
 # SNMP setup: the gateway and the switches
 
-TelltaleDNS can read what your network devices already know: the gateway's ARP table (which MAC address sits behind each IP address, on every VLAN), a managed switch's forwarding table (which port and VLAN a device is on) and the neighbours each switch port sees (LLDP). It only reads. The client has no way to send a write request (`SetRequest`), it asks one thing at a time (at least 50 ms between requests, so at most 20 a second), and it ends a poll that gets no answer.
+WrenDNS can read what your network devices already know: the gateway's ARP table (which MAC address sits behind each IP address, on every VLAN), a managed switch's forwarding table (which port and VLAN a device is on) and the neighbours each switch port sees (LLDP). It only reads. The client has no way to send a write request (`SetRequest`), it asks one thing at a time (at least 50 ms between requests, so at most 20 a second), and it ends a poll that gets no answer.
 
 This page is the checklist for the devices. The settings are in **Settings, Network inventory** (administrators change them; everyone can read them), or in the file under `[discovery]` (see [configuration](configuration.md#sections)).
 
 ## 1. Prepare the secret files
 
-A credential never holds a password. It names a **file** that holds it, under a directory listed in `[node] secret_file_dirs` (by default `/run/secrets`, `/var/run/secrets` and `/etc/telltale/secrets`). Docker and Kubernetes secrets already land there. A file outside those directories is refused when it is read, and the agent shows "skipped". The file holds the password and nothing else; a trailing newline is ignored.
+A credential never holds a password. It names a **file** that holds it, under a directory listed in `[node] secret_file_dirs` (by default `/run/secrets`, `/var/run/secrets` and `/etc/wrendns/secrets`). Docker and Kubernetes secrets already land there. A file outside those directories is refused when it is read, and the agent shows "skipped". The file holds the password and nothing else; a trailing newline is ignored.
 
 ## 2. UniFi gateway (UCG, UDM, USG)
 
 1. In the UniFi Network application, find the **SNMP** settings (the menu differs between versions and models, so follow Ubiquiti's documentation for yours) and turn on **SNMPv3**.
-2. Create a user and a password of 8 characters or more. UniFi uses one password for both authentication and privacy, which is what TelltaleDNS does when you leave the privacy password file empty. Choose **SHA** authentication and **AES** privacy.
+2. Create a user and a password of 8 characters or more. UniFi uses one password for both authentication and privacy, which is what WrenDNS does when you leave the privacy password file empty. Choose **SHA** authentication and **AES** privacy.
 3. Limit who may ask. If the device has an access list, allow only the address of the DNS host. On Kubernetes outside the host network, devices see the node's address after source translation: allow that address.
-4. In TelltaleDNS add a credential with version **v3**, the user, `sha` (or `sha-256`), the authentication password file, and privacy `aes-128`. Add the gateway as an agent with that credential, leave **arp** and **ifmib** on, and press **Test**.
+4. In WrenDNS add a credential with version **v3**, the user, `sha` (or `sha-256`), the authentication password file, and privacy `aes-128`. Add the gateway as an agent with that credential, leave **arp** and **ifmib** on, and press **Test**.
 
 The gateway serves `ipNetToPhysicalTable` (and the older `ipNetToMediaTable`) and the interface tables. It has no bridge or LLDP tables, so **Test** shows those as "no answer (skipped)", and the poller leaves them alone until you press Test again. IPv6 neighbours are counted and left out; the inventory is IPv4 only.
 
@@ -39,7 +39,7 @@ How a device is placed on a port:
 - The first poll (and every **Test**) probes each table with one request; the answer, the security level reached, the v3 engine ID and the device's sysObjectID are the capability record, shown on the page. A table that did not answer is skipped, and logged once, until the next test.
 - An ARP entry becomes a current address of the device only inside a `[[discovery.subnet]]` you listed. It expires when no poll has refreshed it for twice the slowest agent's interval (15 minutes at least).
 - Everything a device says (names, descriptions, the sysObjectID) is cut to 64 or 255 bytes, has its control characters removed and is shown as text only.
-- A poll that fails never affects DNS. The page shows why; three failed polls in a row raise the degraded health reason `discovery_agent_failing`. Metrics: `telltale_discovery_agent_up`, `_polls_total`, `_poll_failures_total`, `_last_success_timestamp_seconds`, `_poll_duration_seconds`, `_table_rows` and `_table_answered`.
+- A poll that fails never affects DNS. The page shows why; three failed polls in a row raise the degraded health reason `discovery_agent_failing`. Metrics: `wrendns_discovery_agent_up`, `_polls_total`, `_poll_failures_total`, `_last_success_timestamp_seconds`, `_poll_duration_seconds`, `_table_rows` and `_table_answered`.
 
 ## 5. In the file
 
@@ -56,7 +56,7 @@ cidr = "192.0.2.0/24"
 [[discovery.snmp_credential]]
 name = "gateway-v3"
 version = "v3"
-user = "telltale"
+user = "wrendns"
 auth_protocol = "sha"                      # sha, sha-256, sha-384 or sha-512
 auth_password_file = "/run/secrets/snmp-auth"
 priv_protocol = "aes-128"                  # leave out for authNoPriv
@@ -70,7 +70,7 @@ interval_secs = 300
 tables = ["arp", "ifmib"]                  # arp, ifmib, bridge, lldp
 ```
 
-MD5, SHA-224, DES, AES-192, AES-256 and no authentication are refused when the file loads, with the reason. An inline `community` or password is not a key at all and fails the load. `telltale snmp walk --agent gateway --table arp` prints a table from a configured agent for a quick look; it takes the agent's name and never an address.
+MD5, SHA-224, DES, AES-192, AES-256 and no authentication are refused when the file loads, with the reason. An inline `community` or password is not a key at all and fails the load. `wrendns snmp walk --agent gateway --table arp` prints a table from a configured agent for a quick look; it takes the agent's name and never an address.
 
 ## Test
 

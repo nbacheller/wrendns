@@ -101,7 +101,7 @@
 <section class="card" data-testid="pihole-api">
   <h2>Pi-hole compatible API<HelpButton id="pihole-api" /></h2>
   <p class="muted small">
-    Lets tools that talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) read TelltaleDNS's
+    Lets tools that talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) read WrenDNS's
     statistics and turn blocking off for a while and back on. Nothing else: lists, rules and settings are not reachable through
     it. It is off until you turn it on, and it needs the token made here.
   </p>

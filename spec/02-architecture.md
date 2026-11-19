@@ -2,16 +2,16 @@
 
 ## 1. Process model: one binary, three roles
 ```
-telltale run --role=all          # default: Pi / single node / small k8s install
-telltale run --role=resolver     # data plane only (scale horizontally)
-telltale run --role=controller   # control plane only (API, UI, compiler, analytics store, cluster primary candidate)
+wrendns run --role=all          # default: Pi / single node / small k8s install
+wrendns run --role=resolver     # data plane only (scale horizontally)
+wrendns run --role=controller   # control plane only (API, UI, compiler, analytics store, cluster primary candidate)
 ```
 - Every cluster **node** runs a resolver. A node with role `all` or `controller` is *eligible* to be the cluster **primary** (see `12`).
 - The reference homelab topology:
   ```
    ┌─────────────── Site "home-pi" ───────────────┐    ┌──────────── Site "k8s" ─────────────────────────┐
    │ Raspberry Pi 4  (container or systemd)       │    │ controller StatefulSet (1 pod, PVC)  role=controller│
-   │ telltale role=all  ── replica OR primary ───────┼─mTLS┼─ resolver Deployment (N pods)        role=resolver  │
+   │ wrendns role=all  ── replica OR primary ───────┼─mTLS┼─ resolver Deployment (N pods)        role=resolver  │
    │ local snapshot + local query store           │    │ LoadBalancer :53 (MetalLB, ETP=Local)              │
    └──────────────────────────────────────────────┘    └────────────────────────────────────────────────────┘
           ▲ clients get both IPs via DHCP option 6 (Pi IP, k8s LB IP) ▲
@@ -20,20 +20,20 @@ telltale run --role=controller   # control plane only (API, UI, compiler, analyt
 ## 2. Crate layout (Cargo workspace)
 | Crate | Responsibility | Notes |
 |---|---|---|
-| `telltale-proto` | Zero-copy DNS wire parser/writer for the hot path (header, question, EDNS, answer walk for CNAME/IP inspection, TTL patching) | `forbid(unsafe)`. Uses `hickory-proto` only for full decode/encode off the hot path (DNSSEC, zone files). |
-| `telltale-net` | Listeners: UDP (SO_REUSEPORT, recvmmsg/sendmmsg), TCP, TLS (rustls), DoH (hyper/h2 + h3 via quinn), DoQ (quinn), PROXY protocol | The only crate allowed `unsafe` (syscalls). |
-| `telltale-cache` | Sharded S3-FIFO cache of wire responses; serve-stale; prefetch queue; persistence | |
-| `telltale-filter` | List parsers, rule compiler, snapshot format (FST + regex DFA), matcher | Compiler runs in the controller (or locally in `all`). |
-| `telltale-policy` | Client identification, group resolution, schedules, rate limiting, rewrites, safe search | |
-| `telltale-upstream` | Upstream transports, pools, strategies, health, breakers, bootstrap, proxies, plugin upstreams | |
-| `telltale-recursor` | Iterative resolver + DNSSEC validator | P1; may build on `hickory-resolver`/`hickory-recursor` components where mature. |
-| `telltale-telemetry` | QueryEvent, ring buffers, aggregator, rollups, histograms, top-K, Prometheus/OTLP/dnstap exporters | |
-| `telltale-store` | Query-log segment store (columnar, zstd) + SQLite for config/rollups/audit | |
-| `telltale-cluster` | Membership, CA/join tokens, snapshot replication, fencing, federation RPC | |
-| `telltale-snmp` | SNMP BER codec and the v2c and v3 USM client (read PDUs only), run in the `discovery-worker` process (M25) | `forbid(unsafe)`; off the hot path. Not a crate until T25.4 (DSC-003, ADR-908). |
-| `telltale-api` | axum REST API, auth, OpenAPI, WebSocket/SSE tail, embedded UI assets | |
-| `telltale-config` | Config schema (serde), validation, env overrides, GitOps mode, migrations | |
-| `telltale` (bin) | CLI, role wiring, signal handling, `ctl` subcommands | |
+| `wrendns-proto` | Zero-copy DNS wire parser/writer for the hot path (header, question, EDNS, answer walk for CNAME/IP inspection, TTL patching) | `forbid(unsafe)`. Uses `hickory-proto` only for full decode/encode off the hot path (DNSSEC, zone files). |
+| `wrendns-net` | Listeners: UDP (SO_REUSEPORT, recvmmsg/sendmmsg), TCP, TLS (rustls), DoH (hyper/h2 + h3 via quinn), DoQ (quinn), PROXY protocol | The only crate allowed `unsafe` (syscalls). |
+| `wrendns-cache` | Sharded S3-FIFO cache of wire responses; serve-stale; prefetch queue; persistence | |
+| `wrendns-filter` | List parsers, rule compiler, snapshot format (FST + regex DFA), matcher | Compiler runs in the controller (or locally in `all`). |
+| `wrendns-policy` | Client identification, group resolution, schedules, rate limiting, rewrites, safe search | |
+| `wrendns-upstream` | Upstream transports, pools, strategies, health, breakers, bootstrap, proxies, plugin upstreams | |
+| `wrendns-recursor` | Iterative resolver + DNSSEC validator | P1; may build on `hickory-resolver`/`hickory-recursor` components where mature. |
+| `wrendns-telemetry` | QueryEvent, ring buffers, aggregator, rollups, histograms, top-K, Prometheus/OTLP/dnstap exporters | |
+| `wrendns-store` | Query-log segment store (columnar, zstd) + SQLite for config/rollups/audit | |
+| `wrendns-cluster` | Membership, CA/join tokens, snapshot replication, fencing, federation RPC | |
+| `wrendns-snmp` | SNMP BER codec and the v2c and v3 USM client (read PDUs only), run in the `discovery-worker` process (M25) | `forbid(unsafe)`; off the hot path. Not a crate until T25.4 (DSC-003, ADR-908). |
+| `wrendns-api` | axum REST API, auth, OpenAPI, WebSocket/SSE tail, embedded UI assets | |
+| `wrendns-config` | Config schema (serde), validation, env overrides, GitOps mode, migrations | |
+| `wrendns` (bin) | CLI, role wiring, signal handling, `ctl` subcommands | |
 | `ui/` | SPA (Svelte 5 + Vite + uPlot); built output embedded with `rust-embed` | Target ≤ 512 KiB gzipped (ADR-1020). |
 
 ## 3. Threading and I/O model
@@ -49,14 +49,14 @@ telltale run --role=controller   # control plane only (API, UI, compiler, analyt
 ## 4. Data flow (single query)
 ```
 packet ──► listener ──► Pipeline::handle(ctx)
-                         │ 1 parse (telltale-proto)                 [t_parse]
-                         │ 2 client id + group (telltale-policy)    [t_policy]
+                         │ 1 parse (wrendns-proto)                 [t_parse]
+                         │ 2 client id + group (wrendns-policy)    [t_policy]
                          │ 3 rate limit
                          │ 4 local records / rewrites / safe-search
-                         │ 5 filter decision (telltale-filter)      [t_filter]
-                         │ 6 cache lookup (telltale-cache)          [t_cache]
+                         │ 5 filter decision (wrendns-filter)      [t_filter]
+                         │ 6 cache lookup (wrendns-cache)          [t_cache]
                          │   hit → patch ID/TTL → respond
-                         │   miss → upstream router ───────────► telltale-upstream (async)   [t_upstream]
+                         │   miss → upstream router ───────────► wrendns-upstream (async)   [t_upstream]
                          │                                         │ DNSSEC validate         [t_dnssec]
                          │ 7 response policy: CNAME inspection, IP filter   ◄───┘
                          │ 8 cache insert
@@ -79,7 +79,7 @@ config edit (UI/API/GitOps) ─► primary: validate ─► append to change log
 
 ## 6. Storage layout (per node)
 ```
-/var/lib/telltale/
+/var/lib/wrendns/
   snapshots/<version>/manifest.json, *.fst, *.dfa, ...   # last 3 kept
   state.db              # SQLite (WAL): local node identity, cluster state, rollups, audit (replica copy), users (primary authoritative)
   qlog/<yyyy>/<mm>/<dd>/<hh>.seg                          # query-log segments (06)
@@ -91,7 +91,7 @@ In Kubernetes: the controller uses a PVC. Resolver pods use `emptyDir` (snapshot
 ## 7. Key dependencies (pin in Cargo.toml; justify any additions in an ADR)
 `tokio`, `socket2`, `quanta`, `arc-swap`, `crossbeam` (or `rtrb`), `mimalloc`, `rustls` + `tokio-rustls` + `rustls-platform-verifier`, `quinn`, `h3`/`h3-quinn`, `hyper` + `h2`, `axum`, `fst`, `regex-automata`, `aho-corasick`, `hickory-proto` (+ `dnssec-ring`), `rusqlite` (bundled), `zstd`, `blake3`, `ed25519-dalek`, `rcgen`, `serde` + `toml` + `ciborium`, `prost` (cluster RPC messages), `hdrhistogram`, `argon2`, `totp-rs`, `ring` (OIDC signature checks, ADR-951), `tracing`, `rust-embed`, `clap`.
 
-M25 adds `aes` for SNMPv3 AES-128-CFB privacy only (ADR-911; T25.5). It is pinned exactly, `=0.8.4`, with its `zeroize` feature, so the key schedule is zeroized on drop. `telltale-snmp` is the only crate that depends on it. `telltale-snmp` also uses `ring` (digests, HMAC, `SystemRandom`) and `zeroize`; neither is new to the workspace.
+M25 adds `aes` for SNMPv3 AES-128-CFB privacy only (ADR-911; T25.5). It is pinned exactly, `=0.8.4`, with its `zeroize` feature, so the key schedule is zeroized on drop. `wrendns-snmp` is the only crate that depends on it. `wrendns-snmp` also uses `ring` (digests, HMAC, `SystemRandom`) and `zeroize`; neither is new to the workspace.
 
 ## 8. Error-handling and resilience rules
 1. The DNS path never panics on input. Every parse failure produces FORMERR or a drop, and increments a counter.

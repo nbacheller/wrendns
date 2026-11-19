@@ -8,7 +8,7 @@ import json
 import sys
 
 MIN_COMPONENTS = 100
-MUST_LIST = ("tokio", "rustls", "fst", "telltale-filter")
+MUST_LIST = ("tokio", "rustls", "fst", "wrendns-filter")
 
 failed = False
 for path in sys.argv[1:]:

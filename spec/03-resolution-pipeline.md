@@ -19,7 +19,7 @@ proxy_protocol = false
 - DoQ: ALPN `doq`; one stream per query.
 - Privileged ports: the container runs non-root with `CAP_NET_BIND_SERVICE` (or binds 5353 with Service port mapping in k8s).
 
-## 2. Parsing (telltale-proto)
+## 2. Parsing (wrendns-proto)
 - Parse in place from the receive buffer: header, the **single** question (QDCOUNT ≠ 1 → FORMERR), and the OPT RR (payload size, DO bit, ECS, EDNS MAC option code 65001, cookies).
 - Normalize the qname to lowercase into a per-worker stack buffer (max 255 bytes) and compute a 64-bit hash (`ahash` or `xxh3`) once. The cache, the filter (for its exact-hash prefilter), and telemetry interning all reuse that hash.
 - Reject: QR=1, opcode ≠ QUERY (→ NOTIMP), labels > 63 bytes, names > 255 bytes, compression loops.
@@ -49,7 +49,7 @@ proxy_protocol = false
 - **Flush APIs:** all, by name (with subtree), by upstream view.
 
 ### 4.1 Sizing advice (OBS-021, ADR-106)
-Each shard follows a 1-in-16 sample of keys (fingerprint bits 32–35 clear) after eviction: fingerprint → (evictions so far, expiry). When a sampled key is inserted again while its old answer would still be fresh, `evictions now − evictions then` is how many more entries the shard needed to still hold it; counted at the smallest of +25%, +50%, +100% of its live entries that covers it. Ghosts further back than +100% are forgotten, and the list is capped at 2 × live/16 + 16 per shard. It runs only in `insert` (after an upstream answer) and eviction, never on a lookup. `stats()` scales the counts by 16 and makes them cumulative (`ghost_hits`); shards also keep their peak weight (`peak_bytes`, the sum of shard peaks). The advice (`grow` at ≥ 1 point of extra hits, the smallest such step; `shrink` with no evictions after 100,000 lookups and a peak under half the budget, to peak × 1.5 ≥ 4 MiB; `ok`; `learning` under 10,000 lookups) is in `GET /api/v1/cache/stats` (`sizing`), MCP `cache_advice`, and `telltale_cache_ghost_hits_total{size}` / `telltale_cache_peak_bytes`.
+Each shard follows a 1-in-16 sample of keys (fingerprint bits 32–35 clear) after eviction: fingerprint → (evictions so far, expiry). When a sampled key is inserted again while its old answer would still be fresh, `evictions now − evictions then` is how many more entries the shard needed to still hold it; counted at the smallest of +25%, +50%, +100% of its live entries that covers it. Ghosts further back than +100% are forgotten, and the list is capped at 2 × live/16 + 16 per shard. It runs only in `insert` (after an upstream answer) and eviction, never on a lookup. `stats()` scales the counts by 16 and makes them cumulative (`ghost_hits`); shards also keep their peak weight (`peak_bytes`, the sum of shard peaks). The advice (`grow` at ≥ 1 point of extra hits, the smallest such step; `shrink` with no evictions after 100,000 lookups and a peak under half the budget, to peak × 1.5 ≥ 4 MiB; `ok`; `learning` under 10,000 lookups) is in `GET /api/v1/cache/stats` (`sizing`), MCP `cache_advice`, and `wrendns_cache_ghost_hits_total{size}` / `wrendns_cache_peak_bytes`.
 
 ## 5. DNSSEC (DNS-011)
 - Modes: `off`, `validate` (default once stable), `validate_permissive` (log bogus, don't fail).

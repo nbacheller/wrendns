@@ -4,12 +4,12 @@
 #   1. configure groups, clients, adlists, allow/deny domains (exact and regex), local DNS and
 #      CNAME records, upstreams, conditional forwarding, DHCP reservations, blocking mode;
 #   2. export a Teleporter archive with Pi-hole's own tool;
-#   3. `telltale import pihole` it; the output must load and carry each of those over;
-#   4. run TelltaleDNS on it and check the answers: local names, a CNAME's TTL, an exact
+#   3. `wrendns import pihole` it; the output must load and carry each of those over;
+#   4. run WrenDNS on it and check the answers: local names, a CNAME's TTL, an exact
 #      deny and a regex deny (with ;querytype) blocked with EDE 15 as NXDOMAIN.
-# Usage: deploy/pihole-import-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/pihole-import-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 V6_IMAGE=pihole/pihole:2026.09.0
 V5_IMAGE=pihole/pihole:2024.07.0

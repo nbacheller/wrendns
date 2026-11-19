@@ -1,6 +1,6 @@
 // REQ: OBS-901, API-005 (T26.3, ADR-958, ADR-970) — the network map page. The e2e server has no real
 // traffic, so snapshots are mocked with `page.route` (the map's data API is tested against a real
-// node in `crates/telltale-api`), and the stream is a fake `EventSource` the test drives; one run
+// node in `crates/wrendns-api`), and the stream is a fake `EventSource` the test drives; one run
 // at the end opens the page against the node's own stream and snapshot. These tests sign in as the
 // admin `1-ui.spec.ts` created, so run the whole suite, not this file alone.
 import { expect, test, type Browser, type BrowserContext, type Page, type Route } from '@playwright/test';

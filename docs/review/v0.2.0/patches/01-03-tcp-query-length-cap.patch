@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-net/src/tcp.rs b/crates/telltale-net/src/tcp.rs
+diff --git a/crates/wrendns-net/src/tcp.rs b/crates/wrendns-net/src/tcp.rs
 index 8a5a049..94b18c1 100644
---- a/crates/telltale-net/src/tcp.rs
-+++ b/crates/telltale-net/src/tcp.rs
+--- a/crates/wrendns-net/src/tcp.rs
++++ b/crates/wrendns-net/src/tcp.rs
 @@ -91,6 +91,10 @@ pub struct TcpServer {
  
  /// Largest DNS message (2-byte length prefix).
@@ -24,10 +24,10 @@ index 8a5a049..94b18c1 100644
          }
          req.resize(n, 0);
          if !matches!(
-diff --git a/crates/telltale-net/tests/tcp.rs b/crates/telltale-net/tests/tcp.rs
+diff --git a/crates/wrendns-net/tests/tcp.rs b/crates/wrendns-net/tests/tcp.rs
 index b780757..9ed8b32 100644
---- a/crates/telltale-net/tests/tcp.rs
-+++ b/crates/telltale-net/tests/tcp.rs
+--- a/crates/wrendns-net/tests/tcp.rs
++++ b/crates/wrendns-net/tests/tcp.rs
 @@ -138,6 +138,18 @@ async fn dns_001_tcp_connection_cap() {
      server.shutdown().await;
  }

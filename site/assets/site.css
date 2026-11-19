@@ -1,4 +1,4 @@
-/* TelltaleDNS project site — one stylesheet, light/dark via tokens (ADR-012). */
+/* WrenDNS project site — one stylesheet, light/dark via tokens (ADR-012). */
 :root {
   --bg: #f7f8fa;
   --surface: #ffffff;
@@ -9,7 +9,7 @@
   --brand: #0b3a5b;        /* deep sea */
   --on-brand: #ffffff;
   --brand-fill: #0b3a5b;   /* diagram boxes with light text: dark in both themes */
-  --accent: #e4572e;       /* telltale yarn */
+  --accent: #e4572e;       /* wrendns yarn */
   --accent-text: #b8401d;  /* the yarn color as small text: 5.2:1 on --bg (AA) */
   --ok: #1f9d55;
   --warn: #c27c0e;

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Network map — TelltaleDNS</title>
-<meta name="description" content="A live map of your network drawn from a sample of lookups: gateway, networks, devices, TelltaleDNS nodes and upstreams, coloured green, yellow or red with a shape and a word, and the settings that tune its sampling and thresholds.">
+<title>Network map — WrenDNS</title>
+<meta name="description" content="A live map of your network drawn from a sample of lookups: gateway, networks, devices, WrenDNS nodes and upstreams, coloured green, yellow or red with a shape and a word, and the settings that tune its sampling and thresholds.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Observability first</p>
   <h1>See your network, and who is having a bad day</h1>
-  <p class="lede"><b>Monitor → Network map</b> draws your gateway, networks and VLANs, devices, TelltaleDNS nodes and upstreams, joined by the flows between them. Moving dashes show how busy each flow is, and every node says how it is doing in a shape, a word and a colour, so a device that is failing lookups stands out at a glance. Select it for the reasons, then jump to its queries, Explain or anomalies.</p>
+  <p class="lede"><b>Monitor → Network map</b> draws your gateway, networks and VLANs, devices, WrenDNS nodes and upstreams, joined by the flows between them. Moving dashes show how busy each flow is, and every node says how it is doing in a shape, a word and a colour, so a device that is failing lookups stands out at a glance. Select it for the reasons, then jump to its queries, Explain or anomalies.</p>
   <ul class="onpage">
     <li><a href="#reads">How to read it</a></li>
     <li><a href="#sampling">Sampling and its error</a></li>
@@ -63,7 +63,7 @@
 
 <section id="geoip">
   <h2>GeoIP and its licence</h2>
-  <p>The world view needs a country database, and it is off until an admin turns it on. It is DB-IP's "IP to Country Lite", published monthly under <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0</a>; each install downloads it from the publisher, nothing is bundled, and the credit "IP geolocation by DB-IP.com" appears with it. The download is checked for damage, not signed by the publisher. An admin turns it on in Settings, Query handling, GeoIP database, and the map is drawn in Monitor, World view. See the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">running guide</a> for details.</p>
+  <p>The world view needs a country database, and it is off until an admin turns it on. It is DB-IP's "IP to Country Lite", published monthly under <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0</a>; each install downloads it from the publisher, nothing is bundled, and the credit "IP geolocation by DB-IP.com" appears with it. The download is checked for damage, not signed by the publisher. An admin turns it on in Settings, Query handling, GeoIP database, and the map is drawn in Monitor, World view. See the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md">running guide</a> for details.</p>
 </section>
 
 </div>

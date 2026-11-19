@@ -93,7 +93,7 @@
     </p>
     {#if n.ignored}
       <div class="notice warn" role="status" data-testid="guarded-ignored">
-        <code>TELLTALE_IGNORE_GUARDED=1</code> is set: this node ignores every stored guarded setting and runs on its
+        <code>WRENDNS_IGNORE_GUARDED=1</code> is set: this node ignores every stored guarded setting and runs on its
         configuration files (nothing is deleted). Remove the variable and restart to use them again.
       </div>
     {/if}
@@ -113,7 +113,7 @@
         {#if !hasSupervisor(n)}
           <div class="muted small" data-testid="guarded-restart-manual">
             Nothing is declared to start this node again, so it can't restart itself from here: restart it yourself
-            (systemd: <code>systemctl restart telltale</code>; Compose: <code>docker compose restart</code>; Kubernetes:
+            (systemd: <code>systemctl restart wrendns</code>; Compose: <code>docker compose restart</code>; Kubernetes:
             delete the pod). If it doesn't come back, see recovery.
           </div>
         {/if}

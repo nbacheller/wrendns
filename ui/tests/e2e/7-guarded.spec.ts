@@ -4,7 +4,7 @@
 // (locked), the controls an operator and a viewer never see, and "Restart now" (hidden without a
 // supervisor, its own phrase, its outcome). It runs after 1-ui.spec.ts (which creates the admin).
 //
-// The server is built with the cargo feature `e2e` (`cargo build -p telltale --features e2e`): that
+// The server is built with the cargo feature `e2e` (`cargo build -p wrendns --features e2e`): that
 // build has three test settings (an immediate one, a confirmation-window one, a staged one) and a
 // test setting a file sets, a short window (`TT_E2E_CONFIRM_WINDOW_SECS`) and a simulated restart
 // (`TT_E2E_RESTART_HOOK`), so no test kills its own server. A release binary has none of them.
@@ -182,7 +182,7 @@ test.describe('api_902 guarded changes', () => {
             status: 403,
             contentType: 'application/problem+json',
             body: JSON.stringify({
-              type: 'https://telltaledns.dev/problems/reauth_required',
+              type: 'https://wrendns.com/problems/reauth_required',
               title: 'Recent sign-in needed',
               status: 403,
               code: 'reauth_required',

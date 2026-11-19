@@ -1,4 +1,4 @@
-# TelltaleDNS web UI — design handoff
+# WrenDNS web UI — design handoff
 
 For a frontend designer/engineer agent improving the UI. You start with no context: read this
 whole file before you change anything. It describes what exists, why, the rules that keep the
@@ -11,7 +11,7 @@ end-to-end tests pass against the real server binary.
 
 ## 1. Product context
 
-**TelltaleDNS** is a DNS resolver for homes and homelabs that filters ads and trackers (like
+**WrenDNS** is a DNS resolver for homes and homelabs that filters ads and trackers (like
 Pi-hole or AdGuard Home), encrypts upstream traffic, and *explains* every decision. It runs on a
 Raspberry Pi or in Kubernetes. Its tagline: "See every question. Answer on your terms."
 
@@ -40,7 +40,7 @@ The UI is served by the DNS server itself, often from a Raspberry Pi.
 |---|---|---|
 | 1 | **Stack: Svelte 5 (runes), Vite, TypeScript, uPlot.** No UI framework, no CSS framework (no Tailwind, Bootstrap, component libraries), no CSS-in-JS runtime. | `spec/07` §3, ADR-009. Owner decision. |
 | 2 | **Bundle ≤ 400 KiB gzipped in total** (JS + CSS + HTML + assets). | `npm run build` fails above it (`scripts/postbuild.mjs`). Currently ~60 KiB: keep plenty of headroom. Any new dependency needs a one-line justification in the commit. |
-| 3 | **Strict CSP.** The server sends `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. So: **no inline `<script>`, no `style="..."` attributes (static or dynamic), no `{@html}`, no external fonts/CDNs/images, no `eval`**. Dynamic styles **must** use Svelte's `style:prop={value}` directive (applied via CSSOM, which CSP allows). Scoped `<style>` blocks in `.svelte` files are fine (Vite emits them to a CSS file). | `crates/telltale-api/src/ui.rs`. The e2e suite fails on any console error, so CSP violations fail CI. Fonts must be system fonts or self-hosted files in `public/` (count them in the budget). |
+| 3 | **Strict CSP.** The server sends `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. So: **no inline `<script>`, no `style="..."` attributes (static or dynamic), no `{@html}`, no external fonts/CDNs/images, no `eval`**. Dynamic styles **must** use Svelte's `style:prop={value}` directive (applied via CSSOM, which CSP allows). Scoped `<style>` blocks in `.svelte` files are fine (Vite emits them to a CSS file). | `crates/wrendns-api/src/ui.rs`. The e2e suite fails on any console error, so CSP violations fail CI. Fonts must be system fonts or self-hosted files in `public/` (count them in the budget). |
 | 4 | **The UI uses only the public REST API** (`/api/v1/*`) through `src/lib/api.ts`. No new server endpoints are created for the UI alone. | The API is the product's contract for scripts and AI agents too (AGT-001..005). If you need data the API doesn't have, write it down as a request (§10); don't fake it. |
 | 5 | **`src/lib/api-types.ts` is generated, never hand-edited.** Run `npm run types` (from `../docs/api/openapi.json`). | CI fails if it's stale. |
 | 6 | **Hash routing** (`#/queries?client=…`). The server only serves `/`, `/assets/*`, `/favicon.svg`. Don't switch to history routing or add paths outside `public/`/`assets`. | `ui.rs` serves `index.html` only at `/`. |
@@ -59,25 +59,25 @@ The UI is served by the DNS server itself, often from a Raspberry Pi.
 ```sh
 cd ui
 npm ci
-npm run dev            # http://localhost:5173, proxies /api and /metrics to TELLTALE_API (default http://127.0.0.1:8053)
+npm run dev            # http://localhost:5173, proxies /api and /metrics to WRENDNS_API (default http://127.0.0.1:8053)
 npm run check          # svelte-check: types + a11y (must be clean)
 npm run build          # dist/ + .gz files + size budget report
 npm run types          # regenerate src/lib/api-types.ts after API changes
 ```
 
-A server for `npm run dev`: from the repo root, `cargo build -p telltale` then run
+A server for `npm run dev`: from the repo root, `cargo build -p wrendns` then run
 `node ui/tests/e2e/server.mjs` (starts a throwaway server on `127.0.0.1:18054` with an inline
-blocklist and a local record; then run dev with `TELLTALE_API=http://127.0.0.1:18054`). The
+blocklist and a local record; then run dev with `WRENDNS_API=http://127.0.0.1:18054`). The
 setup token is in `ui/.e2e-18054/data/setup-token` (the base port; see `tests/e2e/ports.ts`). Generate traffic with
 `dig @127.0.0.1 -p 18055 ads.e2e.test` (the DNS port is the base + 1) (blocked) or `nas.e2e.test` (local record).
 
-**Embedding:** release builds compile `ui/dist` into the binary (`cargo build -p telltale`
+**Embedding:** release builds compile `ui/dist` into the binary (`cargo build -p wrendns`
 after `npm run build`). Debug builds read `ui/dist` from disk at request time, so with a debug
 server running, `npm run build` plus a page reload is enough.
 
 **End-to-end tests:**
 ```sh
-cargo build -p telltale && npm run build
+cargo build -p wrendns && npm run build
 npx playwright install --with-deps --only-shell chromium   # once
 npm run test:e2e                  # 8 tests; starts the real binary
 SHOTS=1 npm run test:e2e          # also writes screenshots to test-results/shots/{page}-{light,dark}.png
@@ -146,7 +146,7 @@ ui/
 - Role-based UI: `can('admin')` etc. The server enforces roles; the UI only hides what can't work.
 
 **Server side you should know about (don't change without the owner):**
-`crates/telltale-api/src/ui.rs` serves `dist/` with the CSP above, `X-Frame-Options: DENY`,
+`crates/wrendns-api/src/ui.rs` serves `dist/` with the CSP above, `X-Frame-Options: DENY`,
 `nosniff`, `no-referrer`; `assets/*` are cached `immutable` (hashed names), `index.html`
 `no-cache`; `.gz` variants are served when accepted.
 
@@ -219,7 +219,7 @@ JSON is camelCase; units are in field names (`totalMs`, `ttlSeconds`, `*UnixSeco
 `tests/e2e/1-ui.spec.ts` relies on these **accessible names and selectors**. Renaming visible
 text, labels, or roles below breaks CI.
 
-- **Headings:** `Welcome to TelltaleDNS`, `Dashboard`, `Query log`, `Sign in`, `Settings`.
+- **Headings:** `Welcome to WrenDNS`, `Dashboard`, `Query log`, `Sign in`, `Settings`.
 - **Labels (inputs):** `Setup token`, `Admin username`, `Password (at least 10 characters)`,
   `Repeat password`, `Username`, `Password`, `Name` (query log and explain), `Token name`.
   Note: in Settings → Users, the add-user inputs are `aria-label="Username"` / `"Password"`.
@@ -258,7 +258,7 @@ needs different names, update the spec file in the same commit and run the suite
    ```sh
    npm run check              # 0 errors, 0 warnings
    npm run build              # under budget; note the new size in your report
-   cargo build -p telltale && npm run test:e2e        # all pass
+   cargo build -p wrendns && npm run test:e2e        # all pass
    SHOTS=1 npm run test:e2e   # look at the light and dark screenshots
    ```
    Also check 360 px by eye (Chrome devtools or a Playwright viewport).
@@ -332,7 +332,7 @@ report (endpoint, fields, why) rather than working around it.
 ## 11. Guided UI: help panels, diagrams, Simple/Advanced (API-011, ADR-036)
 
 The owner's words: Pi-hole is easy for people who aren't DNS experts; Technitium is powerful
-but assumes expertise. TelltaleDNS must be both. Concretely:
+but assumes expertise. WrenDNS must be both. Concretely:
 
 **Names.** Label features by outcome with the DNS term as a subtitle: "Names on my network"
 (*local records / zone*), "Send a domain to another server" (*conditional forwarding*),
@@ -361,7 +361,7 @@ when, example, caution, "Technical term: <term>", a docs link. It must not block
 form behind it. At 360 px it is full-width.
 
 **`FlowDiagram`.** Inline SVG drawn by a Svelte component, with no chart or diagram library
-(CSP and budget). Nodes: the device (left), TelltaleDNS (center), destinations on the right:
+(CSP and budget). Nodes: the device (left), WrenDNS (center), destinations on the right:
 *cache*, *local name*, *blocked*, *another server*, *the internet (upstreams)*. Props: `kind`
 (which path the option creates: `local`, `route`, `block`, `allow`, `upstream`, `cache`),
 `highlight` (the path to emphasize), and `values` (labels such as the domain and server, e.g.

@@ -1,4 +1,4 @@
-# One of the two TelltaleDNS nodes behind the keepalived VIP (deploy/keepalived, REQ: CLU-004, CLU-005).
+# One of the two WrenDNS nodes behind the keepalived VIP (deploy/keepalived, REQ: CLU-004, CLU-005).
 # Node a is the primary of the two-node cluster: it creates the cluster on its first start
 # ([cluster.init]), and node b and the witness join it with tokens (e2e.sh; README.md). Its shared
 # settings ([dns], [[record]], upstreams) are the cluster's configuration, so node b takes them from
@@ -6,11 +6,11 @@
 # its own address.
 #
 # This example has no upstream resolvers: the test network has no internet. Add [[upstream]] and
-# [[upstream_group]] (see deploy/compose/telltale.toml) for a real node.
+# [[upstream_group]] (see deploy/compose/wrendns.toml) for a real node.
 config_version = 1
 
 [node]
-name = "telltale-a"
+name = "wrendns-a"
 
 [[listen]]
 proto = "udp"
@@ -30,7 +30,7 @@ nsid = true
 
 [cluster]
 name = "keepalived"
-site = "telltale-a"
+site = "wrendns-a"
 listen = "0.0.0.0:8443"
 
 [cluster.init]

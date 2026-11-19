@@ -1,5 +1,5 @@
 <script lang="ts">
-  // REQ: API-011, DNS-010, UPS-007 (T3.12) — "Names on my network": the names TelltaleDNS answers
+  // REQ: API-011, DNS-010, UPS-007 (T3.12) — "Names on my network": the names WrenDNS answers
   // itself, grouped by domain (a zone-lite view: SOA/NS are generated, never asked for), plus the
   // domains sent to other servers. A wizard sets up a home domain; another sends a domain
   // elsewhere. Every change is previewed (sentence + diagram) and can be tested with Explain.
@@ -83,7 +83,7 @@
       MX: `mail server ${v}`,
       SRV: `service ${v}`,
     };
-    return `Every device that asks for ${fullName || '…'} gets ${what[ed.rtype] ?? v}, answered by TelltaleDNS itself${ed.rtype === 'A' || ed.rtype === 'AAAA' ? ', and a reverse lookup of the address finds the name' : ''}.`;
+    return `Every device that asks for ${fullName || '…'} gets ${what[ed.rtype] ?? v}, answered by WrenDNS itself${ed.rtype === 'A' || ed.rtype === 'AAAA' ? ', and a reverse lookup of the address finds the name' : ''}.`;
   });
 
   async function saveName(ev: SubmitEvent) {
@@ -228,7 +228,7 @@
           ttl: r.ttl.trim() ? Number(r.ttl.trim()) : undefined,
         })),
       });
-      done = `Saved. TelltaleDNS answers everything under ${apex} from its records now.`;
+      done = `Saved. WrenDNS answers everything under ${apex} from its records now.`;
       if (zed) {
         zed.isNew = false;
         zed.apex = apex;
@@ -314,7 +314,7 @@
     <section class="card" data-testid="zones">
       <h2>Zones<HelpButton id="zones" /></h2>
       <p class="muted small">
-        TelltaleDNS answers everything under these domains itself, from the configuration files (<code>[[zone]]</code>) or
+        WrenDNS answers everything under these domains itself, from the configuration files (<code>[[zone]]</code>) or
         from the zones made here: names it doesn't have get “no such name”. A zone limited to groups is seen only by their devices.
       </p>
       {#if zones.length === 0}
@@ -462,7 +462,7 @@
   <Drawer title={zed.isNew ? 'Add a zone' : `Edit ${zed.apex}`} onclose={() => (zed = null)}>
     <form class="stack" onsubmit={saveZone} data-testid="zone-form">
       <p>
-        TelltaleDNS answers every name under the zone from the records below: a name it doesn't list gets “no such name”, so
+        WrenDNS answers every name under the zone from the records below: a name it doesn't list gets “no such name”, so
         the zone's devices never reach the internet for it.
       </p>
       <label>Zone (its domain) <input name="zone" bind:value={zed.apex} placeholder="home.example.com" required readonly={!zed.isNew} /></label>

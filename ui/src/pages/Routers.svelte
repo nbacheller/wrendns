@@ -268,7 +268,7 @@
 <div class="page">
   <h1>Routers<HelpButton id="routers" /></h1>
   <p class="muted">
-    Routers and Home Assistant tell TelltaleDNS the names of the devices on your network, so a device shows up by name. They're read, never changed.
+    Routers and Home Assistant tell WrenDNS the names of the devices on your network, so a device shows up by name. They're read, never changed.
     {#if !isAdmin}Only an admin adds, changes, checks, or removes a router.{/if}
   </p>
   <ErrorNote {error} />

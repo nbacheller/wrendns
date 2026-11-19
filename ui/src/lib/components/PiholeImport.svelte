@@ -39,10 +39,10 @@
     confirmText = '';
     showAll = false;
     try {
-      const q: { compare?: string; telltale?: string; samples?: string } = {};
+      const q: { compare?: string; wrendns?: string; samples?: string } = {};
       if (compareOn && piholeAddr.trim()) {
         q.compare = piholeAddr.trim();
-        if (ourAddr.trim()) q.telltale = ourAddr.trim();
+        if (ourAddr.trim()) q.wrendns = ourAddr.trim();
         // REQ: API-007 (ADR-941) — extra names join the sample: the import's own names and these.
         if (samplesText.trim()) q.samples = samplesText.trim();
       }
@@ -112,8 +112,8 @@
       <label class="field">Pi-hole address
         <input type="text" placeholder="192.168.1.251" autocomplete="off" bind:value={piholeAddr} data-testid="pihole-address" />
       </label>
-      <label class="field">TelltaleDNS address (this node's resolver)
-        <input type="text" placeholder="127.0.0.1:53" autocomplete="off" bind:value={ourAddr} data-testid="pihole-telltale-address" />
+      <label class="field">WrenDNS address (this node's resolver)
+        <input type="text" placeholder="127.0.0.1:53" autocomplete="off" bind:value={ourAddr} data-testid="pihole-wrendns-address" />
       </label>
       <label class="field">Extra names to compare (comma-separated, optional)<HelpButton id="pihole-compare" />
         <input type="text" placeholder="example.com, nas.home" autocomplete="off" bind:value={samplesText} data-testid="pihole-samples" />
@@ -181,14 +181,14 @@
           {#if preview.compare.differences.length}
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Name</th><th>Type</th><th>Pi-hole</th><th>TelltaleDNS</th></tr></thead>
+                <thead><tr><th>Name</th><th>Type</th><th>Pi-hole</th><th>WrenDNS</th></tr></thead>
                 <tbody>
                   {#each preview.compare.differences as d (d.name + d.qtype)}
                     <tr>
                       <td>{d.name}</td>
                       <td>{d.qtype}</td>
                       <td>{d.pihole.rcode} {d.pihole.values.join(', ')}</td>
-                      <td>{d.telltale.rcode} {d.telltale.values.join(', ')}</td>
+                      <td>{d.wrendns.rcode} {d.wrendns.values.join(', ')}</td>
                     </tr>
                   {/each}
                 </tbody>

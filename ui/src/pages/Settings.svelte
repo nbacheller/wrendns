@@ -573,7 +573,7 @@
       <section class="card stack-card" data-testid="icons-card">
         <h2>Domain icons<HelpButton id="domain-icons" /></h2>
         <p class="muted">
-          The small mark left of a domain name in the dashboard's lists and the query log. It's drawn from what TelltaleDNS already
+          The small mark left of a domain name in the dashboard's lists and the query log. It's drawn from what WrenDNS already
           knows, so nothing about your queries is sent to anyone. Remembered for you in this browser.
         </p>
         <div class="icon-row">
@@ -813,7 +813,7 @@
           {#if verified.ok}
             Chain intact: {verified.entries} entries. Head <code class="mono">{verified.headHash.slice(0, 16)}…</code>
           {:else}
-            <strong>Chain broken at entry {verified.firstBadSeq}</strong>: the log was changed outside TelltaleDNS.
+            <strong>Chain broken at entry {verified.firstBadSeq}</strong>: the log was changed outside WrenDNS.
           {/if}
         </div>
       {/if}

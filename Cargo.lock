@@ -2767,332 +2767,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "telltale"
-version = "0.8.0"
-dependencies = [
- "allocation-counter",
- "arc-swap",
- "argon2",
- "axum",
- "base64",
- "blake3",
- "bytes",
- "clap",
- "dhat",
- "http",
- "hyper",
- "hyper-util",
- "mimalloc",
- "minisign-verify",
- "miniz_oxide",
- "rand",
- "rcgen",
- "ring",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "socket2",
- "telltale-api",
- "telltale-cache",
- "telltale-cluster",
- "telltale-config",
- "telltale-filter",
- "telltale-git",
- "telltale-net",
- "telltale-policy",
- "telltale-proto",
- "telltale-snmp",
- "telltale-store",
- "telltale-support",
- "telltale-telemetry",
- "telltale-upstream",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "toml",
- "tower",
- "tracing",
- "tracing-subscriber",
- "webpki-roots",
- "x509-parser",
- "zeroize",
- "zstd",
-]
-
-[[package]]
-name = "telltale-api"
-version = "0.8.0"
-dependencies = [
- "arc-swap",
- "argon2",
- "axum",
- "base64",
- "blake3",
- "futures-util",
- "miniz_oxide",
- "rand",
- "ring",
- "rust-embed",
- "serde",
- "serde_json",
- "telltale-config",
- "telltale-store",
- "telltale-telemetry",
- "tokio",
- "totp-rs",
- "tower",
- "tracing",
- "utoipa",
- "zeroize",
-]
-
-[[package]]
-name = "telltale-cache"
-version = "0.8.0"
-dependencies = [
- "allocation-counter",
- "criterion",
- "parking_lot 0.13.0",
- "telltale-proto",
- "tokio",
-]
-
-[[package]]
-name = "telltale-cluster"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "prost",
- "rand",
- "rcgen",
- "ring",
- "rustix",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "time",
- "tokio",
- "tokio-rustls",
- "tracing",
- "x509-parser",
-]
-
-[[package]]
-name = "telltale-config"
-version = "0.8.0"
-dependencies = [
- "jiff",
- "rustls-pki-types",
- "schemars",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "telltale-snmp",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "telltale-filter"
-version = "0.8.0"
-dependencies = [
- "allocation-counter",
- "blake3",
- "bytes",
- "fst",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "idna",
- "insta",
- "rand",
- "rcgen",
- "regex-automata",
- "regex-syntax",
- "rustls",
- "serde",
- "serde_json",
- "telltale-config",
- "telltale-net",
- "telltale-proto",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tracing",
- "webpki-roots",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "telltale-git"
-version = "0.8.0"
-dependencies = [
- "base64",
- "miniz_oxide",
- "ring",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "telltale-net"
-version = "0.8.0"
-dependencies = [
- "bytes",
- "h3",
- "h3-quinn",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "libmimalloc-sys",
- "quinn",
- "rustls",
- "rustls-pki-types",
- "rustls-webpki",
- "socket2",
- "telltale-proto",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tracing",
-]
-
-[[package]]
-name = "telltale-policy"
-version = "0.8.0"
-dependencies = [
- "allocation-counter",
- "arc-swap",
- "criterion",
- "parking_lot 0.13.0",
- "telltale-config",
- "telltale-proto",
- "xxhash-rust",
-]
-
-[[package]]
-name = "telltale-proto"
-version = "0.8.0"
-dependencies = [
- "criterion",
- "hickory-proto",
- "proptest",
- "thiserror",
- "xxhash-rust",
-]
-
-[[package]]
-name = "telltale-recursor"
-version = "0.8.0"
-dependencies = [
- "parking_lot 0.13.0",
- "rand",
- "telltale-proto",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "telltale-snmp"
-version = "0.8.0"
-dependencies = [
- "aes",
- "libc",
- "ring",
- "zeroize",
-]
-
-[[package]]
-name = "telltale-store"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "memchr",
- "rand",
- "regex-automata",
- "rusqlite",
- "serde",
- "serde_json",
- "telltale-telemetry",
- "tempfile",
- "thiserror",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "telltale-support"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "miniz_oxide",
- "regex-automata",
- "schemars",
- "serde",
- "serde_json",
- "telltale-config",
-]
-
-[[package]]
-name = "telltale-telemetry"
-version = "0.8.0"
-dependencies = [
- "allocation-counter",
- "blake3",
- "hdrhistogram",
- "rtrb",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "telltale-upstream"
-version = "0.8.0"
-dependencies = [
- "bytes",
- "crypto_box",
- "ed25519-dalek",
- "futures-util",
- "h2",
- "h3",
- "h3-quinn",
- "hickory-net",
- "http",
- "parking_lot 0.13.0",
- "quinn",
- "rand",
- "rcgen",
- "ring",
- "rustls",
- "serde",
- "telltale-config",
- "telltale-net",
- "telltale-proto",
- "telltale-recursor",
- "tempfile",
- "thiserror",
- "time",
- "tokio",
- "tokio-rustls",
- "toml",
- "tracing",
- "webpki-roots",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3715,6 +3389,332 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "wrendns"
+version = "0.8.0"
+dependencies = [
+ "allocation-counter",
+ "arc-swap",
+ "argon2",
+ "axum",
+ "base64",
+ "blake3",
+ "bytes",
+ "clap",
+ "dhat",
+ "http",
+ "hyper",
+ "hyper-util",
+ "mimalloc",
+ "minisign-verify",
+ "miniz_oxide",
+ "rand",
+ "rcgen",
+ "ring",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "webpki-roots",
+ "wrendns-api",
+ "wrendns-cache",
+ "wrendns-cluster",
+ "wrendns-config",
+ "wrendns-filter",
+ "wrendns-git",
+ "wrendns-net",
+ "wrendns-policy",
+ "wrendns-proto",
+ "wrendns-snmp",
+ "wrendns-store",
+ "wrendns-support",
+ "wrendns-telemetry",
+ "wrendns-upstream",
+ "x509-parser",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "wrendns-api"
+version = "0.8.0"
+dependencies = [
+ "arc-swap",
+ "argon2",
+ "axum",
+ "base64",
+ "blake3",
+ "futures-util",
+ "miniz_oxide",
+ "rand",
+ "ring",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tokio",
+ "totp-rs",
+ "tower",
+ "tracing",
+ "utoipa",
+ "wrendns-config",
+ "wrendns-store",
+ "wrendns-telemetry",
+ "zeroize",
+]
+
+[[package]]
+name = "wrendns-cache"
+version = "0.8.0"
+dependencies = [
+ "allocation-counter",
+ "criterion",
+ "parking_lot 0.13.0",
+ "tokio",
+ "wrendns-proto",
+]
+
+[[package]]
+name = "wrendns-cluster"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "prost",
+ "rand",
+ "rcgen",
+ "ring",
+ "rustix",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
+]
+
+[[package]]
+name = "wrendns-config"
+version = "0.8.0"
+dependencies = [
+ "jiff",
+ "rustls-pki-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror",
+ "toml",
+ "wrendns-snmp",
+]
+
+[[package]]
+name = "wrendns-filter"
+version = "0.8.0"
+dependencies = [
+ "allocation-counter",
+ "blake3",
+ "bytes",
+ "fst",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "idna",
+ "insta",
+ "rand",
+ "rcgen",
+ "regex-automata",
+ "regex-syntax",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+ "wrendns-config",
+ "wrendns-net",
+ "wrendns-proto",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
+name = "wrendns-git"
+version = "0.8.0"
+dependencies = [
+ "base64",
+ "miniz_oxide",
+ "ring",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "wrendns-net"
+version = "0.8.0"
+dependencies = [
+ "bytes",
+ "h3",
+ "h3-quinn",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "libmimalloc-sys",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "wrendns-proto",
+]
+
+[[package]]
+name = "wrendns-policy"
+version = "0.8.0"
+dependencies = [
+ "allocation-counter",
+ "arc-swap",
+ "criterion",
+ "parking_lot 0.13.0",
+ "wrendns-config",
+ "wrendns-proto",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "wrendns-proto"
+version = "0.8.0"
+dependencies = [
+ "criterion",
+ "hickory-proto",
+ "proptest",
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "wrendns-recursor"
+version = "0.8.0"
+dependencies = [
+ "parking_lot 0.13.0",
+ "rand",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "wrendns-proto",
+]
+
+[[package]]
+name = "wrendns-snmp"
+version = "0.8.0"
+dependencies = [
+ "aes",
+ "libc",
+ "ring",
+ "zeroize",
+]
+
+[[package]]
+name = "wrendns-store"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "memchr",
+ "rand",
+ "regex-automata",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "wrendns-telemetry",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
+name = "wrendns-support"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "miniz_oxide",
+ "regex-automata",
+ "schemars",
+ "serde",
+ "serde_json",
+ "wrendns-config",
+]
+
+[[package]]
+name = "wrendns-telemetry"
+version = "0.8.0"
+dependencies = [
+ "allocation-counter",
+ "blake3",
+ "hdrhistogram",
+ "rtrb",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "wrendns-upstream"
+version = "0.8.0"
+dependencies = [
+ "bytes",
+ "crypto_box",
+ "ed25519-dalek",
+ "futures-util",
+ "h2",
+ "h3",
+ "h3-quinn",
+ "hickory-net",
+ "http",
+ "parking_lot 0.13.0",
+ "quinn",
+ "rand",
+ "rcgen",
+ "ring",
+ "rustls",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "tracing",
+ "webpki-roots",
+ "wrendns-config",
+ "wrendns-net",
+ "wrendns-proto",
+ "wrendns-recursor",
 ]
 
 [[package]]

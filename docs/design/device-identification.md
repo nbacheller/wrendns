@@ -8,7 +8,7 @@ ask the owner. Read ADR-019/043 (deterministic anomaly engine) and ADR-080/081 (
 names) first: this reuses their inputs and copies their determinism rules.
 
 ## 1. What it is
-A new address on the network is a number. TelltaleDNS already sees three things that say what the
+A new address on the network is a number. WrenDNS already sees three things that say what the
 device is: its **MAC** (neighbor table, EDNS MAC, router leases), the **names it announces** (mDNS,
 the router's DHCP client list), and **which registrable domains it talks to** (the anomaly engine's
 learned set, the aggregator's per-client top domains). Identification scores those against a small
@@ -36,11 +36,11 @@ then suggests a name and, when a group asks for that class, a group. It never ch
   the compressed size in the PR against the 15 MiB image gate (OPS-001). If it pushes the image over,
   drop MA-M first, then zstd-compress and decompress at start (measure cold-start cost; T10.4 is
   already tight).
-- `telltale_proto`-free: a tiny `oui` module in `crates/telltale/src/identify/oui.rs`.
+- `wrendns_proto`-free: a tiny `oui` module in `crates/wrendns/src/identify/oui.rs`.
 
 ### 3.2 `presets/devices.toml` — signatures
 ```toml
-# TelltaleDNS device signatures (REQ: OBS-025). Clean room: written from our own observations and
+# WrenDNS device signatures (REQ: OBS-025). Clean room: written from our own observations and
 # vendors' public documentation. Weights are relative within a signature.
 [[device]]
 id = "roku-player"
@@ -66,14 +66,14 @@ Domains come from what those devices are documented to contact (vendor docs for 
 are a good public source) and from the owner's own query log; keep each list short (3–8 domains) and
 weighted. The owner's network is the first validation set (§10).
 
-`[identify] signatures_file = "/etc/telltale/devices.toml"` adds signatures in the same shape; an
+`[identify] signatures_file = "/etc/wrendns/devices.toml"` adds signatures in the same shape; an
 `id` that collides with a shipped one **replaces** it (so a user can fix ours), and `enabled = false`
 on a signature removes it.
 
 ## 4. Inputs per device (decision)
 Collected by the identifier when it runs (§5), never on the query path:
 - **Vendor:** the device's MAC from, in order, the client entry (`[[client]] mac`), the neighbor table
-  (`telltale_policy::ClientTable`'s MAC view), EDNS MAC seen for the address (the aggregator records
+  (`wrendns_policy::ClientTable`'s MAC view), EDNS MAC seen for the address (the aggregator records
   it on events when present), router leases (`devices.rs`). → `oui::lookup(mac)`.
 - **Names:** router DHCP hostname, mDNS name (`devices.rs` leases), the user's own name if any (not
   used for scoring — it's the output we're suggesting — but shown).
@@ -104,7 +104,7 @@ score          = 0.60 × domain_score + 0.25 × vendor_score + 0.15 × hostname_
   matched name, and the runner-up when its score is within 0.1 ("could also be …").
 
 ## 6. Running it (decision)
-- `crates/telltale/src/identify.rs` (`Identifier`): a background task every 10 minutes (and 60 s after
+- `crates/wrendns/src/identify.rs` (`Identifier`): a background task every 10 minutes (and 60 s after
   start) over devices seen in the last 24 h, at most `max_clients` (1,024; the most recently seen).
   Each pass: gather inputs (§4), score, store `Identity { device, product_id, name, class, level,
   score, evidence, runner_up, computed_at, source: "inferred" | "override" }` in an `ArcSwap<HashMap>`
@@ -138,8 +138,8 @@ score          = 0.60 × domain_score + 0.25 × vendor_score + 0.15 × hostname_
   when `likely`/`possibly`: "New device 10.20.2.77 (looks like a Ring doorbell) on IOT".
 - **MCP:** `identify_device { client }` (read; `analytics:read`); `get_client_profile` gains
   `identity`; `plan_assign_client` gains `kind`.
-- **Metrics:** `telltale_devices_by_class{class}` gauge (≤ 23 series), `telltale_identify_runs_total`,
-  `telltale_identify_duration_seconds`.
+- **Metrics:** `wrendns_devices_by_class{class}` gauge (≤ 23 series), `wrendns_identify_runs_total`,
+  `wrendns_identify_duration_seconds`.
 - **Docs/site:** `running.md` *What is this device?* (how it guesses, how to correct it, the catalog
   file, privacy), help topic `identify`, configuration reference, a line on the site's groups page.
 
@@ -169,7 +169,7 @@ device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "va
 - Binary/image: report the delta; OPS-001's 15 MiB is the gate.
 
 ## 10. Tests (map to the AC in `spec/10`)
-- Golden fixture (`crates/telltale/tests/identify.rs` + `tests/fixtures/identify/*.json`): eight
+- Golden fixture (`crates/wrendns/tests/identify.rs` + `tests/fixtures/identify/*.json`): eight
   devices → expected product/level; byte-identical output on x86-64 and arm64 in CI; ablations (no
   MAC, no domains); vendor penalty; tie order.
 - Overrides win; `device_classes` suggestion rules; validation errors.

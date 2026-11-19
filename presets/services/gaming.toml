@@ -1,4 +1,4 @@
-# TelltaleDNS blocked-services catalog (REQ: FLT-012): games and game stores.
+# WrenDNS blocked-services catalog (REQ: FLT-012): games and game stores.
 # See social.toml for the format. Blocking a platform also stops its game downloads and
 # online play.
 

@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-cluster/src/failover.rs b/crates/telltale-cluster/src/failover.rs
+diff --git a/crates/wrendns-cluster/src/failover.rs b/crates/wrendns-cluster/src/failover.rs
 index 2390358..13fcefd 100644
---- a/crates/telltale-cluster/src/failover.rs
-+++ b/crates/telltale-cluster/src/failover.rs
+--- a/crates/wrendns-cluster/src/failover.rs
++++ b/crates/wrendns-cluster/src/failover.rs
 @@ -154,9 +154,11 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
      };
      let local = cluster.local_state();
@@ -14,10 +14,10 @@ index 2390358..13fcefd 100644
          .map(|m| m.epoch)
          .fold(cluster.role().1, u64::max);
      let mut outs = el.observe(seen);
-diff --git a/crates/telltale-cluster/src/net.rs b/crates/telltale-cluster/src/net.rs
+diff --git a/crates/wrendns-cluster/src/net.rs b/crates/wrendns-cluster/src/net.rs
 index 32a0f9a..6dc4170 100644
---- a/crates/telltale-cluster/src/net.rs
-+++ b/crates/telltale-cluster/src/net.rs
+--- a/crates/wrendns-cluster/src/net.rs
++++ b/crates/wrendns-cluster/src/net.rs
 @@ -991,9 +991,26 @@ impl Cluster {
              .clone()
      }
@@ -45,10 +45,10 @@ index 32a0f9a..6dc4170 100644
          if epoch > mine {
              if role == Role::Primary {
                  warn!(epoch, mine, from, "a newer primary exists: stepping down");
-diff --git a/crates/telltale-cluster/src/net_tests.rs b/crates/telltale-cluster/src/net_tests.rs
+diff --git a/crates/wrendns-cluster/src/net_tests.rs b/crates/wrendns-cluster/src/net_tests.rs
 index 007e1bd..d0b5771 100644
---- a/crates/telltale-cluster/src/net_tests.rs
-+++ b/crates/telltale-cluster/src/net_tests.rs
+--- a/crates/wrendns-cluster/src/net_tests.rs
++++ b/crates/wrendns-cluster/src/net_tests.rs
 @@ -690,3 +690,73 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
      let _ = pod_stop_tx.send(true);
      let _ = stop_tx.send(true);

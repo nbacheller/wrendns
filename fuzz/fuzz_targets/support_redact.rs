@@ -4,9 +4,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use telltale_support::Level;
-use telltale_support::pseudo::{Category, Pseudonyms};
-use telltale_support::redact::{Known, Redactor};
+use wrendns_support::Level;
+use wrendns_support::pseudo::{Category, Pseudonyms};
+use wrendns_support::redact::{Known, Redactor};
 
 const SECRET: &str = "Zq9-planted-SECRET-77";
 

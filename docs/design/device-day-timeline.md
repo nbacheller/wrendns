@@ -63,7 +63,7 @@ default (`bins: 24` for agents, so a day is 24 numbers per lane), plus `events`.
 - Table view: lanes × bins. Phone: lanes scroll horizontally, labels sticky.
 
 ## 6. Grafana
-None (no per-device metrics by default; `telltale_client_queries_total` is opt-in and top-N only).
+None (no per-device metrics by default; `wrendns_client_queries_total` is opt-in and top-N only).
 
 ## 7. Acceptance criteria
 1. Fixture log: device A, 24 h, `pool.ntp.org` every 2.5 s from 14:00 to 18:30, `example.com` 10×/h all

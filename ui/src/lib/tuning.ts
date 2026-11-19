@@ -27,7 +27,7 @@ export type TuningSpec = {
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0));
 /** A value the user gave (an empty field is left out, so the server's default applies). */
 const given = (v: unknown) => v !== undefined && v !== null && v !== '';
-/** The histogram bounds of /metrics (`SLO_LATENCY_MS` in telltale-config). */
+/** The histogram bounds of /metrics (`SLO_LATENCY_MS` in wrendns-config). */
 const SLO_LATENCY_MS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
 /** A byte size as the server reads it (`ByteSize::parse`): a number, then an optional unit. */
 const SIZE = /^\s*\d+\s*(B|KiB|K|k|MiB|M|GiB|G|TiB|T|KB|kB|MB|GB|TB)?\s*$/;

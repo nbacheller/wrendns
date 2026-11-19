@@ -1,4 +1,4 @@
-# TelltaleDNS
+# WrenDNS
 
 > **An independent fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns) started from [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns) and, since 2026-11-19, goes its own way: it no longer merges upstream and ports only fixes (ADR-1026). It keeps upstream's licences (Apache-2.0 or MIT) and copyright notice. Everything below this box is upstream's README as of the last sync. The badges, releases, quick start and project site are upstream's too. The fork's work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
 >
@@ -7,7 +7,7 @@
 >   - device names from a UniFi gateway and from Home Assistant;
 >   - those names answered in DNS (`kitchen-tablet.home.arpa`, with reverse lookups);
 >   - your networks and VLANs, with how full each one is;
->   - a Home Assistant integration for TelltaleDNS;
+>   - a Home Assistant integration for WrenDNS;
 >   - a [Docker Desktop bundle](deploy/docker-desktop/README.md) to try it.
 > - **M24, replacing Pi-hole (in progress):**
 >   - Pi-hole's special names: iCloud Private Relay blocked by default, `resolver.arpa` with encrypted DNS discovery (DDR), and domain-needed;
@@ -15,7 +15,7 @@
 >   - in the UI: special names and DDR, device names in DNS, DNS names and naming sources on the Clients page, and a **Networks** page (make a group from a network);
 >   - **Import from Pi-hole** in Settings (admins only): upload a Teleporter export or `gravity.db`, see what would be imported and where each entry points, then apply it as one change; the importer also reads `dnsmasq.d` lines;
 >   - **Failover with a VIP** (T24.4): keepalived moves one address between two nodes, which answer on the wildcard address, with a witness for automatic promotion; a [Docker example](deploy/keepalived/README.md) proves the failover and maintenance hand-over in CI, and the [runbook](docs/running.md#failover-with-a-vip-keepalived) covers moving a Pi-hole pair's VIP;
->   - rules and groups that match a device by the name your router gave it, ranked below any network you name so a device can't claim another's rules (T24.9, T24.24), and `telltale auth reset-password` for a forgotten password with the node stopped (T24.7);
+>   - rules and groups that match a device by the name your router gave it, ranked below any network you name so a device can't claim another's rules (T24.9, T24.24), and `wrendns auth reset-password` for a forgotten password with the node stopped (T24.7);
 >   - IPv6 device names: AAAA and `ip6.arpa` answers from the routers' leases (T24.8).
 >   - List hygiene: failing lists say why and offer the fix, imported regex lists are recognised, and a list another list fully covers can be turned off (T24.27); the Lists page shows how much each list overlaps the others and proposes a prune plan (T24.28);
 >   - Cluster leases: a renewal is no longer written to disk, so a slow SD card can't make the lease lapse (T24.26, to be confirmed on the Pis).
@@ -30,7 +30,7 @@
 >   - **Replicas stay linked** (T24.38): a rolling restart no longer leaves a replica cut off from another voter; the Cluster page warns when a voter's link keeps dropping while both nodes stay up.
 >   - *Planned:* temporary site exceptions from a browser add-on or a landing page, self-serve within limits or approved by an admin (T24.39, [fork #29](https://github.com/nbacheller/telltaledns/issues/29)).
 > - **M23, secrets and integrations in the UI (in progress):** secrets store, write-only API, no credential on any read surface; secrets replicated to every full cluster member; a **Secrets** page, and credentials (alerts, routers) entered in the UI, write-only, while a secret file still wins; routers (UniFi, Home Assistant) added, checked and changed from a **Routers** page without a restart; backups that carry the secrets encrypted under a passphrase (T23.9); OIDC sign-in providers added and changed in the UI without a restart, and node-local settings (T23.10); event sinks and the OTLP export with their credentials in the secrets store, reloaded without a restart (T23.11).
-> - **M25, network inventory beyond the gateway (in progress):** in so far: the inventory model, which merges devices by MAC; sandboxed discovery workers (a separate process with seccomp, no capabilities and not dumpable) and a `[discovery]` section; an SNMP library (v2c, and v3 with AES) and a read-only SNMP client with `telltale snmp walk` (T25.4) and SNMPv3 with AES (T25.5); more UniFi and Home Assistant reads for the inventory (UniFi's client fields, its known-clients history and its devices' MAC tables; Home Assistant devices that have no entities), each with a toggle on the Network inventory page (T25.10). Still to come:
+> - **M25, network inventory beyond the gateway (in progress):** in so far: the inventory model, which merges devices by MAC; sandboxed discovery workers (a separate process with seccomp, no capabilities and not dumpable) and a `[discovery]` section; an SNMP library (v2c, and v3 with AES) and a read-only SNMP client with `wrendns snmp walk` (T25.4) and SNMPv3 with AES (T25.5); more UniFi and Home Assistant reads for the inventory (UniFi's client fields, its known-clients history and its devices' MAC tables; Home Assistant devices that have no entities), each with a toggle on the Network inventory page (T25.10). Still to come:
 >   - SNMP polling of your gateway and switches, which device is on which port (T25.6, in);
 >   - more UniFi and Home Assistant reads (T25.10, in);
 >   - importing results from a scanner you run yourself.
@@ -49,22 +49,22 @@
 >
 > **Upstream:** what the fork changed from upstream, the upstream issues it triaged, and how it syncs and watches upstream are in [`spec/upstream.md`](spec/upstream.md).
 
-[![CI](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml?query=branch%3Amain)
-[![CodeQL](https://github.com/paimonsoror/telltaledns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/security/code-scanning?query=branch%3Amain)
-[![Release](https://img.shields.io/github/v/release/paimonsoror/telltaledns?sort=semver)](https://github.com/paimonsoror/telltaledns/releases/latest)
+[![CI](https://github.com/nbacheller/telltaledns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nbacheller/telltaledns/actions/workflows/ci.yml?query=branch%3Amain)
+[![CodeQL](https://github.com/nbacheller/telltaledns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/nbacheller/telltaledns/security/code-scanning?query=branch%3Amain)
+[![Release](https://img.shields.io/github/v/release/nbacheller/telltaledns?sort=semver)](https://github.com/nbacheller/telltaledns/releases/latest)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
 [![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/paimonsoror/telltaledns/pulls?q=is%3Apr+author%3Aapp%2Fdependabot)
 
 **See every question. Answer on your terms.**
 
-Every connection on your network starts with a DNS lookup. TelltaleDNS answers it in microseconds, filters it by your rules per device, and shows you exactly who asked, what they asked, and why it answered the way it did. It runs on a Raspberry Pi, in Kubernetes, or on both as one cluster that keeps answering even when parts of it fail.
+Every connection on your network starts with a DNS lookup. WrenDNS answers it in microseconds, filters it by your rules per device, and shows you exactly who asked, what they asked, and why it answered the way it did. It runs on a Raspberry Pi, in Kubernetes, or on both as one cluster that keeps answering even when parts of it fail.
 
-> A *telltale* is the strip of yarn sailors tie to a sail to see what the wind is really doing. DNS is your network's telltale: it reveals what every device is up to.
+> A *wrendns* is the strip of yarn sailors tie to a sail to see what the wind is really doing. DNS is your network's wrendns: it reveals what every device is up to.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.jpg">
-    <img alt="The TelltaleDNS dashboard: queries, blocked share, cache hits, upstream latency, and active clients as plain numbers with their change; one chart of queries and blocked over 15 minutes with a change marker; and the top domains, blocked names, and clients with their groups" src="docs/images/dashboard-light.jpg" width="900">
+    <img alt="The WrenDNS dashboard: queries, blocked share, cache hits, upstream latency, and active clients as plain numbers with their change; one chart of queries and blocked over 15 minutes with a change marker; and the top domains, blocked names, and clients with their groups" src="docs/images/dashboard-light.jpg" width="900">
   </picture>
   <br>
   <sub>The dashboard on a demo network. Every device, name, and address in it is made up.</sub>
@@ -79,33 +79,33 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Run anywhere:** the same artifact on a Pi, in a cluster, or both at once.
 
 ## What it does
-- **Every answer explained.** The query log ties each query to a named device, times every stage, and says why it was answered that way. Names come from your router, from what devices announce over mDNS, or from the UI, and TelltaleDNS recognizes what each device is (a Roku player, a camera, a thermostat) from its maker and the names it asks for.
+- **Every answer explained.** The query log ties each query to a named device, times every stage, and says why it was answered that way. Names come from your router, from what devices announce over mDNS, or from the UI, and WrenDNS recognizes what each device is (a Roku player, a camera, a thermostat) from its maker and the names it asks for.
 - **Your rules, per device.** Blocklists, groups for each network or VLAN, schedules, safe search, blocked services, rewrites, and quick rules. Before you save a change, see what it would have done to yesterday's real traffic.
 - **Encrypted both ways.** DoT, DoH, and DoQ for your devices and to your upstreams, DNSSEC validation, and full recursion when you'd rather not forward at all.
 - **Watch it work.** A dashboard for the whole cluster, one node, or one site. A heatmap of when your network asks, a flow from each group to its answers, answer times as a heatmap, every change marked on every chart, and which devices and names spent the error budget. Compare nodes side by side, see a device's rhythm and its day, and put it all on a wall display. Device anomalies and alerts; Prometheus metrics, OpenTelemetry, dnstap, and event sinks for your SIEM.
 - **One cluster, many places.** A Pi and Kubernetes nodes share one config and one management plane. A witness lets a replica take over automatically, and the config can live in Git. Changes can reach a few canary nodes first and roll back by themselves if those start failing, and maintenance mode takes a node out of service without dropped queries or false alarms.
 - **Private by design.** Privacy levels decide how much of each query is kept, from everything to counters only, and every change lands in an audit log.
-- **Ready for agents.** A documented REST API with OpenAPI, `telltale ctl` for the shell, and MCP tools with plans and approval for AI agents.
+- **Ready for agents.** A documented REST API with OpenAPI, `wrendns ctl` for the shell, and MCP tools with plans and approval for AI agents.
 - **Small and fast.** One static binary in an image of about 13 MiB, for amd64, arm64, and 32-bit Pi OS. It idles at about 14 MiB of memory, holds a million blocked names in 60 MiB, and sends 99.999 % of cached and blocked answers within 250 µs of the query arriving, under load from another machine ([measurements](docs/v1-gate.md)).
 - **Verifiable.** Images are signed with cosign, each release binary carries its dependency list and an SBOM, and two builds of the same commit are identical ([how to check](docs/running.md#versions-and-updates)).
 
 ## Quick start
 On a Raspberry Pi or any Linux host with Docker:
 ```sh
-mkdir telltale && cd telltale
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+mkdir wrendns && cd wrendns
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/wrendns.toml
 docker compose up -d
-docker compose exec telltale telltale auth setup-token     # then open http://<host>:8053/
+docker compose exec wrendns wrendns auth setup-token     # then open http://<host>:8053/
 ```
 Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole or Technitium are covered in [`docs/running.md`](docs/running.md).
 
-**Status:** pre-1.0. Tagged [releases](https://github.com/paimonsoror/telltaledns/releases) are stable (`latest`), and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change; the [roadmap](spec/10-roadmap-and-tasks.md) shows what's next. Project site: **https://paimonsoror.github.io/telltaledns/**
+**Status:** pre-1.0. Tagged [releases](https://github.com/nbacheller/telltaledns/releases) are stable (`latest`), and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change; the [roadmap](spec/10-roadmap-and-tasks.md) shows what's next. Project site: **https://wrendns.com/**
 
 | Read this | If you want |
 |---|---|
-| [FAQ](https://paimonsoror.github.io/telltaledns/faq.html) | Quick answers to what people ask most: replacing other setups, root-server resolving, blocking categories, per-device encrypted DNS, clusters |
-| [`EXECUTIVE-SUMMARY.md`](EXECUTIVE-SUMMARY.md) | What TelltaleDNS is built around, and the projects that inspired it |
+| [FAQ](https://wrendns.com/faq.html) | Quick answers to what people ask most: replacing other setups, root-server resolving, blocking categories, per-device encrypted DNS, clusters |
+| [`EXECUTIVE-SUMMARY.md`](EXECUTIVE-SUMMARY.md) | What WrenDNS is built around, and the projects that inspired it |
 | [`docs/analysis.md`](docs/analysis.md) | Design notes: what we learned from Pi-hole and Technitium |
 | [`spec/`](spec/00-overview.md) | The build specification (requirements, architecture, ADRs, roadmap) |
 | [`AGENTS.md`](AGENTS.md) | Instructions for the agent or developer implementing it |
@@ -127,7 +127,7 @@ Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole
 13. [Agent API and MCP](spec/13-agent-api-and-mcp.md)
 
 ## Contributors
-Thank you to everyone who helps make TelltaleDNS better, whether by reporting what they found running it for real, writing code, or improving the docs:
+Thank you to everyone who helps make WrenDNS better, whether by reporting what they found running it for real, writing code, or improving the docs:
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
@@ -135,9 +135,9 @@ Thank you to everyone who helps make TelltaleDNS better, whether by reporting wh
 <table>
   <tbody>
     <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/gregpakes"><img src="https://avatars.githubusercontent.com/u/102243?v=4?s=100" width="100px;" alt="Greg Pakes"/><br /><sub><b>Greg Pakes</b></sub></a><br /><a href="https://github.com/paimonsoror/telltaledns/commits?author=gregpakes" title="Code">💻</a> <a href="https://github.com/paimonsoror/telltaledns/issues?q=author%3Agregpakes" title="Bug reports">🐛</a> <a href="https://github.com/paimonsoror/telltaledns/commits?author=gregpakes" title="Tests">⚠️</a> <a href="https://github.com/paimonsoror/telltaledns/issues/38" title="Ideas, Planning, & Feedback">🤔</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/JohnDepon"><img src="https://avatars.githubusercontent.com/u/44707713?v=4?s=100" width="100px;" alt="John Depon"/><br /><sub><b>John Depon</b></sub></a><br /><a href="https://github.com/paimonsoror/telltaledns/commits?author=JohnDepon" title="Code">💻</a> <a href="https://github.com/paimonsoror/telltaledns/commits?author=JohnDepon" title="Tests">⚠️</a> <a href="https://github.com/paimonsoror/telltaledns/commits?author=JohnDepon" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/tusc"><img src="https://avatars.githubusercontent.com/u/9438017?v=4?s=100" width="100px;" alt="Carlos Talbot"/><br /><sub><b>Carlos Talbot</b></sub></a><br /><a href="https://github.com/paimonsoror/telltaledns/commits?author=tusc" title="Code">💻</a> <a href="https://github.com/paimonsoror/telltaledns/commits?author=tusc" title="Tests">⚠️</a> <a href="https://github.com/paimonsoror/telltaledns/commits?author=tusc" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/gregpakes"><img src="https://avatars.githubusercontent.com/u/102243?v=4?s=100" width="100px;" alt="Greg Pakes"/><br /><sub><b>Greg Pakes</b></sub></a><br /><a href="https://github.com/nbacheller/telltaledns/commits?author=gregpakes" title="Code">💻</a> <a href="https://github.com/paimonsoror/telltaledns/issues?q=author%3Agregpakes" title="Bug reports">🐛</a> <a href="https://github.com/nbacheller/telltaledns/commits?author=gregpakes" title="Tests">⚠️</a> <a href="https://github.com/paimonsoror/telltaledns/issues/38" title="Ideas, Planning, & Feedback">🤔</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/JohnDepon"><img src="https://avatars.githubusercontent.com/u/44707713?v=4?s=100" width="100px;" alt="John Depon"/><br /><sub><b>John Depon</b></sub></a><br /><a href="https://github.com/nbacheller/telltaledns/commits?author=JohnDepon" title="Code">💻</a> <a href="https://github.com/nbacheller/telltaledns/commits?author=JohnDepon" title="Tests">⚠️</a> <a href="https://github.com/nbacheller/telltaledns/commits?author=JohnDepon" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/tusc"><img src="https://avatars.githubusercontent.com/u/9438017?v=4?s=100" width="100px;" alt="Carlos Talbot"/><br /><sub><b>Carlos Talbot</b></sub></a><br /><a href="https://github.com/nbacheller/telltaledns/commits?author=tusc" title="Code">💻</a> <a href="https://github.com/nbacheller/telltaledns/commits?author=tusc" title="Tests">⚠️</a> <a href="https://github.com/nbacheller/telltaledns/commits?author=tusc" title="Documentation">📖</a></td>
     </tr>
   </tbody>
 </table>
@@ -150,7 +150,7 @@ Thank you to everyone who helps make TelltaleDNS better, whether by reporting wh
 This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind are welcome: [open an issue](https://github.com/paimonsoror/telltaledns/issues) or a pull request.
 
 ### Built with Claude
-TelltaleDNS is developed with [Claude Code](https://claude.com/claude-code), Anthropic's coding agent, working from this repository's specification under the maintainer's direction. Claude writes much of the code, tests, and documentation; the maintainer sets the priorities, decides what ships, and approves every release and rollout.
+WrenDNS is developed with [Claude Code](https://claude.com/claude-code), Anthropic's coding agent, working from this repository's specification under the maintainer's direction. Claude writes much of the code, tests, and documentation; the maintainer sets the priorities, decides what ships, and approves every release and rollout.
 
 The history shows exactly where Claude took part: every commit it worked on carries a `Co-Authored-By: Claude` trailer, naming the model. `git log --grep "Co-Authored-By: Claude"` lists them.
 

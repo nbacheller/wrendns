@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TelltaleDNS">
-  <!-- A mast with a telltale streaming in the wind: what DNS shows you about your network. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="WrenDNS">
+  <!-- A mast with a wrendns streaming in the wind: what DNS shows you about your network. -->
   <rect width="64" height="64" rx="14" fill="#0b3a5b"/>
   <rect x="17" y="10" width="4" height="44" rx="2" fill="#e8eef6"/>
   <path d="M21 16 C31 13 39 19 49 15 L49 22 C39 26 31 20 21 23 Z" fill="#e4572e"/>

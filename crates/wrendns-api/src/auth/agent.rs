@@ -1,0 +1,1223 @@
+//! Agent principals (REQ: AGT-004, AGT-005, AGT-009; ADR-064).
+//!
+//! An agent token is an API token with `kind = agent`: fine-grained scopes instead of a role,
+//! an optional client-group restriction, and a request rate limit. Agents may use only the
+//! routes listed in [`required`] (deny by default), must say why on every change
+//! (`X-Wrendns-Reason`), and are refused cluster-wide while `[agents] enabled = false`.
+
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, PoisonError};
+
+use axum::http::Method;
+
+use super::Role;
+use crate::problem::{Code, Problem};
+
+/// Every scope an agent token can hold, with what it allows.
+pub const SCOPES: &[(&str, &str)] = &[
+    (
+        "analytics:read",
+        "statistics, top lists, latency, anomalies, explain, cluster status",
+    ),
+    (
+        "querylog:read",
+        "the query log and live tail (who asked for what)",
+    ),
+    (
+        "config:read",
+        "lists, groups, devices, upstreams, local names, forwarded domains",
+    ),
+    (
+        "config:write:clients",
+        "create, rename, regroup, and delete devices",
+    ),
+    (
+        "config:write:records",
+        "add, change, and remove local names",
+    ),
+    ("config:write:forwards", "send domains to other servers"),
+    (
+        "config:write:rules",
+        "allow or block a domain for some devices or groups (quick rules)",
+    ),
+    (
+        "config:write:upstreams",
+        "add, change, and remove upstreams and upstream groups",
+    ),
+    (
+        "config:write:lists",
+        "add, change, and remove filter lists; download them again now",
+    ),
+    (
+        "config:write:alerts",
+        "add, change, test, and remove alert destinations and rules",
+    ),
+    (
+        "config:write:groups",
+        "add, change, and remove client groups",
+    ),
+    (
+        "config:write:ratelimit",
+        "change the per-client rate limit, or go back to the config file's",
+    ),
+    (
+        "config:write:anomalies",
+        "mute kinds of device anomaly for devices or groups (they stop counting in the badge and alerts)",
+    ),
+    (
+        "config:write:exclusions",
+        "change which names and devices are kept out of the query log and analytics",
+    ),
+    (
+        "config:write:simulate",
+        "change the change-simulation settings (on/off, bounds, plans simulating by default)",
+    ),
+    // REQ: OBS-901 (T26.2, ADR-958) — the live map's sampling rate and health thresholds.
+    (
+        "config:write:map",
+        "change the live network map's settings (on/off, sampling rate, and the thresholds that colour it)",
+    ),
+    // REQ: DNS-019 (T24.12, ADR-914) — the special-name switches; `ddr_name` is an admin's.
+    (
+        "config:write:special",
+        "change the special-name switches (iCloud Private Relay, domain-needed, ...); never ddr_name",
+    ),
+    // REQ: DNS-023 (T24.13, ADR-901) — the device-name settings; `[clients] mdns` is an admin's.
+    (
+        "config:write:local",
+        "change the device-name settings (device domain, TTLs, auto PTR, device mDNS names)",
+    ),
+    ("ops:pause", "pause and resume blocking"),
+    ("ops:cache", "flush the cache"),
+    (
+        "ops:anomalies",
+        "acknowledge device anomalies (and take it back)",
+    ),
+    (
+        "ops:maintenance",
+        "start and end node maintenance (at most two hours)",
+    ),
+    (
+        "ops:annotate",
+        "leave notes on the time charts (change markers)",
+    ),
+    (
+        "ops:drill",
+        "start and end failover drills (a node stops answering chosen devices for up to five minutes)",
+    ),
+    // REQ: DSC-004 (T25.6, ADR-1002) - the SNMP Test of the network inventory: one probe of a
+    // configured agent (never an address). An admin's scope: it sends packets to a device.
+    (
+        "ops:discovery_test",
+        "test a configured SNMP agent of the network inventory (a short read-only probe, once a minute)",
+    ),
+    (
+        "cluster:admin",
+        "promote a node to primary; change the staged-rollout settings; promote or abort a rollout; pin and unpin the cluster",
+    ),
+];
+
+/// What an agent token gets when none are named: read-only, without the query log.
+pub const DEFAULT_SCOPES: &[&str] = &["analytics:read", "config:read"];
+
+/// The role a scope needs from the token's owner (a token never exceeds its owner).
+fn scope_role(scope: &str) -> Role {
+    if scope == "cluster:admin" || scope == "ops:discovery_test" {
+        Role::Admin
+    } else if scope.starts_with("config:write:") || scope.starts_with("ops:") {
+        Role::Operator
+    } else {
+        Role::Viewer
+    }
+}
+
+/// Parses requested scopes: known names only; `config:write:*` means every write area.
+pub fn parse_scopes(list: &[String]) -> Result<BTreeSet<String>, Problem> {
+    let mut out = BTreeSet::new();
+    for s in list {
+        let s = s.trim();
+        if s == "config:write:*" {
+            out.extend(
+                SCOPES
+                    .iter()
+                    .filter(|(n, _)| n.starts_with("config:write:"))
+                    .map(|(n, _)| (*n).to_owned()),
+            );
+        } else if SCOPES.iter().any(|(n, _)| *n == s) {
+            out.insert(s.to_owned());
+        } else {
+            let known: Vec<&str> = SCOPES.iter().map(|(n, _)| *n).collect();
+            return Err(Problem::invalid(format!("unknown scope `{s}`"))
+                .hint(format!("Scopes: {}.", known.join(", "))));
+        }
+    }
+    if out.is_empty() {
+        return Err(Problem::invalid("an agent token needs at least one scope"));
+    }
+    Ok(out)
+}
+
+/// The highest role any of `scopes` needs.
+pub fn implied_role(scopes: &BTreeSet<String>) -> Role {
+    scopes
+        .iter()
+        .map(|s| scope_role(s))
+        .max()
+        .unwrap_or(Role::Viewer)
+}
+
+/// What a route needs from an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// Any agent (its own identity).
+    Any,
+    Scope(&'static str),
+    /// Not for agents: users, tokens, passwords, backups, the audit log.
+    Forbidden,
+}
+
+/// The scope an agent needs for `method path` (REQ: AGT-004). Deny by default.
+#[allow(clippy::too_many_lines)] // one flat table of routes and the scope each needs
+pub fn required(method: &Method, path: &str) -> Need {
+    let p = path.trim_end_matches('/');
+    let read = *method == Method::GET || *method == Method::HEAD;
+    let write = *method == Method::PUT || *method == Method::DELETE;
+    let under = |prefix: &str| {
+        p.strip_prefix(prefix)
+            .is_some_and(|r| r.starts_with('/') && r.len() > 1)
+    };
+    if read {
+        match p {
+            "/api/v1/auth/me" | "/api/v1/auth/status" | "/mcp" | "/api/v1/plans" => {
+                return Need::Any;
+            }
+            "/api/v1/system/info"
+            | "/api/v1/system/health"
+            | "/api/v1/system/probes"
+            | "/api/v1/cluster"
+            | "/api/v1/explain"
+            | "/api/v1/cache/stats"
+            | "/api/v1/cache/lookup"
+            | "/api/v1/cache/entries"
+            | "/api/v1/blocking"
+            // REQ: OBS-901 (ADR-958) — the live network map (no domain name is in it).
+            | "/api/v1/map"
+            | "/api/v1/map/stream"
+            | "/api/v1/map/world"
+            | "/api/v1/map/health"
+            // REQ: OBS-033 — change markers.
+            | "/api/v1/annotations" => {
+                return Need::Scope("analytics:read");
+            }
+            // REQ: AGT-012 — vqlog reads the query log row by row (by client and name).
+            // REQ: OBS-030 — an exemplar's trace ID names one query.
+            "/api/v1/queries"
+            | "/api/v1/queries/stream"
+            | "/api/v1/analytics/vqlog"
+            | "/api/v1/stats/latency/exemplars" => {
+                return Need::Scope("querylog:read");
+            }
+            "/api/v1/lists"
+            // REQ: FLT-004 (T24.28) - which lists add little, and the plan (a read).
+            | "/api/v1/lists/overlap"
+            | "/api/v1/lists/prune-plan"
+            // REQ: FLT-901, FLT-902 (T24.29) - the category catalog, its cost, and the picker.
+            | "/api/v1/categories"
+            | "/api/v1/categories/budget"
+            | "/api/v1/profiles/devices"
+            | "/api/v1/services"
+            | "/api/v1/groups"
+            | "/api/v1/clients"
+            | "/api/v1/upstreams"
+            | "/api/v1/records"
+            | "/api/v1/zones"
+            | "/api/v1/alerts"
+            | "/api/v1/forwards"
+            | "/api/v1/rules"
+            | "/api/v1/config/entries"
+            // REQ: OBS-901 — the live map's settings.
+            | "/api/v1/map-settings/default"
+            // REQ: OBS-902 (T26.4) - the GeoIP database's status (no setting, no URL).
+            | "/api/v1/map/geoip"
+            // REQ: API-013 (T22.2) — the device inventory and the networks it sits in.
+            | "/api/v1/dhcp/leases"
+            | "/api/v1/networks"
+            // REQ: API-015, AGT-001 (ADR-903 §5) — stored secrets' metadata, never a value.
+            // REQ: API-016 (T23.7) — router settings and status (secrets as names only).
+            | "/api/v1/routers"
+            // REQ: API-016 (T23.11) - event sinks and the OTLP export (tokens as names only).
+            | "/api/v1/sinks"
+            | "/api/v1/otlp"
+            | "/api/v1/secrets"
+            // REQ: API-902 (T27.13, ADR-956 §7) — what is guarded and what is pending, never a
+            // value, a preview ID or a token. Every change is refused (`never_for_agents`).
+            | "/api/v1/guarded"
+            // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's status (no token).
+            | "/api/v1/pihole-api" => {
+                return Need::Scope("config:read");
+            }
+            // REQ: OBS-034 — a device's names bin by bin reads like its query log.
+            _ if timeline_path(p) => return Need::Scope("querylog:read"),
+            // REQ: API-015 — one stored secret's metadata.
+            _ if secret_path(p) => return Need::Scope("config:read"),
+            // REQ: FLT-006, API-010 (T24.30) — a device's effective policy is configuration.
+            _ if policy_path(p) => return Need::Scope("config:read"),
+            // REQ: FLT-902 (T24.29) - a group's content.
+            _ if content_path(p) => return Need::Scope("config:read"),
+            _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
+                return Need::Scope("analytics:read");
+            }
+            _ if analytics_extra(p) => return Need::Scope("analytics:read"),
+            _ => {}
+        }
+    }
+    if write {
+        if under("/api/v1/clients") {
+            return Need::Scope("config:write:clients");
+        }
+        if under("/api/v1/records") {
+            return Need::Scope("config:write:records");
+        }
+        if under("/api/v1/forwards") {
+            return Need::Scope("config:write:forwards");
+        }
+        // REQ: DNS-010 (T27.7) — zones are local data: the records scope writes them too.
+        if under("/api/v1/zones") {
+            return Need::Scope("config:write:records");
+        }
+        if under("/api/v1/rules") {
+            return Need::Scope("config:write:rules");
+        }
+        // T7.5 (ADR-069)
+        if under("/api/v1/upstreams") || under("/api/v1/upstream-groups") {
+            return Need::Scope("config:write:upstreams");
+        }
+        if under("/api/v1/lists") {
+            return Need::Scope("config:write:lists");
+        }
+        // Schedules are group settings (FLT-010, T9.7).
+        if under("/api/v1/groups") || under("/api/v1/schedules") {
+            return Need::Scope("config:write:groups");
+        }
+        // REQ: OBS-010 (T9.6)
+        if under("/api/v1/alerts") {
+            return Need::Scope("config:write:alerts");
+        }
+        // REQ: OBS-038 (ADR-161) — a mute can hide a compromised device, so it has its own scope.
+        if under("/api/v1/anomaly-mutes") {
+            return Need::Scope("config:write:anomalies");
+        }
+        // REQ: DNS-014 (review 01 q1)
+        if under("/api/v1/ratelimit") {
+            return Need::Scope("config:write:ratelimit");
+        }
+        // REQ: OBS-022 (T12.1)
+        if under("/api/v1/exclusions") {
+            return Need::Scope("config:write:exclusions");
+        }
+        // REQ: OBS-024 (T13.1)
+        if under("/api/v1/simulate-settings") {
+            return Need::Scope("config:write:simulate");
+        }
+        // REQ: OBS-901 (T26.2, ADR-958) — `[map]`; the GeoIP settings (T26.4) are admin-only.
+        if under("/api/v1/map-settings") {
+            return Need::Scope("config:write:map");
+        }
+        // REQ: API-016 (T23.7, ADR-903 §5) — routers are admin-only and have no agent scope.
+        if under("/api/v1/routers") {
+            return Need::Forbidden;
+        }
+        // REQ: API-016 (T23.10, ADR-967) — OIDC providers are admin-only and have no agent scope.
+        if under("/api/v1/oidc-providers") {
+            return Need::Forbidden;
+        }
+        // REQ: API-016 (T23.11, ADR-984) - sinks and the OTLP export are admin-only: no agent scope.
+        if under("/api/v1/sinks") || under("/api/v1/otlp") {
+            return Need::Forbidden;
+        }
+        // REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` and the inventory's status have no agent
+        // scope yet: `discovery:read` (DSC-013) comes with T25.12, and no agent writes the kind.
+        if under("/api/v1/discovery") {
+            return Need::Forbidden;
+        }
+        // REQ: DNS-019 (T24.12) — `/clients-settings` has no scope: no agent writes `mdns`.
+        if under("/api/v1/special-names") {
+            return Need::Scope("config:write:special");
+        }
+        // REQ: DNS-023 (T24.13)
+        if under("/api/v1/local-settings") {
+            return Need::Scope("config:write:local");
+        }
+        // REQ: CLU-013 (T13.2) — what every node serves.
+        if under("/api/v1/cluster/rollout-settings") {
+            return Need::Scope("cluster:admin");
+        }
+        if *method == Method::DELETE
+            && let Some(need) = delete_need(p)
+        {
+            return need;
+        }
+    }
+    if *method == Method::POST
+        && let Some(need) = post_need(p)
+    {
+        return need;
+    }
+    Need::Forbidden
+}
+
+/// REQ: API-015 — `/api/v1/secrets/{name}`.
+fn secret_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/secrets/")
+        .is_some_and(|n| !n.is_empty() && !n.contains('/'))
+}
+
+/// REQ: API-015, AGT-004 (ADR-903 §5) — what agent tokens never do, whatever their scopes
+/// (refused with `agent_not_allowed`): setting or clearing a stored secret, a backup (it holds
+/// password hashes, and with a passphrase the secrets), and checking a router draft (it carries
+/// the router's credential). A value would otherwise sit in an agent's plan, the approval diff
+/// and the agent's transcript.
+pub fn never_for_agents(method: &Method, path: &str) -> bool {
+    let p = path.trim_end_matches('/');
+    let secret = p == "/api/v1/secrets" || secret_path(p);
+    let write = *method == Method::PUT || *method == Method::DELETE || *method == Method::POST;
+    // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings and token.
+    let pihole = p == "/api/v1/pihole-api" || p == "/api/v1/pihole-api/token";
+    // REQ: API-902 (T27.13, ADR-956 §7) — guarded changes: no tool, plan or scope; an agent token
+    // gets `agent_not_allowed` on preview, apply, confirm and cancel.
+    let guarded = p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/");
+    // REQ: FLT-004 (T24.28, ADR-992) - turning lists off in bulk: a person confirms the preview.
+    let prune = p == "/api/v1/lists/prune";
+    // REQ: FLT-902 (T24.29) - who a profile applies to moves devices between groups: a person's.
+    let sources = p
+        .strip_prefix("/api/v1/groups/")
+        .and_then(|r| r.strip_suffix("/sources"))
+        .is_some_and(|g| !g.is_empty() && !g.contains('/'));
+    ((secret || pihole) && write)
+        || (guarded && *method != Method::GET && *method != Method::HEAD)
+        || (prune && write)
+        || (sources && write)
+        || (*method == Method::POST
+            && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
+}
+
+/// REQ: OBS-034 — `/api/v1/clients/{id}/timeline`.
+fn timeline_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/clients/")
+        .and_then(|r| r.strip_suffix("/timeline"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// REQ: FLT-902 (T24.29) - `/api/v1/groups/{name}/content`.
+fn content_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/groups/")
+        .and_then(|r| r.strip_suffix("/content"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// REQ: FLT-006, API-010 (T24.30) — `/api/v1/clients/{id}/policy`.
+fn policy_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/clients/")
+        .and_then(|r| r.strip_suffix("/policy"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// Reads under `analytics:read` beyond the plain paths.
+fn analytics_extra(p: &str) -> bool {
+    // REQ: OBS-025 — what kind of device each address is.
+    p == "/api/v1/clients/identities"
+        || p.strip_prefix("/api/v1/clients/")
+            .and_then(|r| r.strip_suffix("/identity"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        // REQ: CLU-013 — the rollout in progress and the kept versions.
+        || p == "/api/v1/cluster/rollout"
+        || p == "/api/v1/cluster/versions"
+        // REQ: OBS-028 — the node comparison.
+        || p == "/api/v1/cluster/compare"
+        // REQ: OBS-031 — how a device's queries are spaced.
+        || p.strip_prefix("/api/v1/clients/")
+            .and_then(|r| r.strip_suffix("/rhythm"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        // REQ: CLU-014 — drill reports, the running drill, and the affinity view.
+        || p == "/api/v1/drills"
+        || p.strip_prefix("/api/v1/drills/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        || drill_path(p)
+        || p == "/api/v1/clients/affinity"
+}
+
+/// REQ: CLU-014 — `/api/v1/nodes/{id}/drill`.
+fn drill_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/nodes/")
+        .and_then(|r| r.strip_suffix("/drill"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// What a `DELETE` outside the configuration areas needs.
+fn delete_need(p: &str) -> Option<Need> {
+    // REQ: CLU-013 — unpinning changes what every node serves.
+    if p == "/api/v1/cluster/pin" {
+        return Some(Need::Scope("cluster:admin"));
+    }
+    // REQ: CLU-001 (ADR-155) — removing a node changes who is in the cluster.
+    if p.strip_prefix("/api/v1/cluster/nodes/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return Some(Need::Scope("cluster:admin"));
+    }
+    // REQ: CLU-014 — ending a drill early.
+    if drill_path(p) {
+        return Some(Need::Scope("ops:drill"));
+    }
+    // REQ: OPS-010 — ending maintenance (starting it is a POST).
+    maintenance_path(p).then_some(Need::Scope("ops:maintenance"))
+}
+
+/// REQ: OPS-010 — `/api/v1/nodes/{id}/maintenance`.
+fn maintenance_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/nodes/")
+        .and_then(|r| r.strip_suffix("/maintenance"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// What a `POST` to `p` needs: tests, MCP, and the immediate operations.
+fn post_need(p: &str) -> Option<Need> {
+    Some(match p {
+        // REQ: OPS-010 — maintenance is an immediate op (agents at most two hours).
+        _ if maintenance_path(p) => Need::Scope("ops:maintenance"),
+        // REQ: CLU-014 — a drill (at most five minutes; never in the default scopes).
+        _ if drill_path(p) => Need::Scope("ops:drill"),
+        _ if p.starts_with("/api/v1/alerts/destinations/") && p.ends_with("/test") => {
+            Need::Scope("config:write:alerts")
+        }
+        // REQ: API-002 (T9.12) — checks need the scope that saves the entry.
+        "/api/v1/checks/upstream" => Need::Scope("config:write:upstreams"),
+        // REQ: FLT-004 — and "update lists now": whoever may save a list (which downloads it)
+        // may download it again.
+        "/api/v1/checks/list" | "/api/v1/lists/refresh" => Need::Scope("config:write:lists"),
+        // MCP: each tool's REST calls are checked on their own (ADR-065).
+        "/mcp" => Need::Any,
+        // REQ: AGT-004 (T6.13) — flushing the cache is an immediate low-risk op (spec/13 §3).
+        "/api/v1/cache/flush" => Need::Scope("ops:cache"),
+        // REQ: AGT-004 (T7.1) — pausing blocking is another (at most 60 minutes).
+        "/api/v1/blocking/pause" | "/api/v1/blocking/resume" => Need::Scope("ops:pause"),
+        // REQ: OBS-014 — acknowledging anomalies is an immediate, reversible op.
+        "/api/v1/analytics/anomalies/acknowledge" | "/api/v1/analytics/anomalies/unacknowledge" => {
+            Need::Scope("ops:anomalies")
+        }
+        "/api/v1/cluster/promote" => Need::Scope("cluster:admin"),
+        // REQ: DSC-004 (T25.6, ADR-1002) - the SNMP Test of one configured agent.
+        "/api/v1/discovery/snmp/test" => Need::Scope("ops:discovery_test"),
+        // REQ: OBS-033 — a note on the time charts is an immediate, append-only op.
+        "/api/v1/annotations" => Need::Scope("ops:annotate"),
+        // REQ: CLU-013 — rollouts and pins change what every node serves.
+        "/api/v1/cluster/rollout/promote" | "/api/v1/cluster/rollout/abort" => {
+            Need::Scope("cluster:admin")
+        }
+        _ if p
+            .strip_prefix("/api/v1/cluster/versions/")
+            .and_then(|r| r.strip_suffix("/pin"))
+            .is_some_and(|v| !v.is_empty() && !v.contains('/')) =>
+        {
+            Need::Scope("cluster:admin")
+        }
+        // REQ: OBS-024 — a simulation reads the query log (and, for a whole configuration,
+        // `config:read`: checked by the route).
+        "/api/v1/simulate" => Need::Scope("querylog:read"),
+        _ => return None,
+    })
+}
+
+/// Routes a group-restricted agent may use; each of them narrows to the group (ADR-064).
+pub fn group_aware(method: &Method, path: &str) -> bool {
+    let p = path.trim_end_matches('/');
+    let read = *method == Method::GET || *method == Method::HEAD;
+    match p {
+        "/api/v1/auth/me"
+        | "/api/v1/auth/status"
+        | "/api/v1/queries"
+        | "/api/v1/stats/top"
+        | "/api/v1/clients" => read,
+        "/mcp" => true,
+        // REQ: FLT-006, API-010 (T24.30) — a device's policy: the handler narrows to the group.
+        _ if read && policy_path(p) => true,
+        _ => {
+            (*method == Method::PUT || *method == Method::DELETE)
+                && p.strip_prefix("/api/v1/clients/")
+                    .is_some_and(|n| !n.is_empty())
+        }
+    }
+}
+
+/// The kill switch and rate limits, updated from `[agents]` on every config change.
+#[derive(Debug)]
+pub struct Policy {
+    enabled: AtomicBool,
+    /// REQ: AGT-007 — `[agents] require_approval`: plans wait for an operator.
+    require_approval: AtomicBool,
+    rate_per_minute: AtomicU32,
+    /// Token ID → (requests left, last refill in ms).
+    buckets: Mutex<HashMap<String, (f64, u64)>>,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(true),
+            require_approval: AtomicBool::new(false),
+            rate_per_minute: AtomicU32::new(120),
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Policy {
+    pub fn set(&self, enabled: bool, rate_per_minute: u32) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+        self.rate_per_minute
+            .store(rate_per_minute.max(1), Ordering::Relaxed);
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_require_approval(&self, on: bool) {
+        self.require_approval.store(on, Ordering::Relaxed);
+    }
+
+    pub fn require_approval(&self) -> bool {
+        self.require_approval.load(Ordering::Relaxed)
+    }
+
+    /// Takes one request from the token's bucket; `Err(seconds)` to wait when it's empty.
+    pub fn take(&self, token: &str, own_rate: Option<u32>, now_ms: u64) -> Result<(), u64> {
+        let rate = f64::from(
+            own_rate
+                .unwrap_or_else(|| self.rate_per_minute.load(Ordering::Relaxed))
+                .max(1),
+        );
+        let mut b = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
+        if b.len() > 10_000 {
+            b.clear();
+        }
+        let (left, last) = b.entry(token.to_owned()).or_insert((rate, now_ms));
+        #[allow(clippy::cast_precision_loss)] // milliseconds since the last request
+        let refill = now_ms.saturating_sub(*last) as f64 / 60_000.0 * rate;
+        *left = (*left + refill).min(rate);
+        *last = now_ms;
+        if *left >= 1.0 {
+            *left -= 1.0;
+            Ok(())
+        } else {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small, positive
+            let wait = ((1.0 - *left) * 60.0 / rate).ceil() as u64;
+            Err(wait.max(1))
+        }
+    }
+}
+
+/// Checks an agent's request (REQ: AGT-004, AGT-009); `Ok` lets it through.
+/// `charge_at_ms`: take one request from the token's rate-limit bucket at that time; `None`
+/// for the REST calls the MCP server makes for a tool (the `/mcp` request paid).
+pub fn check(
+    policy: &Policy,
+    grant: &super::AgentGrant,
+    token_id: &str,
+    method: &Method,
+    path: &str,
+    reason: Option<&str>,
+    charge_at_ms: Option<u64>,
+) -> Result<(), Problem> {
+    if !policy.enabled() {
+        return Err(
+            Problem::new(Code::Forbidden, "agents are switched off on this cluster")
+                .hint("An admin turned them off with [agents] enabled = false."),
+        );
+    }
+    if let Some(now_ms) = charge_at_ms
+        && let Err(wait) = policy.take(token_id, grant.rate_per_minute, now_ms)
+    {
+        return Err(Problem::new(
+            Code::RateLimited,
+            format!("this agent token is over its request rate; try again in {wait} s"),
+        )
+        .retry_after(wait));
+    }
+    if never_for_agents(method, path) {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            format!("agent tokens can't use {method} {path}, whatever their scopes"),
+        )
+        .hint("Stored secrets, backups, and router checks are for people: a value would sit in the agent's plan and transcript."));
+    }
+    match required(method, path) {
+        Need::Forbidden => {
+            return Err(Problem::new(
+                Code::Forbidden,
+                format!("agent tokens can't use {method} {path}"),
+            )
+            .hint("Users, tokens, passwords, backups, and the audit log are for people."));
+        }
+        Need::Scope(s) if !grant.scopes.contains(s) => {
+            return Err(Problem::new(
+                Code::Forbidden,
+                format!("this needs the `{s}` scope"),
+            )
+            .hint("Create an agent token with that scope (POST /api/v1/tokens with kind = agent)."));
+        }
+        Need::Any | Need::Scope(_) => {}
+    }
+    if let Some(g) = &grant.group
+        && !group_aware(method, path)
+    {
+        return Err(Problem::new(
+            Code::Forbidden,
+            format!("a token restricted to group `{g}` can't use {method} {path}"),
+        )
+        .hint("Restricted tokens can read the query log, top lists, and devices, and change devices, for their group."));
+    }
+    // MCP messages are POSTs, but the tools are read-only (their REST calls are GETs).
+    // REQ: OBS-024 — nor does a simulation change anything.
+    let changes = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+        && !matches!(path.trim_end_matches('/'), "/mcp" | "/api/v1/simulate");
+    if changes && reason.is_none_or(|r| r.trim().is_empty()) {
+        return Err(
+            Problem::invalid("agents must say why they change something").hint(
+                "Send the reason in the X-Wrendns-Reason header; it goes into the audit log.",
+            ),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grant(scopes: &[&str], group: Option<&str>) -> super::super::AgentGrant {
+        super::super::AgentGrant {
+            token_name: "helper".into(),
+            scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
+            group: group.map(str::to_owned),
+            rate_per_minute: None,
+            client: None,
+        }
+    }
+
+    // REQ: AGT-004 — routes map to scopes; everything else is refused (deny by default).
+    #[test]
+    fn agt_004_scope_map_denies_by_default() {
+        use Need::{Any, Forbidden, Scope};
+        let g = Method::GET;
+        assert_eq!(
+            required(&g, "/api/v1/stats/summary"),
+            Scope("analytics:read")
+        );
+        assert_eq!(required(&g, "/api/v1/queries"), Scope("querylog:read"));
+        // REQ: AGT-012 — vqlog reads the query log.
+        assert_eq!(
+            required(&g, "/api/v1/analytics/vqlog"),
+            Scope("querylog:read")
+        );
+        assert_eq!(required(&g, "/api/v1/clients"), Scope("config:read"));
+        assert_eq!(
+            required(&Method::PUT, "/api/v1/clients/tv"),
+            Scope("config:write:clients")
+        );
+        assert_eq!(
+            required(&Method::DELETE, "/api/v1/records/nas.lan"),
+            Scope("config:write:records")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/cluster/promote"),
+            Scope("cluster:admin")
+        );
+        assert_eq!(
+            required(&Method::DELETE, "/api/v1/cluster/nodes/3f9c2a1b7d0e4c55"),
+            Scope("cluster:admin")
+        );
+        assert_eq!(required(&g, "/api/v1/auth/me"), Any);
+        for (m, p) in [
+            (Method::GET, "/api/v1/users"),
+            (Method::POST, "/api/v1/tokens"),
+            (Method::GET, "/api/v1/tokens"),
+            (Method::GET, "/api/v1/backup"),
+            // REQ: OPS-011 (ADR-156) — a support package reads logs and state: for people.
+            (Method::POST, "/api/v1/system/support-package"),
+            (Method::GET, "/api/v1/system/support-package/abc/map"),
+            (Method::GET, "/api/v1/audit"),
+            (Method::POST, "/api/v1/auth/password"),
+            (Method::PUT, "/api/v1/clients"),
+            (Method::GET, "/api/v1/stats"),
+            (Method::GET, "/api/v1/something-new"),
+            // REQ: API-015 (ADR-903 §5) — secret writes, backups, router checks.
+            (Method::PUT, "/api/v1/secrets/unifi"),
+            (Method::DELETE, "/api/v1/secrets/unifi"),
+            (Method::POST, "/api/v1/backup"),
+            (Method::POST, "/api/v1/checks/router"),
+        ] {
+            assert_eq!(required(&m, p), Forbidden, "{m} {p}");
+        }
+    }
+
+    /// REQ: API-015, AGT-004 (ADR-903 §5) — agents read stored secrets' metadata with
+    /// `config:read`, and never write one (nor take a backup or check a router), whatever their
+    /// scopes: `agent_not_allowed`.
+    #[test]
+    fn api_015_agent_secret_routes() {
+        assert_eq!(
+            required(&Method::GET, "/api/v1/secrets"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/secrets/unifi"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/secrets/a/b"),
+            Need::Forbidden
+        );
+        for (m, p) in [
+            (Method::PUT, "/api/v1/secrets/unifi"),
+            (Method::DELETE, "/api/v1/secrets/unifi/"),
+            (Method::POST, "/api/v1/secrets"),
+            (Method::POST, "/api/v1/backup"),
+            (Method::POST, "/api/v1/checks/router"),
+            (Method::POST, "/api/v1/checks/router/unifi"),
+        ] {
+            assert!(never_for_agents(&m, p), "{m} {p}");
+        }
+        assert!(!never_for_agents(&Method::GET, "/api/v1/secrets"));
+        assert!(!never_for_agents(&Method::POST, "/api/v1/checks/upstream"));
+        let every: Vec<String> = SCOPES.iter().map(|(n, _)| (*n).to_owned()).collect();
+        let g = super::super::AgentGrant {
+            token_name: "helper".into(),
+            scopes: every.into_iter().collect(),
+            group: None,
+            rate_per_minute: None,
+            client: None,
+        };
+        let policy = Policy::default();
+        let e = check(
+            &policy,
+            &g,
+            "t1",
+            &Method::PUT,
+            "/api/v1/secrets/unifi",
+            Some("rotate"),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!((e.code, e.status), (Code::AgentNotAllowed, 403));
+        assert!(
+            check(
+                &policy,
+                &g,
+                "t1",
+                &Method::GET,
+                "/api/v1/secrets",
+                None,
+                None
+            )
+            .is_ok()
+        );
+    }
+
+    /// REQ: API-005, AGT-004 (T24.10, ADR-961 §7) — an agent with `config:read` reads the Pi-hole
+    /// compatible API's status; nothing writes it, and no scope can (the token is a credential).
+    #[test]
+    fn api_005_agent_pihole_api_routes() {
+        use Need::{Forbidden, Scope};
+        assert_eq!(
+            required(&Method::GET, "/api/v1/pihole-api"),
+            Scope("config:read")
+        );
+        for (m, p) in [
+            (Method::PUT, "/api/v1/pihole-api"),
+            (Method::POST, "/api/v1/pihole-api/token"),
+            (Method::DELETE, "/api/v1/pihole-api/token"),
+        ] {
+            assert_eq!(required(&m, p), Forbidden, "{m} {p}");
+            assert!(never_for_agents(&m, p), "{m} {p}");
+        }
+        assert!(!never_for_agents(&Method::GET, "/api/v1/pihole-api"));
+    }
+
+    /// REQ: AGT-004 (T6.12) — quick rules: reading needs `config:read`, changing needs
+    /// `config:write:rules`.
+    #[test]
+    fn agt_004_quick_rule_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        assert_eq!(
+            required(&Method::GET, "/api/v1/rules"),
+            Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::PUT, "/api/v1/rules/r1"),
+            Scope("config:write:rules")
+        );
+        assert_eq!(
+            required(&Method::DELETE, "/api/v1/rules/r1"),
+            Scope("config:write:rules")
+        );
+        assert_eq!(required(&Method::PUT, "/api/v1/rules"), Forbidden);
+    }
+
+    /// REQ: AGT-004 (T6.13) — looking at the cache is analytics; flushing needs `ops:cache`.
+    #[test]
+    fn agt_004_cache_routes_need_their_scope() {
+        use Need::Scope;
+        assert_eq!(
+            required(&Method::GET, "/api/v1/cache/stats"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/cache/lookup"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/cache/flush"),
+            Scope("ops:cache")
+        );
+        // T7.1 — pausing blocking needs ops:pause; reading it is analytics.
+        assert_eq!(
+            required(&Method::POST, "/api/v1/blocking/pause"),
+            Scope("ops:pause")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/blocking/resume"),
+            Scope("ops:pause")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/blocking"),
+            Scope("analytics:read")
+        );
+        // T6.15 — the top entries are analytics too.
+        assert_eq!(
+            required(&Method::GET, "/api/v1/cache/entries"),
+            Scope("analytics:read")
+        );
+    }
+
+    /// REQ: FLT-004, AGT-004 — "update lists now" needs `config:write:lists` (an operator
+    /// scope, not a default one); reading the lists is `config:read`.
+    #[test]
+    fn flt_004_list_refresh_needs_the_lists_scope() {
+        use Need::Scope;
+        assert_eq!(
+            required(&Method::POST, "/api/v1/lists/refresh"),
+            Scope("config:write:lists")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/lists"),
+            Scope("config:read")
+        );
+        assert!(!DEFAULT_SCOPES.contains(&"config:write:lists"));
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:lists".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OBS-014, OBS-015, AGT-004 — acknowledging anomalies needs `ops:anomalies`;
+    /// reading health and anomalies is analytics.
+    #[test]
+    fn obs_014_anomaly_and_health_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for p in [
+            "/api/v1/analytics/anomalies/acknowledge",
+            "/api/v1/analytics/anomalies/unacknowledge",
+        ] {
+            assert_eq!(required(&Method::POST, p), Scope("ops:anomalies"), "{p}");
+        }
+        assert_eq!(
+            required(&Method::GET, "/api/v1/analytics/anomalies"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/system/health"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/analytics/anomalies"),
+            Forbidden
+        );
+        assert_eq!(
+            implied_role(&parse_scopes(&["ops:anomalies".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OPS-010, AGT-004 — starting and ending maintenance need `ops:maintenance` (an
+    /// operator scope); other paths under `/nodes` stay forbidden.
+    #[test]
+    fn ops_010_maintenance_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for m in [Method::POST, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/nodes/local/maintenance"),
+                Scope("ops:maintenance"),
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/nodes/pi/maintenance"),
+                Scope("ops:maintenance")
+            );
+        }
+        for (m, p) in [
+            (Method::PUT, "/api/v1/nodes/pi/maintenance"),
+            (Method::POST, "/api/v1/nodes//maintenance"),
+            (Method::POST, "/api/v1/nodes/a/b/maintenance"),
+            (Method::DELETE, "/api/v1/nodes/pi"),
+        ] {
+            assert_eq!(required(&m, p), Forbidden, "{m} {p}");
+        }
+        assert_eq!(
+            implied_role(&parse_scopes(&["ops:maintenance".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OBS-033, AGT-004 — reading change markers is analytics; a note needs
+    /// `ops:annotate` (an operator scope, not in the default set); changing one isn't for
+    /// anyone.
+    #[test]
+    fn obs_033_annotation_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        assert_eq!(
+            required(&Method::GET, "/api/v1/annotations"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/annotations"),
+            Scope("ops:annotate")
+        );
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(required(&m, "/api/v1/annotations"), Forbidden, "{m}");
+        }
+        assert!(!DEFAULT_SCOPES.contains(&"ops:annotate"));
+        assert_eq!(
+            implied_role(&parse_scopes(&["ops:annotate".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OBS-025 — identities are analytics.
+    #[test]
+    fn obs_025_identity_routes_need_analytics() {
+        for p in [
+            "/api/v1/clients/identities",
+            "/api/v1/clients/192.168.1.20/identity",
+            "/api/v1/clients/living-room-tv/identity",
+        ] {
+            assert_eq!(
+                required(&Method::GET, p),
+                Need::Scope("analytics:read"),
+                "{p}"
+            );
+        }
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/a/b/identity"),
+            Need::Forbidden
+        );
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30) — a device's policy is configuration, read-only.
+    #[test]
+    fn flt_006_policy_route_needs_config_read() {
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/living-room-tv/policy"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/a/b/policy"),
+            Need::Forbidden
+        );
+    }
+
+    /// REQ: OBS-024 — the simulation settings need their own write scope; a simulation needs
+    /// the query log.
+    #[test]
+    fn obs_024_simulation_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/simulate-settings/default"),
+                Scope("config:write:simulate"),
+                "{m}"
+            );
+        }
+        assert_eq!(
+            required(&Method::POST, "/api/v1/simulate"),
+            Scope("querylog:read")
+        );
+        assert_eq!(required(&Method::GET, "/api/v1/simulate"), Forbidden);
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:simulate".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OBS-038 — muting anomalies has its own write scope (the mutes are read through
+    /// `GET /config/entries?kind=anomaly_mute`, `config:read`).
+    #[test]
+    fn obs_038_anomaly_mutes_need_their_scope() {
+        use Need::Scope;
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/anomaly-mutes/lg-tv"),
+                Scope("config:write:anomalies"),
+                "{m}"
+            );
+        }
+        assert!(
+            parse_scopes(&["config:write:*".into()])
+                .unwrap()
+                .contains("config:write:anomalies")
+        );
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:anomalies".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: DNS-019, DNS-023 (T24.12, T24.13) — the settings sections have their own scopes
+    /// (operators' areas), and no scope reaches `[clients]`: an agent can't write `mdns`.
+    #[test]
+    fn dns_019_settings_sections_need_their_scopes() {
+        use Need::{Forbidden, Scope};
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/special-names/default"),
+                Scope("config:write:special"),
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/local-settings/default"),
+                Scope("config:write:local"),
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/clients-settings/default"),
+                Forbidden,
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/discovery-settings/default"),
+                Forbidden,
+                "{m}"
+            );
+            // REQ: DSC-901 (T31.2) — no agent scope reaches `[cmdb]` either (ADR-1005 section 9).
+            assert_eq!(
+                required(&m, "/api/v1/cmdb-settings/default"),
+                Forbidden,
+                "{m}"
+            );
+        }
+        assert_eq!(
+            required(&Method::GET, "/api/v1/config/entries"),
+            Scope("config:read")
+        );
+        for scope in ["config:write:special", "config:write:local"] {
+            assert_eq!(
+                implied_role(&parse_scopes(&[scope.into()]).unwrap()),
+                Role::Operator
+            );
+        }
+    }
+
+    #[test]
+    fn agt_004_scopes_parse_and_imply_roles() {
+        let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
+        assert_eq!(
+            s.len(),
+            16,
+            "fifteen write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate, map, special, local) + analytics"
+        );
+        assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
+        assert!(s.contains("config:write:rules"));
+        assert_eq!(implied_role(&s), Role::Operator);
+        assert_eq!(
+            implied_role(&parse_scopes(&["cluster:admin".into()]).unwrap()),
+            Role::Admin
+        );
+        assert!(parse_scopes(&["root".into()]).is_err());
+        assert!(parse_scopes(&[]).is_err());
+    }
+
+    // REQ: AGT-009 — the kill switch, rate limits, required reasons, group restriction.
+    #[test]
+    fn agt_009_guardrails() {
+        let p = Policy::default();
+        let g = grant(&["analytics:read", "config:write:clients"], None);
+        let get = |path: &str| check(&p, &g, "t1", &Method::GET, path, None, Some(0));
+        assert!(get("/api/v1/stats/summary").is_ok());
+        assert!(get("/api/v1/queries").is_err(), "no querylog:read");
+        assert!(
+            check(
+                &p,
+                &g,
+                "t1",
+                &Method::PUT,
+                "/api/v1/clients/tv",
+                None,
+                Some(0)
+            )
+            .is_err(),
+            "no reason"
+        );
+        assert!(
+            check(
+                &p,
+                &g,
+                "t1",
+                &Method::PUT,
+                "/api/v1/clients/tv",
+                Some("rename the TV"),
+                Some(0)
+            )
+            .is_ok()
+        );
+        p.set(false, 120);
+        assert!(get("/api/v1/stats/summary").is_err(), "switched off");
+        p.set(true, 2);
+        let fresh = grant(&["analytics:read"], None);
+        let charged = |at: Option<u64>| {
+            check(
+                &p,
+                &fresh,
+                "t2",
+                &Method::GET,
+                "/api/v1/stats/summary",
+                None,
+                at,
+            )
+        };
+        let r = |ms| charged(Some(ms));
+        assert!(r(0).is_ok() && r(0).is_ok());
+        assert!(r(0).is_err(), "over 2 per minute");
+        // The REST calls behind an MCP tool call don't take from the bucket (review 06-04).
+        assert!(charged(None).is_ok(), "in-process calls aren't charged");
+        assert!(r(30_000).is_ok(), "refilled after 30 s");
+        let restricted = grant(&["querylog:read", "analytics:read"], Some("kids"));
+        let rr = |path: &str| {
+            check(
+                &Policy::default(),
+                &restricted,
+                "t3",
+                &Method::GET,
+                path,
+                None,
+                Some(0),
+            )
+        };
+        assert!(rr("/api/v1/queries").is_ok());
+        assert!(rr("/api/v1/stats/summary").is_err(), "no group view");
+        assert!(
+            rr("/api/v1/analytics/vqlog").is_err(),
+            "vqlog has no group view"
+        );
+    }
+}

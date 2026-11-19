@@ -4,7 +4,7 @@
 # credential queries flag (62 of the first 82 alerts). It is ignored by path; production code is
 # scanned in full. Test modules that sit inside a source file are moved to `*_tests.rs` files, as
 # `net_tests.rs` already is, so this list covers them.
-name: telltaledns CodeQL
+name: wrendns CodeQL
 paths-ignore:
   - "**/tests/**"
   - "**/*_tests.rs"

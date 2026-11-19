@@ -3,7 +3,7 @@
   python3 bench/gate.py                      # server on CPUs 0-3, dnsperf on 4-7
   python3 bench/gate.py --server-cpus 0-3 --client-cpus 4-7 --duration 20
 
-Starts the stub upstream and a telltale server (`bench-fast` build) pinned to `--server-cpus`,
+Starts the stub upstream and a wrendns server (`bench-fast` build) pinned to `--server-cpus`,
 drives it with dnsperf pinned to `--client-cpus`, and measures:
 
   1. idle RSS without lists, and start-to-ready;
@@ -109,7 +109,7 @@ class Stack:
 
     def __init__(self, args, data_dir, names_file=None):
         self.args, self.data_dir = args, pathlib.Path(data_dir)
-        self.cfg = self.data_dir / "telltale.toml"
+        self.cfg = self.data_dir / "wrendns.toml"
         lists = [names_file] if names_file else []
         self.cfg.write_text(bench.server_config(args.workers, data_dir, f"udp://127.0.0.1:{bench.STUB_PORT}", lists))
         self.stub = subprocess.Popen([sys.executable, str(HERE / "stub_upstream.py"), "--port", str(bench.STUB_PORT)],
@@ -127,7 +127,7 @@ class Stack:
         return t0, ready
 
     def stop_server(self):
-        bench.stop(self.server, "telltale")
+        bench.stop(self.server, "wrendns")
 
     def close(self):
         self.stop_server()
@@ -158,7 +158,7 @@ def max_and_p99(datafile, args, label):
 
 def telemetry_loss(datafile, rate, args):
     """OBS-002: counters and events under fixed-rate load; drops must stay 0."""
-    names = ("telltale_telemetry_events_total", "telltale_telemetry_dropped_total", "telltale_queries_total")
+    names = ("wrendns_telemetry_events_total", "wrendns_telemetry_dropped_total", "wrendns_queries_total")
     before = [bench.metric_sum(f"{URL}/metrics", n) or 0 for n in names]
     run = perf(datafile, args.duration, args, max_qps=rate)
     time.sleep(0.5)
@@ -181,7 +181,7 @@ def gate_size(tag):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--server-cpus", default="0-3")
     ap.add_argument("--client-cpus", default="4-7")
     ap.add_argument("--workers", type=int, default=4)
@@ -189,11 +189,11 @@ def main():
     ap.add_argument("--clients", type=int, default=8)
     ap.add_argument("--outstanding", type=int, default=200)
     ap.add_argument("--duration", type=int, default=20, help="seconds per measured run")
-    ap.add_argument("--image", default="ghcr.io/paimonsoror/telltale:latest")
+    ap.add_argument("--image", default="ghcr.io/nbacheller/wrendns:latest")
     ap.add_argument("--out", default=str(HERE / "results"))
     args = ap.parse_args()
 
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-gate-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-gate-")
     pinned_dnsperf(args.client_cpus, tmp.name)
     corpora = HERE / "corpora"
     hot, _ = corpus.generate("cache-hot", corpora)
@@ -231,10 +231,10 @@ def main():
     try:
         t0, ready = st.start()
         filt = bench.wait_filter(f"{URL}/metrics", st.server)
-        r["compile_1m_s"] = bench.metric(f"{URL}/metrics", "telltale_filter_compile_seconds")
+        r["compile_1m_s"] = bench.metric(f"{URL}/metrics", "wrendns_filter_compile_seconds")
         r["blocked"] = max_and_p99(blocked, args, "blocked")
         perf(fill, 30, args, max_qps=20_000, once=True)
-        entries = bench.metric_sum(f"{URL}/metrics", "telltale_cache_entries")
+        entries = bench.metric_sum(f"{URL}/metrics", "wrendns_cache_entries")
         time.sleep(3)
         rss, hwm = st.rss_mib()
         r["rss_1m_100k"] = {"rss_mib": rss, "peak_mib": hwm, "cache_entries": entries}
@@ -248,7 +248,7 @@ def main():
         r["cold_start_snapshot_ms"] = {"ready_ms": round((ready - t0) * 1000, 1),
                                        "filter_ms": round((blk - t0) * 1000, 1),
                                        "index_ms": round((filt - t0) * 1000, 1),
-                                       "compile_s": bench.metric(f"{URL}/metrics", "telltale_filter_compile_seconds")}
+                                       "compile_s": bench.metric(f"{URL}/metrics", "wrendns_filter_compile_seconds")}
         print(f"cold start with snapshot: {r['cold_start_snapshot_ms']}", file=sys.stderr)
     finally:
         st.close()
@@ -261,18 +261,18 @@ def main():
     try:
         st.start()
         bench.wait_filter(f"{URL}/metrics", st.server)
-        first = bench.metric(f"{URL}/metrics", "telltale_filter_compile_seconds")
-        v0 = bench.metric(f"{URL}/metrics", "telltale_filter_snapshot_version") or 0
+        first = bench.metric(f"{URL}/metrics", "wrendns_filter_compile_seconds")
+        v0 = bench.metric(f"{URL}/metrics", "wrendns_filter_snapshot_version") or 0
         with open(lst, "a") as f:
             f.write("gate-recompile.example\n")
         st.server.send_signal(signal.SIGUSR1)
         deadline = time.monotonic() + 300
-        while (bench.metric(f"{URL}/metrics", "telltale_filter_snapshot_version") or 0) <= v0:
+        while (bench.metric(f"{URL}/metrics", "wrendns_filter_snapshot_version") or 0) <= v0:
             if time.monotonic() > deadline:
                 raise RuntimeError("recompile didn't finish in 300 s")
             time.sleep(0.5)
         r["compile_2m_s"] = {"first": first,
-                             "recompile": bench.metric(f"{URL}/metrics", "telltale_filter_compile_seconds")}
+                             "recompile": bench.metric(f"{URL}/metrics", "wrendns_filter_compile_seconds")}
         print(f"2M names: {r['compile_2m_s']}", file=sys.stderr)
     finally:
         st.close()

@@ -3,8 +3,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use telltale_config::categories::{Catalog, budget};
-use telltale_config::{AdsTier, ContentLevel, GroupContent, SafeString};
+use wrendns_config::categories::{Catalog, budget};
+use wrendns_config::{AdsTier, ContentLevel, GroupContent, SafeString};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {

@@ -1,0 +1,1182 @@
+//! T3.1 tests: event encoding, rings, top-K, aggregation (OBS-001, OBS-002, OBS-004).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use crate::agg::{HourSel, LatencyKey, Resolution, TopKind};
+use crate::event::{self, MAX_RECORD, Record};
+use crate::topk::SpaceSaving;
+use crate::{Aggregates, Hub, Path, Proto, QueryEvent, Rule, RuleKind, Status, UpstreamEvent};
+
+fn wire(name: &str) -> Vec<u8> {
+    let mut w = Vec::new();
+    for label in name.split('.').filter(|l| !l.is_empty()) {
+        w.push(u8::try_from(label.len()).unwrap());
+        w.extend_from_slice(label.as_bytes());
+    }
+    w.push(0);
+    w
+}
+
+fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
+    std::net::Ipv4Addr::new(a, b, c, d)
+        .to_ipv6_mapped()
+        .octets()
+}
+
+fn query(ts_us: u64, client: [u8; 16], status: Status, total_us: u32) -> QueryEvent {
+    QueryEvent {
+        ts_us,
+        client_ip: client,
+        client_ref: 0,
+        group: 0,
+        qtype: 1,
+        qclass: 1,
+        rcode: Some(0),
+        status,
+        proto: Proto::Udp,
+        flags: 0x8180,
+        rule: None,
+        upstream: 0,
+        attempts: 0,
+        t_total_us: total_us,
+        t_upstream_us: 0,
+        resp_size: 64,
+        answers: 1,
+    }
+}
+
+#[test]
+fn obs_001_query_and_upstream_records_round_trip() {
+    let mut ev = query(
+        1_700_000_000_123_456,
+        ipv4(192, 168, 1, 20),
+        Status::Blocked,
+        42,
+    );
+    ev.rule = Some(Rule {
+        list: 3,
+        kind: RuleKind::Cname,
+        allow: false,
+    });
+    ev.rcode = None;
+    ev.t_upstream_us = 7;
+    let mut buf = [0u8; MAX_RECORD];
+    let name = wire("Ads.Example.COM");
+    let len = event::encode_query(&ev, &name, &mut buf);
+    assert_eq!(event::record_len(&buf), Some(len));
+    let Some(Record::Query(back, n)) = event::decode(&buf[..len]) else {
+        panic!("query record");
+    };
+    assert_eq!(back, ev);
+    assert_eq!(n.dotted(), "ads.example.com", "lowercased");
+
+    // Long names are kept whole (no truncation).
+    let long = format!(
+        "{}.{}.{}.example.com",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(60)
+    );
+    let len = event::encode_query(&ev, &wire(&long), &mut buf);
+    let Some(Record::Query(_, n)) = event::decode(&buf[..len]) else {
+        panic!("long name");
+    };
+    assert_eq!(n.dotted(), long);
+
+    // A malformed name is recorded as unknown, never read out of bounds.
+    let len = event::encode_query(&ev, &[5, b'a', b'b'], &mut buf);
+    let Some(Record::Query(_, n)) = event::decode(&buf[..len]) else {
+        panic!("malformed");
+    };
+    assert_eq!(n.as_wire(), b"");
+
+    let up = UpstreamEvent {
+        ts_us: 5,
+        upstream: 2,
+        latency_us: 1234,
+        ok: false,
+        attempts: 3,
+    };
+    let len = event::encode_upstream(&up, &mut buf);
+    assert_eq!(event::decode(&buf[..len]), Some(Record::Upstream(up)));
+}
+
+#[test]
+fn obs_001_question_is_read_from_a_raw_message() {
+    let mut msg = vec![0u8; 12];
+    msg.extend_from_slice(&wire("www.example.org"));
+    msg.extend_from_slice(&[0, 28, 0, 1]);
+    let (name, class) = event::question(&msg);
+    assert_eq!(event::dotted(name), "www.example.org");
+    assert_eq!(class, 1);
+    assert_eq!(event::question(&[0u8; 5]), (&[][..], 0));
+}
+
+#[test]
+fn obs_004_space_saving_finds_heavy_hitters_with_bounded_error() {
+    // Zipf-like stream: key i appears ~ 10_000 / (i + 1) times, over far more keys than slots.
+    let mut truth: HashMap<u32, u64> = HashMap::new();
+    let mut stream = Vec::new();
+    for i in 0..5_000u32 {
+        let n = 10_000 / (u64::from(i) + 1);
+        for _ in 0..n.max(1) {
+            stream.push(i);
+        }
+        *truth.entry(i).or_default() += n.max(1);
+    }
+    // Interleave deterministically so heavy keys don't arrive in one burst.
+    let mut rng = 0x9E37_79B9_u64;
+    for i in (1..stream.len()).rev() {
+        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let j = usize::try_from(rng >> 33).unwrap() % (i + 1);
+        stream.swap(i, j);
+    }
+    let mut ss = SpaceSaving::new(200);
+    for k in &stream {
+        ss.offer(k, |k| *k);
+    }
+    let top = ss.top(10);
+    let keys: Vec<u32> = top.iter().map(|t| t.key).collect();
+    assert_eq!(
+        keys,
+        (0..10).collect::<Vec<_>>(),
+        "the 10 heaviest, in order"
+    );
+    for t in &ss.top(200) {
+        let real = truth[&t.key];
+        assert!(
+            t.count >= real && t.count - t.error <= real,
+            "{t:?} vs {real}"
+        );
+    }
+    assert_eq!(ss.len(), 200, "fixed memory");
+}
+
+#[test]
+fn obs_002_rings_carry_every_event_from_every_thread() {
+    // Big enough for 1000 undrained events per thread (~75 B each).
+    let hub = Hub::new(1 << 18);
+    let threads: Vec<_> = (0..4u8)
+        .map(|t| {
+            let hub = Arc::clone(&hub);
+            std::thread::spawn(move || {
+                for i in 0..1000u32 {
+                    let mut ev = query(u64::from(i), ipv4(10, 0, 0, t), Status::Cached, i);
+                    ev.client_ref = u32::from(t);
+                    hub.emit_query(&ev, &wire("x.example.com"));
+                }
+            })
+        })
+        .collect();
+    let mut drainer = hub.drainer();
+    let mut per_thread = [0u32; 4];
+    let mut seen = 0;
+    for t in threads {
+        t.join().unwrap();
+    }
+    seen += drainer.drain(|r| {
+        if let Record::Query(e, n) = r {
+            assert_eq!(n.dotted(), "x.example.com");
+            per_thread[e.client_ref as usize] += 1;
+        }
+    });
+    assert_eq!(seen, 4000);
+    assert_eq!(per_thread, [1000; 4]);
+    let stats = hub.ring_stats();
+    assert_eq!(stats.iter().map(|s| s.1).sum::<u64>(), 4000);
+    assert_eq!(stats.iter().map(|s| s.2).sum::<u64>(), 0);
+    // Exited threads' rings are released once drained.
+    assert_eq!(drainer.drain(|_| {}), 0);
+}
+
+/// REQ: OBS-020 (T11.3) — the listener probes' queries (`probe.wrendns.invalid`, any case)
+/// never reach the analytics; other names, `.invalid` ones included, do.
+#[test]
+fn obs_020_probe_queries_stay_out_of_the_analytics() {
+    let hub = Hub::new(1 << 16);
+    let ts = 1_700_000_000_000_000;
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Special, 20),
+        &wire("PROBE.wrendns.invalid"),
+    );
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Special, 20),
+        &wire("other.invalid"),
+    );
+    assert_eq!(event::PROBE_NAME, &wire("probe.wrendns.invalid")[..]);
+    let mut drainer = hub.drainer();
+    hub.drain_once(&mut drainer);
+    let agg = hub.aggregates();
+    let total: u32 = agg
+        .series(Resolution::Second, 0, u64::MAX)
+        .iter()
+        .map(|(_, c)| c.total)
+        .sum();
+    assert_eq!(total, 1, "only other.invalid");
+    let names: Vec<String> = agg
+        .top_names(TopKind::Domains, HourSel::Current, 10)
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    assert_eq!(names, ["other.invalid"]);
+}
+
+#[test]
+fn obs_002_a_full_ring_drops_whole_events_and_counts_them() {
+    let hub = Hub::new(1); // rounded up to the minimum (4 max-size records)
+    let mut drainer = hub.drainer();
+    let name = wire("y.example.com");
+    for i in 0..1000 {
+        hub.emit_query(&query(i, ipv4(10, 0, 0, 1), Status::Forwarded, 1), &name);
+    }
+    let (_, emitted, dropped) = hub.ring_stats()[0].clone();
+    assert_eq!(emitted + dropped, 1000);
+    assert!(dropped > 900, "the ring is small: {dropped}");
+    let mut got = 0u64;
+    drainer.drain(|r| {
+        assert!(matches!(r, Record::Query(_, n) if n.dotted() == "y.example.com"));
+        got += 1;
+    });
+    assert_eq!(got, emitted, "no partial or corrupt records");
+    // Space again after draining.
+    hub.emit_query(&query(0, ipv4(10, 0, 0, 1), Status::Forwarded, 1), &name);
+    assert_eq!(drainer.drain(|_| {}), 1);
+}
+
+#[test]
+fn obs_002_emit_does_not_allocate_after_the_first_event() {
+    let hub = Hub::new(1 << 20);
+    let ev = query(1, ipv4(10, 0, 0, 1), Status::Cached, 5);
+    let name = wire("alloc.example.com");
+    hub.emit_query(&ev, &name); // registers this thread's ring
+    let info = allocation_counter::measure(|| {
+        for _ in 0..1000 {
+            hub.emit_query(&ev, &name);
+        }
+    });
+    assert_eq!(info.count_total, 0);
+}
+
+#[test]
+fn obs_004_aggregates_windows_top_k_and_latency() {
+    let mut agg = Aggregates::new();
+    let t0 = 1_700_000_000u64; // a second-aligned timestamp
+    let a = ipv4(192, 168, 1, 20);
+    let b = ipv4(192, 168, 1, 21);
+    for i in 0..100u32 {
+        let ts = (t0 + u64::from(i % 3)) * 1_000_000;
+        let (client, name, status) = if i % 4 == 0 {
+            (b, "ads.example.com", Status::Blocked)
+        } else {
+            (a, "www.example.org", Status::Cached)
+        };
+        let mut e = query(ts, client, status, 10 + i);
+        if i % 10 == 0 {
+            e.rcode = Some(3);
+            e.status = Status::Forwarded;
+            e.t_upstream_us = 5_000;
+        }
+        agg.record(&Record::Query(e, decoded(name)));
+    }
+    agg.record(&Record::Upstream(UpstreamEvent {
+        ts_us: t0 * 1_000_000,
+        upstream: 1,
+        latency_us: 9_000,
+        ok: false,
+        attempts: 2,
+    }));
+    let secs = agg.series(Resolution::Second, t0, t0 + 3);
+    assert_eq!(secs.len(), 3);
+    assert_eq!(secs.iter().map(|(_, c)| c.total).sum::<u32>(), 100);
+    assert_eq!(secs[0].1.upstreams, vec![0, 1]);
+    assert_eq!(secs[0].1.upstream_failures, 1);
+    let mins = agg.series(Resolution::Minute, t0 - 60, t0 + 60);
+    assert_eq!(mins.iter().map(|(_, c)| c.total).sum::<u32>(), 100);
+
+    let top = agg.top_names(TopKind::Domains, HourSel::Current, 10);
+    assert_eq!(top[0].key, "www.example.org");
+    assert_eq!((top[1].key.as_str(), top[1].count), ("ads.example.com", 25));
+    let blocked = agg.top_names(TopKind::Blocked, HourSel::Current, 10);
+    assert_eq!(blocked.len(), 1);
+    // The 10 NXDOMAIN answers are split across both names.
+    let nx = agg.top_names(TopKind::Nxdomain, HourSel::Current, 10);
+    assert_eq!(nx.iter().map(|t| t.count).sum::<u64>(), 10);
+    assert_eq!(
+        agg.top_names(TopKind::Clients, HourSel::Current, 1)[0].key,
+        "192.168.1.20"
+    );
+    assert_eq!(agg.top_client_domains(b, 5)[0].key, "ads.example.com");
+
+    let all = agg
+        .latency(LatencyKey::Total(Path::Cache, Proto::Udp), HourSel::Current)
+        .unwrap();
+    assert!(all.count > 0 && all.p50 >= 10 && all.max <= 110, "{all:?}");
+    let up = agg
+        .latency(LatencyKey::Upstream(1), HourSel::Current)
+        .unwrap();
+    assert_eq!(up.count, 1);
+    assert!(
+        (8_900..=9_100).contains(&up.p50),
+        "2 significant digits: {up:?}"
+    );
+    assert_eq!(
+        agg.latency(LatencyKey::StageUpstream, HourSel::Current)
+            .unwrap()
+            .count,
+        10
+    );
+    assert!(
+        agg.latency(LatencyKey::Client(a), HourSel::Current)
+            .is_some()
+    );
+
+    // The next hour starts fresh; the finished one stays readable.
+    let next = (t0 / 3600 + 1) * 3600 * 1_000_000;
+    agg.record(&Record::Query(
+        query(next, a, Status::Cached, 1),
+        decoded("new.example"),
+    ));
+    assert_eq!(
+        agg.top_names(TopKind::Domains, HourSel::Current, 10).len(),
+        1
+    );
+    assert_eq!(
+        agg.top_names(TopKind::Domains, HourSel::Previous, 10).len(),
+        2
+    );
+}
+
+fn decoded(name: &str) -> event::Name {
+    let mut buf = [0u8; MAX_RECORD];
+    let len = event::encode_query(&query(0, [0; 16], Status::Cached, 0), &wire(name), &mut buf);
+    match event::decode(&buf[..len]) {
+        Some(Record::Query(_, n)) => n,
+        _ => unreachable!(),
+    }
+}
+
+/// T3.1 AC shape, locally: 4 producers at a sustained 25k events/s each (100k/s total) for
+/// 2 s, drained by the aggregator thread on its default period with the default ring size:
+/// nothing may drop. The end-to-end AC runs on the homelab against the real server.
+/// Optimized builds only: unoptimized, the aggregator is ~10× slower than shipped code.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "needs an optimized build: cargo test --release"
+)]
+fn obs_002_no_drops_at_100k_events_per_second() {
+    let hub = Hub::new(4096 * 128);
+    let aggregator = hub
+        .spawn_aggregator(Duration::from_millis(25), None)
+        .unwrap();
+    let per_thread = 50_000u64; // 2 s at 25k/s
+    let threads: Vec<_> = (0..4u8)
+        .map(|t| {
+            let hub = Arc::clone(&hub);
+            std::thread::spawn(move || {
+                let names: Vec<Vec<u8>> = (0..500)
+                    .map(|i| wire(&format!("n{i}.example.com")))
+                    .collect();
+                let start = Instant::now();
+                for i in 0..per_thread {
+                    // Pace to 25k/s: busy-wait until this event's time slot.
+                    let due = Duration::from_micros(i * 40);
+                    while start.elapsed() < due {
+                        std::hint::spin_loop();
+                    }
+                    let ev = query(
+                        hub.ts_us(Instant::now()),
+                        ipv4(10, 0, 1, t),
+                        Status::Cached,
+                        30,
+                    );
+                    hub.emit_query(&ev, &names[usize::try_from(i % 500).unwrap()]);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    drop(aggregator); // stops after a final drain
+    let dropped: u64 = hub.ring_stats().iter().map(|s| s.2).sum();
+    assert_eq!(dropped, 0);
+    let agg = hub.aggregates();
+    let total: u32 = agg
+        .series(Resolution::Minute, 0, u64::MAX)
+        .iter()
+        .map(|(_, c)| c.total)
+        .sum();
+    assert_eq!(u64::from(total), 4 * per_thread);
+}
+
+/// REQ: OBS-001, OBS-004 — event time follows a step of the system clock (NTP's first sync
+/// on a Pi without an RTC, a resumed VM): the epoch moves, later timestamps are on the new
+/// clock, and a difference under a second (slewing, scheduling) moves nothing.
+#[test]
+fn obs_001_event_time_follows_a_clock_step() {
+    let hub = Hub::new(1 << 16);
+    let at = Instant::now();
+    let before = hub.ts_us(at);
+    assert_eq!(hub.resync_to(before + 500_000, at), None, "under a second");
+    assert_eq!(hub.ts_us(at), before);
+    assert_eq!(
+        hub.resync_to(before + 7_200_000_000, at),
+        Some(7_200_000_000)
+    );
+    assert_eq!(hub.ts_us(at), before + 7_200_000_000, "two hours ahead now");
+    assert_eq!(hub.resync_to(before, at), Some(-7_200_000_000));
+    assert_eq!(hub.ts_us(at), before, "and back");
+    assert_eq!(hub.clock_steps(), (2, -7_200_000_000));
+}
+
+/// REQ: OBS-003 (review 04-05) — level 1's hash is keyed: two clusters hash the same name
+/// differently, and neither matches the unkeyed hash anyone could compute.
+#[test]
+fn obs_003_hidden_names_are_keyed() {
+    let name = wire("bank.example.com");
+    let (a, b) = ([1u8; 32], [2u8; 32]);
+    let with = |k: Option<&[u8; 32]>| event::hidden_name_with(k, &name);
+    assert_eq!(with(Some(&a)), with(Some(&a)), "stable: still groups");
+    assert_ne!(with(Some(&a)), with(Some(&b)));
+    assert_ne!(with(Some(&a)), with(None));
+    assert_eq!(with(Some(&a)).len(), 19, "one label: h + 16 hex digits");
+}
+
+/// REQ: OBS-009 (`spec/06` §4, review 04-04) — the in-memory analytics follow the privacy
+/// level: names hashed as the query log stores them at 1, and no client address at 2.
+#[test]
+fn obs_009_analytics_follow_the_privacy_level() {
+    let name = wire("tracker.example.com");
+    let hidden = event::dotted(&event::hidden_name(&name));
+    for (level, want_name, want_client) in [
+        (0, "tracker.example.com", "10.0.0.7"),
+        (1, hidden.as_str(), "10.0.0.7"),
+        (2, hidden.as_str(), "::"),
+    ] {
+        let hub = Hub::new(1 << 16);
+        hub.set_privacy(level);
+        let mut drainer = hub.drainer();
+        let t0 = 1_700_000_000_000_000;
+        hub.emit_query(&query(t0, ipv4(10, 0, 0, 7), Status::Forwarded, 1), &name);
+        assert_eq!(hub.drain_once(&mut drainer), 1);
+        let agg = hub.aggregates();
+        let domains = agg.top_names(TopKind::Domains, HourSel::Current, 5);
+        let clients = agg.top_names(TopKind::Clients, HourSel::Current, 5);
+        assert_eq!(domains[0].key, want_name, "level {level}");
+        assert_eq!(clients[0].key, want_client, "level {level}");
+    }
+}
+
+/// REQ: OBS-004 — Top clients says how each client's queries were answered: blocked, cached
+/// (stale and refreshed included), and forwarded; other statuses are left out. The group's
+/// list carries the same split.
+#[test]
+fn obs_004_top_clients_split_by_status() {
+    let hub = Hub::new(1 << 16);
+    let mut drainer = hub.drainer();
+    let t0 = 1_700_000_000_000_000;
+    let (tv, phone) = (ipv4(10, 0, 0, 7), ipv4(10, 0, 0, 8));
+    let name = wire("example.com");
+    let mut n = 0;
+    for (client, status, times) in [
+        (tv, Status::Blocked, 5),
+        (tv, Status::Cached, 2),
+        (tv, Status::Stale, 1),
+        (tv, Status::Refreshed, 1),
+        (tv, Status::Forwarded, 3),
+        (tv, Status::Local, 2),
+        (phone, Status::Forwarded, 1),
+    ] {
+        for _ in 0..times {
+            hub.emit_query(&query(t0 + n, client, status, 1), &name);
+            n += 1;
+        }
+    }
+    assert_eq!(hub.drain_once(&mut drainer), 15);
+    let agg = hub.aggregates();
+    let split = |x: &crate::agg::ClientStatus| (x.blocked, x.cached, x.forwarded);
+    let top = agg.top_clients(HourSel::Current, None, 5);
+    assert_eq!(top.len(), 2);
+    assert_eq!((top[0].0.key.as_str(), top[0].0.count), ("10.0.0.7", 14));
+    assert_eq!(split(&top[0].1), (5, 4, 3));
+    assert_eq!(split(&top[1].1), (0, 0, 1));
+    let in_group = agg.top_clients(HourSel::Current, Some(0), 5);
+    assert_eq!(split(&in_group[0].1), (5, 4, 3));
+    assert_eq!(agg.top_clients(HourSel::Current, Some(9), 5).len(), 0);
+    assert_eq!(agg.top_clients(HourSel::Previous, None, 5).len(), 0);
+}
+
+/// REQ: OBS-017 (T11.6, ADR-110) — a trace ID carries the query's start time and a keyed hash
+/// of its query-log fields: the same query gives the same ID, any field (or the key) another;
+/// it round-trips through hex, and nothing else parses as one.
+#[test]
+fn obs_017_trace_ids_carry_time_and_a_keyed_hash() {
+    let key = [7u8; 32];
+    let id =
+        |k: Option<&[u8; 32]>, ts, client, name| event::trace_id_with(k, ts, client, "A", name);
+    let a = id(
+        Some(&key),
+        1_791_000_000_123_456,
+        "192.168.1.5",
+        "ads.example",
+    );
+    assert_eq!(
+        a,
+        id(
+            Some(&key),
+            1_791_000_000_123_456,
+            "192.168.1.5",
+            "ads.example"
+        )
+    );
+    assert_eq!(event::trace_time_us(&a), 1_791_000_000_123_456);
+    for other in [
+        id(
+            Some(&key),
+            1_791_000_000_123_457,
+            "192.168.1.5",
+            "ads.example",
+        ),
+        id(
+            Some(&key),
+            1_791_000_000_123_456,
+            "192.168.1.6",
+            "ads.example",
+        ),
+        id(
+            Some(&key),
+            1_791_000_000_123_456,
+            "192.168.1.5",
+            "ads.example.org",
+        ),
+        id(
+            Some(&[8u8; 32]),
+            1_791_000_000_123_456,
+            "192.168.1.5",
+            "ads.example",
+        ),
+        id(None, 1_791_000_000_123_456, "192.168.1.5", "ads.example"),
+        // Field boundaries count: "1.5"+"a" differs from "1."+"5a".
+        event::trace_id_with(Some(&key), 1, "1.5", "A", "x"),
+    ] {
+        assert_ne!(a[8..], other[8..]);
+    }
+    assert_ne!(
+        event::trace_id_with(Some(&key), 1, "1.5", "A", "x"),
+        event::trace_id_with(Some(&key), 1, "1.", "5A", "x")
+    );
+    let hex = event::trace_hex(&a);
+    assert_eq!(hex.len(), 32);
+    assert!(hex.starts_with("00065c"), "{hex}");
+    assert_eq!(event::parse_trace(&hex), Some(a));
+    assert_eq!(event::parse_trace(&hex.to_uppercase()), Some(a));
+    for bad in [
+        "",
+        "abc",
+        &hex[..31],
+        &format!("{hex}0"),
+        &"0".repeat(32),
+        &"zz".repeat(16),
+    ] {
+        assert_eq!(event::parse_trace(bad), None, "{bad}");
+    }
+}
+
+/// REQ: OBS-022 (T12.1) — excluded names and devices never reach the analytics (counted as
+/// excluded); everything else does; clearing the exclusions lets them in again.
+#[test]
+fn obs_022_excluded_queries_stay_out_of_the_analytics() {
+    let hub = Hub::new(1 << 16);
+    let ts = 1_700_000_000_000_000;
+    hub.set_exclusions(Some(crate::exclude::Exclusions::new(
+        [wire("ntp.org")],
+        &[("10.0.0.9".parse().unwrap(), 32)],
+    )));
+    for (ip, name) in [
+        (ipv4(192, 168, 1, 5), "pool.ntp.org"),
+        (ipv4(10, 0, 0, 9), "shop.example"),
+        (ipv4(192, 168, 1, 5), "shop.example"),
+    ] {
+        hub.emit_query(&query(ts, ip, Status::Forwarded, 20), &wire(name));
+    }
+    let mut drainer = hub.drainer();
+    hub.drain_once(&mut drainer);
+    let total = |hub: &Hub| -> u32 {
+        hub.aggregates()
+            .series(Resolution::Second, 0, u64::MAX)
+            .iter()
+            .map(|(_, c)| c.total)
+            .sum()
+    };
+    assert_eq!(total(&hub), 1, "only shop.example from 192.168.1.5");
+    assert_eq!(hub.excluded_total(), 2);
+    hub.set_exclusions(None);
+    hub.emit_query(
+        &query(ts, ipv4(10, 0, 0, 9), Status::Forwarded, 20),
+        &wire("pool.ntp.org"),
+    );
+    hub.drain_once(&mut drainer);
+    assert_eq!(total(&hub), 2);
+}
+
+// REQ: OBS-027 (ADR-127) — bad answers broken down exactly per bucket (status, upstream, slow
+// rcode), and bad-only top lists of names and clients: good answers never touch them.
+#[test]
+fn obs_027_bad_answers_are_broken_down_and_only_they_reach_the_sketches() {
+    use crate::agg::BadTop;
+    let mut agg = Aggregates::new();
+    let t0 = 1_791_072_000_000_000; // an hour boundary
+    let a = ipv4(192, 0, 2, 185);
+    let b = ipv4(192, 0, 2, 20);
+    let name = |n: &str| crate::event::Name::from_wire(&wire(n));
+    for i in 0..1000 {
+        agg.record(&Record::Query(
+            query(t0 + i, b, Status::Cached, 80),
+            name("ok.example"),
+        ));
+    }
+    for i in 0..10 {
+        let mut e = query(t0 + 2000 + i, a, Status::Refreshed, 90);
+        e.rcode = Some(2);
+        agg.record(&Record::Query(e, name("247.73.85.170.in-addr.arpa")));
+    }
+    for (i, n) in ["x.example", "y.example", "z.example"].iter().enumerate() {
+        let mut e = query(t0 + 3000 + i as u64, b, Status::Forwarded, 900);
+        e.rcode = Some(2);
+        e.upstream = 2;
+        agg.record(&Record::Query(e, name(n)));
+    }
+    for i in 0..2 {
+        agg.record(&Record::Query(
+            query(t0 + 4000 + i, b, Status::Forwarded, 400_000),
+            name("slow.example"),
+        ));
+    }
+    assert_eq!(
+        agg.bad_offers(HourSel::Current),
+        15,
+        "only the 15 bad answers were offered"
+    );
+    let top = agg.bad_top(BadTop::ServfailName, HourSel::Current, 20);
+    assert_eq!(
+        (top[0].key.as_str(), top[0].count),
+        ("247.73.85.170.in-addr.arpa", 10)
+    );
+    let clients = agg.bad_top(BadTop::ServfailClient, HourSel::Current, 20);
+    assert_eq!(
+        (clients[0].key.as_str(), clients[0].count),
+        ("192.0.2.185", 10)
+    );
+    assert_eq!(
+        agg.bad_top(BadTop::SlowName, HourSel::Current, 20)[0].count,
+        2
+    );
+    let minute = agg.series(Resolution::Minute, 0, u64::MAX);
+    let mut c = minute[0].1.clone();
+    let bad = c.bad.as_deref().unwrap();
+    assert_eq!(bad.servfail_status[Status::Refreshed as usize], 10);
+    assert_eq!(bad.servfail_status[Status::Forwarded as usize], 3);
+    assert_eq!(
+        bad.servfail_upstream,
+        [10, 0, 3],
+        "10 with no upstream, 3 from upstream 2"
+    );
+    assert_eq!(bad.slow_status[Status::Forwarded as usize], 2);
+    assert_eq!(bad.slow_rcode[0], 2);
+    assert_eq!(c.slow, 2);
+    c.name_upstreams(&["", "quad9-1", "quad9-2"]);
+    assert_eq!(
+        c.bad.as_deref().unwrap().named_servfail_upstream,
+        [("none".into(), 10), ("quad9-2".into(), 3)]
+    );
+    // A bucket with only good answers allocates nothing.
+    let mut quiet = Aggregates::new();
+    quiet.record(&Record::Query(
+        query(t0, b, Status::Cached, 80),
+        name("ok.example"),
+    ));
+    assert!(
+        quiet.series(Resolution::Minute, 0, u64::MAX)[0]
+            .1
+            .bad
+            .is_none()
+    );
+    assert_eq!(quiet.bad_offers(HourSel::Current), 0);
+}
+
+// REQ: OBS-030 (ADR-130) — answers per latency bucket in the minute: 900 cache answers at 40 µs,
+// 90 upstream ones at 30 ms and 10 at 400 ms land in the 50 µs, 50 ms, and 500 ms buckets of
+// their paths; the latency objective's slow count agrees; the per-second buckets keep none.
+#[test]
+fn obs_030_minutes_count_answers_per_latency_bucket() {
+    use crate::agg::lat_bucket;
+    let mut agg = Aggregates::new();
+    let t0 = 1_791_072_000_000_000;
+    let c = ipv4(192, 168, 1, 20);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    for i in 0..900 {
+        agg.record(&Record::Query(query(t0 + i, c, Status::Cached, 40), name));
+    }
+    for (n, us) in [(90u64, 30_000u32), (10, 400_000)] {
+        for i in 0..n {
+            let mut e = query(t0 + 2000 + i, c, Status::Forwarded, us);
+            e.upstream = 1;
+            agg.record(&Record::Query(e, name));
+        }
+    }
+    let (_, m) = &agg.series(Resolution::Minute, 0, u64::MAX)[0];
+    let lat = m.lat.as_deref().unwrap();
+    let cache = &lat.by_path[Path::Cache as usize];
+    let up = &lat.by_path[Path::Upstream as usize];
+    assert_eq!(cache[lat_bucket(40)], 900);
+    assert_eq!(lat_bucket(40), 0, "the 50 µs bucket");
+    assert_eq!(up[lat_bucket(30_000)], 90);
+    assert_eq!(crate::BUCKETS_US[lat_bucket(30_000)], 50_000);
+    assert_eq!(up[lat_bucket(400_000)], 10);
+    assert_eq!(crate::BUCKETS_US[lat_bucket(400_000)], 500_000);
+    assert_eq!(lat.by_upstream[1].iter().sum::<u32>(), 100);
+    assert_eq!(
+        m.slow, 10,
+        "the objective's slow answers: the same threshold, the same count"
+    );
+    let over: u32 = up[lat_bucket(250_001)..].iter().sum();
+    assert_eq!(over, m.slow);
+    assert!(
+        agg.series(Resolution::Second, 0, u64::MAX)[0]
+            .1
+            .lat
+            .is_none()
+    );
+}
+
+/// REQ: OBS-030 — the latency rows cost less than 50 ns per event (the same events with them
+/// switched off and on, interleaved). Optimized builds only.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing: cargo test --release")]
+fn obs_030_latency_rows_cost_under_50_ns_per_event() {
+    let n = 1_000_000u64;
+    let c = ipv4(10, 0, 0, 1);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    let events: Vec<QueryEvent> = (0..n)
+        .map(|i| {
+            let mut e = query(
+                1_791_072_000_000_000 + i * 50,
+                c,
+                Status::Forwarded,
+                u32::try_from(i % 300_000).unwrap(),
+            );
+            e.upstream = u16::try_from(i % 4).unwrap();
+            e
+        })
+        .collect();
+    let run = |on: bool| {
+        let mut agg = Aggregates::new();
+        agg.latency_hist = on;
+        let t = Instant::now();
+        for e in &events {
+            agg.record(&Record::Query(*e, name));
+        }
+        t.elapsed()
+    };
+    let (mut off, mut on) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..3 {
+        off += run(false);
+        on += run(true);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let per = |d: Duration| d.as_nanos() as f64 / (3 * n) as f64;
+    let added = per(on) - per(off);
+    eprintln!(
+        "obs_030: {:.1} ns/event off, {:.1} on: +{added:.1} ns",
+        per(off),
+        per(on)
+    );
+    assert!(added < 50.0, "+{added:.1} ns per event");
+}
+
+// REQ: OBS-032 (ADR-132) — 1,000 answers over two groups and two upstreams: group → status
+// counts every answer; status → upstream and upstream → response code each count the 290 that
+// asked an upstream; status → response code the rest but the 10 dropped (no response code: a
+// dead end); the 40 SERVFAILs from upstream 1 are exactly that link; names on storing.
+#[test]
+fn obs_032_minutes_count_the_flow_joints_exactly() {
+    use crate::agg::{Joint, flow_key};
+    let mut agg = Aggregates::new();
+    let t0 = 1_791_072_000_000_000;
+    let c = ipv4(192, 168, 1, 20);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    let mut ts = t0;
+    let mut add = |n: u32, group: u16, status: Status, upstream: u16, rcode: Option<u8>| {
+        for _ in 0..n {
+            let mut e = query(ts, c, status, 900);
+            ts += 1;
+            (e.group, e.upstream, e.rcode) = (group, upstream, rcode);
+            agg.record(&Record::Query(e, name));
+        }
+    };
+    add(500, 0, Status::Cached, 0, Some(0));
+    add(200, 1, Status::Blocked, 0, Some(3));
+    add(80, 0, Status::Forwarded, 1, Some(0));
+    add(80, 1, Status::Forwarded, 1, Some(0));
+    add(40, 0, Status::ServFail, 1, Some(2));
+    add(90, 1, Status::Forwarded, 2, Some(0));
+    add(10, 0, Status::Dropped, 0, None);
+    let (_, m) = &agg.series(Resolution::Minute, 0, u64::MAX)[0];
+    let f = m.flow.as_deref().unwrap();
+    let sum = |j: Joint| -> u32 {
+        f.live
+            .iter()
+            .filter(|(k, _)| crate::agg::flow_unkey(*k).0 == j)
+            .map(|(_, n)| n)
+            .sum()
+    };
+    assert_eq!(sum(Joint::GroupStatus), 1000);
+    assert_eq!(sum(Joint::StatusUpstream), 290);
+    assert_eq!(sum(Joint::UpstreamRcode), 290);
+    assert_eq!(
+        sum(Joint::StatusRcode),
+        700,
+        "the 10 dropped have no response code"
+    );
+    let at = |k: u32| f.live.iter().find(|(x, _)| *x == k).map_or(0, |(_, n)| *n);
+    assert_eq!(at(flow_key(Joint::UpstreamRcode, 1, 2)), 40);
+    // Links out of every group equal its count.
+    for (g, n) in m.groups.iter().enumerate() {
+        let out: u32 = Status::ALL
+            .iter()
+            .map(|s| at(flow_key(Joint::GroupStatus, g, *s as usize)))
+            .sum();
+        assert_eq!(out, *n, "group {g}");
+    }
+    let mut named = m.clone();
+    named.name_flow(&["default", "kids"], &["", "quad9-1", "quad9-2"]);
+    let f = named.flow.as_deref().unwrap();
+    let get = |k: &str| {
+        f.named
+            .iter()
+            .find(|(x, _)| &**x == k)
+            .map_or(0, |(_, n)| *n)
+    };
+    assert_eq!(get("ur:quad9-1/2"), 40);
+    assert_eq!(get("su:forwarded/quad9-2"), 90);
+    assert_eq!(get("gs:kids/blocked"), 200);
+    assert_eq!(get("sr:cached/0"), 500);
+    assert!(
+        agg.series(Resolution::Second, 0, u64::MAX)[0]
+            .1
+            .flow
+            .is_none(),
+        "minute buckets only"
+    );
+}
+
+/// REQ: OBS-032 — the flow joints cost less than 50 ns per event (switched off and on,
+/// interleaved). Optimized builds only.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing: cargo test --release")]
+fn obs_032_flow_joints_cost_under_50_ns_per_event() {
+    let n = 1_000_000u64;
+    let c = ipv4(10, 0, 0, 1);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    let events: Vec<QueryEvent> = (0..n)
+        .map(|i| {
+            let status = Status::ALL[usize::try_from(i % 6).unwrap()];
+            let mut e = query(1_791_072_000_000_000 + i * 50, c, status, 900);
+            e.group = u16::try_from(i % 5).unwrap();
+            e.upstream = u16::try_from(i % 4).unwrap();
+            e.rcode = Some(u8::try_from(i % 4).unwrap());
+            e
+        })
+        .collect();
+    let run = |on: bool| {
+        let mut agg = Aggregates::new();
+        agg.flow_joints = on;
+        let t = Instant::now();
+        for e in &events {
+            agg.record(&Record::Query(*e, name));
+        }
+        t.elapsed()
+    };
+    let (mut off, mut on) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..3 {
+        off += run(false);
+        on += run(true);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let per = |d: Duration| d.as_nanos() as f64 / (3 * n) as f64;
+    let added = per(on) - per(off);
+    eprintln!(
+        "obs_032: {:.1} ns/event off, {:.1} on: +{added:.1} ns",
+        per(off),
+        per(on)
+    );
+    assert!(added < 50.0, "+{added:.1} ns per event");
+}
+
+/// REQ: FLT-017 (ADR-150) — the analytics wait briefly for a new pod's address: a query from an
+/// address no workload holds yet is held, then counted under the workload key once the table
+/// names it; known addresses and the no-workload case never wait; order per address holds.
+#[test]
+fn flt_017_analytics_hold_unknown_addresses_briefly() {
+    use crate::ring::{Hold, WORKLOAD_HOLD, WORKLOAD_HOLD_MAX};
+    let name = crate::event::Name::from_wire(&wire("s3.example"));
+    let (pod, lan) = (ipv4(10, 244, 0, 47), ipv4(192, 168, 1, 20));
+    let key = crate::workload::key("jobs/cronjob/backup");
+    let other = crate::workload::key("media/deploy/jellyfin");
+    let rec = |ts: u64, ip: [u8; 16]| Record::Query(query(ts, ip, Status::Cached, 5), name);
+    let client = |r: &Record| match r {
+        Record::Query(e, _) => (e.ts_us, e.client_ip),
+        Record::Upstream(_) => (0, [0; 16]),
+    };
+    let t0 = Instant::now();
+    let mut hold = Hold::default();
+    let mut out = Vec::new();
+
+    // No workload known: nothing waits.
+    hold.release(None, t0, |r| out.push(client(r)));
+    hold.offer(None, rec(1, pod), t0, |r| out.push(client(r)));
+    assert_eq!(out, vec![(1, pod)]);
+    out.clear();
+
+    // Some workload known, not this pod yet: its queries (and the LAN's) wait.
+    let before: Arc<crate::workload::Keys> =
+        Arc::new(HashMap::from([(ipv4(10, 244, 0, 9), other)]));
+    hold.release(Some(&before), t0, |r| out.push(client(r)));
+    hold.offer(Some(&before), rec(2, pod), t0, |r| out.push(client(r)));
+    hold.offer(Some(&before), rec(3, lan), t0, |r| out.push(client(r)));
+    hold.offer(Some(&before), rec(4, ipv4(10, 244, 0, 9)), t0, |r| {
+        out.push(client(r));
+    });
+    assert_eq!(out, vec![(4, other)], "a known pod never waits");
+    assert_eq!(hold.len(), 2);
+    out.clear();
+    let local = ipv4(127, 0, 0, 1);
+    hold.offer(Some(&before), rec(6, local), t0, |r| out.push(client(r)));
+    assert_eq!(out, vec![(6, local)], "the node itself never waits");
+    out.clear();
+
+    // The watch event arrives: the table changes and everything goes out, the pod keyed.
+    let after: Arc<crate::workload::Keys> =
+        Arc::new(HashMap::from([(ipv4(10, 244, 0, 9), other), (pod, key)]));
+    hold.release(Some(&after), t0 + Duration::from_millis(900), |r| {
+        out.push(client(r));
+    });
+    assert_eq!(out, vec![(2, key), (3, lan)]);
+    assert!(hold.is_empty());
+    out.clear();
+
+    // An address no workload ever holds goes out after the wait, as itself.
+    hold.offer(Some(&after), rec(5, lan), t0, |r| out.push(client(r)));
+    hold.release(Some(&after), t0 + WORKLOAD_HOLD / 2, |r| {
+        out.push(client(r));
+    });
+    assert_eq!(out, Vec::<(u64, [u8; 16])>::new());
+    hold.release(Some(&after), t0 + WORKLOAD_HOLD, |r| out.push(client(r)));
+    assert_eq!(out, vec![(5, lan)]);
+    out.clear();
+
+    // Bounded: past the cap the oldest goes out early, in order.
+    for i in 0..=WORKLOAD_HOLD_MAX as u64 {
+        hold.offer(Some(&after), rec(100 + i, lan), t0, |r| out.push(client(r)));
+    }
+    assert_eq!(out, vec![(100, lan)]);
+    assert_eq!(hold.len(), WORKLOAD_HOLD_MAX);
+    out.clear();
+    hold.flush(Some(&after), |r| out.push(client(r)));
+    assert_eq!(out.len(), WORKLOAD_HOLD_MAX);
+    assert!(out.windows(2).all(|w| w[0].0 < w[1].0));
+}
+
+// REQ: OBS-037 — internal names (a pod's search-list expansions, private reverse lookups)
+// count in the internal list, not the domains or NXDOMAIN lists, overall and per group; blocks
+// and one device's own domains keep them; the check is made before privacy hashes the name.
+#[test]
+fn obs_037_internal_names_have_their_own_list() {
+    let t0 = 1_700_000_000_u64;
+    let pod = ipv4(10, 0, 0, 81);
+    let names = [
+        ("postgres.authentik.svc.cluster.local", 0),
+        ("api.github.com.argocd.svc.cluster.local", 3),
+        ("20.1.168.192.in-addr.arpa", 3),
+        ("api.github.com", 0),
+        ("8.8.8.8.in-addr.arpa", 0),
+    ];
+    let run = |level: u8| {
+        let mut agg = Aggregates::new();
+        agg.internal = crate::internal::InternalNames::new([wire("cluster.local")], true);
+        for (i, (name, rcode)) in names.iter().enumerate() {
+            for j in 0..=i {
+                let mut e = query((t0 + j as u64) * 1_000_000, pod, Status::Forwarded, 100);
+                e.rcode = Some(*rcode);
+                agg.record_private(&Record::Query(e, decoded(name)), level);
+            }
+        }
+        agg
+    };
+    let agg = run(0);
+    let keys = |kind| -> Vec<String> {
+        agg.top_names(kind, HourSel::Current, 10)
+            .into_iter()
+            .map(|t| t.key)
+            .collect()
+    };
+    assert_eq!(
+        keys(TopKind::Domains),
+        ["8.8.8.8.in-addr.arpa", "api.github.com"]
+    );
+    assert!(
+        keys(TopKind::Nxdomain).is_empty(),
+        "{:?}",
+        keys(TopKind::Nxdomain)
+    );
+    assert_eq!(
+        keys(TopKind::Internal),
+        [
+            "20.1.168.192.in-addr.arpa",
+            "api.github.com.argocd.svc.cluster.local",
+            "postgres.authentik.svc.cluster.local",
+        ]
+    );
+    let in_group = agg.top_names_in_group(TopKind::Internal, HourSel::Current, 0, 10);
+    assert_eq!(in_group.len(), 3);
+    assert_eq!(
+        agg.top_names_in_group(TopKind::Domains, HourSel::Current, 0, 10)
+            .len(),
+        2
+    );
+    assert_eq!(
+        agg.top_client_domains(pod, 10).len(),
+        5,
+        "a device keeps them all"
+    );
+    // Privacy 1 hashes the names, but they still land in the right lists.
+    let hashed = run(1);
+    assert_eq!(
+        hashed
+            .top_names(TopKind::Internal, HourSel::Current, 10)
+            .len(),
+        3
+    );
+    assert_eq!(
+        hashed
+            .top_names(TopKind::Domains, HourSel::Current, 10)
+            .len(),
+        2
+    );
+}
+
+// REQ: API-005 (ADR-158) — live queries and the restart replay both reach the last-hour
+// list: queries before the clock hour still count, replayed ones only within the window, and
+// a replayed query never sets the window back.
+#[test]
+fn api_005_record_and_replay_fill_the_last_hour() {
+    let (a, b, c) = (ipv4(10, 0, 0, 1), ipv4(10, 0, 0, 2), ipv4(10, 0, 0, 3));
+    let hour_s = 1_800_003_600; // a clock hour
+    let mut agg = Aggregates::new();
+    // Replayed after a restart at hour + 1 min: 30 minutes before, and 2 hours before.
+    let started_s = hour_s + 60;
+    agg.replay_hours(
+        started_s,
+        &query((hour_s - 1800) * 1_000_000, a, Status::Cached, 1),
+        &decoded("a.example"),
+    );
+    agg.replay_hours(
+        started_s,
+        &query((hour_s - 7200) * 1_000_000, c, Status::Cached, 1),
+        &decoded("c.example"),
+    );
+    // Live, after the restart.
+    for _ in 0..3 {
+        agg.record(&Record::Query(
+            query((hour_s + 120) * 1_000_000, b, Status::Cached, 1),
+            decoded("b.example"),
+        ));
+    }
+    let counts = crate::last_hour::rank(agg.last_hour_counts(hour_s + 180), 10);
+    assert_eq!(counts, vec![(b, 3), (a, 1)]);
+    // The clock-hour list only has the live ones.
+    let hourly: Vec<String> = agg
+        .top_names(TopKind::Clients, HourSel::Current, 10)
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    assert_eq!(hourly, ["10.0.0.2"]);
+}
+
+/// Keeps the names of the records the log would write.
+struct Names(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl crate::ring::Sink for Names {
+    fn record(&mut self, r: &Record) {
+        if let Record::Query(e, n) = r {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", e.client_ip[15], n.as_wire().len()));
+        }
+    }
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — a query the log exclusions match never reaches the log's
+/// sink, but the analytics count it and the log counter says how many were kept out; clearing
+/// the exclusions logs again. Nothing here touches the query path (the check is on the
+/// aggregator thread).
+#[test]
+fn obs_903_log_exclusions_keep_queries_out_of_the_log_only() {
+    let hub = Arc::new(Hub::new(1 << 16));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    hub.set_log_exclusions(Some(crate::exclude::LogExclusions::new(
+        [wire("localhost")],
+        [],
+        &[("127.0.0.0".parse().unwrap(), 8)],
+        [],
+    )));
+    let agg = hub
+        .spawn_aggregator(
+            Duration::from_millis(5),
+            Some(Box::new(Names(Arc::clone(&seen)))),
+        )
+        .unwrap();
+    let ts = 1_700_000_000_000_000;
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Forwarded, 20),
+        &wire("shop.example"),
+    );
+    hub.emit_query(
+        &query(ts, ipv4(192, 168, 1, 5), Status::Forwarded, 20),
+        &wire("localhost"),
+    );
+    hub.emit_query(
+        &query(ts, ipv4(192, 168, 1, 5), Status::Forwarded, 20),
+        &wire("shop.example"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let counted = |hub: &Hub| -> u32 {
+        hub.aggregates()
+            .series(Resolution::Second, 0, u64::MAX)
+            .iter()
+            .map(|(_, c)| c.total)
+            .sum()
+    };
+    while counted(&hub) < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(counted(&hub), 3, "the analytics count all three");
+    assert_eq!(hub.log_excluded_total(), 2);
+    assert_eq!(hub.excluded_total(), 0, "[exclusions] is another list");
+    assert_eq!(seen.lock().unwrap().len(), 1, "one query is logged");
+    hub.set_log_exclusions(None);
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Forwarded, 20),
+        &wire("shop.example"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().len() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    drop(agg);
+}

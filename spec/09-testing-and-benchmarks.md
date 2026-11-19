@@ -9,7 +9,7 @@
 | Conformance | `dnsperf`-independent checks: **DNS Flag Day** EDNS compliance checker (`ednscomp`-style), RFC 8914 EDE presence, `kdig`-driven scripts | Protocol correctness |
 | Fuzz (NFR-004) | `cargo-fuzz` (libFuzzer) | Wire parser, response patcher, each list parser, rule compiler, snapshot loader (malformed manifests/blobs), API JSON |
 | Allocation (NFR-002) | Counting global allocator in a test build | Asserts zero allocations across 100k cache hits and 100k blocked answers after warmup |
-| Cluster | `telltale-sim`: a deterministic simulation of N nodes with a virtual network and clock (turmoil-style) + a docker-compose chaos suite (toxiproxy) | §12.10 matrix; linearizable change log check (no two primaries accept writes in the same epoch) |
+| Cluster | `wrendns-sim`: a deterministic simulation of N nodes with a virtual network and clock (turmoil-style) + a docker-compose chaos suite (toxiproxy) | §12.10 matrix; linearizable change log check (no two primaries accept writes in the same epoch) |
 | E2E UI | Playwright | Login/2FA; pause; list add; explain; cluster promote |
 | Helm | `helm lint`, `kubeconform`, `ct install` on kind (amd64) and k3d (arm64 runner) | Chart renders; pods ready; DNS answers through the LB; ServiceMonitor scraped |
 
@@ -26,8 +26,8 @@
 - **Regression gate:** on every PR, the `cache-hot` and `blocked` runs on x86 must stay within 5% of `main` (the machine is noisy, so 3 runs and take the median). Nightly runs everything.
 
 ## 3. Comparative benchmark (analysis §5)
-`bench/compare/` brings up **Pi-hole (latest v6 image)**, **Technitium (latest image)**, and **TelltaleDNS** on the same host with:
-- the same lists (Pi-hole adlists, Technitium block-list URLs, TelltaleDNS lists, all served from a local HTTP fixture server),
+`bench/compare/` brings up **Pi-hole (latest v6 image)**, **Technitium (latest image)**, and **WrenDNS** on the same host with:
+- the same lists (Pi-hole adlists, Technitium block-list URLs, WrenDNS lists, all served from a local HTTP fixture server),
 - the same upstream (local Knot/NSD fake),
 - logging at each product's default and with "full query logging" enabled.
 
@@ -42,6 +42,6 @@ fmt → clippy (`-D warnings`, pedantic subset) → test (linux x86_64 + aarch64
 Coverage is measured to find untested code, not as a score:
 - **Nightly:** `cargo llvm-cov` over the workspace tests (the nightly workflow's `coverage` job). The per-file summary goes on the run's summary page, and the HTML report is published on the project site at `/coverage/` (newest run; a placeholder until the first).
 - **No threshold and no badge.** Line coverage says which lines ran, not whether a test checked what they did; a target number invites tests that run code without asserting anything. Many of the strongest tests run the built binary end to end (DNSSEC against the live root, install and uninstall on a real machine, the browser suite) and count only partly.
-- **How to use it:** look for untested branches in the query path (`telltale-proto`, `-net`, `-cache`, `-filter`, `-policy`, the pipeline), DNSSEC, and configuration changes, and add tests that assert behavior there. Low numbers in CLI glue or importers matter less.
+- **How to use it:** look for untested branches in the query path (`wrendns-proto`, `-net`, `-cache`, `-filter`, `-policy`, the pipeline), DNSSEC, and configuration changes, and add tests that assert behavior there. Low numbers in CLI glue or importers matter less.
 - Locally: `cargo llvm-cov --workspace --html` (needs `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov`).
 

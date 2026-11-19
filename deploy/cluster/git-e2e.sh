@@ -8,9 +8,9 @@
 #   5. with the repository unreachable, both keep serving (and it's flagged);
 #   6. the primary dies, the replica is promoted, and it follows the repository.
 # The primary polls rarely here: each push triggers the webhook, which also proves it.
-# Usage: deploy/cluster/git-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/git-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= R_PID= G_PID=
@@ -53,8 +53,8 @@ start_git() { python3 "$E/githttp.py" 28799 "$E/repo.git" & G_PID=$!; sleep 0.5;
 start_git
 
 shared() { # value -> a shared configuration with one record
-  mkdir -p "$E/work/telltale"
-  cat > "$E/work/telltale/shared.toml" <<EOF
+  mkdir -p "$E/work/wrendns"
+  cat > "$E/work/wrendns/shared.toml" <<EOF
 [[upstream]]
 name = "nowhere"
 url = "udp://127.0.0.1:9"
@@ -94,7 +94,7 @@ listen = "127.0.0.1:$5"
 [cluster.git]
 repo = "http://127.0.0.1:28799/repo.git"
 ref = "main"
-path = "telltale/shared.toml"
+path = "wrendns/shared.toml"
 poll_secs = 600
 webhook_secret_file = "$E/hook"
 EOF
@@ -119,7 +119,7 @@ wait_answer() { # port value seconds
   return 1
 }
 metric() { { curl -s --max-time 2 "http://127.0.0.1:$1/metrics" || true; } | awk -v n="$2" 'index($1, n) == 1 {print $1, $2; exit}'; }
-commit_of() { metric "$1" telltale_cluster_config_commit | sed -n 's/.*commit="\([0-9a-f]*\)".*/\1/p'; }
+commit_of() { metric "$1" wrendns_cluster_config_commit | sed -n 's/.*commit="\([0-9a-f]*\)".*/\1/p'; }
 
 echo "== 1. a pushed commit is served by both nodes"
 shared 10.0.0.1; c1=$(push first)
@@ -135,10 +135,10 @@ for _ in $(seq 50); do [ "$(commit_of 29702)" = "$c1" ] && break; sleep 0.1; don
 echo "ok (both on ${c1:0:12})"
 
 echo "== 2. an invalid commit is never published"
-echo 'this is = not [valid' >> "$E/work/telltale/shared.toml"; push broken >/dev/null
+echo 'this is = not [valid' >> "$E/work/wrendns/shared.toml"; push broken >/dev/null
 [ "$(hook 28701)" = 202 ] || fail "the webhook wasn't accepted"
-for _ in $(seq 50); do [ "$(metric 29701 telltale_cluster_git_refused | awk '{print $2}')" = 1 ] && break; sleep 0.1; done
-[ "$(metric 29701 telltale_cluster_git_refused | awk '{print $2}')" = 1 ] || fail "the invalid commit wasn't flagged"
+for _ in $(seq 50); do [ "$(metric 29701 wrendns_cluster_git_refused | awk '{print $2}')" = 1 ] && break; sleep 0.1; done
+[ "$(metric 29701 wrendns_cluster_git_refused | awk '{print $2}')" = 1 ] || fail "the invalid commit wasn't flagged"
 sleep 1
 [ "$(q 25702)" = 10.0.0.1 ] && [ "$(commit_of 29702)" = "$c1" ] || fail "the invalid commit reached the replica"
 echo ok
@@ -148,14 +148,14 @@ shared 10.0.0.2; c2=$(push second)
 hook 28701 >/dev/null
 wait_answer 25702 10.0.0.2 10 || fail "the good commit didn't reach the replica"
 [ "$(commit_of 29702)" = "$c2" ] || fail "the replica reports $(commit_of 29702), not $c2"
-[ "$(metric 29701 telltale_cluster_git_refused | awk '{print $2}')" = 0 ] || fail "still flagged after a good commit"
+[ "$(metric 29701 wrendns_cluster_git_refused | awk '{print $2}')" = 0 ] || fail "still flagged after a good commit"
 echo ok
 
 echo "== 4. a force-push is refused"
 gw reset -q --hard "$c1"; shared 10.0.0.9; gw add -A; gw commit -q -m rewritten; gw push -q -f origin main 2>/dev/null
 hook 28701 >/dev/null
-for _ in $(seq 50); do [ "$(metric 29701 telltale_cluster_git_refused | awk '{print $2}')" = 1 ] && break; sleep 0.1; done
-[ "$(metric 29701 telltale_cluster_git_refused | awk '{print $2}')" = 1 ] || fail "the force-push wasn't refused"
+for _ in $(seq 50); do [ "$(metric 29701 wrendns_cluster_git_refused | awk '{print $2}')" = 1 ] && break; sleep 0.1; done
+[ "$(metric 29701 wrendns_cluster_git_refused | awk '{print $2}')" = 1 ] || fail "the force-push wasn't refused"
 [ "$(q 25702)" = 10.0.0.2 ] || fail "the force-pushed commit was served"
 grep -q "doesn't descend" "$E/p.log" || fail "the primary's log doesn't say why"
 gw reset -q --hard "$c2"; gw push -q -f origin main 2>/dev/null
@@ -164,8 +164,8 @@ echo ok
 echo "== 5. with the repository unreachable, both keep serving"
 kill "$G_PID"; wait "$G_PID" 2>/dev/null || true; G_PID=
 hook 28701 >/dev/null
-for _ in $(seq 50); do [ "$(metric 29701 telltale_cluster_git_failing | awk '{print $2}')" = 1 ] && break; sleep 0.1; done
-[ "$(metric 29701 telltale_cluster_git_failing | awk '{print $2}')" = 1 ] || fail "the unreachable repository wasn't flagged"
+for _ in $(seq 50); do [ "$(metric 29701 wrendns_cluster_git_failing | awk '{print $2}')" = 1 ] && break; sleep 0.1; done
+[ "$(metric 29701 wrendns_cluster_git_failing | awk '{print $2}')" = 1 ] || fail "the unreachable repository wasn't flagged"
 [ "$(q 25701)" = 10.0.0.2 ] && [ "$(q 25702)" = 10.0.0.2 ] || fail "a node stopped serving the last commit"
 start_git
 echo ok

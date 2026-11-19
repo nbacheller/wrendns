@@ -7,7 +7,7 @@ The owner expects AI agents to manage the platform and run analytics:
 - "Weekly report of new domains per kid's device."
 - "Fail over to the Pi and promote it."
 
-Neither Pi-hole nor Technitium is designed for this. TelltaleDNS treats agents as a first-class client type with the same security model as humans: **least privilege, preview before change, full audit.**
+Neither Pi-hole nor Technitium is designed for this. WrenDNS treats agents as a first-class client type with the same security model as humans: **least privilege, preview before change, full audit.**
 
 ## 2. Requirements
 | ID | Pri | Requirement |
@@ -17,7 +17,7 @@ Neither Pi-hole nor Technitium is designed for this. TelltaleDNS treats agents a
 | AGT-003 | P0 | **Idempotency:** `Idempotency-Key` header on all POST/PATCH/DELETE; replays return the original result for 24 h. |
 | AGT-004 | P0 | **Agent principals:** API tokens with `kind=agent`, a human owner, scopes (`analytics:read`, `querylog:read`, `config:read`, `config:write:<area>`, `ops:pause`, `ops:cache`, `cluster:admin`; for network inventory `discovery:read` at the Viewer role, `ops:discovery` at the Operator role and `ops:discovery_test` at the Admin role, none of them default and none granted by a wildcard or `config:write:*`, DSC-013), an optional group restriction, rate limits, and expiry. Default scope set is read-only. |
 | AGT-005 | P0 | **Audit attribution:** audit entries record `actor = agent:<token-name> (owner: <user>)`, the MCP client name/version when present, and the agent-supplied `reason` string (required on writes). |
-| AGT-006 | P0 | **Built-in MCP server, read-only tools** (§3.1) over Streamable HTTP at `/mcp`, plus `telltale mcp --stdio` (a local stdio bridge that authenticates to a node with a token). |
+| AGT-006 | P0 | **Built-in MCP server, read-only tools** (§3.1) over Streamable HTTP at `/mcp`, plus `wrendns mcp --stdio` (a local stdio bridge that authenticates to a node with a token). |
 | AGT-007 | P1 | **MCP write tools with plan/apply** (§3.2): a write tool returns a plan + `planId`. `apply_plan(planId)` executes it only if the config version hasn't changed and the plan hasn't expired (10 min). Optionally, a policy requires human approval: the plan appears in the UI "Pending agent changes" inbox (and via alert destinations) before apply succeeds. |
 | AGT-008 | P0 | **MCP auth:** Bearer agent tokens. The OAuth 2.1 flow per the MCP authorization spec (protected-resource metadata at `/.well-known/oauth-protected-resource`) uses the configured OIDC provider as the authorization server (P1), so a user can connect an agent with SSO and consent to scopes. |
 | AGT-009 | P0 | **Guardrails:** result-size caps with pagination cursors (default 200 rows / 32 KiB per tool result), privacy level enforcement identical to the UI, per-token rate limits, and a cluster-wide kill switch (`agents.enabled=false`). Tool descriptions state side effects explicitly. |
@@ -85,7 +85,7 @@ UniFi group sync (T25.18, DSC-016, ADR-998, Proposed): read tools `list_group_li
 > → the user approves in the UI → `apply_plan`.
 
 ## 4. Implementation notes
-- Crate: `telltale-mcp` (depends on `telltale-api` service layer). It is mounted in the same axum router on every node, so any node is an MCP entry point (single management plane).
+- Crate: `wrendns-mcp` (depends on `wrendns-api` service layer). It is mounted in the same axum router on every node, so any node is an MCP entry point (single management plane).
 - Tool JSON Schemas are generated from the same Rust types as the OpenAPI document (`schemars`), so they cannot drift. A CI test diffs the tool catalog against a committed snapshot.
 - Tests:
   - an MCP conformance test with the reference inspector/client in CI;

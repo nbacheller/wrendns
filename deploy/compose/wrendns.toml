@@ -1,0 +1,38 @@
+# WrenDNS starter config (REQ: OPS-004) — the same file the Compose bundle and install.sh use.
+# Every key is optional; see docs/configuration.md. Check edits with:
+#   wrendns config check /etc/wrendns/wrendns.toml
+# Changes apply on reload (SIGHUP / `docker compose kill -s HUP`) without dropping queries.
+config_version = 1
+
+# DNS listens on UDP and TCP port 53 on every address (IPv4 and IPv6) unless [[listen]] is
+# set. The web UI and API listen on port 8053: open http://<this machine>:8053/ and use the
+# setup token from `wrendns auth setup-token` (Compose: `docker compose exec wrendns
+# wrendns auth setup-token`) to create the first admin.
+
+# Where answers come from: encrypted (DNS over TLS) to Cloudflare and Quad9, whichever is
+# faster. `wrendns presets list` shows other providers.
+[[upstream]]
+name = "cloudflare"
+url = "tls://1.1.1.1:853"
+tls_server_name = "cloudflare-dns.com"
+
+[[upstream]]
+name = "quad9"
+url = "tls://9.9.9.9:853"
+tls_server_name = "dns.quad9.net"
+
+[[upstream_group]]
+name = "default"
+members = ["cloudflare", "quad9"]
+strategy = "fastest"
+
+# Ad block: HaGeZi's balanced ad and tracker blocklist (about 250k names), refreshed every 8 hours.
+# It is the Ad Block category now (Lists > Categories, or the Ad block checkbox of a group), so
+# the list is no longer written by hand; the size is Settings > Filtering > Ad block size.
+[[group]]
+name = "default"
+content = { ads = true }
+
+# On an SD-card Pi, keep the query log small (or put /var/lib/wrendns on a USB SSD).
+[telemetry.qlog]
+retention_days = 7

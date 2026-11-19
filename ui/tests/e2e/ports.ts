@@ -9,7 +9,7 @@ export const HTTP_PORT = Number(process.env.E2E_HTTP_PORT ?? 18054);
 // Offsets from the base. Each one is a distinct port in 0..999 (asserted below).
 export const OFFSETS = {
   http: 0, // the API and the web UI (the base itself)
-  dns: 1, // the TelltaleDNS listener
+  dns: 1, // the WrenDNS listener
   mdns: 2, // mDNS naming (the test sends an announcement there)
   upstream: 3, // the stub upstream that answers every name with 192.0.2.7
   metrics: 4, // the Prometheus / OpenMetrics listener

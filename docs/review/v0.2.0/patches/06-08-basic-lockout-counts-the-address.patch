@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-api/src/auth/mod.rs b/crates/telltale-api/src/auth/mod.rs
+diff --git a/crates/wrendns-api/src/auth/mod.rs b/crates/wrendns-api/src/auth/mod.rs
 index f4b87c0..5e243f6 100644
---- a/crates/telltale-api/src/auth/mod.rs
-+++ b/crates/telltale-api/src/auth/mod.rs
+--- a/crates/wrendns-api/src/auth/mod.rs
++++ b/crates/wrendns-api/src/auth/mod.rs
 @@ -299,7 +299,7 @@ pub struct Presented<'a> {
      pub basic: Option<(String, String)>,
      /// The request arrived over HTTPS (directly or via a proxy that said so).
@@ -62,10 +62,10 @@ index f4b87c0..5e243f6 100644
              let mut c = self
                  .basic_cache
                  .lock()
-diff --git a/crates/telltale-api/src/auth/tests.rs b/crates/telltale-api/src/auth/tests.rs
+diff --git a/crates/wrendns-api/src/auth/tests.rs b/crates/wrendns-api/src/auth/tests.rs
 index 373c353..11e96d3 100644
---- a/crates/telltale-api/src/auth/tests.rs
-+++ b/crates/telltale-api/src/auth/tests.rs
+--- a/crates/wrendns-api/src/auth/tests.rs
++++ b/crates/wrendns-api/src/auth/tests.rs
 @@ -338,3 +338,40 @@ fn api_003_bootstrap_admin_from_a_secret_runs_only_on_first_start() {
      );
      let _ = std::fs::remove_dir_all(&dir);

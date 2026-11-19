@@ -40,7 +40,7 @@ def smaps(pid):
                 kind = "main stack"
             elif path.startswith("["):
                 kind = path
-            elif "telltale" in path and ("/target/" in path or "/rel/" in path):
+            elif "wrendns" in path and ("/target/" in path or "/rel/" in path):
                 kind = "binary (text, rodata, embedded UI)"
             elif path.endswith((".snap", ".fst", ".idx")) or "/filter/" in path or "snapshot" in path:
                 kind = f"mapped: {pathlib.Path(path).name}"
@@ -67,8 +67,8 @@ def threads(pid):
 
 def counters():
     m = lambda n: bench.metric_sum(f"{URL}/metrics", n)  # noqa: E731
-    return {"cache_bytes": m("telltale_cache_bytes"), "cache_entries": m("telltale_cache_entries"),
-            "index_bytes": m("telltale_filter_lookup_index_bytes"), "rules": m("telltale_filter_rules")}
+    return {"cache_bytes": m("wrendns_cache_bytes"), "cache_entries": m("wrendns_cache_entries"),
+            "index_bytes": m("wrendns_filter_lookup_index_bytes"), "rules": m("wrendns_filter_rules")}
 
 
 def report(stage, pid):
@@ -86,7 +86,7 @@ def report(stage, pid):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--server-cpus", default="0-3")
     ap.add_argument("--client-cpus", default="4-7")
     ap.add_argument("--workers", type=int, default=4)
@@ -99,7 +99,7 @@ def main():
     ap.add_argument("--extra", default="", help="TOML appended to the server config (e.g. to turn a feature off)")
     ap.add_argument("--settle", type=int, default=30, help="seconds to wait before a last sample")
     args = ap.parse_args()
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-mem-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-mem-")
     gate.pinned_dnsperf(args.client_cpus, tmp.name)
 
     d = pathlib.Path(tmp.name) / "plain"

@@ -9,10 +9,10 @@
 #      the N-1 replica gets it only after the bake (an N-1 build without staged rollouts is
 #      named a canary too, and is still only ever sent stable versions);
 #   and the client never fails a query (it tries the other server when one doesn't answer).
-# Usage: deploy/cluster/upgrade-e2e.sh <old telltale> [new telltale (default target/debug)]
+# Usage: deploy/cluster/upgrade-e2e.sh <old wrendns> [new wrendns (default target/debug)]
 set -euo pipefail
 OLD=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-NEW=${2:-target/debug/telltale}
+NEW=${2:-target/debug/wrendns}
 NEW=$(cd "$(dirname "$NEW")" && pwd)/$(basename "$NEW")
 E=$(mktemp -d)
 P_PID= R_PID= C_PID= LOAD=

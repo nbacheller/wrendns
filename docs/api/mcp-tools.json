@@ -247,7 +247,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The network inventory: the LANs and VLANs the routers report (subnet, VLAN, gateway, DHCP pool, domain), and client groups' networks no router reported, each with the group that covers it, its host addresses, the known devices in it, how full it is, and how many devices sit outside the DHCP pool; then every device found by the routers, Home Assistant, and mDNS (MAC, IP, the name the router or Home Assistant gave it, which [[router]] named it, its name in TelltaleDNS, and with [local] device_domain the name it answers as in DNS). Needs config:read.",
+    "description": "Read-only. The network inventory: the LANs and VLANs the routers report (subnet, VLAN, gateway, DHCP pool, domain), and client groups' networks no router reported, each with the group that covers it, its host addresses, the known devices in it, how full it is, and how many devices sit outside the DHCP pool; then every device found by the routers, Home Assistant, and mDNS (MAC, IP, the name the router or Home Assistant gave it, which [[router]] named it, its name in WrenDNS, and with [local] device_domain the name it answers as in DNS). Needs config:read.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -262,7 +262,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+    "description": "Read-only. The public DNS resolvers WrenDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -277,7 +277,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
+    "description": "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or wrendns ctl secrets). Needs config:read.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -337,7 +337,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The Kubernetes workloads TelltaleDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
+    "description": "Read-only. The Kubernetes workloads WrenDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -432,7 +432,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
+    "description": "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against WrenDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -676,7 +676,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Is TelltaleDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
+    "description": "Read-only. Is WrenDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -708,7 +708,7 @@
           "type": "string"
         },
         "node": {
-          "description": "Only this TelltaleDNS node (pod, site or ID).",
+          "description": "Only this WrenDNS node (pod, site or ID).",
           "type": "string"
         }
       },
@@ -1764,7 +1764,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
+    "description": "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or wrendns_anomalies_total (wrendns_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

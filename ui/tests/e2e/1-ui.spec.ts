@@ -50,7 +50,7 @@ const listOf = (title: string) => page.locator('section').filter({ has: page.get
 
 test('first run: the setup token creates the admin', async () => {
   await page.goto('/');
-  const welcome = page.getByRole('heading', { name: 'Welcome to TelltaleDNS' });
+  const welcome = page.getByRole('heading', { name: 'Welcome to WrenDNS' });
   const signInHeading = page.getByRole('heading', { name: 'Sign in' });
   await expect(welcome.or(signInHeading)).toBeVisible();
   if (await signInHeading.isVisible()) {
@@ -221,7 +221,7 @@ test('obs_017 an exemplar opens its query in the log', async () => {
     expect(r.headers.get('content-type')).toContain('application/openmetrics-text');
     const text = await r.text();
     expect(text.endsWith('# EOF\n')).toBe(true);
-    const m = text.match(/telltale_query_duration_seconds_bucket\{path="local",le="[^"]+"\} \d+ # \{trace_id="([0-9a-f]{32})"\}/);
+    const m = text.match(/wrendns_query_duration_seconds_bucket\{path="local",le="[^"]+"\} \d+ # \{trace_id="([0-9a-f]{32})"\}/);
     expect(m).not.toBeNull();
     trace = m?.[1] ?? '';
   }).toPass({ timeout: 15_000 });
@@ -289,12 +289,12 @@ test('explain page', async () => {
 
 test('the menu links to the project on GitHub and its site', async () => {
   await page.goto('/#/');
-  const gh = page.getByRole('link', { name: 'TelltaleDNS on GitHub' });
+  const gh = page.getByRole('link', { name: 'WrenDNS on GitHub' });
   await expect(gh).toHaveAttribute('href', 'https://github.com/paimonsoror/telltaledns');
   await expect(gh).toHaveAttribute('target', '_blank');
   await expect(page.getByRole('link', { name: 'Project site and guides' })).toHaveAttribute(
     'href',
-    'https://paimonsoror.github.io/telltaledns/',
+    'https://wrendns.com/',
   );
 });
 
@@ -306,7 +306,7 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   const icon = page.getByTestId('health-icon');
   await expect(icon).toBeVisible();
   await expect(icon).toHaveAttribute('data-level', /^(healthy|degraded|severe)$/);
-  const [h, gh] = [await icon.boundingBox(), await page.getByRole('link', { name: 'TelltaleDNS on GitHub' }).boundingBox()];
+  const [h, gh] = [await icon.boundingBox(), await page.getByRole('link', { name: 'WrenDNS on GitHub' }).boundingBox()];
   expect(h!.x).toBeLessThan(gh!.x);
   await page.route('**/api/v1/system/health', (route) =>
     route.fulfill({
@@ -521,7 +521,7 @@ test('obs_020 listener checks', async () => {
   await expect(card).toContainText(`udp://127.0.0.1:${DNS_PORT}`, { timeout: 15_000 });
   await expect(card).toContainText('answers');
   const log = await page.evaluate(async () =>
-    (await fetch('/api/v1/queries?name=probe.telltale.invalid&limit=5')).json(),
+    (await fetch('/api/v1/queries?name=probe.wrendns.invalid&limit=5')).json(),
   );
   expect(log.items).toEqual([]);
   // REQ: API-003 (ADR-149) — the web UI's own check: a self-signed certificate says it doesn't
@@ -1050,14 +1050,14 @@ test('ops_011 support package', async () => {
   // Make it: a download that is a gzip, then the map once.
   await card.getByTestId('keep-map').check();
   const [pkg] = await Promise.all([page.waitForEvent('download'), card.getByTestId('support-make').click()]);
-  expect(pkg.suggestedFilename()).toMatch(/^telltale-support-.+\.tar\.gz$/);
+  expect(pkg.suggestedFilename()).toMatch(/^wrendns-support-.+\.tar\.gz$/);
   const bytes = readFileSync(await pkg.path());
   expect([bytes[0], bytes[1]]).toEqual([0x1f, 0x8b]);
-  await expect(card.getByTestId('support-made')).toContainText('telltale-support-');
+  await expect(card.getByTestId('support-made')).toContainText('wrendns-support-');
   await expect(files.filter({ hasText: 'MANIFEST' })).toHaveCount(0);
   await expect(files.filter({ hasText: 'config/effective.json' })).toBeVisible();
   const [map] = await Promise.all([page.waitForEvent('download'), card.getByTestId('support-map').click()]);
-  expect(map.suggestedFilename()).toBe('telltale-support-map.txt');
+  expect(map.suggestedFilename()).toBe('wrendns-support-map.txt');
   await expect(card.getByTestId('support-map')).toBeDisabled();
 });
 
@@ -1379,7 +1379,7 @@ test('flt_005 network groups: cards, chart, and query-log filter', async () => {
 test('clu_008 cluster page on a standalone node', async () => {
   await page.goto('/#/cluster');
   await expect(page.getByRole('heading', { name: 'Cluster' })).toBeVisible();
-  await expect(page.getByTestId('cluster-standalone')).toContainText('telltale cluster init');
+  await expect(page.getByTestId('cluster-standalone')).toContainText('wrendns cluster init');
   expect((await (await page.request.get('/api/v1/cluster')).json()).enabled).toBe(false);
 });
 
@@ -1758,12 +1758,12 @@ test('clu_008 cluster topology', async () => {
     cacheHitPercent: 80, querySharePercent: 10, ...o,
   });
   const pod = (name: string, kube: string, o: Record<string, unknown> = {}) =>
-    node({ nodeId: `id-${name}`, site: 'k8s', ephemeral: true, pod: `telltale-resolver-${name}`, kubeNode: kube, ...o });
+    node({ nodeId: `id-${name}`, site: 'k8s', ephemeral: true, pod: `wrendns-resolver-${name}`, kubeNode: kube, ...o });
   const view = (pods: ReturnType<typeof node>[]) => ({
     enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-ctl', newestConfigSeq: 9, healthy: true, checks: [],
     events: [], conflicts: [], authority: 'primary',
     nodes: [
-      node({ nodeId: 'id-ctl', site: 'k8s', role: 'primary', thisNode: true, link: 'self', rttMs: null, pod: 'telltaledns-756965cdc7-8j9h9', kubeNode: 'k3s-node-with-a-long-name-1', qps: 40, querySharePercent: 40 }),
+      node({ nodeId: 'id-ctl', site: 'k8s', role: 'primary', thisNode: true, link: 'self', rttMs: null, pod: 'wrendns-756965cdc7-8j9h9', kubeNode: 'k3s-node-with-a-long-name-1', qps: 40, querySharePercent: 40 }),
       node({ nodeId: 'id-pi', site: 'home-raspberry-pi-in-the-hall-closet', rttMs: 4, qps: 30, querySharePercent: 30, restarts: 2 }),
       ...pods,
     ],
@@ -1786,7 +1786,7 @@ test('clu_008 cluster topology', async () => {
   await expect(topo).toContainText('node k3s-2 · 2 replica pods');
   await expect(topo).toContainText('4 ms'); // the Pi's round trip, measured by this node
   // Long pod and site names are shortened in the middle to fit (the full name is in the tooltip).
-  await expect(topo.getByTestId('topology-node').first()).toContainText(/tellta.*….*-8j9h9/);
+  await expect(topo.getByTestId('topology-node').first()).toContainText(/wrend.*….*-8j9h9/);
   // The primary is marked as such; the Pi is a replica.
   await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('PRIMARY');
   await expect(topo.getByTestId('topology-node').nth(1).getByTestId('topology-role')).toHaveText('replica');
@@ -1795,10 +1795,10 @@ test('clu_008 cluster topology', async () => {
   await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
 
   // Selecting a pod opens its site in the table and highlights its row.
-  await topo.getByRole('button', { name: /telltale-resolver-bbbbb/ }).click();
+  await topo.getByRole('button', { name: /wrendns-resolver-bbbbb/ }).click();
   const row = page.locator('#node-id-bbbbb');
   await expect(row).toHaveClass(/selected/);
-  await expect(row).toContainText('telltale-resolver-bbbbb on k3s-2');
+  await expect(row).toContainText('wrendns-resolver-bbbbb on k3s-2');
   await expect(row).toContainText('10.0% of queries');
   await expect(row).toContainText('cache: 55.0% hits');
   await expect(page.locator('#node-id-pi')).toContainText('2 restarts');
@@ -2054,7 +2054,7 @@ test('clu_005 the failover mode changes on the Cluster page without a restart', 
     const b = page.locator('#node-id-b');
     await expect(b).toContainText('relayed');
     await expect(b).not.toContainText('seen');
-    // `telltale cluster set-failover auto` on the primary: no restart anywhere.
+    // `wrendns cluster set-failover auto` on the primary: no restart anywhere.
     current = view({ mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: true, leaseSecondsLeft: 11, votedEpoch: 1, votedFor: 'id-p' });
     await expect(page.getByTestId('cluster-failover')).toContainText('automatic: 3 of 3 voters reachable', { timeout: 10_000 });
     await expect(page.getByTestId('cluster-failover')).toContainText("this primary's lease: 11 s left");
@@ -2068,7 +2068,7 @@ test('clu_005 the failover mode changes on the Cluster page without a restart', 
 // name is listed once (hits summed, "N of 8" nodes, per-node detail on demand), and the makeup
 // is one row per node, the first 6 shown.
 test('dns_006 cache page with many nodes', async () => {
-  const pods = Array.from({ length: 8 }, (_, i) => `telltale-resolver-${i}`);
+  const pods = Array.from({ length: 8 }, (_, i) => `wrendns-resolver-${i}`);
   const entry = (name: string, hits: number, ttl: number) => ({
     name, qtype: 'A', rcode: 'NOERROR', answers: 1, authentic: false, dnssecOk: false,
     ttlLeftSeconds: ttl, ageSeconds: 10, bytes: 180, hits,
@@ -2096,7 +2096,7 @@ test('dns_006 cache page with many nodes', async () => {
   await expect(first).toContainText('80'); // 8 × 10 hits
   await expect(top.locator('tbody tr').nth(1)).toContainText('3 of 8');
   await first.getByRole('button', { name: '8 of 8' }).click();
-  await expect(top.locator('tr.detail')).toContainText('telltale-resolver-7');
+  await expect(top.locator('tr.detail')).toContainText('wrendns-resolver-7');
   const makeupRows = page.getByTestId('cache-makeup').locator('tbody tr');
   await expect(makeupRows).toHaveCount(6);
   await page.getByRole('button', { name: 'Show all 8 nodes' }).click();
@@ -2458,7 +2458,7 @@ test('flt_004 prune lists that add little, then undo', async () => {
   const plan = await asAgent.request.get('/api/v1/lists/prune-plan', { headers: { authorization: `Bearer ${agent}` } });
   expect(plan.status()).toBe(200);
   const refused = await asAgent.request.post('/api/v1/lists/prune', {
-    headers: { authorization: `Bearer ${agent}`, 'x-telltale-reason': 'tidy up the lists' },
+    headers: { authorization: `Bearer ${agent}`, 'x-wrendns-reason': 'tidy up the lists' },
     data: { names: ['prune-small'], snapshotVersion: 1, configVersion: 1 },
   });
   expect(refused.status()).toBe(403);
@@ -3132,7 +3132,7 @@ test("api_014 changing a header upstream's url says which credential to re-enter
     await page.getByRole('button', { name: 'Check', exact: true }).click();
     const alert = page.getByRole('alert').filter({ hasText: "isn't kept" });
     await expect(alert).toContainText('headers.Authorization');
-    await expect(alert).toContainText('telltale ctl');
+    await expect(alert).toContainText('wrendns ctl');
     await expect(alert).not.toContainText('credential_reentry_required');
   } finally {
     forgetRefusals();
@@ -3166,9 +3166,9 @@ test('api_014 forward to exec is admin-only', async () => {
 test('api_015 errors read as sentences', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const cases: [number, string, string, RegExp][] = [
-    [422, 'path_not_allowed', '`token_file`: under /proc, which TelltaleDNS never reads', /can't be used/],
+    [422, 'path_not_allowed', '`token_file`: under /proc, which WrenDNS never reads', /can't be used/],
     [409, 'set_by_file', '`url` is set by the configuration file', /The configuration file sets/],
-    [422, 'credential_reentry_required', '`headers.Authorization` is `<redacted>`, and there is no stored value to keep', /has no value to keep\. This form can't enter it: change it with telltale ctl/],
+    [422, 'credential_reentry_required', '`headers.Authorization` is `<redacted>`, and there is no stored value to keep', /has no value to keep\. This form can't enter it: change it with wrendns ctl/],
     // The destination changed: the field is named, the marker is not, and the form can enter it.
     [422, 'credential_reentry_required', '`url` is `<redacted>`, and `tls_server_name` changed: a credential isn\'t sent to a new destination without being entered again', /The stored credential `url` isn't kept, because this entry now points somewhere else\. Enter it again on this form/],
     [422, 'credential_reentry_required', '`password` is `<redacted>`, and there is no stored value to keep', /The stored credential `password` has no value to keep\. Enter it again on this form/],
@@ -3553,7 +3553,7 @@ test('api_015 a secret write sends the head it read, and a moved head is refused
     return route.fulfill({
       status: 412,
       contentType: 'application/problem+json',
-      json: { type: 'https://telltaledns.dev/problems/precondition_failed', title: 'Precondition Failed', status: 412, code: 'precondition_failed', detail: 'the secrets head moved' },
+      json: { type: 'https://wrendns.com/problems/precondition_failed', title: 'Precondition Failed', status: 412, code: 'precondition_failed', detail: 'the secrets head moved' },
     });
   });
   try {
@@ -3622,7 +3622,7 @@ test('api_015 plain HTTP refusal is explained', async () => {
       status: 403,
       contentType: 'application/problem+json',
       json: {
-        type: 'https://telltaledns.dev/problems/insecure_transport',
+        type: 'https://wrendns.com/problems/insecure_transport',
         title: 'Forbidden',
         status: 403,
         code: 'insecure_transport',
@@ -4391,7 +4391,7 @@ test('obs_903 log-only exclusions from Settings', async () => {
   expect(await logged()).not.toContain('hushed.cache.e2e.test');
   // Answered and counted, only not logged: the counter says how many the log skipped.
   await expect
-    .poll(async () => (await (await page.request.get('/metrics')).text()).match(/telltale_queries_log_excluded_total (\d+)/)?.[1], {
+    .poll(async () => (await (await page.request.get('/metrics')).text()).match(/wrendns_queries_log_excluded_total (\d+)/)?.[1], {
       timeout: 20_000,
     })
     .not.toBe('0');
@@ -4412,7 +4412,7 @@ test('ops_901 readyz asks the listener and is never logged', async () => {
     expect(await r.text()).toBe('{"ready":true}\n');
     await page.waitForTimeout(1100);
   }
-  const probes = ((await (await page.request.get('/api/v1/queries?name=probe.telltale.invalid&from=-10m')).json()).items as unknown[])
+  const probes = ((await (await page.request.get('/api/v1/queries?name=probe.wrendns.invalid&from=-10m')).json()).items as unknown[])
     .length;
   expect(probes).toBe(0);
 });
@@ -5979,9 +5979,9 @@ test('clu_001 a stale node can be removed from the Cluster page', async () => {
     'id-lab': { site: 'lab-box', up: true, after: 2 },
   };
   const key =
-    'It was an eligible node, so it holds a copy of the cluster key. If it is lost or cannot be trusted, rotate the cluster CA (telltale cluster rotate-ca).';
+    'It was an eligible node, so it holds a copy of the cluster key. If it is lost or cannot be trusted, rotate the cluster CA (wrendns cluster rotate-ca).';
   const problem = (status: number, code: string, detail: string) => ({
-    type: `https://telltaledns.dev/problems/${code}`, title: code, status, code, detail, hint: 'Stop it first, or tick the box.',
+    type: `https://wrendns.com/problems/${code}`, title: code, status, code, detail, hint: 'Stop it first, or tick the box.',
   });
   const calls: string[] = [];
   const isRemoval = (url: URL) => url.pathname.startsWith('/api/v1/cluster/nodes/');
@@ -6215,7 +6215,7 @@ test('api_016 file router shows set by file', async () => {
             kind: 'unifi',
             url: 'https://192.168.1.1',
             source: 'file',
-            definition: { name: 'filed-udm', type: 'unifi', url: 'https://192.168.1.1', api_key_file: '/etc/telltale/unifi-key' },
+            definition: { name: 'filed-udm', type: 'unifi', url: 'https://192.168.1.1', api_key_file: '/etc/wrendns/unifi-key' },
             setByFile: ['api_key_file'],
             credentials: [{ field: 'api_key', source: 'file', readable: true }],
             status: { polledBy: 'this node', state: 'ok', lastPoll: 1, devices: 4, networks: 2, intervalSecs: 300 },
@@ -6924,7 +6924,7 @@ test('dsc_004 add an agent and test it', async () => {
   await settings.getByTestId('credential-add').click();
   const cform = settings.getByTestId('credential-form');
   await cform.getByLabel('Credential name').fill('gw-v3');
-  await cform.getByLabel('SNMP user').fill('telltale');
+  await cform.getByLabel('SNMP user').fill('wrendns');
   await cform.getByLabel('Authentication password file').fill('/run/secrets/snmp-auth');
   await cform.getByTestId('credential-keep').click();
   await expect(settings.getByTestId('credential-gw-v3')).toContainText('v3 authPriv');
@@ -7026,7 +7026,7 @@ test('dsc_004 operator sees agents read-only', async () => {
       kind: 'discovery', name: 'default', source: 'override',
       definition: {
         enabled: true, node: null, worker_memory_mib: 64, subnet: [{ cidr: '192.168.1.0/24' }],
-        snmp_credential: [{ name: 'gw-v3', role: 'infrastructure', version: 'v3', user: 'telltale', auth_protocol: 'sha', auth_password_file: '/run/secrets/a', priv_protocol: 'aes-128' }],
+        snmp_credential: [{ name: 'gw-v3', role: 'infrastructure', version: 'v3', user: 'wrendns', auth_protocol: 'sha', auth_password_file: '/run/secrets/a', priv_protocol: 'aes-128' }],
         snmp_agent: [{ name: 'gateway', address: '192.168.1.1', port: 161, credential: 'gw-v3', interval_secs: 300, max_repetitions: 10, tables: ['arp', 'ifmib'] }],
       },
       redacted: [], credentialIssues: [], setByFile: [], answering: null,
@@ -7281,7 +7281,7 @@ test('api_005 the UI is served gzipped, and plain to a client that does not acce
   expect(plain.status()).toBe(200);
   expect(plain.headers()['content-encoding']).toBeUndefined();
   const html = await plain.text();
-  expect(html).toContain('<title>TelltaleDNS');
+  expect(html).toContain('<title>WrenDNS');
   expect(await gz.text()).toBe(html);
   const src = /src="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
   expect(src, 'index.html names its script').toBeTruthy();
@@ -7574,7 +7574,7 @@ test('api_007 compare shows the differences', async () => {
           names: 3,
           agree: 2,
           differences: [
-            { name: 'nas.lan', qtype: 'A', pihole: { rcode: 'NOERROR', values: ['192.168.1.10'] }, telltale: { rcode: 'NXDOMAIN', values: [] } },
+            { name: 'nas.lan', qtype: 'A', pihole: { rcode: 'NOERROR', values: ['192.168.1.10'] }, wrendns: { rcode: 'NXDOMAIN', values: [] } },
           ],
           errors: [],
         },
@@ -7620,7 +7620,7 @@ test('api_007 a stale preview is refused', async () => {
       status: 409,
       contentType: 'application/problem+json',
       body: JSON.stringify({
-        type: 'https://telltaledns.dev/problems/conflict',
+        type: 'https://wrendns.com/problems/conflict',
         title: 'Conflict',
         status: 409,
         code: 'conflict',
@@ -7722,13 +7722,13 @@ test('api_007 comparison options reach the request', async () => {
     await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
     await panel.getByTestId('pihole-compare-toggle').check();
     await panel.getByTestId('pihole-address').fill('192.168.1.251');
-    await panel.getByTestId('pihole-telltale-address').fill(`127.0.0.1:${DNS_PORT}`);
+    await panel.getByTestId('pihole-wrendns-address').fill(`127.0.0.1:${DNS_PORT}`);
     await panel.getByTestId('pihole-samples').fill('example.com, nas.home');
     await panel.getByTestId('pihole-preview').click();
     await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 2 names');
     const q = new URL(asked).searchParams;
     expect(q.get('compare')).toBe('192.168.1.251');
-    expect(q.get('telltale')).toBe(`127.0.0.1:${DNS_PORT}`);
+    expect(q.get('wrendns')).toBe(`127.0.0.1:${DNS_PORT}`);
     expect(q.get('samples')).toBe('example.com, nas.home');
     await expect(panel.getByTestId('pihole-detail').first()).toHaveText('udp://9.9.9.9:53');
   } finally {
@@ -7782,7 +7782,7 @@ test('api_007 passphrase backup from settings', async () => {
         contentType: 'application/problem+json',
         headers: { 'retry-after': '2' },
         body: JSON.stringify({
-          type: 'https://telltaledns.dev/problems/rate_limited',
+          type: 'https://wrendns.com/problems/rate_limited',
           title: 'Too many requests',
           status: 429,
           code: 'rate_limited',
@@ -7816,7 +7816,7 @@ test('api_007 passphrase backup from settings', async () => {
           status: 403,
           contentType: 'application/problem+json',
           body: JSON.stringify({
-            type: 'https://telltaledns.dev/problems/reauth_required',
+            type: 'https://wrendns.com/problems/reauth_required',
             title: 'Recent sign-in needed',
             status: 403,
             code: 'reauth_required',

@@ -1491,157 +1491,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "telltale-cache"
-version = "0.8.0"
-dependencies = [
- "parking_lot",
- "telltale-proto",
- "tokio",
-]
-
-[[package]]
-name = "telltale-config"
-version = "0.8.0"
-dependencies = [
- "jiff",
- "rustls-pki-types",
- "schemars",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "telltale-filter"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "bytes",
- "fst",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "idna",
- "rand",
- "regex-automata",
- "regex-syntax",
- "rustls",
- "serde",
- "serde_json",
- "telltale-config",
- "telltale-net",
- "telltale-proto",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tracing",
- "webpki-roots",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "telltale-fuzz"
-version = "0.0.0"
-dependencies = [
- "hickory-proto",
- "libfuzzer-sys",
- "regex-syntax",
- "serde",
- "telltale-cache",
- "telltale-config",
- "telltale-filter",
- "telltale-proto",
- "telltale-snmp",
- "telltale-store",
- "telltale-support",
- "telltale-telemetry",
- "tokio",
-]
-
-[[package]]
-name = "telltale-net"
-version = "0.8.0"
-dependencies = [
- "bytes",
- "h3",
- "h3-quinn",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "libmimalloc-sys",
- "quinn",
- "rustls",
- "rustls-pki-types",
- "rustls-webpki",
- "socket2",
- "telltale-proto",
- "tokio",
- "tokio-rustls",
- "tracing",
-]
-
-[[package]]
-name = "telltale-proto"
-version = "0.8.0"
-dependencies = [
- "thiserror",
- "xxhash-rust",
-]
-
-[[package]]
-name = "telltale-snmp"
-version = "0.8.0"
-dependencies = [
- "aes",
- "libc",
- "ring",
- "zeroize",
-]
-
-[[package]]
-name = "telltale-store"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "memchr",
- "regex-automata",
- "rusqlite",
- "serde",
- "telltale-telemetry",
- "thiserror",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "telltale-support"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "miniz_oxide",
- "regex-automata",
- "schemars",
- "serde",
- "serde_json",
- "telltale-config",
-]
-
-[[package]]
-name = "telltale-telemetry"
-version = "0.8.0"
-dependencies = [
- "blake3",
- "hdrhistogram",
- "rtrb",
- "serde",
-]
-
-[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2042,6 +1891,157 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+
+[[package]]
+name = "wrendns-cache"
+version = "0.8.0"
+dependencies = [
+ "parking_lot",
+ "tokio",
+ "wrendns-proto",
+]
+
+[[package]]
+name = "wrendns-config"
+version = "0.8.0"
+dependencies = [
+ "jiff",
+ "rustls-pki-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "wrendns-filter"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "fst",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "idna",
+ "rand",
+ "regex-automata",
+ "regex-syntax",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+ "wrendns-config",
+ "wrendns-net",
+ "wrendns-proto",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
+name = "wrendns-fuzz"
+version = "0.0.0"
+dependencies = [
+ "hickory-proto",
+ "libfuzzer-sys",
+ "regex-syntax",
+ "serde",
+ "tokio",
+ "wrendns-cache",
+ "wrendns-config",
+ "wrendns-filter",
+ "wrendns-proto",
+ "wrendns-snmp",
+ "wrendns-store",
+ "wrendns-support",
+ "wrendns-telemetry",
+]
+
+[[package]]
+name = "wrendns-net"
+version = "0.8.0"
+dependencies = [
+ "bytes",
+ "h3",
+ "h3-quinn",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "libmimalloc-sys",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "socket2",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "wrendns-proto",
+]
+
+[[package]]
+name = "wrendns-proto"
+version = "0.8.0"
+dependencies = [
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "wrendns-snmp"
+version = "0.8.0"
+dependencies = [
+ "aes",
+ "libc",
+ "ring",
+ "zeroize",
+]
+
+[[package]]
+name = "wrendns-store"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "memchr",
+ "regex-automata",
+ "rusqlite",
+ "serde",
+ "thiserror",
+ "wrendns-telemetry",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
+name = "wrendns-support"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "miniz_oxide",
+ "regex-automata",
+ "schemars",
+ "serde",
+ "serde_json",
+ "wrendns-config",
+]
+
+[[package]]
+name = "wrendns-telemetry"
+version = "0.8.0"
+dependencies = [
+ "blake3",
+ "hdrhistogram",
+ "rtrb",
+ "serde",
+]
 
 [[package]]
 name = "writeable"

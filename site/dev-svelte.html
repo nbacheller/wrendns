@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Svelte pitfalls — TelltaleDNS</title>
-<meta name="description" content="The rules of the TelltaleDNS web UI that the build and the tests enforce, and the mistakes behind them: the attribute that quietly broke two-factor sign-in, the content security policy, help topics, generated types, and the bundle budget.">
+<title>Svelte pitfalls — WrenDNS</title>
+<meta name="description" content="The rules of the WrenDNS web UI that the build and the tests enforce, and the mistakes behind them: the attribute that quietly broke two-factor sign-in, the content security policy, help topics, generated types, and the bundle budget.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -38,7 +38,7 @@
 
 <section id="csp">
   <h2>The content security policy</h2>
-  <p>The server sends this policy with the page (<code>crates/telltale-api/src/ui.rs</code>):</p>
+  <p>The server sends this policy with the page (<code>crates/wrendns-api/src/ui.rs</code>):</p>
 <pre><code>default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
 font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none';
 form-action 'self'; frame-ancestors 'none'</code></pre>
@@ -86,7 +86,7 @@ form-action 'self'; frame-ancestors 'none'</code></pre>
   </ul>
   <div class="guide-nav">
     <a class="btn" href="dev-ui-tests.html">← Write UI tests</a>
-    <a class="btn primary" href="developers.html">Back to Working on TelltaleDNS →</a>
+    <a class="btn primary" href="developers.html">Back to Working on WrenDNS →</a>
   </div>
 </section>
 

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TelltaleDNS on Kubernetes</title>
-<meta name="description" content="What TelltaleDNS does when it runs on Kubernetes: one Helm chart, real client addresses on one IP, resolver pods that scale, a Raspberry Pi in the same cluster, pods named by their workload, tested failover, staged rollouts, and Prometheus built in.">
+<title>WrenDNS on Kubernetes</title>
+<meta name="description" content="What WrenDNS does when it runs on Kubernetes: one Helm chart, real client addresses on one IP, resolver pods that scale, a Raspberry Pi in the same cluster, pods named by their workload, tested failover, staged rollouts, and Prometheus built in.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -17,15 +17,15 @@
   <div>
     <p class="eyebrow">Kubernetes</p>
     <h1>Your network's DNS,<br>and your cluster's too.</h1>
-    <p class="lede">TelltaleDNS runs from one Helm chart. Your devices get filtered, encrypted DNS on one address, your pods get named by the workload that runs them, and a Raspberry Pi can join as the second DNS server, all managed from one place.</p>
+    <p class="lede">WrenDNS runs from one Helm chart. Your devices get filtered, encrypted DNS on one address, your pods get named by the workload that runs them, and a Raspberry Pi can join as the second DNS server, all managed from one place.</p>
     <div class="cta">
       <a class="btn primary" href="guide-kubernetes.html">Run it on Kubernetes</a>
       <a class="btn" href="#what">What you get</a>
     </div>
   </div>
-  <figure class="figure" aria-label="Devices and pods ask TelltaleDNS on one address; a Pi outside the cluster is the second DNS server">
+  <figure class="figure" aria-label="Devices and pods ask WrenDNS on one address; a Pi outside the cluster is the second DNS server">
     <svg viewBox="0 0 520 330" role="img">
-      <title>Devices on the network and pods in the cluster both ask TelltaleDNS. Inside Kubernetes, a controller and resolver pods share one address; a Pi outside joins the same cluster as the second DNS server. Cluster names go on to CoreDNS.</title>
+      <title>Devices on the network and pods in the cluster both ask WrenDNS. Inside Kubernetes, a controller and resolver pods share one address; a Pi outside joins the same cluster as the second DNS server. Cluster names go on to CoreDNS.</title>
       <defs><marker id="k-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
       <rect x="14" y="30" width="104" height="44" rx="10" class="svg-box"/><text x="66" y="57" text-anchor="middle" class="svg-text">📱 Devices</text>
       <rect x="14" y="250" width="104" height="44" rx="10" class="svg-box"/><text x="66" y="270" text-anchor="middle" class="svg-text">🍓 Pi</text><text x="66" y="286" text-anchor="middle" class="svg-sub">second DNS</text>
@@ -71,11 +71,11 @@
 <section>
   <p class="eyebrow">Your cluster's own DNS</p>
   <h2>Point the cluster at it</h2>
-  <p>With pod naming on, TelltaleDNS answers your pods too: they're filtered by their namespace's group, show up by workload, and still resolve Service names, because TelltaleDNS sends <code>cluster.local</code> on to CoreDNS. Try it on one workload, then make it the cluster's default.</p>
+  <p>With pod naming on, WrenDNS answers your pods too: they're filtered by their namespace's group, show up by workload, and still resolve Service names, because WrenDNS sends <code>cluster.local</code> on to CoreDNS. Try it on one workload, then make it the cluster's default.</p>
   <ol class="steps">
     <li class="step"><b>Turn on pod naming</b> in the chart values, with CoreDNS's address and a fixed address for the DNS Service.</li>
-    <li class="step"><b>Try one workload</b> with <code>dnsPolicy: None</code> and TelltaleDNS as its nameserver.</li>
-    <li class="step"><b>Make it the default</b> with the kubelet's cluster DNS (one line in k3s's config file), with CoreDNS second in case TelltaleDNS is unreachable.</li>
+    <li class="step"><b>Try one workload</b> with <code>dnsPolicy: None</code> and WrenDNS as its nameserver.</li>
+    <li class="step"><b>Make it the default</b> with the kubelet's cluster DNS (one line in k3s's config file), with CoreDNS second in case WrenDNS is unreachable.</li>
   </ol>
   <p><a href="guide-kubernetes.html#cluster-dns">The step-by-step guide →</a></p>
 </section>

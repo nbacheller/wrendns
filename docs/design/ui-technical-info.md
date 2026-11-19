@@ -22,14 +22,14 @@ This is a read-only review: nothing was edited or run. Every point below was re-
 ### (A) Bugs to fix now (data)
 
 **A1. "Alex&#039;s PC": an HTML entity is saved in the name.** Backend, S.
-- **Cause:** the Pi-hole importer copies `client.comment` as given: `one_line(&text(c,"comment"))` at `crates/telltale/src/pihole.rs:1602`. `one_line` (`pihole.rs:331-337`) only replaces control characters. Pi-hole's PHP admin stores comments escaped with `htmlspecialchars`, so `&#039;` is saved into the name. Svelte prints text literally, so the entity shows on screen.
+- **Cause:** the Pi-hole importer copies `client.comment` as given: `one_line(&text(c,"comment"))` at `crates/wrendns/src/pihole.rs:1602`. `one_line` (`pihole.rs:331-337`) only replaces control characters. Pi-hole's PHP admin stores comments escaped with `htmlspecialchars`, so `&#039;` is saved into the name. Svelte prints text literally, so the entity shows on screen.
 - **Fix:** add one helper that decodes `&amp; &lt; &gt; &quot; &#39; &#039; &#xNN;` once, then strips control characters. Use it on the importer's human-text columns only: client comment, group name and description, adlist and domain comments. Never use it on domain or regex columns.
 - **Existing names:** add a repair note that offers the fix, or the owner renames the one device.
 - **Safety:** I checked that `ui/src` has no `{@html}` or `innerHTML`, so a decoded `<` stays inert. Add a lint rule that forbids `{@html}`.
 - **Unexplained:** the map label comes from `device_name()` (`api_backend.rs:89-125`, which calls `identify(ip, None, None, …)`). The policy line comes from `policy_view.rs:137-140` (`identify` with `subject.mac`). Both read `clients.client(id).name`, yet the screenshot shows the policy line clean. That points to two different client records, possibly one keyed by MAC and one by IP. Check `GET /api/v1/clients` before fixing.
 
 **A2. Compact policy shows "the lists below" and then nothing; Upstream names no upstream.** UI, S.
-- **Cause:** compact mode keeps only sections that have items, but renders only `{s.title}. {s.summary}` and never the items (`ui/src/lib/components/PolicyPanel.svelte:76-81`). The summaries were written for the full view: `"Group {} names the lists below."` (`crates/telltale/src/policy_view.rs:311`) and `"Where this device's queries are forwarded."` (`:641`).
+- **Cause:** compact mode keeps only sections that have items, but renders only `{s.title}. {s.summary}` and never the items (`ui/src/lib/components/PolicyPanel.svelte:76-81`). The summaries were written for the full view: `"Group {} names the lists below."` (`crates/wrendns/src/policy_view.rs:311`) and `"Where this device's queries are forwarded."` (`:641`).
 - **The data is there:** the upstream items carry the group name (`policy_view.rs:602-637`).
 - **Fix:** in compact mode, render up to 3 item labels as links, then "+N more".
 - **Also (backend, S):** make each server summary stand alone, so the API and MCP output read well too.
@@ -37,7 +37,7 @@ This is a read-only review: nothing was edited or run. Every point below was re-
 **A3. Upstreams show internal ids ("forward:168.192.in…", "forward:example…").**
 - **Cause:**
   - The ids are built by `managed.rs:539-541` (`forward:{domain}`), and stub zones add `#stub` (`:544-546`).
-  - The map uses them directly: `label: name.clone()` with `address: None` (`crates/telltale-api/src/map.rs:1056-1065`).
+  - The map uses them directly: `label: name.clone()` with `address: None` (`crates/wrendns-api/src/map.rs:1056-1065`).
   - The Upstreams page already hides these names (`ui/src/pages/Upstreams.svelte:113`, `api_backend.rs:3771`).
 - **Fix (recommended: backend, S):** a display-label function in `map.rs`:
   - `forward:<x>.in-addr.arpa` becomes "Reverse lookups, 192.168.x.x".
@@ -57,7 +57,7 @@ This is a read-only review: nothing was edited or run. Every point below was re-
 - Keep `domain` out of this line (ADR-958 §7, see F1).
 
 **A5. Networks show interface names (eth0, eth0.100, wlan0).**
-- **Cause:** the map labels come from `b.networks()` (`crates/telltale-api/src/map_api.rs:145-153`). An interface row is used only when no router reported that subnet (`api_backend.rs:3249-3272`). On a replica, `Federated::networks()` should merge in the primary's UniFi names (T24.41).
+- **Cause:** the map labels come from `b.networks()` (`crates/wrendns-api/src/map_api.rs:145-153`). An interface row is used only when no router reported that subnet (`api_backend.rs:3249-3272`). On a replica, `Federated::networks()` should merge in the primary's UniFi names (T24.41).
 - **So:** eth0 here means one of three things: an older build is running, this is the primary with an empty UniFi read, or UniFi does not report 192.0.2.0/24.
 - **Check first:** `GET /api/v1/networks` on the node the browser uses. This is a deploy or data check, S.
 

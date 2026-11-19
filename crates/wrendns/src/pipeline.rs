@@ -1,0 +1,5949 @@
+//! The per-query pipeline (`spec/03` §3), shared by every transport.
+//!
+//! Stages today: parse → reject (DNS-019) → cache (DNS-006) → upstream (UPS-*) with
+//! singleflight, serve-stale (DNS-007), and prefetch (DNS-008). Policy, local data, and
+//! filtering slot in before the cache as M1/M2 tasks land.
+//!
+//! The synchronous part (`handle`) runs on hot-path threads: a cache hit is answered without
+//! allocating. Anything that needs I/O becomes a deferred future driven by the runtime.
+
+use std::cell::RefCell;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use arc_swap::{ArcSwap, ArcSwapOption};
+use wrendns_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
+use wrendns_config::BlockMode;
+use wrendns_config::{Cidr, RateLimitAction, SpecialConfig};
+use wrendns_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
+use wrendns_net::{QueryHandler, RequestMeta, Response, Transport};
+use wrendns_policy::{
+    ClientTable, Group, Identity, LocalData, Neighbors, Pause, RateLimiter, RewriteTarget, Special,
+};
+use wrendns_proto::{
+    EdnsOut, NameBuf, Query, QueryError, ResponseBuilder, Section, badvers_from_raw, build_query,
+    ede, error_from_raw, parse_query, rcode, records, response_edns, rtype, truncate_for_udp,
+    udp_limit,
+};
+use wrendns_telemetry::{Hub, Metrics, Proto, QueryEvent, Rule, RuleKind, Status, UpstreamEvent};
+use wrendns_upstream::{Question, Router};
+use tokio::sync::Semaphore;
+
+/// Settings derived from config.
+#[derive(Debug, Clone)]
+pub(crate) struct Settings {
+    /// Our advertised EDNS UDP payload size (DNS-005).
+    pub(crate) edns_payload: u16,
+    /// Total upstream time budget per query (`spec/02` §8.3).
+    pub(crate) budget: Duration,
+    /// Serve stale data if upstreams haven't answered within this (RFC 8767).
+    pub(crate) stale_answer_timeout: Duration,
+    /// Max concurrent upstream resolutions; beyond it, serve stale or SERVFAIL (02 §8.4).
+    pub(crate) max_inflight: usize,
+    /// Event ring bytes per producing thread (OBS-002, ADR-026).
+    pub(crate) ring_bytes: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            edns_payload: wrendns_proto::DEFAULT_EDNS_PAYLOAD,
+            budget: wrendns_upstream::DEFAULT_BUDGET,
+            stale_answer_timeout: Duration::from_millis(1800),
+            max_inflight: 4096,
+            ring_bytes: 4096 * 128,
+        }
+    }
+}
+
+/// Per-query policy inputs (`spec/03` §3 steps 2–5).
+#[derive(Debug, Default)]
+pub(crate) struct Policy {
+    /// Clients outside these networks are refused (08 §6).
+    pub(crate) allowed: Vec<Cidr>,
+    /// Per-client token buckets (DNS-014); `None` = disabled.
+    pub(crate) limiter: Option<RateLimiter>,
+    pub(crate) limit_action: RateLimitAction,
+    pub(crate) special: SpecialConfig,
+    /// REQ: DNS-019 (ADR-904) — the DDR answer for `_dns.resolver.arpa` SVCB (RFC 9462): one
+    /// SVCB RDATA per encrypted listener; empty without `[special] ddr_name`.
+    pub(crate) ddr: Vec<Box<[u8]>>,
+    /// Local records (DNS-010), answered before cache and upstreams.
+    pub(crate) local: Arc<LocalData>,
+    /// Groups and known clients (FLT-005, FLT-006).
+    pub(crate) clients: Arc<ClientTable>,
+    /// Quick rules (T6.12, ADR-067), decided before the lists.
+    pub(crate) quick: Arc<wrendns_policy::QuickRules>,
+    /// REQ: DNS-018 (T7.22) — authoritative zones, most specific first.
+    pub(crate) zones: Arc<Vec<Zone>>,
+    /// REQ: OBS-018 (T11.5) — lists in `shadow` mode: compiled, never enforced.
+    pub(crate) shadow_lists: Vec<Box<str>>,
+    /// REQ: DNS-021 (T12.4) — this node's name for the NSID option (`[dns] nsid`).
+    pub(crate) nsid: Option<Box<[u8]>>,
+    /// REQ: DNS-023 (T22.1) — device names in DNS (`[local] device_domain`); `None`: off.
+    pub(crate) device_dns: Option<crate::device_dns::Settings>,
+}
+
+/// REQ: DNS-018 (T7.22) — one authoritative zone.
+#[derive(Debug, Default)]
+pub(crate) struct Zone {
+    pub(crate) apex: NameBuf,
+    pub(crate) data: LocalData,
+    /// Groups that see it (empty: everyone).
+    pub(crate) groups: Vec<Box<str>>,
+    pub(crate) negative_ttl: u32,
+    /// REQ: DNS-018 (T9.18) — the apex's SOA (RDATA) and name servers: the zone file's, else
+    /// made up (`localhost.`, as resolvers serving local zones do).
+    pub(crate) soa: Vec<u8>,
+    pub(crate) ns: Vec<NameBuf>,
+    /// TTL of the SOA and NS answers.
+    pub(crate) ttl: u32,
+}
+
+impl Policy {
+    pub(crate) fn from_config(cfg: &wrendns_config::Config, local: LocalData) -> Self {
+        let clients = ClientTable::from_config(cfg);
+        let quick = Arc::new(wrendns_policy::QuickRules::from_config(cfg, &clients));
+        Self {
+            allowed: cfg.access.allowed_networks.clone(),
+            limiter: RateLimiter::new(&cfg.ratelimit),
+            limit_action: cfg.ratelimit.action,
+            special: cfg.special.clone(),
+            ddr: wrendns_policy::ddr_records(cfg),
+            local: Arc::new(local),
+            quick,
+            clients: Arc::new(clients),
+            zones: Arc::default(),
+            shadow_lists: cfg
+                .list
+                .iter()
+                .filter(|l| l.mode == wrendns_config::ListMode::Shadow)
+                .map(|l| Box::from(l.name.as_str()))
+                .collect(),
+            // The option's value is at most 65,535 bytes; a name is far shorter.
+            nsid: cfg
+                .dns
+                .nsid
+                .then(|| crate::http::node_name(cfg).into_bytes().into_boxed_slice())
+                .filter(|n| !n.is_empty() && n.len() <= 255),
+            device_dns: crate::device_dns::Settings::from_config(cfg),
+        }
+    }
+
+    /// Everything allowed, nothing limited (tests).
+    #[cfg(test)]
+    pub(crate) fn open() -> Self {
+        Self {
+            allowed: vec![
+                wrendns_config::Cidr::parse("0.0.0.0/0").unwrap(),
+                wrendns_config::Cidr::parse("::/0").unwrap(),
+            ],
+            ..Self::default()
+        }
+    }
+}
+
+/// REQ: FLT-010 (T7.10) — which schedules are on, per group (`ClientTable` order), as the
+/// 15-second ticker last computed it. Empty vectors when nothing is on.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ScheduleNow {
+    /// Per group: the block-everything schedule that's on (its block reason and query-log
+    /// reference).
+    pub(crate) block_all: Vec<Option<(String, u16)>>,
+    /// Per group: the lists (and `svc-` service lists) schedules add right now.
+    pub(crate) extras: Vec<Vec<String>>,
+    /// Lists and services that only schedules turn on: off for a group outside its windows,
+    /// even when it uses every list.
+    pub(crate) scheduled: Vec<String>,
+    /// Every schedule's query-log reference and name.
+    pub(crate) names: Vec<(u16, String)>,
+}
+
+impl ScheduleNow {
+    /// The state at `now` for `groups` (`ClientTable` order).
+    pub(crate) fn compute(
+        cfg: &wrendns_config::Config,
+        compiled: &[wrendns_config::schedule::Compiled],
+        groups: &[wrendns_policy::Group],
+        now: i64,
+    ) -> Self {
+        let on: Vec<bool> = compiled.iter().map(|s| s.is_on(now)).collect();
+        let mut block_all = vec![None; groups.len()];
+        let mut extras = vec![Vec::new(); groups.len()];
+        for (i, g) in groups.iter().enumerate() {
+            let Some(gc) = cfg.group.iter().find(|x| x.name.as_str() == &*g.name) else {
+                continue;
+            };
+            for (s, on) in compiled.iter().zip(&on) {
+                if !*on || !gc.schedules.iter().any(|n| n.as_str() == s.name) {
+                    continue;
+                }
+                if s.action == wrendns_config::ScheduleAction::BlockAll {
+                    if block_all[i].is_none() {
+                        block_all[i] = Some((
+                            format!("blocked by schedule {}", s.name),
+                            wrendns_policy::quick_ref(&s.name),
+                        ));
+                    }
+                } else {
+                    extras[i].extend(s.list_names());
+                }
+            }
+        }
+        let mut scheduled: Vec<String> = compiled
+            .iter()
+            .flat_map(wrendns_config::schedule::Compiled::list_names)
+            .collect();
+        scheduled.sort();
+        scheduled.dedup();
+        Self {
+            block_all: if block_all.iter().any(Option::is_some) {
+                block_all
+            } else {
+                Vec::new()
+            },
+            extras: if extras.iter().any(|e| !e.is_empty()) {
+                extras
+            } else {
+                Vec::new()
+            },
+            scheduled,
+            names: compiled
+                .iter()
+                .map(|s| (wrendns_policy::quick_ref(&s.name), s.name.clone()))
+                .collect(),
+        }
+    }
+}
+
+/// The active filter (`spec/03` §3 step 6): a matcher plus, per client, which lists apply.
+#[derive(Debug)]
+pub(crate) struct FilterState {
+    pub(crate) matcher: Arc<Matcher>,
+    /// The client table the masks were computed for.
+    pub(crate) clients: Arc<ClientTable>,
+    /// Union of each configured client's groups' lists, by client index (FLT-005).
+    pub(crate) client_masks: Vec<ListMask>,
+    /// Lists for unknown clients (the `default` group).
+    pub(crate) default_mask: ListMask,
+    /// Lists per group, for devices that take their network's group (ADR-050).
+    pub(crate) group_masks: Vec<ListMask>,
+    /// EDE text per list ID, built once so blocking doesn't allocate.
+    pub(crate) reasons: Vec<String>,
+    /// The same for blocks found through a CNAME target (FLT-007).
+    pub(crate) cname_reasons: Vec<String>,
+    /// The snapshot's list names, by list ID.
+    pub(crate) list_names: Vec<String>,
+    /// REQ: OBS-018 (T11.5) — the `shadow` lists' IDs, and per group the lists it enforces plus
+    /// the shadow lists it would use: what the telemetry thread decides with to find would-be
+    /// blocks. Empty when no list is in shadow mode (nothing to do).
+    pub(crate) shadow_ids: ListMask,
+    pub(crate) shadow_group_masks: Vec<ListMask>,
+}
+
+/// Who sent a query, as far as identification needs (carried into deferred answers).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Who {
+    pub(crate) peer: IpAddr,
+    pub(crate) mac: Option<[u8; 6]>,
+    /// From the DoT SNI or the DoH path.
+    pub(crate) client_id: Option<wrendns_net::ClientId>,
+}
+
+/// Drops a swapped-out value on a background thread after a grace period (T2.7). Readers
+/// hold short-lived guards, so after the pause this is the last reference, and freeing a
+/// large snapshot (tens of MB of FST and index) never lands on a DNS worker mid-query.
+fn retire<T: Send + 'static>(old: T) {
+    let spawned = std::thread::Builder::new()
+        .name("wrendns-retire".into())
+        .spawn(move || {
+            wrendns_net::background_thread();
+            std::thread::sleep(Duration::from_secs(2));
+            drop(old);
+        });
+    // If no thread can be started, the value is dropped here (correct, just not deferred).
+    drop(spawned);
+}
+
+/// REQ: DNS-021 (T12.4) — appends an NSID option (RFC 5001) holding `id` to the response's OPT
+/// record and returns the new length. Only when the OPT is the message's last record (ours
+/// always is) and the option fits in `out`; otherwise the answer goes out as it was.
+fn add_nsid(out: &mut [u8], len: usize, id: &[u8]) -> Option<usize> {
+    let opt = records(out.get(..len)?)
+        .ok()?
+        .flatten()
+        .find(|r| r.section == Section::Additional && r.rtype == rtype::OPT)?;
+    let end = opt.rdata_off + usize::from(opt.rdlen);
+    let id_len = u16::try_from(id.len()).ok()?;
+    let rdlen = opt.rdlen.checked_add(4)?.checked_add(id_len)?;
+    let new_len = end.checked_add(4 + id.len())?;
+    if end != len || new_len > out.len() {
+        return None;
+    }
+    out[opt.rdata_off - 2..opt.rdata_off].copy_from_slice(&rdlen.to_be_bytes());
+    out[end..end + 2].copy_from_slice(&wrendns_proto::consts::opt::NSID.to_be_bytes());
+    out[end + 2..end + 4].copy_from_slice(&id_len.to_be_bytes());
+    out[end + 4..new_len].copy_from_slice(id);
+    Some(new_len)
+}
+
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+impl FilterState {
+    #[allow(clippy::too_many_lines)] // the masks of every group, one pass
+    pub(crate) fn new(
+        matcher: Arc<Matcher>,
+        clients: Arc<ClientTable>,
+        sched: &ScheduleNow,
+        shadow: &[Box<str>],
+    ) -> Self {
+        let names: Vec<String> = matcher
+            .snapshot()
+            .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default();
+        // REQ: OBS-018 (T11.5) — shadow lists are never in an enforcing mask.
+        let mut shadow_ids = ListMask::default();
+        for (i, n) in names.iter().enumerate() {
+            if shadow.iter().any(|s| **s == **n)
+                && let Ok(id) = u16::try_from(i)
+            {
+                shadow_ids.set(id);
+            }
+        }
+        let mut shadow_group_masks = Vec::new();
+        // A group's lists → list IDs in this snapshot (a group naming a list that isn't
+        // compiled yet simply doesn't get it until it is). REQ: FLT-012 (T7.9) — blocked
+        // services (`svc-<id>` lists) apply only to the groups that name them, also when a
+        // group uses every list.
+        // REQ: FLT-010 (T7.10) — lists and services a schedule turns on apply during its
+        // windows only (unless the group always uses them).
+        let group_masks: Vec<ListMask> = clients
+            .groups()
+            .iter()
+            .enumerate()
+            .map(|(gi, g)| {
+                let extra = sched.extras.get(gi);
+                let mut m = ListMask::default();
+                for (i, n) in names.iter().enumerate() {
+                    let now = extra.is_some_and(|e| e.iter().any(|x| x == n));
+                    let explicit = g
+                        .lists
+                        .as_ref()
+                        .is_some_and(|l| l.iter().any(|l| **l == **n));
+                    // REQ: FLT-901 — category lists apply only to the groups whose categories
+                    // use them, never through the "every enabled list" default.
+                    let by_category = g.cat_lists.iter().any(|x| **x == **n);
+                    let wanted = now
+                        || by_category
+                        || match wrendns_config::services::of_list(n) {
+                            Some(s) => g.services.iter().any(|x| **x == *s.id),
+                            None if wrendns_config::categories::is_category_list(n) => false,
+                            None if sched.scheduled.iter().any(|x| x == n) => explicit,
+                            None => g.lists.is_none() || explicit,
+                        };
+                    if wanted && let Ok(id) = u16::try_from(i) {
+                        m.set(id);
+                    }
+                }
+                // REQ: OBS-018 (T11.5) — what the group enforces plus the shadow lists it would
+                // use; the shadow lists then leave the enforcing mask.
+                if !shadow.is_empty() {
+                    shadow_group_masks.push(m.clone());
+                    let mut enforced = ListMask::default();
+                    for i in 0..names.len() {
+                        if let Ok(id) = u16::try_from(i)
+                            && m.contains(id)
+                            && !shadow_ids.contains(id)
+                        {
+                            enforced.set(id);
+                        }
+                    }
+                    m = enforced;
+                }
+                m
+            })
+            .collect();
+        let union = |groups: &[u16]| {
+            let mut m = ListMask::default();
+            for &g in groups {
+                if let Some(gm) = group_masks.get(usize::from(g)) {
+                    for i in 0..names.len() {
+                        let Ok(id) = u16::try_from(i) else { break };
+                        if gm.contains(id) {
+                            m.set(id);
+                        }
+                    }
+                }
+            }
+            m
+        };
+        // REQ: FLT-901 - the category a list stands for: a `cat-` list, or the list a file defines
+        // that provides a catalog source to some group.
+        let label_of = |n: &str| {
+            wrendns_config::categories::label_of_list(n).or_else(|| {
+                clients
+                    .groups()
+                    .iter()
+                    .flat_map(|g| g.cat_labels.iter())
+                    .find(|(l, _)| **l == *n)
+                    .map(|(_, c)| c.to_string())
+            })
+        };
+        let unknown = Identity {
+            client: None,
+            source: wrendns_policy::IdSource::Default,
+            net: None,
+        };
+        Self {
+            client_masks: clients.clients().iter().map(|c| union(&c.groups)).collect(),
+            default_mask: union(clients.group_ids(unknown)),
+            group_masks: (0..clients.groups().len())
+                .map(|g| union(&[u16::try_from(g).unwrap_or(0)]))
+                .collect(),
+            reasons: names
+                .iter()
+                .map(|n| match wrendns_config::services::of_list(n) {
+                    Some(s) => format!("blocked service {}", s.name),
+                    // REQ: FLT-901 — a category list names the category it stands for.
+                    None => match label_of(n) {
+                        Some(c) => format!("blocked by category {c} (list {n})"),
+                        None => format!("blocked by list {n}"),
+                    },
+                })
+                .collect(),
+            cname_reasons: names
+                .iter()
+                .map(|n| match wrendns_config::services::of_list(n) {
+                    Some(s) => format!("CNAME target blocked: service {}", s.name),
+                    None => match label_of(n) {
+                        Some(c) => format!("CNAME target blocked by category {c} (list {n})"),
+                        None => format!("CNAME target blocked by list {n}"),
+                    },
+                })
+                .collect(),
+            list_names: names,
+            shadow_ids,
+            shadow_group_masks,
+            clients,
+            matcher,
+        }
+    }
+
+    pub(crate) fn mask(&self, id: Identity) -> &ListMask {
+        if let Some(c) = id.client
+            && self
+                .clients
+                .clients()
+                .get(usize::from(c))
+                .is_some_and(|c| !c.inherit)
+            && let Some(m) = self.client_masks.get(usize::from(c))
+        {
+            return m;
+        }
+        id.net
+            .and_then(|g| self.group_masks.get(usize::from(g)))
+            .unwrap_or(&self.default_mask)
+    }
+
+    /// REQ: FLT-014 (T9.20), FLT-013 — the `$dnsrewrite` answer for this client, if a list it
+    /// uses has one for the name and blocking isn't paused for its group. One shared function
+    /// for the pipeline and `explain`, so they can't disagree. `identify` runs only when some
+    /// list has rewrites (the common case costs one bool check): it gets the table the masks
+    /// were built for.
+    pub(crate) fn list_rewrite(
+        &self,
+        q: &Query<'_>,
+        identify: impl FnOnce(&ClientTable) -> Identity,
+        ip: IpAddr,
+        client_id: Option<&str>,
+        pause: &Pause,
+        workloads: &wrendns_policy::Workloads,
+    ) -> Option<(wrendns_filter::rewrite::ListRewrite, u16)> {
+        if !self.matcher.has_rewrites() {
+            return None;
+        }
+        let ident = identify(&self.clients);
+        if pause.is_paused(&self.clients.primary_group(ident).name, unix_now) {
+            return None;
+        }
+        let wl = workload_table(ident, workloads);
+        let client = ClientCtx {
+            ip,
+            name: client_name(&self.clients, ident, wl.as_deref().map(Arc::as_ref), ip),
+            client_id,
+        };
+        self.matcher
+            .rewrites(q.qname.as_wire(), q.qtype, &client, self.mask(ident))
+    }
+}
+
+/// REQ: FLT-017 — the workload table, loaded only for a query a workload asked.
+/// REQ: CLU-014 — a device's `[[client]]` name and groups as identification sees them from its
+/// address alone (no MAC or client ID): drill targets and reports, off the query path.
+pub(crate) fn name_and_groups(
+    p: &Pipeline,
+    ip: std::net::IpAddr,
+) -> (Option<String>, Vec<Box<str>>) {
+    let st = p.state.load();
+    let c = &st.policy.clients;
+    let ident = c.identify(ip, None, None, &p.neighbors, &p.workloads);
+    (
+        c.client(ident).map(|x| x.name.to_string()),
+        c.group_names(ident).to_vec(),
+    )
+}
+
+/// REQ: CLU-014 — a device's group for a drill report (a workload's from its labels).
+pub(crate) fn group_of(p: &Pipeline, ip: std::net::IpAddr) -> Option<String> {
+    if let std::net::IpAddr::V6(v6) = ip
+        && wrendns_telemetry::workload::is_key(&v6.octets())
+    {
+        return p
+            .workloads
+            .snapshot()
+            .by_key(&v6.octets())
+            .and_then(|w| w.group.as_deref().map(str::to_owned));
+    }
+    name_and_groups(p, ip).1.first().map(ToString::to_string)
+}
+
+pub(crate) fn workload_table(
+    ident: Identity,
+    workloads: &wrendns_policy::Workloads,
+) -> Option<arc_swap::Guard<Arc<wrendns_policy::WorkloadTable>>> {
+    (ident.source == wrendns_policy::IdSource::Workload).then(|| workloads.load())
+}
+
+/// The name `$client` rules see: a configured device's name, or a workload's text form
+/// (`media/deploy/jellyfin`, FLT-017).
+pub(crate) fn client_name<'a>(
+    clients: &'a ClientTable,
+    ident: Identity,
+    workloads: Option<&'a wrendns_policy::WorkloadTable>,
+    ip: IpAddr,
+) -> Option<&'a str> {
+    clients
+        .client(ident)
+        .map(|c| &*c.name)
+        .or_else(|| workloads.and_then(|t| t.get(ip)).map(|h| &*h.workload.text))
+}
+
+thread_local! {
+    /// Per-thread regex caches for the matcher (allocated on first use and after swaps).
+    static FILTER_SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+    /// REQ: DNS-007, DNS-008 — cache refreshes a UDP worker thread queued while answering,
+    /// started by `Handler::sent` once the batch's answers are out.
+    static REFRESHES: RefCell<Vec<Refresh>> = const { RefCell::new(Vec::new()) };
+}
+
+/// More than this queued on one thread (a caller that never calls `sent`): start at once.
+const MAX_QUEUED_REFRESHES: usize = 256;
+
+/// One background cache refresh (a prefetch, or an expired entry just answered).
+struct Refresh {
+    pipe: Arc<Pipeline>,
+    req: Vec<u8>,
+    key: CacheKey,
+    view: u16,
+    permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Refresh {
+    fn start(self) {
+        let Self {
+            pipe,
+            req,
+            key,
+            view,
+            permit,
+        } = self;
+        // The UDP worker threads have no ambient runtime: spawn on the handle captured at
+        // construction, never `tokio::spawn` (it panics).
+        let Some(rt) = pipe.rt.clone() else {
+            return;
+        };
+        rt.spawn(async move {
+            let _ = pipe.resolve_shared(req, key, view, permit).await;
+        });
+    }
+}
+
+/// The part of the pipeline that a config reload replaces (OPS-009).
+#[derive(Debug)]
+pub(crate) struct Dynamic {
+    pub(crate) router: Arc<Router>,
+    pub(crate) policy: Policy,
+}
+
+/// Shared state for every query.
+#[derive(Debug)]
+pub(crate) struct Pipeline {
+    settings: Settings,
+    cache: Arc<Cache>,
+    /// Routing and policy, swapped atomically on reload (OPS-009); readers never lock.
+    state: ArcSwap<Dynamic>,
+    /// The filter, swapped atomically whenever a snapshot is compiled or indexed (FLT-004).
+    pub(crate) filter: ArcSwapOption<FilterState>,
+    /// Serializes filter rebuilds (snapshot publish vs. config reload); never on the query path.
+    filter_lock: std::sync::Mutex<()>,
+    /// IP → MAC from the kernel neighbor table (FLT-006), refreshed by the server.
+    pub(crate) neighbors: Arc<Neighbors>,
+    /// REQ: FLT-017 — pod addresses → Kubernetes workloads, from the controller.
+    pub(crate) workloads: Arc<wrendns_policy::Workloads>,
+    /// REQ: FLT-017 — the Kubernetes watcher's (or the peer side's) status and counters.
+    pub(crate) kube: Arc<crate::kubernetes::Kube>,
+    /// REQ: CLU-014 — a failover drill's targets on this node (one relaxed load when none).
+    pub(crate) drill: Arc<crate::drill::Gate>,
+    /// Blocking paused globally or per group (FLT-009). Kept across reloads.
+    pub(crate) pause: Pause,
+    /// REQ: FLT-010 (T7.10) — schedules on now (the ticker in `server` updates it).
+    pub(crate) schedules: arc_swap::ArcSwap<ScheduleNow>,
+    /// REQ: T8.2 — the routers' DHCP clients by address (names for devices; the API).
+    pub(crate) router_leases: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
+    /// REQ: T8.3 — the names devices announce over mDNS, by address.
+    pub(crate) mdns_names: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
+    /// REQ: API-013 (T22.2) — the networks (LANs, VLANs) the routers reported.
+    pub(crate) router_networks: Arc<arc_swap::ArcSwap<Vec<crate::routers::Network>>>,
+    /// REQ: DNS-023 (T22.1) — the device names answered in DNS, built off the query path by
+    /// `device_dns::run`; empty while `[local] device_domain` is unset.
+    pub(crate) device_names: arc_swap::ArcSwap<crate::device_dns::DeviceNames>,
+    /// REQ: CLU-002 (ADR-125) — the names other nodes' routers and mDNS know (after this
+    /// node's own).
+    pub(crate) peer_names: arc_swap::ArcSwap<crate::devices::Names>,
+    /// REQ: CLU-013 — while the cluster is pinned, the snapshot the primary serves: no other
+    /// snapshot (a list refresh's) may replace it. Never read on the query path.
+    pub(crate) filter_pin: ArcSwapOption<std::path::PathBuf>,
+    /// REQ: OBS-007 (T7.18) — the dnstap tap, set once at startup (one atomic load per query
+    /// when unset).
+    pub(crate) dnstap: std::sync::OnceLock<Arc<crate::dnstap::Tap>>,
+    flights: Arc<Singleflight>,
+    inflight: Arc<Semaphore>,
+    /// Query counters and latency histograms (OBS-005).
+    pub(crate) metrics: Arc<Metrics>,
+    /// Per-query events and their aggregates (OBS-001, OBS-002, OBS-004).
+    pub(crate) telemetry: Arc<Hub>,
+    /// Queries dropped because they carried our own loop tag.
+    loops: std::sync::atomic::AtomicU64,
+    /// Per-process qname hash seed (keeps remote clients from precomputing collisions).
+    seed: u64,
+    /// The runtime background work (prefetch) is spawned on; `None` when built outside one.
+    rt: Option<tokio::runtime::Handle>,
+    /// DNSSEC validation (DNS-011), when `[dnssec] mode` isn't `off`; replaced on reload.
+    dnssec: ArcSwapOption<Dnssec>,
+    /// Validation counters, kept across reloads.
+    pub(crate) dnssec_stats: Arc<wrendns_upstream::dnssec::Stats>,
+    /// REQ: OBS-019 (T11.4) — per-upstream answer quality (EDE codes, DNSSEC verdicts, second
+    /// opinions), kept across reloads.
+    pub(crate) quality: Arc<crate::upstream_checks::Quality>,
+    /// Second opinions (`[upstream_check]`), when on; replaced on reload.
+    checker: ArcSwapOption<crate::upstream_checks::Checker>,
+}
+
+/// The validator and how strictly its verdict is applied.
+#[derive(Debug)]
+pub(crate) struct Dnssec {
+    validator: wrendns_upstream::dnssec::Validator,
+    /// Serve bogus answers anyway (counted).
+    permissive: bool,
+}
+
+/// Largest response we build for a deferred answer (TCP may carry up to 64 KiB).
+const MAX_RESPONSE: usize = u16::MAX as usize;
+
+/// REQ: DNS-013 (T9.8) — a bogus answer travels through the shared lookup as two bytes,
+/// `[0xBE, code]`: shorter than any DNS message (at least 12), so nothing mistakes it for one.
+fn bogus_marker(code: u16) -> Arc<[u8]> {
+    Arc::from(vec![0xBE, u8::try_from(code).unwrap_or(6)])
+}
+
+fn bogus_code(resp: &[u8]) -> Option<u16> {
+    match resp {
+        [0xBE, c] => Some(u16::from(*c)),
+        _ => None,
+    }
+}
+
+fn bogus_text(code: u16) -> &'static str {
+    match code {
+        ede::SIGNATURE_EXPIRED => "DNSSEC validation failed: signature expired",
+        ede::SIGNATURE_NOT_YET_VALID => "DNSSEC validation failed: signature not yet valid",
+        ede::RRSIGS_MISSING => "DNSSEC validation failed: signatures missing",
+        _ => "DNSSEC validation failed",
+    }
+}
+
+impl Pipeline {
+    pub(crate) fn new(
+        settings: Settings,
+        cache: Arc<Cache>,
+        router: Arc<Router>,
+        policy: Policy,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inflight: Arc::new(Semaphore::new(settings.max_inflight.max(1))),
+            metrics: Arc::new(Metrics::new(wrendns_net::default_workers() * 2 + 4)),
+            telemetry: Hub::new(settings.ring_bytes),
+            settings,
+            cache,
+            state: ArcSwap::from_pointee(Dynamic { router, policy }),
+            filter: ArcSwapOption::empty(),
+            filter_lock: std::sync::Mutex::new(()),
+            neighbors: Arc::new(Neighbors::default()),
+            workloads: Arc::default(),
+            kube: Arc::default(),
+            drill: Arc::default(),
+            pause: Pause::default(),
+            schedules: arc_swap::ArcSwap::from_pointee(ScheduleNow::default()),
+            dnstap: std::sync::OnceLock::new(),
+            router_leases: Arc::default(),
+            mdns_names: Arc::default(),
+            router_networks: Arc::default(),
+            device_names: arc_swap::ArcSwap::default(),
+            peer_names: arc_swap::ArcSwap::default(),
+            filter_pin: ArcSwapOption::empty(),
+            flights: Singleflight::new(),
+            seed: rand::random(),
+            loops: std::sync::atomic::AtomicU64::new(0),
+            rt: tokio::runtime::Handle::try_current().ok(),
+            dnssec: ArcSwapOption::empty(),
+            dnssec_stats: Arc::default(),
+            quality: Arc::default(),
+            checker: ArcSwapOption::empty(),
+        })
+    }
+
+    /// REQ: OBS-019 (T11.4) — second opinions on or off for `cfg` (at start and on reload).
+    pub(crate) fn set_upstream_check(&self, cfg: &wrendns_config::Config) {
+        self.checker
+            .store(crate::upstream_checks::Checker::from_config(cfg).map(Arc::new));
+    }
+
+    /// REQ: OBS-019 (T11.4) — after an upstream answered: its EDE code (if any) is counted,
+    /// and now and then the same question goes to a second upstream in the background.
+    fn after_upstream(
+        &self,
+        st: &Arc<Dynamic>,
+        group: &Arc<wrendns_upstream::Group>,
+        question: &Question,
+        answer: &[u8],
+        upstream: u16,
+    ) {
+        self.quality.note_answer(upstream, answer);
+        let Some(c) = self.checker.load_full() else {
+            return;
+        };
+        if !c.sample() {
+            return;
+        }
+        let Some(rt) = &self.rt else {
+            return;
+        };
+        c.spawn(
+            rt,
+            Arc::clone(&st.router),
+            Arc::clone(group),
+            question,
+            answer,
+            upstream,
+            Arc::clone(&self.quality),
+            self.telemetry.ts_us(Instant::now()),
+        );
+    }
+
+    /// This process's cache hash of a wire-format name (for reloading a cache dump, DNS-009).
+    pub(crate) fn name_hash(&self, wire: &[u8]) -> Option<u64> {
+        let mut n = wrendns_proto::NameBuf::default();
+        wrendns_proto::read_name_uncompressed(wire, 0, &mut n).ok()?;
+        Some(n.hash64(self.seed))
+    }
+
+    /// REQ: DNS-011 — turns DNSSEC validation on or off for `cfg` (at start and on reload).
+    pub(crate) fn set_dnssec(&self, cfg: &wrendns_config::Config) {
+        use wrendns_config::DnssecMode;
+        let permissive = match cfg.dnssec.mode {
+            DnssecMode::Off => {
+                self.dnssec.store(None);
+                return;
+            }
+            DnssecMode::Validate => false,
+            DnssecMode::Permissive => true,
+        };
+        // Negative trust anchors: configured, plus every route marked `dnssec_nta` (local
+        // zones forwarded elsewhere are usually unsigned).
+        let mut nta: Vec<String> = cfg
+            .dnssec
+            .negative_trust_anchors
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        for r in cfg.route.iter().filter(|r| r.dnssec_nta) {
+            nta.extend(r.match_suffix.iter().map(ToString::to_string));
+        }
+        // REQ: DNS-011 (T9.8) — root anchors from a file when one is set.
+        let validator =
+            wrendns_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats))
+                .with_anchors_file(cfg.dnssec.trust_anchors_file.as_deref())
+                .with_aggressive_nsec(cfg.dnssec.aggressive_nsec);
+        self.dnssec.store(Some(Arc::new(Dnssec {
+            validator,
+            permissive,
+        })));
+    }
+
+    /// REQ: FLT-013, FLT-006 (T24.30, ADR-996) — runs `f` on the state Explain reads (the policy,
+    /// the filter, the neighbors, the schedules), so a device's Policy panel and Explain read one
+    /// state. Off the query path.
+    pub(crate) fn with_explain_state<R>(
+        &self,
+        f: impl FnOnce(&crate::explain::State<'_>) -> R,
+    ) -> R {
+        let dynamic = self.state.load();
+        let filter = self.filter.load();
+        let schedules = self.schedules.load();
+        let devices = self.device_names.load();
+        let st = crate::explain::State {
+            dynamic: &dynamic,
+            filter: filter.as_deref(),
+            neighbors: &self.neighbors,
+            workloads: &self.workloads,
+            pause: &self.pause,
+            schedules: &schedules,
+            devices: Some(&devices.data),
+        };
+        f(&st)
+    }
+
+    /// Explains what this pipeline would do with a query, and why (FLT-013).
+    pub(crate) fn explain(
+        &self,
+        req: &crate::explain::Request<'_>,
+        source: impl Fn(&str) -> Option<Vec<u8>>,
+    ) -> Result<crate::explain::Explanation, String> {
+        let dynamic = self.state.load();
+        let filter = self.filter.load();
+        let schedules = self.schedules.load();
+        let devices = self.device_names.load();
+        let st = crate::explain::State {
+            dynamic: &dynamic,
+            filter: filter.as_deref(),
+            neighbors: &self.neighbors,
+            workloads: &self.workloads,
+            pause: &self.pause,
+            schedules: &schedules,
+            devices: Some(&devices.data),
+        };
+        crate::explain::explain(&st, req, source)
+    }
+
+    /// Swaps in new routing/policy (OPS-009). In-flight queries finish with the state they
+    /// started with; new queries see the new state immediately.
+    pub(crate) fn reload(&self, router: Arc<Router>, policy: Policy) {
+        retire(self.state.swap(Arc::new(Dynamic { router, policy })));
+        // Group/client changes re-derive the per-client list masks for the current snapshot.
+        self.set_filter(None);
+    }
+
+    /// Installs `matcher` (or, with `None`, re-installs the current one) with masks for the
+    /// current client table. Called when a snapshot is published and on reload.
+    pub(crate) fn set_filter(&self, matcher: Option<Arc<Matcher>>) {
+        let _serialized = self
+            .filter_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let matcher = match matcher {
+            Some(m) => m,
+            None => match self.filter.load_full() {
+                Some(f) => Arc::clone(&f.matcher),
+                None => return,
+            },
+        };
+        let state = self.state.load();
+        let clients = Arc::clone(&state.policy.clients);
+        let sched = self.schedules.load();
+        retire(self.filter.swap(Some(Arc::new(FilterState::new(
+            matcher,
+            clients,
+            &sched,
+            &state.policy.shadow_lists,
+        )))));
+    }
+
+    /// The current routing/policy state.
+    pub(crate) fn current(&self) -> Arc<Dynamic> {
+        self.state.load_full()
+    }
+
+    /// Waits until no upstream resolution is in flight, or `timeout` passes (OPS-007 drain).
+    /// Returns true if everything finished.
+    pub(crate) async fn drain(&self, timeout: Duration) -> bool {
+        let max = u32::try_from(self.settings.max_inflight.max(1)).unwrap_or(u32::MAX);
+        matches!(
+            tokio::time::timeout(timeout, self.inflight.acquire_many(max)).await,
+            Ok(Ok(_))
+        )
+    }
+
+    fn key(&self, q: &Query<'_>, view: u16) -> CacheKey {
+        CacheKey::new(q, q.qname.hash64(self.seed), view)
+    }
+
+    fn finish(&self, q: &Query<'_>, out: &mut [u8], len: usize, transport: Transport) -> usize {
+        // REQ: DNS-021 (T12.4) — only a query that asks for NSID pays for it.
+        let len = if q
+            .edns
+            .as_ref()
+            .is_some_and(|e| e.option(wrendns_proto::consts::opt::NSID).is_some())
+        {
+            let st = self.state.load();
+            st.policy
+                .nsid
+                .as_deref()
+                .and_then(|id| add_nsid(out, len, id))
+                .unwrap_or(len)
+        } else {
+            len
+        };
+        match transport {
+            Transport::Udp => truncate_for_udp(
+                out,
+                len,
+                udp_limit(q.edns.as_ref(), self.settings.edns_payload),
+            ),
+            Transport::Tcp | Transport::Dot | Transport::Doh | Transport::Doq => len,
+        }
+    }
+
+    /// The synchronous stage: parse, then answer from cache or defer.
+    #[allow(clippy::too_many_lines)] // the query path in order, one step after another
+    fn handle_sync(
+        self: &Arc<Self>,
+        req: &[u8],
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        let st = self.state.load();
+        oc.status = Status::Malformed;
+        // A query that can't be parsed has no device: it counts for `default`.
+        oc.group = st.policy.clients.default_group_id();
+        let q = match parse_query(req) {
+            Ok(q) => q,
+            Err(QueryError::Drop) => {
+                oc.status = Status::Dropped;
+                return Response::Drop;
+            }
+            Err(QueryError::NotImp) => return ready(error_from_raw(req, rcode::NOTIMP, out)),
+            Err(QueryError::FormErr(_)) => return ready(error_from_raw(req, rcode::FORMERR, out)),
+            Err(QueryError::BadVers) => {
+                return ready(badvers_from_raw(req, self.settings.edns_payload, out));
+            }
+        };
+        oc.qtype = q.qtype;
+        // REQ: FLT-006 — client identification (`spec/03` §3 step 2), including client IDs from
+        // the DoT SNI or the DoH path. First, so every answer below (refusals, local records)
+        // is logged with the device and its group (owner report 2026-10-07: local names were
+        // logged under the first configured group).
+        let who = Who {
+            peer: meta.peer.ip(),
+            mac: q.edns.as_ref().and_then(wrendns_proto::Edns::client_mac),
+            client_id: meta.client_id,
+        };
+        let ident = st.policy.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(wrendns_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+            &self.workloads,
+        );
+        oc.client_ref = ident.client.map_or(0, |c| u32::from(c) + 1);
+        oc.group = st
+            .policy
+            .clients
+            .group_ids(ident)
+            .first()
+            .copied()
+            .unwrap_or(0);
+        // REQ: CLU-014 (ADR-151) — a failover drill's target gets no answer (after
+        // identification, so groups and names work; before rate limiting). One relaxed load
+        // when no drill runs.
+        if let Some(t) = self.drill.active() {
+            let workloads = workload_table(ident, &self.workloads);
+            let workload = workloads
+                .as_ref()
+                .and_then(|w| w.get(who.peer))
+                .map(|h| &*h.workload.text);
+            let name = st.policy.clients.client(ident).map(|c| &*c.name);
+            if t.drops(
+                who.peer,
+                name,
+                workload,
+                st.policy.clients.group_names(ident),
+            ) {
+                self.drill.count();
+                oc.status = Status::Drilled;
+                // REQ: CLU-014 (owner 2026-10-19) — the REFUSED mode: an answer at once.
+                if t.refused {
+                    return self.simple(
+                        &q,
+                        out,
+                        rcode::REFUSED,
+                        Some((ede::NOT_READY, "failover drill")),
+                        meta,
+                    );
+                }
+                return Response::Close;
+            }
+        }
+        let special = match self.pre_checks(&q, meta, out, start, oc) {
+            Ok(special) => special,
+            Err(early) => return early,
+        };
+        if let Some(len) = self.local_answer(&q, &st.policy, ident, out) {
+            oc.status = Status::Local;
+            return Response::Ready(self.finish(&q, out, len, meta.transport));
+        }
+        // REQ: FLT-005 (T6.12, ADR-067) — quick rules decide before any list.
+        match self.quick_decision(&st.policy, q.qname.as_wire(), ident, who) {
+            Some(m) if m.allow => oc.rule = Some(quick_rule(&st.policy, m)),
+            Some(m) => {
+                oc.status = Status::Blocked;
+                oc.rule = Some(quick_rule(&st.policy, m));
+                let len = self.block_answer(
+                    &q,
+                    out,
+                    st.policy.clients.primary_group(ident),
+                    "quick rule",
+                );
+                return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
+            }
+            // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
+            None => {
+                // REQ: FLT-010 (T7.10) — a schedule blocking everything for the group (bedtime).
+                if let Some(len) = self.schedule_block(&q, out, &st.policy, ident, oc) {
+                    return ready(Some(self.finish(&q, out, len, meta.transport)));
+                }
+                // REQ: FLT-014 (T9.20) — list rewrites (`$dnsrewrite`) win over blocking.
+                if let Some(r) = self.list_rewrite(&q, who) {
+                    let groups = st.policy.clients.group_names(ident);
+                    return self.list_rewrite_answer(req, &q, r, groups, who, meta, out, start, oc);
+                }
+                if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
+                    return blocked;
+                }
+            }
+        }
+        // REQ: FLT-016 (T12.5) — the group's devices get no IPv6 addresses (after local data
+        // and blocking, before rewrites and upstreams).
+        if q.qtype == rtype::AAAA && st.policy.clients.primary_group(ident).filter_aaaa {
+            oc.status = Status::Special;
+            return self.simple(&q, out, rcode::NOERROR, None, meta);
+        }
+        let groups = st.policy.clients.group_names(ident);
+        // REQ: DNS-016 (T9.10) — RFC 6147 §5.3.1: a reverse name inside the NAT64 prefix is
+        // the IPv4 address's (a CNAME to its in-addr.arpa name, resolved like any other).
+        if q.qtype == rtype::PTR
+            && let Some(prefix) = st.policy.clients.primary_group(ident).dns64
+            && let Some(target) = dns64_reverse_target(&q.qname, prefix)
+        {
+            return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
+        }
+        // REQ: FLT-014 (T7.20) — the group's rewrites (blocks above still win).
+        match st.policy.clients.primary_group(ident).rewrite_for(&q.qname) {
+            Some(RewriteTarget::Addr(ip)) => {
+                oc.status = Status::Local;
+                return self.rewrite_answer(&q, ip, out, meta);
+            }
+            Some(RewriteTarget::Name(target)) => {
+                return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
+            }
+            None => {}
+        }
+        // REQ: FLT-011 (T7.11) — safe search: the engine's safe name instead.
+        if let Some(target) = Self::safe_search_target(&q, st.policy.clients.primary_group(ident)) {
+            return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
+        }
+        self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
+    }
+
+    /// REQ: DNS-010 — local data is authoritative and answered before cache/upstreams; then
+    /// (DNS-018, T7.22) the authoritative zones the client's groups see, before any filtering.
+    fn local_answer(
+        &self,
+        q: &Query<'_>,
+        policy: &Policy,
+        ident: Identity,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        if let Some(len) =
+            policy
+                .local
+                .answer(q, out, response_edns(q, self.settings.edns_payload, None))
+        {
+            return Some(len);
+        }
+        // REQ: DNS-023 (T22.1) — device names: after configured records and a zone's own
+        // records, before a zone's NXDOMAIN. With the feature off this is one branch; on, one
+        // lock-free load.
+        if policy.device_dns.is_none() {
+            if policy.zones.is_empty() {
+                return None;
+            }
+            return self.zone_answer(q, policy.clients.group_names(ident), out, None);
+        }
+        let devices = self.device_names.load();
+        if policy.zones.is_empty() {
+            return devices
+                .data
+                .answer(q, out, response_edns(q, self.settings.edns_payload, None));
+        }
+        self.zone_answer(
+            q,
+            policy.clients.group_names(ident),
+            out,
+            Some(&devices.data),
+        )
+    }
+
+    /// REQ: DNS-018 (T7.22) — the answer from the most specific zone this client sees: its
+    /// records, no data for the apex and empty non-terminals, else NXDOMAIN (authoritative,
+    /// with an SOA).
+    fn zone_answer(
+        &self,
+        q: &Query<'_>,
+        groups: &[Box<str>],
+        out: &mut [u8],
+        devices: Option<&LocalData>,
+    ) -> Option<usize> {
+        let st = self.state.load();
+        let Some(z) = st.policy.zones.iter().find(|z| {
+            q.qname.is_subdomain_of(&z.apex)
+                && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
+        }) else {
+            // REQ: DNS-023 — no zone covers it: the device names may.
+            return devices?.answer(q, out, response_edns(q, self.settings.edns_payload, None));
+        };
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        // REQ: DNS-018 (T9.18) — the apex's SOA and NS.
+        if q.qname == z.apex && matches!(q.qtype, rtype::SOA | rtype::NS) {
+            let mut b = ResponseBuilder::new(q, out, rcode::NOERROR).ok()?;
+            b.authoritative(true);
+            if q.qtype == rtype::SOA {
+                b.answer_rdata(None, rtype::SOA, z.ttl, &z.soa).ok()?;
+            } else {
+                for ns in &z.ns {
+                    b.answer_rdata(None, rtype::NS, z.ttl, ns.as_wire()).ok()?;
+                }
+            }
+            return b.finish(edns).ok();
+        }
+        if let Some(len) = z.data.answer(q, out, edns) {
+            return Some(len);
+        }
+        // REQ: DNS-023 — a device name inside a zone (the zone's own records won above).
+        if let Some(len) = devices
+            .and_then(|d| d.answer(q, out, response_edns(q, self.settings.edns_payload, None)))
+        {
+            return Some(len);
+        }
+        let exists = q.qname == z.apex || z.data.has_below(&q.qname);
+        let rc = if exists {
+            rcode::NOERROR
+        } else {
+            rcode::NXDOMAIN
+        };
+        let mut b = ResponseBuilder::new(q, out, rc).ok()?;
+        // The zone's own SOA, owned by the apex (RFC 2308), with the negative TTL.
+        b.authoritative(true)
+            .authority_rdata(&z.apex, rtype::SOA, z.negative_ttl, &z.soa)
+            .ok()?;
+        b.finish(response_edns(q, self.settings.edns_payload, None))
+            .ok()
+    }
+
+    /// REQ: DNS-016 (T7.21) — the client's group NAT64 prefix and (T9.10) exclusions, when
+    /// it has DNS64.
+    fn dns64_for(&self, policy: &Policy, who: Who) -> Option<(std::net::Ipv6Addr, Vec<Cidr>)> {
+        let ident = policy.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(wrendns_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+            &self.workloads,
+        );
+        let g = policy.clients.primary_group(ident);
+        g.dns64.map(|p| (p, g.dns64_exclude.clone()))
+    }
+
+    /// REQ: DNS-016 — `name` answered from the cache, else resolved (coalesced and cached
+    /// like any upstream answer), without a query event: DNS64's A lookup.
+    fn cached_internal(&self, req: &[u8], groups: &[Box<str>]) -> Option<Internal> {
+        let q = parse_query(req).ok()?;
+        let st = self.state.load();
+        let sel = st.router.select(&Question::from_query(&q), groups)?;
+        let key = self.key(&q, sel.view);
+        let client = Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+        let mut out = vec![0u8; MAX_RESPONSE];
+        match self
+            .cache
+            .get(&key, &q.qname, &client, Instant::now(), &mut out)
+        {
+            Lookup::Hit { len, .. } => {
+                out.truncate(len);
+                Some(Internal::Hit(out))
+            }
+            Lookup::Expired | Lookup::Miss => Some(Internal::Miss(key, sel.view)),
+        }
+    }
+
+    pub(crate) async fn lookup_internal(
+        self: &Arc<Self>,
+        req: Vec<u8>,
+        groups: &[Box<str>],
+    ) -> Option<Vec<u8>> {
+        let (key, view) = match self.cached_internal(&req, groups)? {
+            Internal::Hit(bytes) => return Some(bytes),
+            Internal::Miss(key, view) => (key, view),
+        };
+        let permit = Arc::clone(&self.inflight).try_acquire_owned().ok()?;
+        let (a, _) = Arc::clone(self)
+            .resolve_shared(req, key, view, permit)
+            .await?;
+        Some(a.to_vec())
+    }
+
+    /// The A query for the AAAA query `req` (same ID, RD, and DO).
+    fn a_query(req: &[u8]) -> Option<Vec<u8>> {
+        let q = parse_query(req).ok()?;
+        let edns = q.edns.as_ref().map(|e| EdnsOut {
+            udp_payload: e.udp_payload,
+            dnssec_ok: e.dnssec_ok,
+            ede: None,
+        });
+        let mut buf = [0u8; 512];
+        let len = build_query(
+            &mut buf,
+            q.header.id,
+            &q.qname,
+            rtype::A,
+            q.qclass,
+            q.header.flags.rd(),
+            edns,
+        )
+        .ok()?;
+        Some(buf[..len].to_vec())
+    }
+
+    /// REQ: DNS-016 — the AAAA answer made from the name's A records (finished for the
+    /// client's transport), or `None` when the name has no A records either.
+    async fn dns64_synthesize(
+        self: &Arc<Self>,
+        req: &[u8],
+        d: &Dns64,
+        transport: Transport,
+    ) -> Option<Vec<u8>> {
+        let a = self.lookup_internal(Self::a_query(req)?, &d.groups).await?;
+        let mut out = vec![0u8; MAX_RESPONSE];
+        let len = self.synthesize_aaaa(req, &a, d.prefix, &d.exclude, &mut out)?;
+        let q = parse_query(req).ok()?;
+        let len = self.finish(&q, &mut out, len, transport);
+        out.truncate(len);
+        Some(out)
+    }
+
+    /// RFC 6147 §5.1.7: the CNAMEs and A records of `a` (the A answer) as an answer to `req`
+    /// (the AAAA query), each A turned into `prefix` + the IPv4 address. `None` if there's no
+    /// A record to use.
+    fn synthesize_aaaa(
+        &self,
+        req: &[u8],
+        a: &[u8],
+        prefix: std::net::Ipv6Addr,
+        exclude: &[Cidr],
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let q = parse_query(req).ok()?;
+        let recs: Vec<wrendns_proto::Record> = records(a)
+            .ok()?
+            .flatten()
+            .filter(|r| r.section == Section::Answer)
+            .collect();
+        let usable = |r: &wrendns_proto::Record| {
+            r.rtype == rtype::A
+                && r.rdlen == 4
+                && !matches!(r.rdata(a)[0], 0 | 127)
+                && r.rdata(a)[..2] != [169, 254]
+                // REQ: DNS-016 (T9.10) — and none in the exclusion set.
+                && answer_ip(rtype::A, r.rdata(a)).is_none_or(|ip| !exclude.iter().any(|c| c.contains(ip)))
+        };
+        if !recs.iter().any(usable) {
+            return None;
+        }
+        let mut b = ResponseBuilder::new(&q, out, rcode::NOERROR).ok()?;
+        let p = prefix.octets();
+        for r in &recs {
+            let mut owner = NameBuf::default();
+            wrendns_proto::read_name(a, r.name_off, &mut owner).ok()?;
+            if r.rtype == rtype::CNAME {
+                let mut target = NameBuf::default();
+                wrendns_proto::read_name(a, r.rdata_off, &mut target).ok()?;
+                b.answer_rdata(Some(&owner), rtype::CNAME, r.ttl, target.as_wire())
+                    .ok()?;
+            } else if usable(r) {
+                let mut v6 = [0u8; 16];
+                v6[..12].copy_from_slice(&p[..12]);
+                v6[12..].copy_from_slice(r.rdata(a));
+                b.answer_rdata(Some(&owner), rtype::AAAA, r.ttl, &v6).ok()?;
+            }
+        }
+        b.finish(response_edns(&q, self.settings.edns_payload, None))
+            .ok()
+    }
+
+    /// REQ: DNS-016 (T9.10) — `resp` (an AAAA answer) without its excluded AAAA records,
+    /// when it has some and others remain (with none left, it's synthesized instead). The
+    /// CNAMEs stay; signatures go, since the set they signed changed.
+    fn dns64_filter(&self, req: &[u8], resp: &[u8], exclude: &[Cidr]) -> Option<Vec<u8>> {
+        if response_rcode(resp) != rcode::NOERROR {
+            return None;
+        }
+        let recs: Vec<wrendns_proto::Record> = records(resp)
+            .ok()?
+            .flatten()
+            .filter(|r| r.section == Section::Answer)
+            .collect();
+        let aaaa = |r: &&wrendns_proto::Record| r.rtype == rtype::AAAA;
+        let excluded = |r: &wrendns_proto::Record| {
+            answer_ip(rtype::AAAA, r.rdata(resp)).is_some_and(|ip| dns64_excluded(ip, exclude))
+        };
+        if !recs.iter().filter(aaaa).any(excluded) || recs.iter().filter(aaaa).all(excluded) {
+            return None;
+        }
+        let q = parse_query(req).ok()?;
+        let mut out = vec![0u8; MAX_RESPONSE];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).ok()?;
+        for r in &recs {
+            let mut owner = NameBuf::default();
+            wrendns_proto::read_name(resp, r.name_off, &mut owner).ok()?;
+            if r.rtype == rtype::CNAME {
+                let mut target = NameBuf::default();
+                wrendns_proto::read_name(resp, r.rdata_off, &mut target).ok()?;
+                b.answer_rdata(Some(&owner), rtype::CNAME, r.ttl, target.as_wire())
+                    .ok()?;
+            } else if r.rtype == rtype::AAAA && !excluded(r) {
+                b.answer_rdata(Some(&owner), rtype::AAAA, r.ttl, r.rdata(resp))
+                    .ok()?;
+            }
+        }
+        let len = b
+            .finish(response_edns(&q, self.settings.edns_payload, None))
+            .ok()?;
+        out.truncate(len);
+        Some(out)
+    }
+
+    /// REQ: DNS-016 — a cached AAAA answer without addresses: made from a cached A answer
+    /// now, or looked up first (the query event is recorded when it's done).
+    #[allow(clippy::too_many_arguments)]
+    fn dns64_after_cache(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        d: Dns64,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        len: usize,
+        start: Instant,
+        oc: Outcome,
+    ) -> Response {
+        let a_req = Self::a_query(req);
+        if let Some(Internal::Hit(a)) = a_req
+            .as_deref()
+            .and_then(|r| self.cached_internal(r, &d.groups))
+        {
+            let mut tmp = vec![0u8; MAX_RESPONSE];
+            if let Some(n) = self.synthesize_aaaa(req, &a, d.prefix, &d.exclude, &mut tmp)
+                && n <= out.len()
+            {
+                out[..n].copy_from_slice(&tmp[..n]);
+                return Response::Ready(self.finish(q, out, n, meta.transport));
+            }
+            return Response::Ready(self.finish(q, out, len, meta.transport));
+        }
+        let this = Arc::clone(self);
+        let req = req.to_vec();
+        let mut original = out[..len].to_vec();
+        let (transport, peer) = (meta.transport, meta.peer.ip());
+        Response::Deferred(Box::pin(async move {
+            let waited = Instant::now();
+            let q = parse_query(&req).ok()?;
+            let bytes = if let Some(b) = this.dns64_synthesize(&req, &d, transport).await {
+                b
+            } else {
+                let n = original.len();
+                original.resize(MAX_RESPONSE.max(n), 0);
+                let n = this.finish(&q, &mut original, n, transport);
+                original.truncate(n);
+                original
+            };
+            this.metrics.record(
+                proto(transport),
+                oc.status,
+                Some(response_rcode(&bytes)),
+                oc.qtype,
+                start.elapsed(),
+            );
+            this.emit(
+                peer,
+                transport,
+                &req,
+                Some(&bytes),
+                &oc,
+                start,
+                waited.elapsed(),
+            );
+            Some(bytes)
+        }))
+    }
+
+    /// REQ: FLT-014 (T9.20) — the `$dnsrewrite` answer for this client, if a list it uses has
+    /// one for the name. One bool check when no list has rewrites.
+    fn list_rewrite(
+        &self,
+        q: &Query<'_>,
+        who: Who,
+    ) -> Option<(wrendns_filter::rewrite::ListRewrite, u16)> {
+        let guard = self.filter.load();
+        let f = guard.as_ref()?;
+        let client_id = who.client_id.as_ref().map(wrendns_net::ClientId::as_str);
+        f.list_rewrite(
+            q,
+            |clients| {
+                clients.identify(
+                    who.peer,
+                    client_id,
+                    who.mac,
+                    &self.neighbors,
+                    &self.workloads,
+                )
+            },
+            who.peer,
+            client_id,
+            &self.pause,
+            &self.workloads,
+        )
+    }
+
+    /// REQ: FLT-014 (T9.20) — answers with a list rewrite: addresses of the asked family (60 s),
+    /// a CNAME resolved like any name, or an rcode with no records; attributed to the list.
+    #[allow(clippy::too_many_arguments)] // the same inputs as resolve_or_defer
+    fn list_rewrite_answer(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        (rewrite, list): (wrendns_filter::rewrite::ListRewrite, u16),
+        groups: &[Box<str>],
+        who: Who,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        use wrendns_filter::rewrite::ListRewrite;
+        oc.status = Status::Local;
+        oc.rule = Some(Rule {
+            list,
+            kind: RuleKind::Modifier,
+            allow: false,
+        });
+        match rewrite {
+            ListRewrite::Rcode(rc) => self.simple(q, out, rc, None, meta),
+            ListRewrite::Cname(target) => match NameBuf::from_presentation(&target) {
+                Ok(t) => self.safe_search(req, q, &t, groups, who, meta, out, start, oc),
+                Err(_) => self.simple(q, out, rcode::SERVFAIL, None, meta),
+            },
+            ListRewrite::Addrs(ips) => {
+                let edns = response_edns(q, self.settings.edns_payload, None);
+                let built = ResponseBuilder::new(q, out, rcode::NOERROR)
+                    .ok()
+                    .and_then(|mut b| {
+                        for ip in &ips {
+                            match ip {
+                                std::net::IpAddr::V4(a) => b.answer_a(60, *a).ok()?,
+                                std::net::IpAddr::V6(a) => b.answer_aaaa(60, *a).ok()?,
+                            };
+                        }
+                        b.finish(edns).ok()
+                    });
+                match built {
+                    Some(len) => Response::Ready(self.finish(q, out, len, meta.transport)),
+                    None => self.simple(q, out, rcode::SERVFAIL, None, meta),
+                }
+            }
+        }
+    }
+
+    /// REQ: FLT-014 (T7.20) — a rewrite to an address: A or AAAA as asked (no data for the
+    /// other family and other types).
+    fn rewrite_answer(
+        &self,
+        q: &Query<'_>,
+        ip: std::net::IpAddr,
+        out: &mut [u8],
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let built = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                match (q.qtype, ip) {
+                    (rtype::A, std::net::IpAddr::V4(v4)) => {
+                        b.answer_a(60, v4).ok()?;
+                    }
+                    (rtype::AAAA, std::net::IpAddr::V6(v6)) => {
+                        b.answer_aaaa(60, v6).ok()?;
+                    }
+                    _ => {}
+                }
+                b.finish(edns).ok()
+            });
+        match built {
+            Some(len) => Response::Ready(self.finish(q, out, len, meta.transport)),
+            None => self.simple(q, out, rcode::SERVFAIL, None, meta),
+        }
+    }
+
+    /// REQ: FLT-011 (T7.11) — the safe-search name for this query, when the group has safe
+    /// search and the name is an engine's. Never allocates: the name is rebuilt in presentation
+    /// form on the stack (the engine tables only hold letters, digits, and hyphens, so a label
+    /// with anything else can't match), which is what the groups that use this feature (the
+    /// kids' devices, typically) pay per query (review 02-06). Shared with `explain` (FLT-013).
+    pub(crate) fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
+        let youtube = group.safe_search?;
+        // A wire name is at most 255 bytes, its presentation form at most 253.
+        let mut buf = [0u8; 255];
+        let mut n = 0;
+        for (i, label) in q.qname.labels().enumerate() {
+            if i > 0 {
+                *buf.get_mut(n)? = b'.';
+                n += 1;
+            }
+            for &b in label {
+                if !(b.is_ascii_alphanumeric() || b == b'-') {
+                    return None;
+                }
+                *buf.get_mut(n)? = b.to_ascii_lowercase();
+                n += 1;
+            }
+        }
+        let name = std::str::from_utf8(buf.get(..n)?).ok()?;
+        let target =
+            wrendns_config::safesearch::target_in(name, youtube, &group.safe_search_engines)?;
+        NameBuf::from_presentation(target).ok()
+    }
+
+    /// REQ: FLT-011 (T7.11) — answers `q` as `CNAME target` plus the target's records of the
+    /// asked type, resolving the target through the cache and upstreams like any name. HTTPS
+    /// and SVCB get no data (so clients use the target's addresses, not hints for the
+    /// original name).
+    #[allow(clippy::too_many_arguments)] // the same inputs as resolve_or_defer
+    fn safe_search(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        target: &NameBuf,
+        groups: &[Box<str>],
+        who: Who,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        if matches!(q.qtype, rtype::HTTPS | rtype::SVCB) {
+            return self.simple(q, out, rcode::NOERROR, None, meta);
+        }
+        let edns = q.edns.as_ref().map(|e| EdnsOut {
+            udp_payload: e.udp_payload,
+            dnssec_ok: e.dnssec_ok,
+            ede: None,
+        });
+        let mut buf = [0u8; 512];
+        let Ok(len) = build_query(&mut buf, q.header.id, target, q.qtype, q.qclass, true, edns)
+        else {
+            return self.simple(q, out, rcode::SERVFAIL, None, meta);
+        };
+        let treq = buf[..len].to_vec();
+        let Ok(tq) = parse_query(&treq) else {
+            return self.simple(q, out, rcode::SERVFAIL, None, meta);
+        };
+        let orig = req.to_vec();
+        let target = *target;
+        let transport = meta.transport;
+        // A private reverse name stays local (RFC 6303), as when asked directly (T9.10).
+        let special = wrendns_policy::classify(&tq, &self.state.load().policy.special)
+            .filter(|s| *s == Special::PrivatePtr);
+        match self.resolve_or_defer(&treq, &tq, special, groups, who, meta, out, start, oc) {
+            Response::Ready(n) => {
+                let resp = out[..n].to_vec();
+                match self.safe_search_answer(&orig, &target, &resp, out) {
+                    Some(len) => Response::Ready(self.finish(q, out, len, transport)),
+                    None => self.simple(q, out, rcode::SERVFAIL, None, meta),
+                }
+            }
+            Response::Deferred(f) => {
+                let this = Arc::clone(self);
+                Response::Deferred(Box::pin(async move {
+                    let resp = f.await?;
+                    let mut o = vec![0u8; MAX_RESPONSE];
+                    let len = this.safe_search_answer(&orig, &target, &resp, &mut o)?;
+                    let oq = parse_query(&orig).ok()?;
+                    let len = this.finish(&oq, &mut o, len, transport);
+                    o.truncate(len);
+                    Some(o)
+                }))
+            }
+            r @ (Response::Drop | Response::Close) => r,
+        }
+    }
+
+    /// The answer to `orig` from the target's answer `resp`: `CNAME target` and the target's
+    /// records of the asked type (owned by the target). A failed target fails the same way.
+    fn safe_search_answer(
+        &self,
+        orig: &[u8],
+        target: &NameBuf,
+        resp: &[u8],
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let oq = parse_query(orig).ok()?;
+        let rc = u16::from(resp.get(3)? & 0x0F);
+        let mut b = ResponseBuilder::new(&oq, out, rc).ok()?;
+        if rc == rcode::NOERROR {
+            b.answer_rdata(None, rtype::CNAME, 300, target.as_wire())
+                .ok()?;
+            for r in records(resp).ok()?.flatten() {
+                if r.section == Section::Answer && r.rtype == oq.qtype {
+                    b.answer_rdata(Some(target), r.rtype, r.ttl, r.rdata(resp))
+                        .ok()?;
+                }
+            }
+        }
+        b.finish(response_edns(&oq, self.settings.edns_payload, None))
+            .ok()
+    }
+
+    /// `spec/03` §3 steps 2–4: access, rate limit, loop tag, ANY, special names. Returns the
+    /// special-name class to continue with, or the response to send right away.
+    fn pre_checks(
+        &self,
+        q: &Query<'_>,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Result<Option<Special>, Response> {
+        let st = self.state.load();
+        let q = *q;
+        oc.status = Status::Refused;
+        // 08 §6 — never an open resolver: refuse clients outside allowed_networks.
+        if !wrendns_policy::is_allowed(&st.policy.allowed, meta.peer.ip()) {
+            return Err(self.simple(
+                &q,
+                out,
+                rcode::REFUSED,
+                Some((ede::PROHIBITED, "client not allowed")),
+                meta,
+            ));
+        }
+        // REQ: DNS-014 — per-client rate limit.
+        if let Some(rl) = &st.policy.limiter
+            && !rl.check(meta.peer.ip(), start)
+        {
+            oc.status = Status::RateLimited;
+            return Err(match st.policy.limit_action {
+                RateLimitAction::Drop => Response::Drop,
+                RateLimitAction::Refused => self.simple(
+                    &q,
+                    out,
+                    rcode::REFUSED,
+                    Some((ede::PROHIBITED, "rate limited")),
+                    meta,
+                ),
+            });
+        }
+        // `spec/04` §7: a query carrying our own loop tag means an upstream forwards back to
+        // us. Answering would recurse forever; drop it and make noise.
+        if wrendns_upstream::is_own_loop_tag(&q) {
+            let n = self
+                .loops
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n.is_multiple_of(1000) {
+                tracing::error!(
+                    qname = %q.qname.display(),
+                    total = n + 1,
+                    "forwarding loop detected: an upstream sends our own queries back to us; check upstream configuration"
+                );
+            }
+            oc.status = Status::Dropped;
+            return Err(Response::Drop);
+        }
+        oc.status = Status::Special;
+        // REQ: DNS-019 — answer ANY with the RFC 8482 minimal response (no amplification).
+        if q.is_any() {
+            let edns = response_edns(&q, self.settings.edns_payload, None);
+            let len = ResponseBuilder::new(&q, out, rcode::NOERROR)
+                .ok()
+                .and_then(|mut b| {
+                    b.answer_any_refusal(3600).ok()?;
+                    b.finish(edns).ok()
+                });
+            return Err(ready(len.map(|l| self.finish(&q, out, l, meta.transport))));
+        }
+        // REQ: DNS-019 (ADR-126) — a resolver serves no zones to transfer: REFUSED here, never
+        // forwarded (an upstream can only fail it, and the zone's name would leave the network).
+        if q.is_zone_transfer() {
+            return Err(self.simple(
+                &q,
+                out,
+                rcode::REFUSED,
+                Some((ede::NOT_SUPPORTED, "zone transfers aren't served")),
+                meta,
+            ));
+        }
+        // DNS-019 / RFC 6761 — special names (ADR-014).
+        let special = wrendns_policy::classify(&q, &st.policy.special);
+        match special {
+            Some(Special::Refused) => Err(self.simple(&q, out, rcode::REFUSED, None, meta)),
+            // REQ: DNS-019 (ADR-904) — iCloud Private Relay's names, like the Firefox canary.
+            Some(Special::Nxdomain | Special::PrivateRelay) => {
+                Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta))
+            }
+            Some(Special::Localhost) => Err(self.localhost(&q, out, meta)),
+            Some(Special::ResolverArpa) => Err(self.resolver_arpa(&q, &st.policy.ddr, out, meta)),
+            other => Ok(other),
+        }
+    }
+
+    /// REQ: DNS-019 (ADR-904) — `resolver.arpa` (RFC 9462), answered here and never forwarded:
+    /// `_dns.resolver.arpa` SVCB gets this node's DDR records, anything else no data (with an
+    /// SOA, so clients cache it). The records are built with the policy; no allocation here.
+    fn resolver_arpa(
+        &self,
+        q: &Query<'_>,
+        ddr: &[Box<[u8]>],
+        out: &mut [u8],
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let len = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                b.authoritative(true);
+                if wrendns_policy::is_ddr_query(q) && !ddr.is_empty() {
+                    for r in ddr {
+                        b.answer_rdata(None, rtype::SVCB, 300, r).ok()?;
+                    }
+                } else {
+                    b.authority_soa(300).ok()?;
+                }
+                b.finish(edns).ok()
+            });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
+    }
+
+    /// Routing, private-PTR handling, cache lookup, and deferral to upstreams.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_or_defer(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        special: Option<Special>,
+        groups: &[Box<str>],
+        who: Who,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        let st = self.state.load();
+        let q = *q;
+        let question = Question::from_query(&q);
+        // REQ: FLT-005, UPS-007 — routes can match the client's groups.
+        let selection = st.router.select(&question, groups);
+        // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303);
+        // REQ: DNS-019 (ADR-904) — so do single-label names with domain-needed on.
+        if matches!(special, Some(Special::PrivatePtr | Special::SingleLabel))
+            && !selection.is_some_and(|s| s.routed)
+        {
+            return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
+        }
+        let Some(sel) = selection else {
+            // No upstream group applies (none configured): we can't resolve this.
+            oc.status = Status::Refused;
+            let edns = response_edns(
+                &q,
+                self.settings.edns_payload,
+                Some((ede::NOT_READY, "no upstreams configured")),
+            );
+            let len = ResponseBuilder::new(&q, out, rcode::REFUSED)
+                .ok()
+                .and_then(|b| b.finish(edns).ok());
+            return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
+        };
+        let mut key = self.key(&q, sel.view);
+        // REQ: DNS-015 (T9.9) — a group passing clients' subnets on caches per subnet.
+        if sel.group.ecs_client() {
+            key = key.with_ecs(wrendns_upstream::client_subnet(who.peer));
+        }
+        let client = Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+        // REQ: DNS-016 (T7.21) — DNS64 for this client (AAAA only; a validating client that
+        // sets CD gets the real answer).
+        let dns64 =
+            (q.qtype == rtype::AAAA && !q.header.flags.cd() && st.policy.clients.any_dns64())
+                .then(|| self.dns64_for(&st.policy, who))
+                .flatten()
+                .map(|(prefix, exclude)| Dns64 {
+                    prefix,
+                    exclude,
+                    groups: groups.to_vec(),
+                });
+        match self.cache.get(&key, &q.qname, &client, start, out) {
+            Lookup::Hit { len, prefetch } => {
+                if prefetch {
+                    self.prefetch(req, key, sel.view);
+                }
+                oc.status = Status::Cached;
+                let len = match self.cname_block(&q, who, out, len) {
+                    Some((blocked, rule)) => {
+                        oc.status = Status::Blocked;
+                        oc.rule = Some(rule);
+                        blocked
+                    }
+                    None => len,
+                };
+                if let Some(d) = &dns64
+                    && oc.status == Status::Cached
+                    && let Some(n) = self.dns64_filter(req, &out[..len], &d.exclude)
+                    && n.len() <= out.len()
+                {
+                    // REQ: DNS-016 (T9.10) — real AAAA records left after the exclusions.
+                    out[..n.len()].copy_from_slice(&n);
+                    return Response::Ready(self.finish(&q, out, n.len(), meta.transport));
+                }
+                if let Some(d) = dns64
+                    && oc.status == Status::Cached
+                    && needs_dns64(&out[..len], &d.exclude)
+                {
+                    return self.dns64_after_cache(req, &q, d, meta, out, len, start, *oc);
+                }
+                Response::Ready(self.finish(&q, out, len, meta.transport))
+            }
+            // REQ: DNS-007 (ADR-119) — with a zero wait, an expired entry is answered here, like a
+            // hit (TTL `stale_answer_ttl`, EDE 3), and refreshed in the background the way a
+            // prefetch is, after the answer is sent (RFC 8767 §5 with a zero client response
+            // timer). Deferring it cost a task, a full-size buffer, and a second parse per
+            // answer. DNS64 clients, and an entry gone since the lookup above, take the deferred
+            // path.
+            Lookup::Expired if dns64.is_none() && self.settings.stale_answer_timeout.is_zero() => {
+                let edns = response_edns(
+                    &q,
+                    self.settings.edns_payload,
+                    Some((ede::STALE_ANSWER, "")),
+                );
+                let stale = Client::from_query(&q, edns);
+                let Some(len) = self.cache.get_stale(&key, &q.qname, &stale, start, out) else {
+                    return self.defer(req, meta, key, sel.view, true, start, *oc, who, None);
+                };
+                // Overloaded (no permit for the refresh): still answered, as `stale`.
+                oc.status = if self.prefetch(req, key, sel.view) {
+                    Status::Refreshed
+                } else {
+                    Status::Stale
+                };
+                let len = match self.cname_block(&q, who, out, len) {
+                    Some((blocked, rule)) => {
+                        oc.status = Status::Blocked;
+                        oc.rule = Some(rule);
+                        blocked
+                    }
+                    None => len,
+                };
+                Response::Ready(self.finish(&q, out, len, meta.transport))
+            }
+            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, *oc, who, dns64),
+            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, *oc, who, dns64),
+        }
+    }
+
+    /// Answers with `rc` and no records; NXDOMAIN/NOERROR carry a synthetic SOA so clients can
+    /// cache the negative answer briefly.
+    fn simple(
+        &self,
+        q: &Query<'_>,
+        out: &mut [u8],
+        rc: u16,
+        ede: Option<(u16, &str)>,
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, ede);
+        let len = ResponseBuilder::new(q, out, rc).ok().and_then(|mut b| {
+            if rc == rcode::NXDOMAIN {
+                b.authoritative(true).authority_soa(300).ok()?;
+            }
+            b.finish(edns).ok()
+        });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
+    }
+
+    /// Answers a blocked query (NXDOMAIN + EDE 15 naming the list; block modes are T2.6), or
+    /// returns `None` to resolve normally. Allocation-free on the steady state.
+    /// Runs the client's filter on `name` (wire format). `None` when there's no filter or
+    /// blocking is paused for the client's group (FLT-009).
+    fn decide_for(
+        &self,
+        f: &FilterState,
+        who: Who,
+        name: &[u8],
+        qtype: u16,
+    ) -> Option<(Identity, Decision)> {
+        let ident = f.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(wrendns_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+            &self.workloads,
+        );
+        let group = f.clients.primary_group(ident);
+        if self.pause.is_paused(&group.name, unix_now) {
+            return None;
+        }
+        let wl = workload_table(ident, &self.workloads);
+        let client = ClientCtx {
+            ip: who.peer,
+            name: client_name(&f.clients, ident, wl.as_deref().map(Arc::as_ref), who.peer),
+            client_id: who.client_id.as_ref().map(wrendns_net::ClientId::as_str),
+        };
+        let decision = FILTER_SCRATCH.with(|s| {
+            f.matcher
+                .decide(name, qtype, &client, f.mask(ident), &mut s.borrow_mut())
+        });
+        Some((ident, decision))
+    }
+
+    /// Builds the block answer for the client's group (FLT-008): null IP, NXDOMAIN, NODATA,
+    /// REFUSED, or custom IPs, always with EDE 15/17 and (unless turned off) the list.
+    fn block_answer(
+        &self,
+        q: &Query<'_>,
+        out: &mut [u8],
+        group: &Group,
+        reason: &str,
+    ) -> Option<usize> {
+        let b = &group.block;
+        let text = if b.ede_text { reason } else { "" };
+        let edns = response_edns(q, self.settings.edns_payload, Some((b.ede_code, text)));
+        let rc = match b.mode {
+            BlockMode::Nxdomain => rcode::NXDOMAIN,
+            BlockMode::Refused => rcode::REFUSED,
+            BlockMode::NullIp | BlockMode::Nodata | BlockMode::CustomIp => rcode::NOERROR,
+        };
+        let mut r = ResponseBuilder::new(q, out, rc).ok()?;
+        if b.mode != BlockMode::Refused {
+            r.authoritative(true);
+        }
+        let (v4, v6): (&[Ipv4Addr], &[Ipv6Addr]) = match b.mode {
+            BlockMode::NullIp => (&[Ipv4Addr::UNSPECIFIED], &[Ipv6Addr::UNSPECIFIED]),
+            BlockMode::CustomIp => (&b.v4, &b.v6),
+            _ => (&[], &[]),
+        };
+        let mut answered = false;
+        match q.qtype {
+            wrendns_proto::rtype::A => {
+                for ip in v4 {
+                    r.answer_a(b.ttl, *ip).ok()?;
+                    answered = true;
+                }
+            }
+            wrendns_proto::rtype::AAAA => {
+                for ip in v6 {
+                    r.answer_aaaa(b.ttl, *ip).ok()?;
+                    answered = true;
+                }
+            }
+            _ => {}
+        }
+        // NXDOMAIN and NODATA carry an SOA so clients cache the block for `ttl`.
+        if !answered && b.mode != BlockMode::Refused {
+            r.authority_soa(b.ttl).ok()?;
+        }
+        r.finish(edns).ok()
+    }
+
+    /// REQ: FLT-010 (T7.10) — the block answer when a block-everything schedule is on for the
+    /// client's group (and blocking isn't paused). One load and an index when nothing is on.
+    fn schedule_block(
+        &self,
+        q: &Query<'_>,
+        out: &mut [u8],
+        policy: &Policy,
+        ident: Identity,
+        oc: &mut Outcome,
+    ) -> Option<usize> {
+        let now = self.schedules.load();
+        if now.block_all.is_empty() {
+            return None;
+        }
+        let g = *policy.clients.group_ids(ident).first()?;
+        let (reason, r) = now.block_all.get(usize::from(g))?.as_ref()?;
+        let group = policy.clients.primary_group(ident);
+        if self.pause.is_paused(&group.name, unix_now) {
+            return None;
+        }
+        oc.status = Status::Blocked;
+        oc.rule = Some(Rule {
+            list: *r,
+            kind: RuleKind::Schedule,
+            allow: false,
+        });
+        self.block_answer(q, out, group, reason)
+    }
+
+    /// REQ: FLT-003, FLT-008 — answers a blocked query, or returns `None` to resolve normally.
+    /// Allocation-free on the steady state.
+    fn filter_block(
+        &self,
+        q: &Query<'_>,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        oc: &mut Outcome,
+        who: Who,
+    ) -> Option<Response> {
+        let guard = self.filter.load();
+        let f = guard.as_ref()?;
+        let (ident, decision) = self.decide_for(f, who, q.qname.as_wire(), q.qtype)?;
+        // REQ: FLT-013 — every block or allow decision is attributed in the event.
+        let a = match decision {
+            Decision::None => return None,
+            Decision::Allow(a) => {
+                oc.rule = Some(rule_of(&a, true));
+                return None;
+            }
+            Decision::Block(a) => a,
+        };
+        oc.status = Status::Blocked;
+        oc.rule = Some(rule_of(&a, false));
+        let reason = f
+            .reasons
+            .get(usize::from(a.list))
+            .map_or("blocked", String::as_str);
+        let len = self.block_answer(q, out, f.clients.primary_group(ident), reason);
+        Some(ready(len.map(|l| self.finish(q, out, l, meta.transport))))
+    }
+
+    /// REQ: FLT-007 — CNAME deep inspection: if any CNAME target in the answer is blocked for
+    /// this client, replace the answer with the block answer and return its length. Runs on
+    /// cache hits too, since cached answers are policy-neutral. Allocation-free.
+    fn cname_block(
+        &self,
+        q: &Query<'_>,
+        who: Who,
+        out: &mut [u8],
+        len: usize,
+    ) -> Option<(usize, Rule)> {
+        let st = self.state.load();
+        let guard = self.filter.load();
+        let f = guard.as_ref();
+        let answers_on = st.policy.clients.any_answers();
+        if f.is_none() && st.policy.quick.is_empty() && !answers_on {
+            return None;
+        }
+        // REQ: FLT-015 (T7.20) — the client's answer filter, if its group has one.
+        let answer_filter = answers_on
+            .then(|| {
+                let ident = st.policy.clients.identify(
+                    who.peer,
+                    who.client_id.as_ref().map(wrendns_net::ClientId::as_str),
+                    who.mac,
+                    &self.neighbors,
+                    &self.workloads,
+                );
+                st.policy.clients.primary_group(ident)
+            })
+            .filter(|g| g.answers.is_some());
+        let mut target = wrendns_proto::NameBuf::default();
+        for r in wrendns_proto::records(out.get(..len)?).ok()?.flatten() {
+            if r.section != wrendns_proto::Section::Answer {
+                continue;
+            }
+            if let Some(group) = answer_filter
+                && let Some(af) = &group.answers
+                && let Some(ip) = answer_ip(r.rtype, r.rdata(&out[..len]))
+                && !self.paused_for(group)
+            {
+                let mut owner = wrendns_proto::NameBuf::default();
+                let _ = wrendns_proto::read_name(&out[..len], r.name_off, &mut owner);
+                let allowed = af.allow.iter().any(|a| q.qname.is_subdomain_of(a));
+                if let Some(why) = af.refuses(&owner, ip).filter(|_| !allowed) {
+                    let len = self.block_answer(q, out, group, why)?;
+                    return Some((
+                        len,
+                        Rule {
+                            list: 0,
+                            kind: RuleKind::AnswerIp,
+                            allow: false,
+                        },
+                    ));
+                }
+            }
+            if r.rtype != wrendns_proto::rtype::CNAME {
+                continue;
+            }
+            if wrendns_proto::read_name(&out[..len], r.rdata_off, &mut target).is_err() {
+                continue;
+            }
+            // REQ: FLT-005 (ADR-067) — quick rules decide CNAME targets too, before the lists.
+            if !st.policy.quick.is_empty() {
+                let ident = st.policy.clients.identify(
+                    who.peer,
+                    who.client_id.as_ref().map(wrendns_net::ClientId::as_str),
+                    who.mac,
+                    &self.neighbors,
+                    &self.workloads,
+                );
+                if let Some(m) = self.quick_decision(&st.policy, target.as_wire(), ident, who) {
+                    if m.allow {
+                        continue;
+                    }
+                    let group = st.policy.clients.primary_group(ident);
+                    let len = self.block_answer(q, out, group, "quick rule")?;
+                    return Some((len, quick_rule(&st.policy, m)));
+                }
+            }
+            let Some(f) = f else { continue };
+            match self.decide_for(f, who, target.as_wire(), q.qtype) {
+                None => return None, // paused: nothing to inspect
+                Some((ident, Decision::Block(a))) => {
+                    let reason = f
+                        .cname_reasons
+                        .get(usize::from(a.list))
+                        .map_or("blocked", String::as_str);
+                    let len = self.block_answer(q, out, f.clients.primary_group(ident), reason)?;
+                    return Some((len, cname_rule(a.list)));
+                }
+                Some(_) => {}
+            }
+        }
+        None
+    }
+
+    /// Blocking is paused for this group (FLT-009): no answer is refused either.
+    fn paused_for(&self, group: &Group) -> bool {
+        self.pause.is_paused(&group.name, unix_now)
+    }
+
+    /// REQ: FLT-005 (T6.12, ADR-067) — the quick rule deciding `name` (wire format) for this
+    /// client, if any. A paused group (FLT-009) gets no blocks from quick rules either.
+    fn quick_decision(
+        &self,
+        policy: &Policy,
+        name: &[u8],
+        ident: Identity,
+        who: Who,
+    ) -> Option<wrendns_policy::QuickMatch> {
+        if policy.quick.is_empty() {
+            return None;
+        }
+        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        let m = policy
+            .quick
+            .decide(name, ident, who.peer, policy.clients.group_ids(ident), now)?;
+        if !m.allow
+            && self
+                .pause
+                .is_paused(&policy.clients.primary_group(ident).name, unix_now)
+        {
+            return None;
+        }
+        Some(m)
+    }
+
+    /// FLT-007 for deferred (upstream or stale) answers: re-checks the final message.
+    fn deferred_cname_block(
+        &self,
+        req: &[u8],
+        who: Who,
+        transport: Transport,
+        mut bytes: Vec<u8>,
+        status: Status,
+    ) -> (Vec<u8>, Status, Option<Rule>) {
+        if !matches!(
+            status,
+            Status::Forwarded | Status::Stale | Status::Refreshed
+        ) {
+            return (bytes, status, None);
+        }
+        let Ok(q) = parse_query(req) else {
+            return (bytes, status, None);
+        };
+        let len = bytes.len();
+        bytes.resize(MAX_RESPONSE.max(len), 0);
+        if let Some((l, rule)) = self.cname_block(&q, who, &mut bytes, len) {
+            let l = self.finish(&q, &mut bytes, l, transport);
+            bytes.truncate(l);
+            (bytes, Status::Blocked, Some(rule))
+        } else {
+            bytes.truncate(len);
+            (bytes, status, None)
+        }
+    }
+
+    /// RFC 6761 §6.3: `localhost` names resolve to loopback.
+    fn localhost(&self, q: &Query<'_>, out: &mut [u8], meta: &RequestMeta) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let len = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                b.authoritative(true);
+                match q.qtype {
+                    wrendns_proto::rtype::A => {
+                        b.answer_a(3600, std::net::Ipv4Addr::LOCALHOST).ok()?;
+                    }
+                    wrendns_proto::rtype::AAAA => {
+                        b.answer_aaaa(3600, std::net::Ipv6Addr::LOCALHOST).ok()?;
+                    }
+                    _ => {
+                        b.authority_soa(3600).ok()?;
+                    }
+                }
+                b.finish(edns).ok()
+            });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn defer(
+        self: &Arc<Self>,
+        req: &[u8],
+        meta: &RequestMeta,
+        key: CacheKey,
+        view: u16,
+        stale_ok: bool,
+        start: Instant,
+        mut oc: Outcome,
+        who: Who,
+        dns64: Option<Dns64>,
+    ) -> Response {
+        let this = Arc::clone(self);
+        let req = req.to_vec();
+        let transport = meta.transport;
+        let peer = meta.peer.ip();
+        Response::Deferred(Box::pin(async move {
+            let waited = Instant::now();
+            let mut answer = Arc::clone(&this)
+                .resolve_for_client(req.clone(), key, view, stale_ok, transport)
+                .await
+                .map(|(bytes, status, upstream)| {
+                    // REQ: OBS-001 (review 04-07) — the upstream that answered.
+                    oc.upstream = upstream;
+                    this.deferred_cname_block(&req, who, transport, bytes, status)
+                });
+            // REQ: DNS-016 (T7.21) — no AAAA: made from the name's A records.
+            if let Some(d) = &dns64
+                && let Some((bytes, _, None)) = &mut answer
+            {
+                if needs_dns64(bytes, &d.exclude) {
+                    if let Some(synth) = this.dns64_synthesize(&req, d, transport).await {
+                        *bytes = synth;
+                    }
+                } else if let Some(filtered) = this.dns64_filter(&req, bytes, &d.exclude) {
+                    // REQ: DNS-016 (T9.10) — excluded AAAA records dropped.
+                    *bytes = filtered;
+                }
+            }
+            let t_upstream = waited.elapsed();
+            let (status, rcode) = match &answer {
+                Some((bytes, status, rule)) => {
+                    if let Some(rule) = rule {
+                        oc.rule = Some(*rule);
+                    }
+                    (*status, Some(response_rcode(bytes)))
+                }
+                None => (Status::Dropped, None),
+            };
+            oc.status = status;
+            this.metrics
+                .record(proto(transport), status, rcode, oc.qtype, start.elapsed());
+            let resp = answer.as_ref().map(|(bytes, _, _)| bytes.as_slice());
+            this.emit(peer, transport, &req, resp, &oc, start, t_upstream);
+            answer.map(|(bytes, _, _)| bytes)
+        }))
+    }
+
+    /// The deferred stage: resolve upstream (shared via singleflight), then build the client's
+    /// response from the answer, from stale data, or as SERVFAIL with an EDE.
+    async fn resolve_for_client(
+        self: Arc<Self>,
+        req: Vec<u8>,
+        key: CacheKey,
+        view: u16,
+        stale_ok: bool,
+        transport: Transport,
+    ) -> Option<(Vec<u8>, Status, u16)> {
+        let q = parse_query(&req).ok()?;
+        // REQ: NFR-002 (T10.2) — the client's response buffer is allocated once the answer is
+        // in, sized to it. Allocated here, a 64 KiB buffer per query waiting upstream added up
+        // under load (12.5 MiB with 200 in flight) and stayed resident in the allocator after.
+        // The fallbacks (stale, SERVFAIL) are rare and get the largest size.
+        let full = || vec![0u8; MAX_RESPONSE];
+
+        let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
+            // Overloaded (02 §8.4): stale if we have it, else SERVFAIL + EDE 23.
+            return self
+                .fallback(
+                    &q,
+                    key,
+                    stale_ok,
+                    ede::NETWORK_ERROR,
+                    "resolver overloaded",
+                    &mut full(),
+                    transport,
+                )
+                .map(|(b, s)| (b, s, 0));
+        };
+        // Run the resolution as its own task so that, if we give up waiting and serve stale,
+        // it still completes and refreshes the cache (RFC 8767 §5).
+        let task = tokio::spawn(Arc::clone(&self).resolve_shared(req.clone(), key, view, permit));
+        let wait = if stale_ok {
+            self.settings.stale_answer_timeout
+        } else {
+            self.settings.budget + Duration::from_millis(100)
+        };
+        // REQ: DNS-007 — a zero wait answers from the expired entry at once (the spawned
+        // resolution carries on and refreshes it); a zero-length timer would still let an
+        // answer that lands within its tick win.
+        let answer = if stale_ok && wait.is_zero() {
+            None
+        } else {
+            match tokio::time::timeout(wait, task).await {
+                Ok(Ok(Some(a))) => Some(a),
+                _ => None,
+            }
+        };
+        let fallen = |r: Option<(Vec<u8>, Status)>| r.map(|(b, s)| (b, s, 0));
+        match answer {
+            // REQ: DNS-011 — validation failed: SERVFAIL with EDE 6 (or why: T9.8), never a
+            // stale answer.
+            Some((resp, _)) if resp.is_empty() || bogus_code(&resp).is_some() => {
+                let code = bogus_code(&resp).unwrap_or(ede::DNSSEC_BOGUS);
+                fallen(self.fallback(
+                    &q,
+                    key,
+                    false,
+                    code,
+                    bogus_text(code),
+                    &mut full(),
+                    transport,
+                ))
+            }
+            Some((resp, upstream)) => {
+                let client =
+                    Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+                // The answer plus our OPT (with room for an EDE and its text).
+                let mut out = vec![0u8; (resp.len() + 512).min(MAX_RESPONSE)];
+                match Cache::render(&q, &resp, &client, &mut out) {
+                    Some(len) => {
+                        let len = self.finish(&q, &mut out, len, transport);
+                        out.truncate(len);
+                        Some((out, Status::Forwarded, upstream))
+                    }
+                    None => fallen(self.fallback(
+                        &q,
+                        key,
+                        stale_ok,
+                        ede::OTHER,
+                        "unusable upstream answer",
+                        &mut full(),
+                        transport,
+                    )),
+                }
+            }
+            // REQ: DNS-007 — with a zero wait, an expired entry is answered at once and the
+            // resolution above refreshes it: a cache answer (`refreshed`), not a failure. Most
+            // are answered synchronously (`resolve_or_defer`); DNS64 clients, and an entry
+            // evicted between the two lookups, land here.
+            None if stale_ok && self.settings.stale_answer_timeout.is_zero() => self
+                .fallback(
+                    &q,
+                    key,
+                    stale_ok,
+                    ede::NO_REACHABLE_AUTHORITY,
+                    "no upstream answered",
+                    &mut full(),
+                    transport,
+                )
+                .map(|(b, s)| {
+                    let s = if s == Status::Stale {
+                        Status::Refreshed
+                    } else {
+                        s
+                    };
+                    (b, s, 0)
+                }),
+            None => fallen(self.fallback(
+                &q,
+                key,
+                stale_ok,
+                ede::NO_REACHABLE_AUTHORITY,
+                "no upstream answered",
+                &mut full(),
+                transport,
+            )),
+        }
+    }
+
+    /// Resolves `req` upstream once per (key, name), inserting the answer into the cache.
+    async fn resolve_shared(
+        self: Arc<Self>,
+        req: Vec<u8>,
+        key: CacheKey,
+        view: u16,
+        _permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Option<(Arc<[u8]>, u16)> {
+        let q = parse_query(&req).ok()?;
+        let guard = match self.flights.join(key, q.qname.as_wire()) {
+            Flight::Leader(g) => g,
+            Flight::Follower(rx) => {
+                if let Some(a) = Flight::wait(rx).await {
+                    return Some(a);
+                }
+                // The leader gave up; resolve without coalescing.
+                return self.resolve_upstream(&q, key, view).await;
+            }
+        };
+        let (answer, upstream) = self.resolve_upstream(&q, key, view).await?;
+        guard.complete(Arc::clone(&answer), upstream);
+        Some((answer, upstream))
+    }
+
+    /// The answer and the ID of the upstream that gave it (REQ: OBS-001, review 04-07).
+    async fn resolve_upstream(
+        &self,
+        q: &Query<'_>,
+        key: CacheKey,
+        view: u16,
+    ) -> Option<(Arc<[u8]>, u16)> {
+        // A full Arc (not a borrowed guard): it's held across the upstream round trip.
+        let st = self.state.load_full();
+        let mut question = Question::from_query(q);
+        // REQ: DNS-015 (T9.9) — the subnet the key was scoped to (prefetches keep it too).
+        question.client_subnet = key.ecs();
+        // The view chosen at selection time (by qname, qtype, and client groups) names the group.
+        let group = Arc::clone(st.router.group_by_view(view)?);
+        let started = Instant::now();
+        // REQ: DNS-011 — validate unless the client set CD or the name is under a negative
+        // trust anchor.
+        if let Some(d) = self.dnssec.load_full()
+            && !q.header.flags.cd()
+            && d.validator.covers(&q.qname.display().to_string())
+        {
+            return self
+                .resolve_validated(&st, q, key, &group, &question, &d, started)
+                .await;
+        }
+        let result = group.resolve(question, self.settings.budget).await;
+        // REQ: OBS-001 — one event per upstream exchange (prefetches and coalesced misses
+        // included), for per-upstream analytics.
+        let (upstream, attempts) = result
+            .as_ref()
+            .map_or((0, 0), |a| (a.upstream_id, a.attempts));
+        self.telemetry.emit_upstream(&UpstreamEvent {
+            ts_us: self.telemetry.ts_us(started),
+            upstream,
+            latency_us: micros(started.elapsed()),
+            ok: result.is_ok(),
+            attempts,
+        });
+        let answer = result.ok()?;
+        let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
+        self.after_upstream(&st, &group, &question, &answer.bytes, upstream);
+        Some((answer.bytes.into(), upstream))
+    }
+
+    /// One upstream answer, DNSSEC-validated (DNS-011). Bogus answers come back as an empty
+    /// marker (SERVFAIL + EDE 6) and are never cached; in permissive mode they're served.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_validated(
+        &self,
+        st: &Arc<Dynamic>,
+        q: &Query<'_>,
+        key: CacheKey,
+        group: &Arc<wrendns_upstream::Group>,
+        question: &Question,
+        d: &Dnssec,
+        started: Instant,
+    ) -> Option<(Arc<[u8]>, u16)> {
+        use wrendns_upstream::dnssec::Verdict;
+        let client_do = q.edns.is_some_and(|e| e.dnssec_ok);
+        let result = d
+            .validator
+            .resolve(
+                group,
+                *question,
+                self.settings.budget,
+                client_do,
+                q.header.flags.ad(),
+            )
+            .await;
+        let (upstream, attempts) = result
+            .as_ref()
+            .map_or((0, 0), |v| (v.upstream_id, v.attempts));
+        self.telemetry.emit_upstream(&UpstreamEvent {
+            ts_us: self.telemetry.ts_us(started),
+            upstream,
+            latency_us: micros(started.elapsed()),
+            ok: result.is_ok(),
+            attempts,
+        });
+        let v = result.ok()?;
+        // REQ: OBS-019 (T11.4) — the verdict, per upstream.
+        self.quality.note_dnssec(upstream, v.verdict);
+        // REQ: DNS-011 (ADR-098) — which names fail, while trying validation out.
+        if v.verdict == Verdict::Bogus && d.permissive {
+            tracing::info!(
+                name = %question.name.display(),
+                qtype = question.qtype,
+                ede = v.ede,
+                "DNSSEC: bogus answer served (permissive mode)"
+            );
+        }
+        if v.verdict == Verdict::Bogus && !d.permissive {
+            return Some((bogus_marker(v.ede), upstream));
+        }
+        if v.bytes.is_empty() && v.verdict != Verdict::Secure {
+            // Nothing validated to serve (permissive, validation couldn't finish, or a zone
+            // proven unsigned, T10.9): fetch it unvalidated.
+            let a = group.resolve(*question, self.settings.budget).await.ok()?;
+            let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
+            self.after_upstream(st, group, question, &a.bytes, a.upstream_id);
+            return Some((a.bytes.into(), a.upstream_id));
+        }
+        let _ = self.cache.insert(&key, q, &v.bytes, Instant::now());
+        self.after_upstream(st, group, question, &v.bytes, upstream);
+        Some((v.bytes.into(), upstream))
+    }
+
+    /// Stale answer with EDE 3 if allowed and available; otherwise SERVFAIL with `code`.
+    #[allow(clippy::too_many_arguments)]
+    fn fallback(
+        &self,
+        q: &Query<'_>,
+        key: CacheKey,
+        stale_ok: bool,
+        code: u16,
+        text: &str,
+        out: &mut Vec<u8>,
+        transport: Transport,
+    ) -> Option<(Vec<u8>, Status)> {
+        let mut len = None;
+        if stale_ok {
+            let edns = response_edns(q, self.settings.edns_payload, Some((ede::STALE_ANSWER, "")));
+            let client = Client::from_query(q, edns);
+            len = self
+                .cache
+                .get_stale(&key, &q.qname, &client, Instant::now(), out);
+        }
+        let status = if len.is_some() {
+            Status::Stale
+        } else {
+            Status::ServFail
+        };
+        let len = if let Some(l) = len {
+            l
+        } else {
+            let edns: Option<EdnsOut<'_>> =
+                response_edns(q, self.settings.edns_payload, Some((code, text)));
+            ResponseBuilder::new(q, out, rcode::SERVFAIL)
+                .ok()?
+                .finish(edns)
+                .ok()?
+        };
+        let len = self.finish(q, out, len, transport);
+        out.truncate(len);
+        Some((std::mem::take(out), status))
+    }
+
+    /// Refreshes a hot entry in the background before it expires (DNS-008), or an expired one
+    /// just answered (DNS-007). False if it couldn't start (overloaded, or no runtime).
+    fn prefetch(self: &Arc<Self>, req: &[u8], key: CacheKey, view: u16) -> bool {
+        if self.rt.is_none() {
+            return false;
+        }
+        let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
+            return false;
+        };
+        let refresh = Refresh {
+            pipe: Arc::clone(self),
+            req: req.to_vec(),
+            key,
+            view,
+            permit,
+        };
+        // REQ: DNS-007 — on a UDP worker thread (no ambient runtime), the refresh starts after
+        // this batch's answers are sent (`Handler::sent`). Starting it wakes a runtime worker;
+        // first, on an idle node, that cost each refreshed answer 50–400 µs (2026-10-11 review:
+        // p50 78 µs and p99 ~450 µs live, vs 25 and 50 µs for a fresh hit).
+        if tokio::runtime::Handle::try_current().is_err() {
+            let full = REFRESHES.with(move |q| match q.try_borrow_mut() {
+                Ok(mut q) if q.len() < MAX_QUEUED_REFRESHES => {
+                    q.push(refresh);
+                    None
+                }
+                _ => Some(refresh),
+            });
+            if let Some(refresh) = full {
+                refresh.start();
+            }
+            return true;
+        }
+        refresh.start();
+        true
+    }
+}
+
+fn ready(len: Option<usize>) -> Response {
+    len.map_or(Response::Drop, Response::Ready)
+}
+
+/// What the synchronous stage decided, for metrics.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Outcome {
+    pub(crate) status: Status,
+    pub(crate) qtype: u16,
+    /// Configured client index + 1 (0 = unknown) and primary group (OBS-001).
+    pub(crate) client_ref: u32,
+    pub(crate) group: u16,
+    /// The block or allow rule that decided (FLT-013).
+    pub(crate) rule: Option<Rule>,
+    /// REQ: OBS-001 (review 04-07) — the upstream that answered a forwarded query (0: none).
+    pub(crate) upstream: u16,
+}
+
+fn rule_of(a: &wrendns_filter::matcher::Attribution, allow: bool) -> Rule {
+    use wrendns_filter::matcher::RuleRef;
+    Rule {
+        list: a.list,
+        kind: match a.rule {
+            RuleRef::Domain { .. } => RuleKind::Domain,
+            RuleRef::ModRule { .. } => RuleKind::Modifier,
+            RuleRef::Regex { .. } => RuleKind::Regex,
+        },
+        allow,
+    }
+}
+
+/// REQ: FLT-013 (ADR-067) — a quick rule's attribution: its stable reference as the "list".
+fn quick_rule(policy: &Policy, m: wrendns_policy::QuickMatch) -> Rule {
+    let id = policy
+        .quick
+        .rules()
+        .get(m.rule as usize)
+        .map_or("", |r| &r.id);
+    Rule {
+        list: wrendns_policy::quick_ref(id),
+        kind: RuleKind::Quick,
+        allow: m.allow,
+    }
+}
+
+fn cname_rule(list: u16) -> Rule {
+    Rule {
+        list,
+        kind: RuleKind::Cname,
+        allow: false,
+    }
+}
+
+fn micros(d: Duration) -> u32 {
+    u32::try_from(d.as_micros()).unwrap_or(u32::MAX)
+}
+
+impl Pipeline {
+    /// REQ: OBS-001, OBS-002 — the query's event, into this thread's ring. Wait-free and
+    /// allocation-free (after the thread's first event); reads the name from the request.
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &self,
+        peer: std::net::IpAddr,
+        transport: Transport,
+        req: &[u8],
+        resp: Option<&[u8]>,
+        oc: &Outcome,
+        start: Instant,
+        t_upstream: Duration,
+    ) {
+        let (name, qclass) = wrendns_telemetry::event::question(req);
+        let hdr = |i: usize| resp.and_then(|r| r.get(i)).copied().unwrap_or(0);
+        let ip = match peer {
+            std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+            std::net::IpAddr::V6(v6) => v6,
+        };
+        let ev = QueryEvent {
+            ts_us: self.telemetry.ts_us(start),
+            client_ip: ip.octets(),
+            client_ref: oc.client_ref,
+            group: oc.group,
+            qtype: oc.qtype,
+            qclass,
+            rcode: resp.map(|r| (response_rcode(r) & 0xFF) as u8),
+            status: oc.status,
+            proto: proto(transport),
+            flags: u16::from_be_bytes([hdr(2), hdr(3)]),
+            rule: oc.rule,
+            upstream: oc.upstream,
+            attempts: 0,
+            t_total_us: micros(start.elapsed()),
+            t_upstream_us: micros(t_upstream),
+            resp_size: resp.map_or(0, |r| u16::try_from(r.len()).unwrap_or(u16::MAX)),
+            answers: u16::from_be_bytes([hdr(6), hdr(7)]),
+        };
+        self.telemetry.emit_query(&ev, name);
+        // REQ: OBS-007 — a sampled copy of both messages for dnstap, when it's on.
+        if let Some(tap) = self.dnstap.get() {
+            tap.offer(peer, transport, req, resp, ev.ts_us);
+        }
+    }
+}
+
+/// REQ: DNS-016 (T7.21) — DNS64 for one query: the prefix, and the client's groups (for the
+/// A lookup's route).
+#[derive(Debug, Clone)]
+pub(crate) struct Dns64 {
+    prefix: std::net::Ipv6Addr,
+    /// REQ: DNS-016 (T9.10) — the exclusion set.
+    exclude: Vec<Cidr>,
+    groups: Vec<Box<str>>,
+}
+
+/// An internal lookup's cache result: the answer, or where to resolve it.
+enum Internal {
+    Hit(Vec<u8>),
+    Miss(CacheKey, u16),
+}
+
+/// A NOERROR answer with no AAAA record (CNAMEs only, or none) outside the exclusion set
+/// (T9.10): DNS64 applies.
+fn needs_dns64(resp: &[u8], exclude: &[Cidr]) -> bool {
+    // A truncated answer (too big for the buffer) has no records to judge; the client
+    // retries over TCP.
+    if response_rcode(resp) != rcode::NOERROR || wrendns_proto::header::flags(resp).tc() {
+        return false;
+    }
+    records(resp).is_ok_and(|mut it| {
+        !it.any(|r| {
+            r.is_ok_and(|r| {
+                r.section == Section::Answer
+                    && r.rtype == rtype::AAAA
+                    && answer_ip(rtype::AAAA, r.rdata(resp))
+                        .is_none_or(|ip| !dns64_excluded(ip, exclude))
+            })
+        })
+    })
+}
+
+/// REQ: DNS-016 (T9.10) — an AAAA address in the exclusion set; IPv4-mapped addresses
+/// (`::ffff:0:0/96`) always are (RFC 6147 §5.1.4).
+fn dns64_excluded(ip: std::net::IpAddr, exclude: &[Cidr]) -> bool {
+    matches!(ip, std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some())
+        || exclude.iter().any(|c| c.contains(ip))
+}
+
+/// REQ: DNS-016 (T9.10) — RFC 6147 §5.3.1: for a reverse name inside the NAT64 /96
+/// (`….b.9.f.f.4.6.0.0.ip6.arpa`), the embedded IPv4 address's `in-addr.arpa` name.
+fn dns64_reverse_target(qname: &NameBuf, prefix: std::net::Ipv6Addr) -> Option<NameBuf> {
+    let mut name = qname.display().to_string();
+    name.make_ascii_lowercase();
+    let body = name.trim_end_matches('.').strip_suffix(".ip6.arpa")?;
+    let mut nibbles = [0u8; 32];
+    let mut n = 0;
+    for label in body.split('.') {
+        let &[c] = label.as_bytes() else { return None };
+        let v = char::from(c).to_digit(16)?;
+        *nibbles.get_mut(31usize.checked_sub(n)?)? = u8::try_from(v).ok()?;
+        n += 1;
+    }
+    if n != 32 {
+        return None;
+    }
+    let mut addr = [0u8; 16];
+    for (i, b) in addr.iter_mut().enumerate() {
+        *b = (nibbles[2 * i] << 4) | nibbles[2 * i + 1];
+    }
+    if addr[..12] != prefix.octets()[..12] {
+        return None;
+    }
+    NameBuf::from_presentation(&format!(
+        "{}.{}.{}.{}.in-addr.arpa",
+        addr[15], addr[14], addr[13], addr[12]
+    ))
+    .ok()
+}
+
+/// REQ: FLT-015 — the address in an A or AAAA record's RDATA.
+fn answer_ip(rt: u16, rdata: &[u8]) -> Option<std::net::IpAddr> {
+    match (rt, rdata.len()) {
+        (rtype::A, 4) => Some(std::net::IpAddr::from([
+            rdata[0], rdata[1], rdata[2], rdata[3],
+        ])),
+        (rtype::AAAA, 16) => {
+            let b: [u8; 16] = rdata.try_into().ok()?;
+            Some(std::net::IpAddr::from(b))
+        }
+        _ => None,
+    }
+}
+
+fn proto(t: Transport) -> Proto {
+    match t {
+        Transport::Udp => Proto::Udp,
+        Transport::Tcp => Proto::Tcp,
+        Transport::Dot => Proto::Dot,
+        Transport::Doh => Proto::Doh,
+        Transport::Doq => Proto::Doq,
+    }
+}
+
+/// RCODE of a response (low 4 bits; extended RCODEs are rare and counted via their low bits).
+fn response_rcode(msg: &[u8]) -> u16 {
+    msg.get(3).map_or(0, |b| u16::from(b & 0x0F))
+}
+
+/// `Arc<Pipeline>` is the handler every listener shares.
+#[derive(Debug, Clone)]
+pub(crate) struct Handler(pub(crate) Arc<Pipeline>);
+
+impl QueryHandler for Handler {
+    fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
+        let start = Instant::now();
+        let mut oc = Outcome {
+            status: Status::Dropped,
+            qtype: 0,
+            client_ref: 0,
+            group: 0,
+            rule: None,
+            upstream: 0,
+        };
+        let resp = self.0.handle_sync(req, meta, out, start, &mut oc);
+        // REQ: OBS-002 — counters on the hot path: lock-free, allocation-free. Deferred answers
+        // are recorded when their future completes.
+        match &resp {
+            Response::Ready(len) => {
+                let rc = response_rcode(&out[..*len]);
+                self.0.metrics.record(
+                    proto(meta.transport),
+                    oc.status,
+                    Some(rc),
+                    oc.qtype,
+                    start.elapsed(),
+                );
+                let resp = Some(&out[..*len]);
+                self.0.emit(
+                    meta.peer.ip(),
+                    meta.transport,
+                    req,
+                    resp,
+                    &oc,
+                    start,
+                    Duration::ZERO,
+                );
+            }
+            Response::Drop | Response::Close => {
+                self.0.metrics.record(
+                    proto(meta.transport),
+                    oc.status,
+                    None,
+                    oc.qtype,
+                    start.elapsed(),
+                );
+                self.0.emit(
+                    meta.peer.ip(),
+                    meta.transport,
+                    req,
+                    None,
+                    &oc,
+                    start,
+                    Duration::ZERO,
+                );
+            }
+            Response::Deferred(_) => {}
+        }
+        resp
+    }
+
+    /// REQ: DNS-007, DNS-008 — the batch's answers are out: start the refreshes it queued.
+    fn sent(&self) {
+        REFRESHES.with(|q| {
+            if let Ok(mut q) = q.try_borrow_mut() {
+                for r in q.drain(..) {
+                    r.start();
+                }
+            }
+        });
+    }
+}
+
+/// Pipelines and queries for other modules' tests.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use std::sync::Arc;
+
+    use wrendns_cache::{Cache, CachePolicy};
+    use wrendns_net::{QueryHandler, RequestMeta, Response, Transport};
+
+    use super::{Handler, Pipeline, Policy, Settings};
+
+    /// A pipeline over `cfg` (no filter snapshot).
+    pub(crate) fn pipeline_from(cfg: &wrendns_config::Config) -> Arc<Pipeline> {
+        let (local, _) = wrendns_policy::LocalData::from_config(cfg);
+        Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(wrendns_upstream::Router::from_config(cfg).unwrap_or_default()),
+            Policy::from_config(cfg, local),
+        )
+    }
+
+    /// Whether `name` (A) from `client` is answered at once (without an upstream).
+    pub(crate) fn answer(p: &Arc<Pipeline>, name: &str, client: &str) -> bool {
+        let n = wrendns_proto::NameBuf::from_presentation(name).unwrap();
+        let mut q = [0u8; 512];
+        let len =
+            wrendns_proto::build_query(&mut q, 7, &n, wrendns_proto::rtype::A, 1, true, None)
+                .unwrap();
+        let meta = RequestMeta {
+            peer: format!("{client}:1000").parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        matches!(
+            Handler(Arc::clone(p)).handle(&q[..len], &meta, &mut out),
+            Response::Ready(l) if l > 12
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wrendns_cache::CachePolicy;
+    use wrendns_proto::{NameBuf, build_query, rtype, summarize};
+
+    use super::*;
+
+    fn pipeline() -> Arc<Pipeline> {
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
+        Pipeline::new(
+            Settings::default(),
+            cache,
+            Arc::new(Router::default()),
+            Policy::open(),
+        )
+    }
+
+    fn query(name: &str, qtype: u16, edns: bool) -> Vec<u8> {
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation(name).unwrap();
+        let e = edns.then(|| EdnsOut::new(1232));
+        let len = build_query(&mut buf, 9, &n, qtype, 1, true, e).unwrap();
+        buf[..len].to_vec()
+    }
+
+    fn meta() -> RequestMeta {
+        RequestMeta {
+            peer: "127.0.0.1:5353".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        }
+    }
+
+    fn rcode_of(p: &Arc<Pipeline>, req: &[u8]) -> Option<u16> {
+        let mut out = [0u8; 4096];
+        match Handler(Arc::clone(p)).handle(req, &meta(), &mut out) {
+            Response::Ready(len) => Some(summarize(&out[..len]).unwrap().rcode),
+            _ => None,
+        }
+    }
+
+    /// Compiles `rules` into a snapshot and installs it as the pipeline's filter.
+    fn install_filter(p: &Pipeline, rules: &str, lookup: wrendns_filter::matcher::Lookup) {
+        use wrendns_filter::compile::{CompileOptions, ListData, ListInput, compile};
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("snap");
+        let input = ListInput {
+            name: "ads".into(),
+            options: wrendns_filter::parse::ListOptions::default(),
+            data: ListData::Bytes(rules.as_bytes().to_vec()),
+            source_hash: wrendns_filter::fetch::content_hash(rules.as_bytes()),
+            size: rules.len() as u64,
+        };
+        compile(vec![input], &out, &CompileOptions::default()).unwrap();
+        let snap = Arc::new(wrendns_filter::snapshot::Snapshot::open(&out).unwrap());
+        let m = Matcher::with_lookup(Some(snap), lookup).unwrap();
+        p.set_filter(Some(Arc::new(m)));
+    }
+
+    /// Compiles several named lists into one snapshot and installs it.
+    fn install_lists(p: &Pipeline, lists: &[(&str, &str)]) {
+        install_lists_allowing(p, lists, &[]);
+    }
+
+    /// `install_lists`, with the lists named in `allow` compiled as allow-kind lists.
+    fn install_lists_allowing(p: &Pipeline, lists: &[(&str, &str)], allow: &[&str]) {
+        use wrendns_filter::compile::{CompileOptions, ListData, ListInput, compile};
+        use wrendns_filter::matcher::Lookup;
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("snap");
+        let inputs = lists
+            .iter()
+            .map(|(name, rules)| ListInput {
+                name: (*name).into(),
+                options: wrendns_filter::parse::ListOptions {
+                    kind: if allow.contains(name) {
+                        wrendns_config::ListKind::Allow
+                    } else {
+                        wrendns_config::ListKind::Block
+                    },
+                    ..wrendns_filter::parse::ListOptions::default()
+                },
+                data: ListData::Bytes(rules.as_bytes().to_vec()),
+                source_hash: wrendns_filter::fetch::content_hash(rules.as_bytes()),
+                size: rules.len() as u64,
+            })
+            .collect();
+        compile(inputs, &out, &CompileOptions::default()).unwrap();
+        let snap = Arc::new(wrendns_filter::snapshot::Snapshot::open(&out).unwrap());
+        let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
+        p.set_filter(Some(Arc::new(m)));
+    }
+
+    /// REQ: FLT-012 (T7.9) — a blocked service applies to the groups that name it only, also
+    /// next to a group that uses every list, and says which service blocked the name.
+    #[test]
+    fn flt_012_blocked_services_apply_per_group() {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+
+[[group]]
+name = "default"
+
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+blocked_services = ["tiktok"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let expanded = wrendns_config::services::expand(&cfg);
+        let svc = expanded
+            .list
+            .iter()
+            .find(|l| l.name.as_str() == "svc-tiktok")
+            .expect("the service became a list");
+        let svc_rules = svc.rules.iter().fold(String::new(), |mut acc, r| {
+            acc.push_str(r.as_str());
+            acc.push('\n');
+            acc
+        });
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        install_lists(
+            &p,
+            &[("ads", "||ads.example.com^\n"), ("svc-tiktok", &svc_rules)],
+        );
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => Vec::new(),
+            }
+        };
+        let blocked =
+            |r: &[u8]| summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1);
+        let kid = ask("10.0.1.5:1000", "www.tiktok.com");
+        assert!(blocked(&kid), "the kids group blocks TikTok");
+        let text = b"blocked service TikTok";
+        assert!(
+            kid.windows(text.len()).any(|w| w == text),
+            "EDE names the service"
+        );
+        assert!(
+            !blocked(&ask("10.0.0.9:1000", "www.tiktok.com")),
+            "other groups don't"
+        );
+        assert!(
+            blocked(&ask("10.0.0.9:1000", "ads.example.com")),
+            "every list still applies"
+        );
+        assert!(blocked(&ask("10.0.1.5:1000", "ads.example.com")));
+    }
+
+    /// A pipeline over `toml` (with `UPSTREAM` added) whose category lists carry `rules`
+    /// (list name, rule text), built through `Policy::from_config` so quick rules apply.
+    fn category_pipeline(toml: &str, rules: &[(&str, &str)]) -> Arc<Pipeline> {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, report) = wrendns_policy::LocalData::from_config(&cfg);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::from_config(&cfg, local),
+        );
+        install_lists(&p, rules);
+        p
+    }
+
+    fn is_blocked(r: &[u8]) -> bool {
+        summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1)
+    }
+
+    /// REQ: FLT-901 (T24.29) — a category selected for one group does not block for another,
+    /// the default group included (whose `lists` is omitted, so it uses every enabled list), and
+    /// the block says which category it was.
+    #[test]
+    fn flt_901_category_lists_not_in_default() {
+        let p = category_pipeline(
+            r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+[[group]]
+name = "default"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+            &[
+                (
+                    "ads",
+                    "||ads.example.com^
+",
+                ),
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+            ],
+        );
+        let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
+        assert!(is_blocked(&kid), "the kids group blocks the category");
+        let text = b"blocked by category Adult content (list cat-hagezi-nsfw)";
+        assert!(contains(&kid, text), "the block names the category");
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.0.9", "www.adult.example", rtype::A)),
+            "the default group, which uses every list, does not"
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.0.9",
+            "ads.example.com",
+            rtype::A
+        )));
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "ads.example.com",
+            rtype::A
+        )));
+    }
+
+    /// REQ: FLT-901 (T24.29) - a list a file defines with a source's URL provides it, and the block
+    /// still names the category.
+    #[test]
+    fn flt_901_provider_list_names_the_category() {
+        let p = category_pipeline(
+            r#"
+[[list]]
+name = "my-nsfw"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+            &[(
+                "my-nsfw",
+                "||adult.example^
+",
+            )],
+        );
+        let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
+        assert!(is_blocked(&kid));
+        assert!(
+            contains(&kid, b"blocked by category Adult content (list my-nsfw)"),
+            "the provider list is named by its category"
+        );
+    }
+
+    /// REQ: FLT-902 (T24.29) — `basic` blocks adult content and threats and not gambling; `off`
+    /// blocks none and keeps the selection; `enhanced` follows the selection.
+    #[test]
+    fn flt_902_levels_decide_what_blocks() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "default"
+[[group]]
+name = "basic"
+networks = ["10.0.1.0/24"]
+content = { level = "basic", categories = ["gambling"] }
+[[group]]
+name = "off"
+networks = ["10.0.2.0/24"]
+content = { level = "off", categories = ["adult", "gambling"] }
+[[group]]
+name = "enhanced"
+networks = ["10.0.3.0/24"]
+content = { level = "enhanced", categories = ["gambling"] }
+"#,
+            &[
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+                (
+                    "cat-hagezi-tif-mini",
+                    "||threat.example^
+",
+                ),
+                (
+                    "cat-hagezi-gambling-medium",
+                    "||bet.example^
+",
+                ),
+            ],
+        );
+        let blocked = |peer: &str, name: &str| is_blocked(&ask_from(&p, peer, name, rtype::A));
+        assert!(blocked("10.0.1.5", "adult.example"));
+        assert!(blocked("10.0.1.5", "threat.example"));
+        assert!(!blocked("10.0.1.5", "bet.example"), "basic leaves gambling");
+        for name in ["adult.example", "threat.example", "bet.example"] {
+            assert!(!blocked("10.0.2.5", name), "off blocks nothing: {name}");
+        }
+        assert!(blocked("10.0.3.5", "bet.example"));
+        assert!(
+            !blocked("10.0.3.5", "adult.example"),
+            "enhanced is the selection"
+        );
+    }
+
+    /// REQ: FLT-901 (T24.29) — a quick allow rule beats a category block, and a deny from the
+    /// category stays where no rule applies.
+    #[test]
+    fn flt_901_allow_rule_beats_category() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+[[rule]]
+id = "homework"
+action = "allow"
+domain = "ok.adult.example"
+groups = ["kids"]
+"#,
+            &[(
+                "cat-hagezi-nsfw",
+                "||adult.example^
+",
+            )],
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "www.adult.example",
+            rtype::A
+        )));
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
+            "the allow rule wins"
+        );
+    }
+
+    /// REQ: FLT-901 (T24.29, AC 4) - an allow-kind list the group uses beats a category too.
+    #[test]
+    fn flt_901_allow_list_beats_category() {
+        let cfg_toml = r#"
+[[list]]
+name = "homework"
+kind = "allow"
+rules = ["ok.adult.example"]
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+lists = ["homework"]
+content = { level = "enhanced", categories = ["adult"] }
+"#;
+        let p = category_pipeline(cfg_toml, &[]);
+        install_lists_allowing(
+            &p,
+            &[
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+                (
+                    "homework",
+                    "ok.adult.example
+",
+                ),
+            ],
+            &["homework"],
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "www.adult.example",
+            rtype::A
+        )));
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
+            "the allow list wins"
+        );
+    }
+
+    /// REQ: FLT-902 (T24.29) — `safe_search_engines = ["google"]` answers Google with its
+    /// safe-search target and Bing normally; `safe_search = true` alone still covers every
+    /// engine; YouTube's own level applies whatever the list says.
+    #[test]
+    fn flt_902_safe_search_engines_per_group() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "default"
+safe_search = true
+[[group]]
+name = "google"
+networks = ["10.0.1.0/24"]
+safe_search_engines = ["google"]
+[[group]]
+name = "yt"
+networks = ["10.0.2.0/24"]
+safe_search_engines = ["google"]
+youtube_restrict = "moderate"
+"#,
+            &[(
+                "ads",
+                "||nothing.example^
+",
+            )],
+        );
+        // The engines' safe-search names are in the cache (the upstream is never contacted).
+        let cache_a = |name: &str, ip: Ipv4Addr| {
+            let req = query(name, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, ip).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_a(
+            "forcesafesearch.google.com",
+            Ipv4Addr::new(216, 239, 38, 120),
+        );
+        cache_a("strict.bing.com", Ipv4Addr::new(204, 79, 197, 220));
+        cache_a(
+            "restrictmoderate.youtube.com",
+            Ipv4Addr::new(216, 239, 38, 119),
+        );
+        let answered = |peer: &str, name: &str| !ask_from(&p, peer, name, rtype::A).is_empty();
+        // A group that covers only Google: Bing is left alone (forwarded, so nothing is answered).
+        assert!(
+            answered("10.0.1.5", "www.google.com"),
+            "Google gets its target"
+        );
+        assert!(!answered("10.0.1.5", "www.bing.com"), "Bing is left alone");
+        // `safe_search = true` alone covers every engine.
+        assert!(answered("10.0.0.5", "www.google.com"));
+        assert!(
+            answered("10.0.0.5", "www.bing.com"),
+            "safe_search alone covers Bing"
+        );
+        // YouTube's own level applies though the list names only Google.
+        assert!(!answered("10.0.1.5", "www.youtube.com"));
+        assert!(answered("10.0.2.5", "www.youtube.com"));
+    }
+
+    /// REQ: FLT-010 (T7.10) — schedules: bedtime blocks everything for its group during the
+    /// window (a quick allow still wins), and a list a schedule turns on is off outside it,
+    /// even for a group that uses every list.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario across the week
+    fn flt_010_schedules_block_all_and_enable_lists() {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+
+[[list]]
+name = "games"
+rules = ["||game.example.com^"]
+
+[[group]]
+name = "default"
+schedules = ["weekend-games"]
+
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+schedules = ["bedtime"]
+
+[[schedule]]
+name = "bedtime"
+action = "block_all"
+tz = "UTC"
+window = [{ days = ["daily"], start = "21:00", end = "07:00" }]
+
+[[schedule]]
+name = "weekend-games"
+action = "enable_lists"
+lists = ["games"]
+tz = "UTC"
+window = [{ days = ["weekends"], start = "12:00", end = "18:00" }]
+
+[[rule]]
+id = "homework"
+action = "allow"
+domain = "school.example.com"
+groups = ["kids"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let clients = Arc::new(ClientTable::from_config(&cfg));
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                clients: Arc::clone(&clients),
+                quick: Arc::new(wrendns_policy::QuickRules::from_config(&cfg, &clients)),
+                ..Policy::open()
+            },
+        );
+        install_lists(
+            &p,
+            &[
+                ("ads", "||ads.example.com^\n"),
+                ("games", "||game.example.com^\n"),
+            ],
+        );
+        let compiled = wrendns_config::schedule::compile(&cfg);
+        let at = |now: i64| {
+            p.schedules.store(Arc::new(ScheduleNow::compute(
+                &cfg,
+                &compiled,
+                clients.groups(),
+                now,
+            )));
+            p.set_filter(None);
+        };
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => Vec::new(),
+            }
+        };
+        let blocked =
+            |r: &[u8]| summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1);
+        // Monday 2026-10-05 22:00 UTC: bedtime is on.
+        let monday_2200: i64 = 1_791_237_600;
+        at(monday_2200);
+        let r = ask("10.0.1.5:1000", "www.example.org");
+        assert!(blocked(&r), "bedtime blocks everything for kids");
+        let text = b"blocked by schedule bedtime";
+        assert!(
+            r.windows(text.len()).any(|w| w == text),
+            "EDE names the schedule"
+        );
+        assert!(
+            !blocked(&ask("10.0.1.5:1000", "school.example.com")),
+            "a quick allow wins"
+        );
+        assert!(
+            !blocked(&ask("10.0.0.9:1000", "www.example.org")),
+            "other groups are unaffected"
+        );
+        // Noon: bedtime is off.
+        at(monday_2200 - 10 * 3600);
+        assert!(!blocked(&ask("10.0.1.5:1000", "www.example.org")));
+        // The games list is off on a weekday, even for the every-list default group, and on
+        // during its weekend window; the ads list applies throughout.
+        assert!(!blocked(&ask("10.0.0.9:1000", "game.example.com")));
+        assert!(blocked(&ask("10.0.0.9:1000", "ads.example.com")));
+        let saturday_1300 = monday_2200 + 4 * 86_400 + 15 * 3600;
+        at(saturday_1300);
+        assert!(
+            blocked(&ask("10.0.0.9:1000", "game.example.com")),
+            "weekend games list on"
+        );
+        assert!(
+            !blocked(&ask("10.0.1.5:1000", "game.example.com")),
+            "only for its own group"
+        );
+    }
+
+    #[test]
+    fn flt_008_blocked_names_get_null_ip_with_ede() {
+        use wrendns_filter::matcher::Lookup;
+        for lookup in [Lookup::Walk, Lookup::Indexed] {
+            let p = pipeline();
+            install_filter(&p, "||ads.example.com^\n@@||ok.ads.example.com^\n", lookup);
+            let mut out = [0u8; 4096];
+            let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
+                &query("x.ads.example.com", rtype::A, true),
+                &meta(),
+                &mut out,
+            ) else {
+                panic!("blocked queries are answered immediately");
+            };
+            let s = summarize(&out[..len]).unwrap();
+            // Default block mode: null IP (0.0.0.0 for A).
+            assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1), "{lookup:?}");
+            let text = b"blocked by list ads";
+            assert!(
+                out[..len].windows(text.len()).any(|w| w == text),
+                "EDE 15 names the list"
+            );
+            // Not blocked: allowed by @@, or unlisted. No upstreams here, so they're REFUSED.
+            assert_eq!(
+                rcode_of(&p, &query("ok.ads.example.com", rtype::A, true)),
+                Some(rcode::REFUSED)
+            );
+            assert_eq!(
+                rcode_of(&p, &query("example.com", rtype::A, true)),
+                Some(rcode::REFUSED)
+            );
+            // Removing the filter stops blocking at once.
+            p.filter.store(None);
+            assert_eq!(
+                rcode_of(&p, &query("ads.example.com", rtype::A, true)),
+                Some(rcode::REFUSED)
+            );
+        }
+    }
+
+    #[test]
+    fn flt_005_groups_select_lists_per_client() {
+        use wrendns_filter::matcher::Lookup;
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||x^"]
+
+[[group]]
+name = "default"
+lists = []
+
+[[group]]
+name = "kids"
+lists = ["ads"]
+block_mode = "nxdomain"
+
+[[client]]
+name = "tablet"
+match = ["10.0.0.5", "aa:bb:cc:dd:ee:01"]
+groups = ["kids"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        // The compiled snapshot names its one list "ads" (see install_filter).
+        install_filter(&p, "||ads.example.com^\n", Lookup::Indexed);
+        let ask = |peer: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(
+                &query("ads.example.com", rtype::A, true),
+                &meta,
+                &mut out,
+            ) {
+                Response::Ready(len) => summarize(&out[..len]).unwrap().rcode,
+                _ => u16::MAX,
+            }
+        };
+        assert_eq!(
+            ask("10.0.0.5:1000"),
+            rcode::NXDOMAIN,
+            "kids group has the list"
+        );
+        assert_eq!(
+            ask("10.0.0.9:1000"),
+            rcode::REFUSED,
+            "default group has no lists"
+        );
+        // Recognized by MAC from the neighbor table, at any address.
+        p.neighbors.replace([(
+            "10.0.0.77".parse().unwrap(),
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01],
+        )]);
+        assert_eq!(ask("10.0.0.77:1000"), rcode::NXDOMAIN);
+    }
+
+    /// REQ: FLT-005 (T6.12, ADR-067) — quick rules decide before the lists, per device and
+    /// per group; other clients are unaffected.
+    #[test]
+    fn flt_005_quick_rules_decide_before_the_lists() {
+        use wrendns_filter::matcher::Lookup;
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||x^"]
+
+[[group]]
+name = "default"
+block_mode = "nxdomain"
+
+[[group]]
+name = "kids"
+block_mode = "nxdomain"
+
+[[client]]
+name = "tablet"
+match = ["10.0.0.5"]
+groups = ["kids"]
+
+[[client]]
+name = "mom"
+match = ["10.0.0.6"]
+
+[[rule]]
+id = "tablet-ads"
+action = "allow"
+domain = "ads.example.com"
+devices = ["tablet"]
+
+[[rule]]
+id = "kids-videos"
+action = "block"
+domain = "videos.example"
+groups = ["kids"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                allowed: Policy::open().allowed,
+                ..Policy::from_config(&cfg, LocalData::default())
+            },
+        );
+        install_filter(
+            &p,
+            "||ads.example.com^
+",
+            Lookup::Indexed,
+        );
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => summarize(&out[..len]).unwrap().rcode,
+                _ => u16::MAX,
+            }
+        };
+        // No upstream is configured: a query that isn't blocked ends in REFUSED.
+        assert_eq!(
+            ask("10.0.0.5:1000", "ads.example.com"),
+            rcode::REFUSED,
+            "the tablet's allow beats the list"
+        );
+        assert_eq!(
+            ask("10.0.0.6:1000", "ads.example.com"),
+            rcode::NXDOMAIN,
+            "mom still gets the list's block"
+        );
+        assert_eq!(
+            ask("10.0.0.5:1000", "cdn.videos.example"),
+            rcode::NXDOMAIN,
+            "the kids group's block, subdomains too"
+        );
+        assert_eq!(
+            ask("10.0.0.6:1000", "videos.example"),
+            rcode::REFUSED,
+            "not in kids"
+        );
+    }
+
+    /// A pipeline with the given config's clients/groups, a never-contacted upstream (so the
+    /// cache path runs), and `rules` installed as list "ads".
+    fn pipeline_with(cfg_toml: &str, rules: &str) -> Arc<Pipeline> {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let router = Router::from_config(&cfg).unwrap();
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(router),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        install_filter(&p, rules, wrendns_filter::matcher::Lookup::Indexed);
+        p
+    }
+
+    fn ask_from(p: &Arc<Pipeline>, peer: &str, name: &str, qtype: u16) -> Vec<u8> {
+        let mut out = [0u8; 4096];
+        let meta = RequestMeta {
+            peer: format!("{peer}:1000").parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        match Handler(Arc::clone(p)).handle(&query(name, qtype, true), &meta, &mut out) {
+            Response::Ready(len) => out[..len].to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn contains(msg: &[u8], needle: &[u8]) -> bool {
+        msg.windows(needle.len()).any(|w| w == needle)
+    }
+
+    const UPSTREAM: &str = "[[upstream]]\nname = \"u\"\nurl = \"udp://127.0.0.1:9\"\n[[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n";
+
+    #[test]
+    fn flt_008_block_modes_per_group() {
+        let cfg = format!(
+            r#"{UPSTREAM}
+[[list]]
+name = "ads"
+rules = ["||x^"]
+[[group]]
+name = "nx"
+block_mode = "nxdomain"
+[[group]]
+name = "nodata"
+block_mode = "nodata"
+[[group]]
+name = "refused"
+block_mode = "refused"
+[[group]]
+name = "custom"
+block_mode = "custom_ip"
+block_ips = ["192.0.2.7", "fd00::7"]
+block_ttl = 300
+[[group]]
+name = "kids"
+ede = "filtered"
+ede_text = false
+[[client]]
+name = "a"
+match = ["10.0.0.1"]
+groups = ["nx"]
+[[client]]
+name = "b"
+match = ["10.0.0.2"]
+groups = ["nodata"]
+[[client]]
+name = "c"
+match = ["10.0.0.3"]
+groups = ["refused"]
+[[client]]
+name = "d"
+match = ["10.0.0.4"]
+groups = ["custom"]
+[[client]]
+name = "e"
+match = ["10.0.0.5"]
+groups = ["kids"]
+"#
+        );
+        let p = pipeline_with(&cfg, "||ads.example.com^\n");
+        let sum = |m: &[u8]| {
+            let s = summarize(m).unwrap();
+            (s.rcode, s.answers)
+        };
+        let name = "ads.example.com";
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.1", name, rtype::A)),
+            (rcode::NXDOMAIN, 0)
+        );
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.2", name, rtype::A)),
+            (rcode::NOERROR, 0)
+        );
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.3", name, rtype::A)),
+            (rcode::REFUSED, 0)
+        );
+        let a = ask_from(&p, "10.0.0.4", name, rtype::A);
+        assert_eq!(sum(&a), (rcode::NOERROR, 1));
+        assert!(contains(&a, &[192, 0, 2, 7]));
+        let aaaa = ask_from(&p, "10.0.0.4", name, rtype::AAAA);
+        assert!(contains(
+            &aaaa,
+            &"fd00::7".parse::<Ipv6Addr>().unwrap().octets()
+        ));
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.4", name, rtype::TXT)),
+            (rcode::NOERROR, 0)
+        );
+        // Null IP (default mode) with EDE 17 and no list text: option 15, length 2, code 17.
+        let e = ask_from(&p, "10.0.0.5", name, rtype::AAAA);
+        assert_eq!(sum(&e), (rcode::NOERROR, 1));
+        assert!(contains(&e, &[0, 15, 0, 2, 0, 17]));
+        assert!(!contains(&e, b"blocked by list"));
+    }
+
+    /// Puts `name A ip` in the cache, as an upstream answer would be.
+    fn cache_a(p: &Pipeline, name: &str, ip: Ipv4Addr) {
+        let req = query(name, rtype::A, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        b.answer_a(300, ip).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+            .unwrap();
+    }
+
+    /// Caches `name`/`qtype` answered with `ip` (or no data).
+    fn cache_answer(p: &Pipeline, name: &str, qtype: u16, ip: Option<std::net::IpAddr>) {
+        let req = query(name, qtype, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        match ip {
+            Some(std::net::IpAddr::V4(v4)) => {
+                b.answer_a(300, v4).unwrap();
+            }
+            Some(std::net::IpAddr::V6(v6)) => {
+                b.answer_aaaa(300, v6).unwrap();
+            }
+            None => {
+                b.authority_soa(60).unwrap();
+            }
+        }
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+            .unwrap();
+    }
+
+    /// REQ: DNS-018 (T7.22) — authoritative zones: a group's view answers its names, NXDOMAIN
+    /// (authoritative, with an SOA) for names it doesn't have, no data for the apex and empty
+    /// non-terminals; other groups don't see it; a zone file loads.
+    #[test]
+    fn dns_018_local_zones() {
+        let dir = std::env::temp_dir().join(format!("tt-zone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lab.zone");
+        std::fs::write(
+            &file,
+            "$ORIGIN lab.example.\n@ 900 IN SOA ns1 hostmaster 1 900 300 604800 900\n@ 3600 IN NS ns1\nweb 300 IN A 192.168.9.9\n",
+        )
+        .unwrap();
+        let cfg_toml = format!(
+            "{UPSTREAM}[[group]]\nname = \"office\"\nnetworks = [\"10.0.3.0/24\"]\n[[zone]]\nname = \"corp.example\"\ngroups = [\"office\"]\n[[zone.record]]\nname = \"intranet.corp.example\"\ntype = \"A\"\nvalue = \"10.10.0.5\"\n[[zone.record]]\nname = \"_sip._tcp.corp.example\"\ntype = \"SRV\"\nvalue = \"0 5 5060 pbx.corp.example\"\n[[zone]]\nname = \"lab.example\"\nfile = \"{}\"\n",
+            file.display()
+        );
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                zones: Arc::new(crate::server::load_zones(&cfg).unwrap()),
+                ..Policy::open()
+            },
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        cache_a(&p, "intranet.corp.example", Ipv4Addr::new(203, 0, 113, 5));
+        let office = "10.0.3.5";
+        let r = ask_from(&p, office, "intranet.corp.example", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert!(
+            s.header.flags.aa() && contains(&r, &[10, 10, 0, 5]),
+            "the office view"
+        );
+        let nx = summarize(&ask_from(&p, office, "nope.corp.example", rtype::A)).unwrap();
+        assert_eq!(
+            (nx.rcode, nx.header.flags.aa(), nx.negative_ttl.is_some()),
+            (rcode::NXDOMAIN, true, true)
+        );
+        let apex = summarize(&ask_from(&p, office, "corp.example", rtype::A)).unwrap();
+        assert_eq!(
+            (apex.rcode, apex.answers),
+            (rcode::NOERROR, 0),
+            "the apex exists"
+        );
+        let ent = summarize(&ask_from(&p, office, "_tcp.corp.example", rtype::SRV)).unwrap();
+        assert_eq!(
+            (ent.rcode, ent.answers),
+            (rcode::NOERROR, 0),
+            "an empty non-terminal exists"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "intranet.corp.example", rtype::A),
+                &[203, 0, 113, 5]
+            ),
+            "others: the public answer"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "web.lab.example", rtype::A),
+                &[192, 168, 9, 9]
+            ),
+            "the zone file, for everyone"
+        );
+        // REQ: DNS-018 (T9.18) — SOA and NS at the apex: the file's, else made up; negative
+        // answers carry the zone's SOA, owned by the apex.
+        let soa = ask_from(&p, "10.0.0.5", "lab.example", rtype::SOA);
+        let s = summarize(&soa).unwrap();
+        assert_eq!(
+            (s.rcode, s.answers, s.header.flags.aa()),
+            (rcode::NOERROR, 1, true)
+        );
+        let ns1 = NameBuf::from_presentation("ns1.lab.example").unwrap();
+        assert!(contains(&soa, ns1.as_wire()), "the file's SOA (mname ns1)");
+        let ns = ask_from(&p, "10.0.0.5", "lab.example", rtype::NS);
+        assert_eq!(summarize(&ns).unwrap().answers, 1);
+        assert!(contains(&ns, ns1.as_wire()), "the file's NS");
+        let made = ask_from(&p, office, "corp.example", rtype::SOA);
+        let localhost = NameBuf::from_presentation("localhost").unwrap();
+        assert!(
+            summarize(&made).unwrap().answers == 1 && contains(&made, localhost.as_wire()),
+            "made up: localhost."
+        );
+        let nx = ask_from(&p, office, "nope.corp.example", rtype::A);
+        let apex = NameBuf::from_presentation("corp.example").unwrap();
+        let hostmaster = NameBuf::from_presentation("hostmaster.corp.example").unwrap();
+        assert!(
+            contains(&nx, apex.as_wire()) && contains(&nx, hostmaster.as_wire()),
+            "the zone's SOA in the authority"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn named(name: &str, ip: [u8; 4]) -> crate::device_dns::Named {
+        crate::device_dns::Named {
+            name: name.to_owned(),
+            ip: Ipv4Addr::from(ip),
+            v6: Vec::new(),
+        }
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — a device with IPv6 addresses answers AAAA for each and
+    /// an `ip6.arpa` PTR for each (a unique-local one too: the device name answers before the
+    /// private-reverse special names), its A is unchanged, and a device without one stays
+    /// NODATA for AAAA.
+    #[test]
+    fn dns_023_device_names_ipv6_in_dns() {
+        let cfg_toml = format!("{UPSTREAM}[local]\ndevice_domain = \"home.arpa\"\n");
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::from_config(&cfg, local),
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        let gua: std::net::Ipv6Addr = "2001:db8:1::21".parse().unwrap();
+        let ula: std::net::Ipv6Addr = "fd00:10::21".parse().unwrap();
+        let mut tablet = named("kitchen-tablet.home.arpa", [192, 0, 2, 21]);
+        tablet.v6 = vec![gua, ula];
+        p.device_names
+            .store(Arc::new(crate::device_dns::build(&[tablet], 60)));
+        let r = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::AAAA);
+        let s = summarize(&r).unwrap();
+        assert!(s.header.flags.aa() && s.rcode == rcode::NOERROR);
+        assert!(
+            contains(&r, &gua.octets()) && contains(&r, &ula.octets()),
+            "both AAAA"
+        );
+        let a = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        assert!(contains(&a, &[192, 0, 2, 21]), "the A is unchanged");
+        let rev = |ip: std::net::Ipv6Addr| {
+            let nibbles: Vec<String> = ip
+                .octets()
+                .iter()
+                .flat_map(|b| [b >> 4, b & 15])
+                .rev()
+                .map(|x| format!("{x:x}"))
+                .collect();
+            format!("{}.ip6.arpa", nibbles.join("."))
+        };
+        let name = NameBuf::from_presentation("kitchen-tablet.home.arpa").unwrap();
+        for ip in [gua, ula] {
+            let ptr = ask_from(&p, "10.0.0.5", &rev(ip), rtype::PTR);
+            assert!(contains(&ptr, name.as_wire()), "PTR for {ip}");
+        }
+        p.device_names.store(Arc::new(crate::device_dns::build(
+            &[named("nas.home.arpa", [192, 0, 2, 5])],
+            60,
+        )));
+        let r = ask_from(&p, "10.0.0.5", "nas.home.arpa", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::NOERROR, "NODATA");
+    }
+
+    /// REQ: DNS-023 (T22.1) — device names answer A and PTR, authoritatively; a configured
+    /// record and a zone's own record win; inside a zone a device name answers before the
+    /// zone's NXDOMAIN; with the feature off the table is ignored.
+    #[test]
+    fn dns_023_device_names_in_dns() {
+        let cfg_toml = format!(
+            "{UPSTREAM}[local]\ndevice_domain = \"home.arpa\"\n[[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n[[zone]]\nname = \"lab.example\"\n[[zone.record]]\nname = \"web.lab.example\"\ntype = \"A\"\nvalue = \"10.9.9.9\"\n"
+        );
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                zones: Arc::new(crate::server::load_zones(&cfg).unwrap()),
+                ..Policy::from_config(&cfg, local)
+            },
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        p.device_names.store(Arc::new(crate::device_dns::build(
+            &[
+                named("kitchen-tablet.home.arpa", [192, 0, 2, 21]),
+                named("nas.home.arpa", [192, 0, 2, 5]),
+                named("web.lab.example", [10, 1, 1, 1]),
+                named("printer.lab.example", [10, 1, 1, 2]),
+            ],
+            60,
+        )));
+        let r = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert!(
+            s.header.flags.aa() && s.rcode == rcode::NOERROR && contains(&r, &[192, 0, 2, 21]),
+            "a device name"
+        );
+        let ptr = ask_from(&p, "10.0.0.5", "21.2.0.192.in-addr.arpa", rtype::PTR);
+        let name = NameBuf::from_presentation("kitchen-tablet.home.arpa").unwrap();
+        assert!(contains(&ptr, name.as_wire()), "its PTR");
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "nas.home.arpa", rtype::A),
+                &[192, 0, 2, 200]
+            ),
+            "a configured record wins"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "web.lab.example", rtype::A),
+                &[10, 9, 9, 9]
+            ),
+            "a zone's own record wins"
+        );
+        let printer = ask_from(&p, "10.0.0.5", "printer.lab.example", rtype::A);
+        assert!(
+            summarize(&printer).unwrap().rcode == rcode::NOERROR
+                && contains(&printer, &[10, 1, 1, 2]),
+            "a device name inside a zone, before its NXDOMAIN"
+        );
+        let nx = summarize(&ask_from(&p, "10.0.0.5", "nope.lab.example", rtype::A)).unwrap();
+        assert_eq!(
+            nx.rcode,
+            rcode::NXDOMAIN,
+            "the zone still says no for the rest"
+        );
+        // Off: the same table is ignored.
+        let off = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::open(),
+        );
+        install_filter(
+            &off,
+            "||nothing.example^\n",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        off.device_names.store(Arc::new(crate::device_dns::build(
+            &[named("kitchen-tablet.home.arpa", [192, 0, 2, 21])],
+            60,
+        )));
+        let r = ask_from(&off, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        assert!(!contains(&r, &[192, 0, 2, 21]), "off: not answered");
+    }
+
+    /// REQ: DNS-016 (T7.21) — DNS64: a name without AAAA gets AAAA made from its A records
+    /// (prefix + IPv4) for the group; a real AAAA is kept; other groups get no data.
+    #[test]
+    fn dns_016_dns64_synthesizes_aaaa() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\ndns64 = true\n[[group]]\nname = \"plain\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        cache_answer(&p, "v4only.example", rtype::AAAA, None);
+        cache_answer(
+            &p,
+            "v4only.example",
+            rtype::A,
+            Some("192.0.2.33".parse().unwrap()),
+        );
+        cache_answer(
+            &p,
+            "dual.example",
+            rtype::AAAA,
+            Some("2001:db8::7".parse().unwrap()),
+        );
+        let r = ask_from(&p, "10.0.0.5", "v4only.example", rtype::AAAA);
+        let s = summarize(&r).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+        let want: std::net::Ipv6Addr = "64:ff9b::c000:221".parse().unwrap();
+        assert!(contains(&r, &want.octets()), "64:ff9b::192.0.2.33");
+        let real: std::net::Ipv6Addr = "2001:db8::7".parse().unwrap();
+        assert!(contains(
+            &ask_from(&p, "10.0.0.5", "dual.example", rtype::AAAA),
+            &real.octets()
+        ));
+        let plain = summarize(&ask_from(&p, "10.0.2.5", "v4only.example", rtype::AAAA)).unwrap();
+        assert_eq!(plain.answers, 0, "no DNS64 for the other group");
+    }
+
+    /// REQ: FLT-016 (T12.5) — a group with `filter_aaaa` gets NOERROR with no records for AAAA
+    /// (even when an IPv6 address is cached), A still answers, other groups still get AAAA,
+    /// a local AAAA record still answers, and a blocked name stays blocked.
+    #[test]
+    fn flt_016_filter_aaaa_per_group() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"v4only\"\nnetworks = [\"10.0.2.0/24\"]\nfilter_aaaa = true\n\
+             [[record]]\nname = \"nas.home.arpa\"\ntype = \"AAAA\"\nvalue = \"fd00::10\"\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example^\n");
+        // The whole policy from the config: its local records too.
+        let loaded = wrendns_config::Loader::new()
+            .toml_str("t.toml", &cfg)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&loaded);
+        p.reload(
+            Arc::clone(&p.current().router),
+            Policy {
+                allowed: Policy::open().allowed,
+                ..Policy::from_config(&loaded, local)
+            },
+        );
+        let v6: std::net::Ipv6Addr = "2001:db8::7".parse().unwrap();
+        cache_answer(&p, "dual.example", rtype::AAAA, Some(v6.into()));
+        cache_answer(
+            &p,
+            "dual.example",
+            rtype::A,
+            Some("192.0.2.7".parse().unwrap()),
+        );
+        let filtered = ask_from(&p, "10.0.2.5", "dual.example", rtype::AAAA);
+        let s = summarize(&filtered).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 0));
+        assert!(!contains(&filtered, &v6.octets()));
+        assert_eq!(
+            summarize(&ask_from(&p, "10.0.2.5", "dual.example", rtype::A))
+                .unwrap()
+                .answers,
+            1,
+            "A still answers"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.9.5", "dual.example", rtype::AAAA),
+                &v6.octets()
+            ),
+            "other groups keep IPv6"
+        );
+        let local: std::net::Ipv6Addr = "fd00::10".parse().unwrap();
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.2.5", "nas.home.arpa", rtype::AAAA),
+                &local.octets()
+            ),
+            "local records still answer"
+        );
+        let blocked = ask_from(&p, "10.0.2.5", "ads.example", rtype::AAAA);
+        assert!(
+            contains(&blocked, &std::net::Ipv6Addr::UNSPECIFIED.octets()),
+            "still blocked (::)"
+        );
+    }
+
+    /// Caches `name`/`qtype` answered with these records (type, RDATA).
+    fn cache_records(p: &Pipeline, name: &str, qtype: u16, recs: &[(u16, Vec<u8>)]) {
+        let req = query(name, qtype, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 1024];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        for (rt, rdata) in recs {
+            b.answer_rdata(None, *rt, 300, rdata).unwrap();
+        }
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+            .unwrap();
+    }
+
+    fn v6(s: &str) -> Vec<u8> {
+        s.parse::<std::net::Ipv6Addr>().unwrap().octets().to_vec()
+    }
+
+    /// The `ip6.arpa` name of `s`.
+    fn rev6(s: &str) -> String {
+        let o = s.parse::<std::net::Ipv6Addr>().unwrap().octets();
+        let mut parts = Vec::new();
+        for b in o.iter().rev() {
+            parts.push(format!("{:x}", b & 0xf));
+            parts.push(format!("{:x}", b >> 4));
+        }
+        format!("{}.ip6.arpa", parts.join("."))
+    }
+
+    /// REQ: FLT-014 (T9.20) — `$dnsrewrite` in lists: an address for its family (empty
+    /// NOERROR for the other), over a block of the same name, an rcode, a CNAME resolved like
+    /// any name, and an exception that turns it off.
+    #[test]
+    fn flt_014_list_dnsrewrite() {
+        let p = pipeline_with(
+            UPSTREAM,
+            "||rw.example^$dnsrewrite=192.0.2.55\n\
+             ||both.example^\n||both.example^$dnsrewrite=NOERROR;A;192.0.2.66\n\
+             ||nx.example^$dnsrewrite=NXDOMAIN\n\
+             ||cn.example^$dnsrewrite=target.example\n\
+             ||ex.example^$dnsrewrite=192.0.2.77\n@@||ex.example^$dnsrewrite\n",
+        );
+        let r = ask_from(&p, "10.0.0.5", "www.rw.example", rtype::A);
+        assert!(contains(&r, &[192, 0, 2, 55]), "subtree rewrite");
+        let s = summarize(&ask_from(&p, "10.0.0.5", "rw.example", rtype::AAAA)).unwrap();
+        assert_eq!(
+            (s.rcode, s.answers),
+            (rcode::NOERROR, 0),
+            "other family: empty"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "both.example", rtype::A),
+                &[192, 0, 2, 66]
+            ),
+            "over the block"
+        );
+        assert_eq!(
+            summarize(&ask_from(&p, "10.0.0.5", "nx.example", rtype::A))
+                .unwrap()
+                .rcode,
+            rcode::NXDOMAIN
+        );
+        cache_a(&p, "target.example", Ipv4Addr::new(198, 51, 100, 9));
+        let r = ask_from(&p, "10.0.0.5", "cn.example", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert_eq!(s.answers, 2, "CNAME + the target's A");
+        assert!(contains(&r, &[198, 51, 100, 9]));
+        assert!(
+            !contains(
+                &ask_from(&p, "10.0.0.5", "ex.example", rtype::A),
+                &[192, 0, 2, 77]
+            ),
+            "the exception"
+        );
+    }
+
+    /// REQ: DNS-016 (T9.10) — the exclusion set: an excluded (or IPv4-mapped) AAAA counts as
+    /// missing, a mixed answer loses the excluded ones, an excluded A is never made into
+    /// AAAA; reverse names in the prefix follow the IPv4 address's PTR (private ones stay
+    /// local).
+    #[test]
+    fn dns_016_dns64_exclusions_and_reverse() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\ndns64 = true\ndns64_exclude = [\"2001:db8:bad::/48\", \"198.51.100.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        let synth = |last: &str| v6(&format!("64:ff9b::{last}"));
+        // Only an excluded AAAA: made from the A record.
+        cache_records(
+            &p,
+            "excl.example",
+            rtype::AAAA,
+            &[(rtype::AAAA, v6("2001:db8:bad::1"))],
+        );
+        cache_answer(
+            &p,
+            "excl.example",
+            rtype::A,
+            Some("192.0.2.44".parse().unwrap()),
+        );
+        let r = ask_from(&p, "10.0.0.5", "excl.example", rtype::AAAA);
+        assert!(contains(&r, &synth("c000:22c")), "synthesized");
+        assert!(!contains(&r, &v6("2001:db8:bad::1")));
+        // IPv4-mapped: always excluded.
+        cache_records(
+            &p,
+            "mapped.example",
+            rtype::AAAA,
+            &[(rtype::AAAA, v6("::ffff:192.0.2.45"))],
+        );
+        cache_answer(
+            &p,
+            "mapped.example",
+            rtype::A,
+            Some("192.0.2.45".parse().unwrap()),
+        );
+        assert!(contains(
+            &ask_from(&p, "10.0.0.5", "mapped.example", rtype::AAAA),
+            &synth("c000:22d")
+        ));
+        // Mixed: the real one stays, the excluded one goes.
+        cache_records(
+            &p,
+            "mixed.example",
+            rtype::AAAA,
+            &[
+                (rtype::AAAA, v6("2001:db8:bad::2")),
+                (rtype::AAAA, v6("2001:db8::9")),
+            ],
+        );
+        let r = ask_from(&p, "10.0.0.5", "mixed.example", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().answers, 1);
+        assert!(contains(&r, &v6("2001:db8::9")));
+        assert!(!contains(&r, &v6("2001:db8:bad::2")));
+        // An excluded A: no AAAA made.
+        cache_answer(&p, "v4ex.example", rtype::AAAA, None);
+        cache_answer(
+            &p,
+            "v4ex.example",
+            rtype::A,
+            Some("198.51.100.7".parse().unwrap()),
+        );
+        let r = ask_from(&p, "10.0.0.5", "v4ex.example", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().answers, 0);
+        // Reverse: 64:ff9b::192.0.2.33 → 33.2.0.192.in-addr.arpa's PTR.
+        let host = NameBuf::from_presentation("host.example").unwrap();
+        cache_records(
+            &p,
+            "33.2.0.192.in-addr.arpa",
+            rtype::PTR,
+            &[(rtype::PTR, host.as_wire().to_vec())],
+        );
+        let r = ask_from(&p, "10.0.0.5", &rev6("64:ff9b::c000:221"), rtype::PTR);
+        let sr = summarize(&r).unwrap();
+        assert_eq!((sr.rcode, sr.answers), (rcode::NOERROR, 2), "CNAME + PTR");
+        assert!(contains(&r, host.as_wire()));
+        // An embedded private address stays local (RFC 6303).
+        let r = ask_from(&p, "10.0.0.5", &rev6("64:ff9b::c0a8:105"), rtype::PTR);
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::NXDOMAIN);
+        // Outside the prefix: not ours.
+        let other = NameBuf::from_presentation(&rev6("2001:db8::c000:221")).unwrap();
+        assert!(dns64_reverse_target(&other, "64:ff9b::".parse().unwrap()).is_none());
+    }
+
+    /// REQ: FLT-015 (T7.20) — rebinding protection: a private address for a public name is
+    /// refused (cache hits included), allowed under `rebinding_allow`, and for groups without
+    /// it; `block_answer_ips` refuses a range for any name.
+    #[test]
+    fn flt_015_answer_ip_filter() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\nrebinding_protection = true\nrebinding_allow = [\"home.example\"]\nblock_answer_ips = [\"203.0.113.0/24\"]\n[[group]]\nname = \"open\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        cache_a(&p, "evil.example", Ipv4Addr::new(192, 168, 1, 5));
+        cache_a(&p, "nas.home.example", Ipv4Addr::new(192, 168, 1, 6));
+        cache_a(&p, "bad.example", Ipv4Addr::new(203, 0, 113, 9));
+        cache_a(&p, "ok.example", Ipv4Addr::new(93, 184, 216, 34));
+        let evil = ask_from(&p, "10.0.0.5", "evil.example", rtype::A);
+        assert!(
+            !contains(&evil, &[192, 168, 1, 5]),
+            "a private answer for a public name"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "nas.home.example", rtype::A),
+                &[192, 168, 1, 6]
+            ),
+            "allowed domain"
+        );
+        assert!(
+            !contains(
+                &ask_from(&p, "10.0.0.5", "bad.example", rtype::A),
+                &[203, 0, 113, 9]
+            ),
+            "blocked range"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "ok.example", rtype::A),
+                &[93, 184, 216, 34]
+            ),
+            "public is fine"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.2.5", "evil.example", rtype::A),
+                &[192, 168, 1, 5]
+            ),
+            "a group without it"
+        );
+    }
+
+    /// REQ: FLT-014 (T7.20) — rewrites: an address (exact or wildcard) answered locally, a
+    /// name answered as a CNAME with the name's addresses; only for the group.
+    #[test]
+    fn flt_014_rewrites() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\n[[group.rewrite]]\ndomain = \"nas.lan.example\"\nanswer = \"192.168.1.10\"\n[[group.rewrite]]\ndomain = \"*.dev.example\"\nanswer = \"10.1.1.1\"\n[[group.rewrite]]\ndomain = \"tv.example\"\nanswer = \"cdn.example\"\n[[group]]\nname = \"adults\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        cache_a(&p, "cdn.example", Ipv4Addr::new(10, 9, 9, 9));
+        cache_a(&p, "nas.lan.example", Ipv4Addr::new(1, 2, 3, 4));
+        let nas = ask_from(&p, "10.0.0.5", "nas.lan.example", rtype::A);
+        assert_eq!(summarize(&nas).unwrap().answers, 1);
+        assert!(contains(&nas, &[192, 168, 1, 10]));
+        let v6 = summarize(&ask_from(&p, "10.0.0.5", "nas.lan.example", rtype::AAAA)).unwrap();
+        assert_eq!(
+            (v6.rcode, v6.answers),
+            (rcode::NOERROR, 0),
+            "no data for the other family"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "api.dev.example", rtype::A),
+                &[10, 1, 1, 1]
+            ),
+            "wildcard"
+        );
+        let tv = ask_from(&p, "10.0.0.5", "tv.example", rtype::A);
+        let target = NameBuf::from_presentation("cdn.example").unwrap();
+        assert!(
+            contains(&tv, target.as_wire()) && contains(&tv, &[10, 9, 9, 9]),
+            "CNAME and its address"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.2.5", "nas.lan.example", rtype::A),
+                &[1, 2, 3, 4]
+            ),
+            "other groups: the real answer"
+        );
+    }
+
+    /// REQ: FLT-011 (T7.11) — safe search: an engine's name is answered as a CNAME to its
+    /// safe-search name plus that name's addresses (resolved through the cache like any
+    /// name); HTTPS records get no data; groups without safe search are untouched.
+    #[test]
+    fn flt_011_safe_search_rewrites_per_group() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\nsafe_search = true\n[[group]]\nname = \"adults\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        let cache_a = |name: &str, ip: Ipv4Addr| {
+            let req = query(name, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, ip).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_a(
+            "forcesafesearch.google.com",
+            Ipv4Addr::new(216, 239, 38, 120),
+        );
+        cache_a("www.google.com", Ipv4Addr::new(142, 250, 0, 1));
+        let safe = ask_from(&p, "10.0.0.5", "www.google.com", rtype::A);
+        let s = summarize(&safe).unwrap();
+        assert_eq!(
+            (s.rcode, s.answers),
+            (rcode::NOERROR, 2),
+            "CNAME and the target's A"
+        );
+        let target = NameBuf::from_presentation("forcesafesearch.google.com").unwrap();
+        assert!(
+            contains(&safe, target.as_wire()),
+            "points at the safe-search name"
+        );
+        assert!(contains(&safe, &[216, 239, 38, 120]), "with its address");
+        assert!(
+            !contains(&safe, &[142, 250, 0, 1]),
+            "not the normal address"
+        );
+        let rr: Vec<u16> = wrendns_proto::records(&safe)
+            .unwrap()
+            .flatten()
+            .filter(|r| r.section == wrendns_proto::Section::Answer)
+            .map(|r| r.rtype)
+            .collect();
+        assert_eq!(rr, vec![rtype::CNAME, rtype::A]);
+        let https = ask_from(&p, "10.0.0.5", "www.google.com", rtype::HTTPS);
+        let h = summarize(&https).unwrap();
+        assert_eq!((h.rcode, h.answers), (rcode::NOERROR, 0), "no HTTPS hints");
+        let adult = ask_from(&p, "10.0.2.5", "www.google.com", rtype::A);
+        assert!(
+            contains(&adult, &[142, 250, 0, 1]),
+            "the adults group isn't rewritten"
+        );
+        assert!(!contains(&adult, target.as_wire()));
+    }
+
+    #[test]
+    fn flt_007_cname_targets_are_inspected_on_cache_hits() {
+        let cfg = format!("{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n");
+        let p = pipeline_with(&cfg, "||tracker.ads.example.com^\n");
+        // Cache an answer for www.example.com that CNAMEs into a blocked name.
+        let cache_answer = |qname: &str, target: &str| {
+            let req = query(qname, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_cname(300, &NameBuf::from_presentation(target).unwrap())
+                .unwrap();
+            b.answer_a(300, Ipv4Addr::new(203, 0, 113, 9)).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_answer("www.example.com", "tracker.ads.example.com");
+        cache_answer("cdn.example.com", "edge.example.net");
+        let blocked = ask_from(&p, "10.0.0.1", "www.example.com", rtype::A);
+        let s = summarize(&blocked).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+        assert!(
+            contains(&blocked, &[0, 0, 0, 0]),
+            "null IP replaces the answer"
+        );
+        assert!(contains(&blocked, b"CNAME target blocked by list ads"));
+        let fine = ask_from(&p, "10.0.0.1", "cdn.example.com", rtype::A);
+        assert!(
+            contains(&fine, &[203, 0, 113, 9]),
+            "unlisted chain is served from cache"
+        );
+    }
+
+    /// UDP workers are plain threads with no tokio context; a prefetch-eligible cache hit
+    /// there used to `tokio::spawn` and panic, killing the server.
+    #[test]
+    fn dns_008_prefetch_from_a_non_runtime_thread() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let p = rt.block_on(async { pipeline_with(UPSTREAM, "||unrelated.example^\n") });
+        let req = query("hot.example.com", rtype::A, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        b.answer_a(100, Ipv4Addr::new(203, 0, 113, 7)).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        // 95% of the TTL gone: past the prefetch threshold.
+        let stored = Instant::now().checked_sub(Duration::from_secs(95)).unwrap();
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], stored)
+            .unwrap();
+        // This test thread is outside the runtime, like a UDP worker.
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        for _ in 0..5 {
+            let a = ask_from(&p, "10.0.0.1", "hot.example.com", rtype::A);
+            assert!(contains(&a, &[203, 0, 113, 7]), "served from cache");
+        }
+        drop(p);
+        rt.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    /// REQ: NFR-002 — the whole synchronous pipeline, as a UDP worker runs it, allocates
+    /// nothing in the steady state: a cache hit (with a filter installed, so CNAME
+    /// inspection runs), and a blocked answer, both for a configured client. The cache
+    /// crate's own test covers only parse → key → lookup; this one includes identification,
+    /// access and special-name checks, local data, quick rules, the filter, routing, the
+    /// metrics counters, and the event ring.
+    #[test]
+    fn nfr_002_pipeline_hot_paths_do_not_allocate() {
+        // A group with safe search on, as the kids' devices have (review 02-06): every query
+        // from it is checked against the engines' names.
+        let cfg = format!(
+            "{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||ads.example^\"]\n\
+             [[group]]\nname = \"default\"\nsafe_search = true\n\
+             [[client]]\nname = \"tablet\"\nmatch = [\"10.0.0.5\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example^\n");
+        cache_a(&p, "hit.example.com", Ipv4Addr::new(192, 0, 2, 1));
+        let meta = RequestMeta {
+            peer: "10.0.0.5:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let hit = query("hit.example.com", rtype::A, true);
+        let blocked = query("ads.example", rtype::A, true);
+        let h = Handler(Arc::clone(&p));
+        let mut out = [0u8; 4096];
+        // Warm up: the thread's event-ring producer and filter scratch are made on first use.
+        for req in [&hit, &blocked] {
+            assert!(matches!(h.handle(req, &meta, &mut out), Response::Ready(_)));
+        }
+        let info = allocation_counter::measure(|| {
+            for _ in 0..1000 {
+                assert!(matches!(
+                    h.handle(&hit, &meta, &mut out),
+                    Response::Ready(_)
+                ));
+                assert!(matches!(
+                    h.handle(&blocked, &meta, &mut out),
+                    Response::Ready(_)
+                ));
+            }
+        });
+        assert_eq!(info.count_total, 0, "hot paths allocated: {info:?}");
+    }
+
+    /// Every answered query leaves an event with its client, status, rule, and name.
+    #[test]
+    fn obs_001_queries_emit_attributed_events() {
+        use wrendns_telemetry::event::Record;
+        let cfg = format!(
+            "{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n\
+             [[client]]\nname = \"tablet\"\nmatch = [\"10.0.0.5\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example.com^\n@@||ok.ads.example.com^\n");
+
+        // Blocked, from a configured client.
+        let _ = ask_from(&p, "10.0.0.5", "X.Ads.Example.com", rtype::A);
+        // Allowed by an allow rule: deferred to the upstream, so its event comes when the
+        // deferred answer completes (not driven in this test).
+        let _ = ask_from(&p, "10.0.0.9", "ok.ads.example.com", rtype::A);
+        // A cache hit.
+        let req = query("www.example.com", rtype::AAAA, false);
+        let pq = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&pq, &mut out, rcode::NOERROR).unwrap();
+        b.answer_aaaa(300, Ipv6Addr::LOCALHOST).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&pq), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&pq, view), &pq, &out[..len], Instant::now())
+            .unwrap();
+        let _ = ask_from(&p, "10.0.0.9", "www.example.com", rtype::AAAA);
+
+        let mut drainer = p.telemetry.drainer();
+        let mut got = Vec::new();
+        drainer.drain(|r| got.push(r));
+        let queries: Vec<_> = got
+            .iter()
+            .filter_map(|r| match r {
+                Record::Query(e, n) => Some((*e, n.dotted())),
+                Record::Upstream(_) => None,
+            })
+            .collect();
+        assert_eq!(queries.len(), 2, "{queries:?}");
+        let (blocked, name) = &queries[0];
+        assert_eq!(name, "x.ads.example.com", "lowercased");
+        assert_eq!(blocked.status, Status::Blocked);
+        assert_eq!(blocked.client_ref, 1, "tablet");
+        assert_eq!(
+            blocked.rule,
+            Some(Rule {
+                list: 0,
+                kind: RuleKind::Domain,
+                allow: false
+            })
+        );
+        assert_eq!(blocked.rcode, Some(0), "null IP answer");
+        assert_eq!(blocked.answers, 1);
+        assert_eq!(blocked.client_ip[10..], [0xff, 0xff, 10, 0, 0, 5]);
+        let (hit, name) = &queries[1];
+        assert_eq!(
+            (name.as_str(), hit.status),
+            ("www.example.com", Status::Cached)
+        );
+        assert_eq!((hit.qtype, hit.qclass, hit.client_ref), (rtype::AAAA, 1, 0));
+        assert!(hit.resp_size > 0 && hit.flags & 0x8000 != 0, "QR set");
+    }
+
+    /// REQ: OBS-001 (review 04-07) — a forwarded query's event names the upstream that answered,
+    /// so the query log's `upstream` filter finds it.
+    #[tokio::test]
+    async fn obs_001_forwarded_queries_record_their_upstream() {
+        use wrendns_telemetry::event::Record;
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = s.recv_from(&mut b).await {
+                let q = parse_query(&b[..n]).unwrap();
+                let mut out = [0u8; 512];
+                let mut r = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+                r.answer_a(60, std::net::Ipv4Addr::new(192, 0, 2, 7))
+                    .unwrap();
+                let len = r.finish(None).unwrap();
+                let _ = s.send_to(&out[..len], from).await;
+            }
+        });
+        let cfg = format!(
+            "[[upstream]]\nname = \"u\"\nurl = \"udp://{addr}\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n"
+        );
+        let p = pipeline_with(&cfg, "");
+        let id = p
+            .current()
+            .router
+            .upstreams()
+            .iter()
+            .next()
+            .map(|u| u.id)
+            .unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let req = query("www.example.org", rtype::A, true);
+        let Response::Deferred(answer) = Handler(Arc::clone(&p)).handle(&req, &meta, &mut out)
+        else {
+            panic!("a miss goes upstream");
+        };
+        assert!(answer.await.is_some());
+        let mut events = Vec::new();
+        p.telemetry.drainer().drain(|r| events.push(r));
+        let forwarded: Vec<_> = events
+            .iter()
+            .filter_map(|r| match r {
+                Record::Query(e, _) => Some(*e),
+                Record::Upstream(_) => None,
+            })
+            .collect();
+        assert_eq!(forwarded.len(), 1, "{forwarded:?}");
+        assert_eq!(forwarded[0].status, Status::Forwarded);
+        assert_ne!(id, 0);
+        assert_eq!(forwarded[0].upstream, id, "the upstream that answered");
+    }
+
+    /// A stub upstream on loopback that answers every question NOERROR (no records) and counts
+    /// what it was asked.
+    async fn counting_upstream() -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((len, from)) = sock.recv_from(&mut buf).await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Ok(question) = parse_query(&buf[..len]) else {
+                    continue;
+                };
+                let mut out = [0u8; 512];
+                let reply = ResponseBuilder::new(&question, &mut out, rcode::NOERROR).unwrap();
+                let len = reply.finish(None).unwrap();
+                let _ = sock.send_to(&out[..len], from).await;
+            }
+        });
+        (addr, count)
+    }
+
+    /// REQ: DNS-013 — when no upstream answers, the client gets SERVFAIL with EDE 22 (No
+    /// Reachable Authority) and the reason, not a silent timeout.
+    #[tokio::test]
+    async fn dns_013_no_upstream_answer_is_servfail_with_ede_22() {
+        // A socket that reads questions and never answers.
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while s.recv_from(&mut b).await.is_ok() {}
+        });
+        let cfg = format!(
+            "[[upstream]]\nname = \"mute\"\nurl = \"udp://{addr}\"\ntimeout_ms = 150\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"mute\"]\n"
+        );
+        let p = pipeline_with(&cfg, "");
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let Response::Deferred(answer) = Handler(Arc::clone(&p)).handle(
+            &query("nobody.example", rtype::A, true),
+            &meta,
+            &mut out,
+        ) else {
+            panic!("a miss goes upstream");
+        };
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(10), answer)
+            .await
+            .expect("answered within the upstream timeouts")
+            .unwrap();
+        assert_eq!(summarize(&resp).unwrap().rcode, rcode::SERVFAIL);
+        // EDE option code 15, info-code 22, then the text.
+        let ede22 = [0u8, 22];
+        assert!(resp.windows(2).any(|w| w == ede22), "EDE 22");
+        let text = b"no upstream answered";
+        assert!(resp.windows(text.len()).any(|w| w == text), "the reason");
+    }
+
+    /// REQ: DNS-017 — conditional forwarding of a reverse zone (Pi-hole `rev-server`): reverse
+    /// lookups for the LAN's range go to the route's upstream (the router), even though
+    /// private-range PTRs are otherwise answered NXDOMAIN locally; another private range with
+    /// no route still is, and nothing else reaches the router.
+    #[tokio::test]
+    async fn dns_017_reverse_zone_goes_to_its_route() {
+        use std::sync::atomic::Ordering;
+        let (router, at_router) = counting_upstream().await;
+        let (public, at_public) = counting_upstream().await;
+        let cfg = format!(
+            "[[upstream]]\nname = \"router\"\nurl = \"udp://{router}\"\n\
+             [[upstream]]\nname = \"public\"\nurl = \"udp://{public}\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"public\"]\n\
+             [[upstream_group]]\nname = \"lan\"\nmembers = [\"router\"]\n\
+             [[route]]\nmatch_suffix = [\"168.192.in-addr.arpa\"]\nupstream_group = \"lan\"\n"
+        );
+        let p = pipeline_with(&cfg, "");
+        let meta = RequestMeta {
+            peer: "192.168.1.20:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let ask = |name: &str| {
+            let mut out = [0u8; 4096];
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::PTR, true), &meta, &mut out) {
+                Response::Ready(len) => (Some(summarize(&out[..len]).unwrap().rcode), None),
+                Response::Deferred(f) => (None, Some(f)),
+                Response::Drop | Response::Close => (None, None),
+            }
+        };
+        // The LAN's reverse zone: to the router.
+        let (now, later) = ask("20.1.168.192.in-addr.arpa");
+        assert_eq!(now, None, "routed: asked upstream");
+        let answer = later.unwrap().await.unwrap();
+        assert_eq!(summarize(&answer).unwrap().rcode, rcode::NOERROR);
+        assert_eq!(
+            (
+                at_router.load(Ordering::SeqCst),
+                at_public.load(Ordering::SeqCst)
+            ),
+            (1, 0)
+        );
+        // A private range without a route: NXDOMAIN here, nobody asked.
+        let (now, later) = ask("5.0.0.10.in-addr.arpa");
+        assert!(later.is_none());
+        assert_eq!(now, Some(rcode::NXDOMAIN));
+        assert_eq!(
+            (
+                at_router.load(Ordering::SeqCst),
+                at_public.load(Ordering::SeqCst)
+            ),
+            (1, 0)
+        );
+        // A public range: to the default group.
+        let (_, later) = ask("8.8.8.8.in-addr.arpa");
+        later.unwrap().await.unwrap();
+        assert_eq!(
+            (
+                at_router.load(Ordering::SeqCst),
+                at_public.load(Ordering::SeqCst)
+            ),
+            (1, 1)
+        );
+    }
+
+    /// REQ: DNS-007 — with `stale_answer_client_timeout_ms = 0`, an expired entry is answered
+    /// at once (`refreshed`, EDE 3, the stale TTL) while the upstream refreshes it, and the next
+    /// question is a fresh cache hit with the new answer. With the default wait and a working
+    /// upstream, the same question is simply forwarded.
+    #[tokio::test]
+    async fn dns_007_refreshed_answers_come_from_the_cache_at_once() {
+        use wrendns_telemetry::event::Record;
+        // (answered without waiting, the answer)
+        async fn ask(p: &Arc<Pipeline>, meta: &RequestMeta) -> (bool, Vec<u8>) {
+            let mut out = [0u8; 4096];
+            let req = query("www.example.org", rtype::A, true);
+            match Handler(Arc::clone(p)).handle(&req, meta, &mut out) {
+                Response::Ready(len) => (true, out[..len].to_vec()),
+                Response::Deferred(f) => (false, f.await.unwrap_or_default()),
+                Response::Drop | Response::Close => (false, Vec::new()),
+            }
+        }
+        // EDE (option 15), two bytes long: info code 3 (Stale Answer), no text.
+        const EDE_STALE: [u8; 6] = [0, 15, 0, 2, 0, 3];
+
+        let up = fake_upstream(false).await;
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                format!(
+                    "[[upstream]]\nname = \"u\"\nurl = \"udp://{up}\"\n[[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n"
+                ),
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let build = |wait: Duration| {
+            Pipeline::new(
+                Settings {
+                    stale_answer_timeout: wait,
+                    ..Settings::default()
+                },
+                Arc::new(Cache::new(CachePolicy::default())),
+                Arc::new(Router::from_config(&cfg).unwrap()),
+                Policy {
+                    clients: Arc::new(ClientTable::from_config(&cfg)),
+                    ..Policy::open()
+                },
+            )
+        };
+        // An answer for www.example.org that expired 100 s ago (TTL 300, cached 400 s ago).
+        let expire = |p: &Arc<Pipeline>| {
+            let req = query("www.example.org", rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, Ipv4Addr::new(198, 51, 100, 1)).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            let then = Instant::now()
+                .checked_sub(Duration::from_secs(400))
+                .unwrap();
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], then)
+                .unwrap();
+        };
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let statuses = |p: &Arc<Pipeline>| {
+            let mut v = Vec::new();
+            p.telemetry.drainer().drain(|r| {
+                if let Record::Query(e, _) = r {
+                    v.push(e.status);
+                }
+            });
+            v
+        };
+        let p = build(Duration::ZERO);
+        expire(&p);
+        let (ready, first) = ask(&p, &meta).await;
+        assert!(ready, "answered on the synchronous path, like a hit");
+        assert!(contains(&first, &[198, 51, 100, 1]), "the expired answer");
+        assert!(contains(&first, &EDE_STALE), "EDE 3 (Stale Answer)");
+        assert_eq!(statuses(&p), vec![Status::Refreshed]);
+        assert_eq!(p.cache.stats().stale_served, 1, "counted as a stale serve");
+        assert_eq!(Status::Refreshed.path(), wrendns_telemetry::Path::Cache);
+        // The refresh lands in the background: the next question is a fresh hit.
+        let mut fresh = Vec::new();
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (ready, r) = ask(&p, &meta).await;
+            if ready && contains(&r, &[192, 0, 2, 7]) {
+                fresh = r;
+                break;
+            }
+        }
+        assert!(!fresh.is_empty(), "the refreshed answer is cached");
+        assert!(!contains(&fresh, &EDE_STALE));
+        assert!(p.cache.stats().hits >= 1, "a fresh hit");
+
+        // The default wait with an upstream that answers: forwarded, never refreshed.
+        let p = build(Settings::default().stale_answer_timeout);
+        expire(&p);
+        let (_, r) = ask(&p, &meta).await;
+        assert!(contains(&r, &[192, 0, 2, 7]));
+        assert_eq!(statuses(&p), vec![Status::Forwarded]);
+    }
+
+    /// A pipeline with a zero stale wait, `max_inflight` permits, upstream `up`, and an answer
+    /// for www.example.org (198.51.100.1) that expired 100 s ago (TTL 300, cached 400 s ago).
+    fn expired_pipeline(up: &str, max_inflight: usize) -> Arc<Pipeline> {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                format!(
+                    "[[upstream]]
+name = \"u\"
+url = \"udp://{up}\"
+[[upstream_group]]
+name = \"default\"
+members = [\"u\"]
+"
+                ),
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings {
+                stale_answer_timeout: Duration::ZERO,
+                max_inflight,
+                ..Settings::default()
+            },
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        let plain = query("www.example.org", rtype::A, false);
+        let q = parse_query(&plain).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        b.answer_a(300, Ipv4Addr::new(198, 51, 100, 1)).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        let key = p.key(&q, view);
+        let then = Instant::now()
+            .checked_sub(Duration::from_secs(400))
+            .unwrap();
+        p.cache.insert(&key, &q, &out[..len], then).unwrap();
+        p
+    }
+
+    fn query_statuses(p: &Arc<Pipeline>) -> Vec<Status> {
+        let mut v = Vec::new();
+        p.telemetry.drainer().drain(|r| {
+            if let wrendns_telemetry::event::Record::Query(e, _) = r {
+                v.push(e.status);
+            }
+        });
+        v
+    }
+
+    /// REQ: DNS-007 (ADR-119) — with a zero wait and no permit left for the refresh
+    /// (overloaded), an expired entry is still answered at once, as `stale`.
+    #[tokio::test]
+    async fn dns_007_overloaded_expired_answers_are_stale() {
+        let p = expired_pipeline("127.0.0.1:9", 1);
+        // Every permit taken: the refresh can't start.
+        let _held = Arc::clone(&p.inflight).try_acquire_owned().unwrap();
+        let req = query("www.example.org", rtype::A, true);
+        let mut out = [0u8; 4096];
+        let Response::Ready(len) = Handler(Arc::clone(&p)).handle(&req, &meta(), &mut out) else {
+            panic!("answered at once");
+        };
+        assert!(
+            contains(&out[..len], &[198, 51, 100, 1]),
+            "the expired answer"
+        );
+        assert_eq!(query_statuses(&p), vec![Status::Stale]);
+    }
+
+    /// REQ: DNS-007, DNS-008 — on a UDP worker thread (no ambient runtime) the refresh of an
+    /// expired entry waits until the answers are sent (`sent`), then lands in the cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dns_007_refresh_starts_after_the_answer_is_sent() {
+        let up = fake_upstream(false).await;
+        let p = expired_pipeline(&up.to_string(), 64);
+        let h = Handler(Arc::clone(&p));
+        // A plain thread, like a UDP worker: no runtime context.
+        let (answered, queued, after) = std::thread::spawn(move || {
+            let req = query("www.example.org", rtype::A, true);
+            let mut out = [0u8; 4096];
+            let answered = match h.handle(&req, &meta(), &mut out) {
+                Response::Ready(len) => contains(&out[..len], &[198, 51, 100, 1]),
+                _ => false,
+            };
+            let queued = REFRESHES.with(|q| q.borrow().len());
+            h.sent();
+            (answered, queued, REFRESHES.with(|q| q.borrow().len()))
+        })
+        .join()
+        .unwrap();
+        assert!(answered, "the expired answer, at once");
+        assert_eq!((queued, after), (1, 0), "queued until sent, then started");
+        assert_eq!(query_statuses(&p), vec![Status::Refreshed]);
+        let req = query("www.example.org", rtype::A, true);
+        let mut fresh = false;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut out = [0u8; 4096];
+            if let Response::Ready(len) = Handler(Arc::clone(&p)).handle(&req, &meta(), &mut out)
+                && contains(&out[..len], &[192, 0, 2, 7])
+            {
+                fresh = true;
+                break;
+            }
+        }
+        assert!(fresh, "the refresh landed: a fresh hit with the new answer");
+    }
+
+    /// REQ: OBS-018 (T11.5) — a list in shadow mode is compiled but never blocks; the shadow
+    /// sink, fed the answered query's event, counts what it would have blocked. An enforced
+    /// list next to it still blocks.
+    #[test]
+    fn obs_018_shadow_lists_count_but_never_block() {
+        use wrendns_telemetry::ring::Sink as _;
+        let pipe = pipeline_with(UPSTREAM, "");
+        let cfg = wrendns_config::Loader::new()
+            .toml_str("t.toml", UPSTREAM)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        pipe.reload(
+            Arc::clone(&pipe.current().router),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                shadow_lists: vec!["candidate".into()],
+                ..Policy::open()
+            },
+        );
+        install_lists(
+            &pipe,
+            &[
+                ("enforced", "||ads.example^\n"),
+                ("candidate", "||shop.example^\n"),
+            ],
+        );
+        cache_a(&pipe, "shop.example", Ipv4Addr::new(192, 0, 2, 9));
+        assert_eq!(
+            rcode_of(&pipe, &query("ads.example", rtype::A, false)),
+            Some(rcode::NOERROR),
+            "blocked (null IP)"
+        );
+        let mut out = [0u8; 4096];
+        let resp = Handler(Arc::clone(&pipe)).handle(
+            &query("shop.example", rtype::A, false),
+            &meta(),
+            &mut out,
+        );
+        let Response::Ready(len) = resp else {
+            panic!("a cache hit")
+        };
+        assert!(
+            contains(&out[..len], &[192, 0, 2, 9]),
+            "answered, not blocked"
+        );
+        // The telemetry thread's view of that answer.
+        let shadow = Arc::new(crate::shadow::Shadow::new(0, 0));
+        let mut sink = crate::shadow::ShadowSink::new(Arc::clone(&shadow), Arc::clone(&pipe));
+        let wire = NameBuf::from_presentation("shop.example").unwrap();
+        let mut ev = QueryEvent {
+            ts_us: 1,
+            client_ip: Ipv4Addr::new(10, 0, 0, 5).to_ipv6_mapped().octets(),
+            client_ref: 0,
+            group: 0,
+            qtype: rtype::A,
+            qclass: 1,
+            rcode: Some(0),
+            status: Status::Cached,
+            proto: Proto::Udp,
+            flags: 0,
+            rule: None,
+            upstream: 0,
+            attempts: 0,
+            t_total_us: 10,
+            t_upstream_us: 0,
+            resp_size: 60,
+            answers: 1,
+        };
+        let name = wrendns_telemetry::event::Name::from_wire(wire.as_wire());
+        sink.record(&wrendns_telemetry::event::Record::Query(ev, name));
+        let other = wrendns_telemetry::event::Name::from_wire(
+            NameBuf::from_presentation("www.example").unwrap().as_wire(),
+        );
+        sink.record(&wrendns_telemetry::event::Record::Query(ev, other));
+        ev.status = Status::Blocked;
+        sink.record(&wrendns_telemetry::event::Record::Query(ev, name));
+        let v = shadow.lists_view(&["candidate".into()]);
+        assert_eq!((v[0].hits, v[0].devices), (1, 1));
+        assert_eq!(v[0].top_names[0].name, "shop.example");
+    }
+
+    /// REQ: DNS-021 (T12.4) — a query that asks for NSID gets this node's name in the answer's
+    /// OPT (whose length stays consistent); one that doesn't ask, or a node with it off, gets
+    /// none.
+    #[test]
+    fn dns_021_nsid_names_the_node() {
+        let pipe = pipeline_with(UPSTREAM, "");
+        let ask = |p: &Arc<Pipeline>, nsid: bool| {
+            let mut q = query("localhost", rtype::A, true);
+            if nsid {
+                // The OPT is last and empty: its RDLENGTH is the last two bytes.
+                let n = q.len();
+                q[n - 2..].copy_from_slice(&4u16.to_be_bytes());
+                q.extend_from_slice(&[0, 3, 0, 0]);
+            }
+            let mut out = [0u8; 4096];
+            match Handler(Arc::clone(p)).handle(&q, &meta(), &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => panic!("answered locally"),
+            }
+        };
+        let has_nsid = |msg: &[u8]| contains(msg, &[0, 3, 0, 5, b'p', b'o', b'd', b'-', b'a']);
+        assert!(!has_nsid(&ask(&pipe, true)), "off by default");
+        pipe.reload(
+            Arc::clone(&pipe.current().router),
+            Policy {
+                nsid: Some(Box::from(&b"pod-a"[..])),
+                ..Policy::open()
+            },
+        );
+        let r = ask(&pipe, true);
+        assert!(has_nsid(&r), "{r:?}");
+        let opt = records(&r)
+            .unwrap()
+            .flatten()
+            .find(|x| x.rtype == rtype::OPT)
+            .unwrap();
+        assert_eq!(opt.rdata_off + usize::from(opt.rdlen), r.len());
+        assert_eq!(
+            rcode_of(&pipe, &query("localhost", rtype::A, true)),
+            Some(rcode::NOERROR)
+        );
+        assert!(!has_nsid(&ask(&pipe, false)), "only when asked");
+    }
+
+    /// A fake upstream on 127.0.0.1: NXDOMAIN with EDE 17 (a filtering resolver), or an A
+    /// record (an honest one). Returns its address.
+    async fn fake_upstream(filtering: bool) -> std::net::SocketAddr {
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = s.recv_from(&mut b).await {
+                let q = parse_query(&b[..n]).unwrap();
+                let mut out = [0u8; 512];
+                let rc = if filtering {
+                    rcode::NXDOMAIN
+                } else {
+                    rcode::NOERROR
+                };
+                let mut r = ResponseBuilder::new(&q, &mut out, rc).unwrap();
+                if !filtering {
+                    r.answer_a(60, std::net::Ipv4Addr::new(192, 0, 2, 7))
+                        .unwrap();
+                }
+                let edns = wrendns_proto::EdnsOut {
+                    udp_payload: 1232,
+                    dnssec_ok: false,
+                    ede: filtering.then_some((17, "filtered")),
+                };
+                let len = r.finish(Some(edns)).unwrap();
+                let _ = s.send_to(&out[..len], from).await;
+            }
+        });
+        addr
+    }
+
+    /// REQ: OBS-019 (T11.4) — a forwarded answer from a filtering upstream gets its EDE counted
+    /// and, sampled, a second opinion from the group's other upstream: `filtered`, kept with
+    /// both answers. The client's answer doesn't wait for it.
+    #[tokio::test]
+    async fn obs_019_second_opinions_through_the_pipeline() {
+        let (filtering, honest) = (fake_upstream(true).await, fake_upstream(false).await);
+        let toml = format!(
+            "[[upstream]]\nname = \"family\"\nurl = \"udp://{filtering}\"\n\
+             [[upstream]]\nname = \"honest\"\nurl = \"udp://{honest}\"\n\
+             [[upstream_group]]\nname = \"default\"\nstrategy = \"failover\"\nmembers = [\"family\", \"honest\"]\n\
+             [upstream_check]\nsample_every = 1\n"
+        );
+        let pipe = pipeline_with(&toml, "");
+        let cfg = wrendns_config::Loader::new()
+            .toml_str("t.toml", &toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        pipe.set_upstream_check(&cfg);
+        let family = pipe.current().router.upstreams()[0].id;
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let req = query("casino.example.org", rtype::A, true);
+        let Response::Deferred(answer) = Handler(Arc::clone(&pipe)).handle(&req, &meta, &mut out)
+        else {
+            panic!("a miss goes upstream");
+        };
+        let resp = answer.await.unwrap();
+        assert_eq!(
+            response_rcode(&resp),
+            rcode::NXDOMAIN,
+            "the first upstream's answer"
+        );
+        for _ in 0..100 {
+            if !pipe.quality.check_counts().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(pipe.quality.check_counts(), vec![(family, [0, 0, 0, 1, 0])]);
+        assert_eq!(pipe.quality.ede_counts(), vec![((family, 17), 1)]);
+        let view = pipe
+            .quality
+            .view(&cfg.upstream_check, &[(family, "family".into())]);
+        let d = &view.recent[0];
+        assert_eq!(
+            (d.result.as_str(), d.upstream.as_str(), d.reference.as_str()),
+            ("filtered", "family", "honest")
+        );
+        assert_eq!(
+            (d.answer.as_str(), d.reference_answer.as_str()),
+            ("NXDOMAIN", "NOERROR 192.0.2.7")
+        );
+        assert_eq!(d.name, "casino.example.org");
+    }
+
+    #[test]
+    fn flt_009_pause_global_and_per_group() {
+        let cfg = format!("{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n");
+        let p = pipeline_with(&cfg, "||ads.example.com^\n");
+        let blocked = |p: &Arc<Pipeline>| {
+            let m = ask_from(p, "10.0.0.1", "ads.example.com", rtype::A);
+            // Unblocked queries go upstream (deferred), so no immediate answer.
+            !m.is_empty() && contains(&m, b"blocked by list ads")
+        };
+        assert!(blocked(&p));
+        p.pause.pause_all(unix_now() + 600);
+        assert!(!blocked(&p), "global pause");
+        p.pause.pause_all(0);
+        assert!(blocked(&p));
+        p.pause.pause_group("default", unix_now() + 600);
+        assert!(!blocked(&p), "the client's group is paused");
+        p.pause.pause_group("default", unix_now() - 1);
+        assert!(blocked(&p), "an expired pause resumes on its own");
+    }
+
+    #[test]
+    fn dns_019_rejections_and_errors() {
+        let p = pipeline();
+        let q = query("example.com", rtype::A, true);
+        assert_eq!(rcode_of(&p, &q[..5]), None, "runt dropped");
+        let mut notify = q.clone();
+        notify[2] |= 4 << 3;
+        assert_eq!(rcode_of(&p, &notify), Some(rcode::NOTIMP));
+        let mut v1 = q.clone();
+        let n = v1.len();
+        v1[n - 11 + 6] = 1;
+        assert_eq!(rcode_of(&p, &v1), Some(rcode::BADVERS));
+    }
+
+    #[test]
+    fn dns_019_any_gets_minimal_answer_without_upstream() {
+        let p = pipeline();
+        let mut out = [0u8; 4096];
+        let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
+            &query("example.com", rtype::ANY, false),
+            &meta(),
+            &mut out,
+        ) else {
+            panic!("ANY must be answered immediately");
+        };
+        let s = summarize(&out[..len]).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+    }
+
+    // REQ: DNS-019 (ADR-126) — AXFR and IXFR are refused here (EDE 21), never forwarded.
+    #[test]
+    fn dns_019_zone_transfers_are_refused_without_upstream() {
+        let p = pipeline();
+        for qtype in [rtype::AXFR, rtype::IXFR] {
+            let mut out = [0u8; 4096];
+            let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
+                &query("cluster-catalog.cluster.internal", qtype, true),
+                &meta(),
+                &mut out,
+            ) else {
+                panic!("a zone transfer must be answered immediately");
+            };
+            let s = summarize(&out[..len]).unwrap();
+            assert_eq!((s.rcode, s.answers), (rcode::REFUSED, 0), "{qtype}");
+            let text = b"zone transfers aren't served";
+            assert!(
+                out[..len].windows(text.len()).any(|w| w == text),
+                "EDE 21 says why ({qtype})"
+            );
+        }
+    }
+
+    #[test]
+    fn no_upstreams_refuses_with_ede() {
+        let p = pipeline();
+        assert_eq!(
+            rcode_of(&p, &query("example.com", rtype::A, true)),
+            Some(rcode::REFUSED)
+        );
+    }
+
+    #[test]
+    fn loop_tagged_queries_are_dropped() {
+        wrendns_upstream::set_node_tag(0xABCD);
+        let p = pipeline();
+        let q = wrendns_upstream::Question {
+            name: NameBuf::from_presentation("example.com").unwrap(),
+            qtype: rtype::A,
+            qclass: 1,
+            dnssec_ok: false,
+            checking_disabled: false,
+            client_subnet: 0,
+        };
+        let mut buf = [0u8; 512];
+        let len = wrendns_upstream::encode_query(&q, 1, &mut buf).unwrap();
+        let mut out = [0u8; 4096];
+        assert!(matches!(
+            Handler(Arc::clone(&p)).handle(&buf[..len], &meta(), &mut out),
+            Response::Drop
+        ));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use wrendns_cache::CachePolicy;
+    use wrendns_config::{Cidr, RateLimitConfig};
+    use wrendns_proto::{NameBuf, build_query, class, rtype, summarize};
+
+    use super::*;
+
+    fn pipeline(policy: Policy) -> Arc<Pipeline> {
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
+        Pipeline::new(
+            Settings::default(),
+            cache,
+            Arc::new(Router::default()),
+            policy,
+        )
+    }
+
+    fn ask(
+        p: &Arc<Pipeline>,
+        peer: &str,
+        name: &str,
+        qtype: u16,
+        qclass: u16,
+    ) -> Option<(u16, u16)> {
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation(name).unwrap();
+        let len = build_query(&mut buf, 3, &n, qtype, qclass, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: peer.parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        match Handler(Arc::clone(p)).handle(&buf[..len], &meta, &mut out) {
+            Response::Ready(l) => summarize(&out[..l]).ok().map(|s| (s.rcode, s.answers)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn access_control_refuses_outside_networks() {
+        let p = pipeline(Policy {
+            allowed: vec![Cidr::parse("192.168.0.0/16").unwrap()],
+            ..Policy::default()
+        });
+        assert_eq!(
+            ask(&p, "203.0.113.9:5353", "localhost", rtype::A, 1),
+            Some((rcode::REFUSED, 0))
+        );
+        assert_eq!(
+            ask(&p, "192.168.1.9:5353", "localhost", rtype::A, 1),
+            Some((rcode::NOERROR, 1))
+        );
+    }
+
+    #[test]
+    fn dns_014_rate_limited_clients_are_refused() {
+        let mut policy = Policy::open();
+        policy.limiter = RateLimiter::new(&RateLimitConfig {
+            queries: 3,
+            window_secs: 60,
+            exempt: Vec::new(),
+            ..RateLimitConfig::default()
+        });
+        let p = pipeline(policy);
+        for _ in 0..3 {
+            assert_eq!(
+                ask(&p, "10.0.0.5:1000", "localhost", rtype::A, 1)
+                    .unwrap()
+                    .0,
+                rcode::NOERROR
+            );
+        }
+        assert_eq!(
+            ask(&p, "10.0.0.5:1000", "localhost", rtype::A, 1)
+                .unwrap()
+                .0,
+            rcode::REFUSED
+        );
+        assert_eq!(
+            ask(&p, "10.0.0.6:1000", "localhost", rtype::A, 1)
+                .unwrap()
+                .0,
+            rcode::NOERROR
+        );
+    }
+
+    #[test]
+    fn dns_019_special_names_in_pipeline() {
+        let p = pipeline(Policy::open());
+        let peer = "10.0.0.1:53";
+        assert_eq!(
+            ask(&p, peer, "use-application-dns.net", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "x.invalid", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "app.localhost", rtype::AAAA, 1),
+            Some((rcode::NOERROR, 1))
+        );
+        assert_eq!(
+            ask(&p, peer, "version.bind", rtype::TXT, class::CH),
+            Some((rcode::REFUSED, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "4.3.30.10.in-addr.arpa", rtype::PTR, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        // REQ: DNS-019 (ADR-904) — iCloud Private Relay and resolver.arpa, by default.
+        assert_eq!(
+            ask(&p, peer, "mask.icloud.com", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "mask-h2.icloud.com", rtype::HTTPS, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "_dns.resolver.arpa", rtype::SVCB, 1),
+            Some((rcode::NOERROR, 0)),
+            "no ddr_name: no data, not forwarded"
+        );
+        // Bare names go on (here: no upstream configured, so REFUSED) with domain-needed off.
+        assert_eq!(ask(&p, peer, "nas", rtype::A, 1), Some((rcode::REFUSED, 0)));
+        let p = pipeline(Policy {
+            special: SpecialConfig {
+                block_icloud_private_relay: false,
+                ..SpecialConfig::default()
+            },
+            ..Policy::open()
+        });
+        assert_eq!(
+            ask(&p, peer, "mask.icloud.com", rtype::A, 1),
+            Some((rcode::REFUSED, 0)),
+            "switched off: resolved like any name"
+        );
+    }
+
+    fn config(toml: &str) -> wrendns_config::Config {
+        wrendns_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config
+    }
+
+    /// REQ: DNS-019 (ADR-904) — DDR: `_dns.resolver.arpa` SVCB lists the encrypted listeners
+    /// (RFC 9462); its other types and names get no data, authoritatively, with an SOA.
+    #[test]
+    fn dns_019_ddr_answers_advertise_encrypted_listeners() {
+        let cfg = config(
+            "[[listen]]\nproto = \"dot\"\naddr = \"0.0.0.0:853\"\ntls = { cert = \"/c\", key = \"/k\" }\n\
+             [[listen]]\nproto = \"doq\"\naddr = \"0.0.0.0:8853\"\ntls = { cert = \"/c\", key = \"/k\" }\n\
+             [special]\nddr_name = \"dns.example.com\"\n",
+        );
+        let p = pipeline(Policy {
+            ddr: wrendns_policy::ddr_records(&cfg),
+            ..Policy::open()
+        });
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation("_dns.resolver.arpa").unwrap();
+        let len = build_query(&mut buf, 3, &n, rtype::SVCB, 1, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.1:53".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let Response::Ready(l) = Handler(Arc::clone(&p)).handle(&buf[..len], &meta, &mut out)
+        else {
+            panic!("not answered at once");
+        };
+        let s = summarize(&out[..l]).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 2));
+        assert_ne!(out[2] & 0x04, 0, "authoritative");
+        let msg = &out[..l];
+        let has = |needle: &[u8]| msg.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"\x03dns\x07example\x03com\x00\x00\x01\x00\x04\x03dot"));
+        assert!(has(b"\x03dns\x07example\x03com\x00\x00\x01\x00\x04\x03doq"));
+        for (name, qtype) in [
+            ("_dns.resolver.arpa", rtype::A),
+            ("resolver.arpa", rtype::SVCB),
+        ] {
+            assert_eq!(
+                ask(&p, "10.0.0.1:53", name, qtype, 1),
+                Some((rcode::NOERROR, 0)),
+                "{name}"
+            );
+        }
+    }
+
+    /// REQ: DNS-019 (ADR-904) — domain-needed: bare names get NXDOMAIN instead of going to
+    /// an upstream, unless a `[[route]]` matches them; names with a dot still go on.
+    #[test]
+    fn dns_019_single_label_names_stay_local() {
+        let cfg = config(
+            "[[upstream]]\nname = \"u\"\nurl = \"udp://127.0.0.1:9\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
+             [[upstream]]\nname = \"r\"\nurl = \"udp://127.0.0.1:10\"\n\
+             [[upstream_group]]\nname = \"router\"\nmembers = [\"r\"]\n\
+             [[route]]\nmatch_suffix = [\"printer\"]\nupstream_group = \"router\"\n\
+             [special]\nsingle_label_nxdomain = true\n",
+        );
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                special: cfg.special.clone(),
+                ..Policy::open()
+            },
+        );
+        let peer = "10.0.0.1:53";
+        for qtype in [rtype::A, rtype::AAAA, rtype::HTTPS] {
+            assert_eq!(
+                ask(&p, peer, "nas", qtype, 1),
+                Some((rcode::NXDOMAIN, 0)),
+                "type {qtype}"
+            );
+        }
+        // `None`: deferred to an upstream.
+        assert_eq!(ask(&p, peer, "printer", rtype::A, 1), None, "routed");
+        assert_eq!(ask(&p, peer, "nas.example", rtype::A, 1), None);
+        assert_eq!(ask(&p, peer, "com", rtype::DS, 1), None, "a TLD's DS");
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use wrendns_cache::CachePolicy;
+    use wrendns_proto::{NameBuf, build_query, rtype, summarize};
+
+    use super::*;
+
+    #[test]
+    fn ops_009_reload_swaps_policy_for_new_queries() {
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
+        let p = Pipeline::new(
+            Settings::default(),
+            cache,
+            Arc::new(Router::default()),
+            Policy::open(),
+        );
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation("nas.home.arpa").unwrap();
+        let len = build_query(&mut buf, 1, &n, rtype::A, 1, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.2:5353".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let answer = |p: &Arc<Pipeline>| {
+            let mut out = [0u8; 1024];
+            match Handler(Arc::clone(p)).handle(&buf[..len], &meta, &mut out) {
+                Response::Ready(l) => summarize(&out[..l]).map(|s| (s.rcode, s.answers)).ok(),
+                _ => None,
+            }
+        };
+        // No upstreams, no local record: REFUSED.
+        assert_eq!(answer(&p), Some((rcode::REFUSED, 0)));
+        let mut local = LocalData::default();
+        local.add("nas.home.arpa", "A", "192.168.1.10", 60).unwrap();
+        let mut policy = Policy::open();
+        policy.local = Arc::new(local);
+        p.reload(Arc::new(Router::default()), policy);
+        assert_eq!(
+            answer(&p),
+            Some((rcode::NOERROR, 1)),
+            "new local record answered after reload"
+        );
+    }
+
+    /// REQ: FLT-006, OBS-001 — every answer is logged with the device's group, also answers
+    /// from local records and refusals, which return before filtering (owner report
+    /// 2026-10-07: they were logged under the first configured group).
+    #[test]
+    fn flt_006_local_answers_keep_the_device_group() {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[access]
+allowed_networks = ["192.168.0.0/16"]
+
+[[group]]
+name = "Management"
+networks = ["192.168.1.0/24"]
+
+[[group]]
+name = "LAB"
+networks = ["10.50.5.0/24"]
+
+[[record]]
+name = "argo.example.test"
+type = "A"
+value = "10.50.5.100"
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy::from_config(&cfg, local),
+        );
+        let clients = Arc::clone(&p.current().policy.clients);
+        let id = |name: &str| {
+            u16::try_from(
+                clients
+                    .groups()
+                    .iter()
+                    .position(|g| &*g.name == name)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let outcome = |name: &str, peer: &str, raw: Option<&[u8]>| {
+            let mut buf = [0u8; 512];
+            let n = NameBuf::from_presentation(name).unwrap();
+            let len = build_query(&mut buf, 1, &n, rtype::A, 1, true, None).unwrap();
+            let meta = RequestMeta {
+                peer: format!("{peer}:5353").parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            let mut out = [0u8; 1024];
+            let mut oc = Outcome {
+                status: Status::Dropped,
+                qtype: 0,
+                client_ref: 0,
+                group: 0,
+                rule: None,
+                upstream: 0,
+            };
+            let req = raw.unwrap_or(&buf[..len]);
+            let _ = p.handle_sync(req, &meta, &mut out, Instant::now(), &mut oc);
+            (oc.status, oc.group)
+        };
+        assert_eq!(
+            outcome("argo.example.test", "10.50.5.2", None),
+            (Status::Local, id("LAB")),
+            "a local record, from a LAB device"
+        );
+        assert_eq!(
+            outcome("argo.example.test", "10.9.9.9", None),
+            (Status::Refused, id("default")),
+            "refused (not allowed): the device's group, default here"
+        );
+        assert_eq!(
+            outcome("x", "10.50.5.2", Some(&[0u8; 3])).1,
+            id("default"),
+            "unparseable: default"
+        );
+    }
+}

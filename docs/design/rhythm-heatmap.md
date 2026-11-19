@@ -71,7 +71,7 @@ only), `kind=client` at ≥ 2. MCP `activity_heatmap(kind, key, window, grain)` 
 - Phone: rows scroll, columns fit 24 (hour grain forced below 480 px).
 
 ## 6. Grafana
-The network variant exists as Grafana's heatmap panel over `rate(telltale_queries_total[5m])`; add it
+The network variant exists as Grafana's heatmap panel over `rate(wrendns_queries_total[5m])`; add it
 to the *Overview* row with the same 15-minute bucket. Device/name variants are not exported.
 
 ## 7. Acceptance criteria

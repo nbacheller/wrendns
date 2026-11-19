@@ -5,7 +5,7 @@
 
 ## 1. What it is, in one paragraph
 A histogram-over-time heatmap of query latency — x is time, y is the latency bucket (50 µs … 5 s, the
-same bounds as `telltale_query_duration_seconds`), colour is how many answers landed there — per
+same bounds as `wrendns_query_duration_seconds`), colour is how many answers landed there — per
 path (cache, blocked, local, upstream) and per upstream, with **exemplar dots**: a click opens the
 trace lookup (`#/queries?trace=`) for a real query from that cell. The Pi's 77 ms forwarded PTR is a
 lonely dot in the right band; a DoT cold-start tail (ADR-098) is a stripe you can see, not a p99 you
@@ -42,7 +42,7 @@ telemetry thread already keeps one exemplar per (path, bucket) slot, replaced at
   ID resolves to a row).
 - MCP: extend `latency_breakdown` with `histogram: true` (returns the per-path arrays for the window);
   no exemplar tool (IDs are for humans clicking; agents use `search_queries` with `trace`).
-- Metrics: none new; `telltale_query_duration_seconds` is already the Prometheus side of this.
+- Metrics: none new; `wrendns_query_duration_seconds` is already the Prometheus side of this.
 
 ## 5. UI (decision)
 - Dashboard (Advanced view) *Where does time go?* card gets a **Heatmap** tab next to the percentile
@@ -58,7 +58,7 @@ telemetry thread already keeps one exemplar per (path, bucket) slot, replaced at
 
 ## 6. Grafana
 *Latency* row: add Grafana's heatmap panel over
-`sum by (le) (rate(telltale_query_duration_seconds_bucket[1m]))` with exemplars enabled (note in
+`sum by (le) (rate(wrendns_query_duration_seconds_bucket[1m]))` with exemplars enabled (note in
 `docs/monitoring`: Prometheus needs `--enable-feature=exemplar-storage`; the homelab's doesn't have it,
 the owner's call). Per path with a variable.
 

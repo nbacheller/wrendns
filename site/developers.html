@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Working on TelltaleDNS — TelltaleDNS</title>
-<meta name="description" content="How TelltaleDNS is built and extended: the gates every change passes, the size and performance budgets, and a page for each area where the project has a fixed way of doing things, for people and for AI agents.">
+<title>Working on WrenDNS — WrenDNS</title>
+<meta name="description" content="How WrenDNS is built and extended: the gates every change passes, the size and performance budgets, and a page for each area where the project has a fixed way of doing things, for people and for AI agents.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -15,8 +15,8 @@
 
 <section>
   <p class="eyebrow">Developers</p>
-  <h1>Working on TelltaleDNS</h1>
-  <p class="lede">Some parts of TelltaleDNS are extended in one way only: a brand for the domain icons, a parameter on the API, a read between cluster nodes. These pages write that way down, with the reasons, so a person or an AI agent can extend it correctly the first time.</p>
+  <h1>Working on WrenDNS</h1>
+  <p class="lede">Some parts of WrenDNS are extended in one way only: a brand for the domain icons, a parameter on the API, a read between cluster nodes. These pages write that way down, with the reasons, so a person or an AI agent can extend it correctly the first time.</p>
   <ul class="onpage">
     <li><a href="#start">Start here</a></li>
     <li><a href="#principles">The principles</a></li>
@@ -28,7 +28,7 @@
 
 <section id="start">
   <h2>Start here</h2>
-  <div class="callout"><p><b>The spec is the source of truth.</b> Read <a href="https://github.com/paimonsoror/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a> first: it says what to read, in what order, and what "done" means. Then the section of <a href="https://github.com/paimonsoror/telltaledns/tree/main/spec"><code>spec/</code></a> for your task, and its entry in the roadmap (<code>spec/10</code>).</p></div>
+  <div class="callout"><p><b>The spec is the source of truth.</b> Read <a href="https://github.com/nbacheller/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a> first: it says what to read, in what order, and what "done" means. Then the section of <a href="https://github.com/nbacheller/telltaledns/tree/main/spec"><code>spec/</code></a> for your task, and its entry in the roadmap (<code>spec/10</code>).</p></div>
   <ul>
     <li><b>Work task by task.</b> Restate the task's requirement IDs and acceptance criteria before you start, and tick the box when they pass.</li>
     <li><b>Where the spec is silent, don't invent.</b> Choose the most conservative option, record it as an ADR with status <i>Proposed</i> in <code>spec/11</code>, and list it for the owner. The <a href="decisions.html">Decisions</a> page lists them all.</li>
@@ -119,7 +119,7 @@
     <li>The Grafana dashboard and the alert rules, which are generated and checked for drift.</li>
     <li>The Helm chart's values and its end-to-end tests.</li>
   </ul>
-  <p class="muted">Where to look meanwhile: the <a href="nerds.html">architecture page</a> for how the crates fit together, <a href="decisions.html">Decisions</a> for why, the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/releasing.md">releasing guide</a>, and the <a href="standards.html">standards</a> we implement.</p>
+  <p class="muted">Where to look meanwhile: the <a href="nerds.html">architecture page</a> for how the crates fit together, <a href="decisions.html">Decisions</a> for why, the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/releasing.md">releasing guide</a>, and the <a href="standards.html">standards</a> we implement.</p>
 </section>
 
 </div>

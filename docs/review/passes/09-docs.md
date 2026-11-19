@@ -24,9 +24,9 @@ docs, the project site, the specification against the code, release notes.
   doesn't back up, or features the docs don't mention.
 - **Usability:** can a new user go from nothing to a working Pi or Kubernetes install with
   only these docs? Try the steps you can try locally (config snippets through
-  `telltale config check`, commands' flags against `--help`).
+  `wrendns config check`, commands' flags against `--help`).
 - **Examples that don't validate:** run each TOML snippet in `docs/` through
-  `target/debug/telltale config check` (with stub upstreams where needed).
+  `target/debug/wrendns config check` (with stub upstreams where needed).
 - **Spec drift:** requirements marked done whose behaviour differs from the code; ADRs whose
   "Decision" no longer matches what was built (and wasn't amended).
 - **Tone rule:** public text credits Pi-hole and Technitium and never compares against them.
@@ -34,6 +34,6 @@ docs, the project site, the specification against the code, release notes.
 ## Useful
 ```sh
 python3 site/build.py
-target/debug/telltale config check snippet.toml
+target/debug/wrendns config check snippet.toml
 grep -rn "MiB\|qps\|µs\| ms\b" README.md EXECUTIVE-SUMMARY.md site/*.html docs/*.md   # numeric claims to check
 ```

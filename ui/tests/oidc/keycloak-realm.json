@@ -1,5 +1,5 @@
 {
-  "realm": "telltale",
+  "realm": "wrendns",
   "enabled": true,
   "sslRequired": "none",
   "groups": [{ "name": "dns-admins" }, { "name": "family" }],
@@ -36,11 +36,11 @@
   ],
   "clients": [
     {
-      "clientId": "telltale",
-      "name": "TelltaleDNS",
+      "clientId": "wrendns",
+      "name": "WrenDNS",
       "enabled": true,
       "publicClient": false,
-      "secret": "telltale-secret",
+      "secret": "wrendns-secret",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "redirectUris": ["http://127.0.0.1:18054/*", "http://localhost:18054/*"],

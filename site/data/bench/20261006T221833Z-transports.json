@@ -33,7 +33,7 @@
     ]
   },
   "server": {
-    "bin": "target/bench-fast/telltale",
+    "bin": "target/bench-fast/wrendns",
     "version": null,
     "workers": 4,
     "upstream_delay_ms": 0.0,

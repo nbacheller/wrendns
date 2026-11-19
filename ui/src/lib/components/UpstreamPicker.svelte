@@ -194,7 +194,7 @@
     <h2>Choose your upstream DNS servers<HelpButton id="upstream-picker" /></h2>
   </div>
   <p class="muted small">
-    These are the public servers TelltaleDNS asks for names it doesn’t know yet. Tick the ones you want: it asks the fastest
+    These are the public servers WrenDNS asks for names it doesn’t know yet. Tick the ones you want: it asks the fastest
     of them. Each one sees the names you look up, so the notes say what each does with them.
   </p>
   <ErrorNote {error} />

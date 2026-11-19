@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How we work: the gates — TelltaleDNS</title>
-<meta name="description" content="What CI and your own machine check before a change to TelltaleDNS lands: the jobs, the generated files and the commands that regenerate them, how tests are named, and how ADRs and the roadmap are kept.">
+<title>How we work: the gates — WrenDNS</title>
+<meta name="description" content="What CI and your own machine check before a change to WrenDNS lands: the jobs, the generated files and the commands that regenerate them, how tests are named, and how ADRs and the roadmap are kept.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -32,7 +32,7 @@
 <section id="rules">
   <h2>The rules</h2>
   <ul>
-    <li><b>Done means the acceptance criteria pass in CI</b>, clippy is clean, the docs are updated (the user docs under <code>docs/</code> and the matching page on this site), the OpenAPI document is regenerated if the API changed, and the roadmap box is ticked. That is <a href="https://github.com/paimonsoror/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>'s rule 10, and the rest of this page is how to meet it.</li>
+    <li><b>Done means the acceptance criteria pass in CI</b>, clippy is clean, the docs are updated (the user docs under <code>docs/</code> and the matching page on this site), the OpenAPI document is regenerated if the API changed, and the roadmap box is ticked. That is <a href="https://github.com/nbacheller/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>'s rule 10, and the rest of this page is how to meet it.</li>
     <li><b>Say what you did not check.</b> A task's <i>Done</i> note in the roadmap names what was verified and what was not (a cluster you did not run, an architecture you did not test). A later reader trusts the note.</li>
     <li><b>Never edit a generated file by hand.</b> Change its source and regenerate. CI fails on drift.</li>
   </ul>
@@ -78,10 +78,10 @@ npm run test:e2e                # the Playwright suite (needs a built binary)</c
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>File</th><th>Made from</th><th>Regenerate</th></tr></thead>
     <tbody>
-      <tr><td><code>docs/api/openapi.json</code></td><td>The <code>utoipa</code> annotations and the models in <code>crates/telltale-api</code></td><td><code>UPDATE_OPENAPI=1 cargo test -p telltale-api api_001_committed_openapi</code></td></tr>
-      <tr><td><code>docs/api/mcp-tools.json</code></td><td>The tool definitions in <code>crates/telltale-api/src/mcp.rs</code></td><td><code>UPDATE_MCP=1 cargo test -p telltale-api agt_006_committed</code></td></tr>
+      <tr><td><code>docs/api/openapi.json</code></td><td>The <code>utoipa</code> annotations and the models in <code>crates/wrendns-api</code></td><td><code>UPDATE_OPENAPI=1 cargo test -p wrendns-api api_001_committed_openapi</code></td></tr>
+      <tr><td><code>docs/api/mcp-tools.json</code></td><td>The tool definitions in <code>crates/wrendns-api/src/mcp.rs</code></td><td><code>UPDATE_MCP=1 cargo test -p wrendns-api agt_006_committed</code></td></tr>
       <tr><td><code>ui/src/lib/api-types.ts</code></td><td><code>docs/api/openapi.json</code></td><td><code>cd ui &amp;&amp; npm run types</code></td></tr>
-      <tr><td><code>docs/config-schema.json</code>, and the <a href="config.html">configuration reference</a></td><td>The doc comments in <code>crates/telltale-config/src/schema.rs</code></td><td><code>UPDATE_SCHEMA=1 cargo test -p telltale-config doc_002_committed_schema</code></td></tr>
+      <tr><td><code>docs/config-schema.json</code>, and the <a href="config.html">configuration reference</a></td><td>The doc comments in <code>crates/wrendns-config/src/schema.rs</code></td><td><code>UPDATE_SCHEMA=1 cargo test -p wrendns-config doc_002_committed_schema</code></td></tr>
       <tr><td><code>docs/v1-requirements.md</code></td><td>The requirement IDs in code and test names, the roadmap, and <code>spec/trace-evidence.toml</code></td><td><code>python3 spec/trace.py</code> (<code>--check</code> verifies)</td></tr>
       <tr><td>The Grafana dashboard and the alert rules</td><td>The generators under <code>deploy/grafana</code> and <code>deploy/prometheus</code></td><td><code>python3 deploy/grafana/build.py</code>, <code>bash deploy/prometheus/build.sh</code> (<code>--check</code> verifies)</td></tr>
       <tr><td><code>ui/src/lib/icons/brands.ts</code>, <code>map.data.ts</code></td><td>The curated list and the two icon packs</td><td>See <a href="dev-icons.html">Extend the domain icons</a></td></tr>
@@ -130,7 +130,7 @@ npm run test:e2e                # the Playwright suite (needs a built binary)</c
     <li class="step"><b>The budgets hold</b>: see <a href="dev-budgets.html">Size and performance budgets</a>.</li>
   </ol>
   <div class="guide-nav">
-    <a class="btn" href="developers.html">← Working on TelltaleDNS</a>
+    <a class="btn" href="developers.html">← Working on WrenDNS</a>
     <a class="btn primary" href="dev-budgets.html">Next: Size and performance budgets →</a>
   </div>
 </section>

@@ -19,9 +19,9 @@ old=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 | tr -d '\r')
 # The first `version = ` in Cargo.toml is [workspace.package]'s.
 sed -i "0,/^version = \"$old\"/s//version = \"$new\"/" Cargo.toml
 for f in crates/*/Cargo.toml; do
-  sed -i -E "s/^(telltale-[a-z-]+ = \{ version = \")$old(\", path)/\1$new\2/" "$f"
+  sed -i -E "s/^(wrendns-[a-z-]+ = \{ version = \")$old(\", path)/\1$new\2/" "$f"
 done
-sed -i -E "s/^version: .*/version: $new/" deploy/helm/telltale/Chart.yaml
+sed -i -E "s/^version: .*/version: $new/" deploy/helm/wrendns/Chart.yaml
 # The committed OpenAPI document carries the version (`info.version`; CI compares it with the
 # code's, api_001_committed_openapi). It's the document's first "version" key.
 sed -i "0,/^    \"version\": \"$old\"/s//    \"version\": \"$new\"/" docs/api/openapi.json

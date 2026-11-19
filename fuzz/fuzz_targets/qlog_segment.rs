@@ -11,9 +11,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use telltale_store::qlog::format::repair_checksums;
-use telltale_store::qlog::{reader, writer};
-use telltale_telemetry::{Proto, QueryEvent, Status};
+use wrendns_store::qlog::format::repair_checksums;
+use wrendns_store::qlog::{reader, writer};
+use wrendns_telemetry::{Proto, QueryEvent, Status};
 
 fn events(data: &[u8]) -> (Vec<(QueryEvent, Vec<u8>)>, &[u8]) {
     let n = usize::from(*data.first().unwrap_or(&0)).min(64);

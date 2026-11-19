@@ -30,9 +30,9 @@
   }
 </script>
 
-<AuthShell title="Welcome to TelltaleDNS">
+<AuthShell title="Welcome to WrenDNS">
   <p class="muted">
-    Create the first admin. <code>telltale auth setup-token</code> prints the setup token (the server
+    Create the first admin. <code>wrendns auth setup-token</code> prints the setup token (the server
     log says which file holds it).
   </p>
   <form class="stack" onsubmit={submit}>

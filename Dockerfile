@@ -5,9 +5,9 @@
 # build stage runs on the build host's platform and cross-compiles with cargo-zigbuild, so
 # arm64/armv7 images never compile under QEMU.
 #
-#   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t telltale:dev .
-#   docker buildx build --load -t telltale:dev .                       # host arch only
-#   docker buildx build --build-arg PROFILE=bench-fast --load -t telltale:dev .   # quick local build
+#   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t wrendns:dev .
+#   docker buildx build --load -t wrendns:dev .                       # host arch only
+#   docker buildx build --build-arg PROFILE=bench-fast --load -t wrendns:dev .   # quick local build
 
 ARG RUST_VERSION=1.99.0
 ARG NODE_VERSION=24
@@ -80,7 +80,7 @@ RUN case "${TARGETARCH}${TARGETVARIANT}" in \
 # (America/Ojinaga, tzdata 2025b), and a schedule in that zone would fail. The build fails if any
 # zone name the distribution's directory has (apart from the host's own `localtime` and
 # `posixrules`, and the `posix/` and `right/` trees) is missing from it.
-# crates/telltale-config/tests/zoneinfo.rs builds the same way and checks that jiff reads every
+# crates/wrendns-config/tests/zoneinfo.rs builds the same way and checks that jiff reads every
 # file and agrees with the distribution's offsets.
 RUN set -eu; \
     zic -b fat -d /zoneinfo /usr/share/zoneinfo/tzdata.zi; \
@@ -96,10 +96,10 @@ RUN set -eu; \
 WORKDIR /src
 # REQ: OPS-004 (ADR-046) — the build identity CI stamps into every architecture alike.
 # Empty: build.rs stamps the crate version with `-dev` (ADR-948, T21.6).
-ARG TELLTALE_BUILD_VERSION=
-ARG TELLTALE_BUILD_COMMIT=
-ARG TELLTALE_BUILD_DATE=
-ARG TELLTALE_BUILD_CHANNEL=dev
+ARG WRENDNS_BUILD_VERSION=
+ARG WRENDNS_BUILD_COMMIT=
+ARG WRENDNS_BUILD_DATE=
+ARG WRENDNS_BUILD_CHANNEL=dev
 # Cargo features for a test image (deploy/cluster3 builds with `e2e`, which lets its fake source
 # stand in for the category lists' hosts). Empty for every shipped image.
 ARG CARGO_FEATURES=
@@ -114,51 +114,51 @@ ARG BUILD_CACHE_SCOPE=
 COPY . .
 COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT}${BUILD_CACHE_SCOPE},sharing=locked \
+    --mount=type=cache,target=/src/target,id=wrendns-target-${TARGETARCH}${TARGETVARIANT}${BUILD_CACHE_SCOPE},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
-    mkdir -p /out/usr/local/bin /out/var/lib/telltale /out/etc/telltale /out/usr/share /debug; \
+    mkdir -p /out/usr/local/bin /out/var/lib/wrendns /out/etc/wrendns /out/usr/share /debug; \
     # REQ: OPS-013 (ADR-164) — link once with symbols and line tables, then split that one output:
     # the shipped binary is the stripped copy (what `strip = true` made before: the symbol table
     # and debug sections are gone, the dependency data stays; the line tables shift the layout by
     # 0.015%, benchmarked in ADR-164), and
-    # `/debug/telltale.debug` is the rest, matched to it by debuglink (name and CRC). It stays out
+    # `/debug/wrendns.debug` is the rest, matched to it by debuglink (name and CRC). It stays out
     # of `/out`, which the image copies whole: it is only a release asset (the `bin` target), so a
     # stack from a stripped binary can be read afterwards.
     up="$(echo "${PROFILE}" | tr 'a-z-' 'A-Z_')"; \
     export "CARGO_PROFILE_${up}_STRIP=none" "CARGO_PROFILE_${up}_DEBUG=line-tables-only"; \
-    cargo auditable zigbuild --locked --profile "${PROFILE}" -p telltale --target "$t" ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}; \
+    cargo auditable zigbuild --locked --profile "${PROFILE}" -p wrendns --target "$t" ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}; \
     oc="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"; \
-    "$oc" --only-keep-debug "target/$t/${PROFILE}/telltale" /debug/telltale.debug; \
-    "$oc" --strip-all --keep-section=.dep-v0 --add-gnu-debuglink=/debug/telltale.debug \
-      "target/$t/${PROFILE}/telltale" /out/usr/local/bin/telltale; \
+    "$oc" --only-keep-debug "target/$t/${PROFILE}/wrendns" /debug/wrendns.debug; \
+    "$oc" --strip-all --keep-section=.dep-v0 --add-gnu-debuglink=/debug/wrendns.debug \
+      "target/$t/${PROFILE}/wrendns" /out/usr/local/bin/wrendns; \
     cp -a /zoneinfo /out/usr/share/zoneinfo; \
-    printf 'root:x:0:0:root:/:/sbin/nologin\ntelltale:x:65532:65532:telltale:/var/lib/telltale:/sbin/nologin\n' > /out/etc/passwd; \
-    printf 'root:x:0:\ntelltale:x:65532:\n' > /out/etc/group; \
+    printf 'root:x:0:0:root:/:/sbin/nologin\nwrendns:x:65532:65532:wrendns:/var/lib/wrendns:/sbin/nologin\n' > /out/etc/passwd; \
+    printf 'root:x:0:\nwrendns:x:65532:\n' > /out/etc/group; \
     # The data directory belongs to the image's user. Owned here, because `COPY --from` keeps
     # ownership; a later `COPY --chown` of the empty directory left it owned by root.
-    chown 65532:65532 /out/var/lib/telltale
+    chown 65532:65532 /out/var/lib/wrendns
 
 # REQ: OPS-004 — just the static binary, for release assets and native installs:
 #   docker buildx build --platform linux/arm64 --target bin --output type=local,dest=out .
 FROM scratch AS bin
-COPY --from=build /out/usr/local/bin/telltale /telltale
-COPY --from=build /debug/telltale.debug /telltale.debug
+COPY --from=build /out/usr/local/bin/wrendns /wrendns
+COPY --from=build /debug/wrendns.debug /wrendns.debug
 
 FROM scratch
 ARG VERSION=dev
 ARG REVISION=unknown
-LABEL org.opencontainers.image.title="TelltaleDNS" \
+LABEL org.opencontainers.image.title="WrenDNS" \
       org.opencontainers.image.description="See every question. Answer on your terms. A filtering, encrypted, observable, clustered DNS resolver." \
-      org.opencontainers.image.source="https://github.com/paimonsoror/telltaledns" \
+      org.opencontainers.image.source="https://github.com/nbacheller/telltaledns" \
       org.opencontainers.image.licenses="Apache-2.0 OR MIT" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /out/ /
 # REQ: OPS-004 (ADR-046) — containers update by pulling a new image.
-ENV TELLTALE_INSTALL=container
+ENV WRENDNS_INSTALL=container
 USER 65532:65532
 # The only writable path; run with a read-only root filesystem (spec/08 §2).
-VOLUME ["/var/lib/telltale"]
+VOLUME ["/var/lib/wrendns"]
 EXPOSE 53/udp 53/tcp 8053/tcp 9153/tcp
-ENTRYPOINT ["/usr/local/bin/telltale"]
+ENTRYPOINT ["/usr/local/bin/wrendns"]
 CMD ["run"]

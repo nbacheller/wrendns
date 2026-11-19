@@ -1,4 +1,4 @@
-// Starts a real TelltaleDNS for the Playwright suite (REQ: API-005, T3.9 AC): a fresh data
+// Starts a real WrenDNS for the Playwright suite (REQ: API-005, T3.9 AC): a fresh data
 // directory, DNS, the API and UI and every other e2e port from ports.ts (one base, E2E_HTTP_PORT),
 // an inline blocklist, and a local record, so tests don't depend on the internet.
 import { spawn } from 'node:child_process';
@@ -14,7 +14,7 @@ const root = E2E_ROOT;
 rmSync(root, { recursive: true, force: true });
 mkdirSync(resolve(root, 'data'), { recursive: true });
 
-const cfg = resolve(root, 'telltale.toml');
+const cfg = resolve(root, 'wrendns.toml');
 writeFileSync(
   cfg,
   `[node]
@@ -156,7 +156,7 @@ writeFileSync(
           'pod-template-hash': '6c9f7b',
           'app.kubernetes.io/name': 'jellyfin',
         }),
-        pod('db', 'postgres-0', { kind: 'StatefulSet', name: 'postgres' }, '127.0.0.83', { 'telltaledns.io/group': 'lab' }),
+        pod('db', 'postgres-0', { kind: 'StatefulSet', name: 'postgres' }, '127.0.0.83', { 'wrendns.com/group': 'lab' }),
         pod('kube-system', 'cilium-x7k2p', { kind: 'DaemonSet', name: 'cilium' }, '127.0.0.84'),
       ],
     },
@@ -164,7 +164,7 @@ writeFileSync(
       items: [
         { metadata: { name: 'media' } },
         { metadata: { name: 'db' } },
-        { metadata: { name: 'kube-system', labels: { 'telltaledns.io/group': 'lab' } } },
+        { metadata: { name: 'kube-system', labels: { 'wrendns.com/group': 'lab' } } },
       ],
     },
   }),
@@ -176,8 +176,8 @@ const oidc = (process.env.OIDC_E2E ?? '').split(',').filter(Boolean);
 if (oidc.length) {
   const host = process.env.E2E_IDP_HOST ?? '127.0.0.1';
   const issuers = {
-    keycloak: [`http://${host}:8080/realms/telltale`, 'Keycloak'],
-    authentik: [`http://${host}:9000/application/o/telltale/`, 'Authentik'],
+    keycloak: [`http://${host}:8080/realms/wrendns`, 'Keycloak'],
+    authentik: [`http://${host}:9000/application/o/wrendns/`, 'Authentik'],
   };
   let extra = `\n[auth.oidc]\npublic_url = "http://127.0.0.1:${HTTP_PORT}"\n`;
   for (const id of oidc) {
@@ -187,8 +187,8 @@ if (oidc.length) {
 id = "${id}"
 name = "${name}"
 issuer = "${issuer}"
-client_id = "telltale"
-client_secret = "telltale-secret"
+client_id = "wrendns"
+client_secret = "wrendns-secret"
 scopes = ["openid", "profile", "email"]
 [[auth.oidc.provider.role]]
 group = "dns-admins"
@@ -215,27 +215,27 @@ stub.on('message', (q, from) => {
 });
 stub.bind(PORTS.upstream, '127.0.0.1');
 
-const bin = process.env.TELLTALE_BIN ?? resolve(here, '../../../target/debug/telltale');
+const bin = process.env.WRENDNS_BIN ?? resolve(here, '../../../target/debug/wrendns');
 const child = spawn(bin, ['run', '-c', cfg], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    TELLTALE_KUBERNETES_FIXTURE: fixture,
+    WRENDNS_KUBERNETES_FIXTURE: fixture,
     // REQ: API-902 (T27.13, ADR-956 §3, §4a) - the guarded framework's end-to-end hooks, which exist only
-    // in a server built with the cargo feature `e2e` (`cargo build -p telltale --features e2e`): a
+    // in a server built with the cargo feature `e2e` (`cargo build -p wrendns --features e2e`): a
     // declared supervisor (so "Restart now" is offered), the simulated restart (the test never kills its
     // own server), and a short confirmation window (a rollback can be watched).
-    TELLTALE_SUPERVISOR: 'systemd',
+    WRENDNS_SUPERVISOR: 'systemd',
     // REQ: OBS-902 (T26.4, ADR-959 section 8) - the GeoIP tests' allowances, honoured only by a debug build
     // (a release build ignores both): a small fake database is accepted, and the fake source's
     // certificate is trusted besides the built-in roots.
-    TELLTALE_GEOIP_TEST: '1',
-    TELLTALE_GEOIP_TEST_CA: resolve(here, 'fixtures/geoip-source-cert.pem'),
+    WRENDNS_GEOIP_TEST: '1',
+    WRENDNS_GEOIP_TEST_CA: resolve(here, 'fixtures/geoip-source-cert.pem'),
     TT_E2E_RESTART_HOOK: '1',
     TT_E2E_CONFIRM_WINDOW_SECS: '15',
     // REQ: FLT-901 (T24.29) - a build with the `e2e` feature downloads the category lists from this fake instead of
     // the internet (the categories spec serves it on this port).
-    TELLTALE_E2E_CATALOG_BASE: `http://127.0.0.1:${PORTS.catalog}/`,
+    WRENDNS_E2E_CATALOG_BASE: `http://127.0.0.1:${PORTS.catalog}/`,
   },
 });
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill('SIGTERM'));

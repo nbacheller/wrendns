@@ -17,7 +17,7 @@ Requires `dnsperf` (DNS-OARC, `apt install dnsperf`) and Python 3.10+ (standard 
 2. Starts `stub_upstream.py` on `127.0.0.1:5301`: a fake authoritative server that answers
    A/AAAA with deterministic addresses from the RFC 2544/5180 benchmarking ranges (TTL 3600)
    and everything else with NODATA + SOA. `--upstream-delay-ms 20` stands in for netem.
-3. Starts `telltale run` (the `bench-fast` profile, thin LTO) on `127.0.0.1:5300` with 4
+3. Starts `wrendns run` (the `bench-fast` profile, thin LTO) on `127.0.0.1:5300` with 4
    workers and waits for `/readyz`.
 4. For each corpus: a warmup run, a saturating dnsperf run (throughput), then fixed-rate runs at
    a share of that maximum (latency; `00 §5` gates p99 at 50% load). Saturated latency is
@@ -81,18 +81,18 @@ python3 bench/gate.py --duration 20
 Same-host tail latency isn't trustworthy (the client's scheduling shows up in its p99); the latency gates need the load generator on separate hardware.
 
 ## Where memory goes (T10.2)
-`bench/memprobe.py` starts the server like `gate.py` and prints RSS split by mapping (heap, the binary's own pages, mapped files, stacks) next to the server's counters (cache bytes and entries, lookup index bytes), idle and with `--names` blocked names and `--fill` cache entries. `--extra` appends config (`'[telemetry.qlog]\nenabled = false'`) to see what a feature costs; `--bin` measures another build, such as a release binary. `cargo test --release -p telltale-cache --test footprint -- --nocapture` reports the cache's own heap per entry.
+`bench/memprobe.py` starts the server like `gate.py` and prints RSS split by mapping (heap, the binary's own pages, mapped files, stacks) next to the server's counters (cache bytes and entries, lookup index bytes), idle and with `--names` blocked names and `--fill` cache entries. `--extra` appends config (`'[telemetry.qlog]\nenabled = false'`) to see what a feature costs; `--bin` measures another build, such as a release binary. `cargo test --release -p wrendns-cache --test footprint -- --nocapture` reports the cache's own heap per entry.
 
-`bench/heapprof.py` finds which code holds the heap: build with the development-only `dhat-heap` feature (and symbols), and it sends `--fill` unique names, stops the server cleanly, and prints the allocation sites holding the most at the heap's peak, by their first TelltaleDNS frames.
+`bench/heapprof.py` finds which code holds the heap: build with the development-only `dhat-heap` feature (and symbols), and it sends `--fill` unique names, stops the server cleanly, and prints the allocation sites holding the most at the heap's peak, by their first WrenDNS frames.
 
 ```sh
 CARGO_PROFILE_BENCH_FAST_STRIP=false CARGO_PROFILE_BENCH_FAST_DEBUG=1 CARGO_TARGET_DIR=target/heapprof \
-  cargo build --profile bench-fast -p telltale --features dhat-heap
-python3 bench/heapprof.py --bin "$PWD/target/heapprof/bench-fast/telltale" --fill 100000
+  cargo build --profile bench-fast -p wrendns --features dhat-heap
+python3 bench/heapprof.py --bin "$PWD/target/heapprof/bench-fast/wrendns" --fill 100000
 ```
 
 ## Sustained load with telemetry (T3.1)
-`bench.py sustain` runs one corpus at a fixed rate (`--rate`, default 100k qps) for `--duration` seconds (default 60). It passes only if `telltale_telemetry_dropped_total` doesn't move, no query is lost, and the event count covers every answered query. It prints a JSON summary (qps, latency, queries, events, drops, RSS) on stdout.
+`bench.py sustain` runs one corpus at a fixed rate (`--rate`, default 100k qps) for `--duration` seconds (default 60). It passes only if `wrendns_telemetry_dropped_total` doesn't move, no query is lost, and the event count covers every answered query. It prints a JSON summary (qps, latency, queries, events, drops, RSS) on stdout.
 
 ```sh
 python3 bench/bench.py sustain --rate 100000 --duration 60

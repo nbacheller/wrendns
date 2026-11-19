@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # REQ: AGT-006 — T6.6 acceptance: a running node, a named device with traffic, agent tokens,
 # then deploy/mcp-e2e/check.mjs drives the MCP server with the official TypeScript SDK client
-# (Streamable HTTP and `telltale mcp --stdio`). Needs node, npm, dig.
-# Usage: deploy/mcp-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# (Streamable HTTP and `wrendns mcp --stdio`). Needs node, npm, dig.
+# Usage: deploy/mcp-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -26,7 +26,7 @@ trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
 API=http://127.0.0.1:26993
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
-cat > "$E/telltale.toml" <<EOF
+cat > "$E/wrendns.toml" <<EOF
 [node]
 data_dir = "$E/data"
 [[listen]]
@@ -52,7 +52,7 @@ match = ["127.0.0.1"]
 [agents]
 require_approval = true
 EOF
-"$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
+"$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
 for i in $(seq 20); do dig +short +time=1 -p 25993 @127.0.0.1 tv-portal.mcp.test >/dev/null || true; done
 for _ in $(seq 30); do dig +time=1 -p 25993 @127.0.0.1 ads.mcp.test | grep -q 'EDE: 15' && break; sleep 0.3; done

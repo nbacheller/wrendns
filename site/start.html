@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Get started — TelltaleDNS</title>
-<meta name="description" content="Install TelltaleDNS on a Raspberry Pi, Linux, Docker, or Kubernetes, point your network at it, and grow it into a cluster. Step-by-step, with troubleshooting and moving from Pi-hole or Technitium.">
+<title>Get started — WrenDNS</title>
+<meta name="description" content="Install WrenDNS on a Raspberry Pi, Linux, Docker, or Kubernetes, point your network at it, and grow it into a cluster. Step-by-step, with troubleshooting and moving from Pi-hole or Technitium.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -26,7 +26,7 @@
         <text x="69" y="152" text-anchor="middle" class="svg-text">Your phone</text>
         <rect x="300" y="80" width="146" height="90" rx="14" class="svg-brand"/>
         <text x="373" y="120" text-anchor="middle" font-size="30">📖</text>
-        <text x="373" y="152" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">DNS (TelltaleDNS)</text>
+        <text x="373" y="152" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">DNS (WrenDNS)</text>
         <path d="M124 104 H298" class="svg-stroke-brand" stroke-width="2" marker-end="url(#s-arrow)"/>
         <text x="211" y="94" text-anchor="middle" class="svg-sub">"Where is youtube.com?"</text>
         <path d="M298 146 H124" class="svg-stroke-brand" stroke-width="2" marker-end="url(#s-arrow)"/>
@@ -48,7 +48,7 @@
 <section id="install">
   <p class="eyebrow">Step 1</p>
   <h2>Pick where it runs</h2>
-  <p class="muted">Every path ends the same way: your router hands out TelltaleDNS as the DNS server, and every device uses it, with its own address visible. <span class="badge"><span class="dot"></span> Pre-1.0: installs follow builds from main (<code>edge</code>).</span></p>
+  <p class="muted">Every path ends the same way: your router hands out WrenDNS as the DNS server, and every device uses it, with its own address visible. <span class="badge"><span class="dot"></span> Pre-1.0: installs follow builds from main (<code>edge</code>).</span></p>
   <div class="tabs">
     <div role="tablist" aria-label="Where it runs">
       <button role="tab" type="button">Raspberry Pi</button>
@@ -72,7 +72,7 @@
           <text x="275" y="104" text-anchor="middle" class="svg-sub">port 53</text>
           <rect x="342" y="30" width="230" height="170" rx="16" class="svg-brand"/>
           <text x="457" y="62" text-anchor="middle" fill="#e8eef6" font-weight="700">🍓 Raspberry Pi</text>
-          <text x="457" y="98" text-anchor="middle" fill="#e8eef6" font-size="13">TelltaleDNS container</text>
+          <text x="457" y="98" text-anchor="middle" fill="#e8eef6" font-size="13">WrenDNS container</text>
           <text x="457" y="120" text-anchor="middle" fill="#e8eef6" font-size="12">host network · read-only</text>
           <text x="457" y="142" text-anchor="middle" fill="#e8eef6" font-size="12">blocklists · cache · query log</text>
           <text x="457" y="176" text-anchor="middle" fill="#e8eef6" font-size="12">UI on :8053</text>
@@ -82,7 +82,7 @@
           <text x="791" y="104" text-anchor="middle" class="svg-text">Cloudflare / Quad9</text>
           <text x="791" y="128" text-anchor="middle" class="svg-sub">only for names not cached</text>
         </svg>
-        <figcaption>Host networking is what lets TelltaleDNS see each device's own address (and MAC), so per-device statistics and rules work.</figcaption>
+        <figcaption>Host networking is what lets WrenDNS see each device's own address (and MAC), so per-device statistics and rules work.</figcaption>
       </figure>
       <ol class="guide">
         <li><b>Prepare the Pi.</b> Raspberry Pi OS (64-bit recommended) on a Pi 3, 4, 5, or Zero 2 W, with a fixed address (set a DHCP reservation in your router), and Docker:
@@ -90,9 +90,9 @@
 sudo usermod -aG docker $USER    # log out and back in</code></pre></li>
         <li><b>Free port 53.</b> If Pi-hole or another DNS server runs on the Pi, stop it. Check: <code>sudo ss -ulpn 'sport = :53'</code> should print nothing.</li>
         <li><b>Download the bundle and start it.</b>
-<pre><code>mkdir ~/telltale && cd ~/telltale
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+<pre><code>mkdir ~/wrendns && cd ~/wrendns
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/wrendns.toml
 docker compose up -d
 docker compose ps        # STATUS shows "healthy" within a minute</code></pre></li>
         <li><b>Test it from another computer</b> (replace the address with your Pi's):
@@ -100,34 +100,34 @@ docker compose ps        # STATUS shows "healthy" within a minute</code></pre></
 dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works</code></pre>
           On Windows: <code>nslookup example.com 192.168.1.2</code>.</li>
         <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;pi&gt;:8053/</code>:
-<pre><code>docker compose exec telltale telltale auth setup-token</code></pre></li>
+<pre><code>docker compose exec wrendns wrendns auth setup-token</code></pre></li>
       </ol>
-      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
+      <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>wrendns.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
     </div>
 
     <div class="panel" id="native"><h3>Raspberry Pi or Linux, native (systemd)</h3>
       <p>No Docker: a single static binary as a sandboxed systemd service, on any systemd distribution (x86-64, arm64, or 32-bit ARM). The installer checks the release's signature and checksum before installing anything, so read it, then run it:</p>
-<pre><code>curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+<pre><code>curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/systemd/install.sh
 less install.sh
 sudo sh install.sh                 # the latest release; --edge: builds from main
-sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre>
+sudo -u wrendns wrendns auth setup-token -c /etc/wrendns/wrendns.toml</code></pre>
       <ul>
         <li>It asks first: press Enter for the recommended settings, or <b>walk me through the options</b> to pick upstreams (encrypted presets or your own server), starting blocklists (or none), the listen address, the first admin (a setup token, or a password now), and the query log's retention and privacy. Every step shows its default; Enter keeps it. Piped or automated runs (and <code>--yes</code>) ask nothing.</li>
-        <li>It creates a <code>telltale</code> user, writes the config to <code>/etc/telltale/telltale.toml</code> (never overwriting yours), and keeps data in <code>/var/lib/telltale</code>.</li>
+        <li>It creates a <code>wrendns</code> user, writes the config to <code>/etc/wrendns/wrendns.toml</code> (never overwriting yours), and keeps data in <code>/var/lib/wrendns</code>.</li>
         <li>If systemd-resolved holds port 53 (Ubuntu, some Debian setups), it offers to turn the stub listener off (<code>--disable-resolved-stub</code> does it without asking).</li>
-        <li>Updates: <code>sudo telltale self-update --restart</code> (add <code>--channel edge</code> if you installed with <code>--edge</code>). The previous binary is kept as <code>telltale.old</code>.</li>
-        <li>Logs: <code>journalctl -u telltale -f</code>. Reload after editing the config: <code>sudo systemctl reload telltale</code>.</li>
+        <li>Updates: <code>sudo wrendns self-update --restart</code> (add <code>--channel edge</code> if you installed with <code>--edge</code>). The previous binary is kept as <code>wrendns.old</code>.</li>
+        <li>Logs: <code>journalctl -u wrendns -f</code>. Reload after editing the config: <code>sudo systemctl reload wrendns</code>.</li>
         <li>Uninstall: <code>sudo sh install.sh --uninstall</code>. It removes the service and binary, offers to give the machine its own resolver back (systemd-resolved, as it was before), and keeps your config and data unless you ask it to delete them (<code>--purge</code>).</li>
       </ul>
     </div>
 
     <div class="panel" id="docker"><h3>Docker</h3>
-<pre><code>docker run -d --name telltale --read-only --cap-drop ALL \
+<pre><code>docker run -d --name wrendns --read-only --cap-drop ALL \
   -p 53:53/udp -p 53:53/tcp -p 8053:8053 -p 9153:9153 \
-  -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
-  -v telltale-data:/var/lib/telltale \
-  ghcr.io/paimonsoror/telltale:latest
-docker exec telltale telltale auth setup-token</code></pre>
+  -v "$PWD/wrendns.toml:/etc/wrendns/wrendns.toml:ro" \
+  -v wrendns-data:/var/lib/wrendns \
+  ghcr.io/nbacheller/wrendns:latest
+docker exec wrendns wrendns auth setup-token</code></pre>
       <p class="muted">amd64, arm64, and arm/v7; about 13 MiB compressed, web UI included; runs as a non-root user. Published ports can hide each device's own address behind Docker's (the UI warns if they do): on a home network, <code>--network host</code> (or the Pi Compose bundle) makes sure each device shows up as itself. A starter config is in <a href="#configure">step 2</a>.</p>
     </div>
 
@@ -148,22 +148,22 @@ docker exec telltale telltale auth setup-token</code></pre>
           <path d="M542 110 H672" class="svg-stroke-ok" stroke-width="2.5" marker-end="url(#k-arrow)"/>
           <text x="607" y="98" text-anchor="middle" class="svg-sub">client IP kept</text>
           <rect x="674" y="40" width="206" height="140" rx="16" class="svg-brand"/>
-          <text x="777" y="78" text-anchor="middle" fill="#e8eef6" font-weight="700">☸️ TelltaleDNS pod</text>
+          <text x="777" y="78" text-anchor="middle" fill="#e8eef6" font-weight="700">☸️ WrenDNS pod</text>
           <text x="777" y="104" text-anchor="middle" fill="#e8eef6" font-size="12">StatefulSet + volume</text>
           <text x="777" y="126" text-anchor="middle" fill="#e8eef6" font-size="12">UI via Ingress</text>
           <text x="777" y="148" text-anchor="middle" fill="#e8eef6" font-size="12">ServiceMonitor · alerts</text>
         </svg>
       </figure>
-<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale \
-  -n telltale --create-namespace \
+<pre><code>helm install wrendns oci://ghcr.io/nbacheller/charts/wrendns \
+  -n wrendns --create-namespace \
   --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
-kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: your DNS server address
-kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token \
-  -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml</code></pre>
+kubectl -n wrendns get svc wrendns-dns     # EXTERNAL-IP: your DNS server address
+kubectl -n wrendns exec wrendns-0 -- /usr/local/bin/wrendns auth setup-token \
+  -c /etc/wrendns/00-chart.toml -c /etc/wrendns/10-values.toml</code></pre>
       <ul>
-        <li><b>Every option:</b> <code>helm show values oci://ghcr.io/paimonsoror/charts/telltale &gt; values.yaml</code> prints the chart's commented values file; the <a href="helm-values.html">Helm values reference</a> lists each key with its default and meaning. Keep what you change in your own file and pass it with <code>-f</code>.</li>
+        <li><b>Every option:</b> <code>helm show values oci://ghcr.io/nbacheller/charts/wrendns &gt; values.yaml</code> prints the chart's commented values file; the <a href="helm-values.html">Helm values reference</a> lists each key with its default and meaning. Keep what you change in your own file and pass it with <code>-f</code>.</li>
         <li><b>Chart versions:</b> without <code>--version</code>, Helm installs the newest stable release (chart and image versions match). Builds from main publish <code>X.Y.Z-edge.N</code> charts with the <code>:edge</code> image: add <code>--devel</code> for the newest, or pin one with <code>--version</code>.</li>
-        <li><b>Keep <code>externalTrafficPolicy: Local</code></b> (the default): with <code>Cluster</code>, every query looks like it came from a node, and TelltaleDNS shows a "client IPs appear masked" banner.</li>
+        <li><b>Keep <code>externalTrafficPolicy: Local</code></b> (the default): with <code>Cluster</code>, every query looks like it came from a node, and WrenDNS shows a "client IPs appear masked" banner.</li>
         <li>Your settings go in <code>config:</code> (TOML, the same keys as the <a href="config.html">configuration reference</a>); secrets come from existing Secrets.</li>
         <li>Encrypted DNS for phones: <code>encrypted.dot.enabled</code> / <code>encrypted.doh.enabled</code> with a cert-manager certificate.</li>
         <li>Monitoring: <code>serviceMonitor.enabled</code>, <code>prometheusRule.enabled</code>, <code>grafanaDashboard.enabled</code>.</li>
@@ -173,21 +173,21 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
     </div>
 
     <div class="panel" id="source"><h3>From source</h3>
-<pre><code>git clone https://github.com/paimonsoror/telltaledns
-cd telltaledns
+<pre><code>git clone https://github.com/nbacheller/telltaledns
+cd wrendns
 cargo build --release
-sudo ./target/release/telltale run -c telltale.toml   # a config from step 2
+sudo ./target/release/wrendns run -c wrendns.toml   # a config from step 2
 dig @127.0.0.1 example.com</code></pre>
-      <p class="muted">Needs a recent Rust toolchain (the repository pins it). The first start creates a one-time setup token; <code>telltale auth setup-token</code> prints it. Open the web UI on port 8053 and use it to create your admin.</p>
+      <p class="muted">Needs a recent Rust toolchain (the repository pins it). The first start creates a one-time setup token; <code>wrendns auth setup-token</code> prints it. Open the web UI on port 8053 and use it to create your admin.</p>
     </div>
   </div>
 
   <div class="callout" id="verify">
-    <p><b>Check what you run.</b> Release binaries come with a signed <code>SHA256SUMS</code> (the installer and <code>telltale self-update</code> check it for you), and images are signed with cosign through GitHub's keyless signing:</p>
-<pre><code>cosign verify ghcr.io/paimonsoror/telltale:&lt;version&gt; \
-  --certificate-identity-regexp '^https://github\.com/paimonsoror/telltaledns/\.github/workflows/image\.yml@' \
+    <p><b>Check what you run.</b> Release binaries come with a signed <code>SHA256SUMS</code> (the installer and <code>wrendns self-update</code> check it for you), and images are signed with cosign through GitHub's keyless signing:</p>
+<pre><code>cosign verify ghcr.io/nbacheller/wrendns:&lt;version&gt; \
+  --certificate-identity-regexp '^https://github\.com/nbacheller/telltaledns/\.github/workflows/image\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com</code></pre>
-    <p>Each binary carries its dependency list (<code>cargo audit bin telltale</code> reads it), every release has a CycloneDX SBOM per binary, and two builds of the same commit are byte for byte identical. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#versions-and-updates">How to rebuild and compare</a>.</p>
+    <p>Each binary carries its dependency list (<code>cargo audit bin wrendns</code> reads it), every release has a CycloneDX SBOM per binary, and two builds of the same commit are byte for byte identical. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#versions-and-updates">How to rebuild and compare</a>.</p>
   </div>
 </section>
 
@@ -196,7 +196,7 @@ dig @127.0.0.1 example.com</code></pre>
   <h2>Configure (optional)</h2>
   <div class="two">
     <div>
-      <p class="muted">The bundles and the installer come with a working configuration. This is a minimal one with encrypted upstreams, saved as <code>telltale.toml</code>:</p>
+      <p class="muted">The bundles and the installer come with a working configuration. This is a minimal one with encrypted upstreams, saved as <code>wrendns.toml</code>:</p>
 <pre><code>[[upstream]]
 name = "cloudflare"
 url = "tls://1.1.1.1"
@@ -224,7 +224,7 @@ strategy = "fastest"</code></pre>
   <div class="two">
     <figure class="figure">
       <svg viewBox="0 0 440 200" role="img">
-        <title>Your router hands out TelltaleDNS as the DNS server to every device</title>
+        <title>Your router hands out WrenDNS as the DNS server to every device</title>
         <defs><marker id="r-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
         <rect x="160" y="14" width="120" height="50" rx="12" class="svg-box"/>
         <text x="220" y="44" text-anchor="middle" class="svg-text">📶 Router (DHCP)</text>
@@ -232,17 +232,17 @@ strategy = "fastest"</code></pre>
           <path d="M190 64 L60 120"/><path d="M220 64 L220 120"/><path d="M250 64 L380 120"/>
         </g>
         <text x="40" y="140" class="svg-text">📱 💻</text><text x="200" y="140" class="svg-text">📺 🎮</text><text x="360" y="140" class="svg-text">📷 🔊</text>
-        <text x="220" y="180" text-anchor="middle" class="svg-sub">"Use 192.168.1.53 for DNS" → every device now asks TelltaleDNS</text>
+        <text x="220" y="180" text-anchor="middle" class="svg-sub">"Use 192.168.1.53 for DNS" → every device now asks WrenDNS</text>
       </svg>
     </figure>
     <div>
       <h2>Point your network at it</h2>
       <ol class="guide">
-        <li>In your router's DHCP (LAN) settings, set the <b>DNS server</b> to TelltaleDNS's address (the Pi, or the LoadBalancer IP). If there's a second field, use a second TelltaleDNS, or leave it empty: a public resolver there lets devices skip your blocking.</li>
+        <li>In your router's DHCP (LAN) settings, set the <b>DNS server</b> to WrenDNS's address (the Pi, or the LoadBalancer IP). If there's a second field, use a second WrenDNS, or leave it empty: a public resolver there lets devices skip your blocking.</li>
         <li>Renew leases: reconnect Wi-Fi, or wait for leases to expire (often a day).</li>
         <li>Open the dashboard: devices appear under <b>Clients</b> with their own addresses. Give them names and groups there.</li>
       </ol>
-      <p class="muted">Don't point the router's <i>own</i> upstream DNS at TelltaleDNS while devices use the router: every query would then come from the router, and TelltaleDNS would say client IPs appear masked.</p>
+      <p class="muted">Don't point the router's <i>own</i> upstream DNS at WrenDNS while devices use the router: every query would then come from the router, and WrenDNS would say client IPs appear masked.</p>
     </div>
   </div>
 </section>
@@ -267,15 +267,15 @@ strategy = "fastest"</code></pre>
     </svg>
     <figcaption>Give DHCP both DNS servers: each answers on its own, from the same replicated configuration.</figcaption>
   </figure>
-  <p><code>telltale cluster init --name home --advertise https://10.30.3.2:8443</code> on the first node, <code>telltale cluster token create</code> there, then <code>telltale cluster join tt_join_…</code> on the other. Only the first node's port 8443 must be reachable; the others connect out. The first node's configuration, blocklists, users, and tokens then reach every node within seconds (signed, and only what changed), and each node keeps answering from its last copy if the link drops.</p>
+  <p><code>wrendns cluster init --name home --advertise https://10.30.3.2:8443</code> on the first node, <code>wrendns cluster token create</code> there, then <code>wrendns cluster join tt_join_…</code> on the other. Only the first node's port 8443 must be reachable; the others connect out. The first node's configuration, blocklists, users, and tokens then reach every node within seconds (signed, and only what changed), and each node keeps answering from its last copy if the link drops.</p>
   <ul>
     <li><b>One management plane.</b> Any node's UI shows the whole cluster's dashboard, query log, and live view, and changes made there go to the primary. Sign in to any node with the same account.</li>
-    <li><b>Failover.</b> Promote another node by hand (<code>telltale cluster promote</code>), or let the cluster elect one (<code>telltale cluster set-failover auto</code>) once it has a third voter, such as a tiny witness (<code>telltale cluster witness</code>).</li>
+    <li><b>Failover.</b> Promote another node by hand (<code>wrendns cluster promote</code>), or let the cluster elect one (<code>wrendns cluster set-failover auto</code>) once it has a third voter, such as a tiny witness (<code>wrendns cluster witness</code>).</li>
     <li><b>Node-local settings.</b> Each node keeps its own listeners, retention, and overrides; everything else is shared.</li>
     <li><b>More pods in Kubernetes.</b> <code>mode: scaled</code> adds resolver pods beside the controller (<code>resolvers.replicas</code>). They join on their own, share the DNS Service, ship their query log and dashboard counts to the controller, and keep answering for a few seconds while the Service drops them, so rollouts don't lose lookups. For one address for DNS, the UI, and the cluster port, set <code>service.dns.alsoServe</code>.</li>
     <li><b>See it.</b> The Cluster page draws the cluster live: sites, the primary, pods grouped by Kubernetes node, link round trips, and each node's share of the queries.</li>
     <li><b>Git as the source.</b> Optionally, the shared configuration can come from a Git repository or a GitOps tool (<code>config_source = "gitops"</code>).</li>
-    <li><b>Maintenance.</b> Rolling upgrades work across one version step (N and N−1), and <code>telltale cluster rotate-ca</code> replaces the cluster's certificate authority without downtime.</li>
+    <li><b>Maintenance.</b> Rolling upgrades work across one version step (N and N−1), and <code>wrendns cluster rotate-ca</code> replaces the cluster's certificate authority without downtime.</li>
   </ul>
   <div class="cta">
     <a class="btn primary" href="guide-cluster.html">Guide: Build a cluster</a>
@@ -289,11 +289,11 @@ strategy = "fastest"</code></pre>
   <h2>Bring your setup with you</h2>
   <ol class="guide">
     <li>In Pi-hole, open <b>Settings → Teleporter</b> and click <b>Export</b> (v6 gives a <code>.zip</code>, v5 a <code>.tar.gz</code>).</li>
-    <li>Run <code>telltale import pihole pi-hole_teleporter.zip -o pihole.toml</code>. It carries over your upstreams, conditional forwarding, local DNS and CNAME records, adlists, allowed and denied domains (exact and regex), groups, clients, DHCP reservations as named devices, and the "never forward non-FQDN queries" and iCloud Private Relay settings.</li>
+    <li>Run <code>wrendns import pihole pi-hole_teleporter.zip -o pihole.toml</code>. It carries over your upstreams, conditional forwarding, local DNS and CNAME records, adlists, allowed and denied domains (exact and regex), groups, clients, DHCP reservations as named devices, and the "never forward non-FQDN queries" and iCloud Private Relay settings.</li>
     <li>Read the notes at the top of <code>pihole.toml</code>: they list everything that has no equivalent (for example clients matched by host name, or the DHCP server). Then add the file to your configuration.</li>
   </ol>
-  <p class="muted">Query history and passwords aren't imported. Keep Pi-hole running until TelltaleDNS answers the way you expect, then point your router at TelltaleDNS.</p>
-  <p><b>From Technitium:</b> create an API token in Technitium (Administration → Sessions), then run <code>TECHNITIUM_TOKEN=… telltale import technitium http://your-server:5380 -o technitium.toml</code>. Forwarders, zones and records, forwarder zones, block lists, Advanced Blocking groups, and DHCP reservations come across. The notes at the top of the file list the rest.</p>
+  <p class="muted">Query history and passwords aren't imported. Keep Pi-hole running until WrenDNS answers the way you expect, then point your router at WrenDNS.</p>
+  <p><b>From Technitium:</b> create an API token in Technitium (Administration → Sessions), then run <code>TECHNITIUM_TOKEN=… wrendns import technitium http://your-server:5380 -o technitium.toml</code>. Forwarders, zones and records, forwarder zones, block lists, Advanced Blocking groups, and DHCP reservations come across. The notes at the top of the file list the rest.</p>
 </section>
 
 <section id="trouble">
@@ -301,15 +301,15 @@ strategy = "fastest"</code></pre>
   <h2>Troubleshooting</h2>
   <dl class="faq">
     <dt>"address already in use" on port 53</dt>
-    <dd>Another DNS server runs there: Pi-hole, dnsmasq, or systemd-resolved's stub (<code>sudo ss -ulpn 'sport = :53'</code> names it). Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/telltale.conf</code> and restart it.</dd>
+    <dd>Another DNS server runs there: Pi-hole, dnsmasq, or systemd-resolved's stub (<code>sudo ss -ulpn 'sport = :53'</code> names it). Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/wrendns.conf</code> and restart it.</dd>
     <dt>A site is broken</dt>
     <dd>Find it in the <b>Query log</b> and press <b>Why?</b>: it names the list and line that blocked it. Then allow it with a quick rule, or add an allow line (<code>@@||name^</code>) to a list.</dd>
     <dt>Every query shows the same address</dt>
-    <dd>Something in between rewrites addresses: a router forwarding DNS, Docker without host networking, or Kubernetes with <code>externalTrafficPolicy: Cluster</code>. The UI's banner says which address; the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">client IP guide</a> has the fixes.</dd>
+    <dd>Something in between rewrites addresses: a router forwarding DNS, Docker without host networking, or Kubernetes with <code>externalTrafficPolicy: Cluster</code>. The UI's banner says which address; the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">client IP guide</a> has the fixes.</dd>
     <dt>Lost the setup token</dt>
-    <dd><code>telltale auth setup-token</code> prints it again until the first admin exists.</dd>
+    <dd><code>wrendns auth setup-token</code> prints it again until the first admin exists.</dd>
   </dl>
-  <p><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">Full running guide →</a></p>
+  <p><a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md">Full running guide →</a></p>
 </section>
 
 </div>

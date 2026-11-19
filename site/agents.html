@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI agents — TelltaleDNS</title>
-<meta name="description" content="Connect AI agents to TelltaleDNS: a built-in MCP server, an agent-ready REST API, scoped tokens or SSO, changes as plans you approve, and a full audit trail. With example conversations.">
+<title>AI agents — WrenDNS</title>
+<meta name="description" content="Connect AI agents to WrenDNS: a built-in MCP server, an agent-ready REST API, scoped tokens or SSO, changes as plans you approve, and a full audit trail. With example conversations.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -17,13 +17,13 @@
   <div>
     <p class="eyebrow">Built for AI agents</p>
     <h1>Ask your network.<br>Approve what changes.</h1>
-    <p class="lede">TelltaleDNS treats AI assistants as first-class clients: every node speaks the Model Context Protocol, every API answer is written to be read by a model, and every change an agent wants waits as a plan you can see, approve, or throw away.</p>
+    <p class="lede">WrenDNS treats AI assistants as first-class clients: every node speaks the Model Context Protocol, every API answer is written to be read by a model, and every change an agent wants waits as a plan you can see, approve, or throw away.</p>
     <div class="cta">
       <a class="btn primary" href="#connect">Connect an agent</a>
       <a class="btn" href="#examples">See example conversations</a>
     </div>
   </div>
-  <figure class="figure" aria-label="How an agent works with TelltaleDNS">
+  <figure class="figure" aria-label="How an agent works with WrenDNS">
     <svg viewBox="0 0 460 300" role="img" width="460"><title>An agent asks questions through MCP; changes become plans, a person approves, and everything is audited</title>
       <rect x="14" y="20" width="120" height="46" rx="10" class="svg-box"/><text x="74" y="40" text-anchor="middle" class="svg-text">AI agent</text><text x="74" y="56" text-anchor="middle" class="svg-sub">Claude, scripts, …</text>
       <path d="M134 43 H182" class="svg-stroke-brand" stroke-width="2"/><text x="158" y="36" text-anchor="middle" class="svg-sub">MCP</text>
@@ -57,7 +57,7 @@
     </div>
     <div class="card">
       <h3>MCP over stdio</h3>
-      <p>For desktop assistants that start their tools as a subprocess: <code>telltale mcp --stdio</code> relays to a node with your agent token.</p>
+      <p>For desktop assistants that start their tools as a subprocess: <code>wrendns mcp --stdio</code> relays to a node with your agent token.</p>
     </div>
     <div class="card">
       <h3>Sign in with SSO</h3>
@@ -69,7 +69,7 @@
     </div>
     <div class="card">
       <h3>The shell</h3>
-      <p><code>telltale ctl</code> gives scripts and terminal agents the API as commands: status, the query log, top lists, explain, quick rules, pause, cache, and approving plans.</p>
+      <p><code>wrendns ctl</code> gives scripts and terminal agents the API as commands: status, the query log, top lists, explain, quick rules, pause, cache, and approving plans.</p>
     </div>
     <div class="card">
       <h3>Events out</h3>
@@ -87,12 +87,12 @@
 <pre><code>POST /api/v1/tokens
 {"name": "assistant", "kind": "agent",
  "scopes": ["analytics:read", "config:read", "querylog:read"]}</code></pre></li>
-    <li class="step"><h3>Add TelltaleDNS to your MCP client</h3>
+    <li class="step"><h3>Add WrenDNS to your MCP client</h3>
       <p>Over HTTP, use <code>http://&lt;node&gt;:8053/mcp</code> with <code>Authorization: Bearer tt_…</code>. For clients that start a subprocess:</p>
-<pre><code>{"mcpServers": {"telltale": {
-  "command": "telltale",
+<pre><code>{"mcpServers": {"wrendns": {
+  "command": "wrendns",
   "args": ["mcp", "--stdio", "--url", "http://192.168.1.2:8053"],
-  "env": {"TELLTALE_TOKEN": "tt_…"}}}}</code></pre></li>
+  "env": {"WRENDNS_TOKEN": "tt_…"}}}}</code></pre></li>
     <li class="step"><h3>Ask</h3>
       <p>"Why is the TV slow tonight?" "What did the kids' tablets get blocked on this week?" The assistant picks the tools; you see every change before it happens.</p></li>
   </ol>
@@ -195,10 +195,10 @@
       <h3>Act at once (low risk, audited)</h3>
       <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>, <code>refresh_lists</code> (downloads the filter lists again now; <code>dryRun</code> says which), <code>acknowledge_anomalies</code> (marks findings as seen on every node, or takes it back), <code>start_maintenance</code> (up to 2 hours: a node steps out of the load balancer, keeps answering, and its alerts pause) and <code>end_maintenance</code>, and <code>annotate</code> (a note on every time chart, to say why you changed something). And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
       <h3>Resources and prompts</h3>
-      <p class="muted">Resources an assistant can attach: <code>telltale://cluster/status</code>, <code>telltale://config</code> (no secrets), <code>telltale://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
+      <p class="muted">Resources an assistant can attach: <code>wrendns://cluster/status</code>, <code>wrendns://config</code> (no secrets), <code>wrendns://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
     </div>
   </div>
-  <p class="muted">The catalog is committed in the repository (<a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/api/mcp-tools.json">mcp-tools.json</a>) and checked in CI with the official MCP SDK, so what you read here is what the server offers.</p>
+  <p class="muted">The catalog is committed in the repository (<a href="https://github.com/nbacheller/telltaledns/blob/main/docs/api/mcp-tools.json">mcp-tools.json</a>) and checked in CI with the official MCP SDK, so what you read here is what the server offers.</p>
 </section>
 
 <section id="vqlog">
@@ -211,7 +211,7 @@ where name under roku.com | by client | stats count, distinct(name)
 from -1h  | where latency &gt; 200 | by upstream | stats count, p50(latency), p99(latency)
 from -1d  | where status = blocked and (client = 192.168.1.20 or name under roku.com) | top 10 name
 from -180d | where status = blocked | bucket 1d | stats count</code></pre>
-  <p class="muted">Agents can check the cost first (<code>estimateOnly</code>). Over-broad questions are refused with a hint on how to narrow them, and long scans stop and say so instead of slowing DNS down. Full syntax: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#analytics-in-one-query-vqlog">Analytics in one query</a>.</p>
+  <p class="muted">Agents can check the cost first (<code>estimateOnly</code>). Over-broad questions are refused with a hint on how to narrow them, and long scans stop and say so instead of slowing DNS down. Full syntax: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#analytics-in-one-query-vqlog">Analytics in one query</a>.</p>
 </section>
 
 <section>
@@ -232,8 +232,8 @@ from -180d | where status = blocked | bucket 1d | stats count</code></pre>
   <div class="cta">
     <a class="btn primary" href="start.html">Get started</a>
     <a class="btn" href="guide-users.html#agents">Guide: tokens for AI agents</a>
-    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#ai-agents-and-automation">Agent documentation</a>
-    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/api/openapi.json">OpenAPI document</a>
+    <a class="btn" href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#ai-agents-and-automation">Agent documentation</a>
+    <a class="btn" href="https://github.com/nbacheller/telltaledns/blob/main/docs/api/openapi.json">OpenAPI document</a>
   </div>
 </section>
 

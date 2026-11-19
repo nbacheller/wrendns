@@ -49,7 +49,7 @@ for (const id of providers) {
     // The account was created on first sign-in and is marked as provider-managed.
     await page.goto('/#/settings?tab=users');
     await expect(page.locator('main table')).toContainText(`signs in with ${id}`);
-    // Signing out also signs out at the provider, which returns to TelltaleDNS.
+    // Signing out also signs out at the provider, which returns to WrenDNS.
     await page.getByRole('button', { name: 'Sign out' }).click();
     // Keycloak asks "Do you want to log out?" (no id_token_hint is sent; ADR-034).
     const confirm = page.getByRole('button', { name: /^(Logout|Log out)$/i });
@@ -58,10 +58,10 @@ for (const id of providers) {
       .then(() => true)
       .catch(() => false);
     if (asked) await confirm.click();
-    // Keycloak returns to TelltaleDNS; Authentik's default flow shows its own "logged out of
-    // TelltaleDNS" page instead. Either way the TelltaleDNS session is over.
+    // Keycloak returns to WrenDNS; Authentik's default flow shows its own "logged out of
+    // WrenDNS" page instead. Either way the WrenDNS session is over.
     await expect(
-      page.getByRole('heading', { name: 'Sign in' }).or(page.getByRole('heading', { name: /logged out of TelltaleDNS/ })),
+      page.getByRole('heading', { name: 'Sign in' }).or(page.getByRole('heading', { name: /logged out of WrenDNS/ })),
     ).toBeVisible({ timeout: 20_000 });
     await page.goto('/#/');
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
@@ -113,7 +113,7 @@ test.describe('api_016 OIDC providers in the UI', () => {
       await page.getByRole('textbox', { name: 'ID', exact: true }).fill('lab-sso');
       await page.getByRole('textbox', { name: 'Button label' }).fill('Lab SSO');
       await page.getByRole('textbox', { name: 'Issuer', exact: true }).fill('http://127.0.0.1:9/realms/lab');
-      await page.getByRole('textbox', { name: 'Client ID', exact: true }).fill('telltale');
+      await page.getByRole('textbox', { name: 'Client ID', exact: true }).fill('wrendns');
       // The client secret goes through SecretField: typed once, stored by name, never shown again.
       const secret = page.getByTestId('oidc-secret');
       await secret.getByLabel('Client secret', { exact: true }).fill('oidc-e2e-secret-4417');
@@ -157,7 +157,7 @@ test.describe('api_016 OIDC providers in the UI', () => {
                 publicUrl: '',
                 items: [
                   {
-                    id: 'lab-sso', name: 'Lab SSO', issuer: 'https://lab.example', clientId: 'telltale', source: 'api',
+                    id: 'lab-sso', name: 'Lab SSO', issuer: 'https://lab.example', clientId: 'wrendns', source: 'api',
                     scopes: ['openid'], usernameClaim: 'preferred_username', groupsClaim: 'groups', roles: [],
                     requireVerifiedEmail: false, secretSource: 'stored', secret: 'oidc.lab-sso.client_secret',
                     secretReadable: true, active: false,
@@ -193,13 +193,13 @@ test.describe('api_016 OIDC providers in the UI', () => {
                 publicUrl: 'https://dns.example.com',
                 items: [
                   {
-                    id: 'kc', name: 'Keycloak', issuer: 'https://kc.example/realms/home', clientId: 'telltale', source: 'file',
+                    id: 'kc', name: 'Keycloak', issuer: 'https://kc.example/realms/home', clientId: 'wrendns', source: 'file',
                     scopes: ['openid'], usernameClaim: 'preferred_username', groupsClaim: 'groups',
                     roles: [{ group: 'admins', role: 'admin' }], requireVerifiedEmail: false,
                     secretSource: 'inline', active: true, redirectUri: 'https://dns.example.com/api/v1/auth/oidc/kc/callback',
                   },
                   {
-                    id: 'lab', name: 'Lab', issuer: 'https://lab.example', clientId: 'telltale', source: 'api',
+                    id: 'lab', name: 'Lab', issuer: 'https://lab.example', clientId: 'wrendns', source: 'api',
                     scopes: ['openid'], usernameClaim: 'preferred_username', groupsClaim: 'groups', roles: [],
                     defaultRole: 'viewer', requireVerifiedEmail: false, secretSource: 'stored', secret: 'oidc.lab.client_secret',
                     secretReadable: false, active: true,

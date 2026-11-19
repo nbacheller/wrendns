@@ -90,7 +90,7 @@
 
   <dl class="facts small">
     {#if h.temperatureC != null}<dt>Temperature</dt><dd class={h.temperatureC >= 80 ? 'bad-text' : h.temperatureC >= 70 ? 'warn-text' : ''}>{h.temperatureC.toFixed(1)} °C</dd>{/if}
-    {#if h.processRssBytes != null}<dt>TelltaleDNS memory</dt><dd>{bytes(h.processRssBytes)}{#if h.threads != null}{' · '}{h.threads} threads{/if}</dd>{/if}
+    {#if h.processRssBytes != null}<dt>WrenDNS memory</dt><dd>{bytes(h.processRssBytes)}{#if h.threads != null}{' · '}{h.threads} threads{/if}</dd>{/if}
     {#if h.openFds != null}<dt>Open files</dt><dd>{num(h.openFds)}{#if h.maxFds != null}{' of '}{num(h.maxFds)}{/if}</dd>{/if}
     {#if h.hostUptimeSeconds != null}<dt>Machine up</dt><dd>{duration(h.hostUptimeSeconds)}</dd>{/if}
     {#if h.clockOffsetMs != null}<dt>Clock</dt><dd class={Math.abs(h.clockOffsetMs) >= 2000 ? 'bad-text' : ''}>{Math.abs(h.clockOffsetMs) < 50 ? 'in step' : `${(h.clockOffsetMs / 1000).toFixed(1)} s ${h.clockOffsetMs > 0 ? 'ahead' : 'behind'}`}</dd>{/if}

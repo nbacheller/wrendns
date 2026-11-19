@@ -18,7 +18,7 @@ fail() { echo "::error title=preflight::$*"; echo "preflight: $*" >&2; exit 1; }
 echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "version must be X.Y.Z (got '$v')"
 cargo_v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ "$cargo_v" = "$v" ] || fail "Cargo.toml says $cargo_v, not $v: run deploy/release/bump.sh $v on main first"
-chart_v=$(awk '/^version:/ {print $2}' deploy/helm/telltale/Chart.yaml)
+chart_v=$(awk '/^version:/ {print $2}' deploy/helm/wrendns/Chart.yaml)
 [ "$chart_v" = "$v" ] || fail "Chart.yaml says $chart_v, not $v: run deploy/release/bump.sh $v on main first"
 if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
   fail "tag v$v already exists"

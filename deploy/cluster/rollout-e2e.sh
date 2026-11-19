@@ -14,9 +14,9 @@
 #   7. pin an older version by hand: every node serves it, as a newer version number;
 #   8. failover keeps the pin: the canary replica promoted after the primary stops stays pinned,
 #      and unpinning it works.
-# Usage: deploy/cluster/rollout-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/rollout-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= C_PID= R_PID= U_PID= LOAD_C= LOAD_P= LOAD_R=
@@ -225,7 +225,7 @@ read -r sf_r sent_r lost_r < "$E/load_r.txt"
 read -r sf_c sent_c lost_c < "$E/load_c.txt"
 [ "$sf_r" = 0 ] || fail "the plain replica answered SERVFAIL $sf_r times of $sent_r"
 [ "$lost_r" = 0 ] && [ "$lost_c" = 0 ] || fail "lost queries: plain replica $lost_r of $sent_r, canary $lost_c of $sent_c"
-[ "$(metric 29601 'telltale_cluster_rollouts_total{outcome="failed"}')" = 1 ] || fail "the failure wasn't counted once"
+[ "$(metric 29601 'wrendns_cluster_rollouts_total{outcome="failed"}')" = 1 ] || fail "the failure wasn't counted once"
 grep -q "rollout failed" "$E/p.log" || fail "the primary's log doesn't say the rollout failed"
 echo "ok (version $BAD failed after $took s; pinned to $S4; canary SERVFAIL $sf_c of $sent_c, 0 lost)"
 
@@ -237,7 +237,7 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any('
   || fail "the diff doesn't name the upstream change: $(cat "$E/out.json")"
 code=$(api PUT "/records/c.ro.test?dryRun=true" '{"records":[{"type":"A","value":"10.0.0.7"}]}')
 [ "$code" = 200 ] || fail "a dry run while pinned answered $code"
-[ "$(metric 29601 telltale_cluster_pinned)" = 1 ] || fail "telltale_cluster_pinned isn't 1"
+[ "$(metric 29601 wrendns_cluster_pinned)" = 1 ] || fail "wrendns_cluster_pinned isn't 1"
 api GET /system/health >/dev/null
 grep -q cluster_pinned "$E/out.json" || fail "health doesn't say pinned: $(cat "$E/out.json")"
 echo ok
@@ -262,7 +262,7 @@ grep -q canary_failed "$E/out.json" && grep -q superseded "$E/out.json" \
 echo ok
 
 echo "== 7. pin an older version by hand"
-seq_r=$(metric 29603 telltale_cluster_config_seq)
+seq_r=$(metric 29603 wrendns_cluster_config_seq)
 code=$(api POST "/cluster/versions/$S1/pin?dryRun=true" '{"reason":"e2e: back to the start"}')
 [ "$code" = 200 ] || fail "a dry-run pin answered $code: $(cat "$E/out.json")"
 [ "$(field 'd["dryRun"]' < "$E/out.json")" = True ] || fail "not a dry run"
@@ -274,7 +274,7 @@ for port in 25601 25602 25603; do
 done
 api GET "/explain?name=d.ro.test" >/dev/null
 grep -q 10.0.0.2 "$E/out.json" && fail "the primary's explain still shows the newer record: $(cat "$E/out.json")"
-seq_r2=$(metric 29603 telltale_cluster_config_seq)
+seq_r2=$(metric 29603 wrendns_cluster_config_seq)
 [ "$seq_r2" -gt "$seq_r" ] || fail "the pin went backwards on the plain replica: $seq_r -> $seq_r2"
 code=$(api POST /cluster/versions/9.9999/pin '{"reason":"nope"}')
 [ "$code" = 404 ] || fail "pinning an unknown version answered $code"

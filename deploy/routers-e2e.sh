@@ -11,10 +11,10 @@
 # `stat/alluser` (403): the refusal is on the status, the other reads work, and nothing reaches the leases
 # or DNS. The inventory file is read after a graceful stop (it is saved then).
 # Needs python3, dig, curl.
-# Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/routers-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -60,7 +60,7 @@ class UniFi(http.server.BaseHTTPRequestHandler):
             return self.reply(200, {"meta": {"rc": "ok"}, "data": [
                 {"mac": "02:00:00:00:00:0a", "last_ip": "192.168.1.77", "name": "Old TV", "last_seen": int(time.time()) - 86400, "first_seen": 1700000000},
                 {"mac": "02:00:00:00:00:0b", "last_ip": "192.168.1.78", "hostname": "ancient", "last_seen": int(time.time()) - 400 * 86400}]})
-        if self.path == "/api/auth/login" and creds.get("username") == "telltale" and creds.get("password") == "s3cret":
+        if self.path == "/api/auth/login" and creds.get("username") == "wrendns" and creds.get("password") == "s3cret":
             self.reply(200, {}, [("set-cookie", "TOKEN=abc123; Path=/; HttpOnly"), ("x-csrf-token", "x")])
         else:
             self.reply(401, {"error": "bad login"})
@@ -105,7 +105,7 @@ class UniFi(http.server.BaseHTTPRequestHandler):
                 {"mac": "02:00:00:00:00:04", "last_ip": "192.168.1.53", "name": "Old iPad", "last_seen": now - 3600},
                 # Its address is the connected roku's: an offline client never takes a connected one's address.
                 {"mac": "02:00:00:00:00:08", "last_ip": "192.168.1.31", "hostname": "stale", "last_seen": now - 7200},
-                # Outside the default 30 days: the console may still send it, TelltaleDNS doesn't use it.
+                # Outside the default 30 days: the console may still send it, WrenDNS doesn't use it.
                 {"mac": "02:00:00:00:00:07", "last_ip": "192.168.1.52", "name": "Long gone laptop", "last_seen": now - 90 * 86400}])
         else:
             self.reply(404, {"meta": {"rc": "error"}})
@@ -147,7 +147,7 @@ class Refusing(UniFi):
     def do_POST(self):
         n = int(self.headers.get("content-length", 0))
         creds = json.loads(self.rfile.read(n) or b"{}")
-        if self.path == "/api/auth/login" and creds.get("username") == "telltale" and creds.get("password") == "s3cret":
+        if self.path == "/api/auth/login" and creds.get("username") == "wrendns" and creds.get("password") == "s3cret":
             return self.reply(200, {}, [("set-cookie", "TOKEN=abc123; Path=/; HttpOnly"), ("x-csrf-token", "x")])
         if self.path.endswith("/stat/alluser"):
             return self.reply(403, {"meta": {"rc": "error", "msg": "api.err.NoPermission"}})
@@ -178,7 +178,7 @@ echo -n key1 > "$E/opn-key"
 echo -n secret1 > "$E/opn-secret"
 echo -n ha-token > "$E/ha-token"
 
-cat > "$E/telltale.toml" <<EOF
+cat > "$E/wrendns.toml" <<EOF
 [node]
 data_dir = "$E/data"
 [[listen]]
@@ -198,13 +198,13 @@ value = "10.0.0.8"
 name = "udm"
 type = "unifi"
 url = "http://127.0.0.1:26981"
-username = "telltale"
+username = "wrendns"
 password_file = "$E/unifi-pass"
 [[router]]
 name = "udm2"
 type = "unifi"
 url = "http://127.0.0.1:26984"
-username = "telltale"
+username = "wrendns"
 password_file = "$E/unifi-pass"
 [[router]]
 name = "opnsense"
@@ -233,7 +233,7 @@ device_domain = "home.arpa"
 mdns = true
 mdns_port = 25353
 EOF
-"$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
+"$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
 for _ in $(seq 50); do [ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 2 ] && break; sleep 0.2; done
 [ "$(grep -c 'router integration: devices read' "$E/node.log")" -ge 2 ] || fail "both routers weren't read"

@@ -12,9 +12,9 @@
 #   5. maintenance on the primary hands over: the replica is elected within the lease window,
 #      DNS on the old primary answers 100% throughout, and the old primary follows;
 #   6. with handover = false the primary stays primary, and the answer says to promote first.
-# Usage: deploy/cluster/failover-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/failover-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= R_PID= W_PID= LOAD=
@@ -117,10 +117,10 @@ join --site w --witness --advertise https://127.0.0.1:28543 -c "$E/w.toml"
 "$B" cluster witness -c "$E/w.toml" > "$E/w.log" 2>&1 & W_PID=$!
 
 echo "== 1. the primary holds a majority lease"
-wait_metric 29101 telltale_cluster_failover_auto 1 30 || fail "automatic failover never turned on at the primary"
-wait_metric 29102 telltale_cluster_failover_auto 1 30 || fail "automatic failover never turned on at the replica"
-wait_metric 29101 telltale_cluster_lease_held 1 30 || fail "the primary never held a lease"
-[ "$(metric 29102 telltale_cluster_primary)" = 0 ] || fail "the replica thinks it's primary"
+wait_metric 29101 wrendns_cluster_failover_auto 1 30 || fail "automatic failover never turned on at the primary"
+wait_metric 29102 wrendns_cluster_failover_auto 1 30 || fail "automatic failover never turned on at the replica"
+wait_metric 29101 wrendns_cluster_lease_held 1 30 || fail "the primary never held a lease"
+[ "$(metric 29102 wrendns_cluster_primary)" = 0 ] || fail "the replica thinks it's primary"
 # The replica must hold the cluster key to be able to win.
 for _ in $(seq 40); do [ -f "$E/r/cluster/ca.key" ] && break; sleep 0.25; done
 [ -f "$E/r/cluster/ca.key" ] || fail "the eligible replica never received the cluster key"
@@ -128,7 +128,7 @@ for _ in $(seq 40); do [ -f "$E/r/cluster/ca.key" ] && break; sleep 0.25; done
 # granted a renewal once its ballot names the primary (a renewal comes every 5 s).
 for _ in $(seq 120); do grep -q '"candidate":"[0-9a-f]' "$E/r/cluster/ballot.json" 2>/dev/null && break; sleep 0.25; done
 grep -q '"candidate":"[0-9a-f]' "$E/r/cluster/ballot.json" 2>/dev/null || fail "the replica never granted the primary a lease"
-echo "ok (epoch $(metric 29101 telltale_cluster_epoch))"
+echo "ok (epoch $(metric 29101 wrendns_cluster_epoch))"
 
 # An admin, made on the primary; users reach every node (T9.1), for the maintenance steps.
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
@@ -155,10 +155,10 @@ python3 "$E/q.py" load 25402 a.fo.test 40 50 > "$E/load.txt" & LOAD=$!
 sleep 2
 t0=$(date +%s)
 kill -9 "$P_PID"; wait "$P_PID" 2>/dev/null || true; P_PID=
-wait_metric 29102 telltale_cluster_lease_held 1 40 || fail "the replica wasn't elected within 40 s"
+wait_metric 29102 wrendns_cluster_lease_held 1 40 || fail "the replica wasn't elected within 40 s"
 took=$(( $(date +%s) - t0 ))
 [ "$took" -le 30 ] || fail "election took $took s (more than 30)"
-epoch=$(metric 29102 telltale_cluster_epoch)
+epoch=$(metric 29102 wrendns_cluster_epoch)
 [ "$epoch" -ge 2 ] || fail "the new primary's epoch is $epoch"
 wait "$LOAD"; LOAD=
 read -r ok sent < "$E/load.txt"
@@ -168,9 +168,9 @@ echo "ok (elected after ${took} s, epoch $epoch; $ok of $sent queries answered)"
 
 echo "== 3. the old primary returns and follows"
 "$B" run -c "$E/p.toml" > "$E/p2.log" 2>&1 & P_PID=$!
-wait_metric 29101 telltale_cluster_primary 0 30 || fail "the old primary didn't step down"
-wait_metric 29101 telltale_cluster_epoch "$epoch" 30 || fail "the old primary didn't adopt epoch $epoch"
-[ "$(metric 29102 telltale_cluster_lease_held)" = 1 ] || fail "the new primary lost its lease when the old one returned"
+wait_metric 29101 wrendns_cluster_primary 0 30 || fail "the old primary didn't step down"
+wait_metric 29101 wrendns_cluster_epoch "$epoch" 30 || fail "the old primary didn't adopt epoch $epoch"
+[ "$(metric 29102 wrendns_cluster_lease_held)" = 1 ] || fail "the new primary lost its lease when the old one returned"
 [ "$(q 25401 a.fo.test)" = 10.0.0.1 ] || fail "the old primary doesn't answer after rejoining"
 echo "ok"
 
@@ -184,7 +184,7 @@ grep -q '"handover":"not_needed"' "$E/m.json" || fail "a replica needs no handov
 [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:29101/readyz)" = 503 ] || fail "p is still ready in maintenance"
 kill -9 "$R_PID"; wait "$R_PID" 2>/dev/null || true; R_PID=
 for _ in $(seq 40); do
-  [ "$(metric 29101 telltale_cluster_lease_held)" = 0 ] || fail "p was elected while in maintenance"
+  [ "$(metric 29101 wrendns_cluster_lease_held)" = 0 ] || fail "p was elected while in maintenance"
   [ "$(q 25401 a.fo.test)" = 10.0.0.1 ] || fail "p stopped answering DNS"
   sleep 1
 done
@@ -192,13 +192,13 @@ PCSRF=$(login 28101 "$E/pjar") || fail "the admin can't sign in on p"
 code=$(maint 28101 "$E/pjar" "$PCSRF" DELETE local)
 [ "$code" = 200 ] || fail "ending p's maintenance answered $code: $(cat "$E/m.json")"
 t0=$(date +%s)
-wait_metric 29101 telltale_cluster_lease_held 1 40 || fail "p wasn't elected after its maintenance ended"
+wait_metric 29101 wrendns_cluster_lease_held 1 40 || fail "p wasn't elected after its maintenance ended"
 echo "ok (nobody elected for 40 s; p elected $(( $(date +%s) - t0 )) s after its maintenance ended)"
 
 echo "== 5. maintenance on the primary hands over (OPS-010)"
 "$B" run -c "$E/r.toml" > "$E/r2.log" 2>&1 & R_PID=$!
-wait_metric 29102 telltale_cluster_primary 0 30 || fail "r didn't follow after restarting"
-for _ in $(seq 60); do [ "$(metric 29102 telltale_cluster_failover_auto)" = 1 ] && break; sleep 0.5; done
+wait_metric 29102 wrendns_cluster_primary 0 30 || fail "r didn't follow after restarting"
+for _ in $(seq 60); do [ "$(metric 29102 wrendns_cluster_failover_auto)" = 1 ] && break; sleep 0.5; done
 for _ in $(seq 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:29102/readyz)" = 200 ] && break; sleep 0.5; done
 sleep 6   # a heartbeat or two: p sees r connected and eligible
 python3 "$E/q.py" load 25401 a.fo.test 40 50 > "$E/load2.txt" & LOAD=$!
@@ -207,16 +207,16 @@ t0=$(date +%s)
 code=$(maint 28101 "$E/pjar" "$PCSRF" POST local '{"forSecs":600,"reason":"e2e: hand over"}')
 [ "$code" = 200 ] || fail "maintenance on the primary answered $code: $(cat "$E/m.json")"
 grep -q '"handover":"started"' "$E/m.json" || fail "the primary didn't start a handover: $(cat "$E/m.json")"
-wait_metric 29102 telltale_cluster_lease_held 1 40 || fail "r wasn't elected after the handover started"
+wait_metric 29102 wrendns_cluster_lease_held 1 40 || fail "r wasn't elected after the handover started"
 took=$(( $(date +%s) - t0 ))
 [ "$took" -le 30 ] || fail "the handover took $took s (more than the lease window and a round)"
-wait_metric 29101 telltale_cluster_primary 0 30 || fail "the old primary didn't follow"
+wait_metric 29101 wrendns_cluster_primary 0 30 || fail "the old primary didn't follow"
 wait "$LOAD"; LOAD=
 read -r ok sent < "$E/load2.txt"
 [ "$ok" = "$sent" ] || fail "DNS on the old primary dropped answers during the handover: $ok of $sent"
 code=$(maint 28101 "$E/pjar" "$PCSRF" DELETE local)
 [ "$code" = 200 ] || fail "ending the old primary's maintenance answered $code"
-[ "$(metric 29102 telltale_cluster_lease_held)" = 1 ] || fail "r lost its lease when p's maintenance ended"
+[ "$(metric 29102 wrendns_cluster_lease_held)" = 1 ] || fail "r lost its lease when p's maintenance ended"
 echo "ok (r elected after ${took} s; $ok of $sent queries to p answered)"
 
 echo "== 6. handover = false: the primary stays primary (OPS-010)"
@@ -226,7 +226,7 @@ code=$(maint 28102 "$E/rjar" "$RCSRF" POST local '{"forSecs":120,"reason":"e2e: 
 grep -q '"handover":"declined"' "$E/m.json" && grep -q 'promote another node first' "$E/m.json" \
   || fail "no note to promote first: $(cat "$E/m.json")"
 for _ in $(seq 20); do
-  [ "$(metric 29102 telltale_cluster_lease_held)" = 1 ] || fail "the primary lost its lease with handover=false"
+  [ "$(metric 29102 wrendns_cluster_lease_held)" = 1 ] || fail "the primary lost its lease with handover=false"
   sleep 1
 done
 code=$(maint 28102 "$E/rjar" "$RCSRF" DELETE local)

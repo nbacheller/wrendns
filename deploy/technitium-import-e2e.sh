@@ -4,13 +4,13 @@
 #   1. configure forwarders, blocking (NXDOMAIN, a block list, allowed and blocked names), a
 #      zone with records, a forwarder zone, the Advanced Blocking app with two groups, and a
 #      DHCP reservation, all through Technitium's own API;
-#   2. `telltale import technitium` with an API token; the output must load and carry each of
+#   2. `wrendns import technitium` with an API token; the output must load and carry each of
 #      those over;
-#   3. run TelltaleDNS on it: local names, a CNAME's TTL, a blocked name (NXDOMAIN, EDE 15),
+#   3. run WrenDNS on it: local names, a CNAME's TTL, a blocked name (NXDOMAIN, EDE 15),
 #      an Advanced Blocking regex and name, and an allowed name that a list blocks.
-# Usage: deploy/technitium-import-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/technitium-import-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 IMAGE=technitium/dns-server:15.6.0
 E=$(mktemp -d)
@@ -36,7 +36,7 @@ command -v docker >/dev/null || { echo "needs docker"; exit 2; }
 trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
 trap 'fail "terminated at line $LINENO (\`$BASH_COMMAND\`)"' TERM INT
 
-# A local block list, served to both Technitium and TelltaleDNS.
+# A local block list, served to both Technitium and WrenDNS.
 mkdir -p "$E/www"
 printf 'listed.example\nalso-allowed.example\n' > "$E/www/block.txt"
 (cd "$E/www" && exec python3 -m http.server 28780 --bind 0.0.0.0 >/dev/null 2>&1) & LISTS=$!
@@ -108,7 +108,7 @@ fi
 api dhcp/scopes/set name=lan startingAddress=10.77.0.100 endingAddress=10.77.0.200 \
   subnetMask=255.255.255.0 "reservedLeases=kids-tablet|aa-bb-cc-dd-ee-01|10.77.0.150|tablet"
 # An API token, as a user would create one (Administration → Sessions).
-tok=$(curl -s "$U/api/user/createToken?user=admin&pass=e2e-admin&tokenName=telltale-import")
+tok=$(curl -s "$U/api/user/createToken?user=admin&pass=e2e-admin&tokenName=wrendns-import")
 TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("token",""))' "$tok")
 [ -n "$TOKEN" ] || fail "can't create an API token"
 

@@ -6,24 +6,24 @@
 How a question becomes an answer, and how fast: the listeners, parsing, the pipeline, and the
 answer cache. Performance is the owner's first priority, so this pass sets the tone.
 
-- `crates/telltale-proto/` (wire parsing and building, names, EDNS)
-- `crates/telltale-net/` (UDP with `recvmmsg`/`sendmmsg`, TCP, DoT, DoH, DoH3, DoQ listeners;
+- `crates/wrendns-proto/` (wire parsing and building, names, EDNS)
+- `crates/wrendns-net/` (UDP with `recvmmsg`/`sendmmsg`, TCP, DoT, DoH, DoH3, DoQ listeners;
   `sys.rs` holds all of the project's `unsafe`)
-- `crates/telltale/src/pipeline.rs` (the pipeline: identification, access checks, local data,
+- `crates/wrendns/src/pipeline.rs` (the pipeline: identification, access checks, local data,
   filtering, cache, deferral to upstreams), `server.rs` (wiring), `warm.rs`
-- `crates/telltale-cache/` (sharded S3-FIFO, stored answers patched on a hit, singleflight,
+- `crates/wrendns-cache/` (sharded S3-FIFO, stored answers patched on a hit, singleflight,
   persistence)
 
 ## Read first
 1. `spec/02-architecture.md` §3 (hot path budget) and `spec/03-resolution-pipeline.md`.
 2. ADR-002, ADR-013, ADR-020, ADR-023 in `spec/11-decisions.md`.
-3. `crates/telltale-net/src/udp.rs` → `handler.rs` → `crates/telltale/src/pipeline.rs`
+3. `crates/wrendns-net/src/udp.rs` → `handler.rs` → `crates/wrendns/src/pipeline.rs`
    (`Handler::handle`, `handle_sync`, `resolve_or_defer`, `resolve_for_client`) →
-   `crates/telltale-cache/src/lib.rs` (`get`, `insert`) and `entry.rs`.
+   `crates/wrendns-cache/src/lib.rs` (`get`, `insert`) and `entry.rs`.
 
 ## Look for
 - **Allocations, locks, syscalls on the cache-hit and blocked paths.** The zero-allocation
-  tests are `crates/telltale-cache/tests/alloc.rs` and those in `telltale-proto`; is anything
+  tests are `crates/wrendns-cache/tests/alloc.rs` and those in `wrendns-proto`; is anything
   on the hot path not covered by them?
 - **Correctness under hostile input:** truncated or malformed queries, compression loops,
   EDNS options, oversized messages, 0x20 case, ID handling, TC and the UDP size limit,
@@ -44,8 +44,8 @@ is critical. Amplification (ANY is minimal-responded, RFC 8482) and the open-res
 
 ## Useful
 ```sh
-cargo bench -p telltale-proto; cargo bench -p telltale-cache --bench cache_hit
-cargo test -p telltale-cache --test alloc --release
-cargo test -p telltale-cache --test footprint --release -- --nocapture
+cargo bench -p wrendns-proto; cargo bench -p wrendns-cache --bench cache_hit
+cargo test -p wrendns-cache --test alloc --release
+cargo test -p wrendns-cache --test footprint --release -- --nocapture
 ls fuzz/ 2>/dev/null; cat .github/workflows/fuzz.yml   # what's fuzzed, and how often
 ```

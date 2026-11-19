@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-cache/src/entry.rs b/crates/telltale-cache/src/entry.rs
+diff --git a/crates/wrendns-cache/src/entry.rs b/crates/wrendns-cache/src/entry.rs
 index ae209cb..4427005 100644
---- a/crates/telltale-cache/src/entry.rs
-+++ b/crates/telltale-cache/src/entry.rs
+--- a/crates/wrendns-cache/src/entry.rs
++++ b/crates/wrendns-cache/src/entry.rs
 @@ -302,7 +302,8 @@ impl<'a> Client<'a> {
  }
  
@@ -54,10 +54,10 @@ index ae209cb..4427005 100644
      }
      match &client.edns {
          Some(edns) => append_opt(out, len, edns).ok(),
-diff --git a/crates/telltale-cache/tests/cache.rs b/crates/telltale-cache/tests/cache.rs
+diff --git a/crates/wrendns-cache/tests/cache.rs b/crates/wrendns-cache/tests/cache.rs
 index 40d28f1..bfa8153 100644
---- a/crates/telltale-cache/tests/cache.rs
-+++ b/crates/telltale-cache/tests/cache.rs
+--- a/crates/wrendns-cache/tests/cache.rs
++++ b/crates/wrendns-cache/tests/cache.rs
 @@ -692,3 +692,45 @@ fn dns_015_ecs_scoped_keys() {
          Lookup::Miss
      ));
@@ -104,10 +104,10 @@ index 40d28f1..bfa8153 100644
 +    assert_eq!(s.header.ancount, 20);
 +    assert_eq!(cache.stats().hits, 2);
 +}
-diff --git a/crates/telltale/src/pipeline.rs b/crates/telltale/src/pipeline.rs
+diff --git a/crates/wrendns/src/pipeline.rs b/crates/wrendns/src/pipeline.rs
 index 546b2a8..12952d3 100644
---- a/crates/telltale/src/pipeline.rs
-+++ b/crates/telltale/src/pipeline.rs
+--- a/crates/wrendns/src/pipeline.rs
++++ b/crates/wrendns/src/pipeline.rs
 @@ -2151,7 +2151,9 @@ enum Internal {
  /// A NOERROR answer with no AAAA record (CNAMEs only, or none) outside the exclusion set
  /// (T9.10): DNS64 applies.
@@ -115,7 +115,7 @@ index 546b2a8..12952d3 100644
 -    if response_rcode(resp) != rcode::NOERROR {
 +    // A truncated answer (too big for the buffer) has no records to judge; the client
 +    // retries over TCP.
-+    if response_rcode(resp) != rcode::NOERROR || telltale_proto::header::flags(resp).tc() {
++    if response_rcode(resp) != rcode::NOERROR || wrendns_proto::header::flags(resp).tc() {
          return false;
      }
      records(resp).is_ok_and(|mut it| {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds the TelltaleDNS project site into site/_site (ADR-012, DOC-001/004/005).
+"""Builds the WrenDNS project site into site/_site (ADR-012, DOC-001/004/005).
 
 No dependencies beyond the Python standard library (3.6+). It:
   1. injects the shared header/footer partials into every page,
@@ -29,7 +29,7 @@ PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",
          "guide-users.html",
          "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html",
-         # The Developers section (Reference menu): how to work on and extend TelltaleDNS.
+         # The Developers section (Reference menu): how to work on and extend WrenDNS.
          "developers.html", "dev-gates.html", "dev-budgets.html", "dev-api.html", "dev-cluster.html", "dev-icons.html",
          "dev-ui-tests.html", "dev-svelte.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
@@ -51,7 +51,7 @@ def build_stamp():
 
 
 def req_link(r):
-    return '<a class="req" href="https://github.com/paimonsoror/telltaledns/blob/main/spec/01-requirements.md">{}</a>'.format(
+    return '<a class="req" href="https://github.com/nbacheller/telltaledns/blob/main/spec/01-requirements.md">{}</a>'.format(
         html.escape(r)
     )
 
@@ -86,8 +86,8 @@ def render_standards(page, data):
 
 
 # REQ: DOC-002/003 (T4.6) — the configuration reference, rendered from the JSON Schema the
-# binary prints (`telltale config schema`), committed as docs/config-schema.json and kept
-# current by a test in telltale-config. Sections follow the order of a typical config.
+# binary prints (`wrendns config schema`), committed as docs/config-schema.json and kept
+# current by a test in wrendns-config. Sections follow the order of a typical config.
 CONFIG_ORDER = [
     "config_version", "node", "listen", "upstream", "upstream_group", "route", "list", "filter",
     "group", "client", "clients", "record", "local", "access", "ratelimit", "special", "cache",
@@ -238,8 +238,8 @@ def render_config(page, schema):
 
 # REQ: DOC-006, OPS-003 — every Helm chart value with its default and meaning, read from the
 # chart's own values.yaml (its comments are the documentation), so the page can't drift.
-HELM_VALUES = os.path.join(ROOT, "deploy", "helm", "telltale", "values.yaml")
-HELM_SCHEMA = os.path.join(ROOT, "deploy", "helm", "telltale", "values.schema.json")
+HELM_VALUES = os.path.join(ROOT, "deploy", "helm", "wrendns", "values.yaml")
+HELM_SCHEMA = os.path.join(ROOT, "deploy", "helm", "wrendns", "values.schema.json")
 _KEY = re.compile(r'^( *)([A-Za-z0-9_.-]+|"[^"]+"):(?: +(.*))?$')
 _REQ = re.compile(r"^REQ: [^—]+— ")
 
@@ -414,7 +414,7 @@ def render_bench(page):
     out = ['<div class="card bench">']
     out.append(
         "<p><b>{cpu}</b> ({cores} threads, {arch}, Linux {kernel}) · {workers} DNS workers · {date} · "
-        'commit <a href="https://github.com/paimonsoror/telltaledns/commit/{full}">{rev}</a> · '
+        'commit <a href="https://github.com/nbacheller/telltaledns/commit/{full}">{rev}</a> · '
         '<a href="{raw}">raw results (JSON)</a></p>'.format(
             cpu=html.escape(host["cpu"]), cores=host["cores"], arch=host["arch"],
             kernel=html.escape(host["kernel"].split("-")[0]), workers=srv["workers"],
@@ -692,7 +692,7 @@ def render_decisions(page, reqs):
     for n in parts:
         nums = [a["num"] for a in adrs if adr_page(a["num"]) == n]
         span = "ADR-{:03d} to ADR-{:03d}".format(min(nums), max(nums))
-        part = page.replace("<title>Decisions — TelltaleDNS</title>", "<title>Decisions {} — TelltaleDNS</title>".format(span))
+        part = page.replace("<title>Decisions — WrenDNS</title>", "<title>Decisions {} — WrenDNS</title>".format(span))
         part = part.replace("<h1>Decisions</h1>", "<h1>Decisions <span class=\"muted\">{}</span></h1>".format(span))
         pages[n] = part.replace("<!-- @decisions-summary -->", nav(n)).replace("<!-- @decisions -->", "\n".join(records[n]))
     return pages
@@ -714,7 +714,7 @@ def render_glossary(page):
     out = []
     for t in sorted(data["topics"], key=lambda t: t["title"].lower()):
         docs = (
-            ' <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
+            ' <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
             if t.get("docs") else ""
         )
         path = ' <span class="pill supported">{}</span>'.format(FLOW_TEXT[t["diagram"]]) if t.get("diagram") else ""
@@ -737,8 +737,8 @@ def render_glossary(page):
 # REQ: DOC-004, DOC-006 (T6.10) — the "For nerds" page: an interactive architecture view built
 # from site/data/architecture.json and checked against the repo, so it can't drift. Arrows,
 # "used by", line counts and dependency users come from the code, not from the JSON.
-GH = "https://github.com/paimonsoror/telltaledns/blob/main/"
-GH_TREE = "https://github.com/paimonsoror/telltaledns/tree/main/"
+GH = "https://github.com/nbacheller/telltaledns/blob/main/"
+GH_TREE = "https://github.com/nbacheller/telltaledns/tree/main/"
 
 
 def cargo_deps(path):
@@ -878,7 +878,7 @@ def render_nerds(page, arch, adrs, reqs):
     height = y - row_h + 22 + box_h + 16
     edges = []
     for a in crates:
-        if a == "telltale":
+        if a == "wrendns":
             continue  # the binary uses nearly everything; listed in its panel instead
         for b in ws[a]:
             ax, ay, aw = pos[a]
@@ -898,7 +898,7 @@ def render_nerds(page, arch, adrs, reqs):
     for name, (x, yy, bw) in pos.items():
         c = crates[name]
         files, lines = rust_stats(os.path.join(ROOT, "crates", name, "src"))
-        short = name.replace("telltale-", "") if name != "telltale" else "telltale (binary)"
+        short = name.replace("wrendns-", "") if name != "wrendns" else "wrendns (binary)"
         nodes.append(
             '<a class="arch-node layer-{layer}" href="#crate-{n}" data-crate="{n}">'
             '<rect x="{x:.0f}" y="{y}" width="{w:.0f}" height="{h}" rx="12"/>'
@@ -929,7 +929,7 @@ def render_nerds(page, arch, adrs, reqs):
             rows.append("<dt>Main types</dt><dd>{}</dd>".format(" ".join("<code>{}</code>".format(html.escape(t)) for t in c["types"])))
         if c.get("budget"):
             rows.append("<dt>Budget</dt><dd>{}</dd>".format(html.escape(c["budget"])))
-        rows.append("<dt>Uses</dt><dd>{}</dd>".format(", ".join(link(d) for d in ws[name]) or "no other TelltaleDNS crate"))
+        rows.append("<dt>Uses</dt><dd>{}</dd>".format(", ".join(link(d) for d in ws[name]) or "no other WrenDNS crate"))
         rows.append("<dt>Used by</dt><dd>{}</dd>".format(", ".join(link(d) for d in users[name]) or "nothing (it's the top)"))
         rows.append("<dt>Libraries</dt><dd>{}</dd>".format(", ".join("<code>{}</code>".format(html.escape(d)) for d in ext) or "none"))
         rows.append('<dt>Code</dt><dd><a href="{}{}">{}</a>: {:,} lines of Rust in {} files</dd>'.format(GH_TREE, c["code"], html.escape(c["code"]), lines, files))
@@ -959,7 +959,7 @@ def render_nerds(page, arch, adrs, reqs):
         return "\n".join(out)
 
     # The tech stack as one card per area: each library with why it's there, and (for Rust
-    # crates) small chips naming the TelltaleDNS crates that use it, from Cargo.toml.
+    # crates) small chips naming the WrenDNS crates that use it, from Cargo.toml.
     stack = []
     for g in arch["stack"]:
         items = []
@@ -968,7 +968,7 @@ def render_nerds(page, arch, adrs, reqs):
             if it.get("crate"):
                 used = sorted(n for n in crates if it["crate"] in cargo_deps(os.path.join(ROOT, "crates", n, "Cargo.toml")))
                 where = '<p class="used">used in {}</p>'.format(" ".join(
-                    '<a class="chip crate" href="#crate-{}">{}</a>'.format(u, html.escape(u.replace("telltale-", "") if u != "telltale" else "binary"))
+                    '<a class="chip crate" href="#crate-{}">{}</a>'.format(u, html.escape(u.replace("wrendns-", "") if u != "wrendns" else "binary"))
                     for u in used))
             items.append("<li><b>{}</b><p>{}</p>{}</li>".format(html.escape(it["name"]), html.escape(it["why"]), where))
         stack.append('<article class="card stack-card"><h3>{}</h3><ul class="stack-list">{}</ul></article>'.format(

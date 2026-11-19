@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Monitoring and alerts — TelltaleDNS</title>
-<meta name="description" content="What TelltaleDNS shows and tells you: metrics and Grafana, a searchable query log and a cluster-wide live view, per-device anomalies, alerts by email, ntfy, Gotify, Slack, or webhook, and exports to syslog, OpenTelemetry, and dnstap.">
+<title>Monitoring and alerts — WrenDNS</title>
+<meta name="description" content="What WrenDNS shows and tells you: metrics and Grafana, a searchable query log and a cluster-wide live view, per-device anomalies, alerts by email, ntfy, Gotify, Slack, or webhook, and exports to syslog, OpenTelemetry, and dnstap.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -17,7 +17,7 @@
   <div>
     <p class="eyebrow">Observability first</p>
     <h1>Know what your network is doing.<br>Hear about it when it changes.</h1>
-    <p class="lede">Every question is counted, timed, explained, and searchable. When something needs attention, TelltaleDNS tells you where you already look: your inbox, your phone, or your team's channel.</p>
+    <p class="lede">Every question is counted, timed, explained, and searchable. When something needs attention, WrenDNS tells you where you already look: your inbox, your phone, or your team's channel.</p>
     <div class="cta">
       <a class="btn primary" href="#alerts">Alerts</a>
       <a class="btn" href="tour.html">See the UI</a>
@@ -94,7 +94,7 @@
           <tr><th scope="row"><code>anomaly</code>, <code>new_device</code></th><td>a device behaves oddly, or a device appears for the first time</td></tr>
           <tr><th scope="row"><code>disk_full</code></th><td>a node's data disk fills up</td></tr>
           <tr><th scope="row"><code>plan_pending</code></th><td>an AI agent's change waits for your approval</td></tr>
-          <tr><th scope="row"><code>update_available</code></th><td>a newer TelltaleDNS build is out</td></tr>
+          <tr><th scope="row"><code>update_available</code></th><td>a newer WrenDNS build is out</td></tr>
           <tr><th scope="row"><code>maintenance</code></th><td>a node goes into maintenance, and when it's back</td></tr>
           <tr><th scope="row"><code>rollout_failed</code>, <code>cluster_pinned</code></th><td>a staged rollout failed on its canary nodes and the cluster went back to the version before; the cluster stays pinned to an older version</td></tr>
         </tbody>
@@ -126,7 +126,7 @@ to = ["inbox"]</code></pre>
   <p class="eyebrow">Export</p>
   <h2>Into the tools you already run</h2>
   <div class="grid">
-    <div class="card"><h3>Prometheus and Grafana</h3><p>A <code>/metrics</code> endpoint with query, cache, upstream, filter, cluster, and host series, and a ready-made <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/grafana/telltale-dashboard.json">Grafana dashboard</a>: service level, traffic by transport, latency, upstreams, filtering, cache, and the node itself (uptime, restarts after a crash or an OOM kill, CPU, temperature, disk), with configuration changes, list refreshes, and restarts marked on every panel. The Helm chart can add a ServiceMonitor, and alert and SLO burn-rate rules.</p></div>
+    <div class="card"><h3>Prometheus and Grafana</h3><p>A <code>/metrics</code> endpoint with query, cache, upstream, filter, cluster, and host series, and a ready-made <a href="https://github.com/nbacheller/telltaledns/blob/main/deploy/grafana/wrendns-dashboard.json">Grafana dashboard</a>: service level, traffic by transport, latency, upstreams, filtering, cache, and the node itself (uptime, restarts after a crash or an OOM kill, CPU, temperature, disk), with configuration changes, list refreshes, and restarts marked on every panel. The Helm chart can add a ServiceMonitor, and alert and SLO burn-rate rules.</p></div>
     <div class="card"><h3>OpenTelemetry</h3><p>Metrics, query events, and sampled or slow queries as traces, over OTLP/HTTP to a collector or any OTLP backend.</p></div>
     <div class="card"><h3>Event sinks</h3><p>Every query as a JSON line to a file, to syslog (RFC 5424, UDP or TCP), or batched to a webhook, with the same fields as the query log.</p></div>
     <div class="card"><h3>dnstap</h3><p>Raw query and response messages in the standard dnstap format, for DNS-specific tooling.</p></div>
@@ -138,8 +138,8 @@ to = ["inbox"]</code></pre>
   <h2>Go further</h2>
   <div class="cta">
     <a class="btn primary" href="guide-monitoring.html">Guide: set up monitoring and alerts</a>
-    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#monitoring">Monitoring documentation</a>
-    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#alerts">Alerts documentation</a>
+    <a class="btn" href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#monitoring">Monitoring documentation</a>
+    <a class="btn" href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#alerts">Alerts documentation</a>
   </div>
 </section>
 

@@ -59,13 +59,13 @@ jobs:
       # REQ: API-902 (T27.13) - the guarded framework's tests that need the e2e test rows (the other
       # tests, including the release-build checks, run in the step above).
       - name: cargo test (feature e2e)
-        run: cargo test -p telltale-config -p telltale-api -p telltale --features telltale/e2e,telltale-config/e2e guarded
+        run: cargo test -p wrendns-config -p wrendns-api -p wrendns --features wrendns/e2e,wrendns-config/e2e guarded
       # REQ: CLU-005 — T5.4b AC: the election simulator's 10,000 partition schedules.
-      - name: telltale-sim (10k schedules, release)
+      - name: wrendns-sim (10k schedules, release)
         shell: bash
         run: |
           set -o pipefail
-          cargo test --release -p telltale-cluster --test sim -- --nocapture 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+          cargo test --release -p wrendns-cluster --test sim -- --nocapture 2>&1 | tee -a "$RUNNER_TEMP/test.log"
       # Job logs need a token to read; annotations don't. Surface failing tests there.
       - name: Annotate failing tests
         if: failure()
@@ -140,7 +140,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # REQ: API-902 (T27.13) - the e2e server has the guarded framework's test rows and restart hook
       # (the cargo feature `e2e`, never in a release build).
-      - run: cargo build -p telltale --features e2e
+      - run: cargo build -p wrendns --features e2e
         working-directory: .
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run test:e2e
@@ -172,7 +172,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # REQ: API-902 (T27.13) - the e2e server has the guarded framework's test rows and restart hook
       # (the cargo feature `e2e`, never in a release build).
-      - run: cargo build -p telltale --features e2e
+      - run: cargo build -p wrendns --features e2e
         working-directory: .
       - run: npx playwright install --with-deps --only-shell chromium
       - name: Wait for Authentik to apply its blueprint
@@ -180,10 +180,10 @@ jobs:
           # Authentik's startup blueprint run can die on a Postgres deadlock and isn't retried
           # (CI 2026-10-04): after a minute, apply ours explicitly, then every minute after.
           for i in $(seq 60); do
-            curl -sf -o /dev/null http://127.0.0.1:9000/application/o/telltale/.well-known/openid-configuration && exit 0
+            curl -sf -o /dev/null http://127.0.0.1:9000/application/o/wrendns/.well-known/openid-configuration && exit 0
             if [ "$i" -ge 12 ] && [ $((i % 12)) -eq 0 ]; then
               docker compose -f tests/oidc/compose.yml exec -T authentik-worker \
-                ak apply_blueprint /blueprints/custom/telltale.yaml || true
+                ak apply_blueprint /blueprints/custom/wrendns.yaml || true
             fi
             sleep 5
           done
@@ -223,7 +223,7 @@ jobs:
       # them: lint them here (an unquoted ": " in an alert once slipped through).
       - name: Lint the optional monitoring templates
         run: |
-          helm lint deploy/helm/telltale --strict \
+          helm lint deploy/helm/wrendns --strict \
             --set prometheusRule.enabled=true --set serviceMonitor.enabled=true --set grafanaDashboard.enabled=true
       # REQ: CLU-008 (T6.11) — the alert rules fire on bad values and stay quiet on good ones.
       - name: Alert rules (promtool test rules)
@@ -267,81 +267,81 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
-      # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without TELLTALE_WEDGE_AFTER_SECS.
-      - run: cargo build --profile bench-fast -p telltale --features wedge-test
+      # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without WRENDNS_WEDGE_AFTER_SECS.
+      - run: cargo build --profile bench-fast -p wrendns --features wedge-test
       - name: Compose bundle
         run: |
           sh .github/scripts/apt-install.sh dnsutils minisign
-          mkdir ctx && cp target/bench-fast/telltale ctx/
+          mkdir ctx && cp target/bench-fast/wrendns ctx/
           printf '%s\n' 'FROM ubuntu:24.04' \
-            'COPY telltale /usr/local/bin/telltale' \
-            'RUN mkdir -p /var/lib/telltale /etc/telltale && chown 65532:65532 /var/lib/telltale' \
-            'ENTRYPOINT ["/usr/local/bin/telltale"]' 'CMD ["run"]' > ctx/Dockerfile
-          docker build -q -t telltale:ci ctx
-          bash deploy/compose/e2e.sh telltale:ci
+            'COPY wrendns /usr/local/bin/wrendns' \
+            'RUN mkdir -p /var/lib/wrendns /etc/wrendns && chown 65532:65532 /var/lib/wrendns' \
+            'ENTRYPOINT ["/usr/local/bin/wrendns"]' 'CMD ["run"]' > ctx/Dockerfile
+          docker build -q -t wrendns:ci ctx
+          bash deploy/compose/e2e.sh wrendns:ci
       # REQ: OPS-001 (T7.6 AC) — the guided installer's answers produce configs that pass
       # `config check`; Enter gives the starter config; no questions without a terminal.
       - name: install.sh guided setup (answers on stdin)
-        run: bash deploy/systemd/guided-e2e.sh target/bench-fast/telltale
+        run: bash deploy/systemd/guided-e2e.sh target/bench-fast/wrendns
       - name: install.sh + systemd unit
-        run: sudo bash deploy/systemd/e2e.sh target/bench-fast/telltale
+        run: sudo bash deploy/systemd/e2e.sh target/bench-fast/wrendns
       # REQ: CLU-003, CLU-004 (T5.2/T5.3 AC) — a primary and a replica as real processes:
       # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms;
       # OPS-010 (T13.4): maintenance on the replica from the primary, restarts, a stopped node.
       - name: Cluster (two processes)
-        run: bash deploy/cluster/e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/e2e.sh target/bench-fast/wrendns
       # REQ: CLU-005 (T5.4b AC) — automatic failover with a witness: the replica is elected
       # within 30 s of the primary's death with 100% of DNS answered; the old primary follows.
       # OPS-010 (T13.4): a node in maintenance isn't elected; the primary hands over.
       - name: Cluster automatic failover (primary, replica, witness)
-        run: bash deploy/cluster/failover-e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/failover-e2e.sh target/bench-fast/wrendns
       # REQ: CLU-005 (ADR-154, GitHub issue #3) — the GitOps authority with automatic failover:
       # a node that isn't Git-managed becomes the emergency primary, and when the Git-managed
       # node returns it asks for the handover and is elected, with DNS answered throughout.
       - name: Cluster GitOps takeover (emergency primary, automatic failover)
-        run: bash deploy/cluster/gitops-failover-e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/gitops-failover-e2e.sh target/bench-fast/wrendns
       # REQ: CLU-001 (ADR-155, GitHub issue #5) — removing a node: one that is up needs force and
       # doesn't come back, the removed list reaches the other replica, a stale record goes
       # through a replica and is audited with the entry node.
       - name: Cluster node removal
-        run: bash deploy/cluster/remove-e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/remove-e2e.sh target/bench-fast/wrendns
       # REQ: OPS-012 (ADR-163, GitHub issue #7) — a node whose runtime is stuck writes its dump and
       # exits with status 70 for its supervisor; the next run says why and reports the watchdog.
       - name: Watchdog (a stuck runtime is dumped and restarted)
-        run: bash deploy/watchdog/e2e.sh target/bench-fast/telltale
+        run: bash deploy/watchdog/e2e.sh target/bench-fast/wrendns
       # REQ: CLU-001 (T5.4c AC) — rotate the cluster CA under DNS load, every phase gated on
       # every member; replication and reconnection afterwards.
       - name: Cluster CA rotation
-        run: bash deploy/cluster/rotate-e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/rotate-e2e.sh target/bench-fast/wrendns
       # REQ: CLU-013 (T13.2 AC) — staged rollouts: canary first, the guard pins a bad version,
       # 409 while pinned, unpin, a manual pin, and the pin surviving failover.
       - name: Cluster staged rollouts and pins
-        run: bash deploy/cluster/rollout-e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/rollout-e2e.sh target/bench-fast/wrendns
       # REQ: CLU-010 (T5.11 AC) — rolling upgrade: the published edge build (N-1) and this
       # build (N) in one cluster, both ways round, with a two-server client never failing.
       - name: Cluster rolling upgrade (edge build and this build)
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/telltale-old" \
-            https://github.com/paimonsoror/telltaledns/releases/download/edge/telltale-x86_64-linux
-          chmod +x "$RUNNER_TEMP/telltale-old"
-          bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/telltale-old" target/bench-fast/telltale
+          curl -fsSL -o "$RUNNER_TEMP/wrendns-old" \
+            https://github.com/nbacheller/telltaledns/releases/download/edge/wrendns-x86_64-linux
+          chmod +x "$RUNNER_TEMP/wrendns-old"
+          bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/wrendns-old" target/bench-fast/wrendns
       # REQ: DNS-011 (T6.1) — DNSSEC validation against the real DNS tree (needs internet).
       - name: DNSSEC validation (live)
-        run: bash deploy/dnssec-e2e.sh target/bench-fast/telltale
+        run: bash deploy/dnssec-e2e.sh target/bench-fast/wrendns
       # REQ: CLU-003 (T5.12 AC) — the cluster's configuration from a Git repository (served by
       # git upload-pack over HTTP): same commit everywhere, invalid and force-pushed commits
       # refused, outages harmless, a promoted node keeps following.
       - name: Cluster configuration from Git
-        run: bash deploy/cluster/git-e2e.sh target/bench-fast/telltale
+        run: bash deploy/cluster/git-e2e.sh target/bench-fast/wrendns
       # REQ: CLU-009 (T5.10 AC) — Helm mode: scaled on kind with this build: resolver pods join
       # and sync, answer DNS; a node outside Kubernetes joins; a deleted pod expires.
       - name: Install kind
         uses: helm/kind-action@v1
         with: { install_only: true }
       - name: Helm scaled mode on kind
-        run: bash deploy/helm/scaled-e2e.sh target/bench-fast/telltale
+        run: bash deploy/helm/scaled-e2e.sh target/bench-fast/wrendns
 
-  # REQ: API-007 — moving to and between TelltaleDNS installs: importers against the real
+  # REQ: API-007 — moving to and between WrenDNS installs: importers against the real
   # Pi-hole and Technitium images (Docker), and backup/restore across two nodes. A job of its
   # own: the image pulls and Pi-hole's first gravity run take minutes.
   migration:
@@ -351,40 +351,40 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --profile bench-fast -p telltale
+      - run: cargo build --profile bench-fast -p wrendns
       - run: sh .github/scripts/apt-install.sh dnsutils
         timeout-minutes: 12
       # REQ: API-007 (T6.7) — a backup from a running node restores onto a fresh one.
       - name: Backup and restore
-        run: bash deploy/backup-e2e.sh target/bench-fast/telltale
+        run: bash deploy/backup-e2e.sh target/bench-fast/wrendns
       # REQ: AGT-002/004/005/009 (T6.5) — agent tokens on a running node: scopes, a dry run for
       # every change, required reasons, attribution, the kill switch.
       - name: Agent tokens
-        run: bash deploy/agent-e2e.sh target/bench-fast/telltale
+        run: bash deploy/agent-e2e.sh target/bench-fast/wrendns
       # REQ: AGT-006 (T6.6) — the MCP server with the official TypeScript SDK client, over HTTP
-      # and `telltale mcp --stdio`, including the "why is the TV slow?" story.
+      # and `wrendns mcp --stdio`, including the "why is the TV slow?" story.
       - name: MCP server
-        run: bash deploy/mcp-e2e.sh target/bench-fast/telltale
+        run: bash deploy/mcp-e2e.sh target/bench-fast/wrendns
       # REQ: OBS-010 (T7.12, T7.13) — event sinks (file, syslog, webhook) and an alert from a
       # running node.
       - name: Event sinks and alerts
-        run: bash deploy/sinks-e2e.sh target/bench-fast/telltale
-      # REQ: API-008 (T7.25) — `telltale ctl` against a running node.
-      - name: telltale ctl
-        run: bash deploy/ctl-e2e.sh target/bench-fast/telltale
+        run: bash deploy/sinks-e2e.sh target/bench-fast/wrendns
+      # REQ: API-008 (T7.25) — `wrendns ctl` against a running node.
+      - name: wrendns ctl
+        run: bash deploy/ctl-e2e.sh target/bench-fast/wrendns
       # REQ: OBS-010 (T9.4) — alert email against a scripted SMTP server (STARTTLS, TLS, AUTH).
       - name: Alert email
-        run: bash deploy/email-e2e.sh target/bench-fast/telltale
+        run: bash deploy/email-e2e.sh target/bench-fast/wrendns
       # REQ: T8.2 — router integrations against fake UniFi and OPNsense APIs.
       - name: Router integrations
-        run: bash deploy/routers-e2e.sh target/bench-fast/telltale
+        run: bash deploy/routers-e2e.sh target/bench-fast/wrendns
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
       # and v5 images, then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)
-        run: bash deploy/pihole-import-e2e.sh target/bench-fast/telltale
+        run: bash deploy/pihole-import-e2e.sh target/bench-fast/wrendns
       # REQ: API-007 (T6.4) — Technitium import through the API of the official image.
       - name: Technitium import (API)
-        run: bash deploy/technitium-import-e2e.sh target/bench-fast/telltale
+        run: bash deploy/technitium-import-e2e.sh target/bench-fast/wrendns
   # REQ: API-007, DSC-002 (ADR-988, ADR-989) — the sandboxed workers in the shipped shape: the
   # musl binary (mimalloc, reserving address space `RLIMIT_DATA` counts), the scratch image with a
   # read-only root and no /tmp. The discovery worker handshakes under its limit and the import
@@ -397,13 +397,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: Build the musl image
-        run: docker buildx build --platform linux/amd64 --build-arg PROFILE=bench-fast --load -t telltale:ci .
+        run: docker buildx build --platform linux/amd64 --build-arg PROFILE=bench-fast --load -t wrendns:ci .
       - name: Workers in the image (discovery handshake, Pi-hole import)
-        run: bash deploy/worker-image-e2e.sh telltale:ci
+        run: bash deploy/worker-image-e2e.sh wrendns:ci
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - name: Worker tests on an optimized build
-        run: cargo test -j 4 --profile bench-fast -p telltale --test pihole_import_worker --test discovery_workers
+        run: cargo test -j 4 --profile bench-fast -p wrendns --test pihole_import_worker --test discovery_workers
   # REQ: DSC-003 (T25.4, ADR-908) — the SNMP client against net-snmp `snmpd` in a container on an
   # RFC 1918 Docker network: v2c GET and walk, v3 SHA with and without AES.
   snmp:
@@ -415,13 +415,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: bash deploy/snmp-e2e.sh
       # REQ: DSC-003 (T25.5): v3 at authNoPriv and authPriv, SHA and SHA-256, on its own network.
-      - run: bash crates/telltale-snmp/tests/v3-e2e.sh
+      - run: bash crates/wrendns-snmp/tests/v3-e2e.sh
       # REQ: DSC-003 (T25.5): the AES-CFB vectors on the software backend (what arm/v7 uses).
       - name: AES vectors, software backend
-        run: RUSTFLAGS="--cfg aes_force_soft" cargo test -j 4 -p telltale-snmp --lib --target-dir target/soft aes_cfb
+        run: RUSTFLAGS="--cfg aes_force_soft" cargo test -j 4 -p wrendns-snmp --lib --target-dir target/soft aes_cfb
       # The same vectors on arm/v7 itself, under QEMU user emulation.
       - uses: docker/setup-qemu-action@v4
         with: { platforms: arm }
       - name: AES vectors, arm/v7 under QEMU
         run: |
-          docker run --rm --platform linux/arm/v7 -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/tmp/t rust:1.99-bookworm cargo test -j 2 -p telltale-snmp --lib aes_cfb
+          docker run --rm --platform linux/arm/v7 -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/tmp/t rust:1.99-bookworm cargo test -j 2 -p wrendns-snmp --lib aes_cfb

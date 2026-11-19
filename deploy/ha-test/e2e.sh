@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# REQ: T24.21 (DSC-013, API-012, DSC-008, DNS-023) — the TelltaleDNS Home Assistant source
+# REQ: T24.21 (DSC-013, API-012, DSC-008, DNS-023) — the WrenDNS Home Assistant source
 # against a real Home Assistant: a throwaway Home Assistant (deploy/ha-test/compose.yaml, never
 # the owner's) is onboarded through its API, given a long-lived token made at test time, and seeded
-# with fake devices (fixtures/telltale_seed). A TelltaleDNS node runs in a throwaway container on
+# with fake devices (fixtures/wrendns_seed). A WrenDNS node runs in a throwaway container on
 # the same network. The script checks the device names and addresses the node reports, the names
-# it answers in DNS, and the TelltaleDNS integration's sensors inside Home Assistant.
+# it answers in DNS, and the WrenDNS integration's sensors inside Home Assistant.
 # T24.10 (API-005, ADR-961): the same node also answers Pi-hole's API, and the real Home Assistant
 # Pi-hole integration (`pi_hole`) is configured against it: it reads the summary and switches
 # blocking off and on through the node.
 # Everything is torn down by a trap; no token is printed or left behind.
 #
-# Usage: deploy/ha-test/e2e.sh [path/to/telltale]        (default: target/debug/telltale)
-#   TELLTALE_VOLUMES_FROM=wrendns-dev  runs the binary from that container's volumes instead; then
+# Usage: deploy/ha-test/e2e.sh [path/to/wrendns]        (default: target/debug/wrendns)
+#   WRENDNS_VOLUMES_FROM=wrendns-dev  runs the binary from that container's volumes instead; then
 #                                 the path is the binary's path inside that container.
 #   HA_TEST_PORT (18124), NODE_API_PORT (18053), NODE_DNS_PORT (18153): host ports on 127.0.0.1.
 #   HA_TEST_PROJECT, HA_TEST_NODE: Compose project and node container names (default per run, PID-based);
@@ -27,14 +27,14 @@ COMPOSE=(docker compose -f "$(hostpath "$ROOT/deploy/ha-test/compose.yaml")")
 # One Compose project and one node container per run, so two runs on one host don't collide
 # (REQ: T24.21). COMPOSE_PROJECT_NAME is read by `docker compose` before the file's name.
 RUN_ID=$$
-export COMPOSE_PROJECT_NAME=${HA_TEST_PROJECT:-telltale-hatest-$RUN_ID}
+export COMPOSE_PROJECT_NAME=${HA_TEST_PROJECT:-wrendns-hatest-$RUN_ID}
 HA_PORT=${HA_TEST_PORT:-18124}
 API_PORT=${NODE_API_PORT:-18053}
 DNS_PORT=${NODE_DNS_PORT:-18153}
 HA="http://127.0.0.1:$HA_PORT"
 API="http://127.0.0.1:$API_PORT"
-NODE=${HA_TEST_NODE:-telltale-hatest-node-$RUN_ID}
-B=${1:-target/debug/telltale}
+NODE=${HA_TEST_NODE:-wrendns-hatest-node-$RUN_ID}
+B=${1:-target/debug/wrendns}
 E=$(mktemp -d)
 PY=
 for p in python3 python; do
@@ -54,19 +54,19 @@ fail() {
   echo "FAIL: $*"
   [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=ha-test::FAIL: $*"
   docker logs --tail 15 "$NODE" 2>&1 | sed 's/^/node: /' || true
-  [ -n "${HAC:-}" ] && docker logs "$HAC" 2>&1 | grep -i "telltale" | tail -n 12 | cut -c1-240 | sed 's/^/ha: /' || true
+  [ -n "${HAC:-}" ] && docker logs "$HAC" 2>&1 | grep -i "wrendns" | tail -n 12 | cut -c1-240 | sed 's/^/ha: /' || true
   exit 1
 }
 trap 'fail "line $LINENO: $BASH_COMMAND"' ERR
 
 # -- the binary -----------------------------------------------------------------------------
-if [ -n "${TELLTALE_VOLUMES_FROM:-}" ]; then
-  MOUNTS=(--volumes-from "$TELLTALE_VOLUMES_FROM")
+if [ -n "${WRENDNS_VOLUMES_FROM:-}" ]; then
+  MOUNTS=(--volumes-from "$WRENDNS_VOLUMES_FROM")
   BIN_IN=$B
 else
   BDIR=$(cd "$(dirname "$B")" && pwd)
-  MOUNTS=(-v "$(hostpath "$BDIR/$(basename "$B")"):/usr/local/bin/telltale:ro")
-  BIN_IN=/usr/local/bin/telltale
+  MOUNTS=(-v "$(hostpath "$BDIR/$(basename "$B")"):/usr/local/bin/wrendns:ro")
+  BIN_IN=/usr/local/bin/wrendns
 fi
 
 echo "== 1. Home Assistant starts and is onboarded through its API"
@@ -82,7 +82,7 @@ done
 # here and never printed.
 HA_PASS=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
 AUTH=$(curl -s -H 'content-type: application/json' \
-  -d "{\"client_id\":\"$HA/\",\"name\":\"TelltaleDNS test\",\"username\":\"telltale-test\",\"password\":\"$HA_PASS\",\"language\":\"en\"}" \
+  -d "{\"client_id\":\"$HA/\",\"name\":\"WrenDNS test\",\"username\":\"wrendns-test\",\"password\":\"$HA_PASS\",\"language\":\"en\"}" \
   "$HA/api/onboarding/users" | field 'd["auth_code"]') || fail "creating the onboarding user"
 ACCESS=$(curl -s -d "grant_type=authorization_code&code=$AUTH&client_id=$HA/" "$HA/auth/token" \
   | field 'd["access_token"]') || fail "exchanging the onboarding code"
@@ -102,7 +102,7 @@ async def main():
             await ws.send_json({"type": "auth", "access_token": os.environ["TT_ACCESS"]})
             assert (await ws.receive_json())["type"] == "auth_ok"
             await ws.send_json({"id": 1, "type": "auth/long_lived_access_token",
-                                "client_name": "telltale-ha-test", "lifespan": 365})
+                                "client_name": "wrendns-ha-test", "lifespan": 365})
             r = await ws.receive_json()
             assert r["success"], "no long-lived token"
             print(r["result"], end="")
@@ -116,7 +116,7 @@ echo ok
 
 echo "== 3. fake devices: the seed integration, and device_tracker states with addresses"
 FLOW=$(curl -s -H "authorization: Bearer $LLT" -H 'content-type: application/json' \
-  -d '{"handler":"telltale_seed","show_advanced_options":false}' "$HA/api/config/config_entries/flow" \
+  -d '{"handler":"wrendns_seed","show_advanced_options":false}' "$HA/api/config/config_entries/flow" \
   | field 'd["flow_id"]') || fail "starting the seed flow"
 [ "$(curl -s -H "authorization: Bearer $LLT" -H 'content-type: application/json' -d '{}' \
   "$HA/api/config/config_entries/flow/$FLOW" | field 'd["type"]')" = create_entry ] || fail "the seed flow didn't create its entry"
@@ -128,15 +128,15 @@ done
   || fail "the seeded devices didn't appear"
 echo ok
 
-echo "== 4. a TelltaleDNS node reads Home Assistant"
+echo "== 4. a WrenDNS node reads Home Assistant"
 docker rm -f "$NODE" >/dev/null 2>&1 || true
 NET=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$HAC")
 mkdir -p "$E/secrets"
 cp "$E/ha-token" "$E/secrets/ha-token"
-cat > "$E/telltale.toml" <<TOML
+cat > "$E/wrendns.toml" <<TOML
 [node]
 name = "ha-test"
-data_dir = "/var/lib/telltale"
+data_dir = "/var/lib/wrendns"
 [[listen]]
 proto = "udp"
 addr = "0.0.0.0:1053"
@@ -158,11 +158,11 @@ api_key_file = "/run/secrets/ha-token"
 TOML
 docker run -d --name "$NODE" --network "$NET" \
   -p "127.0.0.1:$API_PORT:8053" -p "127.0.0.1:$DNS_PORT:1053/udp" \
-  -v "$(hostpath "$E/telltale.toml"):/etc/telltale/telltale.toml:ro" \
+  -v "$(hostpath "$E/wrendns.toml"):/etc/wrendns/wrendns.toml:ro" \
   -v "$(hostpath "$E/secrets"):/run/secrets:ro" \
-  "${MOUNTS[@]}" ubuntu:24.04 "$BIN_IN" run -c /etc/telltale/telltale.toml >/dev/null
+  "${MOUNTS[@]}" ubuntu:24.04 "$BIN_IN" run -c /etc/wrendns/wrendns.toml >/dev/null
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.2; done
-SETUP=$(docker exec "$NODE" cat /var/lib/telltale/setup-token)
+SETUP=$(docker exec "$NODE" cat /var/lib/wrendns/setup-token)
 JAR="$E/jar"
 CSRF=$(curl -sf -c "$JAR" -H 'content-type: application/json' \
   -d "{\"setupToken\":\"$SETUP\",\"username\":\"admin\",\"password\":\"ha-test-admin-$HA_PASS\"}" \
@@ -225,10 +225,10 @@ print(".".join(str(b) for b in data[-4:]) if rcode == 0 and ancount >= 1 else f"
 done
 echo ok
 
-echo "== 6. the TelltaleDNS integration in Home Assistant"
+echo "== 6. the WrenDNS integration in Home Assistant"
 FLOW=$(curl -s -H "authorization: Bearer $LLT" -H 'content-type: application/json' \
-  -d '{"handler":"telltale","show_advanced_options":false}' "$HA/api/config/config_entries/flow" \
-  | field 'd["flow_id"]') || fail "starting the TelltaleDNS flow"
+  -d '{"handler":"wrendns","show_advanced_options":false}' "$HA/api/config/config_entries/flow" \
+  | field 'd["flow_id"]') || fail "starting the WrenDNS flow"
 RES=$(curl -s -H "authorization: Bearer $LLT" -H 'content-type: application/json' \
   -d "{\"url\":\"http://$NODE:8053\",\"token\":\"$AGENT\",\"verify_ssl\":true}" \
   "$HA/api/config/config_entries/flow/$FLOW")
@@ -377,7 +377,7 @@ echo ok
 echo "== 8. the inventory: Home Assistant's devices, with and without entities (T25.10, DSC-009)"
 # The inventory is saved when the node stops: stop it gracefully, copy the file out, and read it.
 docker stop -t 20 "$NODE" >/dev/null
-docker cp "$NODE:/var/lib/telltale/inventory.json" "$(hostpath "$E/inventory.json")" || fail "the node saved no inventory.json"
+docker cp "$NODE:/var/lib/wrendns/inventory.json" "$(hostpath "$E/inventory.json")" || fail "the node saved no inventory.json"
 "$PY" - "$(hostpath "$E/inventory.json")" <<'PYCHECK' || fail "the saved inventory"
 import json, sys
 inv = json.load(open(sys.argv[1]))

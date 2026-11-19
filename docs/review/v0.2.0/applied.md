@@ -41,7 +41,7 @@ Branch `review/v0.2.0-fixes` in `~/wrendns`, off `main` (0.3.0). One commit per 
 | 02-06 safe-search allocation | afc6b9c | done; the allocation test failed before (2,000 allocations) and passes |
 | 02-07 overlay | 0901251 | done: removed; ADR-003 amended |
 | 02-08 regex cost | 64c79b9 | done as a cap with reporting (ADR-101) |
-| 02-09 silent index fallback | 56d5bfd | done: warning plus `telltale_filter_lookup_mode` |
+| 02-09 silent index fallback | 56d5bfd | done: warning plus `wrendns_filter_lookup_mode` |
 | 03-02 failure kinds | b5c0f2f | done (`--3way`), in `/metrics`, API, and Upstreams page |
 | 03-03 0x20 | 0c61e5c | done; stays off by default |
 | 03-04 SERVFAIL and the breaker | 636f5f1 | done; `spec/04` §5 states the rule |
@@ -63,7 +63,7 @@ Added, all `Proposed`: **ADR-099** per-listener and per-address connection limit
 - **03-04:** a failed half-open probe is unchanged (a SERVFAIL probe still reopens the breaker), FORMERR/NOTIMP still count as a down upstream, and SERVFAIL/REFUSED no longer set `last_failure`.
 - **02-01:** the usable-list check also applies to file and inline lists, not only downloads.
 - **02-04:** DNS64 reverse names (`ip6.arpa` inside the NAT64 prefix) are still not explained; it was not in the report.
-- **02-07:** `telltale explain --json` loses the always-false `manual` field.
+- **02-07:** `wrendns explain --json` loses the always-false `manual` field.
 - **Order effects:** 01-04, 01-06, and 03-02 needed `--3way`, only because earlier commits on this branch moved the context (`Cargo.lock`, `tests/cache.rs`, `http.rs`).
 - **Defaults to check in your environment:** the per-address cap of 32 will starve clients behind a balancer that hides client addresses (no PROXY protocol, SNAT); documented next to the key and in ADR-099.
 
@@ -93,14 +93,14 @@ Branch `review/v0.2.0-fixes-2` in `~/wrendns`, off `main` at 7aa39c3. One commit
 
 | Finding | Commit | Status |
 |---|---|---|
-| 04-01 event clock and clock steps (high) | f238921 | done as patched; `telltale_clock_steps_total` and `telltale_clock_last_step_seconds` |
+| 04-01 event clock and clock steps (high) | f238921 | done as patched; `wrendns_clock_steps_total` and `wrendns_clock_last_step_seconds` |
 | 04-02 duplicate ring series | 7bc7f2e | done as patched |
 | 04-03 `blocked_total{list}` keyed by decider | 8363dcf | done (`--3way`, docs context) |
 | 04-04 privacy levels and analytics | f7d0365 | **partial**: `rollups.db` top lists now follow the level (they were stored in plain text for 400 days at every level, which the review didn't mention); docs say what each level covers. Live analytics and anomaly baselines unchanged: owner question 04 q1, ADR-102 |
 | 04-05 unsalted level-1 hash | f7d0365 | **docs only**: the docs say what level 1 does and doesn't protect against. The key is owner question 04 q2 |
 | 04-06 part-number scan | 707a0b5 | done: the next part starts after the one just closed. Rotation policy for short bursts not changed |
 | 04-07 `upstream` filter never matches | 7796400 | **docs only**: OpenAPI and docs say it matches nothing yet. Recording the upstream is owner question 04 q3 (ADR-026) |
-| 04-08 dnstap timeouts | d065065 | done, plus a logged, backed-off reconnect after a failed write and `telltale_dnstap_dropped_total` (04 q4), which now also counts copies dropped while disconnected |
+| 04-08 dnstap timeouts | d065065 | done, plus a logged, backed-off reconnect after a failed write and `wrendns_dnstap_dropped_total` (04 q4), which now also counts copies dropped while disconnected |
 | 04-09 sink formatting on the aggregator | eaf0841 | partial: the per-event schedule-name clone is gone. Moving formatting off the thread waits for a measurement, as the review says |
 | 04-10 one-off alerts re-sent | ad3a3cd | done: oldest subjects forgotten first, with a test |
 | 04-11 hour extras lost on restart | 8c5398e | done: backfilled after the startup replay (new "replay done" flag). No new test: it needs the writer task, a database, and a replay |
@@ -110,7 +110,7 @@ Branch `review/v0.2.0-fixes-2` in `~/wrendns`, off `main` at 7aa39c3. One commit
 | 05-04 no takeover from an emergency primary | e5aa507 | done by hand, plus the Cluster page (it disabled Promote whenever a primary was up). Automatic takeover is owner question 05 q2 |
 | 05-05 leases on the wall clock | 43cc6a1 | done: `CLOCK_BOOTTIME` election clock, ballots record their clock and are adopted conservatively, simulator restarts on unrelated clocks, mutation-checked. ADR-056 amended. New dependency, see below |
 | 05-06 bootstrap secret HMAC oracle | 722a3d0 | done as a warning under 32 characters, not a refusal (see disagreements) |
-| 05-07 join tokens can't be revoked | c762e14 | done: `telltale cluster token list` and `revoke <id or token>` |
+| 05-07 join tokens can't be revoked | c762e14 | done: `wrendns cluster token list` and `revoke <id or token>` |
 | 05-08 shallow history called a rewind | c56cd4d | done: the message says "more than N commits since" when the fetch was cut at its depth |
 | 05-09 promotion without a second factor | none | deferred: owner question 05 q4 / 06 q6 (needs a UI flow) |
 | 05-10 ADR-066 wording | a015deb | done: ADR corrected with a dated note; docs say rotation helps only against an unused leak |
@@ -132,7 +132,7 @@ Added: **ADR-102** (Proposed): privacy levels cover what is kept and sent out; t
 ## Where I disagreed with, or went beyond, the review
 
 - **04-04 is wider than reported.** Besides the in-memory analytics, `rollups.db` kept each hour's top domains, blocked names, and clients in plain text for 400 days at every level. That is stored data, which every reading of the spec says the level governs, so it is fixed regardless of the owner's answer to q1.
-- **05-05 uses `CLOCK_BOOTTIME`, not plain `Instant`.** `Instant` is `CLOCK_MONOTONIC`, which stops during suspend: a suspended primary would resume believing its lease still runs. `CLOCK_BOOTTIME` neither steps nor stops. Reading it without `unsafe` outside `telltale-net` needs `rustix` (`time` feature, Linux only). It was already in `Cargo.lock` but only as a test dependency, so this is a new runtime dependency for the binary; with LTO only the clock call is linked.
+- **05-05 uses `CLOCK_BOOTTIME`, not plain `Instant`.** `Instant` is `CLOCK_MONOTONIC`, which stops during suspend: a suspended primary would resume believing its lease still runs. `CLOCK_BOOTTIME` neither steps nor stops. Reading it without `unsafe` outside `wrendns-net` needs `rustix` (`time` feature, Linux only). It was already in `Cargo.lock` but only as a test dependency, so this is a new runtime dependency for the binary; with LTO only the clock call is linked.
 - **05-05 restart rule.** A voter that restarts takes any lease it granted as running a full 15 s from the restart. That costs at most 15 s of failover after a voter restart, and is what the review proposed.
 - **05-06 warns instead of refusing.** The homelab's join Secret was created outside Git and I didn't read its length (the live cluster is off limits). Refusing a short secret could stop the resolver pods from joining on the next rollout; a warning can't.
 - **06-04 and 06-07 together.** Skipping the bucket for a tool's REST calls would have let a 16-message batch run 16 tool calls for one request, so batches now charge one per message for agent tokens.

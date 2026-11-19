@@ -1,0 +1,548 @@
+use std::fmt::Write as _;
+use std::fs;
+
+use wrendns_config::{ListKind, ListMatch};
+
+use super::*;
+use crate::snapshot::{Class, ScopeTag, Snapshot};
+
+fn input(name: &str, kind: ListKind, text: &str) -> ListInput {
+    ListInput {
+        name: name.into(),
+        options: ListOptions {
+            kind,
+            match_mode: ListMatch::Subtree,
+        },
+        data: ListData::Bytes(text.as_bytes().to_vec()),
+        source_hash: crate::fetch::content_hash(text.as_bytes()),
+        size: text.len() as u64,
+    }
+}
+
+fn lists() -> Vec<ListInput> {
+    vec![
+        input(
+            "ads",
+            ListKind::Block,
+            "0.0.0.0 ads.example.com\n||tracker.example.net^\n|exact.example.org^\n*.wild.example.com\n\
+             ||shared.example.com^\n||imp.example.com^$important\n@@||ok.ads.example.com^\n\
+             ||v6.example.com^$dnstype=AAAA\n/^ad[0-9]+\\./\n^x[0-9]+\\.example\\.net$;invert\n",
+        ),
+        input(
+            "more",
+            ListKind::Block,
+            "shared.example.com\n||only-more.example.com^\n||tracker.example.net^$badfilter\n\
+             ||v6.example.com^$dnstype=AAAA,badfilter\n",
+        ),
+        input("allow", ListKind::Allow, "shared.example.com\n"),
+    ]
+}
+
+fn build(dir: &Path, opts: &CompileOptions) -> (CompileReport, Snapshot) {
+    let out = dir.join("v1");
+    let report = compile(lists(), &out, opts).unwrap();
+    (report, Snapshot::open(&out).unwrap())
+}
+
+fn classes(s: &Snapshot, id: u32) -> Vec<(Class, Vec<&str>)> {
+    Class::ALL
+        .iter()
+        .filter_map(|&c| {
+            let names: Vec<&str> = (0..3u16)
+                .filter(|&l| s.listsets.contains(id, c, l))
+                .filter_map(|l| s.list_name(l))
+                .collect();
+            (!names.is_empty()).then_some((c, names))
+        })
+        .collect()
+}
+
+#[test]
+fn flt_003_compile_and_look_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (report, snap) = build(tmp.path(), &CompileOptions::default());
+
+    // Subtree hit on the parent; exact only on the full name; subdomains only below.
+    let hits = snap.domain_hits("x.ads.example.com");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].name, "ads.example.com");
+    assert_eq!(hits[0].scope, Scope::Subtree);
+    assert_eq!(snap.domain_hits("exact.example.org").len(), 1);
+    assert_eq!(snap.domain_hits("a.exact.example.org").len(), 0);
+    assert_eq!(snap.domain_hits("wild.example.com").len(), 0);
+    assert_eq!(
+        snap.domain_hits("a.wild.example.com")[0].scope,
+        Scope::Subdomains
+    );
+    assert_eq!(snap.domain_hits("example.com").len(), 0);
+    assert_eq!(snap.domain_hits("unrelated.test").len(), 0);
+
+    // One name, several lists and classes, one interned entry.
+    let shared = snap.domain_hits("shared.example.com");
+    assert_eq!(
+        classes(&snap, shared[0].listset),
+        vec![
+            (Class::Allow, vec!["allow"]),
+            (Class::Block, vec!["ads", "more"])
+        ]
+    );
+    let imp = snap.domain_hits("imp.example.com");
+    assert_eq!(
+        classes(&snap, imp[0].listset),
+        vec![(Class::ImportantBlock, vec!["ads"])]
+    );
+    // `@@` inside a block list is an allow.
+    let ok = snap.domain_hits("ok.ads.example.com");
+    assert_eq!(ok.len(), 2, "allow on ok.ads + block on ads");
+    assert_eq!(
+        classes(&snap, ok[1].listset),
+        vec![(Class::Allow, vec!["ads"])]
+    );
+
+    // $badfilter in list "more" disables the rule in list "ads".
+    assert_eq!(snap.domain_hits("tracker.example.net").len(), 0);
+    assert_eq!(snap.modrules_for("v6.example.com").len(), 0);
+    assert_eq!(report.manifest.stats.badfiltered, 2);
+
+    // Regexes kept with metadata.
+    assert_eq!(snap.regexes.len(), 2);
+    assert!(snap.regexes.iter().any(|r| r.invert && r.list == 0));
+
+    let st = &report.manifest.stats;
+    assert_eq!(
+        (st.subtree_names, st.exact_names, st.subdomains_names),
+        (5, 1, 1)
+    );
+    let ads = &st.per_list[0];
+    let more = &st.per_list[1];
+    // ads: ads, ok.ads, shared, imp, exact, wild (6 names) + 2 regexes; tracker was badfiltered.
+    assert_eq!((ads.entries, ads.unique), (8, 5));
+    assert_eq!((more.entries, more.unique), (2, 1));
+    // REQ: OBS-009 (T7.14), FLT-004 (T24.28, ADR-992) — the overlap matrix counts lists doing
+    // the same thing: shared.example.com is blocked by `ads` and `more` and allowed by `allow`,
+    // so only the two block lists share it; the allow list is the only one allowing it.
+    let pair = |a, b| crate::snapshot::ListOverlap { a, b, names: 1 };
+    assert_eq!(st.overlap, vec![pair(0, 1)]);
+    assert_eq!(st.per_list[2].unique, 1);
+    // The regexes of `ads` can't be shown covered: they are counted apart.
+    assert_eq!((ads.rules, more.rules), (2, 0));
+    assert_eq!(report.parse[0].rules, 10);
+}
+
+// REQ: FLT-004 (T24.28, ADR-992) - the pair counters give the same answer as a map, with a
+// triangle of counters up to 128 lists and a map beyond.
+#[test]
+fn flt_004_pair_counts_dense_and_sparse_agree() {
+    for lists in [4usize, PairCounts::DENSE_LISTS + 2] {
+        let mut p = PairCounts::new(lists);
+        p.record(&[0, 1, 3]);
+        p.record(&[1, 3]);
+        p.record(&[2]);
+        p.record(&[]);
+        let n = |a, b, names| crate::snapshot::ListOverlap { a, b, names };
+        assert_eq!(
+            p.finish(),
+            vec![n(0, 1, 1), n(0, 3, 1), n(1, 3, 2)],
+            "{lists} lists"
+        );
+    }
+}
+
+// REQ: FLT-004 (T24.28, ADR-992) - a name that one list holds and another list's allow rule
+// matches isn't covered by it; a name two block lists hold is, and each list's unique count
+// stays what removing it would lose.
+#[test]
+fn flt_004_unique_counts_the_same_side_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    let lists = vec![
+        input(
+            "a",
+            ListKind::Block,
+            "both.example.com
+only-a.example.com
+allowed.example.com
+",
+        ),
+        input(
+            "b",
+            ListKind::Block,
+            "both.example.com
+only-b.example.com
+",
+        ),
+        input(
+            "exc",
+            ListKind::Allow,
+            "allowed.example.com
+",
+        ),
+    ];
+    let report = compile(lists, &out, &CompileOptions::default()).unwrap();
+    let st = &report.manifest.stats;
+    // a: only-a and allowed (an allow list holding it doesn't cover a block rule); both is shared.
+    assert_eq!(st.per_list[0].unique, 2);
+    assert_eq!(st.per_list[1].unique, 1);
+    assert_eq!(st.per_list[2].unique, 1);
+    assert_eq!(
+        st.overlap,
+        vec![crate::snapshot::ListOverlap {
+            a: 0,
+            b: 1,
+            names: 1
+        }]
+    );
+}
+
+#[test]
+fn flt_003_modifier_rules_are_indexed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    let lists = vec![input(
+        "m",
+        ListKind::Block,
+        "||kids.example.org^$client=192.168.1.0/24|~'Dad laptop'\n||kids.example.org^$dnstype=HTTPS\n\
+         ||example.edu^$denyallow=mail.example.edu\n||plain.example.org^\n",
+    )];
+    compile(lists.clone(), &out, &CompileOptions::default()).unwrap();
+    let snap = Snapshot::open(&out).unwrap();
+    let kids = snap.modrules_for("kids.example.org");
+    assert_eq!(kids.len(), 2);
+    assert_eq!(kids[0].client.len(), 2);
+    assert!(kids[0].client[1].negated);
+    assert_eq!(kids[1].dnstype[0].value, wrendns_proto::rtype::HTTPS);
+    assert_eq!(kids[0].scope, ScopeTag::Subtree);
+    assert_eq!(
+        snap.modrules_for("example.edu")[0].denyallow,
+        vec!["mail.example.edu"]
+    );
+    assert_eq!(snap.modrules_for("plain.example.org").len(), 0);
+    assert_eq!(snap.domain_hits("plain.example.org").len(), 1);
+}
+
+#[test]
+fn flt_004_spilling_and_threads_produce_identical_snapshots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut big = (0..60_000).fold(String::new(), |mut s, i| {
+        let _ = writeln!(s, "n{i}.example{}.com", i % 97);
+        s
+    });
+    // Problem lines near the end, so their line numbers cross chunk boundaries.
+    big.push_str("not valid!\nexample.com##.ad\n");
+    let lists = vec![
+        input("big", ListKind::Block, &big),
+        input(
+            "small",
+            ListKind::Block,
+            "n5.example5.com\n||other.example.net^\n",
+        ),
+    ];
+    let a = compile(
+        lists.clone(),
+        &tmp.path().join("mem"),
+        &CompileOptions::default(),
+    )
+    .unwrap();
+    let b = compile(
+        lists,
+        &tmp.path().join("spill"),
+        &CompileOptions {
+            threads: 2,
+            memory_budget: 0, // clamped to 1 MiB per sorter → spills
+            version: 1,
+            sync: false, // the unsynced path must build the same snapshot
+            max_regexes: 1000,
+        },
+    )
+    .unwrap();
+    assert_eq!(a.spilled_runs, 0);
+    assert!(b.spilled_runs > 0);
+    let blobs = |r: &CompileReport| {
+        r.manifest
+            .blobs
+            .iter()
+            .map(|b| (b.name.clone(), b.blake3.clone()))
+            .collect::<Vec<_>>()
+    };
+    // One thread writes one FST per scope, two threads two shards each: different files,
+    // identical answers.
+    assert_eq!(a.manifest.fst_shards, 1);
+    assert_eq!(b.manifest.fst_shards, 2);
+    assert_eq!(blobs(&a).len() + 3, blobs(&b).len());
+    let (sa, sb) = (
+        Snapshot::open(&tmp.path().join("mem")).unwrap(),
+        Snapshot::open(&tmp.path().join("spill")).unwrap(),
+    );
+    for i in (0..60_000).step_by(997) {
+        let q = format!("x.n{i}.example{}.com", i % 97);
+        let (ha, hb) = (sa.domain_hits(&q), sb.domain_hits(&q));
+        assert_eq!(ha.len(), 1, "{q}");
+        assert_eq!(ha.len(), hb.len(), "{q}");
+        assert_eq!(
+            classes(&sa, ha[0].listset),
+            classes(&sb, hb[0].listset),
+            "{q}"
+        );
+    }
+    assert_eq!(a.manifest.stats.listsets, b.manifest.stats.listsets);
+    assert_eq!(a.manifest.stats.subtree_names, 60_001);
+    // Chunked parsing (threads = 2 splits `big`) reports the same stats and line numbers.
+    assert_eq!(a.parse, b.parse);
+    let lines: Vec<u32> = b.parse[0].samples.iter().map(|s| s.line).collect();
+    assert_eq!(lines, vec![60_001, 60_002]);
+    // No run files or partial directories left behind.
+    let mut left: Vec<_> = fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    left.sort();
+    assert_eq!(left, vec!["mem", "spill"]);
+}
+
+#[test]
+fn flt_003_snapshot_integrity_and_atomicity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    compile(lists(), &out, &CompileOptions::default()).unwrap();
+    assert!(matches!(
+        compile(lists(), &out, &CompileOptions::default()),
+        Err(CompileError::Exists(_))
+    ));
+    // A modified blob is refused.
+    let path = out.join(crate::snapshot::LISTSETS);
+    let mut data = fs::read(&path).unwrap();
+    let last = data.len() - 1;
+    data[last] ^= 0xff;
+    fs::write(&path, data).unwrap();
+    let err = Snapshot::open(&out).unwrap_err().to_string();
+    assert!(err.contains("doesn't match the manifest"), "{err}");
+}
+
+#[test]
+fn flt_003_empty_input_compiles() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    let r = compile(Vec::new(), &out, &CompileOptions::default()).unwrap();
+    assert_eq!(r.manifest.stats.bytes_per_name, 0.0);
+    let snap = Snapshot::open(&out).unwrap();
+    assert_eq!(snap.domain_hits("ads.example.com").len(), 0);
+}
+
+#[test]
+fn reversed_keys() {
+    assert_eq!(reversed_key("ads.example.com"), b"com.example.ads.");
+    assert_eq!(reversed_key("com"), b"com.");
+}
+
+/// REQ: FLT-003 — regexes that each fit the engine's size limit but not together are
+/// dropped at compile time (and reported), so the snapshot's regex set always builds and
+/// the snapshot can be activated.
+#[test]
+fn flt_003_regex_set_that_only_fails_as_a_whole_is_trimmed() {
+    let mut text = String::new();
+    for _ in 0..16 {
+        let _ = writeln!(text, "(?:[a-z]{{200}}){{200}}");
+    }
+    text.push_str("^ads[0-9]+\\.\n");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    let report = compile(
+        vec![input("rx", ListKind::Block, &text)],
+        &out,
+        &CompileOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !report.regex_errors.is_empty(),
+        "some patterns must be dropped"
+    );
+    assert!(report.manifest.stats.regexes >= 1, "the small one stays");
+    let snap = std::sync::Arc::new(Snapshot::open(&out).unwrap());
+    assert!(
+        crate::matcher::Matcher::new(Some(snap)).is_ok(),
+        "the snapshot must activate"
+    );
+}
+
+/// REQ: FLT-003 (review 02-08) — a snapshot keeps at most `max_regexes` regex rules (0 = no
+/// limit): the ones past it, in list order, are reported with their list and line, counted
+/// per list, and left out of the snapshot.
+#[test]
+fn flt_003_regex_rules_are_capped_and_reported() {
+    let lists = || {
+        vec![
+            input("a", ListKind::Block, "/^a1\\./\n/^a2\\./\n/^a3\\./\n"),
+            input("b", ListKind::Block, "||b.example^\n/^b1\\./\n/^b2\\./\n"),
+        ]
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let report = compile(
+        lists(),
+        &tmp.path().join("capped"),
+        &CompileOptions {
+            max_regexes: 4,
+            ..CompileOptions::default()
+        },
+    )
+    .unwrap();
+    let stats = &report.manifest.stats;
+    assert_eq!((stats.regexes, stats.regex_rejected), (4, 1));
+    assert_eq!(report.regex_errors.len(), 1);
+    let (list, line, why) = &report.regex_errors[0];
+    assert_eq!(
+        (list.as_str(), *line),
+        ("b", 3),
+        "the last one, in list order"
+    );
+    assert!(why.contains("max_regexes"), "{why}");
+    assert_eq!(stats.per_list[0].regex_skipped, 0);
+    assert_eq!(stats.per_list[1].regex_skipped, 1);
+    // The kept ones are the first four.
+    let snap = Snapshot::open(&tmp.path().join("capped")).unwrap();
+    let kept: Vec<&str> = snap.regexes.iter().map(|r| r.pattern.as_str()).collect();
+    assert_eq!(kept, ["^a1\\.", "^a2\\.", "^a3\\.", "^b1\\."]);
+
+    let all = compile(
+        lists(),
+        &tmp.path().join("unlimited"),
+        &CompileOptions {
+            max_regexes: 0,
+            ..CompileOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(all.manifest.stats.regexes, 5);
+    assert_eq!(all.manifest.stats.regex_rejected, 0);
+}
+
+/// REQ: FLT-003 (T10.3, ADR-145) — the matcher handed out before the FSTs are written decides
+/// every name exactly as the finished snapshot's matcher does, in memory and with spilled
+/// runs on two threads; the finished snapshot is byte-identical to a plain compile's, and
+/// reuses the early index.
+#[test]
+#[allow(clippy::too_many_lines)] // one comparison across two compile modes
+fn flt_003_the_live_matcher_decides_like_the_finished_snapshot() {
+    use crate::matcher::{ClientCtx, ListMask, Lookup, Scratch};
+    let tmp = tempfile::tempdir().unwrap();
+    let big = (0..20_000).fold(String::new(), |mut s, i| {
+        let _ = writeln!(s, "n{i}.example{}.com", i % 97);
+        s
+    });
+    let mut inputs = lists();
+    inputs.push(input("big", ListKind::Block, &big));
+    let names: Vec<String> = [
+        "ads.example.com",
+        "x.ads.example.com",
+        "ok.ads.example.com",
+        "tracker.example.net",
+        "exact.example.org",
+        "a.exact.example.org",
+        "a.wild.example.com",
+        "wild.example.com",
+        "shared.example.com",
+        "imp.example.com",
+        "only-more.example.com",
+        "v6.example.com",
+        "ad12.example.net",
+        "nothing.example",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .chain(
+        (0..20_000)
+            .step_by(37)
+            .map(|i| format!("n{i}.example{}.com", i % 97)),
+    )
+    .chain((0..500).map(|i| format!("miss{i}.example.com")))
+    .collect();
+    let client = ClientCtx {
+        ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 20)),
+        name: None,
+        client_id: None,
+    };
+    let decide = |m: &Matcher, name: &str| {
+        let wire = wrendns_proto::NameBuf::from_presentation(name).unwrap();
+        let mut scratch = Scratch::default();
+        format!(
+            "{:?}",
+            m.decide(wire.as_wire(), 1, &client, &ListMask::all(8), &mut scratch)
+        )
+    };
+    let plain = compile(
+        inputs.clone(),
+        &tmp.path().join("plain"),
+        &CompileOptions::default(),
+    )
+    .unwrap();
+    for (tag, opts) in [
+        ("mem", CompileOptions::default()),
+        (
+            "spill",
+            CompileOptions {
+                threads: 2,
+                memory_budget: 0,
+                version: 1,
+                sync: false,
+                max_regexes: 1000,
+            },
+        ),
+    ] {
+        let out = tmp.path().join(tag);
+        let mut live: Option<Matcher> = None;
+        let report = compile_live(
+            inputs.clone(),
+            &out,
+            &opts,
+            Some(|m: Matcher| live = Some(m)),
+        )
+        .unwrap();
+        let live = live.expect("the live matcher was handed out");
+        assert!(live.snapshot().unwrap().is_pending());
+        assert_eq!(live.lookup(), Lookup::Indexed);
+        assert!(
+            report
+                .timings
+                .ready
+                .is_some_and(|r| r <= report.timings.total)
+        );
+        let snap = Arc::new(Snapshot::open(&out).unwrap());
+        let finished = Matcher::with_lookup(Some(Arc::clone(&snap)), Lookup::Indexed).unwrap();
+        let reused = Matcher::reuse_index(&snap, &live)
+            .unwrap()
+            .expect("same snapshot: index reused");
+        for name in &names {
+            let want = decide(&finished, name);
+            assert_eq!(decide(&live, name), want, "{tag}: live, {name}");
+            assert_eq!(decide(&reused, name), want, "{tag}: reused, {name}");
+        }
+        if tag == "mem" {
+            let blobs = |r: &CompileReport| {
+                r.manifest
+                    .blobs
+                    .iter()
+                    .map(|b| (b.name.clone(), b.blake3.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                blobs(&report),
+                blobs(&plain),
+                "the same snapshot as a plain compile"
+            );
+        }
+    }
+    // Another snapshot's index isn't reused.
+    let other = Arc::new(Snapshot::open(&tmp.path().join("plain")).unwrap());
+    let mut live = None;
+    compile_live(
+        lists(),
+        &tmp.path().join("small"),
+        &CompileOptions::default(),
+        Some(|m: Matcher| live = Some(m)),
+    )
+    .unwrap();
+    assert!(
+        Matcher::reuse_index(&other, &live.unwrap())
+            .unwrap()
+            .is_none()
+    );
+}

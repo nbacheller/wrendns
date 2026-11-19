@@ -1,7 +1,7 @@
-diff --git a/crates/telltale/src/dnstap.rs b/crates/telltale/src/dnstap.rs
+diff --git a/crates/wrendns/src/dnstap.rs b/crates/wrendns/src/dnstap.rs
 index ab2a2ff..c7f04bd 100644
---- a/crates/telltale/src/dnstap.rs
-+++ b/crates/telltale/src/dnstap.rs
+--- a/crates/wrendns/src/dnstap.rs
++++ b/crates/wrendns/src/dnstap.rs
 @@ -191,16 +191,28 @@ enum Target {
  trait Stream: Read + Write + Send {}
  impl<T: Read + Write + Send> Stream for T {}

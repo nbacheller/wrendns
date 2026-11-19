@@ -43,7 +43,7 @@
     x.outcome === 'blocked' && x.block
       ? `list ${x.block.list}`
       : x.outcome === 'special'
-        ? 'a special-use name TelltaleDNS answers itself'
+        ? 'a special-use name WrenDNS answers itself'
         : x.route
           ? `upstream group ${x.route.group}`
           : '',

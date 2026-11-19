@@ -4,7 +4,7 @@
 use std::net::Ipv4Addr;
 
 use libfuzzer_sys::fuzz_target;
-use telltale_proto::{
+use wrendns_proto::{
     QueryError, ResponseBuilder, ede, error_from_raw, parse_query, rcode, response_edns, summarize,
     truncate_for_udp, udp_limit,
 };

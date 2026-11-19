@@ -1,0 +1,23 @@
+[package]
+name = "wrendns-snmp"
+description = "The SNMP BER codec and the v2c and v3 USM read client (read PDUs only; ADR-908, ADR-911). Off the DNS hot path."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# REQ: DSC-003 — HMAC-SHA-1/SHA-2 and the USM password-to-key digests (ADR-908).
+ring = "0.17.14"
+# REQ: DSC-003 — Ku, Kul and the privacy key are zeroized after use (ADR-908).
+zeroize = "1.9.0"
+# REQ: DSC-003 — AES-128 block for the RFC 3826 CFB-128 privacy (ADR-911). Only this crate uses it.
+aes = { version = "=0.8.4", features = ["zeroize"] }
+# REQ: DSC-003 — O_NOFOLLOW and O_NONBLOCK for the credential file open (ADR-932). Already in the
+# tree already through getrandom (ring); the constants are the only use here.
+libc = "0.2"

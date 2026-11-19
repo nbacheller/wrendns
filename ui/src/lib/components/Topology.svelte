@@ -169,7 +169,7 @@
 
   const L = $derived(layout(nodes));
   const label = (n: Node) => n.pod ?? n.nodeId.slice(0, 8);
-  // Long names (Kubernetes pods: telltaledns-756965cdc7-8j9h9) are shortened in the middle to
+  // Long names (Kubernetes pods: wrendns-756965cdc7-8j9h9) are shortened in the middle to
   // fit: the end tells pods apart. The full name is in the tooltip. Widths are estimates per
   // character for the UI font at that size.
   const fit = (text: string, px: number, perChar: number) => {

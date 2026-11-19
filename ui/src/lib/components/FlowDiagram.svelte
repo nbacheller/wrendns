@@ -1,5 +1,5 @@
 <script lang="ts">
-  // REQ: API-011, ADR-036 — how one question travels: a device asks TelltaleDNS, which answers
+  // REQ: API-011, ADR-036 — how one question travels: a device asks WrenDNS, which answers
   // from memory, from your own names, with a block, from another server, or from the public
   // DNS servers. The path in `highlight` is drawn bold; the rest stays faint. Inline SVG (no
   // library, CSP-safe), with a text equivalent for screen readers and small screens.
@@ -28,7 +28,7 @@
     upstream: 'asks a public DNS server and remembers the answer',
     refused: 'refuses, because the device may not use this server',
   };
-  const text = $derived(`${device} asks for ${name}; TelltaleDNS ${sentence[highlight]}${detail ? ` (${detail})` : ''}.`);
+  const text = $derived(`${device} asks for ${name}; WrenDNS ${sentence[highlight]}${detail ? ` (${detail})` : ''}.`);
   const y = (i: number) => 20 + i * 40;
 </script>
 
@@ -44,7 +44,7 @@
     <text x="73" y="124" text-anchor="middle" class="flow-sub">asks for a name</text>
     <path d="M138 110 H226" class="flow-line" class:flow-on={highlight !== 'refused'} marker-end="url(#flow-arrow)" />
     <rect x="228" y="80" width="150" height="60" rx="12" class="flow-core" />
-    <text x="303" y="107" text-anchor="middle" class="flow-core-text">TelltaleDNS</text>
+    <text x="303" y="107" text-anchor="middle" class="flow-core-text">WrenDNS</text>
     <text x="303" y="125" text-anchor="middle" class="flow-core-sub">{highlight === 'refused' ? 'refused' : 'decides'}</text>
     {#each outs as o, i (o.id)}
       <path

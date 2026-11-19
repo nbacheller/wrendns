@@ -1,0 +1,49 @@
+[package]
+name = "wrendns-filter"
+description = "Blocklist parsers, rule compiler, FST/DFA snapshot format, and matcher."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# REQ: FLT-003 — compiler: fst (domain sets), regex-automata (regex set, 02 §7).
+# REQ: FLT-001 — parsers: idna (punycode), regex-syntax (validate patterns the regex engine
+# will accept). FLT-004 — list fetcher: HTTP/1.1 over rustls (same stack as the DoH upstream), zstd
+# for stored sources (02 §7), BLAKE3 content hashes (02 §5).
+blake3 = "1.8.7"
+bytes = "1.12.1"
+fst = "0.4.7"
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+idna = "1.1.0"
+rand = "0.10.3"
+regex-automata = "0.4.18"
+regex-syntax = "0.8.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+wrendns-config.workspace = true
+wrendns-net = { version = "0.8.0", path = "../wrendns-net" }
+wrendns-proto = { version = "0.8.0", path = "../wrendns-proto" }
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync", "fs"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tracing = "0.1.44"
+webpki-roots = "1.0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = { version = "0.14.0", default-features = false }
+
+[dev-dependencies]
+allocation-counter = "0.8.1"
+insta = "1.49.0"
+rcgen = "0.14.10"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

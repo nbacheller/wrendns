@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-net/src/sys.rs b/crates/telltale-net/src/sys.rs
+diff --git a/crates/wrendns-net/src/sys.rs b/crates/wrendns-net/src/sys.rs
 index d438af8..183f9aa 100644
---- a/crates/telltale-net/src/sys.rs
-+++ b/crates/telltale-net/src/sys.rs
+--- a/crates/wrendns-net/src/sys.rs
++++ b/crates/wrendns-net/src/sys.rs
 @@ -454,8 +454,11 @@ fn pktinfo_from_cmsgs(msg: &libc::msghdr) -> Option<LocalAddr> {
              // unaligned, so read_unaligned.
              let info: libc::in_pktinfo =

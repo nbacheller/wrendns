@@ -1,0 +1,2209 @@
+//! WrenDNS binary: CLI, role wiring, and signal handling (`spec/02-architecture.md` §1).
+
+// REQ: NFR-003 — no unsafe outside wrendns-net.
+#![forbid(unsafe_code)]
+
+mod alerts;
+mod annotations;
+mod anomaly;
+mod api_backend;
+mod api_tls;
+mod archive;
+mod auth_setup;
+mod backup;
+#[cfg(test)]
+mod backup_api_tests;
+mod build_info;
+mod cache_history;
+mod cache_sizing;
+mod checks;
+mod cluster;
+mod cmdb;
+mod credential_rules;
+#[cfg(test)]
+mod credential_rules_tests;
+#[cfg(test)]
+mod credential_tests;
+mod ctl;
+mod datadir;
+mod device_dns;
+mod devices;
+mod discovery;
+mod dnstap;
+mod drill;
+mod explain;
+mod federated;
+#[cfg(test)]
+mod federated_wedge_tests;
+mod forward;
+mod geoip;
+mod gitsource;
+mod group_sources;
+mod guarded;
+mod health;
+mod host;
+mod http;
+mod identify;
+mod import;
+mod kubernetes;
+mod lists;
+mod maintenance;
+mod managed;
+mod managed_adopt;
+#[cfg(test)]
+mod managed_adopt_t2440_tests;
+#[cfg(test)]
+mod managed_adopt_tests;
+mod masking;
+mod mcp_stdio;
+mod mdns;
+mod names;
+mod names_repair;
+#[cfg(test)]
+mod names_repair_tests;
+mod node_managed;
+#[cfg(test)]
+mod node_managed_tests;
+mod node_removal;
+mod node_settings;
+#[cfg(test)]
+mod node_settings_tests;
+mod oidc_settings;
+mod otlp;
+mod own_networks;
+mod pihole;
+mod pihole_import;
+mod pipeline;
+mod policy_view;
+mod privacy;
+mod probes;
+mod profiles;
+mod qlog_cli;
+mod readiness;
+mod redact;
+mod replay;
+mod replication;
+mod rollout;
+mod rollups;
+mod router_cert;
+mod router_settings;
+mod routers;
+#[cfg(test)]
+mod secret_store_tests;
+mod secrets;
+mod secrets_api;
+#[cfg(test)]
+mod secrets_api_tests;
+mod selfupdate;
+mod server;
+mod settings_kinds;
+#[cfg(test)]
+mod settings_kinds_tests;
+mod shadow;
+mod ship;
+mod simulate;
+mod sink_settings;
+#[cfg(test)]
+mod sink_settings_tests;
+mod sinks;
+mod smtp;
+mod snmp_cli;
+mod support;
+mod support_cli;
+mod support_log;
+mod tail;
+mod technitium;
+mod traces;
+mod updates;
+mod upstream_checks;
+mod upstream_presets;
+mod vqlog;
+mod warm;
+mod watchdog;
+
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+use wrendns_config::Loader;
+use wrendns_policy::LocalData;
+use tracing::{error, info, warn};
+
+// REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
+// allocator, which roughly halved cache-hit throughput in the bench harness.
+// Not under `cfg(test)`: the allocation test in `pipeline.rs` (NFR-002) counts through its
+// own global allocator.
+#[cfg(all(not(test), not(feature = "dhat-heap")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+// REQ: NFR-002 (T10.2) — heap profiling for development only (`--features dhat-heap`, never
+// in a release): every allocation site with its bytes at the heap's peak and at exit, written
+// to `dhat-heap.json` in the working directory on a clean shutdown. `bench/heapprof.py` runs it.
+#[cfg(all(not(test), feature = "dhat-heap"))]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
+
+/// Default config file location (`spec/08` §3.4).
+const DEFAULT_CONFIG: &str = "/etc/wrendns/wrendns.toml";
+
+/// WrenDNS — see every question, answer on your terms.
+#[derive(Debug, Parser)]
+#[command(name = "wrendns", version = build_info::LINE, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// REQ: DSC-003 (T25.4) — SNMP diagnostics for the network inventory (read-only).
+    Snmp {
+        #[command(subcommand)]
+        command: SnmpCommand,
+    },
+    /// Run the resolver.
+    Run {
+        /// Config files, later ones overriding earlier ones. Defaults to `$WRENDNS_CONFIG`,
+        /// then `/etc/wrendns/wrendns.toml` if it exists, else built-in defaults.
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Inspect and validate configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+    /// Built-in upstream presets (Cloudflare, Quad9, AdGuard, ...).
+    Presets {
+        #[command(subcommand)]
+        command: PresetsCommand,
+    },
+    /// REQ: FLT-012 (T7.9) — services a group can block (`blocked_services`).
+    Services {
+        #[command(subcommand)]
+        command: ServicesCommand,
+    },
+    /// Filter lists (blocklists and allowlists).
+    Lists {
+        #[command(subcommand)]
+        command: ListsCommand,
+    },
+    /// The audit log of changes (users, tokens, sign-ins, reloads): list and verify.
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
+    /// Sign-in administration: the first-run setup token, password hashes.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
+    /// Guarded settings (listeners, the API address, TLS, proxies, secret keys, cluster, restart):
+    /// list what is stored on this node, or clear it, with the node stopped (lockout recovery).
+    // REQ: API-902 (T27.13, ADR-957; the offline command, so no UI control, API-901)
+    Guarded {
+        #[command(subcommand)]
+        command: GuardedCommand,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
+    },
+    /// The secrets entered in the UI: the store's state and key, and a new key. Run on the node,
+    /// with the same configuration and environment as the server.
+    // REQ: OPS-014 (ADR-903 §3)
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
+    },
+    /// Search the query log (newest first), offline from the data directory.
+    // REQ: OBS-003
+    Qlog {
+        #[command(subcommand)]
+        command: QlogCommand,
+    },
+    /// Explain how a query would be handled for a client: who the client is, its groups,
+    /// every matching rule with its list line, the decision, and the upstream route.
+    /// Reads the config and data directory; the server doesn't need to be running.
+    // REQ: FLT-013
+    Explain {
+        /// The name to look up, e.g. ads.example.com.
+        name: String,
+        /// The client's IP address.
+        #[arg(long, default_value = "127.0.0.1")]
+        client: std::net::IpAddr,
+        /// Query type.
+        #[arg(short = 't', long, default_value = "A")]
+        qtype: String,
+        /// The client's MAC address (default: from the neighbor table).
+        #[arg(long)]
+        mac: Option<String>,
+        /// A DoH/DoT client ID.
+        #[arg(long = "client-id")]
+        client_id: Option<String>,
+        /// Print JSON (the API's response format) instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Import configuration from other DNS servers.
+    // REQ: API-007
+    Import {
+        #[command(subcommand)]
+        command: ImportCommand,
+    },
+    /// REQ: API-007 (T24.18, ADR-939) — internal: parses one uploaded Pi-hole export and prints
+    /// the conversion as JSON. The API runs it as a short-lived child process with an empty
+    /// environment, so a hostile file can't reach the server's state or secrets.
+    #[command(hide = true)]
+    PiholeImportWorker {
+        /// The uploaded file (a Teleporter archive, a gravity.db, or a directory).
+        path: PathBuf,
+        /// A private directory to unpack an archive's gravity.db into (ADR-989).
+        #[arg(long)]
+        scratch: Option<PathBuf>,
+    },
+    /// Serve MCP to an AI agent over stdin/stdout (the `stdio` transport), relaying to a
+    /// running node's `/mcp` with an API token (`WRENDNS_TOKEN`, or `--token-file`).
+    /// Agents that speak HTTP can use `http://<node>:8053/mcp` directly.
+    // REQ: AGT-006
+    Mcp {
+        /// Use the stdio transport (the only one this command offers).
+        #[arg(long)]
+        stdio: bool,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long)]
+        url: Option<String>,
+        /// Also trust the certificate(s) in this PEM file, for a node with a self-signed
+        /// `[api] tls` (default: this node's own, when the config says self-signed).
+        #[arg(long)]
+        ca_file: Option<PathBuf>,
+        /// Read the API token from this file instead of `WRENDNS_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Config files (same defaults as `wrendns run`), to find the API address.
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Drive a running node from the shell through its API (status, the query log, top
+    /// lists, block/allow, pause, flush, lists, plans, and raw get/post/put/delete), with an
+    /// API token (`WRENDNS_TOKEN`, or `--token-file`).
+    // REQ: API-008
+    Ctl {
+        #[command(subcommand)]
+        command: ctl::CtlCommand,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// Also trust the certificate(s) in this PEM file, for a node with a self-signed
+        /// `[api] tls` (default: this node's own, when the config says self-signed).
+        #[arg(long, global = true)]
+        ca_file: Option<PathBuf>,
+        /// Read the API token from this file instead of `WRENDNS_TOKEN`.
+        #[arg(long, global = true)]
+        token_file: Option<PathBuf>,
+        /// Print the API's JSON instead of tables.
+        #[arg(long, global = true)]
+        json: bool,
+        /// Config files (same defaults as `wrendns run`), to find the API address.
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
+    },
+    /// Make a support package: one redacted `.tar.gz` for a bug report (settings without
+    /// secrets, cluster and health, upstreams, a metrics snapshot, the node's recent log).
+    /// Nothing is uploaded. `--level strict` (the default) replaces addresses and names with
+    /// pseudonyms and keeps only warnings and errors from the log. Asks a running node (needs
+    /// an admin's API token: `WRENDNS_TOKEN` or `--token-file`); without one, or with
+    /// `--offline`, it is made from the config files and the log files instead.
+    // REQ: OPS-011
+    SupportPackage {
+        /// `strict` (default), `standard`, or `none`.
+        #[arg(long, default_value = "strict")]
+        level: String,
+        /// A name (device, group, node, host) to keep readable; repeat for several.
+        #[arg(long = "reveal", value_name = "NAME")]
+        reveal: Vec<String>,
+        /// Include this many recent queries, pseudonymized (not at `strict`; at most 1,000).
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        query_sample: u32,
+        /// Write the pseudonym map here. It holds the real names and addresses: keep it.
+        #[arg(long, value_name = "FILE")]
+        keep_map: Option<PathBuf>,
+        /// Show what the package would hold, and write nothing.
+        #[arg(long)]
+        list: bool,
+        /// Where to write it (default: `wrendns-support-<node>-<time>.tar.gz` here).
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Make it from the config files and the log files, without asking a running node.
+        #[arg(long)]
+        offline: bool,
+        /// One package for the whole cluster: every reachable node redacts its own data before it
+        /// leaves the node, and a device has the same pseudonym on all of them. Asks a running
+        /// node (not with `--offline` or `--keep-map`).
+        #[arg(long)]
+        cluster: bool,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long)]
+        url: Option<String>,
+        /// Also trust the certificate(s) in this PEM file (a node with a self-signed `[api] tls`).
+        #[arg(long)]
+        ca_file: Option<PathBuf>,
+        /// Read the API token from this file instead of `WRENDNS_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Back up this node's configuration and data to one file, or restore one.
+    // REQ: API-007
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+    /// Clusters: create one, issue join tokens, join one, show this node's membership.
+    // REQ: CLU-001
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommand,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
+    },
+    /// Exit 0 if the server answers 200 at `url` (a container healthcheck without a shell).
+    // REQ: OPS-004, OPS-006
+    Health {
+        #[arg(long, default_value = "http://127.0.0.1:8053/readyz")]
+        url: String,
+    },
+    /// Update this binary to the latest release (native installs; containers pull a new
+    /// image). Verifies the release signature and checksum before replacing anything.
+    // REQ: OPS-004
+    SelfUpdate {
+        /// Which releases to follow.
+        #[arg(long, value_enum, default_value = "stable")]
+        channel: selfupdate::Channel,
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+        /// Restart the `wrendns` systemd service after updating.
+        #[arg(long)]
+        restart: bool,
+    },
+    /// REQ: DSC-002 (T25.3, ADR-908) — a network-inventory worker process: started by the node
+    /// (never by hand), it reads the stdin frames and answers them on stdout. `--import` is the
+    /// scan-import parser, with no credentials (ADR-913).
+    #[command(hide = true)]
+    DiscoveryWorker {
+        /// The scan-import parser instead of the SNMP poller.
+        #[arg(long)]
+        import: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ClusterCommand {
+    /// Create a cluster with this node as its primary (it generates and keeps the cluster CA).
+    /// Run as the user wrendns runs as, then restart wrendns.
+    Init {
+        /// Cluster name.
+        #[arg(long)]
+        name: String,
+        /// URLs other nodes reach this node's cluster port at (repeatable), e.g.
+        /// `https://10.30.3.2:8443`. Put every address peers might use (LAN IP, DNS name).
+        #[arg(long = "advertise", required = true)]
+        advertise: Vec<String>,
+        /// Site label (default: `[cluster] site`).
+        #[arg(long)]
+        site: Option<String>,
+        /// Where the cluster's configuration comes from (ADR-048): `api` (this node's file and
+        /// UI) or `gitops` (only GitOps-managed nodes may publish it).
+        #[arg(long = "config-authority", default_value = "api")]
+        config_authority: String,
+    },
+    /// Make this (eligible) node the primary when the primary is gone (ADR-051). The web UI's
+    /// Cluster page does the same without a restart.
+    Promote {
+        /// Coordinate the cluster but keep the last configuration (a cluster configured from Git
+        /// whose Git-managed nodes are all down).
+        #[arg(long)]
+        emergency: bool,
+    },
+    /// Change where the cluster's configuration comes from: `api` or `gitops` (on the primary).
+    SetAuthority { authority: String },
+    /// How the cluster fails over (ADR-056): `manual` (promote by hand) or `auto` (elected by
+    /// vote; needs 3 or more voters, e.g. two eligible nodes and a witness). On the primary.
+    SetFailover { mode: String },
+    /// Run this node as a witness: it only votes in elections (no DNS, no lists, no API).
+    Witness,
+    /// Rotate the cluster CA (on the primary, while it runs). Every node first trusts the new
+    /// CA next to the old, then gets a certificate from it, then the old CA is retired; each
+    /// step waits until every member is ready, so no link breaks (ADR-066).
+    RotateCa {
+        /// Show the rotation's phase and which members it's waiting for.
+        #[arg(long)]
+        status: bool,
+    },
+    /// Join tokens (run on the primary).
+    Token {
+        #[command(subcommand)]
+        command: ClusterTokenCommand,
+    },
+    /// Join the cluster a token belongs to, then restart wrendns.
+    Join {
+        /// The `tt_join_…` token from `wrendns cluster token create`.
+        token: String,
+        /// URLs other nodes reach this node at (optional: replicas dial out).
+        #[arg(long = "advertise")]
+        advertise: Vec<String>,
+        /// Site label (default: `[cluster] site`).
+        #[arg(long)]
+        site: Option<String>,
+        /// May become primary (needs persistent storage).
+        #[arg(long)]
+        eligible: bool,
+        /// Join as a witness: votes in automatic failover only (needs --advertise).
+        #[arg(long)]
+        witness: bool,
+    },
+    /// Show this node's cluster identity (offline; live peers are in the API and UI).
+    Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClusterTokenCommand {
+    /// Print a join token. Reusable until it expires, so one token can sit in a Kubernetes
+    /// Secret for every pod.
+    Create {
+        /// Lifetime: 30m, 1h, 7d, ... (default 1h).
+        #[arg(long, default_value = "1h", value_parser = cluster::parse_ttl)]
+        ttl: u64,
+        /// Cluster URLs to put in the token (default: this node's advertise URLs).
+        #[arg(long = "url")]
+        urls: Vec<String>,
+        /// The token may bring an eligible node (one that can be promoted, and so gets the
+        /// cluster key). Without it, a token brings a plain member.
+        #[arg(long)]
+        eligible: bool,
+        /// The token may bring a witness (a vote-only node for automatic failover).
+        #[arg(long)]
+        witness: bool,
+    },
+    /// List the join tokens that are still valid: their IDs and expiry (never the secrets).
+    List,
+    /// Revoke a join token before it expires. Nodes that already joined stay members.
+    Revoke {
+        /// The token's ID from `token list` (or `token create`), or the token itself.
+        id: String,
+    },
+}
+
+/// REQ: API-007 (T23.9, ADR-903 §8) — where a backup's passphrase comes from. Never an argument.
+#[derive(Debug, clap::Args)]
+#[allow(clippy::struct_field_names)] // the flags are named by the spec: --secrets-passphrase-*
+struct PassphraseArgs {
+    /// Read the passphrase (at least 12 characters) from the first line of this file.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
+    secrets_passphrase_file: Option<PathBuf>,
+    /// Read the passphrase from standard input (one line).
+    #[arg(long, conflicts_with = "secrets_passphrase_prompt")]
+    secrets_passphrase_stdin: bool,
+    /// Ask for the passphrase on the terminal (not shown).
+    #[arg(long)]
+    secrets_passphrase_prompt: bool,
+}
+
+impl PassphraseArgs {
+    fn source(&self) -> Option<backup::cli::Source> {
+        if let Some(f) = &self.secrets_passphrase_file {
+            Some(backup::cli::Source::File(f.clone()))
+        } else if self.secrets_passphrase_stdin {
+            Some(backup::cli::Source::Stdin)
+        } else if self.secrets_passphrase_prompt {
+            Some(backup::cli::Source::Prompt)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommand {
+    /// Write a backup: the config files, users and API tokens, devices and names made in the
+    /// UI, the audit log, statistics history, and anomaly baselines (the query log with
+    /// --include-qlog). Safe while WrenDNS runs. The file is owner-only: it holds
+    /// password hashes.
+    Create {
+        /// Also include the query log (can be large).
+        #[arg(long)]
+        include_qlog: bool,
+        /// Where to write it (default: `wrendns-<node>-<time>.ttbk` here).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// Stored secrets (entered in the UI) are left out unless a passphrase is given: with
+        /// one, they are encrypted into the backup under a key made from it.
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
+    },
+    /// Restore a backup onto this machine. Stop WrenDNS first. Every file is checked
+    /// before anything is written; existing files are only replaced with --force.
+    Restore {
+        /// The `.ttbk` file.
+        file: PathBuf,
+        /// Data directory (default: the one it was taken from).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Where the config files go (default: where they were).
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+        /// Replace existing files.
+        #[arg(long)]
+        force: bool,
+        /// The configuration whose secrets-key settings name this node's key (the environment
+        /// counts too). Without one, the data directory's own key is used (made if missing).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// The passphrase of a backup that holds stored secrets.
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
+        /// Restore a backup that holds stored secrets without them.
+        #[arg(long, conflicts_with_all = ["secrets_passphrase_file", "secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
+        skip_secrets: bool,
+    },
+    /// Check a backup and list what's in it.
+    Show {
+        /// The `.ttbk` file.
+        file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImportCommand {
+    /// Convert a zone file (Technitium, BIND, `PowerDNS` export) into `[[record]]` entries.
+    /// Prints TOML to add to your config; the header lists what had no local equivalent.
+    Zone {
+        /// The zone file.
+        file: PathBuf,
+        /// The zone's name, if the file has no `$ORIGIN` line (e.g. home.arpa).
+        #[arg(long)]
+        origin: Option<String>,
+        /// Write the TOML here instead of to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Convert a Pi-hole setup (v6 Teleporter zip, v5 Teleporter tar.gz, a gravity.db, or a
+    /// directory like /etc/pihole) into a WrenDNS configuration: upstreams, conditional
+    /// forwarding, local DNS and CNAME records, adlists, allow/deny domains, groups, and
+    /// clients. The header lists everything that has no equivalent.
+    Pihole {
+        /// The Teleporter archive, gravity.db, or Pi-hole directory.
+        path: PathBuf,
+        /// Write the TOML here instead of to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Resolve a sample of names (A and AAAA) through this Pi-hole (`ip` or `ip:port`)
+        /// and through WrenDNS (`--wrendns`), and report where the answers differ.
+        #[arg(long, value_name = "ADDR")]
+        compare: Option<String>,
+        /// The WrenDNS to compare with: the node's resolver (run it with the imported
+        /// configuration first, or the comparison shows what it answers now).
+        #[arg(
+            long,
+            value_name = "ADDR",
+            default_value = "127.0.0.1:53",
+            requires = "compare"
+        )]
+        wrendns: String,
+        /// Names to add to the sample (repeat the flag).
+        #[arg(long = "sample", value_name = "NAME", requires = "compare")]
+        samples: Vec<String>,
+    },
+    /// Read a running Technitium DNS Server through its API (forwarders, zones and records,
+    /// forwarder zones, block lists, allowed/blocked names, Advanced Blocking groups, DHCP
+    /// reservations) and print a WrenDNS configuration. Create an API token in
+    /// Technitium (Administration → Sessions → Create Token) and pass it in the
+    /// `TECHNITIUM_TOKEN` environment variable or a file.
+    Technitium {
+        /// The web console's address, e.g. `http://192.168.1.2:5380`.
+        url: String,
+        /// Read the API token from this file instead of `TECHNITIUM_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Write the TOML here instead of to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Print the first-run setup token (until the first admin exists). The server creates it
+    /// at startup and keeps it in `<data_dir>/setup-token`.
+    // REQ: API-003
+    SetupToken {
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Read a password from stdin and print its Argon2id hash, for
+    /// `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
+    HashPassword,
+    /// Set a local user's password with the node stopped, for when nobody can sign in. The
+    /// password comes from stdin (one line) or is typed twice in a terminal (echo off). It ends
+    /// the user's UI sessions and is audited. Refuses while `wrendns run` holds the data
+    /// directory, and on a cluster replica (reset it on the primary).
+    // REQ: API-003 (ADR-972; the offline command, so no UI control, API-901)
+    ResetPassword {
+        /// The username.
+        user: String,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GuardedCommand {
+    /// Every guarded entry on this node: staged (waiting for the next start), on probation,
+    /// active, or hidden by a local clear. Needs the node stopped (it reads `state.db`).
+    List,
+    /// Remove this node's guarded entries so it starts on its configuration file's values.
+    /// Audited as `cli:<os user>`. Needs the node stopped. In a cluster it clears only this node;
+    /// a replica also ignores the primary's copy until that copy changes.
+    Clear {
+        /// The setting to clear (`wrendns guarded list` shows the IDs).
+        id: Option<String>,
+        /// Clear every guarded entry on this node.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretsCommand {
+    /// The store (ready, locked, or ephemeral), its key's source and ID (never the key), each
+    /// stored secret without its value, and every credential field with its source and whether
+    /// this node can read it. Exits 1 when the store is locked. Changes nothing (no key made, no
+    /// rotation finished, nothing re-encrypted), so it's safe beside a running server.
+    Status,
+    /// Replace the data-directory key (`secrets.key`): every stored secret is re-encrypted under a
+    /// new one. Stop WrenDNS first. A key from `WRENDNS_SECRETS_KEY` or
+    /// `[node] secrets_key_file` is rotated by setting the old one as the previous key instead.
+    RotateKey,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuditCommand {
+    /// Check the audit log's hash chain; exits non-zero if an entry was changed or removed.
+    // REQ: API-006
+    Verify {
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Print audit entries, newest first.
+    List {
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// How many.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+        /// Only this action or prefix (`user.`, `config.reload`).
+        #[arg(long)]
+        action: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ListsCommand {
+    /// Download every enabled list now and store it in `<data_dir>/lists`, as the running
+    /// server would. Exits non-zero if any list failed.
+    // REQ: FLT-004
+    Fetch {
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Compile the stored lists into a new filter snapshot now and print the result
+    /// (the server does this automatically when lists change).
+    // REQ: FLT-003
+    Compile {
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// Compile threads (default: `[filter] compile_threads`).
+        #[arg(long)]
+        threads: Option<usize>,
+    },
+    /// Parse the stored lists and report rules, unsupported and invalid lines (with the
+    /// first problem lines of each list). Exits non-zero if a list has invalid lines.
+    // REQ: FLT-001
+    Check {
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// Only these lists.
+        #[arg(long = "list")]
+        lists: Vec<String>,
+        /// Print every rule in canonical form.
+        #[arg(long)]
+        rules: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SnmpCommand {
+    /// Read one table from a configured SNMP agent and print its rows. Takes the agent's
+    /// configured name, never an address; the credential is read from its file and never
+    /// printed.
+    Walk {
+        /// The agent's name, from `[[discovery.snmp_agent]]`.
+        #[arg(long)]
+        agent: String,
+        /// Which table: the ARP table, interfaces, the bridge (FDB) table or LLDP neighbours.
+        #[arg(long, value_enum, default_value = "arp")]
+        table: snmp_cli::Table,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum QlogCommand {
+    /// Find logged queries. Filters combine (AND); prints newest first.
+    Search {
+        /// Name to look for (a substring unless --match says otherwise).
+        name: Option<String>,
+        /// How to match the name: substring, exact, suffix (name or subdomain), glob, regex.
+        #[arg(long = "match", default_value = "substring")]
+        mode: String,
+        /// Client IP address.
+        #[arg(long)]
+        client: Option<std::net::IpAddr>,
+        /// Status: cached, forwarded, stale, local, special, blocked, refused, ... (repeatable).
+        #[arg(long)]
+        status: Vec<String>,
+        /// Query type, e.g. AAAA (repeatable).
+        #[arg(short = 't', long)]
+        qtype: Vec<String>,
+        /// Keep the queries whose name does NOT match (does not contain, is not, is not under,
+        /// ...). Needs a name.
+        #[arg(long)]
+        not_name: bool,
+        /// Keep the queries from every client except --client.
+        #[arg(long)]
+        not_client: bool,
+        /// Keep the queries whose status is none of --status.
+        #[arg(long)]
+        not_status: bool,
+        /// Keep the queries whose type is none of --qtype.
+        #[arg(long)]
+        not_qtype: bool,
+        /// Only the last N seconds.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Only queries that took at least this many milliseconds.
+        #[arg(long = "min-ms")]
+        min_ms: Option<u32>,
+        /// Rows per page.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Continue after a previous page (printed at the end of each page).
+        #[arg(long)]
+        cursor: Option<String>,
+        /// JSON lines instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Config files (same defaults as `wrendns run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServicesCommand {
+    /// List every service with its category and the domains it blocks.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
+enum PresetsCommand {
+    /// List the catalog.
+    List,
+    /// Print a preset as `[[upstream]]` entries plus a group, ready to paste into wrendns.toml.
+    // REQ: UPS-004
+    Show {
+        /// Preset ID (see `wrendns presets list`).
+        id: String,
+        /// Only these protocols (comma-separated): udp, tcp, tls, https.
+        #[arg(long, value_delimiter = ',')]
+        proto: Vec<String>,
+        /// Template values, e.g. `--param profile=abc123` for NextDNS.
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+        /// Leave out IPv6 addresses.
+        #[arg(long)]
+        no_ipv6: bool,
+        /// Group name (default: the preset ID; use "default" to make it the main group).
+        #[arg(long)]
+        group: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Validate config files offline. Later files override earlier ones; WRENDNS_* env vars
+    /// override files unless --no-env is given.
+    // REQ: OPS-005
+    Check {
+        /// Config files (e.g. wrendns.toml node.toml).
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Ignore WRENDNS_* environment variables.
+        #[arg(long)]
+        no_env: bool,
+        /// Print the effective config (defaults + files + env) as TOML. Credentials (upstream
+        /// headers and args, passwords in URLs, an OIDC client secret, OTLP headers) print as
+        /// `<redacted>`.
+        #[arg(long)]
+        print: bool,
+        /// With --print: print credentials as they are (REQ: API-014).
+        #[arg(long, requires = "print")]
+        show_secrets: bool,
+    },
+    /// Print the JSON Schema for wrendns.toml (for editor completion).
+    Schema,
+    /// REQ: OBS-024 — what a shared configuration would have done to a running node's logged
+    /// queries (the cluster's, in a cluster), compared with the one in effect: newly blocked,
+    /// newly allowed, changed routes and answers. Test a Git commit before pushing it. Same
+    /// as `wrendns ctl simulate`; needs an API token (`WRENDNS_TOKEN` or `--token-file`).
+    Simulate {
+        /// The candidate configuration as TOML (shared sections; node-local ones are ignored).
+        file: PathBuf,
+        /// How far back: 30m, 24h, 7d (default: `[simulate] default_window`).
+        #[arg(long)]
+        window: Option<String>,
+        /// Where the window ends (RFC 3339 or relative, e.g. -1h; default now).
+        #[arg(long)]
+        until: Option<String>,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long)]
+        url: Option<String>,
+        /// Read the API token from this file instead of `WRENDNS_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Print the API's JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Config files (same defaults as `wrendns run`), to find the API address.
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[allow(clippy::too_many_lines)] // one arm per subcommand
+fn main() -> ExitCode {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Run { config } => run(config),
+        Command::Snmp {
+            command:
+                SnmpCommand::Walk {
+                    agent,
+                    table,
+                    config,
+                },
+        } => Ok(
+            server::load(&config_files(config)).map_or(ExitCode::FAILURE, |cfg| {
+                match snmp_cli::run_walk(&cfg, &agent, table, &mut io::stdout().lock()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }),
+        ),
+        Command::Config { command } => run_config(command),
+        Command::Presets { command } => run_presets(command),
+        Command::Services {
+            command: ServicesCommand::List,
+        } => run_services_list(),
+        Command::Lists { command } => run_lists(command),
+        Command::Qlog {
+            command:
+                QlogCommand::Search {
+                    name,
+                    mode,
+                    client,
+                    status,
+                    qtype,
+                    not_name,
+                    not_client,
+                    not_status,
+                    not_qtype,
+                    since,
+                    min_ms,
+                    limit,
+                    cursor,
+                    json,
+                    config,
+                },
+        } => {
+            let args = qlog_cli::Args {
+                name,
+                mode,
+                client,
+                status,
+                qtype,
+                not: wrendns_store::qlog::Not {
+                    name: not_name,
+                    client: not_client,
+                    status: not_status,
+                    qtype: not_qtype,
+                    rcode: false,
+                },
+                since_secs: since,
+                min_ms,
+                limit,
+                cursor,
+                json,
+            };
+            Ok(
+                server::load(&config_files(config)).map_or(ExitCode::FAILURE, |cfg| {
+                    match qlog_cli::run(&cfg, &args, &mut io::stdout().lock()) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }),
+            )
+        }
+        Command::Auth { command } => Ok(run_auth(command)),
+        Command::Secrets { command, config } => Ok(run_secrets(&command, config)),
+        Command::Guarded { command, config } => Ok(run_guarded(command, config)),
+        Command::Audit { command } => Ok(run_audit(command)),
+        Command::Explain {
+            name,
+            client,
+            qtype,
+            mac,
+            client_id,
+            json,
+            config,
+        } => Ok(run_explain(
+            &name,
+            client,
+            &qtype,
+            mac.as_deref(),
+            client_id.as_deref(),
+            json,
+            config,
+        )),
+        Command::SelfUpdate {
+            channel,
+            check,
+            restart,
+        } => Ok(run_self_update(channel, check, restart)),
+        // REQ: DSC-002 (T25.3) — the worker's exit code says why it stopped (discovery::worker).
+        Command::DiscoveryWorker { import } => Ok(ExitCode::from(
+            u8::try_from(discovery::worker::main(import)).unwrap_or(1),
+        )),
+        Command::Import { command } => Ok(run_import(command)),
+        Command::PiholeImportWorker { path, scratch } => {
+            Ok(pihole_import::run_worker(&path, scratch.as_deref()))
+        }
+        Command::Backup { command } => Ok(run_backup(command)),
+        Command::Mcp {
+            stdio,
+            url,
+            ca_file,
+            token_file,
+            config,
+        } => Ok(run_mcp(stdio, url, ca_file, token_file.as_deref(), config)),
+        Command::Cluster { command, config } => Ok(run_cluster(command, config)),
+        Command::Ctl {
+            command,
+            url,
+            ca_file,
+            token_file,
+            json,
+            config,
+        } => Ok(run_ctl(
+            command,
+            url,
+            ca_file,
+            token_file.as_deref(),
+            json,
+            config,
+        )),
+        Command::SupportPackage {
+            level,
+            reveal,
+            query_sample,
+            keep_map,
+            list,
+            output,
+            offline,
+            cluster,
+            url,
+            ca_file,
+            token_file,
+            config,
+        } => Ok(support_cli::run(
+            &support_cli::Args {
+                level,
+                reveal,
+                query_sample,
+                keep_map,
+                list,
+                output,
+                offline,
+                cluster,
+            },
+            url,
+            ca_file,
+            token_file.as_deref(),
+            config,
+        )),
+        Command::Health { url } => Ok(match health(&url) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("unhealthy: {e}");
+                ExitCode::FAILURE
+            }
+        }),
+    };
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("wrendns: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
+    let Some(cfg) = server::load(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    match command {
+        ClusterCommand::Init {
+            name,
+            advertise,
+            site,
+            config_authority,
+        } => cluster::init(
+            &cfg,
+            &mut io::stdout().lock(),
+            &name,
+            advertise,
+            site.as_deref(),
+            &config_authority,
+        ),
+        ClusterCommand::Promote { emergency } => {
+            cluster::promote_offline(&cfg, &mut io::stdout().lock(), emergency)
+        }
+        ClusterCommand::SetAuthority { authority } => {
+            cluster::set_authority(&cfg, &mut io::stdout().lock(), &authority)
+        }
+        ClusterCommand::SetFailover { mode } => {
+            cluster::set_failover(&cfg, &mut io::stdout().lock(), &mode)
+        }
+        ClusterCommand::Witness => cluster::witness(&cfg),
+        ClusterCommand::RotateCa { status } => {
+            cluster::rotate_ca(&cfg, &mut io::stdout().lock(), status)
+        }
+        ClusterCommand::Token {
+            command:
+                ClusterTokenCommand::Create {
+                    ttl,
+                    urls,
+                    eligible,
+                    witness,
+                },
+        } => cluster::token_create(
+            &cfg,
+            &mut io::stdout().lock(),
+            ttl,
+            urls,
+            wrendns_cluster::node::TokenGrants { eligible, witness },
+        ),
+        ClusterCommand::Token {
+            command: ClusterTokenCommand::List,
+        } => cluster::token_list(&cfg, &mut io::stdout().lock()),
+        ClusterCommand::Token {
+            command: ClusterTokenCommand::Revoke { id },
+        } => cluster::token_revoke(&cfg, &mut io::stdout().lock(), &id),
+        ClusterCommand::Join {
+            token,
+            advertise,
+            site,
+            eligible,
+            witness,
+        } => cluster::join(
+            &cfg,
+            &mut io::stdout().lock(),
+            &token,
+            advertise,
+            site.as_deref(),
+            eligible,
+            witness,
+        ),
+        ClusterCommand::Status => cluster::status(&cfg, &mut io::stdout().lock()),
+    }
+}
+
+/// The local API's URL from the config files' `[api] listen` (warnings stay off stdout,
+/// which is the MCP channel), and with `[api] tls = { self_signed = true }` (ADR-149) the
+/// certificate to trust: this node's own.
+fn api_url(
+    config: Vec<PathBuf>,
+) -> Result<(String, Option<PathBuf>), Vec<wrendns_config::ConfigError>> {
+    let files = config_files(config);
+    let l = files
+        .iter()
+        .fold(Loader::new(), Loader::file)
+        .process_env()
+        .load()?;
+    let a = l.config.api.listen;
+    let host = if a.ip().is_unspecified() {
+        "127.0.0.1".to_owned()
+    } else if a.is_ipv6() {
+        format!("[{}]", a.ip())
+    } else {
+        a.ip().to_string()
+    };
+    let tls = l.config.api.tls.as_ref();
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let ca = tls
+        .filter(|t| t.self_signed)
+        .map(|_| api_tls::self_signed_paths(Path::new(l.config.node.data_dir.as_str())).0);
+    Ok((format!("{scheme}://{host}:{}", a.port()), ca))
+}
+
+/// The API's URL and the certificate to trust: `--url` and `--ca-file` as given, else from the
+/// config files.
+fn api_target(
+    url: Option<String>,
+    ca_file: Option<PathBuf>,
+    config: Vec<PathBuf>,
+) -> Result<(String, Option<PathBuf>), Vec<wrendns_config::ConfigError>> {
+    match url {
+        Some(u) => Ok((u, ca_file)),
+        None => api_url(config).map(|(u, ca)| (u, ca_file.or(ca))),
+    }
+}
+
+// REQ: API-008 (T7.25)
+fn run_ctl(
+    command: ctl::CtlCommand,
+    url: Option<String>,
+    ca_file: Option<PathBuf>,
+    token_file: Option<&Path>,
+    json: bool,
+    config: Vec<PathBuf>,
+) -> ExitCode {
+    let (url, ca) = match api_target(url, ca_file, config) {
+        Ok(u) => u,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let token = match token_file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())),
+        None => std::env::var("WRENDNS_TOKEN")
+            .map_err(|_| "set WRENDNS_TOKEN to an API token, or use --token-file".to_owned()),
+    };
+    let result = token.and_then(|t| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(ctl::run(&url, ca.as_deref(), t.trim(), command, json))
+    });
+    match result {
+        Ok(text) => {
+            let _ = io::Write::write_all(&mut io::stdout().lock(), text.as_bytes());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// REQ: AGT-006 (T6.6, ADR-065)
+fn run_mcp(
+    stdio: bool,
+    url: Option<String>,
+    ca_file: Option<PathBuf>,
+    token_file: Option<&Path>,
+    config: Vec<PathBuf>,
+) -> ExitCode {
+    if !stdio {
+        eprintln!("error: say --stdio (HTTP agents use http://<node>:8053/mcp directly)");
+        return ExitCode::FAILURE;
+    }
+    let (url, ca) = match api_target(url, ca_file, config) {
+        Ok(u) => u,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let token = match token_file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())),
+        None => std::env::var("WRENDNS_TOKEN").map_err(|_| {
+            "set WRENDNS_TOKEN to an API token (an agent token is best), or use --token-file"
+                .to_owned()
+        }),
+    };
+    let result = token.and_then(|t| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(mcp_stdio::run(&url, ca.as_deref(), t.trim()))
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// REQ: OPS-014 (ADR-903 §3)
+/// REQ: API-902 (ADR-957) — `wrendns guarded list|clear`, offline.
+fn run_guarded(command: GuardedCommand, config: Vec<PathBuf>) -> ExitCode {
+    let Some(cfg) = server::load_files(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let done = match command {
+        GuardedCommand::List => guarded::cli::run_list(&cfg, &mut io::stdout().lock()),
+        GuardedCommand::Clear { id, all } => {
+            let target = match (id, all) {
+                (Some(id), false) => guarded::cli::Target::One(id),
+                (None, true) => guarded::cli::Target::All,
+                _ => {
+                    eprintln!("error: name a setting to clear, or pass --all");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let user = std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "unknown".to_owned());
+            guarded::cli::run_clear(&cfg, &target, &user, &mut io::stdout().lock())
+        }
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_secrets(command: &SecretsCommand, config: Vec<PathBuf>) -> ExitCode {
+    let files = config_files(config);
+    let Some(cfg) = server::load(&files) else {
+        return ExitCode::FAILURE;
+    };
+    let env = secrets::cli::env();
+    let result = match command {
+        SecretsCommand::Status => secrets::cli::status(&cfg, env, &mut io::stdout().lock())
+            .map_err(|e| e.to_string())
+            .map(|ok| {
+                if ok {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }),
+        SecretsCommand::RotateKey => {
+            secrets::cli::rotate_key(&cfg, &env, secrets::cli::Until::Done).map(|r| {
+                eprintln!(
+                    "rotated the secrets key: key_id {} -> {}; {} secret(s) re-encrypted{}",
+                    r.from,
+                    r.to,
+                    r.reencrypted,
+                    if r.skipped > 0 {
+                        format!(
+                            ", {} left as they were (not readable under the old key either)",
+                            r.skipped
+                        )
+                    } else {
+                        String::new()
+                    }
+                );
+                ExitCode::SUCCESS
+            })
+        }
+    };
+    result.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+// REQ: API-007 (T6.7, ADR-063; T23.9, ADR-903 §8)
+fn run_backup(command: BackupCommand) -> ExitCode {
+    let result = match command {
+        BackupCommand::Create {
+            include_qlog,
+            output,
+            config,
+            passphrase,
+        } => {
+            let files = config_files(config);
+            let Some(cfg) = server::load(&files) else {
+                return ExitCode::FAILURE;
+            };
+            let out = output.unwrap_or_else(|| backup::default_name(cfg.node.name.as_str()));
+            backup::cli::create(
+                &files,
+                &cfg,
+                include_qlog,
+                &out,
+                passphrase.source().as_ref(),
+            )
+        }
+        BackupCommand::Restore {
+            file,
+            data_dir,
+            config_dir,
+            force,
+            config,
+            passphrase,
+            skip_secrets,
+        } => {
+            // The key settings come from -c (and the environment); no file given, no
+            // configuration is read: the restored node has none yet.
+            let key_cfg = if config.is_empty() {
+                None
+            } else {
+                match server::load(&config) {
+                    Some(c) => Some(c),
+                    None => return ExitCode::FAILURE,
+                }
+            };
+            backup::cli::restore(
+                &file,
+                data_dir.as_deref(),
+                config_dir.as_deref(),
+                force,
+                key_cfg.as_ref(),
+                skip_secrets,
+                passphrase.source().as_ref(),
+            )
+        }
+        BackupCommand::Show { file } => backup::cli::show(&file),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// REQ: API-007
+fn run_import(command: ImportCommand) -> ExitCode {
+    match command {
+        ImportCommand::Zone {
+            file,
+            origin,
+            output,
+        } => run_import_zone(&file, origin.as_deref(), output.as_deref()),
+        ImportCommand::Pihole {
+            path,
+            output,
+            compare,
+            wrendns,
+            samples,
+        } => run_import_pihole(
+            &path,
+            output.as_deref(),
+            compare
+                .as_deref()
+                .map(|p| (p, wrendns.as_str(), samples.as_slice())),
+        ),
+        ImportCommand::Technitium {
+            url,
+            token_file,
+            output,
+        } => run_import_technitium(&url, token_file.as_deref(), output.as_deref()),
+    }
+}
+
+// REQ: API-007 (T6.4, ADR-062)
+fn run_import_technitium(url: &str, token_file: Option<&Path>, output: Option<&Path>) -> ExitCode {
+    let token = match token_file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())),
+        None => std::env::var("TECHNITIUM_TOKEN").map_err(|_| {
+            "set TECHNITIUM_TOKEN to a Technitium API token (or use --token-file)".to_owned()
+        }),
+    };
+    let fetched = token.and_then(|t| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(technitium::fetch(url, t.trim()))
+    });
+    match fetched {
+        Ok(ex) => {
+            let im = technitium::convert(&ex, url);
+            write_import(&im, output, &format!("Technitium {}", ex.version))
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// REQ: API-007 (T6.3, ADR-061; T24.6, ADR-941)
+fn run_import_pihole(
+    path: &Path,
+    output: Option<&Path>,
+    compare: Option<(&str, &str, &[String])>,
+) -> ExitCode {
+    let im = match pihole::Source::load(path)
+        .and_then(|src| pihole::convert(&src, &path.display().to_string()))
+    {
+        Ok(im) => im,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if write_import(&im, output, &format!("Pi-hole {}", im.version)) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
+    let Some((pihole_addr, wrendns_addr, extra)) = compare else {
+        return ExitCode::SUCCESS;
+    };
+    let parsed = pihole::compare::parse_server(pihole_addr)
+        .and_then(|p| Ok((p, pihole::compare::parse_server(wrendns_addr)?)));
+    let (p, t) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut names = im.samples.clone();
+    names.extend(extra.iter().cloned());
+    let rep = pihole::compare::compare(p, t, &names);
+    eprint!("{}", compare_report(&rep, p, t));
+    ExitCode::SUCCESS
+}
+
+/// The comparison as text: the counts, each difference, and what stopped it.
+fn compare_report(
+    rep: &pihole::compare::Report,
+    p: std::net::SocketAddr,
+    t: std::net::SocketAddr,
+) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!(
+        "compared {} names through Pi-hole {p} and WrenDNS {t}: {} agree, {} differ\n",
+        rep.names,
+        rep.agree,
+        rep.names - rep.agree
+    );
+    for d in &rep.differences {
+        let _ = writeln!(
+            s,
+            "  - {} {}: Pi-hole {} {:?}, WrenDNS {} {:?}",
+            d.name, d.qtype, d.pihole.rcode, d.pihole.values, d.wrendns.rcode, d.wrendns.values
+        );
+    }
+    for e in &rep.errors {
+        let _ = writeln!(s, "  ! {e}");
+    }
+    s
+}
+
+/// Checks an importer's output loads as config, writes it, and prints the summary and notes.
+fn write_import(im: &pihole::Imported, output: Option<&Path>, from: &str) -> ExitCode {
+    // The result must load as config, with valid record values.
+    match Loader::new().toml_str("import", im.toml.clone()).load() {
+        Ok(l) => {
+            let (_, report) = LocalData::from_config(&l.config);
+            if !report.errors.is_empty() {
+                for e in &report.errors {
+                    eprintln!("error: {e}");
+                }
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    }
+    let written = match output {
+        Some(p) => std::fs::write(p, &im.toml).map_err(|e| format!("{}: {e}", p.display())),
+        None => write!(io::stdout().lock(), "{}", im.toml).map_err(|e| e.to_string()),
+    };
+    if let Err(e) = written {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!("imported from {from}: {}", im.counts);
+    for n in &im.notes {
+        eprintln!("  - {n}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_import_zone(file: &Path, origin: Option<&str>, output: Option<&Path>) -> ExitCode {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let im = import::parse_zone(&text, origin);
+    let toml = import::to_toml(&im, &file.display().to_string());
+    // The result must load as config, with valid record values.
+    match Loader::new().toml_str("import", toml.clone()).load() {
+        Ok(l) => {
+            let (_, report) = LocalData::from_config(&l.config);
+            if !report.errors.is_empty() {
+                for e in &report.errors {
+                    eprintln!("error: {e}");
+                }
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    }
+    let written = match output {
+        Some(p) => std::fs::write(p, &toml).map_err(|e| format!("{}: {e}", p.display())),
+        None => writeln!(io::stdout().lock(), "{toml}").map_err(|e| e.to_string()),
+    };
+    if let Err(e) = written {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "imported {} records from {} ({} lines skipped; see the header)",
+        im.records.len(),
+        if im.origin.is_empty() {
+            "the file"
+        } else {
+            &im.origin
+        },
+        im.skipped.len()
+    );
+    ExitCode::SUCCESS
+}
+
+/// GETs a plain-HTTP `url` with a 3-second budget; Ok on status 200.
+fn health(url: &str) -> Result<(), String> {
+    use std::io::Read;
+    use std::net::ToSocketAddrs;
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("only http:// URLs are supported")?;
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let addr = authority
+        .to_socket_addrs()
+        .map_err(|e| format!("{authority}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{authority}: no address"))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let mut s = std::net::TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    s.set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    write!(
+        s,
+        "GET /{path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|e| e.to_string())?;
+    let mut head = [0u8; 12];
+    s.read_exact(&mut head).map_err(|e| e.to_string())?;
+    match &head[9..12] {
+        b"200" => Ok(()),
+        code => Err(format!("status {}", String::from_utf8_lossy(code))),
+    }
+}
+
+fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> ExitCode {
+    let opts = selfupdate::Options {
+        channel,
+        check,
+        restart,
+        base_url: None,
+        exe: None,
+    };
+    let msg = match selfupdate::run(&opts) {
+        Ok(selfupdate::Outcome::UpToDate) => {
+            format!("WrenDNS is up to date ({channel:?} channel).")
+        }
+        Ok(selfupdate::Outcome::Available { sha256 }) => {
+            format!(
+                "An update is available ({channel:?} channel, sha256 {sha256}).\n\
+                 Install it with: wrendns self-update --restart"
+            )
+        }
+        Ok(selfupdate::Outcome::Updated { previous }) => {
+            let mut m = format!(
+                "Updated. The previous binary is kept at {}.",
+                previous.display()
+            );
+            if !restart {
+                m.push_str("\nRestart the service to use it: systemctl restart wrendns");
+            }
+            m
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = writeln!(io::stdout().lock(), "{msg}");
+    ExitCode::SUCCESS
+}
+
+fn init_logging() {
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    // `WRENDNS_LOG` is a level (`debug`) or per-module directives such as
+    // `info,wrendns_cluster::failover=debug`, so a cluster lapse can be traced without debug
+    // logging for the whole DNS server.
+    let env = std::env::var("WRENDNS_LOG").ok();
+    let mut targets = env
+        .as_deref()
+        .and_then(|v| v.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or_else(|| {
+            tracing_subscriber::filter::Targets::new()
+                .with_default(tracing::level_filters::LevelFilter::INFO)
+        });
+    // REQ: DNS-011 (ADR-098) — hickory's validator logs every unsigned NODATA (a warning) and
+    // its depth limit (an error); WrenDNS counts and logs each verdict itself.
+    // `WRENDNS_LOG_DNSSEC_LIBRARY=1` turns its log back on, for debugging validation.
+    let library = if std::env::var_os("WRENDNS_LOG_DNSSEC_LIBRARY").is_some() {
+        // INFO and above, as the console's default: the library's own noise is its warnings.
+        tracing::level_filters::LevelFilter::INFO
+    } else {
+        tracing::level_filters::LevelFilter::OFF
+    };
+    targets = targets.with_target("hickory_net::dnssec", library);
+    // The console follows `WRENDNS_LOG`. REQ: OPS-011 (ADR-156) — the support package's own log
+    // keeps INFO and above whatever it says, from the first line on.
+    let console = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_ansi(io::IsTerminal::is_terminal(&io::stderr()))
+        .with_writer(io::stderr)
+        .with_filter(targets);
+    let support = support_log::layer().with_filter(support_log::filter(
+        if library == tracing::level_filters::LevelFilter::OFF {
+            library
+        } else {
+            tracing::level_filters::LevelFilter::INFO
+        },
+    ));
+    tracing_subscriber::registry()
+        .with(console)
+        .with(support)
+        .init();
+}
+
+fn config_files(cli: Vec<PathBuf>) -> Vec<PathBuf> {
+    if !cli.is_empty() {
+        return cli;
+    }
+    if let Ok(p) = std::env::var("WRENDNS_CONFIG") {
+        return vec![PathBuf::from(p)];
+    }
+    if Path::new(DEFAULT_CONFIG).exists() {
+        return vec![PathBuf::from(DEFAULT_CONFIG)];
+    }
+    Vec::new()
+}
+
+fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
+    // REQ: NFR-001 (T10.2) — freed memory goes back to the OS at once.
+    wrendns_net::allocator_purge_at_once();
+    init_logging();
+    let files = config_files(config);
+    // REQ: API-902 (T27.13, ADR-956 §4, ADR-957) — before anything the UI stored is applied: the
+    // staged and restored guarded entries go on probation (or are dropped after two failed
+    // starts), and `WRENDNS_IGNORE_GUARDED=1` makes the node run on its files alone.
+    if let Some(file_cfg) = server::load_files_quiet(&files) {
+        guarded::probation::begin(&file_cfg, &guarded::appliers::rows(), guarded::now_secs());
+    }
+    let Some(cfg) = server::load(&files) else {
+        return Ok(ExitCode::FAILURE);
+    };
+    // REQ: CLU-008 (T6.14) — one process per data directory, held until exit.
+    let data_dir = Path::new(cfg.node.data_dir.as_str());
+    let lock = match datadir::lock(data_dir, std::time::Duration::from_secs(10)) {
+        Ok(l) => Some(l),
+        Err(datadir::LockError::Held(holder)) => {
+            error!(
+                data_dir = %data_dir.display(),
+                holder = %holder,
+                "another WrenDNS process is using this data directory; each process needs its own \
+                 (in Kubernetes, use mode: scaled rather than more replicas of one volume)"
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(datadir::LockError::Io(e)) => {
+            warn!(data_dir = %data_dir.display(), error = %e, "couldn't lock the data directory; starting anyway");
+            None
+        }
+    };
+    // REQ: OPS-011 (ADR-156) — the support package's log files, under the data directory (only
+    // with the lock: two processes would write over each other). From here on, lines reach them.
+    if lock.is_some() {
+        support_log::global().attach(data_dir, cfg.support.persist_logs);
+    }
+    // REQ: OBS-002 (T9.13) — restart counts, kept in the data directory (only with the lock:
+    // two processes would count each other).
+    let runs = if lock.is_some() {
+        datadir::record_start(data_dir)
+    } else {
+        datadir::Runs::default()
+    };
+    if runs.unclean > 0 && runs.starts > 1 {
+        info!(
+            starts = runs.starts,
+            unclean = runs.unclean,
+            "the previous run didn't stop cleanly"
+        );
+    }
+    info!(
+        version = build_info::VERSION,
+        commit = build_info::COMMIT,
+        role = ?cfg.node.role,
+        workers = server::workers(&cfg),
+        config = ?files,
+        "starting WrenDNS"
+    );
+
+    let data_dir = data_dir.to_owned();
+    // REQ: API-902 (ADR-956 §4) — a confirmed guarded listener that can't bind at this start falls
+    // back to the file's value, once, on a fresh runtime.
+    let served = guarded::serve_with_fallback(
+        cfg,
+        || server::load(&files),
+        || server::load_files_quiet(&files),
+        &guarded::appliers::rows(),
+        |cfg| {
+            // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("wrendns-rt")
+                .build()?;
+            // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU
+            // quota, on a 2-CPU replica): the three-node run asserts it, since the UDP workers are
+            // a different count.
+            info!(
+                runtime_workers = rt.metrics().num_workers(),
+                "tokio runtime ready"
+            );
+            let r = rt.block_on(server::serve(files.clone(), cfg));
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
+            r
+        },
+    );
+    if lock.is_some() {
+        datadir::record_stop(&data_dir);
+    }
+    served?;
+    info!("stopped");
+    // REQ: OPS-011 — the last lines (why it stopped) reach the log files before the process exits.
+    support_log::global().flush();
+    // REQ: API-902 (ADR-956 §4a) — a requested restart ends with exit 75, for the supervisor.
+    Ok(ExitCode::from(guarded::restart::exit_status()))
+}
+
+fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {
+    match cmd {
+        ListsCommand::Fetch { config } => {
+            init_logging();
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            match rt.block_on(lists::fetch_once(&cfg, &mut io::stdout().lock())) {
+                Ok(true) => Ok(ExitCode::SUCCESS),
+                Ok(false) => Ok(ExitCode::FAILURE),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+        ListsCommand::Compile { config, threads } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            match lists::compile_now(&cfg, threads, &mut io::stdout().lock()) {
+                Ok(true) => Ok(ExitCode::SUCCESS),
+                Ok(false) => Ok(ExitCode::FAILURE),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+        ListsCommand::Check {
+            config,
+            lists,
+            rules,
+        } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            match lists::check(&cfg, &lists, rules, &mut io::stdout().lock()) {
+                Ok(true) => Ok(ExitCode::SUCCESS),
+                Ok(false) => Ok(ExitCode::FAILURE),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
+}
+
+fn run_auth(command: AuthCommand) -> ExitCode {
+    let done = match command {
+        AuthCommand::SetupToken { config } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return ExitCode::FAILURE;
+            };
+            auth_setup::print_setup_token(&cfg)
+        }
+        AuthCommand::HashPassword => auth_setup::hash_password(),
+        AuthCommand::ResetPassword { user, config } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return ExitCode::FAILURE;
+            };
+            auth_setup::reset_password(&cfg, &user)
+        }
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_audit(command: AuditCommand) -> ExitCode {
+    let (config, verify, limit, action) = match command {
+        AuditCommand::Verify { config } => (config, true, 0, None),
+        AuditCommand::List {
+            config,
+            limit,
+            action,
+        } => (config, false, limit, action),
+    };
+    let Some(cfg) = server::load(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let done = if verify {
+        auth_setup::verify_audit(&cfg)
+    } else {
+        auth_setup::list_audit(&cfg, limit, action.as_deref())
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_explain(
+    name: &str,
+    client: std::net::IpAddr,
+    qtype: &str,
+    mac: Option<&str>,
+    client_id: Option<&str>,
+    json: bool,
+    config: Vec<PathBuf>,
+) -> ExitCode {
+    let Some(qtype_code) = wrendns_proto::rtype::from_name(qtype) else {
+        eprintln!("error: unknown query type `{qtype}`");
+        return ExitCode::FAILURE;
+    };
+    let mac = match mac.map(wrendns_config::MatchKey::parse) {
+        None => None,
+        Some(Ok(wrendns_config::MatchKey::Mac(m))) => Some(m),
+        Some(_) => {
+            eprintln!("error: --mac takes a MAC address like aa:bb:cc:dd:ee:ff");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(cfg) = server::load(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let req = explain::Request {
+        name,
+        qtype: qtype_code,
+        client,
+        mac,
+        client_id,
+    };
+    match explain::run_cli(&cfg, &req, qtype, json, &mut io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
+    let mut out = io::stdout().lock();
+    match cmd {
+        ConfigCommand::Simulate {
+            file,
+            window,
+            until,
+            url,
+            token_file,
+            json,
+            config,
+        } => {
+            drop(out);
+            Ok(run_ctl(
+                ctl::CtlCommand::Simulate {
+                    file,
+                    window,
+                    until,
+                },
+                url,
+                None,
+                token_file.as_deref(),
+                json,
+                config,
+            ))
+        }
+        ConfigCommand::Schema => {
+            let schema = serde_json::to_string_pretty(&wrendns_config::json_schema())
+                .map_err(io::Error::other)?;
+            writeln!(out, "{schema}")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ConfigCommand::Check {
+            files,
+            no_env,
+            print,
+            show_secrets,
+        } => {
+            let mut loader = files.iter().fold(Loader::new(), Loader::file);
+            if !no_env {
+                loader = loader.process_env();
+            }
+            match loader.load() {
+                Ok(cfg) => {
+                    for w in &cfg.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    // REQ: UPS-013 — an upstream `source` this machine doesn't hold.
+                    for w in wrendns_upstream::source_warnings(&cfg.config) {
+                        eprintln!("warning: {w}");
+                    }
+                    // Record values and hosts files are checked too (DNS-010).
+                    let (_, report) = LocalData::from_config(&cfg.config);
+                    for w in &report.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    if !report.errors.is_empty() {
+                        for e in &report.errors {
+                            eprintln!("error: {e}");
+                        }
+                        eprintln!("config invalid: {} error(s)", report.errors.len());
+                        return Ok(ExitCode::FAILURE);
+                    }
+                    if print {
+                        let text = printed_config(&cfg.config, show_secrets)?;
+                        write!(out, "{text}")?;
+                    } else {
+                        writeln!(out, "config OK")?;
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(errors) => {
+                    for e in &errors {
+                        eprintln!("error: {e}");
+                    }
+                    eprintln!("config invalid: {} error(s)", errors.len());
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
+}
+
+/// REQ: API-014 (ADR-903 §4) — `config check --print`: the effective configuration as TOML,
+/// its credentials redacted unless `show_secrets`.
+fn printed_config(cfg: &wrendns_config::Config, show_secrets: bool) -> io::Result<String> {
+    if show_secrets {
+        return toml::to_string(cfg).map_err(io::Error::other);
+    }
+    let mut shown = cfg.clone();
+    wrendns_config::credentials::redact_config(&mut shown);
+    toml::to_string(&shown).map_err(io::Error::other)
+}
+
+/// `wrendns services list`.
+fn run_services_list() -> io::Result<ExitCode> {
+    let mut out = io::stdout().lock();
+    writeln!(
+        out,
+        "{:<14} {:<26} {:<10} DOMAINS",
+        "ID", "NAME", "CATEGORY"
+    )?;
+    for s in wrendns_config::services::catalog() {
+        let domains: Vec<&str> = s
+            .rules
+            .iter()
+            .map(|r| r.trim_start_matches("||").trim_end_matches('^'))
+            .collect();
+        writeln!(
+            out,
+            "{:<14} {:<26} {:<10} {}",
+            s.id,
+            s.name,
+            s.category,
+            domains.join(" ")
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_presets(cmd: PresetsCommand) -> io::Result<ExitCode> {
+    use wrendns_upstream::Protocol;
+    use wrendns_upstream::presets::{ExpandOptions, catalog, find};
+
+    let mut out = io::stdout().lock();
+    match cmd {
+        PresetsCommand::List => {
+            let presets = catalog().map_err(io::Error::other)?;
+            writeln!(
+                out,
+                "{:<20} {:<42} {:<8} {:<6} {:<4} PROTOCOLS",
+                "ID", "NAME", "FILTERS", "DNSSEC", "ECS"
+            )?;
+            for p in presets {
+                let yn = |b: bool| if b { "yes" } else { "no" };
+                let filtering = format!("{:?}", p.filtering).to_lowercase();
+                writeln!(
+                    out,
+                    "{:<20} {:<42} {:<8} {:<6} {:<4} {}",
+                    p.id,
+                    p.name,
+                    filtering,
+                    yn(p.dnssec),
+                    yn(p.ecs),
+                    p.protocols().join(",")
+                )?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PresetsCommand::Show {
+            id,
+            proto,
+            params,
+            no_ipv6,
+            group,
+        } => {
+            let Some(preset) = find(&id) else {
+                eprintln!("error: unknown preset `{id}` (see `wrendns presets list`)");
+                return Ok(ExitCode::FAILURE);
+            };
+            let mut opts = ExpandOptions {
+                no_ipv6,
+                group,
+                ..ExpandOptions::default()
+            };
+            for p in &proto {
+                opts.protocols.push(match p.as_str() {
+                    "udp" => Protocol::Udp,
+                    "tcp" => Protocol::Tcp,
+                    "tls" | "dot" => Protocol::Tls,
+                    "https" | "doh" => Protocol::Https,
+                    other => {
+                        eprintln!("error: unknown protocol `{other}` (udp, tcp, tls, https)");
+                        return Ok(ExitCode::FAILURE);
+                    }
+                });
+            }
+            for kv in &params {
+                let Some((k, v)) = kv.split_once('=') else {
+                    eprintln!("error: --param expects KEY=VALUE, got `{kv}`");
+                    return Ok(ExitCode::FAILURE);
+                };
+                opts.params.insert(k.to_string(), v.to_string());
+            }
+            match preset.expand(&opts) {
+                Ok(exp) => {
+                    writeln!(out, "# {} — {}", preset.name, preset.homepage)?;
+                    for (url, why) in &exp.skipped {
+                        writeln!(out, "# skipped {url}: {why}")?;
+                    }
+                    write!(out, "{}", exp.to_toml().map_err(io::Error::other)?)?;
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
+}
