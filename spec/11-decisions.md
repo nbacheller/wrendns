@@ -5538,7 +5538,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Test plan:** `api_007_t35_1_decode_entities_table` (a double-escaped case among them), `api_007_t35_1_clean_text_strips_controls_after_decoding`, `api_007_t35_1_import_decodes_names_and_tells_duplicates_apart`, `api_007_t35_1_import_leaves_domain_columns_alone`, `dsc_901_t35_1_router_and_ha_names_are_decoded_where_read`, `api_007_t35_1_repair_decodes_stored_names_and_what_names_them`, `api_007_t35_1_repair_is_idempotent_across_passes_and_restarts`, `api_007_t35_1_file_entries_are_reported_and_never_rewritten`, `api_007_t35_1_a_replica_sees_the_repaired_names`, `api_007_t35_1_the_task_repairs_and_reloads_the_node`, and `npm run check` (`check-no-html`).
 
-## ADR-1028 — One release of old names: what keeps working across the rename, and what is kept spelled the old way (Proposed 2026-11-19, T33.2)
+## ADR-1028 — One release of old names: what keeps working across the rename, and what is kept spelled the old way (Accepted 2026-11-19, T33.2)
 
 **Context:** the owner decided (ADR-1026, spec/10 T33.2) that the old paths, environment variables, command, metrics and probe name keep working for one release, that nodes of different versions must keep working together during a rolling upgrade, and that no one is logged out and no token stops working. The decision does not say, for each name, which direction wins, what is written and what is only read, or which names are stored in files and so must never change. These are the choices.
 
@@ -5556,7 +5556,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a rolling upgrade works in both directions between the last release before the rename and the first after it; the cost is a duplicate metric set on `/metrics` (about twice the size of one scrape) and a handful of `legacy*` modules for one release.
 
-## ADR-1029 — `scripts/rebrand.py`: the rename is a script, and the rule for what is history (Proposed 2026-11-19, T33.2)
+## ADR-1029 — `scripts/rebrand.py`: the rename is a script, and the rule for what is history (Accepted 2026-11-19, T33.2)
 
 **Context:** two branches (the CMDB and the secret-members fix) merge into `feat/ipam-integrations` and then `main` before the rename lands, and more may follow, so a hand rename would conflict on every file. The rename also has to keep some old spellings (the licences, upstream's copyright, the history of the project).
 
@@ -5569,7 +5569,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** `python3 scripts/rebrand.py --check` can run in CI after the rename to catch a merged branch that brings the old name back (it is not wired in yet: the other branches are still to merge).
 
-## ADR-1030 — The brand in the product and on the site (Proposed 2026-11-19, T33.2, T33.3)
+## ADR-1030 — The brand in the product and on the site (Accepted 2026-11-19, T33.2, T33.3)
 
 **Context:** `brand/` (the brand book, `tokens.json`, the logo files) was set by the owner on 2026-11-19. The rename's UI, README, Home Assistant and site work follow it; the book leaves open how a dense admin UI uses a scale made for pages, where fonts come from, and how a site that needs a payment link keeps no secret.
 
