@@ -9,7 +9,7 @@ version = "0.8.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/nbacheller/telltaledns"
+repository = "https://github.com/nbacheller/wrendns"
 publish = false
 
 [workspace.lints.rust]

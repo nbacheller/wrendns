@@ -27,7 +27,7 @@
     <li><a href="#movein">Move in from Pi-hole or Technitium</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
   </ul>
-  <div class="callout"><p><b>Read the release notes first.</b> Releases before 1.0 can still change configuration keys and APIs, and each release's notes call out every such change. They're on the <a href="https://github.com/nbacheller/telltaledns/releases">releases page</a>.</p></div>
+  <div class="callout"><p><b>Read the release notes first.</b> Releases before 1.0 can still change configuration keys and APIs, and each release's notes call out every such change. They're on the <a href="https://github.com/nbacheller/wrendns/releases">releases page</a>.</p></div>
 </section>
 
 <section id="version">
@@ -111,7 +111,7 @@ sudo wrendns self-update --channel edge --restart  # builds from main</code></pr
     <li><b>A half-upgraded cluster is fine.</b> Versions one cluster protocol apart work together (N and N−1, either way round).</li>
     <li><b>A replica older than its primary keeps working</b>, unless the primary starts using settings the older version doesn't know. Then the replica keeps serving its last version, and its sync status says to upgrade it.</li>
   </ul>
-  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
 </section>
 
 <section id="backup">
@@ -159,7 +159,7 @@ wrendns backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup t
     <li><b>Running it as root is fine:</b> files are given the data directory's owner, so the <code>wrendns</code> service user can read them.</li>
     <li><b>A cluster member</b> starts on its own after a restore: run <code>wrendns cluster init</code>, or join it again (<a href="guide-cluster.html#create">Build a cluster</a>).</li>
   </ul>
-  <p class="muted">Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#backups-and-moving-to-a-new-machine">Backups and moving to a new machine</a>.</p>
+  <p class="muted">Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#backups-and-moving-to-a-new-machine">Backups and moving to a new machine</a>.</p>
 </section>
 
 <section id="movein">
@@ -183,7 +183,7 @@ wrendns backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup t
       </ol>
       <p><b>Or from the admin page:</b> <b>Settings → Pi-hole</b> (admins only) takes the same export. It shows what would be added, changed or skipped, and nothing changes until you type <code>IMPORT</code> and apply the preview. The apply is one configuration change, recorded in the audit log as <code>import.pihole</code>. Names your config files define are skipped, and the DNSSEC mode stays in the file.</p>
       <p><b>Check the answers match:</b> <code>wrendns import pihole PATH --compare 192.168.1.251</code> (or the same address in the page's "Compare" box) resolves a sample of your names through the Pi-hole and through the node's resolver, and lists each name whose answers differ. Run the imported configuration first, or the comparison shows what the node answers now.</p>
-      <p class="muted">Every row of the mapping: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#moving-from-pi-hole">Moving from Pi-hole</a>.</p>
+      <p class="muted">Every row of the mapping: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#moving-from-pi-hole">Moving from Pi-hole</a>.</p>
     </div>
 
     <div class="panel" id="from-technitium"><h3>From Technitium</h3>
@@ -192,7 +192,7 @@ wrendns backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup t
       <p>Pass the token in <code>TECHNITIUM_TOKEN</code> or in a file with <code>--token-file</code>. It's never a command-line argument, so it doesn't show up in <code>ps</code>, and it never appears in the output.</p>
       <p><b>What comes over:</b> forwarders, primary zones as local records, forwarder zones (conditional forwarding), block list URLs and blocked and allowed zones, the blocking type, Advanced Blocking app groups, the blocking bypass list, DHCP reservations as named devices, and the DNSSEC, rate-limit, and cache-saving settings.</p>
       <p><b>What doesn't:</b> the header lists it, including secondary and stub zones, forwarders given only by name, the DHCP server, and encrypted listeners (set those up in <a href="guide-encrypted.html">Encrypted DNS</a>).</p>
-      <p class="muted">Technitium's backup files use a private binary format, so the importer reads the documented API instead. Every row of the mapping: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#moving-from-technitium">Moving from Technitium</a>.</p>
+      <p class="muted">Technitium's backup files use a private binary format, so the importer reads the documented API instead. Every row of the mapping: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#moving-from-technitium">Moving from Technitium</a>.</p>
     </div>
   </div>
   <p><b>Zone files from any DNS server</b> (Technitium's <b>Zones → Export Zone</b>, BIND, PowerDNS) become <code>[[record]]</code> entries for your config:</p>

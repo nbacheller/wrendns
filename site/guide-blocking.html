@@ -79,7 +79,7 @@ wrendns ctl lists refresh --wait       # update every list now (or name some; --
     </div>
   </div>
   <div class="callout"><p><b>A failed refresh never loses a list.</b> The last good copy stays in use, and a failing list is retried after 5 minutes, then 10, 20, and so on up to hourly. Downloads that can't be a list (an empty body, a captive portal's HTML page, mostly invalid lines) are refused.</p></div>
-  <p class="muted">Every <code>[[list]]</code> and <code>[filter]</code> key is in the <a href="config.html">configuration reference</a>; compiling and memory sizing are in the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#compiling">detailed docs</a>.</p>
+  <p class="muted">Every <code>[[list]]</code> and <code>[filter]</code> key is in the <a href="config.html">configuration reference</a>; compiling and memory sizing are in the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#compiling">detailed docs</a>.</p>
 </section>
 
 <section id="formats">
@@ -99,7 +99,7 @@ wrendns ctl lists refresh --wait       # update every list now (or name some; --
       <tr><td><code>/^ad[0-9]+\./</code> or <code>(^|\.)doubleclick\.net$</code></td><td>AdBlock regex, or Pi-hole regex</td></tr>
     </tbody>
   </table></div>
-  <p class="muted">Rules that only make sense in a browser (cosmetic <code>##</code> rules, URL paths, <code>$third-party</code>) are counted as <i>unsupported</i> and skipped, not treated as errors. The <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#list-syntax">full syntax table</a> has every modifier.</p>
+  <p class="muted">Rules that only make sense in a browser (cosmetic <code>##</code> rules, URL paths, <code>$third-party</code>) are counted as <i>unsupported</i> and skipped, not treated as errors. The <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#list-syntax">full syntax table</a> has every modifier.</p>
 </section>
 
 <section id="answers">
@@ -283,7 +283,7 @@ mode = "shadow"          # enforce (the default) or shadow</code></pre>
       </ul>
     </div>
   </div>
-  <p class="muted">Explain covers the query name only. To see why a CNAME target was blocked, explain the target name. More in the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#why-was-it-blocked-explain">detailed docs</a>.</p>
+  <p class="muted">Explain covers the query name only. To see why a CNAME target was blocked, explain the target name. More in the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#why-was-it-blocked-explain">detailed docs</a>.</p>
 </section>
 
 <section id="trouble">

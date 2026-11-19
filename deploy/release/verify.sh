@@ -8,7 +8,7 @@
 # Needs: curl, minisign, sha256sum, helm, cosign, and docker (buildx) or crane.
 set -eu
 v=${1:?usage: verify.sh <X.Y.Z>}
-repo=${GITHUB_REPOSITORY:-nbacheller/telltaledns}
+repo=${GITHUB_REPOSITORY:-nbacheller/wrendns}
 owner=${repo%%/*}
 image="ghcr.io/$owner/wrendns"
 chart="oci://ghcr.io/$owner/charts/wrendns"

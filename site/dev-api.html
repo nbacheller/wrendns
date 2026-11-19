@@ -32,7 +32,7 @@
     <li><b>Typed, optional, and named for what it does.</b> A <code>bool</code> is a boolean (<code>nameNot=true</code>), a choice is an enum, a number is a number. Names are camelCase. A new parameter is optional, so an old client keeps working.</li>
     <li><b>The doc comment is the documentation.</b> The comments on the model's fields become the OpenAPI descriptions, which an agent reads to decide how to call the operation. Write them for that reader, and say the constraints ("Needs <code>name</code>").</li>
     <li><b>Refuse a mistake; never ignore it.</b> A parameter that makes no sense without another is a 400 whose message names the parameter and whose hint says how to fix it. A silent no-op looks like a bug in the result.</li>
-    <li><b>Every operation is agent-ready</b> (AGT-001 to AGT-005, linted by <code>.spectral.yaml</code>), and exposed as an MCP tool where it fits the catalogue in <a href="https://github.com/nbacheller/telltaledns/blob/main/spec/13-agent-api-and-mcp.md"><code>spec/13</code></a>.</li>
+    <li><b>Every operation is agent-ready</b> (AGT-001 to AGT-005, linted by <code>.spectral.yaml</code>), and exposed as an MCP tool where it fits the catalogue in <a href="https://github.com/nbacheller/wrendns/blob/main/spec/13-agent-api-and-mcp.md"><code>spec/13</code></a>.</li>
     <li><b>An older node must not answer wrongly.</b> If the parameter reaches other nodes, one that doesn't know it will ignore it and answer as if it were absent. See <a href="dev-cluster.html">Extend the cluster protocol</a>.</li>
     <li><b>Say what it costs.</b> If a parameter makes a search slower, the description and the docs say so and what keeps it fast (a time range).</li>
   </ul>

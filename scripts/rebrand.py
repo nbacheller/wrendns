@@ -30,8 +30,9 @@ What it keeps (the KEEP list; ADR-1029 states the history rule)
 * KEEP_TOKENS: attributions that point at upstream (`paimonsoror/telltaledns`: the repository,
   its issues and commits; install, download, image and site URLs are the project's own and move
   to the fork's owner and to wrendns.com, see RULES),
-  the upstream copyright line (`The TelltaleDNS Authors`) and `nbacheller/telltaledns`, the GitHub
-  repository's slug, which stays until the owner renames the repository.
+  and the upstream copyright line (`The TelltaleDNS Authors`). The repository's own slug moved
+  from `nbacheller/telltaledns` to `nbacheller/wrendns` when the owner renamed it (T33.2), so the
+  slug is a RULES entry now and the old one survives only in history (KEEP_SECTIONS, KEEP_PATHS).
 * KEEP_SECTIONS: text that records the rename or the old name as history. The rule: *current-tense
   prose and every identifier is renamed; a statement of what the project was called, and the
   records of the rename itself, are history and stay.* Concretely: ADR-1026, ADR-1028 to
@@ -63,26 +64,27 @@ ROOT = Path(__file__).resolve().parent.parent
 KEEP_TOKENS = [
     "paimonsoror/telltaledns",  # upstream: repository, issues, releases, badges
     "The TelltaleDNS Authors",  # the upstream copyright line
-    "nbacheller/telltaledns",  # this repository's slug, until it is renamed (ADR-1026)
 ]
 
 RULES = [
     # The project's own artifacts live under the fork's owner (ADR-1029): container images and
     # charts (upstream published `ghcr.io/paimonsoror/telltale`; it will never publish `wrendns`),
     # install and download URLs, raw files, the docs a link opens, badges, and the site.
+    # The repository itself was renamed from nbacheller/telltaledns (T33.2): every form of the old slug.
+    ("sub", r"nbacheller/telltaledns", "nbacheller/wrendns"),
     ("sub", r"ghcr\.io/(?:nbacheller|paimonsoror)/(charts/)?telltale(?:dns)?\b", r"ghcr.io/nbacheller/\1wrendns"),
-    ("sub", r"raw\.githubusercontent\.com/paimonsoror/telltaledns", "raw.githubusercontent.com/nbacheller/telltaledns"),
-    ("sub", r"github\.com/paimonsoror/telltaledns/(releases|blob|tree|actions|security|commit/)", r"github.com/nbacheller/telltaledns/\1"),
+    ("sub", r"raw\.githubusercontent\.com/paimonsoror/telltaledns", "raw.githubusercontent.com/nbacheller/wrendns"),
+    ("sub", r"github\.com/paimonsoror/telltaledns/(releases|blob|tree|actions|security|commit/)", r"github.com/nbacheller/wrendns/\1"),
     # the repository a thing points its users or its metadata at (T33.2: only attribution text keeps upstream's):
     # the fetch user agent `(+https://...)`, a quoted URL (`repository = "..."`, an OCI label), a URL ending its
     # line (a chart's `home` and `sources`, a `git clone`), and the release check's default repository
-    ("sub", r"(?<=\(\+)https://github\.com/paimonsoror/telltaledns(?=\))", "https://github.com/nbacheller/telltaledns"),
-    ("sub", r'(?<=")https://github\.com/paimonsoror/telltaledns(?=")', "https://github.com/nbacheller/telltaledns"),
-    ("sub", r"(?<=[ :])https://github\.com/paimonsoror/telltaledns(?=\s*$)", "https://github.com/nbacheller/telltaledns"),
-    ("sub", r"(?<=:-)paimonsoror/telltaledns(?=\})", "nbacheller/telltaledns"),
-    ("sub", r"img\.shields\.io/github/v/release/paimonsoror/telltaledns", "img.shields.io/github/v/release/nbacheller/telltaledns"),
+    ("sub", r"(?<=\(\+)https://github\.com/paimonsoror/telltaledns(?=\))", "https://github.com/nbacheller/wrendns"),
+    ("sub", r'(?<=")https://github\.com/paimonsoror/telltaledns(?=")', "https://github.com/nbacheller/wrendns"),
+    ("sub", r"(?<=[ :])https://github\.com/paimonsoror/telltaledns(?=\s*$)", "https://github.com/nbacheller/wrendns"),
+    ("sub", r"(?<=:-)paimonsoror/telltaledns(?=\})", "nbacheller/wrendns"),
+    ("sub", r"img\.shields\.io/github/v/release/paimonsoror/telltaledns", "img.shields.io/github/v/release/nbacheller/wrendns"),
     # the signing identity of the images (cosign --certificate-identity-regexp), written as a regex
-    ("sub", r"github\\\.com/paimonsoror/telltaledns/\\\.github", r"github\\.com/nbacheller/telltaledns/\\.github"),
+    ("sub", r"github\\\.com/paimonsoror/telltaledns/\\\.github", r"github\\.com/nbacheller/wrendns/\\.github"),
     ("sub", r"https?://paimonsoror\.github\.io/telltaledns/?", "https://wrendns.com/"),
     ("protect", KEEP_TOKENS),
     # the product's old domains (problem type URIs, the Kubernetes label prefix) move to the new one

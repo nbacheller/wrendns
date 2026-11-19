@@ -61,7 +61,7 @@
       <p>Each node asks its own listeners a question every 30 seconds. The <b>Upstreams</b> page's <b>Answer quality</b> card shows each upstream's DNSSEC verdicts and the error codes it attaches.</p>
     </div>
   </div>
-  <p class="muted">The same health answer is at <code>GET /api/v1/system/health</code>. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#health">Health</a>, <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#query-log">Query log</a>, <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#host-resources">Host resources</a>.</p>
+  <p class="muted">The same health answer is at <code>GET /api/v1/system/health</code>. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#health">Health</a>, <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#query-log">Query log</a>, <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#host-resources">Host resources</a>.</p>
 </section>
 
 <section id="prometheus">
@@ -82,7 +82,7 @@ scrape_configs:
   - job_name: wrendns-metrics
     static_configs:
       - targets: ["&lt;node&gt;:9153"]</code></pre></li>
-        <li>In Grafana, import <a href="https://github.com/nbacheller/telltaledns/blob/main/deploy/grafana/wrendns-dashboard.json"><code>deploy/grafana/wrendns-dashboard.json</code></a>, then pick the Prometheus data source, job, and instance at the top.</li>
+        <li>In Grafana, import <a href="https://github.com/nbacheller/wrendns/blob/main/deploy/grafana/wrendns-dashboard.json"><code>deploy/grafana/wrendns-dashboard.json</code></a>, then pick the Prometheus data source, job, and instance at the top.</li>
       </ol>    </div>
 
     <div class="panel" id="prom-helm"><h3>Kubernetes (Helm)</h3>
@@ -105,9 +105,9 @@ grafanaDashboard:
     </div>
   </div>
   <div class="callout">
-    <p><b>From a latency spike to the query behind it.</b> Each bucket of <code>wrendns_query_duration_seconds</code> carries an exemplar. Start Prometheus with <code>--enable-feature=exemplar-storage</code>, and the bundled dashboard shows them as dots. In Grafana's Prometheus data source, under <i>Exemplars</i>, add a link with label name <code>trace_id</code> and URL <code>https://&lt;your WrenDNS&gt;/#/queries?trace=${__value.raw}</code>. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#exemplars-and-traces">Exemplars and traces</a>.</p>
+    <p><b>From a latency spike to the query behind it.</b> Each bucket of <code>wrendns_query_duration_seconds</code> carries an exemplar. Start Prometheus with <code>--enable-feature=exemplar-storage</code>, and the bundled dashboard shows them as dots. In Grafana's Prometheus data source, under <i>Exemplars</i>, add a link with label name <code>trace_id</code> and URL <code>https://&lt;your WrenDNS&gt;/#/queries?trace=${__value.raw}</code>. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#exemplars-and-traces">Exemplars and traces</a>.</p>
   </div>
-  <p class="muted">The main metric names are in the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#monitoring">Monitoring docs</a>.</p>
+  <p class="muted">The main metric names are in the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#monitoring">Monitoring docs</a>.</p>
 </section>
 
 <section id="slo">
@@ -141,7 +141,7 @@ window_days = 30             # 1 to 90</code></pre>
     <li><b>When it warns:</b> a <b>fast</b> burn (14.4× over 1 hour and 5 minutes) or a <b>slow</b> burn (6× over 6 hours and 30 minutes) turns the health icon amber and fires <code>slo_burn</code> alert rules. A pair needs at least 50 answers in its short window and 10 bad ones in its long window, so one SERVFAIL on a quiet night stays quiet.</li>
     <li><b>Where to look:</b> the dashboard's <b>Service level</b> card (Advanced view), the Grafana dashboard's <b>Service level</b> row, <code>GET /api/v1/stats/slo</code>, and the MCP tool <code>slo_status</code>.</li>
   </ul>
-  <p class="muted">What counts and how burn rates work: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#service-level-objectives">Service-level objectives</a>.</p>
+  <p class="muted">What counts and how burn rates work: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#service-level-objectives">Service-level objectives</a>.</p>
 </section>
 
 <section id="alerts">
@@ -189,7 +189,7 @@ to = ["phone"]</code></pre>
       <p class="muted"><b>Admins only:</b> a destination's <code>token_file</code> and <code>password_file</code>, and the address of one that has a credential (a token file, a password file, or a password in its URL), are changed by an admin; operators see them read-only and agents get <code>403</code>. A file set through the UI or API must be in <code>[node] secret_file_dirs</code> (<code>/run/secrets</code>, <code>/var/run/secrets</code>, <code>/etc/wrendns/secrets</code> by default) and never under <code>/proc</code>, the data directory or <code>/var/run/secrets/kubernetes.io</code> (<code>422 path_not_allowed</code>). An admin's change of where a credential goes is audited as <code>credential.redirect</code> and sent by the <code>credential_redirected</code> condition.</p>
     </div>
   </div>
-  <p><b>Rules worth starting with:</b> <code>upstream_down</code>, <code>servfail_rate</code>, <code>list_failing</code>, <code>disk_full</code>, <code>slo_burn</code>, <code>probe_failing</code>, and <code>cert_expiring</code> if you serve encrypted DNS. In a cluster add <code>node_down</code>, and <code>sync_lag</code> with <code>for_secs</code> around 300 so a normal sync stays quiet. Every condition, and what each sends one alert per, is in the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#alerts">Alerts docs</a>.</p>
+  <p><b>Rules worth starting with:</b> <code>upstream_down</code>, <code>servfail_rate</code>, <code>list_failing</code>, <code>disk_full</code>, <code>slo_burn</code>, <code>probe_failing</code>, and <code>cert_expiring</code> if you serve encrypted DNS. In a cluster add <code>node_down</code>, and <code>sync_lag</code> with <code>for_secs</code> around 300 so a normal sync stays quiet. Every condition, and what each sends one alert per, is in the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#alerts">Alerts docs</a>.</p>
   <ul>
     <li>A condition must hold for <code>for_secs</code> (60 by default) before it alerts, and a "Resolved" message follows when it clears. Anomalies, updates, new devices, pending plans, failed rollouts, credential redirects, and secret exports go out once each.</li>
     <li>In a cluster the primary checks the rules for the whole cluster, so you get one message, not one per node. Nodes in maintenance are left out of per-node rules.</li>
@@ -235,7 +235,7 @@ name = "siem"
 type = "syslog"                           # RFC 5424
 address = "udp://192.168.1.20:514"        # or tcp://, or tls://host:6514
 statuses = ["blocked"]                    # only blocks; empty means every event</code></pre>
-  <p class="muted">A destination that's slow or down drops events and counts them (<code>wrendns_sink_dropped_total</code>, <code>wrendns_dnstap_dropped_total</code>, <code>wrendns_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>; they belong to the sink's name and URL, so a name re-used for another collector never replays the old one's events. A removed sink sends what it holds and stops within two seconds. Every option: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
+  <p class="muted">A destination that's slow or down drops events and counts them (<code>wrendns_sink_dropped_total</code>, <code>wrendns_dnstap_dropped_total</code>, <code>wrendns_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>; they belong to the sink's name and URL, so a name re-used for another collector never replays the old one's events. A removed sink sends what it holds and stops within two seconds. Every option: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
 </section>
 
 <section id="exclusions">
@@ -264,7 +264,7 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
     <li>It applies from the next query on, on every node of a cluster (<code>[exclusions]</code> is shared). Queries logged before stay.</li>
     <li>The dashboard's totals leave excluded queries out, so they'll be lower than Prometheus's. <code>wrendns_queries_excluded_total</code> counts them.</li>
   </ul>
-  <div class="callout"><p><b>Hiding names or devices for privacy instead?</b> Use <code>[telemetry.qlog] privacy_level</code>: <code>1</code> hashes names, <code>2</code> also drops client addresses, <code>3</code> keeps no per-query log. Counts, graphs, and latency keep working, but anomaly detection and new-device alerts are off at 1 and above. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#query-log">Privacy levels</a>.</p></div>
+  <div class="callout"><p><b>Hiding names or devices for privacy instead?</b> Use <code>[telemetry.qlog] privacy_level</code>: <code>1</code> hashes names, <code>2</code> also drops client addresses, <code>3</code> keeps no per-query log. Counts, graphs, and latency keep working, but anomaly detection and new-device alerts are off at 1 and above. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#query-log">Privacy levels</a>.</p></div>
 </section>
 
 <section id="internal-names">
@@ -294,7 +294,7 @@ enabled = true
 learning_days = 7
 sensitivity = "normal"         # low | normal | high
 ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity checks)</code></pre>
-  <p class="muted">To hear about findings, add an alert rule with <code>when = "anomaly"</code>. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#device-anomalies">Device anomalies</a>.</p>
+  <p class="muted">To hear about findings, add an alert rule with <code>when = "anomaly"</code>. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#device-anomalies">Device anomalies</a>.</p>
 </section>
 
 <section id="probes">
@@ -312,7 +312,7 @@ targets = ["udp://10.50.5.112:53"]     # extra: by IP, e.g. a load balancer's ad
     <li>Two failures in a row turn the health icon amber; an expired certificate turns it red. Alert on it with <code>probe_failing</code> and <code>cert_expiring</code> rules.</li>
     <li>Probe queries stay out of the query log, top lists, device analytics, and event sinks.</li>
   </ul>
-  <p class="muted">Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#listener-checks">Listener checks</a>.</p>
+  <p class="muted">Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#listener-checks">Listener checks</a>.</p>
 </section>
 
 <section id="which">

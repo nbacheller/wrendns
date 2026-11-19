@@ -26,16 +26,16 @@
       <thead><tr><th>For</th><th>Get it</th><th>What it is</th></tr></thead>
       <tbody>
         <tr><td>A Raspberry Pi or any Linux box, one command</td>
-            <td><a href="https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/systemd/install.sh"><code>install.sh</code></a></td>
+            <td><a href="https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/systemd/install.sh"><code>install.sh</code></a></td>
             <td>Checks the release's signature and the binary's SHA-256, then installs a sandboxed systemd service. It also moves an install made before the rename. <a href="start.html#native">Steps</a>.</td></tr>
         <tr><td>Linux on x86-64</td>
-            <td><a href="https://github.com/nbacheller/telltaledns/releases/latest/download/wrendns-x86_64-linux"><code>wrendns-x86_64-linux</code></a></td>
+            <td><a href="https://github.com/nbacheller/wrendns/releases/latest/download/wrendns-x86_64-linux"><code>wrendns-x86_64-linux</code></a></td>
             <td>One static binary.</td></tr>
         <tr><td>Linux on arm64 (Pi 3, 4, 5, Zero 2 W with a 64-bit OS)</td>
-            <td><a href="https://github.com/nbacheller/telltaledns/releases/latest/download/wrendns-aarch64-linux"><code>wrendns-aarch64-linux</code></a></td>
+            <td><a href="https://github.com/nbacheller/wrendns/releases/latest/download/wrendns-aarch64-linux"><code>wrendns-aarch64-linux</code></a></td>
             <td>One static binary.</td></tr>
         <tr><td>Linux on 32-bit ARM</td>
-            <td><a href="https://github.com/nbacheller/telltaledns/releases/latest/download/wrendns-armv7-linux"><code>wrendns-armv7-linux</code></a></td>
+            <td><a href="https://github.com/nbacheller/wrendns/releases/latest/download/wrendns-armv7-linux"><code>wrendns-armv7-linux</code></a></td>
             <td>One static binary.</td></tr>
         <tr><td>Docker or Docker Compose</td>
             <td><code>ghcr.io/nbacheller/wrendns:latest</code></td>
@@ -44,12 +44,12 @@
             <td><code>oci://ghcr.io/nbacheller/charts/wrendns</code></td>
             <td>The Helm chart. <a href="start.html#k8s">Steps</a>, and <a href="helm-values.html">every value</a>.</td></tr>
         <tr><td>Home Assistant</td>
-            <td><a href="https://github.com/nbacheller/telltaledns/tree/main/integrations/home-assistant">The integration</a></td>
+            <td><a href="https://github.com/nbacheller/wrendns/tree/main/integrations/home-assistant">The integration</a></td>
             <td>Sensors, blocking switches, an event for each new anomaly and device quarantine.</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="muted">Each release also publishes <code>SHA256SUMS</code> and its signature, a signed <code>releases.json</code>, a CycloneDX SBOM per binary and the release notes, on the <a href="https://github.com/nbacheller/telltaledns/releases/latest">latest release</a> page. Builds of <code>main</code> are on the <code>edge</code> channel. To check what you downloaded, see <a href="guide-upgrades.html">Upgrades, backups, and moving in</a>.</p>
+  <p class="muted">Each release also publishes <code>SHA256SUMS</code> and its signature, a signed <code>releases.json</code>, a CycloneDX SBOM per binary and the release notes, on the <a href="https://github.com/nbacheller/wrendns/releases/latest">latest release</a> page. Builds of <code>main</code> are on the <code>edge</code> channel. To check what you downloaded, see <a href="guide-upgrades.html">Upgrades, backups, and moving in</a>.</p>
 </section>
 
 <!-- @support -->

@@ -185,7 +185,7 @@ impl Client {
             tls: TlsConnector::from(Arc::new(cfg)),
             resolver,
             user_agent: format!(
-                "WrenDNS/{} (+https://github.com/nbacheller/telltaledns)",
+                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
                 env!("CARGO_PKG_VERSION")
             ),
             link_local: false,
@@ -257,7 +257,7 @@ impl Client {
             tls: TlsConnector::from(Arc::new(cfg)),
             resolver,
             user_agent: format!(
-                "WrenDNS/{} (+https://github.com/nbacheller/telltaledns)",
+                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
                 env!("CARGO_PKG_VERSION")
             ),
             link_local: false,
@@ -281,7 +281,7 @@ impl Client {
             tls: TlsConnector::from(Arc::new(cfg)),
             resolver,
             user_agent: format!(
-                "WrenDNS/{} (+https://github.com/nbacheller/telltaledns)",
+                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
                 env!("CARGO_PKG_VERSION")
             ),
             link_local: false,

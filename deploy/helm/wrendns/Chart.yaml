@@ -9,8 +9,8 @@ appVersion: "edge"
 kubeVersion: ">=1.26.0-0"
 home: https://wrendns.com/
 sources:
-  - https://github.com/nbacheller/telltaledns
+  - https://github.com/nbacheller/wrendns
 keywords: [dns, resolver, adblock, dot, doh, prometheus]
 maintainers:
   - name: WrenDNS
-    url: https://github.com/nbacheller/telltaledns
+    url: https://github.com/nbacheller/wrendns

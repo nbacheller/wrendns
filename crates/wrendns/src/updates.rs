@@ -14,7 +14,7 @@ use wrendns_api::model::UpdateStatus;
 use crate::build_info;
 use crate::selfupdate::{RELEASE_KEY, verify_signature};
 
-const RELEASES: &str = "https://github.com/nbacheller/telltaledns/releases";
+const RELEASES: &str = "https://github.com/nbacheller/wrendns/releases";
 const MAX_INDEX: u64 = 256 * 1024;
 
 /// The signed index CI publishes next to each release's binaries.

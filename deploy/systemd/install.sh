@@ -1,7 +1,7 @@
 #!/bin/sh
 # WrenDNS native installer (REQ: OPS-004, spec/08 §4, ADR-038).
 #
-#   curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/systemd/install.sh
+#   curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/systemd/install.sh
 #   less install.sh                 # read it first
 #   sudo sh install.sh              # latest release;  --edge for builds from main
 #
@@ -31,7 +31,7 @@
 # WRENDNS_RELEASE_PUBKEY (minisign public key), WRENDNS_PREFIX (default /usr/local).
 set -eu
 
-REPO_RAW="https://raw.githubusercontent.com/nbacheller/telltaledns/main"
+REPO_RAW="https://raw.githubusercontent.com/nbacheller/wrendns/main"
 # Run from a checkout (or the tests), the unit and starter config come from next to this script.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PUBKEY_DEFAULT="RWRXU7+PSlC/THqf7tUqrCWT0rNnxIU3Z+bxy85CoSNkTzYQzOa+qMln"
@@ -453,9 +453,9 @@ esac
 if [ -n "${WRENDNS_RELEASE_URL:-}" ]; then
   BASE="$WRENDNS_RELEASE_URL"
 elif [ "$CHANNEL" = edge ]; then
-  BASE="https://github.com/nbacheller/telltaledns/releases/download/edge"
+  BASE="https://github.com/nbacheller/wrendns/releases/download/edge"
 else
-  BASE="https://github.com/nbacheller/telltaledns/releases/latest/download"
+  BASE="https://github.com/nbacheller/wrendns/releases/latest/download"
 fi
 
 fetch() { # url dest

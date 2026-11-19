@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Questions people ask</p>
   <h1>FAQ</h1>
-  <p class="lede">Short answers, each with a link to the details. Missing yours? <a href="https://github.com/nbacheller/telltaledns/issues">Open an issue</a> and it may end up here.</p>
+  <p class="lede">Short answers, each with a link to the details. Missing yours? <a href="https://github.com/nbacheller/wrendns/issues">Open an issue</a> and it may end up here.</p>
   <ul class="toc">
     <li><a href="#fit">Is it right for me?</a></li>
     <li><a href="#resolving">Resolving names</a></li>
@@ -83,18 +83,18 @@ url = "recursive://"
 name = "default"
 members = ["recursive"]</code></pre>
       <p>No public resolver then sees your lookups. Each server is asked only as much of the name as it needs (so the root servers see <code>com</code>, not the whole name), answers can be checked with DNSSEC, and delegations are remembered, so only the first lookup in a new zone takes a few round trips.</p>
-      <p>The trade-off: the authoritative servers see your address, and your ISP still sees the traffic. You can mix it with a forwarder as a fallback in a failover group. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#recursive-resolution-no-forwarder">recursive resolution</a>.</p>
+      <p>The trade-off: the authoritative servers see your address, and your ISP still sees the traffic. You can mix it with a forwarder as a fallback in a failover group. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#recursive-resolution-no-forwarder">recursive resolution</a>.</p>
     </dd>
 
     <dt id="q-stub">My domain's servers are authoritative-only (BIND with recursion off, NSD, Knot). How do I send the domain to them?</dt>
     <dd>
-      <p>Use a stub zone. In <b>Names on my network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
+      <p>Use a stub zone. In <b>Names on my network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
     </dd>
 
     <dt id="q-zones">Can it serve my own names and zones?</dt>
     <dd>
       <p>Yes, at two levels. <b>Local records</b> answer single names (A, AAAA, CNAME, PTR, TXT, MX, SRV, with wildcards), and PTR records for your A and AAAA records are made for you. <b>Local zones</b> make WrenDNS the authority for a whole domain, from an RFC 1035 zone file or written inline, and a zone can be limited to some groups for split-horizon DNS. Manage them in the web UI or the API, or import a zone export with <code>wrendns import zone</code>.</p>
-      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#local-records">local records and zones</a>.</p>
+      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#local-records">local records and zones</a>.</p>
     </dd>
 
     <dt id="q-ptr">How do reverse (PTR) lookups of my LAN addresses work?</dt>
@@ -170,7 +170,7 @@ upstream_group = "lan"</code></pre>
         <li><b>Kubernetes with <code>externalTrafficPolicy: Cluster</code>:</b> use <code>Local</code> (the chart's default) or <code>hostNetwork: true</code>.</li>
         <li><b>Docker with a proxy or bridge:</b> use <code>network_mode: host</code>.</li>
       </ul>
-      <p>Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">seeing real client IPs</a>.</p>
+      <p>Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#seeing-real-client-ips">seeing real client IPs</a>.</p>
     </dd>
   </dl>
 </section>
@@ -196,7 +196,7 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-pigit">Can a Raspberry Pi be the primary, with the configuration coming from Git?</dt>
     <dd>
-      <p>Yes. Any eligible node that has the same <code>[cluster.git]</code> section can take over and keep following the repository, so the Pi can follow your repository directly while Argo CD or Flux keeps managing the Kubernetes side. Join the Pi with a token made for eligible nodes. Details under "Where configuration comes from" in the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#clusters">cluster documentation</a>.</p>
+      <p>Yes. Any eligible node that has the same <code>[cluster.git]</code> section can take over and keep following the repository, so the Pi can follow your repository directly while Argo CD or Flux keeps managing the Kubernetes side. Join the Pi with a token made for eligible nodes. Details under "Where configuration comes from" in the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#clusters">cluster documentation</a>.</p>
     </dd>
 
     <dt id="q-k8sdns">Isn't DNS in Kubernetes risky when Kubernetes needs DNS itself?</dt>
@@ -217,13 +217,13 @@ upstream_group = "lan"</code></pre>
     <dt id="q-support">How do I report a problem without sharing my network?</dt>
     <dd>
       <p>Make a <b>support package</b>: one file with your build, your settings without secrets, health, upstream state, a metrics snapshot, and the node's recent log. By default every address and name in it is replaced by a pseudonym (<code>device-1</code>, <code>10.4.7.9</code>) that is the same all through the file, a subnet stays a subnet, and nothing you searched for is included. It's made on your machine and nothing is uploaded: you read it, then attach it to your issue.</p>
-      <p>In the web UI it's <b>Settings → System → Support package</b>. From a shell it's <code>wrendns support-package</code>, or <code>wrendns support-package --offline</code> when the node won't start. The page lists every file and what was replaced before you make it. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#support-package">Details</a>.</p>
+      <p>In the web UI it's <b>Settings → System → Support package</b>. From a shell it's <code>wrendns support-package</code>, or <code>wrendns support-package --offline</code> when the node won't start. The page lists every file and what was replaced before you make it. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#support-package">Details</a>.</p>
     </dd>
 
     <dt id="q-hang">What if the service says it's running but nothing answers?</dt>
     <dd>
       <p>A built-in <b>watchdog</b> looks for exactly that. Every 5 seconds a thread of its own checks that the node can still run a task and that its own listener answers a probe question. If neither has worked for a minute, it writes a <b>dump</b> (which check failed, every thread and what it waits on, where each one is stuck, and the last log lines) under <code>&lt;data_dir&gt;/watchdog/</code> and ends the process, so systemd, Docker, or Kubernetes starts it again. That's a restart of a few seconds instead of an outage until someone notices.</p>
-      <p>The dump holds no client data. Every release publishes the matching debug file, so the stacks in it can be turned into function names. Attach the dump, or a support package (which includes it), to an issue. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#when-a-node-stops-answering-the-watchdog">Details</a>.</p>
+      <p>The dump holds no client data. Every release publishes the matching debug file, so the stacks in it can be turned into function names. Attach the dump, or a support package (which includes it), to an issue. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#when-a-node-stops-answering-the-watchdog">Details</a>.</p>
     </dd>
 
     <dt id="q-breaker">Why do upstream health labels say "open", "closed", and "half_open"?</dt>

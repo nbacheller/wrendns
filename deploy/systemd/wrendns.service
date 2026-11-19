@@ -1,7 +1,7 @@
 # WrenDNS native service (REQ: OPS-004, spec/08 §4). Installed by deploy/systemd/install.sh.
 [Unit]
 Description=WrenDNS resolver
-Documentation=https://github.com/nbacheller/telltaledns/blob/main/docs/running.md
+Documentation=https://github.com/nbacheller/wrendns/blob/main/docs/running.md
 Wants=network-online.target
 After=network-online.target
 

@@ -132,19 +132,19 @@ url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFs
   <div class="grid">
     <div class="card">
       <h3>Client subnet (ECS)</h3>
-      <p>Your devices' subnets are never sent. <code>ecs = "203.0.113.0/24"</code> sends a subnet you choose, for better CDN answers; <code>ecs = "client"</code> suits clients on public addresses. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#client-subnet-ecs">Details</a>.</p>
+      <p>Your devices' subnets are never sent. <code>ecs = "203.0.113.0/24"</code> sends a subnet you choose, for better CDN answers; <code>ecs = "client"</code> suits clients on public addresses. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#client-subnet-ecs">Details</a>.</p>
     </div>
     <div class="card">
       <h3>Through a proxy (Tor)</h3>
-      <p><code>proxy = "socks5://127.0.0.1:9050"</code> sends an upstream's traffic through SOCKS5 or HTTP, so the resolver never sees your address. Use <code>tcp://</code> or <code>tls://</code> with Tor. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#through-a-proxy-tor">Details</a>.</p>
+      <p><code>proxy = "socks5://127.0.0.1:9050"</code> sends an upstream's traffic through SOCKS5 or HTTP, so the resolver never sees your address. Use <code>tcp://</code> or <code>tls://</code> with Tor. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#through-a-proxy-tor">Details</a>.</p>
     </div>
     <div class="card">
       <h3>Pinning and client certificates</h3>
-      <p><code>tls_ca</code>, <code>tls_client_cert</code>, <code>tls_client_key</code>, and <code>spki_pins</code> for an office server with its own CA, mTLS, or a pinned key. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#pinning-and-client-certificates">Details</a>.</p>
+      <p><code>tls_ca</code>, <code>tls_client_cert</code>, <code>tls_client_key</code>, and <code>spki_pins</code> for an office server with its own CA, mTLS, or a pinned key. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#pinning-and-client-certificates">Details</a>.</p>
     </div>
     <div class="card">
       <h3>Plugin upstreams</h3>
-      <p><code>unix://</code> or <code>exec://</code>: anything that speaks DNS over a Unix socket can be an upstream. A dead plugin is a failing upstream like any other. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#plugin-upstreams">Details</a>.</p>
+      <p><code>unix://</code> or <code>exec://</code>: anything that speaks DNS over a Unix socket can be an upstream. A dead plugin is a failing upstream like any other. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#plugin-upstreams">Details</a>.</p>
     </div>
   </div>
 </section>
@@ -213,7 +213,7 @@ tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }</code></pr
     <li><b>Connection limits</b> per listener: <code>max_connections</code> (default 1,024) and <code>max_connections_per_address</code> (default 32, <code>0</code> = no limit).</li>
     <li><b>Let devices find it by themselves</b> (Discovery of Designated Resolvers, RFC 9462): with <code>[special] ddr_name = "dns.example.com"</code>, a device that already uses WrenDNS over plain DNS (Windows 11, iOS 16 and macOS 13 and later, among others) asks <code>_dns.resolver.arpa</code> and learns these listeners, with their ports and DoH path. It switches to encrypted DNS only when the certificate also lists the address it reaches WrenDNS on (an IP SAN such as <code>192.168.1.2</code>). <code>resolver.arpa</code> is never forwarded, with or without <code>ddr_name</code>. In the UI the name is set under Settings → Query handling → Special names, by an admin only; the listener checks on that page say whether each listener's certificate covers the name.</li>
   </ul>
-  <p class="muted">Metrics, timeouts, and HTTP details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">Encrypted DNS for your devices in the docs</a>.</p>
+  <p class="muted">Metrics, timeouts, and HTTP details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">Encrypted DNS for your devices in the docs</a>.</p>
 </section>
 
 <section id="routes">
@@ -325,7 +325,7 @@ members = ["recursive"]
     <li><b>Fast after the first time:</b> a first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.</li>
     <li><b>Mix it in:</b> it's an upstream like any other. Use <code>strategy = "failover"</code> with a public resolver as the fallback, or route only some domains through it.</li>
   </ul>
-  <p class="muted">Limits, root priming, and safety details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#recursive-resolution-no-forwarder">Recursive resolution in the docs</a>.</p>
+  <p class="muted">Limits, root priming, and safety details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#recursive-resolution-no-forwarder">Recursive resolution in the docs</a>.</p>
 </section>
 
 <section id="dnssec">
@@ -352,7 +352,7 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed<
     <li>It works on cache misses only, and a validated answer is cached with its AD bit.</li>
     <li>The root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you.</li>
   </ul>
-  <p class="muted">NSEC proofs, unsigned-zone handling, and trust anchors: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#dnssec-validation">DNSSEC validation in the docs</a>.</p>
+  <p class="muted">NSEC proofs, unsigned-zone handling, and trust anchors: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#dnssec-validation">DNSSEC validation in the docs</a>.</p>
 </section>
 
 <section id="failures">
@@ -363,7 +363,7 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed<
     <li><b>Stale answers keep you going.</b> If upstreams don't answer within 1.8 s and an expired answer is still cached (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer") while the refresh continues.</li>
     <li><b>All failed:</b> the client gets SERVFAIL with Extended DNS Error 22, and the SERVFAIL is cached for 5 seconds.</li>
   </ul>
-  <p class="muted">The <b>Upstreams</b> page's <b>Answer quality</b> card shows each upstream's DNSSEC verdicts and the error codes it attached. More in <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#how-a-query-is-answered">How a query is answered</a> and <a href="how-it-works.html">How it works</a>.</p>
+  <p class="muted">The <b>Upstreams</b> page's <b>Answer quality</b> card shows each upstream's DNSSEC verdicts and the error codes it attached. More in <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#how-a-query-is-answered">How a query is answered</a> and <a href="how-it-works.html">How it works</a>.</p>
 </section>
 
 <section id="trouble">

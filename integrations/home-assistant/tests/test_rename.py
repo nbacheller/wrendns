@@ -45,8 +45,7 @@ def test_no_old_name_is_left_except_the_compatibility_shim_and_the_changelog() -
             continue
         if path.suffix not in {".py", ".json", ".yaml", ".md", ".toml", ".ini"}:
             continue
-        # The repository's slug stays until the repository is renamed (ADR-1026).
-        text = path.read_text(encoding="utf-8").lower().replace("nbacheller/telltaledns", "")
+        text = path.read_text(encoding="utf-8").lower()
         assert "telltale" not in text, f"{path.relative_to(HERE)} still says telltale"
 
 

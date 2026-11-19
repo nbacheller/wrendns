@@ -12,7 +12,7 @@ WrenDNS spots the behavior. Home Assistant can then do something physical about 
 
 It talks to WrenDNS's REST API with an API token, and runs outside the DNS binary, so it can never slow DNS down.
 
-> This lives in the `nbacheller/telltaledns` fork next to the server code it's tested against. To install it through HACS, it needs a repository of its own (HACS installs from a repository's root). Until then, copy it by hand as below.
+> This lives in the `nbacheller/wrendns` fork next to the server code it's tested against. To install it through HACS, it needs a repository of its own (HACS installs from a repository's root). Until then, copy it by hand as below.
 
 ## Install
 

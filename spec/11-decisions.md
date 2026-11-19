@@ -2,7 +2,7 @@
 
 Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`). The owner accepted every ADR proposed through ADR-096 on 2026-10-07; new ones start as Proposed. An agent must not contradict an accepted ADR without adding a superseding ADR and flagging it to the owner.
 
-ADR numbers from 901 up belong to this fork (nbacheller/telltaledns); lower numbers follow upstream (paimonsoror/telltaledns).
+ADR numbers from 901 up belong to this fork (nbacheller/wrendns); lower numbers follow upstream (paimonsoror/telltaledns).
 
 ## ADR-001 — Language: Rust (Accepted)
 **Context:** Performance and footprint are paramount: a small, steady memory footprint on a Raspberry Pi and microsecond cache hits. That rules out garbage-collection pauses and runtime memory overhead, and we want memory safety at the same time.
@@ -2553,7 +2553,7 @@ This ADR keeps the read-only router posture of ADR-080 and ADR-902. ADR-091 (no 
   - A network printer that answers v2c `public` with the Printer MIB is the case the ADR-909 opt-in is for.
 
 ## ADR-906 — Fork ADR numbers: fork-only ADRs take the next free number from 901 up (Accepted 2026-11-16)
-**Context:** This fork (nbacheller/telltaledns) and upstream (paimonsoror/telltaledns) both record decisions as ADRs. Upstream's numbering ended at ADR-164, so the fork's first five decisions after it (numbers 165 to 169) sat where upstream's next decisions would go, and one number could mean two decisions once a sync brought them together.
+**Context:** This fork (nbacheller/wrendns) and upstream (paimonsoror/telltaledns) both record decisions as ADRs. Upstream's numbering ended at ADR-164, so the fork's first five decisions after it (numbers 165 to 169) sat where upstream's next decisions would go, and one number could mean two decisions once a sync brought them together.
 **Decision:**
 - Fork-only ADRs take the next free number at or above 901, in order, and a number is never reused.
 - Upstream's ADR numbers are kept as they are; the fork does not renumber them.

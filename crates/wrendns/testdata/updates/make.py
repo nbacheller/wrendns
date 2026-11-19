@@ -28,7 +28,7 @@ index = {
     "version": "0.1.0-edge.60",
     "commit": "abc1234",
     "date": "2026-10-05T12:00:00Z",
-    "notes": "https://github.com/nbacheller/telltaledns/releases/tag/edge",
+    "notes": "https://github.com/nbacheller/wrendns/releases/tag/edge",
     "assets": {
         "x86_64-unknown-linux-musl": {"name": "wrendns-x86_64-linux", "sha256": "00" * 32},
         "aarch64-unknown-linux-musl": {"name": "wrendns-aarch64-linux", "sha256": "11" * 32},

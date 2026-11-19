@@ -109,7 +109,7 @@ block_mode = "nxdomain"</code></pre>
     <li><b>Blocked services, safe search, and schedules</b> are group settings too: see <a href="guide-blocking.html">Block, allow, and explain</a>.</li>
     <li><b>See the effect:</b> filter the query log by <b>Group</b>, or look at the group's card on the <b>Groups</b> page. In a cluster, every node attributes devices the same way.</li>
   </ul>
-  <p class="muted">Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#groups-for-your-networks-vlans">Groups for your networks</a> and <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#upstream-servers-per-group">Upstream servers per group</a> in the docs.</p>
+  <p class="muted">Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#groups-for-your-networks-vlans">Groups for your networks</a> and <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#upstream-servers-per-group">Upstream servers per group</a> in the docs.</p>
 </section>
 
 <section id="networks">
@@ -198,7 +198,7 @@ mdns = true</code></pre>
     <li><b>In a cluster</b>, one node reading the router (or hearing mDNS) is enough: every node uses the names the others know, so resolver pods name devices the same way the primary does.</li>
     <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. An offline client (the router remembers it, but it isn't connected) is marked <em>offline</em> there; it has no DNS name. A device a router reported shows the router by name and type, such as <code>router: udm (UniFi)</code> or <code>router: ha (Home Assistant)</code>, once the Routers page knows the router. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
   </ul>
-  <p class="muted">Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense">Names from your router</a> and <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>
+  <p class="muted">Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense">Names from your router</a> and <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>
 </section>
 
 <section id="identify">
@@ -213,7 +213,7 @@ name = "iot"
 device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "vacuum"]</code></pre>
   <ul>
     <li><b>Wrong guess?</b> Name the device and set <b>What it is</b> (<code>[[client]] kind = "camera"</code>, or <code>"unknown"</code> to stop guessing).</li>
-    <li>It never changes how a query is answered. It's off at query-log privacy level 1 and above, and with <code>[identify] enabled = false</code>. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#what-is-this-device">How it works</a>.</li>
+    <li>It never changes how a query is answered. It's off at query-log privacy level 1 and above, and with <code>[identify] enabled = false</code>. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#what-is-this-device">How it works</a>.</li>
   </ul>
 </section>
 
@@ -260,7 +260,7 @@ value = "10.10.0.5"</code></pre>
       </ul>
     </div>
   </div>
-  <p class="muted">Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#local-records">Local records</a> and <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#local-zones">Local zones</a>.</p>
+  <p class="muted">Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#local-records">Local records</a> and <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#local-zones">Local zones</a>.</p>
 </section>
 
 <section id="answers">
@@ -269,10 +269,10 @@ value = "10.10.0.5"</code></pre>
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
     <tbody>
-      <tr><td><a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#rewrites"><code>[[group.rewrite]]</code></a></td><td>Answers a name differently for the group (an address, or a CNAME to another name), such as a split-horizon name or a test server. Blocks still win; for a name everyone should get, use a local record.</td></tr>
-      <tr><td><a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#dns64"><code>dns64 = true</code></a></td><td>For IPv6-only devices behind NAT64: names without an IPv6 address get one made from their IPv4 address (prefix <code>64:ff9b::/96</code> by default).</td></tr>
-      <tr><td><a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#no-ipv6-addresses-for-a-group"><code>filter_aaaa = true</code></a> (<b>No IPv6 addresses</b>)</td><td>For a network whose IPv6 is broken: AAAA questions get an empty answer, so devices use IPv4 at once. Your local records still answer AAAA. Not with <code>dns64</code>.</td></tr>
-      <tr><td><a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#rebinding-protection"><code>rebinding_protection = true</code></a></td><td>Blocks public names that answer with private, loopback, link-local, or CGNAT addresses (DNS rebinding). <code>rebinding_allow</code> lists names that may (<code>plex.direct</code>); <code>block_answer_ips</code> refuses answers in networks you list, for any name. Local records and routed domains are never affected.</td></tr>
+      <tr><td><a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#rewrites"><code>[[group.rewrite]]</code></a></td><td>Answers a name differently for the group (an address, or a CNAME to another name), such as a split-horizon name or a test server. Blocks still win; for a name everyone should get, use a local record.</td></tr>
+      <tr><td><a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#dns64"><code>dns64 = true</code></a></td><td>For IPv6-only devices behind NAT64: names without an IPv6 address get one made from their IPv4 address (prefix <code>64:ff9b::/96</code> by default).</td></tr>
+      <tr><td><a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#no-ipv6-addresses-for-a-group"><code>filter_aaaa = true</code></a> (<b>No IPv6 addresses</b>)</td><td>For a network whose IPv6 is broken: AAAA questions get an empty answer, so devices use IPv4 at once. Your local records still answer AAAA. Not with <code>dns64</code>.</td></tr>
+      <tr><td><a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#rebinding-protection"><code>rebinding_protection = true</code></a></td><td>Blocks public names that answer with private, loopback, link-local, or CGNAT addresses (DNS rebinding). <code>rebinding_allow</code> lists names that may (<code>plex.direct</code>); <code>block_answer_ips</code> refuses answers in networks you list, for any name. Local records and routed domains are never affected.</td></tr>
     </tbody>
   </table></div>
 <pre><code>[[group]]
@@ -306,7 +306,7 @@ action = "refused"      # or "drop"
 exempt = ["127.0.0.0/8", "::1/128"]</code></pre>
   <ul>
     <li>A router or proxy that forwards for a whole network looks like one address and is refused above about 17 queries a second: add it to <code>exempt</code>, or raise <code>queries</code>.</li>
-    <li>Change the rate limit in <b>Settings → Query handling → Rate limit</b>, or with <code>PUT /api/v1/ratelimit/default</code>. A change replaces the whole section, so keep <code>127.0.0.0/8</code> and <code>::1/128</code> in the exempt list. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#who-can-query-and-how-often">Details</a>.</li>
+    <li>Change the rate limit in <b>Settings → Query handling → Rate limit</b>, or with <code>PUT /api/v1/ratelimit/default</code>. A change replaces the whole section, so keep <code>127.0.0.0/8</code> and <code>::1/128</code> in the exempt list. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#who-can-query-and-how-often">Details</a>.</li>
   </ul>
 </section>
 

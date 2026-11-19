@@ -1,6 +1,6 @@
 # Running WrenDNS
 
-> **Status:** stable releases are listed on the [releases page](https://github.com/nbacheller/telltaledns/releases). This page describes `main`; each release's notes say what it contains. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change. What stands between 0.x and 1.0 is tracked in [`docs/v1-gate.md`](v1-gate.md).
+> **Status:** stable releases are listed on the [releases page](https://github.com/nbacheller/wrendns/releases). This page describes `main`; each release's notes say what it contains. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change. What stands between 0.x and 1.0 is tracked in [`docs/v1-gate.md`](v1-gate.md).
 
 ## Start
 ```sh
@@ -63,8 +63,8 @@ Two ways, both with real client addresses (host networking) and port 53 without 
 **Docker Compose (recommended):** `deploy/compose/` has `compose.yaml` and a starter `wrendns.toml` (encrypted upstreams, one balanced blocklist, a 7-day query log).
 ```sh
 mkdir wrendns && cd wrendns
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/wrendns.toml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/compose/wrendns.toml
 docker compose up -d
 docker compose exec wrendns wrendns auth setup-token     # then open http://<pi>:8053/
 ```
@@ -72,7 +72,7 @@ The container uses the host network, a read-only root filesystem, and only `NET_
 
 **Native (systemd):** `deploy/systemd/install.sh` downloads the static binary for your CPU, checks the release signature (minisign) and its SHA-256, creates a `wrendns` system user, installs a sandboxed systemd unit (`ProtectSystem=strict`, only `CAP_NET_BIND_SERVICE`, `MemoryMax=256M`) and the starter config (an existing `/etc/wrendns/wrendns.toml` is kept), then starts the service and waits until it's ready.
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/systemd/install.sh
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/systemd/install.sh
 less install.sh                     # read before running as root
 sudo sh install.sh                  # the latest release; --edge: builds from main
 sudo -u wrendns wrendns auth setup-token -c /etc/wrendns/wrendns.toml
@@ -353,7 +353,7 @@ The same build identity, and how the node was installed (`native`, `container`, 
 - **Images** are signed with [cosign](https://docs.sigstore.dev/) through GitHub's keyless signing: the signature names the repository's image workflow, and is in Sigstore's public log.
   ```sh
   cosign verify ghcr.io/nbacheller/wrendns:0.5.0 \
-    --certificate-identity-regexp '^https://github\.com/nbacheller/telltaledns/\.github/workflows/image\.yml@' \
+    --certificate-identity-regexp '^https://github\.com/nbacheller/wrendns/\.github/workflows/image\.yml@' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 - **What's inside:** each binary carries its dependency list (`cargo audit bin wrendns` reads it), and every release has a CycloneDX SBOM per binary (`wrendns-<arch>-linux.cdx.json`, listed in the signed `SHA256SUMS`).

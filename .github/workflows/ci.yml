@@ -2,7 +2,7 @@
 name: ci
 on:
   push:
-    # The fork's integration branch gets CI on every push (nbacheller/telltaledns). Track branches don't
+    # The fork's integration branch gets CI on every push (nbacheller/wrendns). Track branches don't
     # (owner decision 2026-11-17): their agents run the same checks locally, and a run on one is started
     # by hand with `gh workflow run ci.yml --ref <branch>` when it needs the hosted arm64 runner.
     branches: [main, 'feat/ipam-integrations']
@@ -328,7 +328,7 @@ jobs:
       - name: Cluster rolling upgrade (edge build and this build)
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wrendns-old" \
-            https://github.com/nbacheller/telltaledns/releases/download/edge/wrendns-x86_64-linux
+            https://github.com/nbacheller/wrendns/releases/download/edge/wrendns-x86_64-linux
           chmod +x "$RUNNER_TEMP/wrendns-old"
           bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/wrendns-old" target/bench-fast/wrendns
       # REQ: DNS-011 (T6.1) — DNSSEC validation against the real DNS tree (needs internet).

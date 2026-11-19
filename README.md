@@ -9,7 +9,7 @@
 
 # WrenDNS
 
-> **An independent fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns) started from [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns) and, since 2026-11-19, goes its own way: it no longer merges upstream and ports only fixes (ADR-1026). It keeps upstream's licences (Apache-2.0 or MIT) and copyright notice. The project is now called **WrenDNS** (T33.2, ADR-1026): the command is `wrendns`, and the old names keep working for one release ([Upgrading to WrenDNS](docs/running.md#upgrading-to-wrendns)). The GitHub repository keeps its old name until the owner renames it. The badges, releases, quick start and project site below are this project's. The work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
+> **An independent fork:** [`nbacheller/wrendns`](https://github.com/nbacheller/wrendns) started from [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns) and, since 2026-11-19, goes its own way: it no longer merges upstream and ports only fixes (ADR-1026). It keeps upstream's licences (Apache-2.0 or MIT) and copyright notice. The project is now called **WrenDNS** (T33.2, ADR-1026): the command is `wrendns`, and the old names keep working for one release ([Upgrading to WrenDNS](docs/running.md#upgrading-to-wrendns)). The GitHub repository keeps its old name until the owner renames it. The badges, releases, quick start and project site below are this project's. The work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/wrendns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
 >
 > **What the fork adds** (milestones in the [roadmap](spec/10-roadmap-and-tasks.md)):
 > - **M22, network inventory and home integrations (done):**
@@ -31,13 +31,13 @@
 >   - **A device's policy** (T24.30): click a device on Clients, the map or Flow to see the group it lands in and why, and every list, service, schedule, quick rule and upstream that applies, each linked to where it is set.
 >   - **Content categories and filter profiles** (T24.29): pick what to block (adult, gambling, malware, social, newly registered domains and more, each backed by an open, licensed list) per device or network in a named profile, with Basic and Enhanced presets, Ad Block as one checkbox, a memory budget that refuses what a small node cannot hold, and the same controls in the API and MCP.
 >   - **Query log exclusions** (T24.35): keep chosen clients, domains or the node's own lookups out of the query log while they still count in the statistics; the Pi-hole importer brings Pi-hole's exclusions across; `GET /readyz` answers only when the DNS listener does, for keepalived and load balancers.
->   - **Map fixes** ([fork #25](https://github.com/nbacheller/telltaledns/issues/25)): legend icons at their proper size; a dead member of an upstream group that still answers is a warning, not a failure; an upstream with no route on this node (say, IPv6 on an IPv4-only host) says so.
->   - **One picker** (T24.34, [fork #26](https://github.com/nbacheller/telltaledns/issues/26)): search, multi-select, chips and full keyboard use wherever you choose from a list; the Query log filters by device name, several devices at once.
->   - **A simple upstream picker** (T24.36, [fork #27](https://github.com/nbacheller/telltaledns/issues/27)): tick public providers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing), choose encrypted or plain and IPv4/IPv6, or add your own; the full editor stays under Advanced.
+>   - **Map fixes** ([fork #25](https://github.com/nbacheller/wrendns/issues/25)): legend icons at their proper size; a dead member of an upstream group that still answers is a warning, not a failure; an upstream with no route on this node (say, IPv6 on an IPv4-only host) says so.
+>   - **One picker** (T24.34, [fork #26](https://github.com/nbacheller/wrendns/issues/26)): search, multi-select, chips and full keyboard use wherever you choose from a list; the Query log filters by device name, several devices at once.
+>   - **A simple upstream picker** (T24.36, [fork #27](https://github.com/nbacheller/wrendns/issues/27)): tick public providers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing), choose encrypted or plain and IPv4/IPv6, or add your own; the full editor stays under Advanced.
 >   - **Edits after a failover** (T24.37): entries added through the API on one primary stay editable and deletable after another node takes over, and a deleted entry stays deleted.
 >   - **Upgrading a cluster keeps its entries** (T24.40): a node promoted after an upgrade from an older build takes over the API entries it serves (once, in one step), and refuses any write that would drop them until it has.
 >   - **Replicas stay linked** (T24.38): a rolling restart no longer leaves a replica cut off from another voter; the Cluster page warns when a voter's link keeps dropping while both nodes stay up.
->   - *Planned:* temporary site exceptions from a browser add-on or a landing page, self-serve within limits or approved by an admin (T24.39, [fork #29](https://github.com/nbacheller/telltaledns/issues/29)).
+>   - *Planned:* temporary site exceptions from a browser add-on or a landing page, self-serve within limits or approved by an admin (T24.39, [fork #29](https://github.com/nbacheller/wrendns/issues/29)).
 > - **M23, secrets and integrations in the UI (in progress):** secrets store, write-only API, no credential on any read surface; secrets replicated to every full cluster member; a **Secrets** page, and credentials (alerts, routers) entered in the UI, write-only, while a secret file still wins; routers (UniFi, Home Assistant) added, checked and changed from a **Routers** page without a restart; backups that carry the secrets encrypted under a passphrase (T23.9); OIDC sign-in providers added and changed in the UI without a restart, and node-local settings (T23.10); event sinks and the OTLP export with their credentials in the secrets store, reloaded without a restart (T23.11).
 > - **M25, network inventory beyond the gateway (in progress):** in so far: the inventory model, which merges devices by MAC; sandboxed discovery workers (a separate process with seccomp, no capabilities and not dumpable) and a `[discovery]` section; an SNMP library (v2c, and v3 with AES) and a read-only SNMP client with `wrendns snmp walk` (T25.4) and SNMPv3 with AES (T25.5); more UniFi and Home Assistant reads for the inventory (UniFi's client fields, its known-clients history and its devices' MAC tables; Home Assistant devices that have no entities), each with a toggle on the Network inventory page (T25.10). Still to come:
 >   - SNMP polling of your gateway and switches, which device is on which port (T25.6, in);
@@ -51,18 +51,18 @@
 > - **Cluster:** automatic failover can be turned on in a running cluster (T21.7), and dev builds report a readable version (T21.6).
 > - **Test harnesses:** a throwaway Home Assistant in Docker for the Home Assistant source ([`deploy/ha-test`](deploy/ha-test/README.md), in CI).
 > - **M27, UI for everything (in progress, [ADR-956](spec/11-decisions.md)):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)). In so far: the guarded-changes framework (staged change, typed confirmation, a rollback countdown, Restart now under a supervisor; T27.13), every alert condition in the Alerts form (T27.1), and group rewrites (T27.4). In so far: cache, support and update settings per node, DNSSEC, filter and failover-drill settings (T27.2, T27.11); SLO, probes, upstream checks, anomalies, query log and metrics settings, and zones and routes edited in the UI (T27.5, T27.7); the map's settings card (T26.6). The UI budget is 512 KiB gzipped (ADR-1020).
-> - **M31, CMDB (planned, [fork #21](https://github.com/nbacheller/telltaledns/issues/21)):** one configuration item per device from every source, each source's record linked, a definitive source per attribute, and MACD lifecycle.
-> - **M32, away from home (planned, [fork #28](https://github.com/nbacheller/telltaledns/issues/28)):** a cloud-hosted resolver on a free or low-cost Azure tier, with DoH/DoT setup generated per device for Windows, macOS, iOS and Android, and the same policy at home and away.
+> - **M31, CMDB (planned, [fork #21](https://github.com/nbacheller/wrendns/issues/21)):** one configuration item per device from every source, each source's record linked, a definitive source per attribute, and MACD lifecycle.
+> - **M32, away from home (planned, [fork #28](https://github.com/nbacheller/wrendns/issues/28)):** a cloud-hosted resolver on a free or low-cost Azure tier, with DoH/DoT setup generated per device for Windows, macOS, iOS and Android, and the same policy at home and away.
 >
-> **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Fixes in code the fork still shares with upstream are ported by hand, citing the upstream commit.
+> **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/wrendns/issues). Fixes in code the fork still shares with upstream are ported by hand, citing the upstream commit.
 >
 > **Upstream:** what the fork changed from upstream, the upstream issues it triaged, and how it syncs and watches upstream are in [`spec/upstream.md`](spec/upstream.md).
 
-[![CI](https://github.com/nbacheller/telltaledns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nbacheller/telltaledns/actions/workflows/ci.yml?query=branch%3Amain)
-[![CodeQL](https://github.com/nbacheller/telltaledns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/nbacheller/telltaledns/security/code-scanning?query=branch%3Amain)
-[![Release](https://img.shields.io/github/v/release/nbacheller/telltaledns?sort=semver)](https://github.com/nbacheller/telltaledns/releases/latest)
+[![CI](https://github.com/nbacheller/wrendns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nbacheller/wrendns/actions/workflows/ci.yml?query=branch%3Amain)
+[![CodeQL](https://github.com/nbacheller/wrendns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/nbacheller/wrendns/security/code-scanning?query=branch%3Amain)
+[![Release](https://img.shields.io/github/v/release/nbacheller/wrendns?sort=semver)](https://github.com/nbacheller/wrendns/releases/latest)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
-[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/nbacheller/telltaledns/pulls?q=is%3Apr+author%3Aapp%2Fdependabot)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/nbacheller/wrendns/pulls?q=is%3Apr+author%3Aapp%2Fdependabot)
 
 **See every question. Answer on your terms.**
 
@@ -102,14 +102,14 @@ Give everyone who runs a home or small network an honest, real-time view of what
 On a Raspberry Pi or any Linux host with Docker:
 ```sh
 mkdir wrendns && cd wrendns
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/wrendns.toml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/compose/wrendns.toml
 docker compose up -d
 docker compose exec wrendns wrendns auth setup-token     # then open http://<host>:8053/
 ```
 Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole or Technitium are covered in [`docs/running.md`](docs/running.md).
 
-**Status:** pre-1.0. Tagged [releases](https://github.com/nbacheller/telltaledns/releases) are stable (`latest`), and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change; the [roadmap](spec/10-roadmap-and-tasks.md) shows what's next. Project site: **https://wrendns.com/**
+**Status:** pre-1.0. Tagged [releases](https://github.com/nbacheller/wrendns/releases) are stable (`latest`), and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change; the [roadmap](spec/10-roadmap-and-tasks.md) shows what's next. Project site: **https://wrendns.com/**
 
 | Read this | If you want |
 |---|---|

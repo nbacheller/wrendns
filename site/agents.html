@@ -198,7 +198,7 @@
       <p class="muted">Resources an assistant can attach: <code>wrendns://cluster/status</code>, <code>wrendns://config</code> (no secrets), <code>wrendns://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
     </div>
   </div>
-  <p class="muted">The catalog is committed in the repository (<a href="https://github.com/nbacheller/telltaledns/blob/main/docs/api/mcp-tools.json">mcp-tools.json</a>) and checked in CI with the official MCP SDK, so what you read here is what the server offers.</p>
+  <p class="muted">The catalog is committed in the repository (<a href="https://github.com/nbacheller/wrendns/blob/main/docs/api/mcp-tools.json">mcp-tools.json</a>) and checked in CI with the official MCP SDK, so what you read here is what the server offers.</p>
 </section>
 
 <section id="vqlog">
@@ -211,7 +211,7 @@ where name under roku.com | by client | stats count, distinct(name)
 from -1h  | where latency &gt; 200 | by upstream | stats count, p50(latency), p99(latency)
 from -1d  | where status = blocked and (client = 192.168.1.20 or name under roku.com) | top 10 name
 from -180d | where status = blocked | bucket 1d | stats count</code></pre>
-  <p class="muted">Agents can check the cost first (<code>estimateOnly</code>). Over-broad questions are refused with a hint on how to narrow them, and long scans stop and say so instead of slowing DNS down. Full syntax: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#analytics-in-one-query-vqlog">Analytics in one query</a>.</p>
+  <p class="muted">Agents can check the cost first (<code>estimateOnly</code>). Over-broad questions are refused with a hint on how to narrow them, and long scans stop and say so instead of slowing DNS down. Full syntax: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#analytics-in-one-query-vqlog">Analytics in one query</a>.</p>
 </section>
 
 <section>
@@ -232,8 +232,8 @@ from -180d | where status = blocked | bucket 1d | stats count</code></pre>
   <div class="cta">
     <a class="btn primary" href="start.html">Get started</a>
     <a class="btn" href="guide-users.html#agents">Guide: tokens for AI agents</a>
-    <a class="btn" href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#ai-agents-and-automation">Agent documentation</a>
-    <a class="btn" href="https://github.com/nbacheller/telltaledns/blob/main/docs/api/openapi.json">OpenAPI document</a>
+    <a class="btn" href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#ai-agents-and-automation">Agent documentation</a>
+    <a class="btn" href="https://github.com/nbacheller/wrendns/blob/main/docs/api/openapi.json">OpenAPI document</a>
   </div>
 </section>
 

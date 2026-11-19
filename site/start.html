@@ -91,8 +91,8 @@ sudo usermod -aG docker $USER    # log out and back in</code></pre></li>
         <li><b>Free port 53.</b> If Pi-hole or another DNS server runs on the Pi, stop it. Check: <code>sudo ss -ulpn 'sport = :53'</code> should print nothing.</li>
         <li><b>Download the bundle and start it.</b>
 <pre><code>mkdir ~/wrendns && cd ~/wrendns
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/wrendns.toml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/compose/wrendns.toml
 docker compose up -d
 docker compose ps        # STATUS shows "healthy" within a minute</code></pre></li>
         <li><b>Test it from another computer</b> (replace the address with your Pi's):
@@ -107,7 +107,7 @@ dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works
 
     <div class="panel" id="native"><h3>Raspberry Pi or Linux, native (systemd)</h3>
       <p>No Docker: a single static binary as a sandboxed systemd service, on any systemd distribution (x86-64, arm64, or 32-bit ARM). The installer checks the release's signature and checksum before installing anything, so read it, then run it:</p>
-<pre><code>curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/systemd/install.sh
+<pre><code>curl -fsSLO https://raw.githubusercontent.com/nbacheller/wrendns/main/deploy/systemd/install.sh
 less install.sh
 sudo sh install.sh                 # the latest release; --edge: builds from main
 sudo -u wrendns wrendns auth setup-token -c /etc/wrendns/wrendns.toml</code></pre>
@@ -173,7 +173,7 @@ kubectl -n wrendns exec wrendns-0 -- /usr/local/bin/wrendns auth setup-token \
     </div>
 
     <div class="panel" id="source"><h3>From source</h3>
-<pre><code>git clone https://github.com/nbacheller/telltaledns
+<pre><code>git clone https://github.com/nbacheller/wrendns
 cd wrendns
 cargo build --release
 sudo ./target/release/wrendns run -c wrendns.toml   # a config from step 2
@@ -185,9 +185,9 @@ dig @127.0.0.1 example.com</code></pre>
   <div class="callout" id="verify">
     <p><b>Check what you run.</b> Release binaries come with a signed <code>SHA256SUMS</code> (the installer and <code>wrendns self-update</code> check it for you), and images are signed with cosign through GitHub's keyless signing:</p>
 <pre><code>cosign verify ghcr.io/nbacheller/wrendns:&lt;version&gt; \
-  --certificate-identity-regexp '^https://github\.com/nbacheller/telltaledns/\.github/workflows/image\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/nbacheller/wrendns/\.github/workflows/image\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com</code></pre>
-    <p>Each binary carries its dependency list (<code>cargo audit bin wrendns</code> reads it), every release has a CycloneDX SBOM per binary, and two builds of the same commit are byte for byte identical. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#versions-and-updates">How to rebuild and compare</a>.</p>
+    <p>Each binary carries its dependency list (<code>cargo audit bin wrendns</code> reads it), every release has a CycloneDX SBOM per binary, and two builds of the same commit are byte for byte identical. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#versions-and-updates">How to rebuild and compare</a>.</p>
   </div>
 </section>
 
@@ -305,11 +305,11 @@ strategy = "fastest"</code></pre>
     <dt>A site is broken</dt>
     <dd>Find it in the <b>Query log</b> and press <b>Why?</b>: it names the list and line that blocked it. Then allow it with a quick rule, or add an allow line (<code>@@||name^</code>) to a list.</dd>
     <dt>Every query shows the same address</dt>
-    <dd>Something in between rewrites addresses: a router forwarding DNS, Docker without host networking, or Kubernetes with <code>externalTrafficPolicy: Cluster</code>. The UI's banner says which address; the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">client IP guide</a> has the fixes.</dd>
+    <dd>Something in between rewrites addresses: a router forwarding DNS, Docker without host networking, or Kubernetes with <code>externalTrafficPolicy: Cluster</code>. The UI's banner says which address; the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#seeing-real-client-ips">client IP guide</a> has the fixes.</dd>
     <dt>Lost the setup token</dt>
     <dd><code>wrendns auth setup-token</code> prints it again until the first admin exists.</dd>
   </dl>
-  <p><a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md">Full running guide →</a></p>
+  <p><a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md">Full running guide →</a></p>
 </section>
 
 </div>

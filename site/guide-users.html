@@ -165,7 +165,7 @@ role = "viewer"</code></pre></li>
     <li class="step"><b>Restart WrenDNS</b> once, for <code>public_url</code> (it is read at start). Providers themselves apply without a restart: after that, add them in <b>Settings → Sign-in</b> (below), or reload the file with <code>SIGHUP</code>.</li>
   </ol>
   <p><b>Or add providers in the UI.</b> Admins add, change and remove providers in <b>Settings → Sign-in</b>, with no file edit and no restart, on every node of a cluster within seconds. The client secret is typed into a write-only field and stored encrypted by name (never shown again), and replicated to the cluster's nodes. A provider the config file defines is read-only there (<b>Set by file</b>). Each node keeps its own <code>public_url</code> in its file: a node without it shows the providers as <b>Inactive on this node</b> and says why. Removing a provider ends the sessions it opened; the break-glass admin and password sign-in are never touched.</p>
-  <p>What a sign-in accepts: the provider's ID token must be signed with an RSA key of at least 2048 bits, an EC key on P-256 or P-384, or an Ed25519 key, and must be for this client alone. An HTTPS issuer needs HTTPS endpoints. A client without a client secret is a public client (PKCE), and the key set is refetched at most once a minute when a token's key is unknown. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md">The details are in the running guide</a>.</p>
+  <p>What a sign-in accepts: the provider's ID token must be signed with an RSA key of at least 2048 bits, an EC key on P-256 or P-384, or an Ed25519 key, and must be for this client alone. An HTTPS issuer needs HTTPS endpoints. A client without a client secret is a public client (PKCE), and the key set is refetched at most once a minute when a token's key is unknown. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md">The details are in the running guide</a>.</p>
   <div class="tabs">
     <div role="tablist" aria-label="Identity provider">
       <button role="tab" type="button">Authentik</button>
@@ -231,7 +231,7 @@ role = "viewer"</code></pre></li>
 wrendns ctl status                          # version, uptime, the last day's numbers
 wrendns ctl top blocked --limit 20
 wrendns ctl queries --status blocked --from -1h</code></pre>
-  <p class="muted">It talks to the node in <code>[api] listen</code> from your config, or the one you give with <code>--url http://dns.example.com:8053</code>. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#from-the-shell-wrendns-ctl">Every <code>ctl</code> command in the docs</a>.</p>
+  <p class="muted">It talks to the node in <code>[api] listen</code> from your config, or the one you give with <code>--url http://dns.example.com:8053</code>. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#from-the-shell-wrendns-ctl">Every <code>ctl</code> command in the docs</a>.</p>
 
   <h3 id="agents">Agent tokens for AI assistants</h3>
   <p>Give an AI assistant an <b>agent token</b> instead of your own account: <b>Settings → API tokens</b>, pick <b>for an AI agent</b>, and tick what it may do. The default is read-only, without the query log. Agents can't touch users, tokens, passwords, backups, or the audit log, must give a reason for every change, and all stop at once with <code>[agents] enabled = false</code>. See <a href="agents.html">AI agents</a>.</p>
@@ -288,7 +288,7 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
     <li>A promoted replica becomes the place to manage users, with everything it had synced.</li>
     <li><code>[auth]</code> and <code>[api]</code> are per node: set them in each node's own file. <a href="guide-settings.html#shared">Shared or per node</a>.</li>
   </ul>
-  <p class="muted">More in <a href="guide-cluster.html">Build a cluster</a> and the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+  <p class="muted">More in <a href="guide-cluster.html">Build a cluster</a> and the <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
 </section>
 
 <section id="trouble">
@@ -307,7 +307,7 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
       <tr><td>Every change answers <b>503</b></td><td>The audit log can't be written (a full disk, a broken database). Fix that; DNS keeps answering meanwhile.</td></tr>
     </tbody>
   </table></div>
-  <p class="muted">Full detail: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#users-and-sign-in">Users and sign-in in the docs</a>.</p>
+  <p class="muted">Full detail: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#users-and-sign-in">Users and sign-in in the docs</a>.</p>
 </section>
 
 <section>

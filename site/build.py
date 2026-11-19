@@ -256,7 +256,7 @@ def build_stamp():
 
 
 def req_link(r):
-    return '<a class="req" href="https://github.com/nbacheller/telltaledns/blob/main/spec/01-requirements.md">{}</a>'.format(
+    return '<a class="req" href="https://github.com/nbacheller/wrendns/blob/main/spec/01-requirements.md">{}</a>'.format(
         html.escape(r)
     )
 
@@ -619,7 +619,7 @@ def render_bench(page):
     out = ['<div class="card bench">']
     out.append(
         "<p><b>{cpu}</b> ({cores} threads, {arch}, Linux {kernel}) · {workers} DNS workers · {date} · "
-        'commit <a href="https://github.com/nbacheller/telltaledns/commit/{full}">{rev}</a> · '
+        'commit <a href="https://github.com/nbacheller/wrendns/commit/{full}">{rev}</a> · '
         '<a href="{raw}">raw results (JSON)</a></p>'.format(
             cpu=html.escape(host["cpu"]), cores=host["cores"], arch=host["arch"],
             kernel=html.escape(host["kernel"].split("-")[0]), workers=srv["workers"],
@@ -919,7 +919,7 @@ def render_glossary(page):
     out = []
     for t in sorted(data["topics"], key=lambda t: t["title"].lower()):
         docs = (
-            ' <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
+            ' <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
             if t.get("docs") else ""
         )
         path = ' <span class="pill supported">{}</span>'.format(FLOW_TEXT[t["diagram"]]) if t.get("diagram") else ""
@@ -942,8 +942,8 @@ def render_glossary(page):
 # REQ: DOC-004, DOC-006 (T6.10) — the "For nerds" page: an interactive architecture view built
 # from site/data/architecture.json and checked against the repo, so it can't drift. Arrows,
 # "used by", line counts and dependency users come from the code, not from the JSON.
-GH = "https://github.com/nbacheller/telltaledns/blob/main/"
-GH_TREE = "https://github.com/nbacheller/telltaledns/tree/main/"
+GH = "https://github.com/nbacheller/wrendns/blob/main/"
+GH_TREE = "https://github.com/nbacheller/wrendns/tree/main/"
 
 
 def cargo_deps(path):

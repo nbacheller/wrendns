@@ -290,7 +290,7 @@ test('explain page', async () => {
 test('the menu links to the project on GitHub and its site', async () => {
   await page.goto('/#/');
   const gh = page.getByRole('link', { name: 'WrenDNS on GitHub' });
-  await expect(gh).toHaveAttribute('href', 'https://github.com/nbacheller/telltaledns');
+  await expect(gh).toHaveAttribute('href', 'https://github.com/nbacheller/wrendns');
   await expect(gh).toHaveAttribute('target', '_blank');
   await expect(page.getByRole('link', { name: 'Project site and guides' })).toHaveAttribute(
     'href',
