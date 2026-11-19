@@ -382,7 +382,13 @@ for n in replica-a replica-b; do
   call "$n" GET /api/v1/dhcp/leases
   [ "$RS" = 200 ] || bad "$n's /dhcp/leases answered $RS"
   has kids-tablet || bad "$n's /dhcp/leases doesn't list the primary's router clients: ${RB:0:400}"
-  call "$n" GET /api/v1/routers
+  # A replica's router loop wakes every 15 s at most, so a router added on the primary shows there as
+  # "this node, waiting" until the next tick: the state is polled for, not read once.
+  for _ in $(seq 60); do
+    call "$n" GET /api/v1/routers
+    [ "$(jget 'next((r["status"]["state"] for r in d["items"] if r["name"] == "fake-udm"), "")')" = ok ] && break
+    sleep 1
+  done
   [ "$(jget 'next((r["status"]["state"] for r in d["items"] if r["name"] == "fake-udm"), "")')" = ok ] \
     || bad "$n doesn't show the primary's state of fake-udm: ${RB:0:600}"
   [ "$(jget 'next((r["status"]["devices"] for r in d["items"] if r["name"] == "fake-udm"), 0)')" -ge 3 ] \
