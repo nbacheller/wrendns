@@ -18,7 +18,7 @@ R="$T/root"
 BIN="$T/fakebin"
 LOG="$T/calls.log"
 mkdir -p "$BIN" "$R/etc/telltale" "$R/var/lib/telltale" "$R/etc/systemd/system/telltale.service.d" \
-  "$R/etc/systemd/resolved.conf.d" "$R/etc/keepalived" "$R/usr/local/bin"
+  "$R/etc/systemd/resolved.conf.d" "$R/etc/keepalived" "$R/usr/local/bin" "$R/usr/local/sbin" "$R/etc/sudoers.d"
 : > "$LOG"
 
 # Stand-ins for the commands that need root or systemd; each logs its call.
@@ -51,6 +51,18 @@ StateDirectory=telltale
 LimitNOFILE=1234
 EOF
 printf '[Service]\nEnvironment=TELLTALE_BOOTSTRAP_ADMIN_USER=admin\n' > "$R/etc/systemd/system/telltale.service.d/10-first-admin.conf"
+# things the owner runs next to it: a witness unit running as the telltale user, a trial script, a sudoers line
+printf '[Service]
+User=telltale
+Group=telltale
+ExecStart=/usr/local/bin/telltale witness
+' > "$R/etc/systemd/system/telltale-witness.service"
+printf '#!/bin/sh
+systemctl stop telltale
+' > "$R/usr/local/sbin/custom-check"
+printf 'ops ALL=(telltale) NOPASSWD: ALL
+ops ALL=(ALL) sudo -u telltale /bin/true
+' > "$R/etc/sudoers.d/example"
 echo "nameserver 1.1.1.1" > "$R/etc/resolv.conf.telltale-backup"
 echo "[Resolve]" > "$R/etc/systemd/resolved.conf.d/telltale.conf"
 printf 'script "/etc/keepalived/check-telltale.sh"\n' > "$R/etc/keepalived/keepalived.conf"
@@ -75,7 +87,7 @@ grep -q -E "systemctl (stop|enable)" "$LOG" && fail "the dry run called systemct
 ok "a dry run changes nothing and says what it would do"
 
 # --- the real run ---
-run_migrate > "$T/run.out"
+run_migrate > "$T/run.out" 2>&1 || { cat "$T/run.out"; fail "the real run failed"; }
 [ -f "$R/etc/wrendns/wrendns.toml" ] || fail "no /etc/wrendns/wrendns.toml"
 [ -f "$R/var/lib/wrendns/state.db" ] || fail "the data didn't move"
 [ -L "$R/etc/telltale" ] && [ -L "$R/var/lib/telltale" ] || fail "the old directories aren't links"
@@ -104,6 +116,11 @@ grep -q "check-telltale.sh" "$T/run.out" || grep -q "keepalived.conf" "$T/run.ou
 grep -q "usermod -l wrendns" "$LOG" && grep -q "groupmod -n wrendns telltale" "$LOG" || fail "user/group rename not called"
 grep -q "systemctl stop telltale" "$LOG" && grep -q "systemctl start wrendns" "$LOG" || fail "the service wasn't stopped and started"
 grep -q "systemctl disable telltale" "$LOG" && grep -q "systemctl enable wrendns" "$LOG" || fail "the units weren't switched"
+W="$R/etc/systemd/system/telltale-witness.service"
+grep -q '^User=wrendns' "$W" && grep -q '^Group=wrendns' "$W" || fail "the witness unit still runs as telltale"
+[ -f "$W.pre-wrendns" ] || fail "the witness unit's original wasn't kept"
+grep -q "systemctl stop telltale-witness.service" "$LOG" && grep -q "systemctl start telltale-witness.service" "$LOG"   || fail "the witness wasn't stopped for the rename and started again"
+grep -q "custom-check" "$T/run.out" && grep -q "sudoers.d/example" "$T/run.out" || fail "the trial script and the sudoers file weren't listed"
 ok "the real run migrates paths, config, unit, drop-in, user, command and links"
 
 # --- idempotent ---
@@ -120,7 +137,26 @@ ok "a second run changes nothing"
 R2="$T/root2"
 mkdir -p "$R2/etc/telltale" "$R2/etc/wrendns" "$R2/usr/local/bin"
 echo a > "$R2/etc/telltale/telltale.toml"; echo b > "$R2/etc/wrendns/other"
+: > "$LOG"
 if PATH="$BIN:$PATH" WRENDNS_MIGRATE_ROOT="$R2" sh "$SCRIPT" > "$T/refuse.out" 2>&1; then fail "it overwrote a full /etc/wrendns"; fi
 grep -q "both" "$T/refuse.out" || fail "no explanation for the refusal"
 [ -f "$R2/etc/telltale/telltale.toml" ] || fail "the refused run moved files"
-ok "a full /etc/wrendns is never overwritten"
+grep -q "systemctl stop" "$LOG" && fail "a refused migration stopped the service first"
+ok "a full /etc/wrendns is never overwritten, and nothing is stopped before the refusal"
+
+# --- a failure part-way starts the service again ---
+R3="$T/root3"
+BIN3="$T/fakebin3"
+mkdir -p "$BIN3" "$R3/etc/telltale" "$R3/etc/systemd/system" "$R3/usr/local/bin"
+cp "$BIN"/* "$BIN3"/
+printf '#!/bin/sh
+exit 1
+' > "$BIN3/usermod"
+echo a > "$R3/etc/telltale/telltale.toml"
+printf '[Service]
+User=telltale
+' > "$R3/etc/systemd/system/telltale.service"
+: > "$LOG"
+if PATH="$BIN3:$PATH" WRENDNS_MIGRATE_ROOT="$R3" sh "$SCRIPT" > "$T/fail.out" 2>&1; then fail "a failing usermod didn't fail the migration"; fi
+grep -q "systemctl start telltale" "$LOG" || fail "DNS was left stopped after a failed migration"
+ok "a failed migration starts the old service again"

@@ -110,8 +110,12 @@ class Legal(unittest.TestCase):
         self.assertIn('<h3 id="1-1-sub">1.1 Sub</h3>', body)
         self.assertIn("<li>one</li>", body)
         self.assertIn("<b>bold</b>", body)
-        self.assertIn('<span class="confirm">[confirm]</span>', body)
-        self.assertEqual(body.count('class="confirm"'), 1)
+        self.assertNotIn("[confirm", body)
+        _, body2 = build.render_legal("# T\n\nA clause. [confirm: Consumer rules] More.\n")
+        self.assertNotIn("[confirm", body2)
+        for md in build.LEGAL.values():
+            _, b = build.render_legal(open(os.path.join(brand.ROOT, "docs", "legal", md), encoding="utf-8").read())
+            self.assertNotIn("[confirm", b)
 
     def test_terms_and_privacy_pages_come_from_docs_legal(self):
         for page, md in build.LEGAL.items():

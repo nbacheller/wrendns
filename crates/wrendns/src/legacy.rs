@@ -34,7 +34,7 @@ pub(crate) const COMMAND_WARNING: &str =
 /// The warning logged when the pre-rename configuration file is read.
 pub(crate) fn config_warning(new: &str) -> String {
     format!(
-        "reading the pre-rename configuration file; move it to {new} with          deploy/systemd/migrate-from-telltale.sh (docs/running.md, \"Upgrading to WrenDNS\")"
+        "reading the pre-rename configuration file; move it to {new} with deploy/systemd/migrate-from-telltale.sh (docs/running.md, \"Upgrading to WrenDNS\")"
     )
 }
 

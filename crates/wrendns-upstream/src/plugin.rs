@@ -73,6 +73,10 @@ fn command_from(
     c.args(args)
         .env("WRENDNS_PLUGIN_SOCKET", socket)
         .env("WRENDNS_UPSTREAM", name)
+        // REQ: UPS-011 (ADR-1028) — the names the pre-rename release documented, for this release
+        // only: a plugin written for them keeps working until its author moves to the new ones.
+        .env("TELLTALE_PLUGIN_SOCKET", socket) // rebrand:keep
+        .env("TELLTALE_UPSTREAM", name) // rebrand:keep
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -208,6 +212,11 @@ mod env_tests {
         assert!(envs.contains(&("WRENDNS_UPSTREAM".to_owned(), Some("plug".to_owned()))));
         assert!(envs.contains(&(
             "WRENDNS_PLUGIN_SOCKET".to_owned(),
+            Some("/run/wrendns/p.sock".to_owned())
+        )));
+        assert!(envs.contains(&("TELLTALE_UPSTREAM".to_owned(), Some("plug".to_owned())))); // rebrand:keep
+        assert!(envs.contains(&(
+            "TELLTALE_PLUGIN_SOCKET".to_owned(), // rebrand:keep
             Some("/run/wrendns/p.sock".to_owned())
         )));
     }

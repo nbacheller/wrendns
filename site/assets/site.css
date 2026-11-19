@@ -335,11 +335,10 @@ a.card .more { display: inline-block; margin-top: 10px; font-size: 14.5px; font-
 .sub-head { padding: 8px 10px 2px; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
 @media (min-width: 761px) { .sub-list { max-height: calc(100vh - 84px); overflow-y: auto; } }
 
-/* The legal pages: prose at a reading width; a value still to confirm is marked until the owner settles it. */
+/* The legal pages: prose at a reading width. */
 .legal section > h2 { margin-top: 1.6em; }
 .legal section > h3 { margin-top: 1.2em; }
 .legal section > p, .legal section > ul, .legal section > h2, .legal section > h3 { max-width: 72ch; }
-.confirm { background: var(--brand-sky-soft); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 0 4px; font-weight: 650; }
 
 /* Keyboard focus: the brand's solid 2px ring, 2px outside, never removed. */
 :focus-visible { outline: 2px solid var(--brand-focus-ring); outline-offset: 2px; }

@@ -384,7 +384,7 @@ TelltaleDNS is now **WrenDNS** (T33.2, ADR-1026, ADR-1028). The command, the pat
 | header `X-Telltale-Reason`, `X-Telltale-Client`; cookie `telltale_session` | `X-Wrendns-Reason`, `X-Wrendns-Client`; `wrendns_session` | both are read, so open sessions stay signed in and agent scripts keep working; responses carry both backup headers |
 | Kubernetes label `telltaledns.io/group` | `wrendns.com/group` | read as well while `[kubernetes] label` is the default |
 | `probe.telltale.invalid` | `probe.wrendns.invalid` | both are recognised as the node's own probe |
-| release files `telltale-<arch>-linux` | `wrendns-<arch>-linux` | published under both names, so an older `self-update` finds its file |
+| release files `telltale-<arch>-linux` | `wrendns-<arch>-linux` | published under both names (an upstream TelltaleDNS binary's `self-update` finds its file; this project's old binaries don't use these releases, see the native install steps) |
 | container image `ghcr.io/paimonsoror/telltale` (upstream's) | `ghcr.io/nbacheller/wrendns` | none: pull the new name |
 
 **A cluster can be upgraded node by node.** The nodes of both versions talk to each other: the cluster certificates keep their names while any node may still be old (and each version accepts the other's), and nothing on the wire between nodes changed spelling. Upgrade replicas first and the primary last, as before. `deploy/cluster3/e2e.sh` checks this with an image from before the rename (check **l**): DNS answers on at least two nodes throughout, and no one signs in again.
@@ -393,16 +393,30 @@ What stays as it was, because it is stored in files you already have: backup fil
 
 ### Native install (systemd)
 
-Run the installer again (`sudo sh install.sh`). It installs the new binary and then migrates the old install. (An older `telltale self-update` also works: the new binary then runs under the old unit and the old paths, with warnings, until you run the migration.) To do the migration alone, or to see what it would change first:
+Run the installer again (`sudo sh install.sh`). It installs the new binary and then migrates the old install. **Don't use the old `telltale self-update` for this upgrade**: it looks at upstream's TelltaleDNS releases, not this project's, and would install that over your data. Use `install.sh` (or, once the release signing key is settled, `wrendns self-update --base-url` pointing at this project's releases). To do the migration alone, or to see what it would change first:
 
 ```sh
 sudo sh deploy/systemd/migrate-from-telltale.sh --dry-run    # says what it would do, changes nothing
 sudo sh deploy/systemd/migrate-from-telltale.sh              # does it
 ```
 
-It stops `telltale.service`; renames the `telltale` user and group to `wrendns` (the same IDs, so every file keeps its owner); moves `/var/lib/telltale` to `/var/lib/wrendns` and `/etc/telltale` to `/etc/wrendns`; renames `telltale.toml` to `wrendns.toml` and rewrites the old paths inside it (the original is kept as `wrendns.toml.pre-wrendns`); installs `wrendns.service` from your old unit, so your edits and drop-ins carry over (with `TELLTALE_` variables renamed); keeps a copy of the old unit in `/etc/wrendns/pre-wrendns/`; and starts the new service if the old one was running. The old paths stay behind as links, and `/usr/local/bin/telltale` becomes a link to `wrendns`, so a keepalived check, a cron job or a script that still names them keeps working; it lists the keepalived files that do. Running it again changes nothing. If `/etc/wrendns` or `/var/lib/wrendns` already holds files, it stops and says so instead of mixing the two.
+Before it stops anything it checks that `/etc/wrendns` and `/var/lib/wrendns` aren't in the way, and if a later step fails it starts the old service again, so DNS isn't left stopped. It stops `telltale.service` (and any `telltale-*.service` unit of yours that runs as the `telltale` user, such as a witness; their `User=` and `Group=` are changed to `wrendns` and the units started again); renames the `telltale` user and group to `wrendns` (the same IDs, so every file keeps its owner); moves `/var/lib/telltale` to `/var/lib/wrendns` and `/etc/telltale` to `/etc/wrendns`; renames `telltale.toml` to `wrendns.toml` and rewrites the old paths inside it (the original is kept as `wrendns.toml.pre-wrendns`); installs `wrendns.service` from your old unit, so your edits and drop-ins carry over (with `TELLTALE_` variables renamed); keeps a copy of the old unit in `/etc/wrendns/pre-wrendns/`; and starts the new service if the old one was running. The old paths stay behind as links, and `/usr/local/bin/telltale` becomes a link to `wrendns`, so a keepalived check, a cron job or a script that still names them keeps working; it lists the keepalived files that do. It lists any other file that still names the old user, unit or command (under `/etc/systemd/system`, `/usr/local/sbin`, `/etc/cron.d` and `/etc/sudoers.d`: scripts, `sudo -u telltale` rules) and leaves it for you to change. `install.sh` keeps the unit the migration carried over; it writes its stock unit only on a fresh install. Running it again changes nothing. If `/etc/wrendns` or `/var/lib/wrendns` already holds files, it stops and says so instead of mixing the two.
 
-To roll back, stop `wrendns`, move the two directories back, and restore the unit from `/etc/wrendns/pre-wrendns/`.
+To roll back (as root), in this order:
+
+```sh
+systemctl stop wrendns && systemctl disable wrendns
+rm /var/lib/telltale /etc/telltale                  # the links the migration left; the directories move back next
+mv /var/lib/wrendns /var/lib/telltale
+mv /etc/wrendns /etc/telltale
+usermod -l telltale wrendns && groupmod -n telltale wrendns
+rm /usr/local/bin/telltale && mv /usr/local/bin/telltale.pre-wrendns /usr/local/bin/telltale
+mv /etc/telltale/pre-wrendns/telltale.service* /etc/systemd/system/
+rm /etc/systemd/system/wrendns.service && rm -rf /etc/systemd/system/wrendns.service.d
+systemctl daemon-reload && systemctl enable --now telltale
+```
+
+The config file inside is `wrendns.toml` (the original is `wrendns.toml.pre-wrendns`): move that back to `telltale.toml` too (`mv /etc/telltale/wrendns.toml.pre-wrendns /etc/telltale/telltale.toml`; remove the `telltale.toml` link first). A `telltale-*.service` unit of yours that was changed is kept as `<name>.pre-wrendns` next to it.
 
 ### Docker Compose
 
@@ -1024,7 +1038,7 @@ name = "consul"
 url = "exec:///usr/local/bin/consul-dns-plugin"
 args = ["--datacenter", "home"]
 ```
-- With `exec://`, WrenDNS starts the program and tells it where to listen in `WRENDNS_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `WRENDNS_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to WrenDNS's log. It's stopped when the configuration changes or WrenDNS stops.
+- With `exec://`, WrenDNS starts the program and tells it where to listen in `WRENDNS_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `WRENDNS_UPSTREAM` has the upstream's name; for this release the pre-rename names `TELLTALE_PLUGIN_SOCKET` and `TELLTALE_UPSTREAM` are set too, so an older plugin keeps working). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to WrenDNS's log. It's stopped when the configuration changes or WrenDNS stops. <!-- rebrand:keep -->
 - The plugin gets WrenDNS's environment except every `WRENDNS_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `WRENDNS_SECRETS_KEY`, `WRENDNS_SECRETS_PREVIOUS_KEY`, `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD`, `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `WRENDNS_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `wrendns config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 

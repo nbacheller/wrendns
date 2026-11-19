@@ -3435,6 +3435,17 @@ fn authority(url: &str) -> Result<String, String> {
     })
 }
 
+/// True when a TLS handshake failed because the peer's certificate isn't valid for the name asked for.
+fn is_name_mismatch(e: &std::io::Error) -> bool {
+    use rustls::CertificateError;
+    matches!(
+        e.get_ref().and_then(|i| i.downcast_ref::<rustls::Error>()),
+        Some(rustls::Error::InvalidCertificate(
+            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. }
+        ))
+    )
+}
+
 async fn tls_connect(
     url: &str,
     cfg: Arc<ClientConfig>,
@@ -3467,6 +3478,11 @@ async fn tls_connect(
             Ok(s) => return Ok(s),
             Err(e) => {
                 first_error.get_or_insert_with(|| format!("{a}: {e}"));
+                // Only a certificate that isn't valid for the name is worth a second try with the
+                // other spelling; a CA mismatch or a dead peer fails the same way again.
+                if !is_name_mismatch(&e) {
+                    break;
+                }
             }
         }
     }

@@ -186,8 +186,8 @@ def csp_errors(out_dir, names):
 
 
 # REQ: DOC-006 (T33.3) — /terms and /privacy are the drafts in docs/legal/, rendered as they are: the owner and
-# counsel settle the `[confirm]` markers in the Markdown (shown highlighted until they do), and the next build
-# carries the change. The headings get anchors; the HTML comments (the drafts' own notes) are dropped.
+# counsel settle the `[confirm]` markers in the Markdown; the pages never show them (the build strips them and fails if
+# one reaches the HTML). The headings get anchors; the HTML comments (the drafts' own notes) are dropped.
 LEGAL = {"terms.html": "terms.md", "privacy.html": "privacy.md"}
 
 
@@ -241,7 +241,8 @@ def render_legal(md):
                 flush()
             para.append(line.strip())
     flush()
-    return title, "\n".join(out).replace("[confirm]", '<span class="confirm">[confirm]</span>')
+    # The owner's to-confirm notes are for the drafts only: none reaches the public page.
+    return title, re.sub(r"\s*\[confirm[^\]]*\]", "", "\n".join(out))
 
 
 def build_stamp():
@@ -1319,6 +1320,8 @@ def main():
         # The decisions index and its part pages come from one template.
         generated = render_decisions(page, reqs) if name == "decisions.html" else {name: page}
         for gname, gpage in generated.items():
+            if "[confirm" in gpage and gname in LEGAL:
+                sys.exit("{}: a [confirm] marker reached the public page".format(gname))
             if "<!-- @" in gpage:
                 sys.exit("{}: unreplaced marker".format(gname))
             with open(os.path.join(out, gname), "w", encoding="utf-8") as f:

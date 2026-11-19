@@ -72,7 +72,7 @@ RULES = [
     # install and download URLs, raw files, the docs a link opens, badges, and the site.
     ("sub", r"ghcr\.io/(?:nbacheller|paimonsoror)/(charts/)?telltale(?:dns)?\b", r"ghcr.io/nbacheller/\1wrendns"),
     ("sub", r"raw\.githubusercontent\.com/paimonsoror/telltaledns", "raw.githubusercontent.com/nbacheller/telltaledns"),
-    ("sub", r"github\.com/paimonsoror/telltaledns/(releases|blob|tree|actions|security|commit)", r"github.com/nbacheller/telltaledns/\1"),
+    ("sub", r"github\.com/paimonsoror/telltaledns/(releases|blob|tree|actions|security|commit/)", r"github.com/nbacheller/telltaledns/\1"),
     # the repository a thing points its users or its metadata at (T33.2: only attribution text keeps upstream's):
     # the fetch user agent `(+https://...)`, a quoted URL (`repository = "..."`, an OCI label), a URL ending its
     # line (a chart's `home` and `sources`, a `git clone`), and the release check's default repository

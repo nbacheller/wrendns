@@ -131,6 +131,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     "$oc" --only-keep-debug "target/$t/${PROFILE}/wrendns" /debug/wrendns.debug; \
     "$oc" --strip-all --keep-section=.dep-v0 --add-gnu-debuglink=/debug/wrendns.debug \
       "target/$t/${PROFILE}/wrendns" /out/usr/local/bin/wrendns; \
+    # REQ: OPS-004 (ADR-1028) — the old command name stays in the image for this release: a Compose
+    # healthcheck written for it (`/usr/local/bin/<old name> health`) still passes.
+    ln -s wrendns /out/usr/local/bin/telltale; : rebrand:keep; \
     cp -a /zoneinfo /out/usr/share/zoneinfo; \
     printf 'root:x:0:0:root:/:/sbin/nologin\nwrendns:x:65532:65532:wrendns:/var/lib/wrendns:/sbin/nologin\n' > /out/etc/passwd; \
     printf 'root:x:0:\nwrendns:x:65532:\n' > /out/etc/group; \

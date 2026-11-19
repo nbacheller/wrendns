@@ -51,7 +51,7 @@
 #      there (REQUIRE_PRERENAME=1 makes that a failure). ONLY=prerename runs the bring-up, (a) and (l)
 #      alone. Build the old image from a checkout of the base:
 #      git archive <commit before the rename> | tar -x -C <dir>; docker build -t telltale:pre-rename <dir>
-#      (--build-arg PROFILE=bench-fast --build-arg CARGO_FEATURES=e2e --build-arg WRENDNS_BUILD_CHANNEL=dev).
+#      (--build-arg PROFILE=bench-fast --build-arg CARGO_FEATURES=e2e --build-arg TELLTALE_BUILD_CHANNEL=dev).
 # rebrand:keep-end
 # And, between a and b, a2: in manual failover each replica reports the other as up (relayed by the
 # primary), then `set-failover auto` on the running primary is adopted with no restart: it holds a
@@ -957,9 +957,13 @@ else
   done
   at_image "$IMAGE" "$P" || { probe_stop; bad "$P didn't come up on the renamed image"; }
   N1=$(wait_primary_any 120) || { probe_stop; bad "no primary after the roll"; }
+  # An old Compose healthcheck (`/usr/local/bin/<old name> health`) still passes on the new image (ADR-1028 §1).
+  for n in "${NODES[@]}"; do
+    docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml" exec -T "$n" /usr/local/bin/telltale health >/dev/null 2>&1       || { probe_stop; bad "the old health command (/usr/local/bin/telltale health) fails on $n's renamed image"; } # rebrand:keep
+  done
   for n in "${NODES[@]}"; do
     call "$n" GET /api/v1/lists
-    if [ "$RS" = 401 ] && [ "$(metric_any "${MET[$n]}" cluster_primary)" = 0 ]; then
+    if [ "$RS" = 401 ] && [ "$n" = "$P" ] && [ "$N1" != "$P" ]; then
       # Replacing the old primary can take longer than a lease, and then another node is elected: the node that
       # stepped down takes its users from the new primary, which ends the sessions it had. That is a failover,
       # not the rename; the node signs in again.

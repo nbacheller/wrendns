@@ -192,3 +192,36 @@ async fn ups_011_exec_plugin_is_supervised() {
     assert!(gone, "the plugin stops with its upstream");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// REQ: UPS-011 (ADR-1028) — a plugin written for the pre-rename variable name still finds its socket.
+#[tokio::test]
+async fn ups_011_exec_plugin_may_still_read_the_old_variable_name() {
+    let Some(python) = which("python3") else {
+        eprintln!("skipped: no python3");
+        return;
+    };
+    let dir = scratch("exec-old");
+    let script = dir.join("plugin.py");
+    let old = PLUGIN.replace("WRENDNS_PLUGIN_SOCKET", "TELLTALE_PLUGIN_SOCKET"); // rebrand:keep
+    std::fs::write(&script, old).unwrap();
+    let pidfile = dir.join("pid");
+    let o = UpstreamOptions {
+        plugin_args: vec![script.display().to_string(), pidfile.display().to_string()],
+        plugin_dir: Some(dir.join("plugins")),
+        ..opts()
+    };
+    let ep = Endpoint::parse(&format!("exec://{}", python.display())).unwrap();
+    let up = Upstream::build(1, "py", ep, &o, &TlsOptions::default()).unwrap();
+    let mut answered = false;
+    for _ in 0..100 {
+        if let Ok(r) = up.exchange(&question(), Duration::from_millis(500)).await {
+            assert!(r.ends_with(&[10, 9, 9, 9]));
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(answered, "the plugin using the old variable name answered");
+    drop(up);
+    let _ = std::fs::remove_dir_all(&dir);
+}

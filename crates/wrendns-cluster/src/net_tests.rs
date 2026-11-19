@@ -3272,3 +3272,42 @@ async fn clu_001_a_certificate_with_the_next_cluster_name_is_accepted() {
     let s = tls_connect(&format!("https://{addr}"), Arc::new(client)).await;
     assert!(s.is_ok(), "{:?}", s.err());
 }
+
+// REQ: CLU-001 (ADR-1028) — a handshake that fails for a reason other than the name (here an
+// untrusted CA) is not dialled a second time with the other spelling.
+#[tokio::test]
+async fn clu_001_only_a_name_mismatch_is_retried_with_the_other_spelling() {
+    let ck = rcgen::generate_simple_self_signed(vec![pki::CLUSTER_NAME.to_owned()]).unwrap();
+    let der = ck.cert.der().clone();
+    let key = PrivateKeyDer::try_from(ck.signing_key.serialize_der()).unwrap();
+    let p = provider();
+    let server = rustls::ServerConfig::builder_with_provider(Arc::clone(&p))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![der], key)
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let (listener, addr) = bound_port().await;
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&accepted);
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(acceptor.accept(tcp).await);
+        }
+    });
+    // No trusted roots: the certificate's issuer is unknown, whatever the name.
+    let client = ClientConfig::builder_with_provider(p)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(RootCertStore::empty())
+        .with_no_client_auth();
+    assert!(
+        tls_connect(&format!("https://{addr}"), Arc::new(client))
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

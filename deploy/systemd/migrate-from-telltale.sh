@@ -90,15 +90,21 @@ rewrite() {
   mv -f "$f.new" "$f"
 }
 
+# Refuses (before anything is stopped or changed) when both an old directory and a non-empty new one exist.
+preflight_dir() {
+  old=$1 new=$2
+  is_real_dir "$old" || return 0
+  if [ -e "$new" ] && [ ! -L "$new" ] && [ -n "$(ls -A "$new" 2>/dev/null)" ]; then
+    die "both $old and $new exist and $new isn't empty: look at them and move what you want to keep into $new, then run this again (nothing was changed)"
+  fi
+}
+
 # Moves a real directory to its new place (an empty new one is replaced; a full one is an error).
 move_dir() {
   old=$1 new=$2
   is_real_dir "$old" || return 0
-  if [ -e "$new" ] && [ ! -L "$new" ]; then
-    if [ -z "$(ls -A "$new" 2>/dev/null)" ]; then run rmdir "$new"
-    else die "both $old and $new exist and $new isn't empty: look at them and move what you want to keep into $new, then run this again"
-    fi
-  fi
+  preflight_dir "$old" "$new"
+  if [ -e "$new" ] && [ ! -L "$new" ]; then run rmdir "$new"; fi
   say "Moving $old to $new"
   run mv "$old" "$new"
   # a relative link: both directories share a parent, and it holds in a test root too
@@ -116,12 +122,46 @@ if [ -z "$ROOT" ] && [ "$(id -u)" != 0 ] && [ "$DRY" = no ]; then die "run as ro
 SYSTEMCTL=systemctl
 command -v "$SYSTEMCTL" >/dev/null 2>&1 || SYSTEMCTL=true
 
+preflight_dir "$OLD_DATA" "$NEW_DATA"
+preflight_dir "$OLD_ETC" "$NEW_ETC"
+
+# Other units the owner runs as the telltale user (a witness, a trial watchdog): found now, because
+# the rename of the user needs them stopped, and they must run as wrendns afterwards.
+OTHER_UNITS=""
+if [ -d "$UNIT_DIR" ]; then
+  for u in "$UNIT_DIR"/telltale-*.service; do
+    [ -f "$u" ] || continue
+    if grep -q -E '^(User|Group)=telltale' "$u" 2>/dev/null; then OTHER_UNITS="$OTHER_UNITS $u"; fi
+  done
+fi
+
 WAS_ACTIVE=no
+STOPPED_OTHERS=""
 if "$SYSTEMCTL" is-active --quiet telltale 2>/dev/null; then WAS_ACTIVE=yes; fi
+# If anything below fails, DNS must not stay down: start whichever unit exists (the old one until
+# the new one is in place).
+recover() {
+  rc=$?
+  if [ "$rc" != 0 ] && [ "$DRY" = no ] && [ "$WAS_ACTIVE" = yes ]; then
+    printf 'error: the migration stopped part-way; starting the DNS service again\n' >&2
+    if [ -f "$OLD_UNIT" ]; then "$SYSTEMCTL" start telltale 2>/dev/null || true
+    else "$SYSTEMCTL" start wrendns 2>/dev/null || true; fi
+    for o in $STOPPED_OTHERS; do "$SYSTEMCTL" start "$o" 2>/dev/null || true; done
+  fi
+}
+trap recover EXIT
 if [ "$WAS_ACTIVE" = yes ]; then
   say "Stopping telltale.service"
   run "$SYSTEMCTL" stop telltale
 fi
+for u in $OTHER_UNITS; do
+  n=$(basename "$u")
+  if "$SYSTEMCTL" is-active --quiet "$n" 2>/dev/null; then
+    say "Stopping $n (it runs as the telltale user)"
+    run "$SYSTEMCTL" stop "$n"
+    STOPPED_OTHERS="$STOPPED_OTHERS $n"
+  fi
+done
 
 # --- the user and group: renamed, so the IDs (and who owns every file) stay ---
 if getent passwd telltale >/dev/null 2>&1 && ! getent passwd wrendns >/dev/null 2>&1; then
@@ -201,6 +241,33 @@ if [ -f "$ROOT/etc/resolv.conf.telltale-backup" ] && [ ! -e "$ROOT/etc/resolv.co
   run mv "$ROOT/etc/resolv.conf.telltale-backup" "$ROOT/etc/resolv.conf.wrendns-backup"
 fi
 
+# --- other units that run as the telltale user: User= and Group= follow the rename ---
+for u in $OTHER_UNITS; do
+  say "Pointing $(basename "$u") at the wrendns user"
+  if [ "$DRY" = yes ]; then note "would: change User=/Group= in $u"
+  else
+    [ -e "$u.pre-wrendns" ] || cp -p "$u" "$u.pre-wrendns"
+    sed -e 's#^User=telltale#User=wrendns#' -e 's#^Group=telltale#Group=wrendns#' "$u.pre-wrendns" > "$u.new"
+    mv -f "$u.new" "$u"
+  fi
+done
+if [ -n "$OTHER_UNITS" ]; then run "$SYSTEMCTL" daemon-reload; fi
+
+# --- anything else that names the old user, unit or command: listed, never edited ---
+SCAN=""
+for d in "$UNIT_DIR" "$ROOT/usr/local/sbin" "$ROOT/etc/cron.d" "$ROOT/etc/sudoers.d"; do
+  [ -d "$d" ] && SCAN="$SCAN $d"
+done
+if [ -n "$SCAN" ]; then
+  # shellcheck disable=SC2086
+  others=$(grep -rlE '^(User|Group)=telltale|telltale\.service|-u telltale|sudo .*telltale|systemctl .*telltale' $SCAN 2>/dev/null \
+    | grep -v -e '/wrendns\.service' -e '\.pre-wrendns$' || true)
+  if [ -n "$others" ]; then
+    say "These files still name the old user, unit or command; change them when it suits you (the user is wrendns now, the unit is wrendns.service):"
+    printf '%s\n' "$others" | while read -r h; do note "$h"; done
+  fi
+fi
+
 # --- keepalived and other things that call the old names: they keep working through the links ---
 if [ -d "$ROOT/etc/keepalived" ]; then
   hits=$(grep -rl -i telltale "$ROOT/etc/keepalived" 2>/dev/null || true)
@@ -211,6 +278,9 @@ if [ -d "$ROOT/etc/keepalived" ]; then
 fi
 
 # --- start again ---
+if [ "$NO_START" = no ]; then
+  for o in $STOPPED_OTHERS; do run "$SYSTEMCTL" start "$o"; done
+fi
 if [ "$WAS_ACTIVE" = yes ] && [ "$NO_START" = no ]; then
   if [ -x "$BIN/wrendns" ]; then
     say "Starting wrendns.service"
@@ -221,4 +291,4 @@ if [ "$WAS_ACTIVE" = yes ] && [ "$NO_START" = no ]; then
 fi
 
 say "Done. WrenDNS's paths are /etc/wrendns/wrendns.toml and /var/lib/wrendns; the old ones are links."
-note "Roll back: stop wrendns, move the directories back, restore $NEW_ETC/pre-wrendns/telltale.service."
+note "Roll back (as root): systemctl stop wrendns && systemctl disable wrendns; rm /var/lib/telltale /etc/telltale (the links); mv /var/lib/wrendns /var/lib/telltale; mv /etc/wrendns /etc/telltale; usermod -l telltale wrendns; groupmod -n telltale wrendns; rm /usr/local/bin/telltale && mv /usr/local/bin/telltale.pre-wrendns /usr/local/bin/telltale; mv /etc/telltale/pre-wrendns/telltale.service* /etc/systemd/system/; rm /etc/systemd/system/wrendns.service; systemctl daemon-reload && systemctl enable --now telltale. (docs/running.md has the same steps.)"

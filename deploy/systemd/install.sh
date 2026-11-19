@@ -506,9 +506,11 @@ if [ ! -f "$MIGRATE" ]; then
   MIGRATE="$TMP/migrate.sh"
   fetch "$REPO_RAW/deploy/systemd/migrate-from-telltale.sh" "$MIGRATE" 2>/dev/null || MIGRATE= # rebrand:keep
 fi
+MIGRATED=no
 if [ -n "$MIGRATE" ] && sh "$MIGRATE" --detect; then
   say "Migrating the TelltaleDNS install to WrenDNS" # rebrand:keep
   sh "$MIGRATE"
+  MIGRATED=yes
 fi
 
 if ! id wrendns >/dev/null 2>&1; then
@@ -532,7 +534,12 @@ fi
 UNIT=/etc/systemd/system/wrendns.service
 if [ -f "$HERE/wrendns.service" ]; then cp "$HERE/wrendns.service" "$TMP/wrendns.service"
 else fetch "$REPO_RAW/deploy/systemd/wrendns.service" "$TMP/wrendns.service"; fi
-sed "s#/usr/local/bin/wrendns#$PREFIX/bin/wrendns#" "$TMP/wrendns.service" > "$UNIT"
+if [ "$MIGRATED" = yes ] && [ -f "$UNIT" ]; then
+  # The unit the migration carried over from the old one holds the owner's edits: keep it.
+  say "Keeping $UNIT, carried over from the old unit"
+else
+  sed "s#/usr/local/bin/wrendns#$PREFIX/bin/wrendns#" "$TMP/wrendns.service" > "$UNIT"
+fi
 # The first admin, when chosen in the guided setup: its Argon2id hash goes to the service for
 # its first start only (a root-only drop-in, removed once the service is up).
 DROPIN=/etc/systemd/system/wrendns.service.d/10-first-admin.conf
