@@ -8,6 +8,8 @@ A custom integration that connects Home Assistant to [WrenDNS](../../README.md).
 
 WrenDNS spots the behavior. Home Assistant can then do something physical about it: notify you, cut a smart plug's power, or move the device into a quarantine group where every name is blocked.
 
+> **Upgrading from version 0.1?** The integration's domain is now `wrendns`, so it's a new integration: see the [changelog](CHANGELOG.md) for what changed (events, actions, entity IDs) and how to move over.
+
 It talks to WrenDNS's REST API with an API token, and runs outside the DNS binary, so it can never slow DNS down.
 
 > This lives in the `nbacheller/telltaledns` fork next to the server code it's tested against. To install it through HACS, it needs a repository of its own (HACS installs from a repository's root). Until then, copy it by hand as below.

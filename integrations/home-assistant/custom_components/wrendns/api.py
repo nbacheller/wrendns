@@ -12,7 +12,10 @@ from urllib.parse import quote
 
 import aiohttp
 
+from .legacy import LEGACY_CLIENT_HEADER, LEGACY_REASON_HEADER
+
 TIMEOUT = aiohttp.ClientTimeout(total=15)
+CLIENT_NAME = "home-assistant/0.2.0"
 
 
 class WrendnsError(Exception):
@@ -75,10 +78,12 @@ class WrendnsClient:
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
-            "X-Wrendns-Client": "home-assistant/0.1.0",
+            "X-Wrendns-Client": CLIENT_NAME,
+            LEGACY_CLIENT_HEADER: CLIENT_NAME,
         }
         if reason:
             headers["X-Wrendns-Reason"] = reason[:500]
+            headers[LEGACY_REASON_HEADER] = reason[:500]
         try:
             async with self._session.request(
                 method,
