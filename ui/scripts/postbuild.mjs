@@ -1,8 +1,8 @@
 // Precompresses dist/ for the embedded server and enforces the bundle budget: ≤ 512 KiB gzipped
 // in total (`spec/07` §3, API-005; ADR-1020 raised it from 400 KiB). A text file is replaced by
-// its `x.gz` (when that is smaller): the binary embeds what dist/ holds, so a raw copy beside its `.gz` cost about the file's gzip
-// size again in the image (NFR-001, ADR-168). The server sends the `.gz` to a browser that accepts
-// gzip, and inflates it for any other client.
+// its `x.gz` (when that is smaller): the binary embeds what dist/ holds, so a raw copy beside its
+// `.gz` cost about the file's gzip size again in the image (NFR-001, ADR-168). The server sends
+// the `.gz` to a browser that accepts gzip, and inflates it for any other client.
 import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync, constants } from 'node:zlib';

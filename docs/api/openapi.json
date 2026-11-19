@@ -16634,7 +16634,7 @@
           },
           "id": {
             "type": "string",
-            "description": "Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`."
+            "description": "Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,\n`failover`, `voter_links` (a voter reached only some of the time, T24.38)."
           },
           "ok": {
             "type": "boolean"
@@ -16749,6 +16749,13 @@
             "format": "int32",
             "description": "Voters this node has a stream to (itself included).",
             "minimum": 0
+          },
+          "unstableVoters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnstableVoter"
+            },
+            "description": "REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more\ntimes in the last ten minutes (a link that comes and goes). Empty when all are steady."
           },
           "votedEpoch": {
             "type": "integer",
@@ -30254,6 +30261,38 @@
           "secretBase32": {
             "type": "string",
             "description": "For manual entry in an authenticator app."
+          }
+        }
+      },
+      "UnstableVoter": {
+        "type": "object",
+        "description": "REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time.",
+        "required": [
+          "nodeId",
+          "drops",
+          "windowSeconds",
+          "lastDropSecondsAgo"
+        ],
+        "properties": {
+          "drops": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many times its link dropped within `windowSeconds`.",
+            "minimum": 0
+          },
+          "lastDropSecondsAgo": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds since the last drop.",
+            "minimum": 0
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

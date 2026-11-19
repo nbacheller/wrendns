@@ -5622,7 +5622,10 @@ export interface components {
         ClusterCheck: {
             /** @description What to do about it (failing checks only). */
             fix?: string | null;
-            /** @description Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`. */
+            /**
+             * @description Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,
+             *     `failover`, `voter_links` (a voter reached only some of the time, T24.38).
+             */
             id: string;
             ok: boolean;
             summary: string;
@@ -5674,6 +5677,11 @@ export interface components {
              * @description Voters this node has a stream to (itself included).
              */
             reachableVoters: number;
+            /**
+             * @description REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
+             *     times in the last ten minutes (a link that comes and goes). Empty when all are steady.
+             */
+            unstableVoters?: components["schemas"]["UnstableVoter"][];
             /**
              * Format: int64
              * @description The epoch and node this node last voted for.
@@ -11332,6 +11340,22 @@ export interface components {
             otpauthUrl: string;
             /** @description For manual entry in an authenticator app. */
             secretBase32: string;
+        };
+        /** @description REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time. */
+        UnstableVoter: {
+            /**
+             * Format: int32
+             * @description How many times its link dropped within `windowSeconds`.
+             */
+            drops: number;
+            /**
+             * Format: int64
+             * @description Seconds since the last drop.
+             */
+            lastDropSecondsAgo: number;
+            nodeId: string;
+            /** Format: int64 */
+            windowSeconds: number;
         };
         /** @description Update status from the signed release index (ADR-046). */
         UpdateStatus: {

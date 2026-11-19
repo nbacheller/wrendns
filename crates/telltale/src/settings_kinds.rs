@@ -255,6 +255,54 @@ fn set_section(cfg: &mut Config, kind: ManagedKind, v: Value) -> Result<(), Stri
     Ok(())
 }
 
+/// REQ: CLU-015 (T24.40, ADR-1019) — puts the fields the API edits (`keys`) of a shared tuning
+/// section back as `own` (this node's files) has them, leaving its other fields as `cfg` has them
+/// (a field only the files set, such as `[dnssec] trust_anchors_file`, is never an API entry's). The
+/// kinds are `dnssec`, `filter`, `drill`, `slo`, `probe` and `upstream_check`; any other is left.
+pub(crate) fn restore_api_fields(cfg: &mut Config, own: &Config, kind: ManagedKind) {
+    let mut full = section_full(kind, cfg);
+    let theirs = section_full(kind, own);
+    if let (Value::Object(f), Value::Object(o)) = (&mut full, &theirs) {
+        for k in keys(kind) {
+            match o.get(*k) {
+                Some(v) => {
+                    f.insert((*k).to_owned(), v.clone());
+                }
+                None => {
+                    f.remove(*k);
+                }
+            }
+        }
+    }
+    let set = |cfg: &mut Config| -> Result<(), String> {
+        let bad = |e: serde_json::Error| e.to_string();
+        match kind {
+            ManagedKind::Slo => cfg.slo = serde_json::from_value(full.clone()).map_err(bad)?,
+            ManagedKind::Probe => cfg.probe = serde_json::from_value(full.clone()).map_err(bad)?,
+            ManagedKind::UpstreamCheck => {
+                cfg.upstream_check = serde_json::from_value(full.clone()).map_err(bad)?;
+            }
+            ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill => {
+                set_section(cfg, kind, full.clone())?;
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+    if set(cfg).is_err() {
+        // Not expected (both halves are valid sections): the files' section whole, then.
+        match kind {
+            ManagedKind::Slo => cfg.slo = own.slo.clone(),
+            ManagedKind::Probe => cfg.probe = own.probe.clone(),
+            ManagedKind::UpstreamCheck => cfg.upstream_check = own.upstream_check.clone(),
+            ManagedKind::Dnssec => cfg.dnssec = own.dnssec.clone(),
+            ManagedKind::Filter => cfg.filter = own.filter.clone(),
+            ManagedKind::Drill => cfg.drill = own.drill.clone(),
+            _ => {}
+        }
+    }
+}
+
 /// The dotted keys the files set for this kind's section (`special.ddr_name`), from
 /// [`Config::file_set`].
 fn file_set(kind: ManagedKind, own: &Config, k: &str) -> bool {

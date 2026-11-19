@@ -360,11 +360,22 @@ telltale cluster join tt_join_…</pre>
         </dd>
         <!-- REQ: CLU-005 — how the cluster fails over (ADR-056). -->
         {#if view.failover}
-          <dt>Failover</dt>
+          <dt>Failover<HelpButton id="voter-links" /></dt>
           <dd data-testid="cluster-failover">
             {#if view.failover.active}
               automatic: {view.failover.reachableVoters} of {view.failover.voters} voters reachable
               {#if view.failover.leaseHeld}<span class="muted small">· this primary's lease: {Math.round(view.failover.leaseSecondsLeft ?? 0)} s left</span>{/if}
+              <!-- REQ: CLU-005 (T24.38) — a voter this node reaches only some of the time. -->
+              {#if view.failover.unstableVoters?.length}
+                <div class="notice warn small" role="status" data-testid="cluster-unstable-voters">
+                  {#each view.failover.unstableVoters as v (v.nodeId)}
+                    <div>
+                      {siteOf(v.nodeId)}: its link dropped {v.drops} times in the last {Math.round(v.windowSeconds / 60)} minutes
+                      (last {v.lastDropSecondsAgo} s ago). A voter reached only some of the time can lose a vote or a lease renewal.
+                    </div>
+                  {/each}
+                </div>
+              {/if}
               {#if view.failover.votedFor}<div class="muted small">voted for {siteOf(view.failover.votedFor)} in epoch {view.failover.votedEpoch}</div>{/if}
             {:else if view.failover.mode === 'auto'}
               automatic, but waiting for 3 or more voters ({view.failover.voters} now)

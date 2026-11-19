@@ -1057,6 +1057,61 @@ impl State {
 mod tests {
     use super::*;
 
+    /// REQ: CLU-015 (T24.40, ADR-1019) - `insert_missing_managed_noted` adds only the rows a node
+    /// does not hold, leaves its own rows and every other kind alone, records the note in the same
+    /// step, and does nothing the second time.
+    #[test]
+    fn clu_015_t24_40_insert_missing_keeps_own_rows_and_runs_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        s.put_managed("list", "own", "{\"v\":1}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed(
+            "upstream",
+            "lan",
+            "{\"node_only\":true}",
+            None,
+            None,
+            1,
+            "t",
+        )
+        .unwrap();
+        let before = s.config_version().unwrap();
+        let rows = [
+            ("list", "own", "{\"v\":2}"),
+            ("list", "new", "{}"),
+            ("client", "tv", "{}"),
+        ];
+        let added = s
+            .insert_missing_managed_noted(&rows, 5, "adopted:7", ("managed-seeded", "served:x"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(added, ["list", "client"]);
+        assert_eq!(s.config_version().unwrap(), before + 1);
+        let by = |k: &str| {
+            s.managed(k)
+                .unwrap()
+                .into_iter()
+                .map(|m| (m.name, m.body, m.updated_by))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(by("list").len(), 2);
+        assert!(by("list").contains(&("own".into(), "{\"v\":1}".into(), "t".into())));
+        assert!(by("list").contains(&("new".into(), "{}".into(), "adopted:7".into())));
+        assert_eq!(by("upstream").len(), 1, "another kind is untouched");
+        assert_eq!(
+            s.meta_get("managed-seeded").unwrap().as_deref(),
+            Some("served:x")
+        );
+        // Again: the note matches, nothing happens.
+        assert!(
+            s.insert_missing_managed_noted(&rows, 6, "adopted:7", ("managed-seeded", "served:x"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(s.config_version().unwrap(), before + 1);
+    }
+
     /// REQ: CLU-015 (T24.37) - `replace_managed` makes the named kinds exactly the rows given,
     /// leaves other kinds alone, and moves the version once.
     #[test]

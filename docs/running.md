@@ -2327,6 +2327,13 @@ DNS keeps answering throughout if your clients have two DNS servers (each node i
 - A replica older than its primary keeps working, unless the primary starts using settings
   the older version doesn't know. Then the replica keeps serving its last version, and its
   sync status says to upgrade it.
+- Entries made through the API or UI (lists, groups, devices, local names, forwards, upstreams
+  and the rest) survive an upgrade and a failover on either side of it. A node that is primary
+  after taking over from an older version's primary, or that was already primary in that state
+  when it was upgraded, adopts the entries it serves that its own config files don't define as
+  its own on its first start or reload (the log says `it adopted them as its own`, with counts by
+  kind). Until that has happened it answers any change with 409 and the reason, and changes
+  nothing, rather than publish a version without them.
 
 **Certificates renew themselves.** Each node's cluster certificate lasts 90 days, and a node
 renews it when fewer than 30 days remain (checked every 6 hours). It keeps its key and node
@@ -2391,6 +2398,18 @@ telltale cluster set-failover auto
   "not serving", and the Health checks, rollouts and Compare leave it out for those. One that
   is unreachable still fails the "nodes up" check and raises the `node_down` health reason and
   alert, because automatic failover needs its vote.
+- **Every voter reaches every other voter** (REQ: CLU-005, T24.38). Voting needs a link
+  between each pair, so the nodes keep one beside the one a replica holds to the primary: a replica
+  that moves to another replica while the primary restarts, and back when the primary answers,
+  keeps its voter links. The Cluster page's Failover line counts the voters this node reaches, and
+  shows a warning (the **Voter links** check on the Health tab) when one voter's link has dropped
+  three or more times in ten minutes: it is up now but can't be counted on, so look at the network
+  between the nodes. One restart is one drop and is not a warning. The log's
+  `cluster: the main link ended` lines say how long a replica's link to its primary or fallback
+  lasted and why it ended. Before this fix a rolling restart (replicas, then the primary)
+  could leave two replicas with no usable link to each other for good: the Failover line then read
+  "2 of 3 voters reachable" and the replicas kept moving between the primary and each other; a
+  restart of the replica that shows it (or of the other) cleared it.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator
@@ -2657,9 +2676,13 @@ version. A node that takes over as primary adopts them as its own (the primary's
 set, once per version it inherits), so afterwards you can edit or delete every one of them on
 the new primary, none comes back, and a node that returns with older entries of its own has them
 replaced by the cluster's. If the node that took over runs from a version published by an older
-primary (every node needs this release for its first hand-over), a change to an entry it serves
-but doesn't hold answers 409 with that reason instead of "not found": upgrade, then change it on
-the current primary.
+primary (a release before this hand-over existed), it holds nothing of the old primary's entries
+as its own. It adopts them from what it serves, once, when it takes over or starts as primary in
+that state: every entry of that version that its own config files don't define becomes its own
+(marked `adopted:<version>`), and it publishes them with the next version, so a later failover
+keeps them. An entry its config files define stays the file's: edit it in the file, or with an
+override through the API. A change that arrives before the adoption could happen (the data
+directory can't be written, say) is refused with 409 and nothing changes.
 
 ## Failover drills
 Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network

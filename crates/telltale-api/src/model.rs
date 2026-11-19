@@ -3643,6 +3643,22 @@ pub struct ClusterFailover {
     /// The epoch and node this node last voted for.
     pub voted_epoch: u64,
     pub voted_for: Option<String>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
+    /// times in the last ten minutes (a link that comes and goes). Empty when all are steady.
+    #[serde(default)]
+    pub unstable_voters: Vec<UnstableVoter>,
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstableVoter {
+    pub node_id: String,
+    /// How many times its link dropped within `windowSeconds`.
+    pub drops: u32,
+    pub window_seconds: u64,
+    /// Seconds since the last drop.
+    pub last_drop_seconds_ago: u64,
 }
 
 /// A version an old primary published after a newer primary took over: never applied
@@ -3854,7 +3870,8 @@ pub struct ClusterEvent {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterCheck {
-    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`.
+    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,
+    /// `failover`, `voter_links` (a voter reached only some of the time, T24.38).
     pub id: String,
     pub ok: bool,
     pub summary: String,
