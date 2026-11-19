@@ -98,23 +98,23 @@
     align-items: center;
     gap: 2px;
     padding: 3px 3px 3px 12px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     white-space: nowrap;
   }
   .note-btn {
-    border: 0;
-    border-radius: 999px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-full);
     min-height: 28px;
-    padding: 3px 12px;
+    padding: 0 var(--space-3);
     background: transparent;
     color: var(--muted);
   }
   .note-btn:hover,
   .note-btn[aria-expanded='true'] {
     background: var(--surface);
+    border-color: var(--border-strong);
     color: var(--text);
-    box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
   }
   .note-form {
     display: flex;
@@ -143,13 +143,15 @@
   }
   .chip {
     min-height: 28px;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 12.5px;
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-full);
+    font-size: var(--type-label-size);
   }
+  /* Selected: sky-soft with sky-strong text and edge (T33.6). */
   .chip[aria-pressed='true'] {
-    background: var(--accent);
-    color: var(--accent-text);
+    background: var(--brand-sky-soft);
+    color: var(--accent);
     border-color: var(--accent);
+    font-weight: 600;
   }
 </style>

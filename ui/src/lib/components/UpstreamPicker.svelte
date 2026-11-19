@@ -318,7 +318,7 @@
     align-items: center;
   }
   .opt.off {
-    opacity: 0.6;
+    color: var(--muted);
   }
   .sep {
     flex: 0 0 1px;
@@ -351,7 +351,7 @@
     display: inline-block;
     padding: 0 6px;
     margin: 0 2px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     font-size: 0.8em;
     white-space: nowrap;

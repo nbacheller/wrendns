@@ -180,7 +180,7 @@
 
 <style>
   .test {
-    border-top: 1px solid var(--line, #ddd);
+    border-top: 1px solid var(--border);
     padding: 8px 0;
   }
   label {

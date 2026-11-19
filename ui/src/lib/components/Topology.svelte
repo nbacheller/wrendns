@@ -192,15 +192,15 @@
   };
   const podLabel = (n: Node) => (n.pod ? n.pod.slice(-5) : n.nodeId.slice(0, 5));
   const role = (n: Node) => (n.witness ? 'witness' : n.role);
-  // T6.14 — the primary stands out: a filled badge and an accent stripe; replicas and
-  // witnesses get a quiet outlined badge, an emergency primary an amber one.
+  // T6.14 — the primary stands out with a filled badge; replicas and witnesses get a quiet
+  // outlined badge, an emergency primary an amber one. Sentence case, never all caps (T33.6).
   const badge = (n: Node) =>
     n.role.includes('emergency')
-      ? { kind: 'emergency', text: 'EMERGENCY' }
+      ? { kind: 'emergency', text: 'Emergency' }
       : n.role === 'primary'
-        ? { kind: 'primary', text: 'PRIMARY' }
+        ? { kind: 'primary', text: 'Primary' }
         : { kind: 'replica', text: n.witness ? 'witness' : 'replica' };
-  const badgeW = (n: Node) => badge(n).text.length * 6.2 + 12;
+  const badgeW = (n: Node) => badge(n).text.length * 7 + 12;
   const describe = (n: Node) =>
     [
       `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
@@ -260,7 +260,7 @@
           >
             <title>{describe(c.node)}</title>
             <rect x={c.x} y={c.y} width={c.w} height={c.h} rx="8" />
-            {#if b.kind === 'primary'}<rect class="stripe" x={c.x + 3} y={c.y + 6} width="3" height={c.h - 12} rx="1.5" />{/if}
+            <rect class="ring" x={c.x - 4} y={c.y - 4} width={c.w + 8} height={c.h + 8} rx="12" />
             <circle class="dot" cx={c.x + 14} cy={c.y + 14} r="4" />
             <text class="name" x={c.x + 24} y={c.y + 17}>{fit(label(c.node), c.w - 32 - bw - 6, 7.2)}</text>
             <g class="role-badge {b.kind}" data-testid="topology-role">
@@ -290,6 +290,7 @@
               >
                 <title>{p.more ? `${p.more.length} more pods` : describe(n)}</title>
                 <rect x={p.x} y={p.y} width={p.w} height={p.h} rx="5" />
+                <rect class="ring" x={p.x - 4} y={p.y - 4} width={p.w + 8} height={p.h + 8} rx="9" />
                 <text x={p.x + p.w / 2} y={p.y + 15} text-anchor="middle">{p.more ? `+${p.more.length}` : podLabel(n)}</text>
               </g>
             {/if}
@@ -299,7 +300,7 @@
     {/each}
   </svg>
   <p class="legend muted small">
-    <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
+    <span class="legend-badge">Primary</span> publishes the configuration; replicas follow it ·
     <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
     {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> in maintenance{/if} ·
     {#if canaries.length}<span class="key canary"></span> runs the version baking ·{/if}
@@ -362,9 +363,13 @@
     stroke: var(--ok);
     stroke-width: 1.5;
   }
+  /* Not ready or behind: dotted as well as amber, so the state is never colour alone (T33.6). */
   .chip.warn rect,
   .pod.warn rect {
     stroke: var(--warn);
+    stroke-width: 2;
+    stroke-dasharray: 1 3;
+    stroke-linecap: round;
   }
   .chip.bad rect,
   .pod.bad rect {
@@ -400,12 +405,21 @@
     border-style: dotted;
     background: repeating-linear-gradient(45deg, transparent 0 2px, color-mix(in srgb, var(--warn) 40%, transparent) 2px 4px);
   }
-  .chip:focus-visible rect,
-  .pod:focus-visible rect,
-  .chip:hover rect,
-  .pod:hover rect {
-    stroke: var(--focus, var(--accent));
-    stroke-width: 2.5;
+  .chip:hover > rect:first-of-type,
+  .pod:hover > rect:first-of-type {
+    fill: var(--surface-2);
+  }
+  /* Keyboard focus: a 2px ring 2px outside the node, which hover never draws. */
+  .topo .chip > rect.ring,
+  .topo .pod > rect.ring {
+    fill: none;
+    stroke: none;
+  }
+  .topo .chip:focus-visible > rect.ring,
+  .topo .pod:focus-visible > rect.ring {
+    stroke: var(--focus);
+    stroke-width: 2;
+    stroke-dasharray: none;
   }
   .dot {
     fill: var(--ok);
@@ -429,9 +443,6 @@
     fill: var(--text);
     font-family: var(--mono);
   }
-  .stripe {
-    fill: var(--accent-strong);
-  }
   .chip .role-badge rect {
     fill: none;
     stroke: var(--border);
@@ -439,9 +450,8 @@
     stroke-dasharray: none;
   }
   .role-badge text {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.02em;
     fill: var(--muted);
   }
   .chip .role-badge.primary rect {
@@ -455,13 +465,13 @@
     stroke: var(--warn);
   }
   .role-badge.emergency text {
-    fill: var(--warn-strong, var(--warn));
+    fill: var(--warn);
   }
   .legend-badge {
     display: inline-block;
-    padding: 0 6px;
-    border-radius: 999px;
-    font-size: 10px;
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
     font-weight: 600;
     background: var(--accent-strong);
     color: var(--accent-text);

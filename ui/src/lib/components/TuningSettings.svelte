@@ -42,6 +42,6 @@
   }
   .tuning > summary {
     cursor: pointer;
-    color: var(--muted, inherit);
+    color: var(--muted);
   }
 </style>

@@ -615,7 +615,7 @@
 <style>
   tr.differs th,
   tr.differs td {
-    background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
   }
   ul.plain {
     list-style: none;
@@ -627,10 +627,10 @@
   }
   .chip {
     display: inline-block;
-    padding: 0 0.4rem;
-    margin-right: 0.25rem;
-    border: 1px solid var(--border, #8884);
-    border-radius: 999px;
-    font-size: 0.75rem;
+    padding: 0 var(--space-1);
+    margin-right: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-mono-sm-size);
   }
 </style>

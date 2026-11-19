@@ -65,17 +65,17 @@
     // REQ: API-013 (T24.15) — the networks the routers report, beside Clients.
     { path: '/networks', label: 'Networks', page: Networks, icon: 'networks', section: 'Devices' },
     // REQ: DSC-001 (T25.2, ADR-907) — the network inventory: its settings (admins) and status.
-    { path: '/network-inventory', label: 'Network inventory', page: NetworkInventoryRoute, icon: 'networks', section: 'Devices' },
+    { path: '/network-inventory', label: 'Network inventory', page: NetworkInventoryRoute, icon: 'inventory', section: 'Devices' },
     // REQ: DSC-901, DSC-902, DSC-903 (T31.2) — the CMDB: one record for each thing on the network, its sources
     // side by side, and the link, unlink, merge and split that fix a wrong one.
-    { path: '/cmdb', label: 'CMDB', page: CmdbRoute, icon: 'clients', section: 'Devices' },
+    { path: '/cmdb', label: 'CMDB', page: CmdbRoute, icon: 'cmdb', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
     // REQ: API-016 (T23.8) — router integrations: the devices' names come from them.
-    { path: '/routers', label: 'Routers', page: Routers, icon: 'cluster', section: 'Devices' },
+    { path: '/routers', label: 'Routers', page: Routers, icon: 'router', section: 'Devices' },
     { path: '/lists', label: 'Lists', page: Lists, icon: 'lists', section: 'Filtering & DNS' },
     { path: '/rules', label: 'Quick rules', page: Rules, icon: 'rules', section: 'Filtering & DNS' },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
-    { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
+    { path: '/local-dns', label: 'Names on your network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
     { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },
     { path: '/alerts', label: 'Alerts', page: Alerts, icon: 'bell', section: 'System' },
     { path: '/agent-changes', label: 'Agent changes', page: AgentChanges, icon: 'inbox', section: 'System' },
@@ -382,19 +382,18 @@
     text-decoration: none;
   }
   .section {
-    margin: 14px 12px 6px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    /* Sentence case, the label style (T33.6): never all caps. */
+    margin: var(--space-4) var(--space-3) var(--space-1);
+    font-size: var(--type-label-size);
+    font-weight: var(--type-label-weight);
     color: var(--side-muted);
   }
   .nav {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    border-radius: 10px;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
     color: var(--side-text);
   }
   .nav:hover {
@@ -412,12 +411,12 @@
   .count {
     margin-left: auto;
     min-width: 20px;
-    padding: 0 6px;
-    border-radius: 999px;
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
     background: var(--warn-soft);
     color: var(--warn);
     border: 1px solid var(--warn);
-    font-size: 11px;
+    font-size: var(--type-mono-sm-size);
     line-height: 18px;
     text-align: center;
   }
@@ -428,15 +427,15 @@
   }
   .project-links {
     display: flex;
-    gap: 4px;
-    margin-top: 16px;
+    gap: var(--space-1);
+    margin-top: var(--space-4);
   }
   .project-links a {
     display: grid;
     place-items: center;
     width: 34px;
-    height: 34px;
-    border-radius: 8px;
+    height: 36px;
+    border-radius: var(--radius-md);
     color: var(--side-muted);
   }
   .project-links a:hover,
@@ -446,8 +445,8 @@
   }
   .links-gap {
     width: 1px;
-    margin: 7px 4px;
-    background: var(--side-hover);
+    margin: var(--space-2) var(--space-1);
+    background: var(--border);
   }
   .menu {
     position: relative;
@@ -467,14 +466,14 @@
     background: var(--bad);
   }
   .project-links + .build {
-    margin-top: 6px;
+    margin-top: var(--space-2);
   }
   .build {
     display: grid;
     gap: 2px;
-    margin-top: 16px;
-    padding: 10px 12px;
-    border-radius: 10px;
+    margin-top: var(--space-4);
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
     background: var(--side-hover);
     color: var(--side-muted);
   }
@@ -487,12 +486,12 @@
     font-weight: 600;
   }
   .role {
-    margin-left: 6px;
-    padding: 0 6px;
+    margin-left: var(--space-2);
+    padding: 0 var(--space-1);
     border: 1px solid var(--side-muted);
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     color: var(--side-muted);
-    font-size: 11px;
+    font-size: var(--type-mono-sm-size);
     font-weight: 600;
   }
   .role.primary {
@@ -501,8 +500,8 @@
   }
   .pill {
     justify-self: start;
-    padding: 0 8px;
-    border-radius: 999px;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
     background: var(--warn-soft);
     color: var(--warn);
     border: 1px solid var(--warn);
@@ -513,8 +512,8 @@
     grid-area: top;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 24px;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-6);
     background: var(--bg);
     position: sticky;
     top: 0;
@@ -523,44 +522,45 @@
   .search {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 12px;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
     width: min(360px, 40vw);
-    border-radius: 999px;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-strong);
     background: var(--surface);
-    box-shadow: var(--shadow);
     color: var(--muted);
   }
   .search input {
     border: 0;
     background: transparent;
-    padding: 6px 0;
+    padding: 0;
     flex: 1;
-    min-height: 36px;
+    min-height: 34px;
   }
+  /* The ring goes round the whole search box, 2px outside it, instead of round the bare input. */
   .search input:focus-visible {
     outline: none;
   }
   .search:focus-within {
     outline: 2px solid var(--focus);
-    outline-offset: 1px;
+    outline-offset: 2px;
   }
   .who {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding-left: 6px;
+    gap: var(--space-2);
+    padding-left: var(--space-2);
   }
   .avatar {
     display: inline-grid;
     place-items: center;
-    width: 34px;
-    height: 34px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
-    color: var(--accent);
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-full);
+    background: var(--brand-sky-soft);
+    color: var(--text);
     font-weight: 700;
-    font-size: 13px;
+    font-size: var(--type-label-size);
   }
   .who-text {
     display: grid;
@@ -578,13 +578,13 @@
   }
   .content {
     grid-area: content;
-    padding: 8px 24px 32px;
+    padding: var(--space-2) var(--space-6) var(--space-8);
     min-width: 0;
   }
   .mode {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-2);
   }
   .mode-nav {
     display: none;
@@ -597,14 +597,14 @@
     color: var(--side-text);
   }
   .banner {
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
   }
   .center {
     min-height: 100vh;
     display: grid;
     place-content: center;
-    gap: 12px;
-    padding: 16px;
+    gap: var(--space-3);
+    padding: var(--space-4);
   }
 
   /* Medium widths: the sidebar shrinks to icons. */
@@ -657,8 +657,8 @@
       display: none;
     }
     .top {
-      gap: 6px;
-      padding: 10px 12px;
+      gap: var(--space-2);
+      padding: var(--space-3);
     }
     .search {
       width: auto;
@@ -681,12 +681,12 @@
       height: auto;
       width: min(270px, 82vw);
       z-index: 15;
-      box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
+      box-shadow: var(--shadow-float);
     }
     .mode-nav {
       display: flex;
-      margin-top: 12px;
-      padding: 0 12px;
+      margin-top: var(--space-3);
+      padding: 0 var(--space-3);
     }
     .layout.open .side {
       display: flex;
@@ -700,11 +700,12 @@
       padding: 0;
       border: 0;
       border-radius: 0;
-      background: rgb(0 0 0 / 45%);
+      /* The page beside the menu washes out to the page colour: no dark scrim (airy, T33.6). */
+      background: color-mix(in srgb, var(--bg) 70%, transparent);
       cursor: default;
     }
     .content {
-      padding: 8px 12px 24px;
+      padding: var(--space-2) var(--space-3) var(--space-6);
     }
   }
 </style>

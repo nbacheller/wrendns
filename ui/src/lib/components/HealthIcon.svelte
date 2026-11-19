@@ -77,7 +77,8 @@
         <ul>
           {#each h.reasons as r, i (i)}
             <li class={r.level}>
-              <span class="small">{#if r.node}<strong>{r.node}</strong>: {/if}{r.summary}</span>
+              <span class="lvl" role="img" aria-label={r.level === 'severe' ? 'Severe' : 'Degraded'}><Icon name={`health-${r.level === 'severe' ? 'severe' : 'degraded'}`} size={16} /></span>
+              <span class="small grow">{#if r.node}<strong>{r.node}</strong>: {/if}{r.summary}</span>
               {#if r.link}<a class="small" href={r.link} onclick={() => (open = false)}>Look</a>{/if}
             </li>
           {/each}
@@ -112,7 +113,7 @@
     height: 34px;
     padding: 0;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: none;
     color: var(--side-muted);
     cursor: pointer;
@@ -132,12 +133,12 @@
     position: fixed;
     z-index: 40;
     width: min(320px, calc(100vw - 16px));
-    padding: 10px 12px;
-    border-radius: 10px;
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
     background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow, 0 4px 16px rgb(0 0 0 / 15%));
+    box-shadow: var(--shadow-float);
   }
   .panel p {
     margin: 0 0 6px;
@@ -151,13 +152,19 @@
   }
   .panel li {
     display: flex;
-    gap: 8px;
-    align-items: baseline;
-    justify-content: space-between;
-    padding-left: 8px;
-    border-left: 3px solid var(--warn);
+    gap: var(--space-2);
+    align-items: flex-start;
   }
-  .panel li.severe {
-    border-left-color: var(--bad);
+  /* Each reason leads with its level's shape and colour (never a coloured left border; T33.6). */
+  .lvl {
+    display: inline-flex;
+    padding-top: 2px;
+    color: var(--warn);
+  }
+  .panel li.severe .lvl {
+    color: var(--bad);
+  }
+  .grow {
+    flex: 1;
   }
 </style>

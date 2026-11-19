@@ -301,7 +301,7 @@
     position: absolute;
     box-sizing: border-box;
     border: 1px solid var(--surface);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     padding: 4px 6px;
     overflow: hidden;
     display: flex;
@@ -309,12 +309,13 @@
     gap: 1px;
     color: var(--text);
     text-decoration: none;
+    /* Every tile moves together, in the brand's one motion (T33.6). */
     transition:
-      left 0.6s ease,
-      top 0.6s ease,
-      width 0.6s ease,
-      height 0.6s ease,
-      background-color 0.6s ease;
+      left var(--motion),
+      top var(--motion),
+      width var(--motion),
+      height var(--motion),
+      background-color var(--motion);
   }
   .tile.allowed {
     background: color-mix(in srgb, var(--info) var(--mix), var(--surface));
@@ -379,7 +380,7 @@
   .badge {
     font-size: 12px;
     padding: 2px 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     color: var(--tm-ink);
   }
   .badge.allowed {

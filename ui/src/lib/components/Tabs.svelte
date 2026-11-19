@@ -76,27 +76,27 @@
   .tabs button {
     white-space: nowrap;
   }
+  /* Selected: `sky-soft` with `sky-strong` text, as the sidebar's current page (T33.6). */
   .tabs button[aria-selected='true'] {
-    background: var(--accent);
-    color: var(--accent-text);
+    background: var(--brand-sky-soft);
+    border-color: var(--border-strong);
+    color: var(--accent);
+    font-weight: 600;
   }
   .count {
     display: inline-block;
-    margin-left: 6px;
-    padding: 0 6px;
-    border-radius: 999px;
-    font-size: 11px;
+    margin-left: var(--space-2);
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-mono-sm-size);
     font-weight: 600;
     background: var(--surface);
     color: var(--muted);
   }
-  [aria-selected='true'] .count {
-    background: rgb(255 255 255 / 25%);
-    color: inherit;
-  }
-  .count.alert,
-  [aria-selected='true'] .count.alert {
-    background: var(--warn);
-    color: #fff;
+  /* Something needs attention: the warning colour on its tint, with an edge (never a saturated fill). */
+  .count.alert {
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px solid var(--warn);
   }
 </style>

@@ -195,7 +195,7 @@
     margin-top: 10px;
   }
   .chip {
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     padding: 3px 10px;
     font-size: 12.5px;
   }

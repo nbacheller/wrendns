@@ -88,7 +88,7 @@ members = ["recursive"]</code></pre>
 
     <dt id="q-stub">My domain's servers are authoritative-only (BIND with recursion off, NSD, Knot). How do I send the domain to them?</dt>
     <dd>
-      <p>Use a stub zone. In <b>Names on my network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
+      <p>Use a stub zone. In <b>Names on your network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
     </dd>
 
     <dt id="q-zones">Can it serve my own names and zones?</dt>

@@ -30,7 +30,8 @@
   --s-refreshed: color-mix(in srgb, var(--brand-ok) 55%, var(--brand-surface-raised));
   --s-forwarded: var(--brand-sky-strong);
   --s-blocked: var(--brand-alert);
-  --s-local: var(--brand-flock-3);
+  /* Not a flock colour: those are for groups only (ADR-1040). */
+  --s-local: var(--brand-sky);
   --s-other: color-mix(in srgb, var(--brand-ink-muted) 70%, var(--brand-surface-raised));
   --radius: var(--radius-md);
   --gap: var(--space-6);
@@ -63,6 +64,13 @@
   --hm-hatch: var(--brand-ink-muted);
   --card-border: var(--brand-line);
   --mono: var(--brand-font-mono);
+  /* REQ: API-005, DOC-006 (T33.6) — one motion for everything that moves: 160 ms ease-out. */
+  --motion: 160ms ease-out;
+  /* Status icons for notices (Lucide-style info, alert-triangle, circle-check), used as masks in
+     the tone's colour. */
+  --icon-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4m0-4h.01'/%3E%3C/svg%3E");
+  --icon-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3M12 9v4m0 4h.01'/%3E%3C/svg%3E");
+  --icon-ok: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E");
 }
 
 *,
@@ -132,14 +140,14 @@ code,
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 6px 0 2px;
+  gap: var(--space-3);
+  padding: var(--space-2) 0 0;
 }
 .row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .grid-2 {
   display: grid;
@@ -156,33 +164,17 @@ code,
   border: 1px solid var(--card-border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 18px 20px;
+  padding: var(--space-4) var(--space-6);
   min-width: 0;
 }
-/* T6.8 — card titles carry a short accent bar. */
-.card > h2,
-.card-head h2 {
-  position: relative;
-  padding-left: 12px;
-}
-.card > h2::before,
-.card-head h2::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 2px;
-  bottom: 2px;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--accent);
-}
+/* Card titles are plain: no accent bar (the brand has no coloured left borders; T33.6). */
 .card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin: -2px 0 14px;
-  padding-bottom: 12px;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--surface-2);
 }
 .card-head h2 {
@@ -191,17 +183,12 @@ code,
 /* Soft tinted pill actions (card headers, "View all"). */
 .card-head a,
 .pill-link {
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--brand-sky-soft);
   color: var(--accent-strong);
-  font-size: 12px;
+  font-size: var(--type-label-size);
   font-weight: 600;
-}
-.card-head a:hover,
-.pill-link:hover {
-  text-decoration: none;
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .muted {
   color: var(--muted);
@@ -220,10 +207,10 @@ button,
   border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--text);
-  border-radius: 10px;
-  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
   cursor: pointer;
-  min-height: 34px;
+  min-height: 36px;
 }
 button:hover,
 .btn:hover {
@@ -236,9 +223,6 @@ button.primary {
   color: var(--accent-text);
   font-weight: 600;
 }
-button.primary:hover {
-  filter: brightness(1.05);
-}
 button.danger {
   color: var(--bad);
 }
@@ -246,7 +230,7 @@ button.link {
   border: 0;
   background: none;
   color: var(--link);
-  padding: 2px 4px;
+  padding: 0 var(--space-1);
   min-height: 0;
 }
 /* Round icon-only buttons in the header (theme, pause, menu). Global, so every component's
@@ -259,7 +243,7 @@ button.icon-btn {
   min-height: 36px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: transparent;
   color: var(--muted);
 }
@@ -268,9 +252,22 @@ button.icon-btn[aria-expanded='true'] {
   background: var(--surface-2);
   color: var(--text);
 }
-button:disabled {
-  opacity: 0.55;
+/* Disabled: muted text and a hairline edge, never opacity (which breaks contrast; T33.6). */
+button:disabled,
+button.primary:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  color: var(--muted);
+  border-color: var(--border);
+  background-color: var(--surface);
+  /* Chrome fades a disabled select by itself. */
+  opacity: 1;
   cursor: default;
+}
+button.icon-btn:disabled,
+button.link:disabled {
+  background: none;
 }
 input,
 select {
@@ -278,19 +275,19 @@ select {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  padding: 6px 10px;
-  min-height: 34px;
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+  min-height: 36px;
   min-width: 0;
 }
 /* Every select: the theme's chevron instead of the browser's arrow. */
 select {
   appearance: none;
   -webkit-appearance: none;
-  padding-right: 30px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a97a6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  padding-right: var(--space-8);
+  background-image: var(--chevron);
   background-repeat: no-repeat;
-  background-position: right 11px center;
+  background-position: right var(--space-3) center;
   background-size: 10px 6px;
   cursor: pointer;
 }
@@ -309,8 +306,8 @@ input[type='checkbox'] {
 }
 label.field {
   display: grid;
-  gap: 4px;
-  font-size: 12.5px;
+  gap: var(--space-1);
+  font-size: var(--type-label-size);
   color: var(--muted);
 }
 label.field > input,
@@ -320,28 +317,29 @@ label.field > select {
 }
 form.stack {
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .seg {
   display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
+  gap: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-full);
   background: var(--surface-2);
 }
 .seg button {
-  border: 0;
-  border-radius: 999px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
   min-height: 28px;
-  padding: 3px 12px;
+  padding: 0 var(--space-3);
   background: transparent;
   color: var(--muted);
 }
+/* The pressed segment: raised, with a control's edge and no shadow (the one shadow is for things that float). */
 .seg button[aria-pressed='true'] {
   background: var(--surface);
+  border-color: var(--border-strong);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
 }
 
 /* A labeled select shaped like .seg: the label on the track, the value like a pressed segment
@@ -349,28 +347,26 @@ form.stack {
 .pill-field {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 3px 3px 12px;
-  border-radius: 999px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
   background: var(--surface-2);
   color: var(--muted);
   white-space: nowrap;
 }
 .pill-field select {
-  border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   min-height: 28px;
   max-width: 15rem;
-  padding: 3px 30px 3px 12px;
+  padding: 0 var(--space-8) 0 var(--space-3);
   background-color: var(--surface);
   color: var(--text);
   font-weight: 600;
   text-overflow: ellipsis;
-  box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
 }
 /* Without a visible label (the select's own aria-label names it): just the track. */
 .pill-field.bare {
-  padding: 3px;
+  padding: var(--space-1);
 }
 /* On/off switches. Any `<input type="checkbox" role="switch">` draws as one; in a view's
    controls it sits on a .seg-like track: `<span class="switch-track"><label class="switch">
@@ -378,16 +374,16 @@ form.stack {
 .switch-track {
   display: inline-flex;
   align-items: center;
-  gap: 14px;
-  padding: 3px 12px;
-  border-radius: 999px;
+  gap: var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
   background: var(--surface-2);
   white-space: nowrap;
 }
 .switch {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 28px;
   color: var(--muted);
   cursor: pointer;
@@ -405,34 +401,43 @@ input[type='checkbox'][role='switch'] {
   min-height: 0;
   margin: 0;
   padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 55%, var(--surface-2));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--motion);
 }
+/* Off: an ink-muted knob on a raised track with a control's edge. On: the interactive fill. */
 input[type='checkbox'][role='switch']::before {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 1px;
+  left: 1px;
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(16 24 40 / 25%);
-  transition: transform 0.15s;
+  background: var(--muted);
+  transition: transform var(--motion);
 }
 input[type='checkbox'][role='switch']:checked {
   background: var(--accent);
+  border-color: var(--accent);
 }
 input[type='checkbox'][role='switch']:checked::before {
+  background: var(--accent-text);
   transform: translateX(12px);
 }
+input[type='checkbox'][role='switch']:disabled::before {
+  background: var(--border);
+}
+/* Reduced motion: every movement becomes an instant change (T33.6). */
 @media (prefers-reduced-motion: reduce) {
-  input[type='checkbox'][role='switch'],
-  input[type='checkbox'][role='switch']::before {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
   }
 }
 /* Tables */
@@ -447,8 +452,8 @@ table {
 th,
 td {
   text-align: left;
-  padding: 10px 10px;
-  border-bottom: 1px solid var(--surface-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
 th {
@@ -462,7 +467,7 @@ th {
 /* Dense tables in half-width cards. */
 table.compact th,
 table.compact td {
-  padding: 8px 6px;
+  padding: var(--space-2);
 }
 tbody tr:hover td {
   background: color-mix(in srgb, var(--surface-2) 55%, transparent);
@@ -480,51 +485,75 @@ td.name {
   word-break: break-all;
 }
 
-/* Badges */
+/* Badges: a status colour on its own -soft tint, always with a word. */
 .badge {
   display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--type-mono-sm-size);
   font-weight: 600;
   background: var(--surface-2);
   color: var(--muted);
   white-space: nowrap;
 }
 .badge.ok {
-  color: var(--ok-strong);
+  color: var(--ok);
+  background: var(--ok-soft);
 }
 .badge.bad {
-  color: var(--bad-strong);
+  color: var(--bad);
+  background: var(--bad-soft);
 }
 .badge.warn {
-  color: var(--warn-strong);
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 .badge.info {
-  color: var(--info);
+  color: var(--text);
+  background: var(--brand-sky-soft);
 }
 
+/* Notices: a whole hairline border on the tone's -soft tint, and a leading status icon in the
+   tone's colour; never a coloured left border, never colour alone (T33.6). */
 .notice {
-  border: 1px solid var(--card-border);
-  border-left: 4px solid var(--info);
-  background: var(--surface);
-  box-shadow: var(--shadow);
-  border-radius: 10px;
-  padding: 10px 12px;
+  --nc: var(--info);
+  --ni: var(--icon-info);
+  position: relative;
+  border: 1px solid var(--border);
+  background: var(--brand-sky-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-8);
+}
+.notice::before {
+  content: '';
+  position: absolute;
+  left: var(--space-3);
+  top: 14px;
+  width: 16px;
+  height: 16px;
+  background: var(--nc);
+  -webkit-mask: var(--ni) center / contain no-repeat;
+  mask: var(--ni) center / contain no-repeat;
 }
 .notice.bad {
-  border-left-color: var(--bad);
+  --nc: var(--bad);
+  --ni: var(--icon-alert);
+  background: var(--bad-soft);
 }
 .notice.warn {
-  border-left-color: var(--warn);
+  --nc: var(--warn);
+  --ni: var(--icon-alert);
+  background: var(--warn-soft);
 }
 .notice.ok {
-  border-left-color: var(--ok);
+  --nc: var(--ok);
+  --ni: var(--icon-ok);
+  background: var(--ok-soft);
 }
 
 .empty {
   color: var(--muted);
-  padding: 18px 4px;
+  padding: var(--space-4) var(--space-1);
   text-align: center;
 }
 
@@ -540,9 +569,9 @@ td.name {
 /* A group's name in its color (ADR-050); set --gc to the group's color. */
 .group-chip {
   display: inline-block;
-  margin: 2px 4px 0 0;
-  padding: 0 6px;
-  border-radius: 999px;
+  margin: 2px var(--space-1) 0 0;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--gc, var(--muted));
   color: var(--text);
   background: color-mix(in srgb, var(--gc, var(--muted)) 14%, transparent);

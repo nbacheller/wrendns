@@ -81,7 +81,7 @@
     { v: '120', l: '2 hours' },
     { v: 'today', l: 'Until midnight' },
     { v: '1440', l: '1 day' },
-    { v: 'always', l: 'Until I remove it' },
+    { v: 'always', l: 'Until removed' },
   ];
   /** An edit can keep the end time the rule has (a new duration counts from now). */
   const options = $derived(

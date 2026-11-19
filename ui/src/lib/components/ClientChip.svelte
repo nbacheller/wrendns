@@ -365,11 +365,11 @@
   .glyph {
     display: inline-flex;
     vertical-align: -2px;
-    margin-right: 3px;
-    color: var(--accent, currentColor);
+    margin-right: var(--space-1);
+    color: var(--accent);
   }
   .menu button:disabled {
-    opacity: 0.6;
+    color: var(--muted);
     cursor: default;
   }
   .menu {
@@ -377,25 +377,25 @@
     z-index: 15;
     top: 100%;
     left: 0;
-    margin-top: 4px;
+    margin-top: var(--space-1);
     display: flex;
     flex-direction: column;
     min-width: 180px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
-    padding: 4px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-float);
+    padding: var(--space-1);
   }
   .menu button,
   .menu a {
     text-align: left;
-    padding: 6px 10px;
+    padding: var(--space-2) var(--space-3);
     border: 0;
     background: none;
     color: var(--text);
     font: inherit;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     white-space: nowrap;
   }
@@ -403,7 +403,7 @@
   .menu a:hover,
   .menu button:focus-visible,
   .menu a:focus-visible {
-    background: var(--hover, rgb(127 127 127 / 12%));
+    background: var(--brand-sky-soft);
   }
   .stack {
     display: grid;
@@ -411,7 +411,7 @@
   }
   fieldset {
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 8px 12px;
   }
   .check {

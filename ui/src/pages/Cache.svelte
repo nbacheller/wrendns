@@ -439,7 +439,7 @@
   .stack {
     display: flex;
     height: 10px;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     overflow: hidden;
     background: var(--surface-2);
   }

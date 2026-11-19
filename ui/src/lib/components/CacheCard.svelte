@@ -145,7 +145,7 @@
   <ErrorNote {error} />
   <p class="muted small">
     Flushing doesn't clear devices' own caches. Blocked answers are never cached, so unblocking needs no flush. To change
-    what a name resolves to, use Names on my network.
+    what a name resolves to, use Names on your network.
   </p>
 </section>
 

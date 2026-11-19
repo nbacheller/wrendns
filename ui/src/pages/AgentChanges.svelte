@@ -155,7 +155,7 @@
     margin: 4px 0 0;
     padding: 8px;
     background: var(--surface-2);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     overflow-x: auto;
     max-height: 260px;
   }

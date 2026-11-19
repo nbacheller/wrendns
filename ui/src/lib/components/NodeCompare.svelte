@@ -241,7 +241,7 @@
   }
   .cell {
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     padding: 6px 8px;
     min-width: 0;
   }

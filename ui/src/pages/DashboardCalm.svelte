@@ -390,14 +390,14 @@
   }
   .track {
     height: 4px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     overflow: hidden;
   }
   .track span {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--ok);
   }
   .track.warn span {

@@ -211,11 +211,14 @@
     gap: 6px;
     min-width: 0;
   }
+  /* Domains are data: IBM Plex Mono (T33.6). */
   .dom {
     display: flex;
     min-width: 0;
     max-width: 100%;
     white-space: nowrap;
+    font-family: var(--mono);
+    font-size: var(--type-mono-size);
   }
   .sub {
     min-width: 0;
@@ -248,7 +251,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     padding: 0 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     color: var(--muted);
     font-size: 11.5px;
@@ -288,7 +291,7 @@
     min-height: 0;
     padding: 2px 2px 2px 6px;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: inherit;
     font: inherit;
@@ -306,8 +309,7 @@
     border-right: 1.5px solid var(--muted);
     border-bottom: 1.5px solid var(--muted);
     transform: translateY(-1px) rotate(45deg);
-    opacity: 0.55;
-    transition: transform 0.15s;
+    transition: transform var(--motion);
   }
   .open > .line .chev {
     transform: translateY(1px) rotate(-135deg);

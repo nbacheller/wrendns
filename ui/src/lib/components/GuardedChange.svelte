@@ -422,50 +422,50 @@
   .guarded {
     display: block;
   }
+  /* The alert colour on its tint, in sentence case (T33.6). */
   .weak {
-    background: var(--bad, #c0392b);
-    color: #fff;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 0.75em;
-    margin-left: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    background: var(--bad-soft);
+    color: var(--bad);
+    border-radius: var(--radius-sm);
+    padding: 0 var(--space-2);
+    font-size: var(--type-mono-sm-size);
+    font-weight: 600;
+    margin-left: var(--space-2);
   }
   .row {
     display: flex;
-    gap: 8px;
-    margin: 8px 0;
+    gap: var(--space-2);
+    margin: var(--space-2) 0;
     flex-wrap: wrap;
   }
   .fields {
     display: grid;
-    gap: 8px;
+    gap: var(--space-2);
     max-width: 420px;
-    margin: 8px 0;
+    margin: var(--space-2) 0;
   }
   .check {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
     align-items: flex-start;
-    margin: 6px 0;
+    margin: var(--space-2) 0;
   }
   .bar {
-    height: 10px;
-    background: var(--line, #ddd);
-    border-radius: 5px;
+    height: 8px;
+    background: var(--surface-2);
+    border-radius: var(--radius-full);
     overflow: hidden;
-    margin: 8px 0;
+    margin: var(--space-2) 0;
   }
   .fill {
     height: 100%;
-    background: var(--accent, #2f6fed);
-    transition: width 0.4s linear;
+    background: var(--accent);
+    transition: width var(--motion);
   }
   label {
     display: grid;
-    gap: 4px;
-    margin: 8px 0;
+    gap: var(--space-1);
+    margin: var(--space-2) 0;
     max-width: 460px;
   }
   .button {

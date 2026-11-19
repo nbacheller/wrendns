@@ -160,7 +160,11 @@
   function hoverNode(e: MouseEvent, n: PlacedNode) {
     tip = { ...at(e), text: nodeText(n) };
   }
+  // REQ: T33.6 — the band with keyboard focus gets the brand's focus ring (drawn under it), which
+  // hover never shows.
+  let ring = $state<PlacedLink | null>(null);
   function focusLink(l: PlacedLink) {
+    ring = l;
     tip = { x: l.x1, y: l.y1, text: linkText(l) };
   }
   function setClient(e: SubmitEvent) {
@@ -270,6 +274,10 @@
           data-scale={lay.scale}
           data-total={data?.total}
         >
+          {#if ring}
+            <path class="ring" d={ring.d} stroke-width={Math.max(1, ring.width) + 8} data-testid="flow-focus-ring"></path>
+            <path class="ring-gap" d={ring.d} stroke-width={Math.max(1, ring.width) + 4}></path>
+          {/if}
           <g class="links">
             {#each lay.links as l (l.source + '>' + l.target)}
               <path
@@ -293,7 +301,7 @@
                 onmousemove={(e) => hoverLink(e, l)}
                 onmouseleave={() => (tip = null)}
                 onfocus={() => focusLink(l)}
-                onblur={() => (tip = null)}
+                onblur={() => ((tip = null), (ring = null))}
               ></path>
             {/each}
           </g>
@@ -348,7 +356,7 @@
     justify-content: space-between;
     font-size: 12px;
     color: var(--muted);
-    margin-bottom: 4px;
+    margin-bottom: var(--space-1);
   }
   svg {
     display: block;
@@ -370,6 +378,18 @@
     stroke-opacity: 0.7;
     outline: none;
   }
+  /* The focus ring: 2px of the focus colour, 2px outside the band. */
+  path.ring,
+  path.ring-gap {
+    stroke-opacity: 1;
+    pointer-events: none;
+  }
+  path.ring {
+    stroke: var(--focus);
+  }
+  path.ring-gap {
+    stroke: var(--surface);
+  }
   text {
     font-size: 12px;
     fill: var(--text);
@@ -385,8 +405,8 @@
     position: absolute;
     z-index: 2;
     max-width: 260px;
-    padding: 6px 8px;
-    border-radius: 8px;
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);

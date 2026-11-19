@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   // REQ: FLT-902, FLT-901, API-010 (T24.29, ADR-994, ADR-973) — the filter profile editor: Name, Source (the
   // networks and devices the profile applies to, from the shared picker, with a warning on a private Wi-Fi
   // address and an "Add device" form), Ad Block, Safe Search per engine, Filtering (Off, Basic or Enhanced with
@@ -308,7 +309,7 @@
               <span class="muted small">{keyText(k)}</span>
             {/if}
             {#if k?.randomized}
-              <span class="warn-icon" data-testid="private-mac-warning" role="img" aria-label="Private Wi-Fi address" title="This device uses a private Wi-Fi address">⚠</span>
+              <span class="warn-icon" data-testid="private-mac-warning" role="img" aria-label="Private Wi-Fi address" title="This device uses a private Wi-Fi address"><Icon name="alert" size={16} /></span>
             {/if}
           </div>
         {/each}
@@ -345,8 +346,8 @@
       </div>
 
       <div class="field">
-        <span>Safe Search</span>
-        <div class="row" role="group" aria-label="Safe Search engines" data-testid="profile-engines">
+        <span>Safe search</span>
+        <div class="row" role="group" aria-label="Safe search engines" data-testid="profile-engines">
           {#each ENGINES.filter((x) => !x.more) as e (e.id)}
             <label class="check"><input type="checkbox" checked={engines.includes(e.id)} onchange={(ev) => (engines = ev.currentTarget.checked ? [...engines, e.id] : engines.filter((x) => x !== e.id))} data-testid={`engine-${e.id}`} /> {e.name}</label>
           {/each}
@@ -358,7 +359,7 @@
           {/if}
         </div>
         {#if !engines.includes('youtube') && definition.youtube_restrict && definition.youtube_restrict !== 'strict'}
-          <p class="muted small" data-testid="profile-youtube-note">YouTube restriction is on although YouTube is not in the Safe Search engines.</p>
+          <p class="muted small" data-testid="profile-youtube-note">YouTube restriction is on although YouTube is not in the safe search engines.</p>
         {/if}
       </div>
 

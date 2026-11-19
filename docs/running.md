@@ -1161,7 +1161,7 @@ default_ttl = 300
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `wrendns config check` validates record values and reads the hosts files.
-- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up my home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
+- **In the web UI:** **Names on your network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up your home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
 - **Moving from another DNS server:** `wrendns import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: WrenDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ### Device names in DNS
@@ -1198,7 +1198,7 @@ type = "A"
 value = "10.10.0.5"
 ```
 - Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry the zone's SOA, owned by its apex, with `negative_ttl`.
-- **Zones made in the UI.** **Names on my network** → **Add a zone** (or `PUT /api/v1/zones/{name}`) makes a zone with the same fields as the file (groups, negative TTL, records with their TTLs and node-only flags), kept in the state database and applied on every node without a restart. A zone the files define is read-only in the UI, and its `file` can only be set in the file.
+- **Zones made in the UI.** **Names on your network** → **Add a zone** (or `PUT /api/v1/zones/{name}`) makes a zone with the same fields as the file (groups, negative TTL, records with their TTLs and node-only flags), kept in the state database and applied on every node without a restart. A zone the files define is read-only in the UI, and its `file` can only be set in the file.
 - **SOA and NS at the apex** (`dig SOA home.example`, `dig NS home.example`) answer with the zone file's own records. Without a file, or a file without them, they're made up as resolvers serving local zones do: `localhost.` as the name server, `hostmaster.<zone>` as the contact, and `negative_ttl` as the SOA minimum.
 - **Split horizon:** with `groups`, only those groups' devices see the zone; everyone else resolves the domain normally (the public answer). Several zones for the same domain can serve different groups.
 - The most specific zone wins (`a.corp.example.com` over `corp.example.com`). Zones are answered before filtering, like local records.
@@ -1462,7 +1462,7 @@ makes groups a way to see *which kinds of devices* make which traffic:
 [[group]]
 name = "IOT"
 networks = ["10.20.2.0/24"]
-color = "#22c55e"                        # optional: its color in charts and chips
+# color = "#22c55e"                      # optional: overrides the brand colour for its place
 
 [[group]]
 name = "Surveillance"
@@ -1472,6 +1472,7 @@ networks = ["192.168.7.0/24"]
 name = "Trust"
 networks = ["192.0.2.0/24"]
 ```
+- **Its colour:** groups take the brand's five group colours (sky, tangerine, plum, leaf, rose) in the order the configuration lists them, and every group after the fifth, and `default`, a neutral grey. A group keeps its colour when you filter. A `color` set on the group overrides it.
 - **Which group a device gets:** the group of the most specific matching network. A
   `[[client]]` entry with its own `groups` still wins. Naming a device (in the UI or with a
   `[[client]]` entry without `groups`) keeps it in its network's group. Devices outside every
@@ -2119,7 +2120,7 @@ dnssec_nta = true             # internal zones are usually unsigned
   answer except SERVFAIL counts as up, even REFUSED from servers that host only zones below
   it (a server that says it is failing for its own zone isn't up). A name under a delegated
   server that fails is a failed lookup, like with `recursive://`.
-- From the UI: **Names on my network → Send a domain to another server**, and tick **These
+- From the UI: **Names on your network → Send a domain to another server**, and tick **These
   servers only know this domain**. Through the API:
   `PUT /api/v1/forwards/corp.example` with `{"servers": ["10.0.0.53"], "stub": true}`
   (agents: `plan_forward_domain` with `stub: true`).

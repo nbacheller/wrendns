@@ -64,7 +64,7 @@
         <li>Open <b>Groups → Manage groups</b>, and add a group (or <b>Edit</b> one).</li>
         <li>Under <b>Networks</b>, enter its networks, one per line (<code>192.168.20.0/24</code>).</li>
         <li>Tick its <b>Lists</b>, and pick its <b>Upstream servers</b>. <i>(default)</i> means the <code>default</code> upstream group.</li>
-        <li>In the Advanced view, set its <b>Priority</b> and <b>Color</b> if you like. <b>Check</b> shows what the change does; nothing is saved until <b>Apply</b>.</li>
+        <li>In the Advanced view, set its <b>Priority</b> if you like, and a <b>Color</b> only to override the group colour WrenDNS gives it by its place in the list. <b>Check</b> shows what the change does; nothing is saved until <b>Apply</b>.</li>
       </ol>
     </div>
     <div class="panel" id="vlans-file"><h3>Config file</h3>
@@ -228,8 +228,8 @@ device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "va
     </div>
     <div class="panel" id="local-ui"><h3>Web UI</h3>
       <ol class="guide">
-        <li>Open <b>Names on my network</b>. It lists every local name, grouped by domain.</li>
-        <li>For a first device, run <b>Set up my home domain</b> (home.arpa by default). Add, edit, or remove names: A, AAAA, and CNAME in Simple, every type in Advanced.</li>
+        <li>Open <b>Names on your network</b>. It lists every local name, grouped by domain.</li>
+        <li>For a first device, run <b>Set up your home domain</b> (home.arpa by default). Add, edit, or remove names: A, AAAA, and CNAME in Simple, every type in Advanced.</li>
         <li>To send a domain to your router or another server, use <b>Send a domain to another server</b>.</li>
       </ol>
       <p>Each change is previewed in a sentence and a diagram before it's saved, and every name has a <b>Test</b> link to Explain. Names from the config files are read-only.</p>

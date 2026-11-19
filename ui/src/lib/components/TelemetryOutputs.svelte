@@ -135,11 +135,6 @@
     align-items: center;
   }
   .bad-text {
-    color: var(--bad, #b00020);
-  }
-  .notice {
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
-    background: var(--panel-2, rgba(127, 127, 127, 0.12));
+    color: var(--bad);
   }
 </style>

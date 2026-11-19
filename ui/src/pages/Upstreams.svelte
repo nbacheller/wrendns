@@ -299,7 +299,7 @@
   </div>
   <p class="muted small">
     To send one domain to a different server (a work network, your router), add a forwarded domain on the
-    <a href={href('/local-dns')}>Names on my network</a> page.<HelpButton id="routes" />
+    <a href={href('/local-dns')}>Names on your network</a> page.<HelpButton id="routes" />
   </p>
 </div>
 
@@ -309,7 +309,7 @@
     gap: 0;
     margin: 4px 0 8px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     overflow: hidden;
   }
   .seg button {
@@ -326,7 +326,7 @@
     display: inline-block;
     padding: 0 6px;
     margin: 1px 4px 1px 0;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     white-space: nowrap;
   }
