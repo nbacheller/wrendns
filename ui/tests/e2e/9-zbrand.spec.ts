@@ -2,7 +2,7 @@
 // CSS variables for Day and Night (the system's choice, and the header's toggle kept per viewer),
 // Figtree and IBM Plex Mono, the logo files (byte for byte from brand/logos) and the app icon as the
 // favicon, and status colours that always come with a word. These tests sign in as the admin
-// `1-ui.spec.ts` created; the file is named `9-` so it runs after it.
+// `1-ui.spec.ts` created; the file is named `9-z` so it runs after it and after `9-categories.spec.ts`, whose timing it must not shift.
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
