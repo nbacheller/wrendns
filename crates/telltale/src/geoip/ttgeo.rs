@@ -305,10 +305,13 @@ impl Collector {
             return Err(Reject::Overlap);
         }
         // IPv4: merge contiguous ranges of one country, add the gap rows.
-        let mut t4: Vec<(u32, u16)> = Vec::new();
+        // REQ: OBS-902 (ADR-1008 M2) - sized from the row count (merging shrinks it, gap rows grow
+        // it by a few percent), so the table is allocated once and never doubled.
+        let src4 = std::mem::take(&mut self.v4);
+        let mut t4: Vec<(u32, u16)> = Vec::with_capacity(src4.len() + src4.len() / 8 + 2);
         let mut expect: u64 = 0;
         let mut last: Option<(u64, u16)> = None; // (end + 1, cc) of the row just added
-        for &(s, e, cc) in &self.v4 {
+        for &(s, e, cc) in &src4 {
             if let Some((next, c)) = last
                 && next == u64::from(s)
                 && c == cc
@@ -327,12 +330,15 @@ impl Collector {
         if u32::try_from(expect).is_ok() {
             t4.push((u32::try_from(expect).unwrap_or(u32::MAX), 0));
         }
+        // The IPv4 source rows are consumed: free them before the IPv6 table is built.
+        drop(src4);
         // IPv6: ranges are cut to /64 (conservative: a range's first and last /64 are wholly its
         // own). A /64 two ranges share belongs to the earlier one.
-        let mut t6: Vec<(u64, u16)> = Vec::new();
+        let src6 = std::mem::take(&mut self.v6);
+        let mut t6: Vec<(u64, u16)> = Vec::with_capacity(src6.len() + src6.len() / 8 + 2);
         let mut expect: u128 = 0;
         let mut last: Option<(u128, u16)> = None;
-        for &(s, e, cc) in &self.v6 {
+        for &(s, e, cc) in &src6 {
             let mut s_hi = s >> 64;
             let e_hi = e >> 64;
             if s_hi < expect {
@@ -359,6 +365,7 @@ impl Collector {
         if u64::try_from(expect).is_ok() {
             t6.push((u64::try_from(expect).unwrap_or(u64::MAX), 0));
         }
+        drop(src6);
         Ok(Table {
             v4: t4,
             v6: t6,
