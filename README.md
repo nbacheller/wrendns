@@ -1,6 +1,6 @@
 # TelltaleDNS
 
-> **This is a fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns), based on [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns). Everything below this box is upstream's README. The badges, releases, quick start and project site are upstream's too. The fork's work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
+> **An independent fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns) started from [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns) and, since 2026-11-19, goes its own way: it no longer merges upstream and ports only fixes (ADR-1026). It keeps upstream's licences (Apache-2.0 or MIT) and copyright notice. Everything below this box is upstream's README as of the last sync. The badges, releases, quick start and project site are upstream's too. The fork's work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
 >
 > **What the fork adds** (milestones in the [roadmap](spec/10-roadmap-and-tasks.md)):
 > - **M22, network inventory and home integrations (done):**

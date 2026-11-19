@@ -699,6 +699,13 @@ Two tasks from the design session of 2026-10-18, built in order T15.1 → T15.2 
   - *Done 2026-11-16:* (1) the e2e suite (74 tests) passes on the VM and in CI, with the tests that found cards by class moved to the new hooks; (2)–(4) `SmoothChart`, `TopList` and `names.ts` as in ADR-157, looked at on the demo network and on the live cluster's name shapes (read-only); (5) the e2e test `api_005 the previous dashboard is reachable and remembered`; (6) `npm run check` clean, bundle 229.9 KiB gzipped. The contributor's #31 (per-device status split, issue #30, ADR-159), #34 (lists follow the range, ADR-160), #36 (legend width) and #42 (rolling last hour, ADR-158) were ported onto it (the split also rides on range reads), and the PRs closed with a note.
   - *Open:* the owner's acceptance of ADR-157 to ADR-160; when to remove the previous dashboard; a server-side option to fold pods' search suffixes in the top lists; the rolling hour (ADR-158) has no per-device status split.
 
+## M33 — Independence: the fork's own name (owner decision 2026-11-19, ADR-1026)
+
+The fork goes its own way (ADR-1026). Before anything is published outside the owner's network it takes its own name.
+
+- [x] **T33.1 Leave upstream's fork network.** *(ADR-1026)* Export every issue, comment and label (`.github/issues-archive/`), the owner clicks Leave fork network, then recreate the issues in order so #1 to #29 keep their numbers. *Export done 2026-11-19 (29 issues, 27 comments, 12 labels); recreation follows the owner's click.*
+- [ ] **T33.2 A new name.** *(ADR-1026)* The owner picks the name (AskUserQuestion, with a check that the name and its domain are free). Then rename the user-visible product: the binary and its `--version`, config and data paths (`/etc/telltale`, `/var/lib/telltale`, with the old paths still read and a migration note), systemd units, container images, the Helm chart, the UI title and help, docs, site and README; crate names may stay. A rollout to the test Pis and the bundle with the old paths migrated; the licence texts and upstream copyright line kept.
+
 ## M32 — Cloud-hosted resolver and roaming-device clients (owner request 2026-11-18) [fork #28]
 
 A TelltaleDNS that devices use when they're away from home, hosted on a free or nearly free Azure tier, with native DoH or DoT setup for Windows, macOS, iOS and Android, and the same per-device policy at home and away. Research (2026-11-18, in fork #28) found:

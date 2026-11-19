@@ -2,6 +2,10 @@
 
 Fork-only file. `nbacheller/telltaledns` is based on `paimonsoror/telltaledns`; this file records how far the fork has merged upstream, every intentional difference from upstream, the upstream issues the fork has triaged, and how the daily watch (`.github/workflows/upstream-watch.yml`) reports on new upstream work. Read it before any sync. The watch script reads the three machine-readable blocks below, so keep their format.
 
+## Status since 2026-11-19: independent (ADR-1026)
+
+The fork no longer merges upstream. The sync procedure below is kept as a record and is not used. The daily watch still reports new upstream commits and issues; each one is triaged for a **fix to port** (a security or bug fix in code the fork still shares), ported on its own branch citing the upstream commit, and recorded in the `triaged` block. Nothing is merged wholesale.
+
 ## Last sync
 
 upstream-synced: 095b77f

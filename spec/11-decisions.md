@@ -5418,3 +5418,15 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Decision (owner, 2026-11-18):** the budget is **512 KiB gzipped** in total. The per-chunk caps stay as they are (the map chunk at most 30 KiB, lazy pages split out of the main chunk), the main bundle still carries no page-only code, and every task still records its size delta. The image gate (25 MiB per architecture, ADR-916) and the RSS budgets are unchanged: the bundle is embedded gzipped, so 112 KiB more is under 0.5 % of the image gate.
 
 **Consequences:** the build and `obs_901` check 512 KiB; `spec/02` and `spec/07` say so. A first page load on a Pi-served LAN grows by a few milliseconds at most. When the UI nears 512 KiB, the next step is to load help topics from the API on demand and to split the brand icons, not another raise without an ADR.
+
+## ADR-1026 — The fork goes its own way: no more upstream syncs, a watch for fixes only, its own name before any public release (Accepted 2026-11-19, owner decision)
+
+**Context:** On 2026-11-19 the fork was 612 commits ahead of `paimonsoror/telltaledns` and 80 behind since the last shared commit (`095b77f`, 2026-11-17): about 198,000 lines added in 566 files against upstream's 8,600 in 69, its own milestones M22 to M32 and about 120 fork ADRs. Each sync cost hours of conflict resolution. Upstream is dual-licensed Apache-2.0 or MIT, which permits a permanent independent fork; neither licence grants use of the project's name (Apache-2.0 section 6).
+
+**Decision (the owner, through AskUserQuestion):**
+1. **Independent, with a watch for fixes.** No more full upstream merges; `spec/upstream.md`'s sync procedure is retired. The daily upstream watch stays, but only to find security and bug fixes in code the fork still shares; such a fix is ported by cherry-pick or by hand on its own branch, citing the upstream commit. Upstream ADR and task numbers already taken keep their meaning; new work uses the fork's numbering only.
+2. **Licence.** The fork keeps both licence texts and the upstream copyright line; fork additions may carry their own. Distribution uses the MIT option or keeps Apache-2.0's notices, whichever the release says.
+3. **Name.** TelltaleDNS stays the name internally for now. A new name, and the rename of the binary, paths, images, units, docs and site, is its own task, done before anything is published outside the owner's network (spec/10 M33).
+4. **GitHub.** The repository leaves upstream's fork network (Settings, Danger Zone, Leave fork network; the owner's click). Because that drops every issue and comment, they were exported first to `.github/issues-archive/` (29 issues, 27 comments, 12 labels) and are recreated in order afterwards so #1 to #29 keep their numbers, each comment noting its original author and date.
+
+**Consequences:** shared bugs are no longer reported upstream by comment unless the owner asks; the "Upstream watch" issue reports candidates for porting instead of a sync; the README's fork box says the project is independent.
