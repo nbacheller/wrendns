@@ -47,7 +47,7 @@ By starting a monthly Support Payment, you authorise us, through Stripe, to char
 
 ### 4.5 Refunds
 
-- **One-time Support Payments:** refunded in full on request within thirty (30) days of the payment. Email support@wrendns.com with the receipt. [confirm the refund window]
+- **One-time Support Payments:** refunded in full on request within thirty (30) days of the payment. Email support@wrendns.com with the receipt.
 - **Monthly Support Payments:** you may cancel at any time as described in section 4.4. We refund the most recent monthly charge in full on request within thirty (30) days of that charge. We do not otherwise give pro-rated refunds, except where the law requires it.
 - **Required by law:** we give any refund that applicable consumer-protection law requires.
 
@@ -77,7 +77,7 @@ We respond to clear notices of alleged copyright infringement that comply with t
 - a statement that you have a good-faith belief that the use is not authorised; and
 - a statement, under penalty of perjury, that the information in the notice is accurate and that you are the copyright owner or authorised to act on the owner's behalf.
 
-DMCA Designated Agent: MySummitKeep LLC, Attn: DMCA Designated Agent, 5005 W Laurel St, Ste 100 #3250, Tampa, FL 33607. Phone: (813) 418-6800. Email: dmca@wrendns.com. [confirm the address alias, and add WrenDNS and wrendns.com to the agent's entry in the Copyright Office's DMCA directory]
+DMCA Designated Agent: MySummitKeep LLC, Attn: DMCA Designated Agent, 5005 W Laurel St, Ste 100 #3250, Tampa, FL 33607. Phone: (813) 418-6800. Email: dmca@wrendns.com. <!-- owner: add WrenDNS and wrendns.com to MySummitKeep LLC's entry in the Copyright Office's DMCA agent directory -->
 
 ## 7. Third-party services and content
 
@@ -91,7 +91,7 @@ THE SITE AND THE SOFTWARE ARE PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRA
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, MYSUMMITKEEP LLC IS NOT LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, DATA, USE, GOODWILL OR OTHER INTANGIBLE LOSSES, ARISING OUT OF THE SITE, THE SOFTWARE OR A SUPPORT PAYMENT.
 
-OUR TOTAL LIABILITY FOR ALL CLAIMS ARISING OUT OF OR RELATED TO THESE TERMS IS LIMITED TO THE GREATER OF (A) THE SUPPORT PAYMENTS YOU MADE TO US IN THE TWELVE (12) MONTHS BEFORE THE CLAIM, AND (B) ONE HUNDRED DOLLARS ($100.00). [confirm the floor amount] This limit does not apply to liability that cannot be excluded or limited under applicable law.
+OUR TOTAL LIABILITY FOR ALL CLAIMS ARISING OUT OF OR RELATED TO THESE TERMS IS LIMITED TO THE GREATER OF (A) THE SUPPORT PAYMENTS YOU MADE TO US IN THE TWELVE (12) MONTHS BEFORE THE CLAIM, AND (B) ONE HUNDRED DOLLARS ($100.00). This limit does not apply to liability that cannot be excluded or limited under applicable law.
 
 ## 10. Indemnification
 
