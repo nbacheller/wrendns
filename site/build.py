@@ -235,6 +235,9 @@ PERMISSIVE_CLAIM = re.compile(r"Apache[- ]2\.0,? (?:OR|or) (?:the )?MIT|MIT (?:O
 NO_ATTRIBUTION = re.compile(r"Built with Claude|Co-Authored-By: Claude|Generated with Claude", re.IGNORECASE)
 
 
+OWNER_NO_COMMA = re.compile(r"mysummitkeep llc", re.I)
+
+
 def licence_errors(footer, pages):
     """`pages` maps a page name to its built HTML; `footer` is the footer partial."""
     errs = []
@@ -252,6 +255,8 @@ def licence_errors(footer, pages):
         for line in page.splitlines():
             if not record and PERMISSIVE_CLAIM.search(line) and not re.search(r"permissive-final|TelltaleDNS", line):  # rebrand:keep
                 errs.append("{}: says Apache-2.0 OR MIT without the permissive-final baseline: {}".format(name, line.strip()[:120]))
+            if not record and OWNER_NO_COMMA.search(line):
+                errs.append("{}: the owner is MySummitKeep, LLC (with the comma): {}".format(name, line.strip()[:120]))
             if NO_ATTRIBUTION.search(line):
                 errs.append("{}: carries an AI attribution note: {}".format(name, line.strip()[:120]))
     return errs
