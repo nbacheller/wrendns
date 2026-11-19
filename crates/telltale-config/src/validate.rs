@@ -2075,6 +2075,15 @@ fn discovery(cfg: &Config, r: &mut Report<'_>) {
             "from 32 to 128 (MiB per discovery worker)",
         );
     }
+    // REQ: DSC-009 (ADR-912) — the `stat/alluser` window.
+    if !(crate::discovery::ALL_USERS_MIN_HOURS..=crate::discovery::ALL_USERS_MAX_HOURS)
+        .contains(&d.unifi_all_users_within_hours)
+    {
+        r.err(
+            "discovery.unifi_all_users_within_hours",
+            "from 1 to 8,760 (hours, up to one year)",
+        );
+    }
     for (i, s) in d.subnets.iter().enumerate() {
         let path = format!("discovery.subnet[{i}].cidr");
         if !matches!(s.cidr.addr, std::net::IpAddr::V4(_)) {

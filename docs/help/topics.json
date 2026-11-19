@@ -1300,6 +1300,16 @@
       "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {
+      "id": "inventory-unifi-reads",
+      "title": "More from your routers",
+      "term": "Extra router reads",
+      "summary": "The inventory can ask UniFi for more than its device list: more fields of each connected client (port or access point, VLAN, network, first seen), clients it has seen before (history), and its own devices with each switch port's MAC table and LLDP neighbours. It can also ask Home Assistant for devices that have a MAC address and no entity. Every read only reads, adds to the inventory only, and is capped at 4 MiB and 8,192 rows (Home Assistant 1 MiB).",
+      "when": "Turn these on when the inventory shows a device with no place: you want to know which switch port or access point a device is on, or to keep the name of a phone that left last week.",
+      "example": "With the devices read on, a printer's row shows the switch and port it plugs into. With history on, a laptop that has been away for ten days is listed as history, with the last address UniFi saw, and it never answers for the address now.",
+      "caution": "History is never a current address: it can't give a device a DNS name, and it never replaces an address a router reports now. A console that refuses a read (a key without the right to read devices, for example) is reported once in the table, and the other reads carry on. Home Assistant can only list a device with no entity when the device sits in an area or has a label.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
       "id": "block-response",
       "title": "How blocked names are answered",
       "term": "Block response",

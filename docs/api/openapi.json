@@ -15936,13 +15936,68 @@
           }
         }
       },
+      "DiscoveryRead": {
+        "type": "object",
+        "description": "REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw\nit. Read-only: nothing here changes a console.",
+        "required": [
+          "router",
+          "read",
+          "state",
+          "rows",
+          "truncated"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the result was recorded (Unix seconds).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a read did not work, in words (no credential in it)."
+          },
+          "read": {
+            "type": "string",
+            "description": "`client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.",
+            "example": "all_users"
+          },
+          "router": {
+            "type": "string",
+            "description": "The `[[router]]` read.",
+            "example": "udm"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows used.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`ok`, `refused` (the console answered 401 or 403) or `failed`.",
+            "example": "ok"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More rows were offered than the 8,192 cap; the rest were left out."
+          }
+        }
+      },
       "DiscoveryStatus": {
         "type": "object",
         "description": "REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,\nand each discovery worker process. Health reasons for the workers never mark DNS unhealthy.",
         "required": [
           "enabled",
           "designated",
-          "workers"
+          "workers",
+          "reads"
         ],
         "properties": {
           "designated": {
@@ -15959,6 +16014,13 @@
               "null"
             ],
             "description": "The designated node's name, when `[discovery] node` is set."
+          },
+          "reads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryRead"
+            },
+            "description": "REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant\nread: which ones work, and which the console refused. Empty unless one is on."
           },
           "workers": {
             "type": "array",
