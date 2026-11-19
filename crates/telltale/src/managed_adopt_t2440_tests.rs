@@ -449,15 +449,18 @@ async fn clu_015_t24_40_the_publish_loop_adopting_first_loses_nothing_after_a_re
     )
     .unwrap();
     let file = follow(&b, NodeRole::Replica, 1, &merged, &old_blob());
-    let _ = crate::replication::effective(&file);
+    // What gather holds: the files (never the running config), captured while a replica.
+    let _running = crate::replication::effective(&file);
     promote(&b, 2);
     // The publish loop's first gather, before any reload.
     assert!(matches!(
         crate::replication::managed_base_state(&file),
         crate::replication::Base::Adopted(_)
     ));
+    assert_eq!(rows(&b, "list"), ["hag"], "adopted as rows by the gather");
     crate::managed_adopt::reset_cache();
     let cfg = crate::replication::effective(&file);
+    assert_eq!(rows(&b, "list"), ["hag"]);
     assert_eq!(cfg.special, merged.special);
     assert_eq!(upstream_names(&cfg), upstream_names(&merged));
     assert_eq!(cfg.list.len(), merged.list.len());

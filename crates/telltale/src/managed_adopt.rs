@@ -253,6 +253,7 @@ fn insert_derived(state: &State, derived: &[Entry], seq: u64, marker: &str) -> O
         &format!("adopted:{seq}"),
         (SEEDED, marker),
     ) {
+        Ok(Some(added)) if added.is_empty() => Some(()),
         Ok(Some(added)) => {
             let mut counts: std::collections::BTreeMap<String, usize> =
                 std::collections::BTreeMap::new();
