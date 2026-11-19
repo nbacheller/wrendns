@@ -12,8 +12,8 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
-use wrendns_api::auth::{self, Auth};
 use tower::ServiceExt as _;
+use wrendns_api::auth::{self, Auth};
 
 use crate::http::Sources;
 

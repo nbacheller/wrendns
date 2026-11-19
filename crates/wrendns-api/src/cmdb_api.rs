@@ -18,8 +18,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use wrendns_store::state::Replay;
 use utoipa::{IntoParams, ToSchema};
+use wrendns_store::state::Replay;
 
 use crate::Shared;
 use crate::auth::Auth;

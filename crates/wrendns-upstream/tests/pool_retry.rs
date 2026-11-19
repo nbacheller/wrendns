@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
-use wrendns_upstream::{Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
+use wrendns_upstream::{Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
 
 /// The first connection reads a query and closes; later ones answer every query.
 async fn flaky_server(connections: Arc<AtomicUsize>) -> std::net::SocketAddr {

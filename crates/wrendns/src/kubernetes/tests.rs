@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wrendns_config::{Config, KubernetesConfig};
 use wrendns_policy::{GroupOrigin, Workloads};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
 

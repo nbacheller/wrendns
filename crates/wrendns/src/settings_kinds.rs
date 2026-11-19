@@ -359,8 +359,8 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
                 serde_json::from_value::<wrendns_config::SloConfig>(body.clone()).map_err(bad)?;
         }
         ManagedKind::Probe => {
-            cfg.probe = serde_json::from_value::<wrendns_config::ProbeConfig>(body.clone())
-                .map_err(bad)?;
+            cfg.probe =
+                serde_json::from_value::<wrendns_config::ProbeConfig>(body.clone()).map_err(bad)?;
         }
         ManagedKind::UpstreamCheck => {
             cfg.upstream_check =

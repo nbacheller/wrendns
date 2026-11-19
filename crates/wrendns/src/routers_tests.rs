@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use wrendns_api::auth::Role;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use wrendns_api::auth::Role;
 
 use crate::credential_tests::{Harness, harness};
 use crate::secrets::value::Kind;

@@ -12,10 +12,10 @@ use base64::Engine as _;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
-use wrendns_api::model::RouterCertificate;
-use wrendns_api::problem::{Code, Problem};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+use wrendns_api::model::RouterCertificate;
+use wrendns_api::problem::{Code, Problem};
 
 /// How long the handshake may take.
 const TIMEOUT: Duration = Duration::from_secs(10);

@@ -21,9 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use wrendns_cluster::net::Cluster;
 use wrendns_store::cmdb::{CmdbDb, CmdbError, Ops, STANDBY_NAME, WireRow};
-use tokio::sync::watch;
 
 use crate::http::Sources;
 

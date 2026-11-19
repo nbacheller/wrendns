@@ -10,10 +10,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use wrendns_proto::{
     EdnsOut, FlagBit, HEADER_LEN, NameBuf, build_query, header, opt, rcode, read_name, summarize,
 };
-use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
 use crate::bootstrap::Bootstrap;
 use crate::conn::{BoxIo, ConnStats, Connector, Pool, counted};
@@ -898,9 +898,9 @@ impl Upstream {
                     opts.idle_timeout,
                 )?))
             }
-            Protocol::Recursive => Transport::Recursive(Box::new(
-                wrendns_recursor::Recursor::new(opts.recursive.clone()),
-            )),
+            Protocol::Recursive => Transport::Recursive(Box::new(wrendns_recursor::Recursor::new(
+                opts.recursive.clone(),
+            ))),
             Protocol::DnsCrypt => {
                 let (pk, name) = opts
                     .dnscrypt

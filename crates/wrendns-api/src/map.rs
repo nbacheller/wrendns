@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use wrendns_config::{Cidr, MapConfig};
 use wrendns_telemetry::map::{AnswerKind, ClientKey, Counts, Window};
-use utoipa::ToSchema;
 
 /// Most devices drawn in one snapshot; the rest fold into `+N more` per network.
 pub const MAX_DEVICES: usize = 200;

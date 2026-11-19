@@ -17,9 +17,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use wrendns_config::categories::{self as cat, Budget, CategoryKind};
 use wrendns_config::{AdsTier, ContentLevel, GroupContent, SafeString};
-use utoipa::ToSchema;
 
 use crate::auth::routes::principal;
 use crate::auth::{Auth, Principal};

@@ -237,9 +237,7 @@ pub(crate) fn to_identity(key: &str, g: &Guess, inp: &Inputs, at_s: u64) -> Devi
         vendor: g.vendor.clone(),
         suggested_group: None,
         source: "inferred".to_owned(),
-        computed_at: Some(wrendns_api::time::format_us(
-            at_s.saturating_mul(1_000_000),
-        )),
+        computed_at: Some(wrendns_api::time::format_us(at_s.saturating_mul(1_000_000))),
         node: None,
         changed_at: None,
         previous: None,
@@ -295,9 +293,7 @@ pub(crate) fn workload_identity(
         vendor: None,
         suggested_group: None,
         source: "kubernetes".to_owned(),
-        computed_at: Some(wrendns_api::time::format_us(
-            at_s.saturating_mul(1_000_000),
-        )),
+        computed_at: Some(wrendns_api::time::format_us(at_s.saturating_mul(1_000_000))),
         node: None,
         changed_at: None,
         previous: None,
@@ -340,9 +336,7 @@ pub(crate) fn override_identity(key: &str, kind: DeviceClass, at_s: u64) -> Devi
         vendor: None,
         suggested_group: None,
         source: "override".to_owned(),
-        computed_at: Some(wrendns_api::time::format_us(
-            at_s.saturating_mul(1_000_000),
-        )),
+        computed_at: Some(wrendns_api::time::format_us(at_s.saturating_mul(1_000_000))),
         node: None,
         evidence: None,
         changed_at: None,

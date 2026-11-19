@@ -2483,8 +2483,7 @@ async fn queries(
     let mut page = blocking(move || bk.queries(&p, from_us, to_us, limit)).await?;
     if let Some(id) = trace {
         page.items.retain(|r| {
-            wrendns_telemetry::event::trace_id(r.ts_unix_micros, &r.client, &r.qtype, &r.name)
-                == id
+            wrendns_telemetry::event::trace_id(r.ts_unix_micros, &r.client, &r.qtype, &r.name) == id
         });
         page.next_cursor = None;
     }

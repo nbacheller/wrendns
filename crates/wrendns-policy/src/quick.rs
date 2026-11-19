@@ -176,10 +176,7 @@ impl QuickRules {
                 labels: u8::try_from(domain.split('.').count()).unwrap_or(u8::MAX),
                 domain: domain.into(),
                 scope,
-                expires: r
-                    .expires
-                    .as_deref()
-                    .and_then(wrendns_config::parse_rfc3339),
+                expires: r.expires.as_deref().and_then(wrendns_config::parse_rfc3339),
                 note: r.note.as_deref().map(Into::into),
                 targets: r
                     .devices

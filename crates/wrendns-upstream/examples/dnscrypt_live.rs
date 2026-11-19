@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 
 use wrendns_proto::{NameBuf, rtype, summarize};
 use wrendns_upstream::dnscrypt::{Stamp, parse_stamp};
-use wrendns_upstream::{
-    Endpoint, Host, Protocol, Question, TlsOptions, Upstream, UpstreamOptions,
-};
+use wrendns_upstream::{Endpoint, Host, Protocol, Question, TlsOptions, Upstream, UpstreamOptions};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {

@@ -11,10 +11,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tracing::{info, warn};
 use wrendns_config::{Config, TelemetryMode};
 use wrendns_store::qlog::search::{Cursor, Filter, Row, search};
 use wrendns_telemetry::event::{Name, QueryEvent};
-use tracing::{info, warn};
 
 use crate::pipeline::Pipeline;
 

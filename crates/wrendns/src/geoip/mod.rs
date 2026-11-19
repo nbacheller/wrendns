@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
+use tracing::{info, warn};
 use wrendns_config::{Config, MapGeoipConfig};
 use wrendns_filter::fetch::{Client, Conditional, Response, SystemResolver};
-use tracing::{info, warn};
 
 pub(crate) mod ttgeo;
 

@@ -288,8 +288,7 @@ pub(crate) fn endpoint(cfg: &wrendns_config::Config) -> Option<String> {
 
 /// The HTTP client the exports use.
 pub(crate) fn client() -> Option<wrendns_filter::fetch::Client> {
-    match wrendns_filter::fetch::Client::new(Arc::new(wrendns_filter::fetch::SystemResolver), &[])
-    {
+    match wrendns_filter::fetch::Client::new(Arc::new(wrendns_filter::fetch::SystemResolver), &[]) {
         Ok(c) => Some(c),
         Err(e) => {
             warn!("OTLP export disabled: {e}");

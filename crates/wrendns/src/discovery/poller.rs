@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
+use tokio::sync::{mpsc, oneshot};
 use wrendns_api::model::{
     AgentCapability, AgentCapabilityPart, DiscoveryAgent, DiscoveryAgentCounts,
     DiscoveryAgentTable, SnmpTestOid,
@@ -24,7 +25,6 @@ use wrendns_api::model::{
 use wrendns_config::{Config, CredentialRole, SnmpAgent, SnmpCredential, SnmpTable, SnmpVersion};
 use wrendns_snmp::creds::{self, CredError};
 use wrendns_snmp::dest;
-use tokio::sync::{mpsc, oneshot};
 
 use super::inventory::Observation;
 use super::snmp_job::{

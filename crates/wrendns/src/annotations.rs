@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use tracing::{info, warn};
 use wrendns_api::annotations_api::KINDS;
 use wrendns_api::model::{Annotation, AnnotationFilter};
-use tracing::{info, warn};
 
 /// The file in the data directory.
 pub(crate) const FILE: &str = "annotations.jsonl";

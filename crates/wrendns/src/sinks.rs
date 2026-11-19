@@ -18,12 +18,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
+use tracing::{info, warn};
 use wrendns_api::model::QueryRow;
 use wrendns_config::{Config, SinkConfig, SinkFormat, SinkKind};
 use wrendns_telemetry::Status;
 use wrendns_telemetry::event::{QueryEvent, Record};
 use wrendns_telemetry::ring::Sink;
-use tracing::{info, warn};
 
 use crate::pipeline::Pipeline;
 
@@ -195,11 +195,10 @@ fn prepare(c: &SinkConfig) -> Result<Ready, String> {
                 Ok(Ready::Syslog(None))
             }
         }
-        SinkKind::Webhook => wrendns_filter::fetch::Client::new(
-            Arc::new(wrendns_filter::fetch::SystemResolver),
-            &[],
-        )
-        .map(|cl| Ready::Webhook(Box::new(cl))),
+        SinkKind::Webhook => {
+            wrendns_filter::fetch::Client::new(Arc::new(wrendns_filter::fetch::SystemResolver), &[])
+                .map(|cl| Ready::Webhook(Box::new(cl)))
+        }
     }
 }
 

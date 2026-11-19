@@ -22,8 +22,8 @@ use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
-use wrendns_store::state::Replay;
 use utoipa::{IntoParams, ToSchema};
+use wrendns_store::state::Replay;
 use zeroize::Zeroizing;
 
 use crate::auth::routes::{OnBehalfOf, TlsConnection, is_https, principal, reason, remote};

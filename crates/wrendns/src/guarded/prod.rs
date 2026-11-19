@@ -14,6 +14,8 @@ use std::time::Duration;
 use axum::Router as HttpRouter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::net::TcpListener;
+use tracing::{info, warn};
 use wrendns_api::BoxFuture;
 use wrendns_api::auth::{Actor, Auth};
 use wrendns_api::guarded::ArrivedOn;
@@ -21,8 +23,6 @@ use wrendns_api::problem::{Code, Problem};
 use wrendns_cluster::net::Cluster;
 use wrendns_config::Config;
 use wrendns_store::state::{NewAudit, State};
-use tokio::net::TcpListener;
-use tracing::{info, warn};
 
 use super::assertion::{Forwarded, ForwardedAnswer};
 use super::engine::Engine;

@@ -23,9 +23,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 use wrendns_cluster::net::Cluster;
 use wrendns_store::qlog::{SegmentId, list_segments, retention, segment_path};
-use tracing::{debug, info, warn};
 
 /// The RPC that carries one chunk of a segment.
 pub(crate) const KIND: &str = "qlog.put";

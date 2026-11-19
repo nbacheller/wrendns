@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use arc_swap::{ArcSwap, Guard};
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 use wrendns_api::DrillWrite;
 use wrendns_api::model::{
     ActiveDrill, DrillCheck, DrillDevice, DrillMode, DrillNodeCount, DrillReport, DrillStart,
@@ -38,7 +39,6 @@ use wrendns_api::problem::{Code, Problem};
 use wrendns_cluster::net::{Cluster, DrillMark};
 use wrendns_config::Cidr;
 use wrendns_telemetry::seen::Window;
-use tracing::{info, warn};
 
 use crate::http::Sources;
 use crate::maintenance::{label, now_ms};

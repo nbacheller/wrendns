@@ -1213,10 +1213,7 @@ mod tests {
             bogus_reason(&msg(Some((5, u32::MAX - 100))), u32::MAX - 10),
             wrendns_proto::ede::DNSSEC_BOGUS
         );
-        assert_eq!(
-            bogus_reason(b"junk", now),
-            wrendns_proto::ede::DNSSEC_BOGUS
-        );
+        assert_eq!(bogus_reason(b"junk", now), wrendns_proto::ede::DNSSEC_BOGUS);
     }
     use hickory_net::proto::rr::{RData, Record, rdata};
 

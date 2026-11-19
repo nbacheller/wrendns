@@ -21,8 +21,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use wrendns_store::state::State as Store;
 use utoipa::ToSchema;
+use wrendns_store::state::State as Store;
 
 use crate::Shared;
 use crate::auth::routes::{principal, reason, remote};

@@ -358,10 +358,7 @@ trust_edns_mac_from = ["192.168.1.1/32"]
     let c = &loaded.config;
     assert_eq!(c.group[0].priority, 10);
     // No groups of its own: it takes its network's group, else `default` (ADR-050).
-    assert_eq!(
-        c.client[1].groups,
-        Vec::<wrendns_config::SafeString>::new()
-    );
+    assert_eq!(c.client[1].groups, Vec::<wrendns_config::SafeString>::new());
     assert_eq!(
         wrendns_config::MatchKey::parse("AA-BB-CC-DD-EE-FF").unwrap(),
         wrendns_config::MatchKey::Mac([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])

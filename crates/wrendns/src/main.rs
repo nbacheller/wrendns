@@ -126,9 +126,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use tracing::{error, info, warn};
 use wrendns_config::Loader;
 use wrendns_policy::LocalData;
-use tracing::{error, info, warn};
 
 // REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
 // allocator, which roughly halved cache-hit throughput in the bench harness.

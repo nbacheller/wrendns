@@ -21,9 +21,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tracing::{error, info, warn};
 use wrendns_config::{Config, ListenProto, WatchdogAction};
 use wrendns_telemetry::prom::PromWriter;
-use tracing::{error, info, warn};
 
 /// Between two rounds of checks.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(5);

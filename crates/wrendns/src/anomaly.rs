@@ -8,13 +8,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use tracing::{info, warn};
 use wrendns_config::{AnomalyKind, AnomalySensitivity, Cidr, Config};
 use wrendns_telemetry::anomaly::{
     Engine, Finding, Kind, MuteTable, PairRhythm, RHYTHM_BINS, Sensitivity, Settings,
 };
 use wrendns_telemetry::event::Record;
 use wrendns_telemetry::ring::Sink;
-use tracing::{info, warn};
 
 /// How often the state is written.
 const SAVE_EVERY: Duration = Duration::from_secs(3600);

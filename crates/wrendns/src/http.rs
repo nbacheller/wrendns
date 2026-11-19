@@ -532,11 +532,7 @@ fn render_maintenance(src: &Sources, w: &mut PromWriter) {
         "gauge",
         "1 while this node is in maintenance (not ready for new traffic; still answering).",
     )
-    .sample(
-        "wrendns_node_maintenance",
-        &[],
-        u8::from(current.is_some()),
-    );
+    .sample("wrendns_node_maintenance", &[], u8::from(current.is_some()));
     w.family(
         "wrendns_node_maintenance_until_seconds",
         "gauge",
@@ -1044,11 +1040,7 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
             "Query events an event sink dropped: its buffer was full, or its collector refused a batch (and it couldn't be kept on disk).",
         );
         for (name, n) in &drops {
-            f.sample(
-                "wrendns_sink_dropped_total",
-                &[("sink", name.as_str())],
-                *n,
-            );
+            f.sample("wrendns_sink_dropped_total", &[("sink", name.as_str())], *n);
         }
     }
     // REQ: OPS-014 (ADR-903 §3) — stored secrets by how they stand on this node.

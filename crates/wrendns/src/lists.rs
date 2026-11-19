@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
 use wrendns_config::{Config, Role};
 use wrendns_filter::compile::{CompileOptions, CompileReport, ListData, ListInput, compile_live};
 use wrendns_filter::fetch::{
@@ -22,9 +25,6 @@ use wrendns_filter::matcher::{Lookup, Matcher};
 use wrendns_filter::parse::{ListOptions, parse_list};
 use wrendns_filter::snapshot::{MANIFEST, Manifest, Snapshot};
 use wrendns_upstream::Bootstrap;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
 
 use crate::pipeline::Pipeline;
 

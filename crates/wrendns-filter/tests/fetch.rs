@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use wrendns_filter::fetch::{
-    Client, FetchSettings, Fetcher, ListSource, ListSpec, Outcome, Resolve, Store,
-};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+use wrendns_filter::fetch::{
+    Client, FetchSettings, Fetcher, ListSource, ListSpec, Outcome, Resolve, Store,
+};
 
 // ---------------------------------------------------------------- scripted server
 

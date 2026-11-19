@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use tokio::sync::Semaphore;
 use wrendns_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
 use wrendns_config::BlockMode;
 use wrendns_config::{Cidr, RateLimitAction, SpecialConfig};
@@ -28,7 +29,6 @@ use wrendns_proto::{
 };
 use wrendns_telemetry::{Hub, Metrics, Proto, QueryEvent, Rule, RuleKind, Status, UpstreamEvent};
 use wrendns_upstream::{Question, Router};
-use tokio::sync::Semaphore;
 
 /// Settings derived from config.
 #[derive(Debug, Clone)]
@@ -2921,9 +2921,8 @@ pub(crate) mod tests_support {
     pub(crate) fn answer(p: &Arc<Pipeline>, name: &str, client: &str) -> bool {
         let n = wrendns_proto::NameBuf::from_presentation(name).unwrap();
         let mut q = [0u8; 512];
-        let len =
-            wrendns_proto::build_query(&mut q, 7, &n, wrendns_proto::rtype::A, 1, true, None)
-                .unwrap();
+        let len = wrendns_proto::build_query(&mut q, 7, &n, wrendns_proto::rtype::A, 1, true, None)
+            .unwrap();
         let meta = RequestMeta {
             peer: format!("{client}:1000").parse().unwrap(),
             local: None,

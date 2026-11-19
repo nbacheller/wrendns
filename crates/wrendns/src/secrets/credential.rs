@@ -330,10 +330,7 @@ pub(crate) fn fields(
 
 /// REQ: OPS-014 (ADR-903 §2) — the load warnings for references to secrets this node doesn't
 /// store: DNS never depends on the store, so a missing one is a warning, not an error.
-pub(crate) fn missing_references(
-    cfg: &wrendns_config::Config,
-    store: &SecretStore,
-) -> Vec<String> {
+pub(crate) fn missing_references(cfg: &wrendns_config::Config, store: &SecretStore) -> Vec<String> {
     if cfg.cluster.ephemeral {
         return Vec::new();
     }

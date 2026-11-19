@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
-use wrendns_api::auth;
 use tower::ServiceExt as _;
+use wrendns_api::auth;
 
 use crate::credential_tests::{Harness, harness, leaks};
 

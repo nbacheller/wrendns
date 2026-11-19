@@ -18,12 +18,12 @@ use hickory_net::proto::dnssec::{DnssecSigner, PublicKey as _, SigningKey};
 use hickory_net::proto::op::{Message, OpCode, ResponseCode};
 use hickory_net::proto::rr::rdata::{A, CNAME, NS, SOA};
 use hickory_net::proto::rr::{DNSClass, Name, RData, Record, RecordSet, RecordType};
+use tokio::net::UdpSocket;
 use wrendns_proto::{NameBuf, rtype};
 use wrendns_upstream::dnssec::{Stats, Validator, Verdict};
 use wrendns_upstream::{
     Endpoint, Group, Question, Strategy, TlsOptions, Upstream, UpstreamOptions,
 };
-use tokio::net::UdpSocket;
 
 fn n(s: &str) -> Name {
     Name::from_ascii(s).unwrap()

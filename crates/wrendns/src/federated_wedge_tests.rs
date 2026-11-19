@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use tower::ServiceExt;
 use wrendns_cluster::net::{Cluster, dial, join, serve};
 use wrendns_cluster::node::{Identity, JoinRequest, TokenGrants};
-use tower::ServiceExt;
 
 use crate::credential_tests::{Harness, harness_in};
 use wrendns_api::{Backend, Shared};

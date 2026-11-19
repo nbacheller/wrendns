@@ -9,8 +9,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use wrendns_proto::{NameBuf, Section, records, rtype, summarize};
 use tokio::net::UdpSocket;
+use wrendns_proto::{NameBuf, Section, records, rtype, summarize};
 
 use crate::upstream::{ExchangeError, Question, encode_query, matches_query};
 

@@ -6,12 +6,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::net::UdpSocket;
 use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
 use wrendns_upstream::dnscrypt::server::TestResolver;
-use wrendns_upstream::{
-    Endpoint, Host, Protocol, Question, TlsOptions, Upstream, UpstreamOptions,
-};
-use tokio::net::UdpSocket;
+use wrendns_upstream::{Endpoint, Host, Protocol, Question, TlsOptions, Upstream, UpstreamOptions};
 
 const PROVIDER: &str = "2.dnscrypt-cert.test";
 

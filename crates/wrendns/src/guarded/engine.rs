@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tokio::time::Instant;
+use tracing::{info, warn};
 use wrendns_api::BoxFuture;
 use wrendns_api::auth::Actor;
 use wrendns_api::guarded::{
@@ -23,8 +25,6 @@ use wrendns_api::problem::{Code, Problem};
 use wrendns_config::Config;
 use wrendns_config::guarded::{Mode, Proof, RESTART_NOW, Row};
 use wrendns_store::state::State;
-use tokio::time::Instant;
-use tracing::{info, warn};
 
 use super::assertion::{
     ASSERTION_SECS, Assertion, Expect, Forwarded, ForwardedAnswer, ForwardedOp, Refusal, Signed,

@@ -2524,14 +2524,13 @@ impl Backend for ApiBackend {
         let by_id: std::collections::HashMap<&str, &wrendns_store::state::AnomalyAck> =
             acks.iter().map(|a| (a.id.as_str(), a)).collect();
         for f in items {
-            f.acknowledged =
-                by_id
-                    .get(f.id.as_str())
-                    .map(|a| wrendns_api::model::AnomalyAckInfo {
-                        by: a.by.clone(),
-                        at: format_us(a.at.saturating_mul(1_000_000)),
-                        note: a.note.clone(),
-                    });
+            f.acknowledged = by_id
+                .get(f.id.as_str())
+                .map(|a| wrendns_api::model::AnomalyAckInfo {
+                    by: a.by.clone(),
+                    at: format_us(a.at.saturating_mul(1_000_000)),
+                    note: a.note.clone(),
+                });
         }
     }
 
@@ -3448,17 +3447,15 @@ impl Backend for ApiBackend {
             let current = src.config.load_full();
             let candidate = wrendns_config::shared::with_shared(&src.file_config.load(), &config)
                 .map_err(|errs| {
-                    Problem::new(
-                        Code::InvalidConfig,
-                        errs.iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    )
-                    .hint(
-                        "Send the shared sections as JSON, as a Git commit's shared TOML becomes.",
-                    )
-                })?;
+                Problem::new(
+                    Code::InvalidConfig,
+                    errs.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+                .hint("Send the shared sections as JSON, as a Git commit's shared TOML becomes.")
+            })?;
             crate::simulate::simulate(&src, current, Arc::new(candidate), &opts)
                 .await
                 .map(Option::unwrap_or_default)
@@ -4447,10 +4444,7 @@ impl Backend for ApiBackend {
             .rule
             .iter()
             .map(|r| {
-                let at = r
-                    .expires
-                    .as_deref()
-                    .and_then(wrendns_config::parse_rfc3339);
+                let at = r.expires.as_deref().and_then(wrendns_config::parse_rfc3339);
                 wrendns_api::model::RuleInfo {
                     id: r.id.to_string(),
                     action: if r.action == wrendns_config::RuleAction::Allow {
@@ -5905,8 +5899,7 @@ fn singleton_store(
 ) -> Result<String, Problem> {
     let bad = |e: serde_json::Error| Problem::new(Code::InvalidConfig, format!("{e}"));
     Ok(if kind == ManagedKind::Exclusions {
-        let x: wrendns_config::ExclusionsConfig =
-            serde_json::from_value(v.clone()).map_err(bad)?;
+        let x: wrendns_config::ExclusionsConfig = serde_json::from_value(v.clone()).map_err(bad)?;
         let text = serde_json::to_string(&x).unwrap_or_default();
         entries.exclusions = Some(x);
         text

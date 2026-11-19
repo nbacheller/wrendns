@@ -10,9 +10,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use tower::ServiceExt as _;
 use wrendns_api::auth;
 use wrendns_config::{Config, Loader};
-use tower::ServiceExt as _;
 
 use crate::credential_tests::{Harness, harness, harness_in, older_primary_and_replica};
 

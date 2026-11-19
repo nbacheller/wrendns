@@ -38,8 +38,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use wrendns_proto::{HEADER_LEN, NameBuf, rcode, read_name, rtype};
 use tracing::debug;
+use wrendns_proto::{HEADER_LEN, NameBuf, rcode, read_name, rtype};
 
 use crate::cache::Caches;
 use crate::msg::{Outcome, Rr};

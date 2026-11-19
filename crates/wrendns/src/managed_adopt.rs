@@ -19,9 +19,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tracing::{info, warn};
 use wrendns_config::Config;
 use wrendns_store::state::State;
-use tracing::{info, warn};
 
 use crate::managed::{self, Named};
 use crate::node_managed::{Entry, SHARED_KINDS, parse_shared};

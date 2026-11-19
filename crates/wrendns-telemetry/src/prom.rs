@@ -223,9 +223,7 @@ mod tests {
         assert!(text.contains("# TYPE wrendns_queries_total counter"));
         assert!(text.contains("wrendns_queries_total{proto=\"udp\",status=\"cached\"} 1"));
         assert!(
-            text.contains(
-                "wrendns_query_duration_seconds_bucket{path=\"cache\",le=\"0.00005\"} 1"
-            )
+            text.contains("wrendns_query_duration_seconds_bucket{path=\"cache\",le=\"0.00005\"} 1")
         );
         assert!(
             text.contains(
@@ -233,9 +231,7 @@ mod tests {
             )
         );
         assert!(
-            text.contains(
-                "wrendns_query_duration_seconds_bucket{path=\"upstream\",le=\"0.05\"} 1"
-            )
+            text.contains("wrendns_query_duration_seconds_bucket{path=\"upstream\",le=\"0.05\"} 1")
         );
         assert!(text.contains("wrendns_query_duration_seconds_count{path=\"upstream\"} 1"));
         assert!(text.contains("wrendns_queries_by_qtype_total{qtype=\"AAAA\"} 1"));

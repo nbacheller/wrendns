@@ -16,9 +16,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::{info, warn};
 use wrendns_config::{Config, OidcProvider, OtlpConfig, SinkConfig};
 use wrendns_store::state::State;
-use tracing::{info, warn};
 
 use crate::managed::{CACHE, OIDC_PROVIDER, OTLP, SINK, SUPPORT, UPDATES};
 

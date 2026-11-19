@@ -700,7 +700,8 @@ pub(crate) fn answered_early(
                 if z.data.answer(q, &mut out, None).is_none() && device() {
                     return Err((
                         Outcome::Local,
-                        "answered from the devices WrenDNS knows by name ([local] device_domain)".into(),
+                        "answered from the devices WrenDNS knows by name ([local] device_domain)"
+                            .into(),
                     ));
                 }
                 return Err((

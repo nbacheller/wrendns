@@ -314,11 +314,7 @@ fn decode_bad(bytes: &[u8]) -> Option<(Bad, &[u8])> {
                     }
                 }
                 3 => {
-                    wrendns_telemetry::agg::add_name(
-                        &mut bad.named_servfail_upstream,
-                        &key,
-                        value,
-                    );
+                    wrendns_telemetry::agg::add_name(&mut bad.named_servfail_upstream, &key, value);
                 }
                 4 => {
                     wrendns_telemetry::agg::add_name(&mut bad.named_slow_upstream, &key, value);

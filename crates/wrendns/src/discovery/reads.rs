@@ -18,9 +18,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use serde_json::Value;
+use tokio::sync::mpsc;
 use wrendns_api::model::DiscoveryRead;
 use wrendns_config::{DiscoveryConfig, RouterConfig};
-use tokio::sync::mpsc;
 
 use super::inventory::{Inventory, NameKind, Observation, Source};
 use super::sources::{ha_observations, parse_mac};

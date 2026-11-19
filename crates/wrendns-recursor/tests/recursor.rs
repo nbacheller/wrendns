@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::net::UdpSocket;
 use wrendns_proto::{HEADER_LEN, NameBuf, rcode, read_name, rtype};
 use wrendns_recursor::{Recursor, Settings};
-use tokio::net::UdpSocket;
 
 /// A zone: its records, its delegations (child, server name, glue), and quirks.
 #[derive(Clone, Default)]

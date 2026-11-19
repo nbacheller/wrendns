@@ -11,10 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::{info, warn};
 use wrendns_api::Backend;
 use wrendns_api::model::Step;
 use wrendns_config::{AlertDestination, AlertKind, AlertRule, AlertWhen, Config};
-use tracing::{info, warn};
 
 /// What a rule sees right now: `(subject, summary)` pairs (one per upstream, node, list, ...).
 pub(crate) type Observed = Vec<(String, String)>;

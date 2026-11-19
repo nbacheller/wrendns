@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use tokio::sync::{mpsc, oneshot, watch};
+use tracing::{error, info, warn};
 use wrendns_cluster::net::{BlobSource, Cluster};
 use wrendns_cluster::node::{self, Role};
 use wrendns_cluster::sync::{
@@ -24,8 +26,6 @@ use wrendns_cluster::sync::{
 use wrendns_config::Config;
 use wrendns_config::shared::{shared_part, with_shared};
 use wrendns_filter::snapshot::{MANIFEST, Manifest};
-use tokio::sync::{mpsc, oneshot, watch};
-use tracing::{error, info, warn};
 
 use crate::http::Sources;
 use crate::lists::Publisher;

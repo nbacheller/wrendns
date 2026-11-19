@@ -6,9 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wrendns_proto::{NameBuf, rcode, rtype, summarize};
 use wrendns_upstream::{Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn question() -> Question {
     Question {

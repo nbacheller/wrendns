@@ -18,8 +18,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use wrendns_policy::{ClientTable, LocalData, device_label};
 use tracing::info;
+use wrendns_policy::{ClientTable, LocalData, device_label};
 
 use crate::devices::Leases;
 

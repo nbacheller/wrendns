@@ -40,10 +40,10 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wrendns_api::model::{RouterCheck, RouterStatus};
-use wrendns_config::{RouterConfig, RouterKind};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+use wrendns_api::model::{RouterCheck, RouterStatus};
+use wrendns_config::{RouterConfig, RouterKind};
 
 use crate::devices::{Lease, Leases};
 

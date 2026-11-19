@@ -19,10 +19,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use wrendns_cluster::net::{Cluster, Member, SecretsHead, SecretsMark};
 use wrendns_cluster::node::Role;
 use wrendns_store::state::Stamp;
-use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::store::{Applied, Dropped, Page, Remote, StoreState, Unavailable, head_from};

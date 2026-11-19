@@ -9,9 +9,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wrendns_net::{RequestMeta, Response, TcpConfig, TcpServer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use wrendns_net::{RequestMeta, Response, TcpConfig, TcpServer};
 
 fn echo(req: &[u8], _: &RequestMeta, out: &mut [u8]) -> Response {
     out[..req.len()].copy_from_slice(req);

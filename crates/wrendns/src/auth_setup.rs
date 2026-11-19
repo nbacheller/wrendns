@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::{error, info, warn};
 use wrendns_api::auth::{Auth, Role, Settings, crypto};
 use wrendns_config::{Config, UserRole};
 use wrendns_store::state::State;
-use tracing::{error, info, warn};
 
 const SETUP_TOKEN_FILE: &str = "setup-token";
 

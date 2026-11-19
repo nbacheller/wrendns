@@ -12,8 +12,8 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, patch, post};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use wrendns_store::state::User;
 use utoipa::ToSchema;
+use wrendns_store::state::User;
 
 use super::{Actor, Auth, NewSession, Presented, Principal, Role, Scope, Via, crypto};
 use crate::problem::{Code, Problem};

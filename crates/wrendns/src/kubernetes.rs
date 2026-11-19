@@ -23,10 +23,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::{info, warn};
 use wrendns_config::KubernetesConfig;
 use wrendns_policy::workloads::glob;
 use wrendns_policy::{GroupOrigin, Interval, Pod, Workload, WorkloadTable};
-use tracing::{info, warn};
 
 #[cfg(test)]
 mod tests;

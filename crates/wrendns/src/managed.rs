@@ -12,12 +12,12 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tracing::{error, warn};
 use wrendns_config::{
     ClientConfig, Config, FilterList, GroupConfig, LocalRecord, Route, SafeString, Upstream,
     UpstreamGroup,
 };
 use wrendns_store::state::State;
-use tracing::{error, warn};
 
 /// The kind names in `state.db`.
 pub(crate) const CLIENT: &str = "client";

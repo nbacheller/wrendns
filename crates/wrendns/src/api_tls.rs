@@ -22,11 +22,11 @@ use hyper::body::Incoming;
 use hyper::service::Service as _;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use wrendns_api::auth::routes::TlsConnection;
 use wrendns_config::{ApiTls, Config};
 use wrendns_net::CertStore;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
 
 /// How long a connection may take to send its first byte, and then to finish the TLS handshake.
 const HANDSHAKE: Duration = Duration::from_secs(10);

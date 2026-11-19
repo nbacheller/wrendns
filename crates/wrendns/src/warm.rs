@@ -11,9 +11,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::{debug, info};
 use wrendns_api::Backend as _;
 use wrendns_api::model::{Hour, TopKind};
-use tracing::{debug, info};
 
 /// Lookups per second while warming.
 const RATE: u64 = 20;

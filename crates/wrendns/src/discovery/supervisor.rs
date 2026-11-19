@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
-use wrendns_api::model::DiscoveryWorker;
 use tokio::io::BufReader;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use wrendns_api::model::DiscoveryWorker;
 
 use super::frames::{self, Frame, FrameError};
 use super::snmp_job::{MAX_ROWS_PER_JOB, OP_POLL, OP_PROBE};

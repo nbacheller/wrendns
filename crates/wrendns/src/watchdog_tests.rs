@@ -540,10 +540,7 @@ fn sample_report() -> Report {
             stime: 1,
         }],
         stacks: vec![
-            (
-                "wrendns-rt (10)".to_owned(),
-                vec![0x4000_1234, 0x4000_2000],
-            ),
+            ("wrendns-rt (10)".to_owned(), vec![0x4000_1234, 0x4000_2000]),
             ("wrendns-udp (11)".to_owned(), vec![]),
         ],
         maps: vec!["00400000-00800000 r-xp 00000000 08:01 1 /usr/local/bin/wrendns".to_owned()],

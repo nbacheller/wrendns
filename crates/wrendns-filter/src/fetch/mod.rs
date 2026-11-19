@@ -14,10 +14,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use wrendns_config::Config;
 use tokio::sync::{Notify, Semaphore, watch};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
+use wrendns_config::Config;
 
 pub use self::http::{
     BodySink, BodyStream, Client, Conditional, HttpError, Resolve, Response, Streamed,

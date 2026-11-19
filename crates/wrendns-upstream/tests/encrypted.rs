@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
-use wrendns_upstream::{Bootstrap, Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
+use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
+use wrendns_upstream::{Bootstrap, Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
 
 struct Cert {
     der: CertificateDer<'static>,

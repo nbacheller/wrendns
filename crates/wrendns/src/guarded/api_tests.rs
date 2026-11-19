@@ -18,9 +18,9 @@ use std::net::SocketAddr;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use tower::ServiceExt as _;
 use wrendns_api::auth::{self, Role};
 use wrendns_api::guarded::ArrivedOn;
-use tower::ServiceExt as _;
 
 use super::tests::install;
 use crate::credential_tests::{Harness, harness};
@@ -483,11 +483,7 @@ fn api_902_test_row_absent_in_release() {
         .map(|d| d.row.id)
         .collect();
     assert_eq!(ids, ["restart-now"], "only the real rows have appliers");
-    assert!(
-        wrendns_config::guarded::rows()
-            .iter()
-            .all(|r| !r.test_only)
-    );
+    assert!(wrendns_config::guarded::rows().iter().all(|r| !r.test_only));
     // The restart's hook is named only behind the feature, so the variable can't reach it.
     let src = include_str!("restart.rs");
     for line in src.lines().filter(|l| l.contains("E2E_HOOK_ENV")) {

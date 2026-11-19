@@ -8,11 +8,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::{info, warn};
 use wrendns_config::Config;
 use wrendns_store::rollup::{LatencyRow, Rollups, TopRow};
 use wrendns_telemetry::agg::{HourSel, LatencyKey, Percentiles, Resolution, TopKind};
 use wrendns_telemetry::{Path as AnswerPath, Proto, QTYPES};
-use tracing::{info, warn};
 
 use crate::pipeline::Pipeline;
 

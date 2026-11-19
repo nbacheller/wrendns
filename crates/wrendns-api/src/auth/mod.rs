@@ -16,8 +16,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
-use wrendns_store::state::{NewAudit, State, StateError, User};
 use utoipa::ToSchema;
+use wrendns_store::state::{NewAudit, State, StateError, User};
 
 use crate::problem::{Code, Problem};
 

@@ -6,10 +6,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype};
-use wrendns_upstream::{Endpoint, Question, Router, TlsOptions, Upstream, UpstreamOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
+use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype};
+use wrendns_upstream::{Endpoint, Question, Router, TlsOptions, Upstream, UpstreamOptions};
 
 fn question() -> Question {
     Question {

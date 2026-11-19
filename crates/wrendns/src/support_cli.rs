@@ -393,10 +393,7 @@ fn offline(req: &SupportPackageRequest, config: Vec<PathBuf>) -> Result<Made, St
     let files = crate::config_files(config);
     let loaded = files
         .iter()
-        .fold(
-            wrendns_config::Loader::new(),
-            wrendns_config::Loader::file,
-        )
+        .fold(wrendns_config::Loader::new(), wrendns_config::Loader::file)
         .process_env()
         .load()
         .map_err(|errs| {

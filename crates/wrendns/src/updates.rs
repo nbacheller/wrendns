@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
-use wrendns_api::model::UpdateStatus;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
+use wrendns_api::model::UpdateStatus;
 
 use crate::build_info;
 use crate::selfupdate::{RELEASE_KEY, verify_signature};

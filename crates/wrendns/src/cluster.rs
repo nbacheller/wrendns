@@ -9,14 +9,14 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::watch;
+use tracing::{info, warn};
 use wrendns_api::model::{ClusterInfo, ClusterPeer};
 use wrendns_api::time::format_us;
 use wrendns_cluster::net::{self, Cluster};
 use wrendns_cluster::node::{Identity, JoinRequest};
 use wrendns_cluster::pki;
 use wrendns_cluster::token::Token;
-use tokio::sync::watch;
-use tracing::{info, warn};
 
 const VERSION: &str = crate::build_info::VERSION;
 
@@ -800,9 +800,7 @@ fn unstable_voters(c: &Cluster, voters: &[String]) -> Vec<wrendns_api::model::Un
 
 /// REQ: CLU-005 (T24.38, ADR-1018) — the `voter_links` check: a voter that is up now but whose
 /// link keeps dropping can't be counted on for a vote (names the voters; passes when steady).
-fn voter_links_check(
-    f: &wrendns_api::model::ClusterFailover,
-) -> wrendns_api::model::ClusterCheck {
+fn voter_links_check(f: &wrendns_api::model::ClusterFailover) -> wrendns_api::model::ClusterCheck {
     let ok = f.unstable_voters.is_empty();
     wrendns_api::model::ClusterCheck {
         id: "voter_links".into(),

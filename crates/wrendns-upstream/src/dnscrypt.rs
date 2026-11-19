@@ -19,9 +19,9 @@ use crypto_box::aead::AeadInPlace;
 use crypto_box::aead::generic_array::GenericArray;
 use crypto_box::{ChaChaBox, PublicKey, SalsaBox, SecretKey};
 use parking_lot::Mutex;
-use wrendns_proto::{NameBuf, rtype};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
+use wrendns_proto::{NameBuf, rtype};
 
 use crate::upstream::ExchangeError;
 

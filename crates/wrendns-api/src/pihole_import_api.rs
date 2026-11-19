@@ -13,8 +13,8 @@ use axum::http::{Extensions, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, post};
 use serde::Deserialize;
-use wrendns_store::state::Replay;
 use utoipa::IntoParams;
+use wrendns_store::state::Replay;
 
 use crate::auth::Auth;
 use crate::auth::routes::{principal, reason, remote};

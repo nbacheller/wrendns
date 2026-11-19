@@ -238,9 +238,7 @@ impl Code {
             Self::ClusteredNode => "https://wrendns.com/problems/clustered_node",
             Self::Restarting => "https://wrendns.com/problems/restarting",
             Self::RotationIncomplete => "https://wrendns.com/problems/rotation_incomplete",
-            Self::DataDirNotPersistent => {
-                "https://wrendns.com/problems/data_dir_not_persistent"
-            }
+            Self::DataDirNotPersistent => "https://wrendns.com/problems/data_dir_not_persistent",
             Self::NotPrimary => "https://wrendns.com/problems/not_primary",
             Self::OwnedByCategory => "https://wrendns.com/problems/owned_by_category",
             Self::BudgetRefused => "https://wrendns.com/problems/budget_refused",

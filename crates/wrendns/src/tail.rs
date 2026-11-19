@@ -13,12 +13,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use tokio::sync::{broadcast, mpsc};
 use wrendns_api::model::{NameMatch, TailDropped, TailItem, TailParams};
 use wrendns_api::problem::Problem;
 use wrendns_telemetry::Status;
 use wrendns_telemetry::event::{QueryEvent, Record};
 use wrendns_telemetry::ring::Sink;
-use tokio::sync::{broadcast, mpsc};
 
 /// Events buffered per subscriber before it counts as lagging.
 const CHANNEL: usize = 4096;
@@ -621,9 +621,8 @@ mod tests {
         assert!(Tail::new(3).is_none(), "level 3: no tail at all");
         let tail = Tail::new(2).unwrap();
         let mut sink = tail.sink();
-        let rec = |e: &TailEvent| {
-            Record::Query(e.ev, wrendns_telemetry::event::Name::from_wire(&e.name))
-        };
+        let rec =
+            |e: &TailEvent| Record::Query(e.ev, wrendns_telemetry::event::Name::from_wire(&e.name));
         let e = event("secret.example", Status::Forwarded, 1);
         sink.record(&rec(&e)); // no subscriber: dropped silently
         let (mut rx, slot) = tail.subscribe().unwrap();

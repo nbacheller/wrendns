@@ -10,6 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
 use wrendns_cache::{Cache, CachePolicy};
 use wrendns_config::{Config, ListenProto, Listener, Loader};
 use wrendns_net::{
@@ -17,9 +20,6 @@ use wrendns_net::{
 };
 use wrendns_policy::LocalData;
 use wrendns_upstream::Router;
-use tokio::signal::unix::{SignalKind, signal};
-use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
 
 use crate::http;
 use crate::pipeline::{Handler, Pipeline, Policy, Settings};

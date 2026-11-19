@@ -11,11 +11,11 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UdpSocket};
 use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
 use wrendns_upstream::health::Breaker;
 use wrendns_upstream::{Endpoint, Group, Question, Strategy, Upstream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UdpSocket};
 
 #[derive(Clone, Copy)]
 enum Fake {

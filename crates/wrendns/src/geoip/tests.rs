@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use wrendns_config::SafeString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use wrendns_config::SafeString;
 
 use super::ttgeo::tests::{csv, gzip};
 use super::*;

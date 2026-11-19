@@ -6,9 +6,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use wrendns_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
+use wrendns_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
 
 /// Why a server gave nothing usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

@@ -301,10 +301,7 @@ fn settle_policy(
     primary_label: &str,
     own_label: &str,
     mine: impl FnOnce() -> Result<wrendns_api::policy_api::ClientPolicy, Problem>,
-) -> (
-    Result<wrendns_api::policy_api::ClientPolicy, Problem>,
-    bool,
-) {
+) -> (Result<wrendns_api::policy_api::ClientPolicy, Problem>, bool) {
     match reply {
         Some(PolicyReply::Found(p)) => {
             let mut p = *p;
@@ -1622,8 +1619,8 @@ impl Backend for Federated {
         if self.with_me() {
             parts.push(self.local.heatmap_key(q)?);
         }
-        for (_, p) in self.everyone_labelled::<wrendns_api::heatmap::KeyPart>(|| {
-            Read::HeatmapKey { q: q.clone() }
+        for (_, p) in self.everyone_labelled::<wrendns_api::heatmap::KeyPart>(|| Read::HeatmapKey {
+            q: q.clone(),
         }) {
             parts.push(p);
         }
@@ -2267,9 +2264,7 @@ impl Backend for Federated {
                 continue;
             };
             items.push(wrendns_api::model::WorkloadInfo {
-                last_seen: Some(wrendns_api::time::format_us(
-                    last.saturating_mul(1_000_000),
-                )),
+                last_seen: Some(wrendns_api::time::format_us(last.saturating_mul(1_000_000))),
                 ..info
             });
         }
@@ -2283,9 +2278,8 @@ impl Backend for Federated {
                     .and_then(|t| wrendns_api::time::parse_time(t, 0).ok())
                     .unwrap_or(0);
                 if *last > mine {
-                    w.last_seen = Some(wrendns_api::time::format_us(
-                        last.saturating_mul(1_000_000),
-                    ));
+                    w.last_seen =
+                        Some(wrendns_api::time::format_us(last.saturating_mul(1_000_000)));
                 }
             }
         }
@@ -3013,8 +3007,8 @@ impl Backend for Federated {
         if self.with_me() {
             parts.push(label(self.local.shadow_lists(), &self.own_label()));
         }
-        for (node, rows) in self
-            .everyone_labelled::<Vec<wrendns_api::model::ShadowListStats>>(|| Read::ShadowLists)
+        for (node, rows) in
+            self.everyone_labelled::<Vec<wrendns_api::model::ShadowListStats>>(|| Read::ShadowLists)
         {
             parts.push(label(rows, &node));
         }

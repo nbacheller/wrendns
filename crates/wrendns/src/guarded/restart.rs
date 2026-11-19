@@ -20,11 +20,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::json;
+use tracing::info;
 use wrendns_api::guarded::{
     GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedCheck, Supervisor,
 };
 use wrendns_api::problem::{Code, Problem};
-use tracing::info;
 
 use super::engine::{Checked, Engine, Preview};
 

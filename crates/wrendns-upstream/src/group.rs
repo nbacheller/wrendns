@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use wrendns_proto::{rcode, summarize};
 use tokio::task::JoinSet;
+use wrendns_proto::{rcode, summarize};
 
 use crate::health::Admission;
 use crate::upstream::{ExchangeError, Question, Upstream};

@@ -19,10 +19,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use wrendns_cluster::net::Cluster;
-use wrendns_config::{Config, GitSourceConfig, Loader};
 use tokio::sync::{Notify, watch};
 use tracing::{info, warn};
+use wrendns_cluster::net::Cluster;
+use wrendns_config::{Config, GitSourceConfig, Loader};
 
 const STATUS: &str = "git.json";
 const SHARED: &str = "git-shared.toml";

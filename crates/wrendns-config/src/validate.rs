@@ -619,10 +619,7 @@ fn kubernetes(cfg: &Config, r: &mut Report<'_>) {
         );
     }
     if k.label.is_empty() || k.label.contains(char::is_whitespace) {
-        r.err(
-            "kubernetes.label",
-            "a label key such as wrendns.com/group",
-        );
+        r.err("kubernetes.label", "a label key such as wrendns.com/group");
     }
     let plain = |s: &str| {
         !s.is_empty()

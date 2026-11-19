@@ -728,9 +728,7 @@ mod tests {
         });
         let om = openmetrics(text, &ex);
         assert!(
-            om.contains(
-                "# TYPE wrendns_queries counter\nwrendns_queries_total{proto=\"udp\"} 3\n"
-            ),
+            om.contains("# TYPE wrendns_queries counter\nwrendns_queries_total{proto=\"udp\"} 3\n"),
             "{om}"
         );
         assert!(

@@ -21,12 +21,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 use wrendns_api::MaintenanceWrite;
 use wrendns_api::maintenance_api::{check_reason, check_secs};
 use wrendns_api::model::{MaintenanceResult, NodeMaintenance};
 use wrendns_api::problem::{Code, Problem};
 use wrendns_cluster::net::{Cluster, MaintenanceWindow};
-use tracing::{info, warn};
 
 use crate::readiness::Readiness;
 

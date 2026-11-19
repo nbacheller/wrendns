@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use tracing::{info, warn};
 use wrendns_net::Ipv4Interface;
 use wrendns_proto::{NameBuf, Section, read_name, records, rtype};
-use tracing::{info, warn};
 
 use crate::devices::{Lease, Leases};
 
