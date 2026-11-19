@@ -1736,6 +1736,34 @@ Through the API: `identity` on each device of `GET /api/v1/clients`, `GET /api/v
 
 The MAC vendor table is built from the IEEE Registration Authority's public registry by `presets/build-oui.py`.
 
+## Content categories and filter profiles
+Instead of picking blocklists by name, you can pick **what to block**: adult content, gambling, malware, social networks, newly registered domains and so on. Each category is backed by an open list its maintainer publishes (HaGeZi, StevenBlack, Perflyst and a bundle we author for AI services), downloaded once by the node that owns lists (the primary), shared by everything that uses it, and removed when nothing does. The catalog ships in the binary; **Lists, Categories** shows it with each category's sources, size and licence. Nothing is selected until you choose.
+
+A **filter profile** is a group (see Groups and devices above) that says which categories apply to which devices and networks:
+```toml
+[[group]]
+name = "kids"
+content = { level = "basic" }            # adult, malware, phishing and scam
+safe_search = true
+
+[[group]]
+name = "default"
+content = { ads = true }                 # Ad Block only (the tier is [filter] ads_tier)
+
+[[group]]
+name = "teens"
+content = { level = "enhanced", categories = ["adult", "gambling", "social", "bypass"], tiers = { gambling = "light" } }
+```
+- `level`: `off`, `basic` (the preset above) or `enhanced` (exactly the `categories` you list). `ads = true` adds Ad Block. `tiers` picks a size for a category that has several (they are exclusive, or additive for threats). `safe_search_engines = ["google", "youtube"]` restricts only those engines.
+- A device in two profiles gets the **union** of both (the Groups page says so). A category's list serves only the profiles that select it, never the default group unless that group selects it.
+- In the web UI, **Groups, New profile** edits all of this with the shared picker for networks and devices. A device that appears only with a private Wi-Fi address shows a warning, because the address changes and the profile may stop following it; select it by network, by hostname or by a stable address instead.
+- An allow rule, a quick rule or a group's own allow list beats a category block, and **Explain** names the category and the list that blocked. A category can be set to shadow (counts what it would block, blocks nothing) from the Lists page.
+- **Limits of DNS blocking.** A category blocks names, not content: a site served from a name that is also used for something else (a CDN, a video host) is blocked or allowed with it. Encrypted DNS in a browser or app, a VPN and a hard-coded resolver skip this resolver; turn on the Networking, DoH, VPN and proxy bypass category and your gateway's DNS redirect to narrow that. Lists lag new sites by hours or days, and no category list is complete. Safe Search and YouTube restrictions are DNS rewrites and depend on the engine not changing its names.
+- **Memory.** Every distinct name in every selected source costs about 12 bytes in the snapshot, and the compile needs several times the source text for a short while. `[filter] entry_budget` (default 1,000,000 names, **Settings, Filtering**) is the total you accept; a source above 500,000 names is **heavy** (refreshed once a day, and asks you to confirm); a selection that would use more than half of a small node's memory is refused with the numbers. The compile's sort memory is capped at a quarter of the node's memory limit. On a Pi 4 the Basic profile peaks at about 74 MiB and settles at about 31 MiB; every light category plus Ad Block settles at about 56 MiB, and newly registered domains (7 days, 2.4 million names) at about 65 MiB.
+- **API and agents.** `GET /api/v1/categories`, `GET` and `PUT /api/v1/groups/{name}/content`; the MCP tools `categories_list`, `get_group_content` and `plan_set_group_content`. An agent token can read and plan a content change, but only an operator can apply it, and an agent is refused a heavy selection.
+- **Cluster.** Content replicates with the groups. Only the primary downloads and compiles; replicas receive the snapshot. A change to content waits until every member runs a version that understands it.
+- **Upgrading a bundle.** The Compose and Docker Desktop bundles no longer define `hagezi-pro` as a list: the default group sets `content = { ads = true }`, which uses the same list through Ad Block. A list you manage through the API with the same URL is adopted by Ad Block (no second download). A list your config files define is left alone and shown as provided by that list.
+
 ## Quick rules
 A quick rule allows or blocks a site, and everything under it, for one device, a group, or everyone. It can last for a while or until you remove it. Some uses:
 - unblock a game's server on one phone for an evening;

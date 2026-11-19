@@ -21,8 +21,9 @@ categories = ["adult", "malware", "phishing", "scam"]
 baseline_rss_bytes = 33554432
 # Snapshot bytes per distinct domain.
 bytes_per_domain = 12
-# Compile peak = min(source bytes x factor, the merge budget).
-compile_peak_factor = 2.0
+# Compile peak = min(source bytes x factor, the merge budget). Measured 2026-11-18 (design 2.4):
+# 2.8x to 5x of the source text on a 4-CPU stand-in; 4.0 is the conservative figure.
+compile_peak_factor = 4.0
 # A source above this many entries is "heavy".
 heavy_threshold = 500000
 # Refresh of a light and of a heavy source, seconds (8 hours; 24 hours).

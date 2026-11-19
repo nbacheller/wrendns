@@ -216,7 +216,7 @@ impl Default for Measured {
         Self {
             baseline_rss_bytes: 32 * 1024 * 1024,
             bytes_per_domain: 12,
-            compile_peak_factor: 2.0,
+            compile_peak_factor: 4.0,
             heavy_threshold: 500_000,
             light_refresh_secs: 28_800,
             heavy_refresh_secs: 86_400,
