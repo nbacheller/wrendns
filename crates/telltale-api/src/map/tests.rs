@@ -1374,3 +1374,167 @@ fn obs_901_unrouted_spare_is_yellow() {
     assert_eq!(find(&s, "up:cf6").health, MapHealth::Yellow);
     assert_eq!(find(&s, "res:pi1").health, MapHealth::Yellow);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Display labels (API-013, T35.3)
+
+/// REQ: API-013, OBS-901 (T35.3) — the internal IDs of forwarded domains read as words; every
+/// other ID is its own name.
+#[test]
+fn api_013_t35_3_display_labels_table() {
+    let table: &[(&str, &str)] = &[
+        ("forward:home.example", "home.example names"),
+        ("forward:home.example#1", "home.example names"),
+        ("forward:home.example#2", "home.example names, server 2"),
+        (
+            "forward:home.example#stub",
+            "home.example names (stub zone)",
+        ),
+        (
+            "forward:168.192.in-addr.arpa",
+            "Reverse lookups, 192.168.x.x",
+        ),
+        (
+            "forward:168.192.in-addr.arpa#1",
+            "Reverse lookups, 192.168.x.x",
+        ),
+        (
+            "forward:1.168.192.in-addr.arpa#1",
+            "Reverse lookups, 192.168.1.x",
+        ),
+        ("forward:10.in-addr.arpa", "Reverse lookups, 10.x.x.x"),
+        (
+            "forward:168.192.IN-ADDR.ARPA#stub",
+            "Reverse lookups, 192.168.x.x (stub zone)",
+        ),
+        (
+            "forward:0.0.0.0.d.f.ip6.arpa",
+            "Reverse lookups, IPv6 fd00:0::/24",
+        ),
+        // Not reverse zones: a domain with those words in it, or a bad octet.
+        (
+            "forward:x.168.192.in-addr.arpa",
+            "x.168.192.in-addr.arpa names",
+        ),
+        ("forward:in-addr.arpa", "in-addr.arpa names"),
+        // Left as they are.
+        ("cloudflare", "cloudflare"),
+        ("default", "default"),
+        ("forward:", "forward:"),
+        ("", ""),
+    ];
+    for (id, want) in table {
+        assert_eq!(&display_label(id), want, "{id}");
+    }
+}
+
+/// REQ: API-013 (T35.3) — the map's upstream node carries the display label and the server's
+/// address; MCP's `network_health` (the same labels) names the flow and the problem the same way.
+#[test]
+fn api_013_t35_3_map_labels_forward_upstreams_and_fills_the_address() {
+    let mut p = part(
+        "pi1",
+        vec![
+            entry(
+                client(7),
+                AnswerKind::Upstream,
+                1,
+                counts(30, 300, 0, 120, 0),
+            ),
+            entry(client(8), AnswerKind::Upstream, 2, counts(30, 300, 0, 0, 0)),
+        ],
+    );
+    p.upstreams = vec![
+        PartUpstream {
+            id: 1,
+            name: "forward:168.192.in-addr.arpa#1".into(),
+            breaker: "closed".into(),
+            ip: Some("192.168.1.1".parse().unwrap()),
+            ..PartUpstream::default()
+        },
+        PartUpstream {
+            id: 2,
+            name: "forward:home.example#stub".into(),
+            breaker: "closed".into(),
+            ..PartUpstream::default()
+        },
+    ];
+    let parts = MapParts {
+        parts: vec![p],
+        missing: vec![],
+        unseen: vec![],
+        pending: Vec::new(),
+    };
+    let s = build(&parts, &ctx(&no_names), &Filter::default());
+    let rev = s
+        .nodes
+        .iter()
+        .find(|n| n.id == "up:forward:168.192.in-addr.arpa#1")
+        .unwrap();
+    assert_eq!(rev.label, "Reverse lookups, 192.168.x.x");
+    assert_eq!(rev.address.as_deref(), Some("192.168.1.1"));
+    let stub = s
+        .nodes
+        .iter()
+        .find(|n| n.id == "up:forward:home.example#stub")
+        .unwrap();
+    assert_eq!(stub.label, "home.example names (stub zone)");
+    assert_eq!(
+        stub.address, None,
+        "a stub zone's endpoint is no single address"
+    );
+    // No node of the snapshot carries an internal ID as its label.
+    assert!(s.nodes.iter().all(|n| !n.label.starts_with("forward:")));
+    // MCP's network_health: problems and flows in words, ids kept.
+    let h = network_health(&s);
+    let flow = h
+        .busiest
+        .iter()
+        .find(|f| f.to == "up:forward:168.192.in-addr.arpa#1")
+        .unwrap();
+    assert_eq!(
+        flow.to_label.as_deref(),
+        Some("Reverse lookups, 192.168.x.x")
+    );
+    assert!(
+        h.problems
+            .iter()
+            .any(|p| p.id == "up:forward:168.192.in-addr.arpa#1"
+                && p.label == "Reverse lookups, 192.168.x.x"),
+        "{:?}",
+        h.problems.iter().map(|p| &p.label).collect::<Vec<_>>()
+    );
+    let text = serde_json::to_string(&h).unwrap();
+    assert!(
+        !text.contains("\"label\":\"forward:"),
+        "no internal ID is a label: {text}"
+    );
+}
+
+/// REQ: API-013 (T35.3) — a roll-up sentence that names an upstream uses its label too.
+#[test]
+fn api_013_t35_3_group_aware_reasons_use_labels() {
+    let down = PartUpstream {
+        id: 1,
+        name: "forward:home.example#1".into(),
+        groups: vec!["forward:home.example".into()],
+        ..PartUpstream::default()
+    };
+    let up = PartUpstream {
+        id: 2,
+        name: "forward:home.example#2".into(),
+        groups: vec!["forward:home.example".into()],
+        ..PartUpstream::default()
+    };
+    let (_, notes) = group_aware(&[(&down, MapHealth::Red), (&up, MapHealth::Green)]);
+    assert_eq!(notes.len(), 1);
+    assert!(
+        notes[0]
+            .summary
+            .contains("upstream home.example names is down")
+            && notes[0].summary.contains("home.example names, server 2"),
+        "{}",
+        notes[0].summary
+    );
+    assert!(!notes[0].summary.contains("forward:"));
+}

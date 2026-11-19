@@ -730,3 +730,94 @@ fn t24_27_import_rewrites_github_and_skips_regex_lists() {
             .any(|n| n.contains("regular expressions") && n.contains("regex.list"))
     );
 }
+
+// REQ: API-007, DSC-901 (T35.1, ADR-1032) — Pi-hole stores comments HTML-escaped: the importer
+// decodes them once, tells devices of one name apart by their address tail (not " (2)"), and
+// lists a name that lost characters in the report.
+#[test]
+fn api_007_t35_1_import_decodes_names_and_tells_duplicates_apart() {
+    let mut e = archive::Entries::new();
+    let mut put = |k: &str, v: &str| {
+        e.insert(k.to_owned(), v.as_bytes().to_vec());
+    };
+    put(
+        "group.json",
+        r#"[{"id":0,"enabled":1,"name":"Default"},{"id":1,"enabled":1,"name":"Kids &amp; Teens","description":"it&#039;s"}]"#,
+    );
+    put(
+        "client.json",
+        r#"[{"id":1,"ip":"192.168.1.20","comment":"Alex&#039;s PC"},
+            {"id":2,"ip":"192.168.1.21","comment":"Alex&#039;s PC"},
+            {"id":3,"ip":"AA:BB:CC:DD:EE:0F","comment":"Alex&#039;s PC"},
+            {"id":4,"ip":"192.168.1.22","comment":"Double&amp;#039;d"},
+            {"id":5,"ip":"192.168.1.23","comment":"IoT - Google -?"},
+            {"id":6,"ip":"192.168.1.24","comment":"Tom &amp; Jerry"}]"#,
+    );
+    put(
+        "client_by_group.json",
+        r#"[{"client_id":1,"group_id":1},{"client_id":2,"group_id":1},{"client_id":3,"group_id":1}]"#,
+    );
+    put(
+        "adlist.json",
+        r#"[{"id":1,"address":"https://lists.example/a.txt","enabled":1,"comment":"Tom &amp; Jerry&#039;s list"}]"#,
+    );
+    put("adlist_by_group.json", r#"[{"adlist_id":1,"group_id":0}]"#);
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "test").unwrap();
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t", &im.toml)
+        .load()
+        .unwrap()
+        .config;
+    let names: Vec<&str> = cfg.client.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"Alex's PC"), "{names:?}");
+    assert!(names.contains(&"Alex's PC (1.21)"), "{names:?}");
+    assert!(names.contains(&"Alex's PC (ee:0f)"), "{names:?}");
+    assert!(names.contains(&"Double&#039;d"), "decoded once: {names:?}");
+    assert!(names.contains(&"Tom & Jerry"), "{names:?}");
+    assert!(names.iter().all(|n| !n.contains("(2)")), "{names:?}");
+    assert!(cfg.group.iter().any(|g| g.name.as_str() == "Kids & Teens"));
+    assert!(
+        im.toml.contains("Tom & Jerry's list"),
+        "the list note is decoded: {}",
+        im.toml
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("IoT - Google -?") && n.contains("lost characters")),
+        "{:?}",
+        im.notes
+    );
+    assert!(
+        !im.notes.iter().any(|n| n.contains("Alex")),
+        "a decoded name lost nothing: {:?}",
+        im.notes
+    );
+}
+
+// REQ: API-007 (T35.1) — domain and regex columns are never decoded.
+#[test]
+fn api_007_t35_1_import_leaves_domain_columns_alone() {
+    let mut e = archive::Entries::new();
+    let mut put = |k: &str, v: &str| {
+        e.insert(k.to_owned(), v.as_bytes().to_vec());
+    };
+    put("group.json", r#"[{"id":0,"enabled":1,"name":"Default"}]"#);
+    put(
+        "blacklist.regex.json",
+        r#"[{"id":4,"type":3,"domain":"^a&amp;b[0-9]+\\.example$","enabled":1}]"#,
+    );
+    put(
+        "domainlist_by_group.json",
+        r#"[{"domainlist_id":4,"group_id":0}]"#,
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "test").unwrap();
+    assert!(
+        im.toml.contains("a&amp;b") || im.notes.iter().any(|n| n.contains("a&amp;b")),
+        "the regex keeps its text: {}\n{:?}",
+        im.toml,
+        im.notes
+    );
+}

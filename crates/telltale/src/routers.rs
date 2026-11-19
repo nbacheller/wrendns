@@ -225,6 +225,17 @@ pub(crate) fn first_str(v: &Value, keys: &[&str]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// REQ: API-012, DSC-901 (T35.1, ADR-1032) — [`first_str`] for a device or network name: the
+/// HTML entities a console or Home Assistant hands over (`Alex&#039;s PC`) are decoded once and
+/// control characters stripped, where the name is read. A name that is empty after that is no
+/// name.
+pub(crate) fn first_name(v: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|k| v.get(*k).and_then(Value::as_str))
+        .map(crate::names::clean_text)
+        .find(|s| !s.is_empty())
+}
+
 /// UniFi clients in a `stat/sta` (or `rest/user`) answer.
 pub(crate) fn unifi_clients(v: &Value) -> Seen {
     let Some(data) = v.get("data").and_then(Value::as_array) else {
@@ -240,7 +251,7 @@ pub(crate) fn unifi_clients(v: &Value) -> Seen {
                 .as_str()?
                 .parse()
                 .ok()?;
-            let name = first_str(c, &["name", "hostname"]);
+            let name = first_name(c, &["name", "hostname"]);
             Some((mac, ip, name))
         })
         .collect()
@@ -290,7 +301,7 @@ pub(crate) fn unifi_reserved(v: &Value) -> Seen {
             }
             let mac = c.get("mac")?.as_str()?.to_ascii_lowercase();
             let ip: Ipv4Addr = c.get("fixed_ip")?.as_str()?.trim().parse().ok()?;
-            Some((mac, ip, first_str(c, &["name", "hostname"])))
+            Some((mac, ip, first_name(c, &["name", "hostname"])))
         })
         .collect()
 }
@@ -341,7 +352,7 @@ pub(crate) fn unifi_known(v: &Value, not_before: u64) -> Seen {
                 addrs.extend(c.get("fixed_ip").and_then(Value::as_str));
             }
             let ip: Ipv4Addr = addrs.into_iter().find_map(|s| s.trim().parse().ok())?;
-            let name = first_str(c, &["name", "hostname"])?;
+            let name = first_name(c, &["name", "hostname"])?;
             Some((seen.unwrap_or(0), (mac, ip, Some(name))))
         })
         .collect();
@@ -425,7 +436,7 @@ pub(crate) fn unifi_networks(v: &Value, router: &str) -> Vec<Network> {
             };
             Some(Network {
                 router: router.to_owned(),
-                name: first_str(n, &["name"]).unwrap_or_else(|| format!("{subnet}/{prefix}")),
+                name: first_name(n, &["name"]).unwrap_or_else(|| format!("{subnet}/{prefix}")),
                 vlan,
                 subnet,
                 prefix,
@@ -457,9 +468,8 @@ pub(crate) fn opnsense_leases(v: &Value) -> Seen {
             let name = ["hostname", "client_hostname", "descr"]
                 .iter()
                 .filter_map(|k| r.get(*k).and_then(Value::as_str))
-                .map(str::trim)
-                .find(|s| !s.is_empty() && *s != "*")
-                .map(str::to_owned);
+                .map(crate::names::clean_text)
+                .find(|s| !s.is_empty() && s != "*");
             Some((mac, ip, name))
         })
         .collect()
@@ -850,7 +860,7 @@ pub(crate) fn ha_devices(v: &Value) -> (Vec<HaDevice>, HashMap<String, Ipv4Addr>
                         return None;
                     }
                     let id = first_str(d, &["id"]);
-                    if let Some(n) = first_str(d, &["name_by_user"]) {
+                    if let Some(n) = first_name(d, &["name_by_user"]) {
                         return Some(HaDevice {
                             id,
                             macs,
@@ -858,7 +868,7 @@ pub(crate) fn ha_devices(v: &Value) -> (Vec<HaDevice>, HashMap<String, Ipv4Addr>
                             curated: true,
                         });
                     }
-                    first_str(d, &["name"]).map(|n| HaDevice {
+                    first_name(d, &["name"]).map(|n| HaDevice {
                         id,
                         macs,
                         name: n,
@@ -2081,6 +2091,43 @@ mod tests {
             v[&ip(3)].offline && v[&ip(3)].ipv6.is_empty(),
             "offline: none"
         );
+    }
+
+    /// REQ: API-012, DSC-901 (T35.1, ADR-1032) — a name a console, OPNsense or Home Assistant hands
+    /// over with HTML entities in it is decoded once where it is read, and control characters go.
+    #[test]
+    fn dsc_901_t35_1_router_and_ha_names_are_decoded_where_read() {
+        let seen = unifi_clients(&serde_json::json!({"data": [
+            {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.20", "name": "Alex&#039;s PC"},
+            {"mac": "aa:bb:cc:00:00:02", "ip": "192.168.1.21", "hostname": "Tom &amp; Jerry"},
+            {"mac": "aa:bb:cc:00:00:03", "ip": "192.168.1.22", "name": "double&amp;#039;d"},
+            {"mac": "aa:bb:cc:00:00:04", "ip": "192.168.1.23", "name": "bell&#7;ring"}
+        ]}));
+        let names: Vec<_> = seen.iter().map(|c| c.2.clone().unwrap()).collect();
+        assert_eq!(
+            names,
+            ["Alex's PC", "Tom & Jerry", "double&#039;d", "bellring"]
+        );
+        let leases = opnsense_leases(&serde_json::json!({"rows": [
+            {"address": "192.168.1.30", "mac": "aa:bb:cc:00:00:05", "hostname": "Kid&#039;s iPad"}
+        ]}));
+        assert_eq!(leases[0].2.as_deref(), Some("Kid's iPad"));
+        let (devices, _) = ha_devices(&serde_json::json!({
+            "devices": [
+                {"name_by_user": "Mom&#039;s lamp", "name": "x", "macs": ["a8:03:2a:00:00:01"]},
+                {"name_by_user": "", "name": "Tom &amp; Jerry TV", "macs": ["a8:03:2a:00:00:02"]}
+            ],
+            "trackers": []
+        }));
+        assert_eq!(devices[0].name, "Mom's lamp");
+        assert_eq!(devices[1].name, "Tom & Jerry TV");
+        let nets = unifi_networks(
+            &serde_json::json!({"data": [
+                {"name": "IoT &amp; Guests", "ip_subnet": "192.168.20.1/24", "purpose": "corporate"}
+            ]}),
+            "udm",
+        );
+        assert_eq!(nets[0].name, "IoT & Guests");
     }
 
     /// REQ: T8.2 (ADR-166) — UniFi's offline known clients keep their names: the history (a bare

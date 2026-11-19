@@ -1002,6 +1002,9 @@ async fn start_http(
         audit_cmdb(sources, None, &file);
         // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
         crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
+        // REQ: API-007, DSC-901 (T35.1, ADR-1032) — names stored with HTML codes are decoded once, on the
+        // primary (audited, replicated like any write); file entries are only reported.
+        crate::names_repair::spawn(Arc::clone(sources), stop.clone());
         let app = http::api_router(Arc::clone(sources), Arc::clone(&auth));
         // REQ: API-902 (T27.13, ADR-956) — the guarded-changes engine: the API's routes reach it
         // through `Sources`, and the cluster channel's forwarded requests do too.

@@ -14,6 +14,9 @@
 
   let { client, compact = false }: { client: string; compact?: boolean } = $props();
 
+  // The compact panel names this many items per section; the rest are "+N more".
+  const COMPACT_ITEMS = 3;
+
   let policy = $state<S['ClientPolicy'] | null>(null);
   let error = $state<unknown>(null);
 
@@ -76,7 +79,13 @@
     {#if compact}
       <ul class="small summaries">
         {#each policy.sections.filter((x) => x.items.length > 0) as s (s.id)}
-          <li data-testid={`policy-summary-${s.id}`}><strong>{s.title}.</strong> {s.summary}</li>
+          <li data-testid={`policy-summary-${s.id}`}>
+            <strong>{s.title}.</strong> {s.summary}
+            <!-- REQ: AGT-001 (T35.2) — up to three items as links, then "+N more" to the full panel. -->
+            <span class="peek" data-testid={`policy-peek-${s.id}`}>
+              {#each s.items.slice(0, COMPACT_ITEMS) as it, i (`${it.label}#${i}`)}{#if i > 0}, {/if}{#if it.link}<a href={linkHref(it.link)} data-testid="policy-peek-link">{it.label}</a>{:else}<span data-testid="policy-peek-item">{it.label}</span>{/if}{/each}{#if s.items.length > COMPACT_ITEMS}, <a href={fullHref} class="more" data-testid={`policy-more-${s.id}`}>+{s.items.length - COMPACT_ITEMS} more</a>{/if}
+            </span>
+          </li>
         {/each}
       </ul>
       <p class="small"><a href={fullHref} data-testid="policy-full-link">Full policy</a></p>

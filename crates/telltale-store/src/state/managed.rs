@@ -97,6 +97,15 @@ impl State {
         })
     }
 
+    /// REQ: API-007 (T35.1) — the client groups agent tokens are restricted to.
+    pub fn agent_token_groups(&self) -> Result<Vec<String>> {
+        self.with(|c| {
+            let mut st =
+                c.prepare("SELECT DISTINCT agent_group FROM tokens WHERE agent_group IS NOT NULL")?;
+            st.query_map([], |r| r.get(0))?.collect()
+        })
+    }
+
     /// Every entry of `kind`, by name.
     pub fn managed(&self, kind: &str) -> Result<Vec<Managed>> {
         self.with(|c| {
@@ -177,6 +186,59 @@ impl State {
             return Err(ManagedError::VersionConflict { current });
         }
         for (kind, name, body) in rows {
+            tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,
+                     updated = excluded.updated, updated_by = excluded.updated_by",
+                params![kind, name, body, i(now), by],
+            )?;
+        }
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// REQ: API-007, DSC-901 (T35.1, ADR-1032) — creates or replaces every `(kind, name, body)` of
+    /// `puts` and deletes every `(kind, name)` of `removes`, in one transaction, if the version is
+    /// still `expect` (when given). The version moves once; `note` (a `meta` key and value) is
+    /// recorded in the same transaction. A repair that renames entries (a
+    /// delete of the old row and a put of the new one) lands whole or not at all.
+    pub fn put_and_remove_managed(
+        &self,
+        puts: &[(&str, &str, &str)],
+        removes: &[(&str, &str)],
+        expect: Option<u64>,
+        now: u64,
+        by: &str,
+        note: Option<(&str, &str)>,
+    ) -> std::result::Result<u64, ManagedError> {
+        let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        let current = version(&tx)?;
+        if let Some(v) = expect
+            && v != current
+        {
+            return Err(ManagedError::VersionConflict { current });
+        }
+        if let Some((key, value)) = note {
+            // A node-local note recorded in the same transaction as the write.
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        for (kind, name) in removes {
+            tx.execute(
+                "DELETE FROM managed WHERE kind = ?1 AND name = ?2",
+                params![kind, name],
+            )?;
+        }
+        for (kind, name, body) in puts {
             tx.execute(
                 "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,

@@ -57,6 +57,10 @@ mod managed_adopt_tests;
 mod masking;
 mod mcp_stdio;
 mod mdns;
+mod names;
+mod names_repair;
+#[cfg(test)]
+mod names_repair_tests;
 mod node_managed;
 #[cfg(test)]
 mod node_managed_tests;
