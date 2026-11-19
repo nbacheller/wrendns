@@ -3581,14 +3581,14 @@ note    = "hourly reverse-DNS sweep"
 - **Through the API:** `PUT /api/v1/anomaly-mutes/<name>` with the same fields (add `?dryRun=true` to preview), `DELETE` to remove, `GET /api/v1/config/entries?kind=anomaly_mute` to list. The operator role; agents need `config:write:anomalies` (a mute can hide a compromised device, so it isn't part of any other scope, though `config:write:*` includes it) and use `plan_set_anomaly_mute` / `plan_remove_anomaly_mute`. Every change is audited as `config.anomaly_mute`.
 
 ## Alerts
-WrenDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
+WrenDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh), Gotify or [Pushover](https://pushover.net), in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
 ```toml
 [alerts]
 interval_secs = 30                       # how often rules are checked
 
 [[alerts.destination]]
 name = "phone"
-type = "ntfy"                            # webhook | ntfy | gotify | slack | email
+type = "ntfy"                            # webhook | ntfy | gotify | pushover | slack | email
 url = "https://ntfy.sh/my-home-dns"
 # token_file = "/run/secrets/ntfy-token" # an access token, kept out of the config
 
@@ -3603,6 +3603,32 @@ name = "Too many failures"
 when = "servfail_rate"
 threshold = 5                            # percent of queries over the last 5 minutes
 to = ["phone"]
+```
+The destination types:
+
+| `type` | Sends | `url` | Secrets |
+|---|---|---|---|
+| `webhook` | a JSON POST | the receiver | none |
+| `ntfy` | text to a topic | the topic URL | optional `token_file` / `token_ref` |
+| `gotify` | a message to your Gotify server | the server | `token_file` / `token_ref` (application token) |
+| `pushover` | a push through Pushover | empty (pushover.net), or a proxy's `https://` URL | `token_file` / `token_ref` (application token) and `user_key_file` / `user_key_ref` (user or group key) |
+| `slack` | a Slack-compatible message | the webhook URL | none (the URL is the secret) |
+| `email` | an email over SMTP | `smtp://host:587`, `smtps://host:465` | `password_file` / `password_ref` |
+
+**Pushover.** Create an application on pushover.net (Your Applications, Create an Application/API Token) for its API token, and copy your user key from the dashboard. Both are secrets: keep them in files (`token_file`, `user_key_file`) or in the node's encrypted store (`token_ref`, `user_key_ref`; **Alerts** → the destination's token fields), where they replicate to every cluster member and are never shown again. Optional: `device` (one of your devices by name; empty is all of them), `sound`, and the priority per state, `priority_firing` (default 0) and `priority_resolved` (default -1, no sound), each from -2 to 1; emergency priority (2) is not offered. A message has the rule and subject as its title, the summary with the node and the time as its text, and, for a `new_device` alert on a node with `[auth.oidc] public_url`, a link to the device in the UI; Pushover's limits (250 characters for the title, 1024 for the text) cut a long one with an ellipsis. A refusal from Pushover (a wrong token or key) shows its reason in the last-delivery list, without the secrets. A `url` other than Pushover's must be `https://` (`http://` only to this machine, for a test server), and changing it is an admin's, as for any destination that holds a credential.
+```toml
+[[alerts.destination]]
+name = "pushover"
+type = "pushover"
+token_ref = "pushover-app"               # or token_file = "/run/secrets/pushover-token"
+user_key_ref = "pushover-user"           # or user_key_file = "/run/secrets/pushover-user"
+# device = "iphone"
+# sound = "siren"
+
+[[alerts.rule]]
+name = "New device"
+when = "new_device"                      # what Pi-hole's DHCP hook used to send
+to = ["pushover"]
 ```
 Rules watch:
 

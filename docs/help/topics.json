@@ -833,12 +833,22 @@
       "id": "alerts",
       "title": "Alerts",
       "term": "Alert rules and destinations",
-      "summary": "Messages to ntfy, Gotify, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
+      "summary": "Messages to ntfy, Gotify, Pushover, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
       "when": "You want to hear about problems without watching the dashboard.",
       "example": "An ntfy push to your phone when Quad9 has been unreachable for a minute, and another when it's back.",
       "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in a stored secret (the token field keeps it encrypted), not in the config file.",
       "docs": "alerts",
       "general": true
+    },
+    {
+      "id": "pushover",
+      "title": "Pushover keys",
+      "term": "Pushover application token and user key",
+      "summary": "A Pushover destination needs two secrets: the API token of an application you make for WrenDNS, and your user key (or a delivery group's key).",
+      "when": "You are adding a Pushover alert destination and need to know where the two values come from.",
+      "example": "On pushover.net, sign in: your user key is shown at the top right of the dashboard. Under Your Applications choose Create an Application/API Token, name it WrenDNS, and copy its API Token/Key. Paste the token into the Token field and the user key into the User or group key field.",
+      "caution": "Both are stored encrypted on the node and never shown again; anyone with them can send you messages. If one leaks, reset the token on pushover.net and store the new one. Alerts go out with priority 0 (firing) and -1 (resolved) unless you change them; emergency priority is not offered.",
+      "docs": "alerts"
     },
     {
       "id": "alert-conditions",

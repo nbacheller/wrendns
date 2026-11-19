@@ -146,7 +146,7 @@ window_days = 30             # 1 to 90</code></pre>
 
 <section id="alerts">
   <h2>Get alerts somewhere</h2>
-  <p>Alerts have two parts: <b>destinations</b> (where messages go: <code>email</code>, <code>ntfy</code>, <code>gotify</code>, <code>slack</code>, or <code>webhook</code>) and <b>rules</b> (what to watch, and which destinations to tell).</p>
+  <p>Alerts have two parts: <b>destinations</b> (where messages go: <code>email</code>, <code>ntfy</code>, <code>gotify</code>, <code>pushover</code>, <code>slack</code>, or <code>webhook</code>) and <b>rules</b> (what to watch, and which destinations to tell).</p>
   <div class="tabs">
     <div role="tablist" aria-label="Alert setup">
       <button role="tab" type="button">Web UI</button>
@@ -167,7 +167,7 @@ interval_secs = 30                       # how often rules are checked
 
 [[alerts.destination]]
 name = "phone"
-type = "ntfy"                            # webhook | ntfy | gotify | slack | email
+type = "ntfy"                            # webhook | ntfy | gotify | pushover | slack | email
 url = "https://ntfy.sh/my-home-dns"
 # token_file = "/run/secrets/ntfy-token" # an access token, kept out of the config
 

@@ -26,17 +26,18 @@
   }
   $effect(() => poll(load, 15_000));
 
-  const kinds = ['email', 'ntfy', 'gotify', 'slack', 'webhook'];
+  const kinds = ['email', 'ntfy', 'gotify', 'pushover', 'slack', 'webhook'];
+  const pushover = (v: Record<string, unknown>) => v.type === 'pushover';
   // REQ: API-014 (T23.2) — a destination holds a credential when a file gives it one or its
   // address carries a password: then only an admin changes where it goes.
   const holdsCredential = (d: Record<string, unknown>) =>
-    Boolean(d.token_file || d.password_file || d.token_ref || d.password_ref || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
+    Boolean(d.token_file || d.password_file || d.user_key_file || d.token_ref || d.password_ref || d.user_key_ref || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
   const destinationFields: Field[] = [
     // REQ: API-014 (T24.16) — a destination that holds a credential keeps its kind (where it sends it) for an admin.
     { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email', admin: (d, r) => holdsCredential(d) || r.length > 0,
-      help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook. A destination with a stored or file credential is changed by an admin.' },
+      help: 'email (any provider’s SMTP), ntfy, Gotify or Pushover (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook. A destination with a stored or file credential is changed by an admin.' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'smtp://smtp.gmail.com:587 or https://ntfy.sh/my-topic',
-      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.', admin: holdsCredential },
+      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Pushover: leave empty for pushover.net, or a proxy’s https:// URL. Others: the https:// URL.', admin: holdsCredential },
     { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
     { key: 'to', label: 'To (email, one per line)', type: 'lines', placeholder: 'you@gmail.com' },
     { key: 'username', label: 'Account (email)', type: 'text', placeholder: 'you@gmail.com' },
@@ -45,9 +46,22 @@
     { key: 'password_ref', label: 'Password (email)', type: 'secret', fileKey: 'password_file', admin: true,
       secretName: (e) => secretNameFor('alert', e, 'password'),
       help: 'The password (a Gmail app password, for example), kept encrypted on this node and never shown again. A password_file in the configuration wins over it.' },
-    { key: 'token_ref', label: 'Token (ntfy, Gotify)', type: 'secret', fileKey: 'token_file', advanced: true, admin: true,
+    { key: 'token_ref', label: 'Token (ntfy, Gotify, Pushover app)', type: 'secret', fileKey: 'token_file', admin: true,
+      visibleWhen: (v) => ['ntfy', 'gotify', 'pushover'].includes(String(v.type)) || !!(v.token_ref || v.token_file),
       secretName: (e) => secretNameFor('alert', e, 'token'),
-      help: 'The access token of your ntfy or Gotify server, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
+      help: 'The access token of your ntfy or Gotify server, or the API token of your Pushover application, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
+    // REQ: OBS-010 (T24.43) — Pushover: the user or group key is a second stored secret.
+    { key: 'user_key_ref', label: 'User or group key (Pushover)', type: 'secret', fileKey: 'user_key_file', admin: true,
+      visibleWhen: pushover, helpTopic: 'pushover', secretName: (e) => secretNameFor('alert', e, 'user_key'),
+      help: 'Your Pushover user key (or a delivery group’s key), kept encrypted on this node and never shown again. A user_key_file in the configuration wins over it.' },
+    { key: 'device', label: 'Device (Pushover)', type: 'text', placeholder: 'all devices', visibleWhen: pushover,
+      help: 'One of your Pushover devices by name; empty sends to all of them.' },
+    { key: 'priority_firing', label: 'Priority when firing (Pushover)', type: 'number', min: -2, max: 1, placeholder: '0', visibleWhen: pushover,
+      help: 'From -2 (no notification) to 1 (bypasses quiet hours). Default 0.' },
+    { key: 'priority_resolved', label: 'Priority when resolved (Pushover)', type: 'number', min: -2, max: 1, placeholder: '-1', visibleWhen: pushover,
+      help: 'The same range. Default -1: a message without a sound.' },
+    { key: 'sound', label: 'Sound (Pushover)', type: 'text', placeholder: 'siren', visibleWhen: pushover,
+      help: 'The name of a Pushover sound; empty uses your account default.' },
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/wrendns/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
   // REQ: OBS-010 (T27.1) — every condition the server accepts; the list is checked against the enum.

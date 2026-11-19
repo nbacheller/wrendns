@@ -74,6 +74,7 @@ fn credential_files(node: &Config) -> Vec<PathBuf> {
     for d in &node.alerts.destination {
         out.extend(d.token_file.as_deref());
         out.extend(d.password_file.as_deref());
+        out.extend(d.user_key_file.as_deref());
     }
     for r in &node.router {
         out.extend(r.api_key_file.as_deref());
@@ -579,6 +580,7 @@ fn slot<'a>(
             match field {
                 "token_file" => Some(&mut d.token_file),
                 "password_file" => Some(&mut d.password_file),
+                "user_key_file" => Some(&mut d.user_key_file),
                 "tls_ca" => Some(&mut d.tls_ca),
                 _ => None,
             }

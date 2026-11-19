@@ -1484,15 +1484,17 @@ impl Default for AlertsConfig {
 pub struct AlertDestination {
     /// Unique name, used in a rule's `to`.
     pub name: SafeString,
-    /// `webhook` (JSON POST), `ntfy`, `gotify`, `slack` (Slack-compatible webhooks:
+    /// `webhook` (JSON POST), `ntfy`, `gotify`, `pushover`, `slack` (Slack-compatible webhooks:
     /// Slack, Mattermost, Discord's `/slack` endpoint), or `email`.
     #[serde(rename = "type")]
     pub kind: AlertKind,
     /// The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), the Gotify server,
-    /// or the mail server: `smtp://smtp.gmail.com:587` (STARTTLS), `smtps://host:465` (TLS),
+    /// Pushover's messages endpoint (empty: `https://api.pushover.net/1/messages.json`; a
+    /// self-hosted proxy otherwise), or the mail server: `smtp://smtp.gmail.com:587` (STARTTLS), `smtps://host:465` (TLS),
     /// or `smtp+insecure://127.0.0.1:1025` (no encryption: a local mail catcher only).
+    #[serde(default)]
     pub url: SafeString,
-    /// A file holding the token (ntfy access token, Gotify application token), so it stays
+    /// A file holding the token (ntfy access token, Gotify or Pushover application token), so it stays
     /// out of the config and Git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<SafeString>,
@@ -1518,6 +1520,26 @@ pub struct AlertDestination {
     /// server; public ones are trusted already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<SafeString>,
+    /// REQ: OBS-010 (T24.43) — `pushover`: a file holding the user or group key (a secret, like
+    /// the application token in `token_file`), or the name of a stored secret holding it
+    /// (`user_key_ref`); at most one of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_key_file: Option<SafeString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_key_ref: Option<SafeString>,
+    /// `pushover`: one of the account's devices by name (empty: all of them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<SafeString>,
+    /// `pushover`: the priority of a firing alert (-2 to 1; default 0) and of a resolved one
+    /// (default -1, a message without a sound). 2 (emergency) needs a retry policy and is not
+    /// offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_firing: Option<i8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_resolved: Option<i8>,
+    /// `pushover`: the notification sound's name (`siren`; empty: the account's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<SafeString>,
 }
 
 /// A destination's kind.
@@ -1527,6 +1549,8 @@ pub enum AlertKind {
     Webhook,
     Ntfy,
     Gotify,
+    /// REQ: OBS-010 (T24.43)
+    Pushover,
     Slack,
     /// REQ: OBS-010 (T9.4)
     Email,
