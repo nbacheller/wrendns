@@ -290,7 +290,7 @@ test('explain page', async () => {
 test('the menu links to the project on GitHub and its site', async () => {
   await page.goto('/#/');
   const gh = page.getByRole('link', { name: 'WrenDNS on GitHub' });
-  await expect(gh).toHaveAttribute('href', 'https://github.com/paimonsoror/telltaledns');
+  await expect(gh).toHaveAttribute('href', 'https://github.com/nbacheller/telltaledns');
   await expect(gh).toHaveAttribute('target', '_blank');
   await expect(page.getByRole('link', { name: 'Project site and guides' })).toHaveAttribute(
     'href',
@@ -1655,6 +1655,8 @@ test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
     .poll(
       async () => {
         await page.reload();
+        // The rows arrive a moment after the page's load event; read them once they are there.
+        await page.locator('table.log tbody tr').first().waitFor({ timeout: 5_000 }).catch(() => {});
         return page.locator('table.log tbody').innerText();
       },
       { timeout: 60_000, intervals: [1000] },

@@ -107,26 +107,32 @@
   let menuOpen = $state(false);
   let info = $state<S['SystemInfo'] | null>(null);
 
-  // Theme: follows the system unless chosen; the choice is kept in this browser.
-  function stored(): string | null {
+  // Theme (brand: Day and Night): follows the system unless chosen; the choice is kept per viewer,
+  // in this browser (`wrendns.theme`; `theme` is what earlier builds stored).
+  const THEMES = ['auto', 'light', 'dark'] as const;
+  type Theme = (typeof THEMES)[number];
+  const THEME_NAME: Record<Theme, string> = { auto: 'System', light: 'Day', dark: 'Night' };
+  function stored(): Theme | null {
     try {
-      return localStorage.getItem('theme');
+      const v = localStorage.getItem('wrendns.theme') ?? localStorage.getItem('theme');
+      return THEMES.find((t) => t === v && t !== 'auto') ?? null;
     } catch {
       return null;
     }
   }
-  let theme = $state(stored() ?? 'auto');
+  let theme = $state<Theme>(stored() ?? 'auto');
   $effect(() => {
     if (theme === 'auto') delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = theme;
     try {
-      if (theme === 'auto') localStorage.removeItem('theme');
-      else localStorage.setItem('theme', theme);
+      localStorage.removeItem('theme');
+      if (theme === 'auto') localStorage.removeItem('wrendns.theme');
+      else localStorage.setItem('wrendns.theme', theme);
     } catch {
       // Private mode: the choice lasts for this page only.
     }
   });
-  const nextTheme = $derived(theme === 'auto' ? 'dark' : theme === 'dark' ? 'light' : 'auto');
+  const nextTheme = $derived<Theme>(theme === 'auto' ? 'dark' : theme === 'dark' ? 'light' : 'auto');
 
   void refreshSession();
 
@@ -224,7 +230,7 @@
       <button type="button" class="scrim" aria-label="Close the menu" data-testid="menu-scrim" onclick={closeMenu}></button>
     {/if}
     <nav class="side" aria-label="Main">
-      <a class="brand" href="#/" onclick={closeMenu}><Logo /> <span>WrenDNS</span></a>
+      <a class="brand" href="#/" onclick={closeMenu} aria-label="WrenDNS, home"><span class="full"><Logo /></span><span class="mini"><Logo variant="mark" /></span></a>
       {#each sections as sec (sec)}
         <div class="section">{sec}</div>
         {#each pages.filter((p) => p.section === sec) as p (p.path)}
@@ -295,7 +301,14 @@
           ><Icon name="wall" /></button
         >
       {/if}
-      <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
+      <button
+        class="icon-btn"
+        data-testid="theme-toggle"
+        data-theme-choice={theme}
+        onclick={() => (theme = nextTheme)}
+        title={`Theme: ${THEME_NAME[theme]} (click for ${THEME_NAME[nextTheme]})`}
+        aria-label={`Theme: ${THEME_NAME[theme]}`}
+      >
         <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />
       </button>
       <span class="who">
@@ -340,7 +353,7 @@
     grid-template-areas: 'side top' 'side content';
     min-height: 100vh;
   }
-  /* Sidebar: dark, sectioned, filled pill for the current page. */
+  /* Sidebar: light (surface-raised), sectioned; the current page is sky-soft with sky-strong text. */
   .side {
     grid-area: side;
     display: flex;
@@ -349,6 +362,7 @@
     padding: 16px 12px;
     background: var(--side-bg);
     color: var(--side-text);
+    border-right: 1px solid var(--border);
     position: sticky;
     top: 0;
     height: 100vh;
@@ -359,9 +373,10 @@
     align-items: center;
     gap: 10px;
     padding: 4px 10px 14px;
-    color: #f2f6fa;
-    font-weight: 700;
-    font-size: 15px;
+    color: var(--text);
+  }
+  .brand .mini {
+    display: none;
   }
   .brand:hover {
     text-decoration: none;
@@ -387,8 +402,8 @@
     text-decoration: none;
   }
   .nav[aria-current='page'] {
-    background: var(--accent-strong);
-    color: var(--accent-text);
+    background: var(--nav-current-bg);
+    color: var(--nav-current-text);
     font-weight: 600;
   }
   .nav {
@@ -399,15 +414,17 @@
     min-width: 20px;
     padding: 0 6px;
     border-radius: 999px;
-    background: var(--warn);
-    color: #1b1300;
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px solid var(--warn);
     font-size: 11px;
     line-height: 18px;
     text-align: center;
   }
   .count.alert {
-    background: var(--bad);
-    color: var(--on-bad);
+    background: var(--bad-soft);
+    color: var(--bad);
+    border-color: var(--bad);
   }
   .project-links {
     display: flex;
@@ -486,8 +503,9 @@
     justify-self: start;
     padding: 0 8px;
     border-radius: 999px;
-    background: var(--warn);
-    color: #1b1300;
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px solid var(--warn);
     font-weight: 600;
   }
   /* Top bar: light, borderless. */
@@ -594,7 +612,12 @@
     .layout {
       grid-template-columns: 72px minmax(0, 1fr);
     }
-    .brand span,
+    .brand .full {
+      display: none;
+    }
+    .brand .mini {
+      display: inline-flex;
+    }
     .nav span,
     .count,
     .section,

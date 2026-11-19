@@ -1,139 +1,68 @@
-/* Design tokens (`spec/07` §3: no CSS framework, tokens + CSS variables). */
+/* The brand's tokens (brand/tokens.json, generated into brand.css): colours for Day and Night, type,
+   space, radius and shadow. Everything below takes its colours from them; the names this file
+   defines (--bg, --surface, --accent ...) are the UI's own, mapped onto the brand's. Night is
+   chosen by `prefers-color-scheme`, or by the header's theme toggle (`data-theme`). */
+@import './brand.css';
+
 :root {
-  --bg: #f5f7fa;
-  --surface: #ffffff;
-  --surface-2: #eef2f6;
-  --border: #d9e0e8;
-  --text: #17212b;
-  --muted: #5b6b7b;
-  --brand: #123044;
-  --accent: #1f8f74;
-  --accent-text: #ffffff;
-  --link: #11698e;
-  --ok: #1f8f74;
-  --warn: #b7791f;
-  --bad: #c2413a;
-  --info: #3b6fb6;
-  --focus: #3b82f6;
-  --s-cached: #1f8f74;
-  --s-refreshed: #6fbfa9;
-  --s-forwarded: #3b6fb6;
-  --s-blocked: #c2413a;
-  --s-local: #8a63c7;
-  --s-other: #9aa7b4;
-  --radius: 12px;
-  --gap: 20px;
-  --shadow: 0 1px 2px rgb(16 24 40 / 4%), 0 4px 14px rgb(16 24 40 / 6%);
-  /* T6.8 — the shell: a dark sidebar from the brand color, borderless cards. */
-  --side-bg: #123044;
-  --side-text: #c9d6e2;
-  --side-muted: #9fb3c4;
-  /* T6.8 — WCAG AA text on tinted chips, pills, and the active nav pill (4.5:1 or more). */
-  --accent-strong: #18775f;
-  --ok-strong: #156b55;
-  --bad-strong: #a3322c;
-  --warn-strong: #8a5a14;
-  --on-bad: #ffffff;
+  /* Surfaces: the page on `surface`, cards and menus on `surface-raised`, insets on `surface-sunken`. */
+  --bg: var(--brand-surface);
+  --surface: var(--brand-surface-raised);
+  --surface-2: var(--brand-surface-sunken);
+  --border: var(--brand-line);
+  /* The edge of anything you can click or type into (3:1 on every surface). */
+  --border-strong: var(--brand-line-strong);
+  --text: var(--brand-ink);
+  --muted: var(--brand-ink-muted);
+  --brand: var(--brand-ink);
+  /* `sky-strong` is the only interactive colour. */
+  --accent: var(--brand-sky-strong);
+  --accent-text: var(--brand-on-sky-strong);
+  --link: var(--brand-sky-strong);
+  /* Status: always shown with a word or an icon, never by colour alone. */
+  --ok: var(--brand-ok);
+  --warn: var(--brand-warn);
+  --bad: var(--brand-alert);
+  --info: var(--brand-sky-strong);
+  --focus: var(--brand-focus-ring);
+  /* How a query was answered, in the charts and the query log. */
+  --s-cached: var(--brand-ok);
+  --s-refreshed: color-mix(in srgb, var(--brand-ok) 55%, var(--brand-surface-raised));
+  --s-forwarded: var(--brand-sky-strong);
+  --s-blocked: var(--brand-alert);
+  --s-local: var(--brand-flock-3);
+  --s-other: color-mix(in srgb, var(--brand-ink-muted) 70%, var(--brand-surface-raised));
+  --radius: var(--radius-md);
+  --gap: var(--space-6);
+  --shadow: var(--shadow-float);
+  /* The shell: a light sidebar on `surface-raised`; the current page is `sky-soft` with `sky-strong` text. */
+  --side-bg: var(--brand-surface-raised);
+  --side-text: var(--brand-ink);
+  --side-muted: var(--brand-ink-muted);
+  --side-hover: var(--brand-sky-soft);
+  --nav-current-bg: var(--brand-sky-soft);
+  --nav-current-text: var(--brand-sky-strong);
+  /* Text on tinted chips, pills and badges: the status colour on its own `-soft` tint. */
+  --accent-strong: var(--brand-sky-strong);
+  --ok-strong: var(--brand-ok);
+  --bad-strong: var(--brand-alert);
+  --warn-strong: var(--brand-warn);
+  --ok-soft: var(--brand-ok-soft);
+  --bad-soft: var(--brand-alert-soft);
+  --warn-soft: var(--brand-warn-soft);
+  --on-bad: var(--brand-surface-raised);
   /* The traffic map: text on its strongest tiles. */
-  --tm-ink: #ffffff;
+  --tm-ink: var(--brand-on-sky-strong);
   /* REQ: OBS-033 — change markers on time charts, and notes among them. */
-  --mk-ink: #5b6b7b;
-  --mk-note: #b7791f;
+  --mk-ink: var(--brand-ink-muted);
+  --mk-note: var(--brand-warn);
   /* REQ: OBS-029 — the heatmap: full-strength cells, empty cells, and hatched (unknown) ones. */
-  --hm-ink: #3b6fb6;
-  --hm-ink-blocked: #c2413a;
-  --hm-bg: #eef2f6;
-  --hm-hatch: #9aa7b4;
-  --side-hover: rgb(255 255 255 / 7%);
-  --card-border: transparent;
-  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --bg: #0e151c;
-    --surface: #151f29;
-    --surface-2: #1c2834;
-    --border: #2a3846;
-    --text: #e4eaf0;
-    --muted: #93a3b3;
-    --brand: #0b1a25;
-    --accent: #2fb594;
-    --accent-text: #06231b;
-    --link: #6cc3e6;
-    --ok: #3cc49f;
-    --warn: #e0a84e;
-    --bad: #ef7067;
-    --info: #78a5e6;
-    --s-cached: #3cc49f;
-    --s-refreshed: #2a8a70;
-    --s-forwarded: #78a5e6;
-    --s-blocked: #ef7067;
-    --s-local: #b494ea;
-    --s-other: #6b7c8c;
-    --shadow: none;
-    --side-bg: #0b1a25;
-    --side-text: #c3d0dc;
-    --side-muted: #8aa0b2;
-    --accent-strong: #2fb594;
-    --ok-strong: #3cc49f;
-    --bad-strong: #ef7067;
-    --warn-strong: #e0a84e;
-    --on-bad: #1b0705;
-    --tm-ink: #0b1a25;
-    --mk-ink: #93a3b3;
-    --mk-note: #e0a84e;
-    --hm-ink: #78a5e6;
-    --hm-ink-blocked: #ef7067;
-    --hm-bg: #1c2834;
-    --hm-hatch: #6b7c8c;
-    --side-hover: rgb(255 255 255 / 6%);
-    --card-border: #223140;
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme='dark'] {
-  --bg: #0e151c;
-  --surface: #151f29;
-  --surface-2: #1c2834;
-  --border: #2a3846;
-  --text: #e4eaf0;
-  --muted: #93a3b3;
-  --brand: #0b1a25;
-  --accent: #2fb594;
-  --accent-text: #06231b;
-  --link: #6cc3e6;
-  --ok: #3cc49f;
-  --warn: #e0a84e;
-  --bad: #ef7067;
-  --info: #78a5e6;
-  --s-cached: #3cc49f;
-  --s-refreshed: #2a8a70;
-  --s-forwarded: #78a5e6;
-  --s-blocked: #ef7067;
-  --s-local: #b494ea;
-  --s-other: #6b7c8c;
-    --shadow: none;
-  --side-bg: #0b1a25;
-  --side-text: #c3d0dc;
-  --side-muted: #8aa0b2;
-  --accent-strong: #2fb594;
-  --ok-strong: #3cc49f;
-  --bad-strong: #ef7067;
-  --warn-strong: #e0a84e;
-  --on-bad: #1b0705;
-  --tm-ink: #0b1a25;
-  --mk-ink: #93a3b3;
-  --mk-note: #e0a84e;
-  --hm-ink: #78a5e6;
-  --hm-ink-blocked: #ef7067;
-  --hm-bg: #1c2834;
-  --hm-hatch: #6b7c8c;
-  --side-hover: rgb(255 255 255 / 6%);
-  --card-border: #223140;
-  color-scheme: dark;
+  --hm-ink: var(--brand-sky-strong);
+  --hm-ink-blocked: var(--brand-alert);
+  --hm-bg: var(--brand-surface-sunken);
+  --hm-hatch: var(--brand-ink-muted);
+  --card-border: var(--brand-line);
+  --mono: var(--brand-font-mono);
 }
 
 *,
@@ -147,7 +76,8 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* A dense admin UI: the brand's `body-sm` (the brand book sends dense tables and side panels there). */
+  font: var(--type-body-sm-weight) var(--type-body-sm-size) / var(--type-body-sm-line) var(--brand-font-sans);
   -webkit-text-size-adjust: 100%;
 }
 
@@ -159,26 +89,32 @@ a:hover {
   text-decoration: underline;
 }
 
+/* The app steps the brand's heading scale down one level (page title h2, card title h3): its pages
+   are dense. The site uses the full scale. Sentence case, never all caps. */
 h1 {
-  font-size: 22px;
-  font-weight: 650;
+  font-size: var(--type-h2-size);
+  line-height: var(--type-h2-line);
+  font-weight: var(--type-h2-weight);
   letter-spacing: -0.01em;
   margin: 0;
 }
 h2 {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--type-h3-size);
+  line-height: var(--type-h3-line);
+  font-weight: var(--type-h3-weight);
   margin: 0 0 12px;
 }
 h3 {
-  font-size: 14px;
+  font-size: var(--type-body-size);
+  font-weight: var(--type-h3-weight);
   margin: 0 0 8px;
 }
 
 code,
 .mono {
-  font-family: var(--mono);
-  font-size: 12.5px;
+  font-family: var(--brand-font-mono);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
 }
 
 :focus-visible {
@@ -281,7 +217,7 @@ code,
 button,
 .btn {
   font: inherit;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--text);
   border-radius: 10px;
@@ -341,7 +277,7 @@ select {
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 6px 10px;
   min-height: 34px;
@@ -516,10 +452,10 @@ td {
   vertical-align: top;
 }
 th {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
   color: var(--muted);
   white-space: nowrap;
 }
