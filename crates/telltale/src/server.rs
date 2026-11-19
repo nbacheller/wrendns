@@ -1217,7 +1217,13 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
-        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
+        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| {
+            // The origin labels (file / API) are only as good as this; say so loudly.
+            warn!(
+                "config: files alone failed to load; entry origins will read as file until they do"
+            );
+            cfg.clone()
+        })),
         config_files: files.clone(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(
             cfg.updates.check,
@@ -1808,11 +1814,21 @@ fn reconcile_discovery(sources: &http::Sources, pipeline: &Pipeline, cfg: &Confi
         Arc::clone(&pipeline.router_leases),
         Arc::clone(&pipeline.mdns_names),
     );
+    // REQ: DSC-009 - the sessions the router poll shares with the inventory thread.
+    let shared = sources.routers.share();
     // REQ: DSC-001 — the generation is taken here, in reload order; the blocking task applies it.
     let generation = rt.next_generation();
     // A stopping inventory saves and joins its thread: that happens off the runtime's workers.
     drop(tokio::task::spawn_blocking(move || {
-        rt.reconcile(generation, &cfg, &data_dir, &own, Some(routers), Some(mdns));
+        rt.reconcile(
+            generation,
+            &cfg,
+            &data_dir,
+            &own,
+            Some(routers),
+            Some(mdns),
+            Some(shared),
+        );
     }));
 }
 

@@ -764,6 +764,11 @@ telltale presets show nextdns --param profile=abc123    # templated presets need
 ```
 `show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. That includes the DoQ (`quic://`) endpoints.
 
+### Choosing public upstreams in the UI
+The **Upstreams** page opens on a simple view, like Pi-hole's: tick the public resolvers you want (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing, and others), each with a note on what it filters and what it does with your queries. Choose **Encrypted** (DNS over TLS, recommended; DNS over HTTPS where a provider has no TLS address) or **Plain**, and IPv4, IPv6 or both. IPv6 is greyed out, with the reason, when the node has no IPv6 route. The **Custom** row takes a bare IP (plain DNS), a `tls://` or `https://` address, or a `quic://` one; an IP-literal `tls://` address also needs the name on its certificate.
+
+Saving writes one upstream per address, named `pub-<provider>-<protocol>-<n>` (for example `pub-cloudflare-tls-1`), and sets the `default` upstream group to the `fastest` strategy over them. Entries the simple view didn't make (from your config files, a Pi-hole import, or the Advanced view) are listed under "Also set up" and left alone; they stay in the `default` group. **Advanced** is the technical list and forms, unchanged: the simple view's entries show there too, and switching views loses nothing. Each upstream on the page says where it is defined: the config file, the API or UI, or both. The catalog is `presets/upstreams.toml`; `GET /api/v1/upstream-presets` (and the MCP tool `list_upstream_presets`) read it with whether this node has an IPv6 route.
+
 ## Encrypted DNS for your devices (DoT, DoH, and DoQ)
 Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:
 ```toml
@@ -2648,6 +2653,17 @@ for peers. The Helm chart's node alerts leave out a node whose last reported win
 
 A node that's really failing during its window stays quiet until the window ends: keep windows
 short.
+
+### Entries made through the API after a failover
+Upstreams, lists, groups, devices, local names, forwards, quick rules and the other entries made
+through the API or UI are stored on the primary that took the write and published with every
+version. A node that takes over as primary adopts them as its own (the primary's last published
+set, once per version it inherits), so afterwards you can edit or delete every one of them on
+the new primary, none comes back, and a node that returns with older entries of its own has them
+replaced by the cluster's. If the node that took over runs from a version published by an older
+primary (every node needs this release for its first hand-over), a change to an entry it serves
+but doesn't hold answers 409 with that reason instead of "not found": upgrade, then change it on
+the current primary.
 
 ## Failover drills
 Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network

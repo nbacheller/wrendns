@@ -107,10 +107,14 @@ ARG CARGO_FEATURES=
 # zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
 # time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
 ARG SOURCE_DATE_EPOCH
+# The cargo target cache is shared by every build of this architecture on a host, and cargo
+# trusts it by file time; a checkout that must not reuse another checkout's output (a worktree
+# building older code) names its own cache, e.g. --build-arg BUILD_CACHE_SCOPE=-bundle.
+ARG BUILD_CACHE_SCOPE=
 COPY . .
 COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT},sharing=locked \
+    --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT}${BUILD_CACHE_SCOPE},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
     mkdir -p /out/usr/local/bin /out/var/lib/telltale /out/etc/telltale /out/usr/share /debug; \
     # REQ: OPS-013 (ADR-164) — link once with symbols and line tables, then split that one output:

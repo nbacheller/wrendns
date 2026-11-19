@@ -1903,7 +1903,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 162 with FLT-006's /clients/{id}/policy (T24.30); 168 with FLT-901's /categories,
     // /categories/budget, /groups/{name}/content, /filter-settings/default and FLT-902's
     // /groups/{name}/sources and /profiles/devices (T24.29).
-    assert_eq!(paths.len(), 168);
+    // 169 with UPS-004's /upstream-presets (T24.36).
+    assert_eq!(paths.len(), 169);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

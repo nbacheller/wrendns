@@ -280,6 +280,13 @@ pub fn tools() -> Vec<Tool> {
                 ])
             },
         },
+        // REQ: UPS-004, AGT-001 (T24.36)
+        Tool {
+            name: "list_upstream_presets",
+            description: "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("presets".into(), "/api/v1/upstream-presets".into())]),
+        },
         // REQ: API-015, AGT-001 (ADR-903 §5) — metadata only; setting a value is for people.
         Tool {
             name: "secrets_status",

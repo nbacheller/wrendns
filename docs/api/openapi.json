@@ -12042,6 +12042,28 @@
         }
       }
     },
+    "/api/v1/upstream-presets": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).",
+        "description": "The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses\n(plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its\nprivacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The\npicker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`\nand `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a\nNextDNS profile) are listed with `simple` false.",
+        "operationId": "upstream_presets",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamPresets"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/upstreams": {
       "get": {
         "tags": [
@@ -16831,13 +16853,68 @@
           }
         }
       },
+      "DiscoveryRead": {
+        "type": "object",
+        "description": "REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw\nit. Read-only: nothing here changes a console.",
+        "required": [
+          "router",
+          "read",
+          "state",
+          "rows",
+          "truncated"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the result was recorded (Unix seconds).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a read did not work, in words (no credential in it)."
+          },
+          "read": {
+            "type": "string",
+            "description": "`client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.",
+            "example": "all_users"
+          },
+          "router": {
+            "type": "string",
+            "description": "The `[[router]]` read.",
+            "example": "udm"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows used.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`ok`, `refused` (the console answered 401 or 403) or `failed`.",
+            "example": "ok"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More rows were offered than the 8,192 cap; the rest were left out."
+          }
+        }
+      },
       "DiscoveryStatus": {
         "type": "object",
         "description": "REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,\nand each discovery worker process. Health reasons for the workers never mark DNS unhealthy.",
         "required": [
           "enabled",
           "designated",
-          "workers"
+          "workers",
+          "reads"
         ],
         "properties": {
           "designated": {
@@ -16854,6 +16931,13 @@
               "null"
             ],
             "description": "The designated node's name, when `[discovery] node` is set."
+          },
+          "reads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryRead"
+            },
+            "description": "REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant\nread: which ones work, and which the console refused. Empty unless one is on."
           },
           "workers": {
             "type": "array",
@@ -28998,6 +29082,120 @@
               "null"
             ],
             "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
+          }
+        }
+      },
+      "UpstreamPreset": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "variant",
+          "note",
+          "homepage",
+          "filtering",
+          "dnssec",
+          "simple",
+          "params",
+          "endpoints"
+        ],
+        "properties": {
+          "dnssec": {
+            "type": "boolean"
+          },
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamPresetEndpoint"
+            }
+          },
+          "filtering": {
+            "type": "string",
+            "description": "`none`, `malware`, `family` or `ads`."
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "One line: what it filters and what it does with your queries."
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Placeholders in its addresses (a NextDNS profile); empty for every simple preset."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The heading it is listed under (`Cloudflare`)."
+          },
+          "simple": {
+            "type": "boolean",
+            "description": "Offered in the simple view (false: it needs a parameter, or is for the Advanced view)."
+          },
+          "variant": {
+            "type": "string",
+            "description": "The choice under the heading (`Malware`)."
+          }
+        }
+      },
+      "UpstreamPresetEndpoint": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — one address a public resolver answers on.",
+        "required": [
+          "url",
+          "protocol",
+          "family"
+        ],
+        "properties": {
+          "family": {
+            "type": "string",
+            "description": "`v4` or `v6` for an address, `name` for a host name (which resolves to either)."
+          },
+          "protocol": {
+            "type": "string",
+            "description": "`udp`, `tcp`, `tls`, `https` or `quic`."
+          },
+          "tlsServerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name on the server certificate, for a `tls://` address given by IP."
+          },
+          "url": {
+            "type": "string",
+            "description": "`tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`."
+          }
+        }
+      },
+      "UpstreamPresets": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.",
+        "required": [
+          "ipv6Route",
+          "items"
+        ],
+        "properties": {
+          "ipv6Route": {
+            "type": "boolean",
+            "description": "Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only\ntimes out. Unknown (another OS) reads true."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamPreset"
+            }
           }
         }
       },

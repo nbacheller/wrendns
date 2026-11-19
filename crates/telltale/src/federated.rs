@@ -2719,6 +2719,10 @@ impl Backend for Federated {
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         self.local.networks()
     }
+    // REQ: UPS-004 (T24.36) — the catalog is the same everywhere; the IPv6 route is this node's.
+    fn upstream_presets(&self) -> telltale_api::model::UpstreamPresets {
+        self.local.upstream_presets()
+    }
     // REQ: API-016 (T23.7) — the settings are the replicated configuration; the status is this node's.
     fn router_entries(&self) -> Vec<telltale_api::model::RouterEntry> {
         self.local.router_entries()

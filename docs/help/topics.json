@@ -340,6 +340,16 @@
       "docs": "encrypted-upstreams"
     },
     {
+      "id": "upstream-picker",
+      "title": "Pick your upstream servers",
+      "term": "Upstream picker (simple view)",
+      "summary": "Tick the public DNS servers you want, choose encrypted or plain DNS and IPv4 and/or IPv6, and Save. TelltaleDNS asks the fastest of the servers you ticked. The Custom row takes an address of your own. The Advanced view is the technical list and forms.",
+      "when": "Setting up, or changing which public servers answer for you, without writing addresses by hand.",
+      "example": "Tick Quad9 and Cloudflare, leave Encrypted on, and Save: DNS over TLS to both, using whichever answers faster.",
+      "caution": "Every server you tick sees the names you look up, so read its note. Plain DNS isn't private. IPv6 is greyed out when this node has no IPv6 route. Servers set up another way (config files, an import, the Advanced view) are shown and left alone, and stay in the default group.",
+      "docs": "upstream-presets"
+    },
+    {
       "id": "upstream-route",
       "title": "\"This node has no IPv6 route\"",
       "term": "No route to an upstream",
@@ -1277,6 +1287,16 @@
       "when": "Look here when the inventory shows no data, or when the health icon names a discovery worker.",
       "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
       "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "inventory-unifi-reads",
+      "title": "More from your routers",
+      "term": "Extra router reads",
+      "summary": "The inventory can ask UniFi for more than its device list: more fields of each connected client (port or access point, VLAN, network, first seen), clients it has seen before (history), and its own devices with each switch port's MAC table and LLDP neighbours. It can also ask Home Assistant for devices that have a MAC address and no entity. Every read only reads, adds to the inventory only, and is capped at 4 MiB and 8,192 rows (Home Assistant 1 MiB).",
+      "when": "Turn these on when the inventory shows a device with no place: you want to know which switch port or access point a device is on, or to keep the name of a phone that left last week.",
+      "example": "With the devices read on, a printer's row shows the switch and port it plugs into. With history on, a laptop that has been away for ten days is listed as history, with the last address UniFi saw, and it never answers for the address now.",
+      "caution": "History is never a current address: it can't give a device a DNS name, and it never replaces an address a router reports now. A console that refuses a read (a key without the right to read devices, for example) is reported once in the table, and the other reads carry on. Home Assistant can only list a device with no entity when the device sits in an area or has a label.",
       "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {

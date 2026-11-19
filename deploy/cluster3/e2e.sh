@@ -14,9 +14,10 @@
 #   g. upstream #7 on the 2-CPU replica: with the primary paused, 20 concurrent reads each return
 #      within 15 s, and /livez, /metrics and DNS keep answering; replica-a's runtime starts with
 #      two workers; the primary is unpaused after;
-#   h. failover with three nodes: the node holding the lease is killed, a survivor is promoted 5 to
+#   h. failover with three nodes: an upstream is added on the lease holder (T24.37), which is killed, a survivor is promoted 5 to
 #      40 s later, the other follows, DNS on both survivors keeps answering (0 SERVFAIL), an edit on
-#      the new primary reaches the other survivor, and the killed node, started again, steps down;
+#      the new primary reaches the other survivor, the upstream added through the old primary is deleted on the
+#      new one and stays deleted, and the killed node, started again, steps down;
 #   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout;
 #   c2. (FLT-901, T24.29) a content category chosen on a replica's API is stored by the primary, which
 #       downloads its list from the fake source once; every node blocks the list's names from the
@@ -418,6 +419,14 @@ done
 for n in "${survivors[@]}"; do
   login "$n" || bad "$n's administrator can't sign in before the kill"
 done
+# T24.37 (ADR-1016): an upstream added through the API on the lease holder, which is killed next.
+put_json up-fo.json '{"url":"udp://192.0.2.37"}'
+call "$killed" PUT /api/v1/upstreams/t2437-fo "$E/up-fo.json"
+[ "$RS" = 200 ] || bad "adding an upstream on $killed answered $RS: $RB"
+for n in "${survivors[@]}"; do
+  for _ in $(seq 60); do call "$n" GET /api/v1/upstreams; has '"t2437-fo"' && break; sleep 0.5; done
+  has '"t2437-fo"' || bad "$n doesn't list the upstream added on $killed"
+done
 docker kill "$(container "$killed")" >/dev/null
 election=$("${PY[@]}" failover 40 20 "${fo[@]}")
 echo "$election"
@@ -441,6 +450,16 @@ put_json rec-fo.json '{"records":[{"type":"A","value":"10.0.0.9"}]}'
 call "$new" PUT /api/v1/records/after-failover.cluster3.test "$E/rec-fo.json"
 [ "$RS" = 200 ] || bad "an edit on the new primary $new answered $RS: $RB"
 await_dns 10000 "$other" after-failover.cluster3.test 10.0.0.9 || bad "$other doesn't follow the new primary"
+# T24.37 (ADR-1016): the entry the old primary's API added is the new primary's to delete (it answered
+# 404 before), and it is gone on the other survivor.
+call "$new" DELETE /api/v1/upstreams/t2437-fo?dryRun=true
+[ "$RS" = 200 ] || bad "a dry-run delete on the new primary $new answered $RS: $RB"
+call "$new" DELETE /api/v1/upstreams/t2437-fo
+[ "$RS" = 200 ] || bad "deleting an upstream the old primary added, on the new primary $new, answered $RS: $RB"
+for n in "$new" "$other"; do
+  for _ in $(seq 60); do call "$n" GET /api/v1/upstreams; has '"t2437-fo"' || break; sleep 0.5; done
+  ! has '"t2437-fo"' || bad "$n still lists the deleted upstream"
+done
 "${COMPOSE[@]}" up -d --wait "$killed" >/dev/null 2>&1 || bad "the old primary $killed didn't come back"
 # A session from before the kill may be gone: sign in again.
 for _ in $(seq 60); do login "$killed" && break; sleep 0.5; done
@@ -452,6 +471,10 @@ done
 [ "$(jget 'next((n["role"] for n in d["nodes"] if n["thisNode"]), "")')" = replica ] \
   || bad "the old primary $killed didn't step down (status $RS: ${RB:0:300})"
 await_dns 30000 "$killed" after-failover.cluster3.test 10.0.0.9 || bad "the old primary $killed doesn't follow the new one"
+# T24.37: the old primary kept the upstream in its own store; following the new primary, it must not
+# bring it back.
+for _ in $(seq 60); do call "$killed" GET /api/v1/upstreams; has '"t2437-fo"' || break; sleep 0.5; done
+! has '"t2437-fo"' || bad "the old primary $killed brought the deleted upstream back"
 pass "$killed (the lease holder) killed; $new promoted at $first_at s after the kill; loss $loss; the old primary follows"
 
 step "i. rolling restart: each node in turn, at least two nodes answer DNS throughout"

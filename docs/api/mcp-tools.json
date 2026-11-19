@@ -262,6 +262,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_upstream_presets"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
     "inputSchema": {
       "additionalProperties": false,

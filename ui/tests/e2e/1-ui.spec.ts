@@ -10,6 +10,7 @@ import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
 import { pick } from './picker';
 import { alertConditions } from '../../src/lib/alert-conditions';
+import { customUrl, nextCustomName, planFor, readSaved, type Transport } from '../../src/lib/upstream-picker';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
@@ -668,6 +669,7 @@ test('ups_013 upstream source address: suggestions and a lost-address problem', 
   await page.route(isInfo, info);
   try {
     await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await page.reload();
     await expect(page.getByTestId('upstream-source').first()).toHaveText('from 198.51.100.252');
     await expect(page.getByTestId('upstream-source-problem')).toContainText('no longer held by this node');
@@ -706,6 +708,168 @@ test('ups_013 a source this node does not hold is refused on save', async () => 
     expect(row.source).toBe('127.0.0.1');
   } finally {
     await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
+// REQ: UPS-004 (T24.36) — what the simple view's ticks mean as upstream entries, and back.
+test('ups_004 picker plans entries from ticks and reads them back', async () => {
+  const r = page.request;
+  const { items, ipv6Route } = await (await r.get('/api/v1/upstream-presets')).json();
+  expect(typeof ipv6Route).toBe('boolean');
+  const cf = items.find((p: { id: string }) => p.id === 'cloudflare');
+  const nd = items.find((p: { id: string }) => p.id === 'nextdns');
+  expect(cf.simple).toBe(true);
+  expect(nd.simple, 'a preset that needs a parameter is for the Advanced view').toBe(false);
+  const providers = items.filter((p: { simple: boolean }) => p.simple).map((p: { provider: string }) => p.provider);
+  for (const want of ['Cloudflare', 'Google', 'Quad9', 'OpenDNS', 'AdGuard', 'Mullvad', 'CleanBrowsing']) expect(providers).toContain(want);
+  const urls = (t: Transport, v4: boolean, v6: boolean) =>
+    planFor(items, new Set(['cloudflare']), t, v4, v6).entries.map((e) => e.url);
+  expect(urls('encrypted', true, false)).toEqual(['tls://1.1.1.1', 'tls://1.0.0.1']);
+  expect(urls('encrypted', false, true)).toEqual(['tls://[2606:4700:4700::1111]', 'tls://[2606:4700:4700::1001]']);
+  expect(urls('plain', true, false)).toEqual(['udp://1.1.1.1', 'udp://1.0.0.1']);
+  expect(urls('plain', true, true)).toHaveLength(4);
+  const first = planFor(items, new Set(['cloudflare']), 'encrypted', true, false).entries[0];
+  expect(first).toEqual({ name: 'pub-cloudflare-tls-1', url: 'tls://1.1.1.1', tls_server_name: 'cloudflare-dns.com' });
+  // Mullvad has no plain address: the encrypted one is used, and the plan says so.
+  const mv = planFor(items, new Set(['mullvad']), 'plain', true, false);
+  expect(mv.fellBack).toEqual(['mullvad']);
+  expect(mv.entries.every((e) => e.url.startsWith('tls://'))).toBe(true);
+  // Entries come back as the same ticks, transport and families.
+  const saved = (name: string, url: string) => ({ kind: 'upstream', name, source: 'added', definition: { url } }) as never;
+  const back = readSaved(
+    [saved('pub-cloudflare-tls-1', 'tls://1.1.1.1'), saved('pub-custom-2', 'udp://9.9.9.9'), saved('nowhere', 'udp://127.0.0.1:9')],
+    items,
+  );
+  expect([...back.ticked]).toEqual(['cloudflare']);
+  expect(back.transport).toBe('encrypted');
+  expect(back.v4).toBe(true);
+  expect(back.v6).toBe(false);
+  expect(back.customs.map((c) => c.url)).toEqual(['udp://9.9.9.9']);
+  expect(customUrl('9.9.9.9')).toBe('udp://9.9.9.9');
+  expect(customUrl('2606:4700:4700::1111')).toBe('udp://[2606:4700:4700::1111]');
+  expect(customUrl('https://dns.example.net/dns-query')).toBe('https://dns.example.net/dns-query');
+  expect(customUrl('not an address')).toBeNull();
+  expect(nextCustomName(['pub-custom-1', 'pub-custom-3'])).toBe('pub-custom-2');
+});
+
+// REQ: UPS-004, API-002 (T24.36) — the Upstreams page opens on the simple view; ticking providers
+// writes upstream entries and the default group (fastest); the config file's upstream is kept;
+// Advanced shows what the simple view made, and switching views loses nothing.
+test('ups_004 the simple view writes upstreams and the default group', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  await page.goto('/#/upstreams');
+  await page.evaluate(() => localStorage.removeItem('upstreams-view'));
+  await page.reload();
+  await expect(page.getByTestId('upstream-picker')).toBeVisible();
+  await expect(page.getByTestId('editor-upstream')).toBeHidden();
+  await expect(page.getByTestId('pick-cloudflare')).not.toBeChecked();
+  // The file's own upstream is listed and left alone.
+  await expect(page.getByTestId('picker-others')).toContainText('nowhere');
+  try {
+    // Encrypted is the default; this node's IPv6 route decides whether IPv6 is on.
+    await expect(page.getByTestId('transport-encrypted')).toBeChecked();
+    await page.getByTestId('pick-cloudflare').check();
+    await page.getByTestId('pick-quad9-unfiltered').check();
+    await page.getByTestId('family-v4').check();
+    if (await page.getByTestId('family-v6').isEnabled()) await page.getByTestId('family-v6').uncheck();
+    // Switching views keeps the unsaved ticks.
+    await page.getByTestId('view-advanced').click();
+    await expect(page.getByTestId('upstream-picker')).toBeHidden();
+    await expect(page.getByTestId('editor-upstream')).toBeVisible();
+    await page.getByTestId('view-simple').click();
+    await expect(page.getByTestId('pick-cloudflare')).toBeChecked();
+    await page.getByTestId('custom-address').fill('9.9.9.9');
+    await page.getByTestId('custom-add').click();
+    await expect(page.getByTestId('custom-entry')).toContainText('udp://9.9.9.9');
+    await page.getByTestId('picker-save').click();
+    await expect(page.getByTestId('picker-note')).toContainText('Saved');
+    const entries = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items;
+    const get = (n: string) => entries.find((e: { name: string }) => e.name === n);
+    expect(get('pub-cloudflare-tls-1').definition.url).toBe('tls://1.1.1.1');
+    expect(get('pub-cloudflare-tls-1').definition.tls_server_name).toBe('cloudflare-dns.com');
+    expect(get('pub-quad9-unfiltered-tls-1').source).toBe('added');
+    expect(get('pub-custom-1').definition.url).toBe('udp://9.9.9.9');
+    expect(get('nowhere').source, 'the file entry is untouched').toBe('file');
+    const group = (await (await r.get('/api/v1/config/entries?kind=upstream_group')).json()).items.find((e: { name: string }) => e.name === 'default');
+    expect(group.definition.strategy).toBe('fastest');
+    expect(group.definition.members).toEqual(expect.arrayContaining(['nowhere', 'pub-cloudflare-tls-1', 'pub-quad9-unfiltered-tls-1', 'pub-custom-1']));
+    // Reloading shows the saved choices; Advanced lists the same entries, labelled where they come from.
+    await page.reload();
+    await expect(page.getByTestId('pick-cloudflare')).toBeChecked();
+    await expect(page.getByTestId('pick-google')).not.toBeChecked();
+    await expect(page.getByTestId('custom-entry')).toContainText('udp://9.9.9.9');
+    await page.getByTestId('view-advanced').click();
+    const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'pub-cloudflare-tls-1' });
+    await expect(row).toContainText('added here');
+    await expect(row).not.toContainText('config file');
+    // Unticking removes what the simple view made; the rest stays.
+    await page.getByTestId('view-simple').click();
+    await page.getByTestId('pick-cloudflare').uncheck();
+    await page.getByTestId('picker-save').click();
+    await expect(page.getByTestId('picker-note')).toContainText('Saved');
+    const after = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items.map((e: { name: string }) => e.name);
+    expect(after).not.toContain('pub-cloudflare-tls-1');
+    expect(after).toEqual(expect.arrayContaining(['pub-quad9-unfiltered-tls-1', 'pub-custom-1', 'nowhere']));
+  } finally {
+    // Back to the file's configuration.
+    await r.delete('/api/v1/upstream-groups/default', { headers: h });
+    const all = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items;
+    for (const e of all) if (e.name.startsWith('pub-')) await r.delete(`/api/v1/upstreams/${e.name}`, { headers: h });
+    await page.evaluate(() => localStorage.setItem('upstreams-view', 'advanced'));
+  }
+});
+
+// REQ: UPS-004 (T24.36) — IPv6 is greyed out, with the reason, on a node with no IPv6 route; plain
+// DNS says it isn't private; nothing ticked can't be saved.
+test('ups_004 IPv6 is disabled without a route and plain DNS is warned about', async () => {
+  const stub = async (route: Route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: { ...(await res.json()), ipv6Route: false } });
+  };
+  await page.route('**/api/v1/upstream-presets', stub);
+  try {
+    await page.goto('/#/upstreams');
+    await page.evaluate(() => localStorage.removeItem('upstreams-view'));
+    await page.reload();
+    await expect(page.getByTestId('family-v6')).toBeDisabled();
+    await expect(page.getByTestId('family-v6')).not.toBeChecked();
+    await expect(page.getByTestId('ipv6-reason')).toContainText('no IPv6 route');
+    await expect(page.getByTestId('picker-save')).toBeDisabled();
+    await page.getByTestId('transport-plain').check();
+    await expect(page.getByTestId('plain-warning')).toContainText('isn’t private');
+    await page.getByTestId('pick-mullvad').check();
+    await expect(page.getByTestId('plain-warning')).toContainText('no plain address');
+    await page.getByTestId('pick-mullvad').uncheck();
+    // Nothing ticked and nothing else in the group to keep is refused; the file's upstream is kept
+    // here, so this saves nothing new but is allowed.
+    await expect(page.getByTestId('picker-save')).toBeEnabled();
+  } finally {
+    await page.unroute('**/api/v1/upstream-presets', stub);
+    await page.evaluate(() => localStorage.setItem('upstreams-view', 'advanced'));
+  }
+});
+
+// REQ: API-002 (T24.36, fork #27) — each upstream says where it is defined: an upstream made through
+// the API (the form, a Pi-hole import) reads "added through the API or UI", the file's reads "config file".
+test('ups_004 an upstream made through the API is not labelled config file', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/upstreams/ups004-api', { headers: h, data: { url: 'udp://192.0.2.44' } });
+  expect(put.status(), await put.text()).toBe(200);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload();
+    const origin = (name: string) =>
+      page.locator('table tbody tr', { has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) }).first().getByTestId('upstream-origin');
+    await expect(origin('ups004-api')).toHaveText('defined in: added through the API or UI');
+    await expect(origin('nowhere')).toHaveText('defined in: config file');
+    await page.getByTestId('view-advanced').click();
+    const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ups004-api' });
+    await expect(row).toContainText('added here');
+    await expect(row).not.toContainText('config file');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups004-api', { headers: h });
   }
 });
 
@@ -1997,6 +2161,7 @@ test('api_002 lists and upstreams are edited from the UI', async () => {
 
   // An upstream from the files: overridden, then back to the files' version.
   await page.goto('/#/upstreams');
+  await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
   const ups = page.getByTestId('editor-upstream');
   const router = ups.getByTestId('entry-row').filter({ hasText: 'router' });
   await expect(router).toContainText('config file');
@@ -2760,6 +2925,7 @@ test('api_014 upstream url is admin-only when it holds a credential', async () =
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-cred-up' });
     await expect(row.getByTestId('kept-badge')).toHaveText('kept: re-enter to change', { timeout: 20_000 });
@@ -2790,6 +2956,7 @@ test('api_014 a credential file on an upstream holds its address too', async () 
       await route.fulfill({ response: res, json: body });
     });
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-keyfile-up' });
     await row.getByRole('button', { name: 'Edit' }).click();
@@ -2805,6 +2972,7 @@ test('api_014 upstream exec draft is held for an operator', async () => {
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Add upstream', exact: true }).click();
     await op.p.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-exec-draft');
     await op.p.getByRole('textbox', { name: 'Address', exact: true }).fill('exec:///usr/bin/true');
@@ -2827,6 +2995,7 @@ test('api_014 operator re-times a saved program upstream', async () => {
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-exec-up' });
     await row.getByRole('button', { name: 'Edit' }).click();
@@ -2856,6 +3025,7 @@ test('api_014 a viewer sees credential entries and changes nothing', async () =>
   const v = await operatorPage(VIEWER.user, VIEWER.pass, 'viewer');
   try {
     await v.p.goto('/#/upstreams');
+    await v.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     const editor = v.p.getByTestId('editor-upstream');
     const row = editor.getByTestId('entry-row').filter({ hasText: 'ui-view-up' });
     await expect(row.getByTestId('kept-badge')).toBeVisible({ timeout: 20_000 });
@@ -2897,6 +3067,7 @@ test("api_014 changing a header upstream's url says which credential to re-enter
   expect(put.status(), await put.text()).toBe(200);
   try {
     await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-hdr-up' });
     await row.getByRole('button', { name: 'Edit' }).click();
     await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://other.e2e.test/dns-query');
@@ -2957,6 +3128,7 @@ test('api_015 errors read as sentences', async () => {
   });
   try {
     await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await page.reload();
     await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-err-up');
@@ -6265,6 +6437,10 @@ test('dsc_001 network inventory settings are admin-only', async () => {
     await expect(mine.getByText('Only an administrator can change the network inventory')).toBeVisible({ timeout: 30_000 });
     await expect(mine.getByRole('button', { name: 'Check', exact: true })).toHaveCount(0);
     await expect(mine.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    // REQ: DSC-009 — the extra read switches are read-only for an operator too.
+    for (const name of ['UniFi client fields', 'UniFi client history', 'UniFi devices and ports', 'Home Assistant devices without entities']) {
+      await expect(mine.getByRole('switch', { name })).toBeDisabled();
+    }
     const ocsrf = await csrfOf(op.request);
     const moved = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { enabled: true, worker_memory_mib: 64 } });
     expect(moved.status()).toBe(403);
@@ -6387,6 +6563,70 @@ test('dsc_001 a poll keeps unsaved edits', async () => {
   await page.waitForTimeout(16_000);
   await expect(node).toHaveValue('pi-unsaved');
   await node.fill('');
+});
+
+// REQ: DSC-009 (T25.10, ADR-912) — an admin turns on the extra UniFi reads, sets the history window and
+// the Home Assistant switch, checks and applies; the server keeps them across a reload; a window out of
+// range is refused with the server's message. UniFi's reads start off, Home Assistant's on.
+test('dsc_009 unifi read toggles', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  const unifi = ['UniFi client fields', 'UniFi client history', 'UniFi devices and ports'];
+  const ha = settings.getByRole('switch', { name: 'Home Assistant devices without entities' });
+  const window_ = settings.getByLabel('History window in hours');
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).not.toBeChecked();
+  await expect(ha).toBeChecked();
+  await expect(window_).toHaveValue('720');
+  for (const name of unifi) await settings.getByRole('switch', { name }).check();
+  await ha.uncheck();
+  await window_.fill('48');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.reload();
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).toBeChecked();
+  await expect(settings.getByRole('switch', { name: 'Home Assistant devices without entities' })).not.toBeChecked();
+  await expect(settings.getByLabel('History window in hours')).toHaveValue('48');
+  // A window out of range is refused, and nothing is offered to apply.
+  await settings.getByLabel('History window in hours').fill('0');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'from 1 to 8,760' })).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+  // The refusal is expected: the browser logs the 422 as a console error, which the test removes.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+  // Back to the file's settings (the defaults here).
+  await page.reload();
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).not.toBeChecked();
+  await expect(settings.getByRole('switch', { name: 'Home Assistant devices without entities' })).toBeChecked();
+});
+
+// REQ: DSC-009 (ADR-912) — a read the console refuses shows in the status with its reason; the reads
+// that work show their rows (and say when they were cut at the cap).
+test('dsc_009 refused read shows on the inventory page', async () => {
+  const status = {
+    enabled: true, designated: true, node: null, workers: [],
+    reads: [
+      { router: 'udm', read: 'devices', state: 'refused', rows: 0, truncated: false, error: 'http://192.168.1.1/proxy/network/api/s/default/stat/device: HTTP 403 Forbidden (the key or user cannot read it)', at: 1 },
+      { router: 'udm', read: 'all_users', state: 'ok', rows: 8192, truncated: true, error: null, at: 1 },
+    ],
+  };
+  await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const dev = page.getByTestId('read-udm-devices');
+    await expect(dev.getByTestId('read-state')).toHaveText('refused');
+    await expect(dev).toContainText('HTTP 403');
+    const hist = page.getByTestId('read-udm-all_users');
+    await expect(hist.getByTestId('read-state')).toHaveText('ok');
+    await expect(hist).toContainText('8192');
+    await expect(hist).toContainText('cut at 8,192');
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
 });
 
 // REQ: OBS-039 (ADR-167) — domain icons: a brand tile for a name the map knows (Netflix), a monogram

@@ -61,6 +61,54 @@ pub struct NodeAddress {
     pub network: String,
 }
 
+/// REQ: UPS-004 (T24.36) — one address a public resolver answers on.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresetEndpoint {
+    /// `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`.
+    pub url: String,
+    /// `udp`, `tcp`, `tls`, `https` or `quic`.
+    pub protocol: String,
+    /// `v4` or `v6` for an address, `name` for a host name (which resolves to either).
+    pub family: String,
+    /// The name on the server certificate, for a `tls://` address given by IP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<String>,
+}
+
+/// REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPreset {
+    pub id: String,
+    pub name: String,
+    /// The heading it is listed under (`Cloudflare`).
+    pub provider: String,
+    /// The choice under the heading (`Malware`).
+    pub variant: String,
+    /// One line: what it filters and what it does with your queries.
+    pub note: String,
+    pub homepage: String,
+    /// `none`, `malware`, `family` or `ads`.
+    pub filtering: String,
+    pub dnssec: bool,
+    /// Offered in the simple view (false: it needs a parameter, or is for the Advanced view).
+    pub simple: bool,
+    /// Placeholders in its addresses (a NextDNS profile); empty for every simple preset.
+    pub params: Vec<String>,
+    pub endpoints: Vec<UpstreamPresetEndpoint>,
+}
+
+/// REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresets {
+    /// Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+    /// times out. Unknown (another OS) reads true.
+    pub ipv6_route: bool,
+    pub items: Vec<UpstreamPreset>,
+}
+
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1395,6 +1443,33 @@ pub struct DiscoveryStatus {
     pub node: Option<String>,
     /// The worker processes this node runs (none unless enabled and designated).
     pub workers: Vec<DiscoveryWorker>,
+    /// REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+    /// read: which ones work, and which the console refused. Empty unless one is on.
+    pub reads: Vec<DiscoveryRead>,
+}
+
+/// REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+/// it. Read-only: nothing here changes a console.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryRead {
+    /// The `[[router]]` read.
+    #[schema(example = "udm")]
+    pub router: String,
+    /// `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+    #[schema(example = "all_users")]
+    pub read: String,
+    /// `ok`, `refused` (the console answered 401 or 403) or `failed`.
+    #[schema(example = "ok")]
+    pub state: String,
+    /// Rows used.
+    pub rows: u32,
+    /// More rows were offered than the 8,192 cap; the rest were left out.
+    pub truncated: bool,
+    /// Why a read did not work, in words (no credential in it).
+    pub error: Option<String>,
+    /// When the result was recorded (Unix seconds).
+    pub at: Option<u64>,
 }
 
 /// REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.

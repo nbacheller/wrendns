@@ -483,6 +483,7 @@ fn clu_015_sink_and_otlp_blob_refs_only() {
     // A blob made by hand with the values is dropped entry by entry.
     let forged = serde_json::to_vec(&Doc {
         version: 1,
+        managed: false,
         entries: vec![
             Entry {
                 kind: SINK.into(),
