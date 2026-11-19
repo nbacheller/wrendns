@@ -834,3 +834,29 @@ fn clu_015_t24_40_a_probe_target_with_a_password_is_not_adopted() {
     assert_eq!(derived.len(), 1);
     assert_eq!(derived[0].kind, "probe");
 }
+
+/// REQ: CLU-015, OBS-902 (T24.40, T26.4, ADR-1019, ADR-1008) — `[map.geoip]` rides inside the
+/// shared `map` kind: a served GeoIP setting is adopted with the thresholds (it holds no secret:
+/// `source_url` is refused with credentials, a query string or a fragment), and stripping the row
+/// gives the files' `[map]` back.
+#[test]
+fn clu_015_obs_902_map_geoip_is_adopted_with_the_map() {
+    let own = Config::default();
+    let mut served = own.clone();
+    served.map.geoip.enabled = true;
+    served.map.geoip.home_country = Some("NL".into());
+    served.map.geoip.source_url = Some("https://mirror.example/geo.csv.gz".into());
+    let derived = crate::managed_adopt::derive(&served, &own);
+    let kinds: Vec<&str> = derived.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, ["map"]);
+    let map = &derived[0].body;
+    assert_eq!(map["geoip"]["enabled"], true);
+    assert_eq!(map["geoip"]["home_country"], "NL");
+    assert_eq!(
+        map["geoip"]["source_url"],
+        "https://mirror.example/geo.csv.gz"
+    );
+    let mut stripped = served.clone();
+    crate::managed_adopt::strip(&mut stripped, &derived, &own);
+    assert_eq!(stripped.map, own.map);
+}

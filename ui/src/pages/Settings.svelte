@@ -30,6 +30,8 @@
   const ICON_PREVIEW = ['www.netflix.com', 'cdn.example.org', 'nas.home.arpa'];
   import PiholeImport from '../lib/components/PiholeImport.svelte';
   import PiholeApi from '../lib/components/PiholeApi.svelte';
+  // REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database for the world view: status for all, controls for admins.
+  import GeoipCard from '../lib/components/GeoipCard.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
@@ -97,6 +99,8 @@
     { key: 'max_rows', label: 'Most logged queries read per node', type: 'number', placeholder: '2000000', advanced: true,
       help: 'At least 1,000. Newest first.' },
   ];
+  // REQ: OBS-901, OBS-902 — bumped when the GeoIP card saves `[map]`, to remount the map card.
+  let mapSettingsRev = $state(0);
   // REQ: CLU-013 (T13.2) — `[cluster.rollout]`: a canary picker over the cluster's nodes, sites,
   // and its resolver pods, the bake, and the guard.
   let clusterView = $state<S['ClusterView'] | null>(null);
@@ -1067,7 +1071,13 @@
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
     <!-- REQ: OBS-901 (T26.6, ADR-958) — the live network map's sampling and thresholds. -->
-    <MapSettingsCard />
+    <!-- Re-read after a GeoIP save: both cards write the one `[map]` entry, and a stale map card
+         would put the old `geoip` back (or be refused for an operator). -->
+    {#key mapSettingsRev}
+      <MapSettingsCard />
+    {/key}
+    <!-- REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database: everyone sees its status, an admin controls it. -->
+    <GeoipCard onsaved={() => mapSettingsRev++} />
   {/if}
   </TabPanel>
 </div>

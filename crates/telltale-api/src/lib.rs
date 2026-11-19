@@ -425,6 +425,27 @@ pub trait Backend: Send + Sync + 'static {
             pending: Vec::new(),
         }
     }
+    /// REQ: OBS-902 (T26.4, ADR-959) - this node's GeoIP database: its state. `None`: this
+    /// backend has none (a resolver pod never fetches one).
+    fn geoip_status(&self) -> Option<model::GeoipStatus> {
+        None
+    }
+    /// REQ: OBS-902 (T26.4) - "Update now": starts a fetch on this node (it runs in the
+    /// background; the status says how it went). 409 `conflict` when one is running and
+    /// `geoip_off` when the toggle is off.
+    fn geoip_update(&self) -> Result<model::GeoipStatus, Problem> {
+        Err(Problem::not_found("this node has no GeoIP database"))
+    }
+    /// REQ: OBS-902 (T26.4) - "Delete database": removes this node's copy.
+    fn geoip_delete(&self) -> Result<model::GeoipStatus, Problem> {
+        Err(Problem::not_found("this node has no GeoIP database"))
+    }
+    /// REQ: OBS-902 (T26.4, T26.5) - the countries of `ips` from this node's database, read by
+    /// position from the file (blocking: call it inside `blocking()`).
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> map::GeoAnswer {
+        let _ = ips;
+        map::GeoAnswer::default()
+    }
     /// REQ: OBS-018 (ADR-109) — what the shadow lists would have blocked (every node, merged).
     fn shadow_lists(&self) -> Vec<model::ShadowListStats> {
         Vec::new()
@@ -1627,6 +1648,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             guarded_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database's "Update now" and "Delete": admin
+        // sessions only, no agent scope (a node downloading from the internet is an admin's call).
+        .merge(
+            map_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
         // REQ: API-015 (ADR-903 §4) — stored secrets: operators read metadata, admins set and
         // clear values (never agents); each route checks its own role.
         .merge(secrets_api::routes(Arc::clone(&backend), Arc::clone(&auth)))
@@ -1687,7 +1714,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, map_api::get_map, map_api::map_stream, map_api::get_world, map_api::get_health, map_api::get_settings, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, policy_api::client_policy, categories_api::categories, categories_api::categories_budget, categories_api::get_group_content, categories_api::put_group_content, categories_api::put_group_sources, categories_api::profile_devices, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, config_api::backup_create, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, pihole_api::get_status, pihole_api::put_settings, pihole_api::issue_token, pihole_api::revoke_token, pihole_api::v6_login, pihole_api::v6_session, pihole_api::v6_logout, pihole_api::v6_summary, pihole_api::v6_top_domains, pihole_api::v6_top_clients, pihole_api::v6_upstreams, pihole_api::v6_version, pihole_api::v6_blocking, pihole_api::v6_set_blocking, pihole_api::v5, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, map_api::get_map, map_api::map_stream, map_api::get_world, map_api::get_geoip, map_api::update_geoip, map_api::delete_geoip, map_api::get_health, map_api::get_settings, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, policy_api::client_policy, categories_api::categories, categories_api::categories_budget, categories_api::get_group_content, categories_api::put_group_content, categories_api::put_group_sources, categories_api::profile_devices, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, config_api::backup_create, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, pihole_api::get_status, pihole_api::put_settings, pihole_api::issue_token, pihole_api::revoke_token, pihole_api::v6_login, pihole_api::v6_session, pihole_api::v6_logout, pihole_api::v6_summary, pihole_api::v6_top_domains, pihole_api::v6_top_clients, pihole_api::v6_upstreams, pihole_api::v6_version, pihole_api::v6_blocking, pihole_api::v6_set_blocking, pihole_api::v5, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -1707,7 +1734,7 @@ async fn fallback(
     ),
     components(schemas(
         guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult,
-        map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
+        map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, model::GeoipStatus, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
         model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,

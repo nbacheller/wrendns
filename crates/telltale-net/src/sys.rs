@@ -728,6 +728,7 @@ use libmimalloc_sys as _;
 
 unsafe extern "C" {
     fn mi_option_set(option: libc::c_int, value: libc::c_long);
+    fn mi_collect(force: bool);
 }
 
 /// `mi_option_purge_delay` in mimalloc's `mi_option_e` (the same in v2 and v3).
@@ -740,6 +741,18 @@ pub(crate) fn allocator_purge_at_once() {
     // SAFETY: mi_option_set only stores an integer option; 0 is a documented value for
     // purge_delay ("immediate purging"). Safe to call from any thread at any time.
     unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, 0) }
+}
+
+/// REQ: NFR-001, OBS-902 (ADR-1008 (h)) — mimalloc frees what the calling thread's heap holds
+/// empty and returns the arenas' free memory to the OS now, after work that runs rarely and
+/// allocates a lot (the GeoIP build). Freed pages a thread keeps for reuse would otherwise stay
+/// resident until that thread allocates again in the same size class, which a blocking-pool
+/// thread may never do.
+pub(crate) fn allocator_collect() {
+    // SAFETY: mi_collect takes no pointers and only walks the calling thread's own heap and the
+    // shared arenas under mimalloc's own locks; it is documented as callable from any thread at
+    // any time (mimalloc makes the same call itself at thread exit).
+    unsafe { mi_collect(true) }
 }
 
 /// REQ: NFR-001 (T10.2) — drops this process's resident pages of its own executable's
@@ -1181,6 +1194,10 @@ mod tests {
         allocator_purge_at_once();
         let v: Vec<u8> = vec![7; 1 << 20];
         drop(v);
+        // REQ: OBS-902 (ADR-1008 (h)) - a collect after a large free leaves the allocator usable.
+        allocator_collect();
+        let w: Vec<u8> = vec![9; 1 << 20];
+        assert_eq!(w.iter().map(|&b| u64::from(b)).sum::<u64>(), 9 << 20);
     }
 
     #[test]

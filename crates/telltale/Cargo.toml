@@ -99,6 +99,11 @@ wedge-test = []
 # (`TT_E2E_RESTART_HOOK`). Never in a release build: only the end-to-end server is built with it
 # (`ui/tests/e2e/server.mjs`); the registry rows and the hook are compiled out without it.
 e2e = ["telltale-config/e2e"]
+# REQ: OBS-902, NFR-001 (ADR-1008 addendum (h)) - a bench hook, never in a release build: a
+# release-profile binary built with it trusts `TELLTALE_GEOIP_TEST_CA` (the fake source's
+# certificate, as a debug build does), so `bench/geoipbuild.py` can measure a real download and
+# build in the resolver's own allocator configuration. The production limits stay.
+geoip-probe = []
 
 [dev-dependencies]
 # REQ: NFR-002 — the whole-pipeline allocation test (`pipeline.rs`).

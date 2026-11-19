@@ -53,9 +53,23 @@ pub(crate) fn read_routes(backend: Shared) -> Router {
         .route("/api/v1/map/stream", get(map_stream))
         .route("/api/v1/map/world", get(get_world))
         .route("/api/v1/map/health", get(get_health))
+        // REQ: OBS-902 (T26.4) - the GeoIP database's status: everyone who sees the map sees it.
+        .route("/api/v1/map/geoip", get(get_geoip))
         // The settings are read here (viewers) and written in `config_api` (operators): one path.
         .route("/api/v1/map-settings/default", get(get_settings))
         .with_state(state)
+}
+
+/// REQ: OBS-902 (T26.4, ADR-959 section 2) - "Update now" and "Delete database": admin only, no
+/// agent scope (an agent can't make a node download from the internet or delete what it holds).
+pub(crate) fn admin_routes(backend: Shared, auth: Arc<crate::auth::Auth>) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/map/geoip/update",
+            axum::routing::post(update_geoip),
+        )
+        .route("/api/v1/map/geoip", axum::routing::delete(delete_geoip))
+        .with_state((backend, auth))
 }
 
 #[derive(Clone)]
@@ -81,6 +95,15 @@ pub struct MapParams {
     pub group: Option<String>,
     /// Only devices whose name or address contains this text.
     pub device: Option<String>,
+    /// Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).
+    pub node: Option<String>,
+}
+
+/// `GET /api/v1/map/world` filters. Answer prefixes are counted per node, not per device, so the
+/// network, group and device filters of the map have nothing to narrow here.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct WorldParams {
     /// Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).
     pub node: Option<String>,
 }
@@ -228,23 +251,140 @@ pub(crate) async fn map_stream(
 
 /// Where answers point (world view).
 ///
-/// `available: false` with a `reason` when it can't be drawn: `geoip_off`, `geoip_missing`, or
-/// `address_not_recorded`. A lookup's answer address isn't kept yet (ADR-970), so until it is every
-/// lookup counts as `unlocated`.
-#[utoipa::path(get, path = "/api/v1/map/world", tag = "map",
+/// Countries with the rate, count and slow share of the answers that point there, and a marker
+/// for each upstream whose address has a country. `available: false` with a `reason` when
+/// answers can't be placed: `geoip_off` or `geoip_missing` (the GeoIP database, `GET
+/// /map/geoip`), `address_not_recorded` (the lookup's answer address isn't kept yet, ADR-970: the
+/// upstream `markers` are then where the upstreams are, not where answers point) or `privacy`
+/// (level 3 keeps nothing per event). `unlocated` counts the answers with no place: failed,
+/// blocked and local ones, and prefixes with no country. Countries come from the database of the
+/// node that answers.
+#[utoipa::path(get, path = "/api/v1/map/world", tag = "map", params(WorldParams),
     responses(
         (status = 200, body = map::MapWorld, description = "The world view's data, or why it is unavailable."),
         (status = 404, body = Problem, description = "`map_disabled`.")))]
-pub(crate) async fn get_world(State(s): State<MapState>) -> Result<Json<map::MapWorld>, Problem> {
+pub(crate) async fn get_world(
+    State(s): State<MapState>,
+    Query(p): Query<WorldParams>,
+) -> Result<Json<map::MapWorld>, Problem> {
     let b = s.backend;
     let _seat = s.hub.builds.acquire().await;
+    let node = p
+        .node
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty());
     blocking(move || {
-        settings(&*b)?;
+        let settings = settings(&*b)?;
         let parts = b.map_parts();
-        Ok(map::world_unavailable(&parts, b.now_unix_seconds()))
+        let locate = |ips: &[std::net::IpAddr]| b.geoip_locate(ips);
+        Ok(map::world(
+            &parts,
+            &settings.thresholds,
+            b.now_unix_seconds(),
+            node.as_deref(),
+            &locate,
+        ))
     })
     .await
     .map(Json)
+}
+
+/// The GeoIP database.
+///
+/// This node's country database for the world view: `enabled`, `state` (`off`, `missing`,
+/// `downloading`, `ready`, `failed`), the source's month, when it was built, its size, when the
+/// next check is due and the last error's code. The database is never bundled and is downloaded
+/// only after an admin turns `[map.geoip]` on; each node that serves the console keeps its own
+/// copy. Change the settings with `PUT /map-settings/default` (admin), fetch now with `POST
+/// /map/geoip/update`, remove it with `DELETE /map/geoip`.
+#[utoipa::path(get, path = "/api/v1/map/geoip", tag = "map",
+    responses(
+        (status = 200, body = crate::model::GeoipStatus, description = "The database's status."),
+        (status = 404, body = Problem, description = "This node has no GeoIP database (a resolver pod).")))]
+pub(crate) async fn get_geoip(
+    State(s): State<MapState>,
+) -> Result<Json<crate::model::GeoipStatus>, Problem> {
+    let b = s.backend;
+    blocking(move || {
+        b.geoip_status()
+            .ok_or_else(|| Problem::not_found("this node keeps no GeoIP database"))
+    })
+    .await
+    .map(Json)
+}
+
+/// Fetch the GeoIP database now.
+///
+/// Starts a download on this node, in the background, even when the day's check is not due (it
+/// also lifts a "Delete database"). The status shows `downloading`, then `ready` or `failed` with
+/// the error's code; a failed fetch keeps the old database. Admin only (never an agent); audited
+/// as `map.geoip.update`. 409 `conflict` when a fetch is running or the toggle is off.
+#[utoipa::path(post, path = "/api/v1/map/geoip/update", tag = "map",
+    responses(
+        (status = 202, body = crate::model::GeoipStatus, description = "The fetch was started."),
+        (status = 409, body = Problem, description = "A fetch is running already, or `[map.geoip]` is off.")))]
+pub(crate) async fn update_geoip(
+    State((backend, auth)): State<(Shared, Arc<crate::auth::Auth>)>,
+    headers: axum::http::HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    geoip_action(backend, auth, headers, ext, "map.geoip.update", |b| {
+        b.geoip_update()
+    })
+    .await
+}
+
+/// Delete the GeoIP database.
+///
+/// Removes this node's copy (and its `.prev`). While `[map.geoip]` stays on nothing is fetched
+/// again until an admin presses Update now or turns it off and on; the world view says
+/// `geoip_missing`. Admin only (never an agent); audited as `map.geoip.delete`.
+#[utoipa::path(delete, path = "/api/v1/map/geoip", tag = "map",
+    responses((status = 200, body = crate::model::GeoipStatus, description = "The status after the delete.")))]
+pub(crate) async fn delete_geoip(
+    State((backend, auth)): State<(Shared, Arc<crate::auth::Auth>)>,
+    headers: axum::http::HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    geoip_action(backend, auth, headers, ext, "map.geoip.delete", |b| {
+        b.geoip_delete()
+    })
+    .await
+}
+
+async fn geoip_action(
+    backend: Shared,
+    auth: Arc<crate::auth::Auth>,
+    headers: axum::http::HeaderMap,
+    ext: axum::http::Extensions,
+    action: &'static str,
+    run: fn(&dyn Backend) -> Result<crate::model::GeoipStatus, Problem>,
+) -> Response {
+    use crate::auth::routes::{principal, reason, remote};
+    let p = match principal(&ext) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    let status = tokio::task::spawn_blocking({
+        let b = Arc::clone(&backend);
+        move || run(&*b)
+    })
+    .await
+    .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))));
+    let status = match status {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    let a2 = Arc::clone(&auth);
+    let detail = serde_json::json!({ "state": status.state });
+    let _ = tokio::task::spawn_blocking(move || a2.record(&actor, action, "geoip", &detail)).await;
+    let code = if action == "map.geoip.update" {
+        axum::http::StatusCode::ACCEPTED
+    } else {
+        axum::http::StatusCode::OK
+    };
+    (code, Json(status)).into_response()
 }
 
 /// The live map's settings.

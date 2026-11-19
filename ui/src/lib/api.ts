@@ -416,6 +416,15 @@ export const api = {
   profileDevices: () => get<S['ProfileDevices']>('/profiles/devices'),
   // REQ: OBS-901 (T26.3), the live network map; the filters narrow it on the server.
   map: (q: { network?: string; group?: string; device?: string; node?: string } = {}) => get<S['MapSnapshot']>('/map', q),
+  // REQ: OBS-902 (T26.4, T26.5), the world view and the GeoIP database that places answers (ADR-959).
+  mapWorld: (q: { node?: string } = {}) => get<S['MapWorld']>('/map/world', q),
+  geoip: () => get<S['GeoipStatus']>('/map/geoip'),
+  geoipUpdate: () => post<S['GeoipStatus']>('/map/geoip/update'),
+  geoipDelete: () => call<S['GeoipStatus']>('DELETE', '/map/geoip'),
+  // `[map]` as a whole: the GeoIP card reads it and writes it back with its own `geoip` part (an admin's).
+  geoipSettings: () => get<S['ConfigEntry']>('/map-settings/default'),
+  putGeoipSettings: (body: Record<string, unknown>) =>
+    call<S['ConfigChange']>('PUT', '/map-settings/default', { body, headers: { 'idempotency-key': newKey() } }),
   // REQ: FLT-012 (T7.9) — the blockable services.
   services: () => get<S['Items_ServiceInfo']>('/services'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),

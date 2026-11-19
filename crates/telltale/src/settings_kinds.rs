@@ -192,6 +192,9 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
     match kind {
         ManagedKind::Special => &["ddr_name"],
         ManagedKind::Clients => &["mdns"],
+        // REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database is fetched from the internet by every
+        // node that serves the console: an admin's call.
+        ManagedKind::Map => &["geoip"],
         // REQ: DSC-001 (T25.2, ADR-907) — every field of the network inventory is admin-only.
         ManagedKind::Discovery => DISCOVERY_KEYS,
         // REQ: CLU-014 (T27.11, ADR-1006) - the drill schedule starts drills on the cluster's nodes.
@@ -646,6 +649,9 @@ pub(crate) fn check_admin_fields(
         ManagedKind::Clients => "it turns on mDNS listening on every node of the cluster",
         ManagedKind::Discovery => {
             "the network inventory reads the devices on the LAN, from one node"
+        }
+        ManagedKind::Map => {
+            "it makes every node that serves the console download a database from the internet"
         }
         ManagedKind::Drill => "the drill schedule starts failover drills on the cluster's nodes",
         _ => "it is one name for the whole cluster, tied to every node's certificates",

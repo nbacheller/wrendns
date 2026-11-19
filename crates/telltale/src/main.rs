@@ -35,6 +35,7 @@ mod federated;
 #[cfg(test)]
 mod federated_wedge_tests;
 mod forward;
+mod geoip;
 mod gitsource;
 mod group_sources;
 mod guarded;

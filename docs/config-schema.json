@@ -295,6 +295,9 @@
         "enabled": true,
         "error_pct": 25,
         "event_rate": 200,
+        "geoip": {
+          "enabled": false
+        },
         "min_sample": 20,
         "warn_blocked_pct": 60,
         "warn_error_pct": 5,
@@ -2881,6 +2884,13 @@
           "default": 200,
           "minimum": 0
         },
+        "geoip": {
+          "description": "REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database the world view places answers with.\nAdmin-only: an operator's change to it is refused, and a request that leaves it out keeps\nthe current one.",
+          "$ref": "#/$defs/MapGeoipConfig",
+          "default": {
+            "enabled": false
+          }
+        },
         "min_sample": {
           "description": "Sampled answers a device, edge or upstream needs in the 60 s window before it is\ncoloured; fewer is grey (\"idle\"), not green (1 to 1,000).",
           "type": "integer",
@@ -2917,6 +2927,42 @@
           "format": "uint32",
           "default": 10,
           "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "MapGeoipConfig": {
+      "description": "REQ: OBS-902 (T26.4, ADR-959) - the optional country database for the world view: nothing is\ndownloaded until an admin turns this on, and it is never bundled. Each node that serves the\nconsole fetches its own copy from the source below, at most once a day, in the background.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Off (the default): nothing is fetched and the world view says GeoIP is off. On: this node\ndownloads the database and keeps it current.",
+          "type": "boolean",
+          "default": false
+        },
+        "home_country": {
+          "description": "Two-letter country code arcs start from. Unset: arcs start at \"Your network\".",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "sha256": {
+          "description": "Pin the download to this SHA-256 (64 hex digits). Useful only with a fixed mirror URL\nwhose content you control: the publisher's monthly file changes digest every month.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "source_url": {
+          "description": "Where the CSV (`start,end,CC`, gzip) comes from: an HTTPS URL. Unset: DB-IP's \"IP to\nCountry Lite\" for this month (CC BY 4.0), falling back to the month before. Set it to your\nown HTTPS mirror for an air-gapped site.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         }
       },
       "additionalProperties": false

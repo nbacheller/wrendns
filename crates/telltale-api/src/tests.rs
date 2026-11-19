@@ -9,6 +9,7 @@ use super::*;
 
 mod flt_901_content;
 mod obs_901_map;
+mod obs_902_geoip;
 
 /// Records what it was asked for; returns fixed data.
 #[derive(Default)]
@@ -24,6 +25,9 @@ struct Fake {
     paused: Mutex<Option<u32>>,
     /// REQ: OBS-901 — the map's settings (`None`: no map) and what every node reports.
     map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
+    /// REQ: OBS-902 - the GeoIP database's status (`None`: this backend keeps none) and the
+    /// countries it answers by address.
+    geoip: Mutex<Option<FakeGeoip>>,
     /// REQ: FLT-004 (T24.28) - lists where `quiet` nearly duplicates `ads`, for the prune tests.
     prunable: std::sync::atomic::AtomicBool,
     /// REQ: FLT-901 (T24.29) - the groups the category tests read, and the memory limit the node
@@ -37,6 +41,9 @@ struct Fake {
     slow_ms: std::sync::atomic::AtomicU64,
     slow_done: Arc<Mutex<Vec<String>>>,
 }
+
+/// The GeoIP database the fake reports: its status and the country of each address prefix.
+type FakeGeoip = (crate::model::GeoipStatus, Vec<(std::net::IpAddr, String)>);
 
 /// The one finding the fake reports.
 fn fake_finding_id() -> String {
@@ -93,6 +100,48 @@ impl Backend for Fake {
     }
     fn map_parts(&self) -> crate::map::MapParts {
         self.map.lock().unwrap().1.clone()
+    }
+    // REQ: OBS-902 (T26.4) - the GeoIP database the test sets up.
+    fn geoip_status(&self) -> Option<crate::model::GeoipStatus> {
+        self.geoip.lock().unwrap().as_ref().map(|g| g.0.clone())
+    }
+    fn geoip_update(&self) -> Result<crate::model::GeoipStatus, Problem> {
+        self.seen.lock().unwrap().push("geoip update".into());
+        self.geoip_status()
+            .ok_or_else(|| Problem::not_found("no database"))
+    }
+    fn geoip_delete(&self) -> Result<crate::model::GeoipStatus, Problem> {
+        self.seen.lock().unwrap().push("geoip delete".into());
+        self.geoip_status()
+            .ok_or_else(|| Problem::not_found("no database"))
+    }
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> crate::map::GeoAnswer {
+        let g = self.geoip.lock().unwrap();
+        let Some((status, table)) = g.as_ref() else {
+            return crate::map::GeoAnswer::default();
+        };
+        if !status.enabled {
+            return crate::map::GeoAnswer::default();
+        }
+        if status.state != "ready" {
+            return crate::map::GeoAnswer {
+                state: crate::map::GeoState::Missing,
+                ..crate::map::GeoAnswer::default()
+            };
+        }
+        crate::map::GeoAnswer {
+            state: crate::map::GeoState::Ready,
+            home: Some("NL".into()),
+            countries: ips
+                .iter()
+                .map(|ip| {
+                    table
+                        .iter()
+                        .find(|(a, _)| crate::map::prefix_of(*a) == crate::map::prefix_of(*ip))
+                        .map(|(_, c)| c.clone())
+                })
+                .collect(),
+        }
     }
     // REQ: API-007 (T24.18) — the test backend discards any plan (a real one answers 404 for a plan
     // it doesn't hold; the idempotency test needs a first answer that succeeds).
@@ -828,7 +877,9 @@ async fn send(
     let resp = app.router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
+    // 4 MiB: the served OpenAPI document passed 1 MiB with the merge of feat/ipam-integrations
+    // into feat/t26.4-t26.5-world (1,052,133 bytes).
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22)
         .await
         .unwrap();
     (
@@ -1974,9 +2025,11 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 179 with the tuning sections' /slo-settings/default, /probe-settings/default,
     // /upstream-check-settings/default, /anomaly-settings/default, /qlog-settings/default and
     // /metrics-settings/default (T27.5), from the same merge.
-    // 184 with FLT-901's /categories, /categories/budget and /groups/{name}/content and FLT-902's
+    // 181 with OBS-902's /map/geoip and /map/geoip/update (T26.4), from the merge of
+    // feat/ipam-integrations into feat/t26.4-t26.5-world.
+    // 186 with FLT-901's /categories, /categories/budget and /groups/{name}/content and FLT-902's
     // /groups/{name}/sources and /profiles/devices (T24.29; its /filter-settings/default is the one above).
-    assert_eq!(paths.len(), 184);
+    assert_eq!(paths.len(), 186);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

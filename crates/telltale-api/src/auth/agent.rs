@@ -238,6 +238,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/config/entries"
             // REQ: OBS-901 — the live map's settings.
             | "/api/v1/map-settings/default"
+            // REQ: OBS-902 (T26.4) - the GeoIP database's status (no setting, no URL).
+            | "/api/v1/map/geoip"
             // REQ: API-013 (T22.2) — the device inventory and the networks it sits in.
             | "/api/v1/dhcp/leases"
             | "/api/v1/networks"

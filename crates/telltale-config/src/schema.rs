@@ -2182,6 +2182,33 @@ pub struct MapConfig {
     pub error_pct: u32,
     /// Yellow for a device when this percent of its answers or more are blocked (1 to 100).
     pub warn_blocked_pct: u32,
+    /// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database the world view places answers with.
+    /// Admin-only: an operator's change to it is refused, and a request that leaves it out keeps
+    /// the current one.
+    pub geoip: MapGeoipConfig,
+}
+
+/// REQ: OBS-902 (T26.4, ADR-959) - the optional country database for the world view: nothing is
+/// downloaded until an admin turns this on, and it is never bundled. Each node that serves the
+/// console fetches its own copy from the source below, at most once a day, in the background.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct MapGeoipConfig {
+    /// Off (the default): nothing is fetched and the world view says GeoIP is off. On: this node
+    /// downloads the database and keeps it current.
+    pub enabled: bool,
+    /// Where the CSV (`start,end,CC`, gzip) comes from: an HTTPS URL. Unset: DB-IP's "IP to
+    /// Country Lite" for this month (CC BY 4.0), falling back to the month before. Set it to your
+    /// own HTTPS mirror for an air-gapped site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<SafeString>,
+    /// Pin the download to this SHA-256 (64 hex digits). Useful only with a fixed mirror URL
+    /// whose content you control: the publisher's monthly file changes digest every month.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<SafeString>,
+    /// Two-letter country code arcs start from. Unset: arcs start at "Your network".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_country: Option<SafeString>,
 }
 
 impl Default for MapConfig {
@@ -2195,6 +2222,7 @@ impl Default for MapConfig {
             warn_error_pct: 5,
             error_pct: 25,
             warn_blocked_pct: 60,
+            geoip: MapGeoipConfig::default(),
         }
     }
 }

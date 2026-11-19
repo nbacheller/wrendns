@@ -2824,6 +2824,39 @@ fn map(cfg: &Config, r: &mut Report<'_>) {
             "at least warn_error_pct (red can't come before yellow)",
         );
     }
+    map_geoip(&m.geoip, r);
+}
+
+// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP source is HTTPS, a pin is a SHA-256, and the home
+// country is a two-letter code.
+fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
+    if let Some(u) = &g.source_url {
+        let u = u.as_str();
+        let host_ok = u
+            .strip_prefix("https://")
+            .and_then(|rest| rest.split(['/', '?', '#']).next())
+            .is_some_and(|h| !h.is_empty() && !h.contains('@'));
+        // The URL is shown to every role: a query string or fragment could carry a token.
+        if !host_ok || u.contains('?') || u.contains('#') {
+            r.err(
+                "map.geoip.source_url",
+                "an https:// URL with a host, no credentials and no query string",
+            );
+        }
+    }
+    if let Some(d) = &g.sha256
+        && !(d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        r.err("map.geoip.sha256", "64 hexadecimal digits (a SHA-256)");
+    }
+    if let Some(c) = &g.home_country
+        && !(c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()))
+    {
+        r.err(
+            "map.geoip.home_country",
+            "a two-letter country code such as NL",
+        );
+    }
 }
 
 #[cfg(test)]

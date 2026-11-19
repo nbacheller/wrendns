@@ -221,6 +221,11 @@ const child = spawn(bin, ['run', '-c', cfg], {
     // declared supervisor (so "Restart now" is offered), the simulated restart (the test never kills its
     // own server), and a short confirmation window (a rollback can be watched).
     TELLTALE_SUPERVISOR: 'systemd',
+    // REQ: OBS-902 (T26.4, ADR-959 section 8) - the GeoIP tests' allowances, honoured only by a debug build
+    // (a release build ignores both): a small fake database is accepted, and the fake source's
+    // certificate is trusted besides the built-in roots.
+    TELLTALE_GEOIP_TEST: '1',
+    TELLTALE_GEOIP_TEST_CA: resolve(here, 'fixtures/geoip-source-cert.pem'),
     TT_E2E_RESTART_HOOK: '1',
     TT_E2E_CONFIRM_WINDOW_SECS: '15',
     // REQ: FLT-901 (T24.29) - a build with the `e2e` feature downloads the category lists from this fake instead of

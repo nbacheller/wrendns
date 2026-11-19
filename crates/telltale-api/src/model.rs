@@ -4612,6 +4612,39 @@ pub struct OtlpEntry {
     pub reason: Option<String>,
 }
 
+/// REQ: OBS-902 (T26.4, ADR-959 section 6) - this node's GeoIP database: whether it is on, what
+/// it holds, and how the last fetch went. Everyone who can see the map sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoipStatus {
+    /// `[map.geoip] enabled`.
+    pub enabled: bool,
+    /// `off`, `missing` (on, with no database on this node yet), `downloading`, `ready` or
+    /// `failed` (the last attempt was not accepted: `lastError` says why, and the previous
+    /// database, if any, is kept).
+    pub state: String,
+    /// The month of the database's source, `YYYY-MM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_month: Option<String>,
+    /// When this node built the database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// Rows of the source file.
+    pub rows: u64,
+    pub size_bytes: u64,
+    /// When the next check is due (a check runs at most once a day).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_check_at: Option<String>,
+    /// A stable code (`digest_mismatch`, `overlapping_ranges`, `not_found`, ...), never a
+    /// response body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// The database is more than 90 days old (it still works).
+    pub old: bool,
+    /// The attribution the database's licence (CC BY 4.0) asks for.
+    pub attribution: String,
+}
+
 /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — `GET /api/v1/node-settings/{node}`:
 /// the per-node sections of one node (`cache`, `support`, `updates`).
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
