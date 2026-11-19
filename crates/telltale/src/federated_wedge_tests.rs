@@ -361,7 +361,7 @@ fn replica_status() -> telltale_api::model::RouterStatus {
 }
 
 /// What a replica's Networks, DHCP and Routers reads answer: each the JSON body.
-fn router_reads(handler: telltale_cluster::net::RpcHandler) -> [serde_json::Value; 3] {
+fn router_reads(handler: telltale_cluster::net::RpcHandler) -> [serde_json::Value; 4] {
     finish_within(move || {
         let rt = multi_thread_runtime(2);
         let (replica, primary, stop, dirs) = rt.block_on(replica_of(handler));
@@ -369,7 +369,12 @@ fn router_reads(handler: telltale_cluster::net::RpcHandler) -> [serde_json::Valu
         h.src.routers.put("udm", replica_status());
         let out = rt.block_on(async {
             let mut out = Vec::new();
-            for path in ["/api/v1/networks", "/api/v1/dhcp/leases", "/api/v1/routers"] {
+            for path in [
+                "/api/v1/networks",
+                "/api/v1/dhcp/leases",
+                "/api/v1/routers",
+                "/api/v1/profiles/devices",
+            ] {
                 let (status, _, text) = h.send(h.request("GET", path, None)).await;
                 assert_eq!(status, StatusCode::OK, "{path}: {text}");
                 out.push(serde_json::from_str::<serde_json::Value>(&text).unwrap());
@@ -379,7 +384,12 @@ fn router_reads(handler: telltale_cluster::net::RpcHandler) -> [serde_json::Valu
         let _ = stop.send(true);
         rt.shutdown_background();
         drop((h, replica, primary, dirs));
-        [out[0].clone(), out[1].clone(), out[2].clone()]
+        [
+            out[0].clone(),
+            out[1].clone(),
+            out[2].clone(),
+            out[3].clone(),
+        ]
     })
 }
 
@@ -397,7 +407,11 @@ fn names(v: &serde_json::Value) -> Vec<&str> {
 /// and its state, labelled as read by the primary. Nothing is missing.
 #[test]
 fn api_013_a_replica_shows_the_primarys_router_data() {
-    let [nets, leases, routers] = router_reads(router_view_handler(false));
+    let [nets, leases, routers, picker] = router_reads(router_view_handler(false));
+    // The category picker lists the primary's router networks and clients too.
+    let p = picker.to_string();
+    assert!(p.contains("vlan-30") && p.contains("vlan-40"), "{p}");
+    assert!(p.contains("kids-tablet"), "{p}");
     let n = names(&nets);
     for want in ["LAN", "vlan-30", "vlan-40"] {
         assert!(n.contains(&want), "{want} missing from {n:?}");
@@ -440,7 +454,7 @@ fn api_013_a_replica_answers_without_the_primarys_router_data() {
         ("older primary", router_view_handler(true)),
         ("silent primary", silent),
     ] {
-        let [nets, leases, routers] = router_reads(handler);
+        let [nets, leases, routers, _] = router_reads(handler);
         assert!(!names(&nets).contains(&"LAN"), "{label}: {nets}");
         for v in [&nets, &leases, &routers] {
             assert_eq!(

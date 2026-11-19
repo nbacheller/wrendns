@@ -14,7 +14,7 @@ use telltale_api::model::{DhcpLease, NetworkInfo, RouterEntry, RouterStatus};
 
 /// What the node that reads the routers answers: its router networks, router leases and the
 /// status of each router. Results only.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct RouterView {
     pub(super) networks: Vec<NetworkInfo>,
     pub(super) leases: Vec<DhcpLease>,

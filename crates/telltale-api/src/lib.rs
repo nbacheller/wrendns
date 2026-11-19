@@ -344,6 +344,12 @@ pub trait Backend: Send + Sync + 'static {
         }
     }
     fn groups(&self) -> Vec<GroupInfo>;
+    /// REQ: API-013 (T24.41) - the groups over the networks the caller read (a replica's include
+    /// the primary's routers'); a backend without its own router data ignores them.
+    fn groups_with(&self, networks: &[model::NetworkInfo]) -> Vec<GroupInfo> {
+        let _ = networks;
+        self.groups()
+    }
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
     /// The configuration version (bumped by every change made through the API; ADR-040).
@@ -523,6 +529,15 @@ pub trait Backend: Send + Sync + 'static {
     /// primary's, which fetches and compiles.
     fn category_env(&self) -> categories_api::CategoryEnv {
         categories_api::CategoryEnv::default()
+    }
+    /// REQ: API-010, API-013 (T24.41) - the picker over the networks and leases the caller read.
+    fn profile_devices_with(
+        &self,
+        networks: &[model::NetworkInfo],
+        leases: &[DhcpLease],
+    ) -> categories_api::ProfileDevices {
+        let _ = (networks, leases);
+        self.profile_devices()
     }
     /// REQ: FLT-902 (T24.29) — the picker's networks and devices.
     fn profile_devices(&self) -> categories_api::ProfileDevices {

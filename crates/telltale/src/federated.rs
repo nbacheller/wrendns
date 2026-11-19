@@ -894,7 +894,13 @@ pub(crate) struct Federated {
     /// REQ: OBS-901 (ADR-958 section 6) — the live map's per-peer last-good parts and the gather
     /// task that fills them, shared by every handle (each request has its own).
     map: Arc<MapPeers>,
+    /// REQ: API-013 (T24.41) - the primary's last good router read, kept a few seconds so one
+    /// page load or map snapshot makes one call; shared by every handle.
+    router_view: Arc<Mutex<Option<(std::time::Instant, String, routers_view::RouterView)>>>,
 }
+
+/// How long a replica reuses the primary's router read.
+const ROUTER_VIEW_TTL: Duration = Duration::from_secs(5);
 
 /// REQ: OBS-901 — what the cluster read of the map keeps between requests: the cache the gather
 /// task writes and the snapshot reads, and whether somebody asked lately.
@@ -946,6 +952,7 @@ impl Federated {
             missing: Mutex::new(Vec::new()),
             only: None,
             map: Arc::new(MapPeers::new()),
+            router_view: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -966,6 +973,7 @@ impl Federated {
             missing: Mutex::new(Vec::new()),
             only: Some(Only { me, peers }),
             map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
         }
     }
 
@@ -1073,16 +1081,44 @@ impl Federated {
         if self.cluster.is_primary() {
             return None;
         }
+        // Only a router the primary reads needs the call (a cluster without routers asks nothing
+        // and never reports the primary as missing).
+        if !self
+            .local
+            .router_entries()
+            .iter()
+            .any(|e| e.status.polled_by == "the primary")
+        {
+            return None;
+        }
         let known = self.cluster.members().into_iter().find(|m| m.primary);
-        let asked = self.cluster.reachable_primary().and_then(|primary| {
+        let primary = self.cluster.reachable_primary();
+        if let Some(p) = &primary {
+            let cached = self
+                .router_view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((at, id, v)) = cached.as_ref()
+                && id == p
+                && at.elapsed() < ROUTER_VIEW_TTL
+            {
+                return Some((self.label_of(p), v.clone()));
+            }
+        }
+        let asked = primary.and_then(|primary| {
             let body = self.call_one(&primary, &Read::RouterView, DEADLINE)?.ok()?;
-            let view = serde_json::from_slice(&body).ok()?;
+            let view: routers_view::RouterView = serde_json::from_slice(&body).ok()?;
+            *self
+                .router_view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((std::time::Instant::now(), primary.clone(), view.clone()));
             Some((self.label_of(&primary), view))
         });
-        if asked.is_none()
-            && let Some(m) = known
-        {
-            self.record_missing(vec![self.label_of(&m.node_id)]);
+        if asked.is_none() {
+            // No member is primary during an election: the note still names who is missing.
+            let who = known.map_or_else(|| "the primary".to_owned(), |m| self.label_of(&m.node_id));
+            self.record_missing(vec![who]);
         }
         asked
     }
@@ -1409,6 +1445,7 @@ impl Backend for Federated {
             missing: Mutex::new(Vec::new()),
             only: Some(only),
             map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
         }))
     }
     fn local(&self) -> Option<Shared> {
@@ -1429,6 +1466,7 @@ impl Backend for Federated {
             missing: Mutex::new(Vec::new()),
             only: self.only.clone(),
             map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
         }))
     }
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
@@ -2082,8 +2120,20 @@ impl Backend for Federated {
         parts.extend(self.everyone::<std::collections::BTreeMap<String, u64>>(|| Read::ListHits));
         telltale_api::federation::merge_list_hits(parts)
     }
+    // REQ: API-013 (T24.41) - a caller's own rows are used as given.
+    fn groups_with(&self, networks: &[telltale_api::model::NetworkInfo]) -> Vec<GroupInfo> {
+        self.local.groups_with(networks)
+    }
+    fn profile_devices_with(
+        &self,
+        networks: &[telltale_api::model::NetworkInfo],
+        leases: &[telltale_api::model::DhcpLease],
+    ) -> telltale_api::categories_api::ProfileDevices {
+        self.local.profile_devices_with(networks, leases)
+    }
+    // REQ: API-013 (T24.41) - the Source column's network names include the primary's routers'.
     fn groups(&self) -> Vec<GroupInfo> {
-        self.local.groups()
+        self.local.groups_with(&self.networks())
     }
     // REQ: OBS-025 — each named device with the cluster's most confident identity.
     fn clients(&self) -> Vec<ClientInfo> {
@@ -3282,8 +3332,17 @@ impl Backend for Federated {
     }
     // REQ: FLT-902 (T24.29) - the picker reads this node's own view (devices are seen by the node
     // that answers them; the networks come from the routers it reads).
+    // REQ: API-010, API-013 (T24.41) - on a replica the picker lists the primary's router
+    // networks and clients (one read serves both).
     fn profile_devices(&self) -> telltale_api::categories_api::ProfileDevices {
-        self.local.profile_devices()
+        match self.primary_router_view() {
+            Some((_, v)) => {
+                let nets = routers_view::merge_networks(self.local.networks(), v.networks);
+                let leases = routers_view::merge_leases(self.local.dhcp_leases(), v.leases);
+                self.local.profile_devices_with(&nets, &leases)
+            }
+            None => self.local.profile_devices(),
+        }
     }
     // REQ: API-014 — the keyed hash is this node's (the entry node keeps the record).
     fn idempotency_request(
