@@ -1,4 +1,6 @@
-# REQ: NFR-005 — supply-chain checks. AGENTS.md rule 6: permissive licenses only (no copyleft).
+# REQ: NFR-005 — supply-chain checks. AGENTS.md rule 6 and ADR-1033: WrenDNS is AGPL-3.0-or-later
+# and MySummitKeep LLC also licenses it commercially, so every dependency must be usable under both:
+# permissive licences only, plus MPL-2.0 (file-level copyleft). No GPL, LGPL or AGPL dependency.
 [graph]
 all-features = true
 
@@ -13,6 +15,8 @@ ignore = []
 [licenses]
 version = 2
 allow = [
+    # Permissive licences the tree uses (`cargo deny list`), each compatible with the AGPL and with
+    # a proprietary commercial licence: keep their notices, nothing more.
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
@@ -23,12 +27,20 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
-    "MPL-2.0",
+    # webpki-roots' Mozilla root list: a permissive data licence.
     "CDLA-Permissive-2.0",
+    # Exception (ADR-1033 §5): MPL-2.0's copyleft covers only the MPL files themselves, which stay
+    # MPL and public when changed; it does not reach WrenDNS's own code or the commercial licence.
+    # No dependency in today's tree needs it; it stays allowed so one may.
+    "MPL-2.0",
 ]
+# Not allowed, on purpose: GPL-*, LGPL-* and AGPL-* (they would bind the commercial licence; r-efi
+# offers LGPL-2.1-or-later only as one choice beside MIT and Apache-2.0, so deny takes those), and
+# anything source-available (BUSL-1.1, SSPL, Elastic, FSL). "BSL-1.0" above is the Boost licence.
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
+# WrenDNS's own crates (AGPL-3.0-or-later, publish = false) are not dependencies and are skipped.
 [licenses.private]
 ignore = true
 

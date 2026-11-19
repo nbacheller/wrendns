@@ -149,3 +149,7 @@ The tests do three things:
 - run the integration against a real WrenDNS node: setup, entities, switches, actions, quarantine, and the blocked answer;
 - render the fork's Home Assistant registry template through Home Assistant's real `/api/template` endpoint;
 - run a WrenDNS process that reads a Home Assistant test server and answers the names in DNS.
+
+## Licence
+
+This integration is licensed under the [Apache License 2.0](LICENSE), so other projects and stores can adopt it. WrenDNS itself is AGPL-3.0-or-later; see the repository's [LICENSING.md](../../LICENSING.md).

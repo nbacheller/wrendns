@@ -231,6 +231,6 @@ Requested by the owner on 2026-10-02. A project site (GitHub Pages at first, wre
 | NFR-003 | P0 | Memory safety: `#![forbid(unsafe_code)]` in all crates except an audited `wrendns-net` crate (recvmmsg/sendmmsg, socket options). Each `unsafe` block carries a `// SAFETY:` comment. |
 | NFR-004 | P0 | Fuzzing: cargo-fuzz targets for the wire parser, list parsers, rule compiler, and API JSON inputs; run in CI nightly. |
 | NFR-005 | P0 | Supply chain: `cargo-deny` (licenses, advisories), `cargo-auditable`, SBOM (CycloneDX), cosign-signed images, reproducible builds. |
-| NFR-006 | P0 | Clean-room implementation: **no code copied** from Pi-hole (EUPL-1.2) or Technitium (GPL-3.0). Specs and RFCs only. Project license: Apache-2.0 OR MIT (owner may change). |
+| NFR-006 | P0 | Clean-room implementation: **no code copied** from Pi-hole (EUPL-1.2) or Technitium (GPL-3.0). Specs and RFCs only. Project licence: AGPL-3.0-or-later, with a commercial licence from MySummitKeep LLC (ADR-1033); Apache-2.0 OR MIT up to the `permissive-final` tag. |
 | NFR-007 | P0 | Observability of the observability: exported metrics for telemetry drops, store write latency, segment counts, and snapshot versions. |
 | NFR-008 | P1 | Accessibility: the UI meets WCAG 2.1 AA; dark/light themes. |

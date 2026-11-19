@@ -144,6 +144,37 @@ def render_support(page, cfg):
     return page.replace("<!-- @support-tax -->", html.escape(SUPPORT_TAX))
 
 
+# REQ: DOC-006 (T33.5, ADR-1033) — the licence is said the same way everywhere: AGPL-3.0-or-later, a commercial
+# licence available, a link to LICENSING.md, and the permissive-final baseline. Apache-2.0 OR MIT may appear only
+# beside that baseline or upstream's portions, and no page carries a "Built with Claude" note (owner's rule).
+LICENCE_NEEDLES = ["AGPL-3.0-or-later", "commercial licence", "LICENSING.md", "permissive-final"]
+LICENCE_PAGES = ["faq.html", "download.html"]
+PERMISSIVE_CLAIM = re.compile(r"Apache[- ]2\.0,? (?:OR|or) (?:the )?MIT|MIT (?:OR|or) Apache", re.IGNORECASE)
+NO_ATTRIBUTION = re.compile(r"Built with Claude|Co-Authored-By: Claude|Generated with Claude", re.IGNORECASE)
+
+
+def licence_errors(footer, pages):
+    """`pages` maps a page name to its built HTML; `footer` is the footer partial."""
+    errs = []
+    for needle in LICENCE_NEEDLES:
+        if needle not in footer:
+            errs.append("footer: the licence line lacks {!r}".format(needle))
+    for name in LICENCE_PAGES:
+        main = pages.get(name, "").replace(footer, "")
+        for needle in LICENCE_NEEDLES:
+            if needle not in main:
+                errs.append("{}: the licence text lacks {!r}".format(name, needle))
+    for name, page in pages.items():
+        # The decision pages are the ADRs, a record that says what the licence was when each was written.
+        record = name.startswith("decisions")
+        for line in page.splitlines():
+            if not record and PERMISSIVE_CLAIM.search(line) and not re.search(r"permissive-final|TelltaleDNS", line):  # rebrand:keep
+                errs.append("{}: says Apache-2.0 OR MIT without the permissive-final baseline: {}".format(name, line.strip()[:120]))
+            if NO_ATTRIBUTION.search(line):
+                errs.append("{}: carries an AI attribution note: {}".format(name, line.strip()[:120]))
+    return errs
+
+
 # REQ: DOC-006 (T33.3) — the Content-Security-Policy in staticwebapp.config.json allows no inline script or style,
 # so a page may not carry one. The headers the site is served with are checked here too.
 SWA_HEADERS = ["Content-Security-Policy", "Strict-Transport-Security", "X-Content-Type-Options", "Referrer-Policy"]
@@ -1328,7 +1359,8 @@ def main():
                 f.write(gpage)
             written.append(gname)
     shutil.copyfile(os.path.join(SITE, "staticwebapp.config.json"), os.path.join(out, "staticwebapp.config.json"))
-    errors = (
+    built = {n: read(os.path.join(out, n)) for n in written}
+    errors = licence_errors(footer, built) + (
         coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
         + ["brand: " + p for p in brand.problems()] + site_config_errors(site_cfg) + swa_errors(swa_cfg) + csp_errors(out, written)
     )

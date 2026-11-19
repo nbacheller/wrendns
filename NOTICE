@@ -1,0 +1,51 @@
+WrenDNS
+Copyright (c) 2026 MySummitKeep LLC
+
+WrenDNS is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE for the full text.
+
+WrenDNS is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+details.
+
+MySummitKeep LLC, a Florida limited liability company, holds the copyright in
+WrenDNS's own work and may also license WrenDNS under other terms (a
+commercial licence). Ask at support@wrendns.com. See LICENSING.md.
+
+
+Portions from TelltaleDNS
+-------------------------
+
+WrenDNS started from TelltaleDNS (https://github.com/paimonsoror/telltaledns).
+The portions of WrenDNS that came from TelltaleDNS are
+
+    Copyright (c) 2026 The TelltaleDNS Authors:
+    paimonsoror (Paimon Sorornejad) and the TelltaleDNS contributors,
+    including Greg Pakes (gregpakes), John Depon (JohnDepon),
+    Carlos Talbot (tusc), Rowdy (rowdynl) and Nathan Bacheller (nbacheller)
+
+and remain available under either of
+
+    the Apache License, Version 2.0 (LICENSE-UPSTREAM-APACHE), or
+    the MIT License (LICENSE-UPSTREAM-MIT),
+
+at your option. Those permissions cannot be withdrawn, and this NOTICE keeps
+their copyright line and permission text as both licences require.
+
+The last version of this repository released entirely under Apache-2.0 OR MIT
+is the annotated git tag `permissive-final` (commit 8c70f7ff), published on
+2026-11-19 as https://github.com/nbacheller/wrendns/releases/tag/permissive-final
+(source only). Everything from the commits after it is AGPL-3.0-or-later.
+
+
+Separately licensed parts
+-------------------------
+
+integrations/home-assistant/ (the Home Assistant integration, which ships on
+its own) is licensed under the Apache License, Version 2.0; see its LICENSE.
+
+Third-party components bundled with WrenDNS (fonts, icons, data sets) keep
+their own licences, listed in docs/third-party-notices.md.

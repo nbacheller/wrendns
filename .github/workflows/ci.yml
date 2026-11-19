@@ -104,7 +104,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # The SPDX check compares against the permissive-final tag, so it needs the history and tags.
+        with: { fetch-depth: 0, fetch-tags: true }
       - run: python3 site/build.py --check
+      # REQ: ADR-1033, ADR-1035 — every source file added since permissive-final carries the AGPL
+      # SPDX header (old files are not mass-edited).
+      - run: python3 scripts/test_check_spdx.py
+      - run: python3 scripts/check-spdx.py
       # REQ: OBS-005 — the Grafana dashboard is regenerated from deploy/grafana/build.py.
       - run: python3 deploy/grafana/build.py --check
       # T10.6 — every P0 requirement has tests or evidence, and docs/v1-requirements.md is current.

@@ -4,7 +4,8 @@
     "title": "WrenDNS API",
     "description": "Read and control a WrenDNS resolver. JSON is camelCase; field names carry units (`totalMs`, `ttlSeconds`). Errors are RFC 9457 problem+json with a stable `code` and a `hint`. Time parameters take RFC 3339 or a relative offset (`-24h`). Collections page with `cursor`/`limit`. Analytics calls take `scope` (`cluster` or `node:local`; both mean this node until clustering is available).",
     "license": {
-      "name": "Apache-2.0 OR MIT"
+      "name": "AGPL-3.0-or-later",
+      "identifier": "AGPL-3.0-or-later"
     },
     "version": "0.8.0"
   },
