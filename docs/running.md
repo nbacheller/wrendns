@@ -368,6 +368,62 @@ In a cluster, upgrade replicas first.
 
 **The check** (T27.11): Settings → System has *Check for new builds once a day* (`[updates] check`) for this node. Admins change it; it applies after a restart of the node. API: `PUT` and `DELETE /api/v1/updates-settings/{node}`, and `GET /api/v1/node-settings` for the state of this node.
 
+## Upgrading to WrenDNS
+
+<!-- rebrand:keep-start -->
+TelltaleDNS is now **WrenDNS** (T33.2, ADR-1026, ADR-1028). The command, the paths, the service, the container image, the Helm chart, the environment variables and the metrics changed with it. The old names keep working for **one release**, each with a warning that says what to use, so you can upgrade now and tidy up later. Then they are removed.
+
+| Before | Now | Until the release after the rename |
+|---|---|---|
+| `telltale` (the command) | `wrendns` | `telltale` is a link to `wrendns` and prints a deprecation warning |
+| `/etc/telltale/telltale.toml` | `/etc/wrendns/wrendns.toml` | read when the new file doesn't exist, with a warning |
+| `/var/lib/telltale` | `/var/lib/wrendns` | used when the new directory doesn't exist and the old one does |
+| `telltale.service`, user `telltale` | `wrendns.service`, user `wrendns` | the migration script moves both |
+| `TELLTALE_*` environment variables | `WRENDNS_*` | read when the new name isn't set, with a warning; the new name wins when both are set |
+| metrics `telltale_*` | `wrendns_*` | `/metrics` exports both; the bundled dashboards and alerts use `wrendns_*` |
+| header `X-Telltale-Reason`, `X-Telltale-Client`; cookie `telltale_session` | `X-Wrendns-Reason`, `X-Wrendns-Client`; `wrendns_session` | both are read, so open sessions stay signed in and agent scripts keep working; responses carry both backup headers |
+| Kubernetes label `telltaledns.io/group` | `wrendns.com/group` | read as well while `[kubernetes] label` is the default |
+| `probe.telltale.invalid` | `probe.wrendns.invalid` | both are recognised as the node's own probe |
+| release files `telltale-<arch>-linux` | `wrendns-<arch>-linux` | published under both names, so an older `self-update` finds its file |
+| container image `ghcr.io/paimonsoror/telltale` (upstream's) | `ghcr.io/nbacheller/wrendns` | none: pull the new name |
+
+**A cluster can be upgraded node by node.** The nodes of both versions talk to each other: the cluster certificates keep their names while any node may still be old (and each version accepts the other's), and nothing on the wire between nodes changed spelling. Upgrade replicas first and the primary last, as before. `deploy/cluster3/e2e.sh` checks this with an image from before the rename (check **l**): DNS answers on at least two nodes throughout, and no one signs in again.
+
+What stays as it was, because it is stored in files you already have: backup files and their format name, the secrets key format, the audit chain, and the API token prefixes. A backup made before the rename restores on the new version.
+
+### Native install (systemd)
+
+Run the installer again (`sudo sh install.sh`). It installs the new binary and then migrates the old install. (An older `telltale self-update` also works: the new binary then runs under the old unit and the old paths, with warnings, until you run the migration.) To do the migration alone, or to see what it would change first:
+
+```sh
+sudo sh deploy/systemd/migrate-from-telltale.sh --dry-run    # says what it would do, changes nothing
+sudo sh deploy/systemd/migrate-from-telltale.sh              # does it
+```
+
+It stops `telltale.service`; renames the `telltale` user and group to `wrendns` (the same IDs, so every file keeps its owner); moves `/var/lib/telltale` to `/var/lib/wrendns` and `/etc/telltale` to `/etc/wrendns`; renames `telltale.toml` to `wrendns.toml` and rewrites the old paths inside it (the original is kept as `wrendns.toml.pre-wrendns`); installs `wrendns.service` from your old unit, so your edits and drop-ins carry over (with `TELLTALE_` variables renamed); keeps a copy of the old unit in `/etc/wrendns/pre-wrendns/`; and starts the new service if the old one was running. The old paths stay behind as links, and `/usr/local/bin/telltale` becomes a link to `wrendns`, so a keepalived check, a cron job or a script that still names them keeps working; it lists the keepalived files that do. Running it again changes nothing. If `/etc/wrendns` or `/var/lib/wrendns` already holds files, it stops and says so instead of mixing the two.
+
+To roll back, stop `wrendns`, move the two directories back, and restore the unit from `/etc/wrendns/pre-wrendns/`.
+
+### Docker Compose
+
+Take the new `compose.yaml` and `wrendns.toml` (the image is `ghcr.io/nbacheller/wrendns`; the project is named `wrendns`). Stop the old project first (`docker compose down` in the old directory) so two projects don't fight over port 53, and keep your `./data` directory: it is mounted at `/var/lib/wrendns` now and is read as it is. A setup that keeps its data in a named volume should copy it once: `docker run --rm -v <old volume>:/from -v wrendns-data:/to busybox cp -a /from/. /to/`.
+
+### Helm
+
+The chart is `wrendns` now. Resource names come from the release name and the chart name, so an existing release named `telltale` would get new names (and a new StatefulSet and volumes) unless you keep the old ones. Upgrade in place with the old names pinned:
+
+```sh
+helm upgrade telltale oci://ghcr.io/nbacheller/charts/wrendns --version <version> --reuse-values \
+  --set nameOverride=telltale --set fullnameOverride=telltale
+```
+
+(The selector labels of a StatefulSet can't change, so `nameOverride` keeps `app.kubernetes.io/name` as it was.) Or install a new release named `wrendns` and restore a backup into it. Namespaces and pods labelled `telltaledns.io/group` keep their groups while `[kubernetes] label` is the default.
+
+### Monitoring and automation
+
+Move your own dashboards, alert rules and recording rules from `telltale_*` to `wrendns_*` within the release: the old names stop being exported after it. The bundled Grafana dashboard (`deploy/grafana/wrendns-dashboard.json`), the Helm chart's rules and `deploy/prometheus/wrendns-slo-rules.yaml` already use the new names. Scripts that send `X-Telltale-Reason` should send `X-Wrendns-Reason`. The Home Assistant integration has its own breaking change: see its [changelog](../integrations/home-assistant/CHANGELOG.md).
+<!-- rebrand:keep-end -->
+
 ## Backups and moving to a new machine
 ```sh
 wrendns backup create -o pi.ttbk               # safe while WrenDNS runs
