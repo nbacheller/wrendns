@@ -849,7 +849,12 @@ fn pushover_form(
         format!("Cleared: {}", n.summary)
     };
     // The node and the time stay when the summary is cut.
-    let tail = format!("\nNode: {node}\nTime: {}", time_text(now));
+    // (a very long node name is cut, so it cannot eat the summary's room)
+    let tail = format!(
+        "\nNode: {}\nTime: {}",
+        truncate_chars(node, 64),
+        time_text(now)
+    );
     let room = PUSHOVER_MESSAGE_MAX.saturating_sub(tail.chars().count());
     let message = format!("{}{tail}", truncate_chars(&summary, room));
     let mut f: Vec<(&str, String)> = vec![
@@ -905,6 +910,10 @@ fn pushover_outcome(status: u16, body: &[u8], secrets: &[&str]) -> Result<(), St
     }
     for t in secrets.iter().filter(|t| !t.is_empty()) {
         out = out.replace(t, wrendns_config::credentials::MARKER);
+        out = out.replace(
+            &crate::kubernetes::encode(t),
+            wrendns_config::credentials::MARKER,
+        );
     }
     let out: String = out.chars().filter(|c| !c.is_control()).collect();
     Err(truncate_chars(&out, 300))
@@ -958,6 +967,10 @@ async fn deliver_pushover(
             let mut m = e.message;
             for t in [token, user].iter().filter(|t| !t.is_empty()) {
                 m = m.replace(*t, wrendns_config::credentials::MARKER);
+                m = m.replace(
+                    &crate::kubernetes::encode(t),
+                    wrendns_config::credentials::MARKER,
+                );
             }
             m
         })?;

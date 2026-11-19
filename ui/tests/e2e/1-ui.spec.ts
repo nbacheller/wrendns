@@ -3551,6 +3551,10 @@ test('obs_010 pushover destination: two write-only secrets and Send test', async
     expect(html).not.toContain('po-user-key-3377');
     await page.getByLabel('Device (Pushover)', { exact: true }).fill('phone');
     await page.getByLabel('Sound (Pushover)', { exact: true }).fill('siren');
+    await page.getByLabel('Priority when firing (Pushover)', { exact: true }).fill('1');
+    await page.getByRole('button', { name: 'Help: Pushover keys' }).click();
+    await expect(page.getByTestId('help-panel')).toBeVisible();
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Check' }).click();
     await page.getByRole('button', { name: 'Apply' }).click();
     const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-pushover' });
@@ -3566,7 +3570,7 @@ test('obs_010 pushover destination: two write-only secrets and Send test', async
     expect(got).toHaveLength(1);
     expect(got[0].type).toBe('application/x-www-form-urlencoded');
     const f = new URLSearchParams(got[0].body);
-    expect([f.get('token'), f.get('user'), f.get('device'), f.get('sound'), f.get('priority')]).toEqual(['po-app-token-8812', 'po-user-key-3377', 'phone', 'siren', '0']);
+    expect([f.get('token'), f.get('user'), f.get('device'), f.get('sound'), f.get('priority')]).toEqual(['po-app-token-8812', 'po-user-key-3377', 'phone', 'siren', '1']);
     expect(f.get('title')).toBe('Test: test');
     expect(f.get('message')).toContain('This is a test alert');
 

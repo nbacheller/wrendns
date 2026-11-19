@@ -47,7 +47,7 @@
       secretName: (e) => secretNameFor('alert', e, 'password'),
       help: 'The password (a Gmail app password, for example), kept encrypted on this node and never shown again. A password_file in the configuration wins over it.' },
     { key: 'token_ref', label: 'Token (ntfy, Gotify, Pushover app)', type: 'secret', fileKey: 'token_file', admin: true,
-      visibleWhen: (v) => ['ntfy', 'gotify', 'pushover'].includes(String(v.type)),
+      visibleWhen: (v) => ['ntfy', 'gotify', 'pushover'].includes(String(v.type)) || !!(v.token_ref || v.token_file),
       secretName: (e) => secretNameFor('alert', e, 'token'),
       help: 'The access token of your ntfy or Gotify server, or the API token of your Pushover application, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
     // REQ: OBS-010 (T24.43) — Pushover: the user or group key is a second stored secret.

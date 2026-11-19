@@ -2150,6 +2150,18 @@ fn obs_010_pushover_destination_is_validated() {
             )),
             "https://",
         ),
+        (
+            dest(&format!(
+                "url = \"http://localhost:80@evil.example/m\"\n{both}"
+            )),
+            "https://",
+        ),
+        (
+            dest(&format!(
+                "url = \"http://127.0.0.1@evil.example/m\"\n{both}"
+            )),
+            "https://",
+        ),
         (dest(&format!("url = \"ftp://x\"\n{both}")), "https://"),
         (
             dest(&format!("priority_firing = 2\n{both}")),

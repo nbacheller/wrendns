@@ -904,10 +904,26 @@ fn pushover_url_ok(u: &str) -> bool {
     let Some(rest) = u.strip_prefix("http://") else {
         return false;
     };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    ["127.0.0.1", "localhost", "[::1]"]
-        .iter()
-        .any(|h| host == *h || host.strip_prefix(h).is_some_and(|r| r.starts_with(':')))
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // A username or password in the address hides the real host (`localhost:80@evil.example`).
+    if auth.contains(['@', '\\']) {
+        return false;
+    }
+    let (host, port) = match auth.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((h, r)) => (
+                format!("[{h}]"),
+                r.strip_prefix(':').or(r.is_empty().then_some("")),
+            ),
+            None => return false,
+        },
+        None => match auth.split_once(':') {
+            Some((h, pt)) => (h.to_owned(), Some(pt)),
+            None => (auth.to_owned(), Some("")),
+        },
+    };
+    port.is_some_and(|pt| pt.bytes().all(|b| b.is_ascii_digit()))
+        && ["127.0.0.1", "localhost", "[::1]"].contains(&host.as_str())
 }
 
 // REQ: OBS-010 (T7.12) — alerts: unique names, rules sent to destinations that exist,
