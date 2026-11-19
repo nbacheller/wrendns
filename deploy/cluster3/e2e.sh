@@ -959,7 +959,15 @@ else
   N1=$(wait_primary_any 120) || { probe_stop; bad "no primary after the roll"; }
   for n in "${NODES[@]}"; do
     call "$n" GET /api/v1/lists
-    [ "$RS" = 200 ] || { probe_stop; bad "$n answered $RS to the pre-rename session cookie after the roll: $RB"; }
+    if [ "$RS" = 401 ] && [ "$(metric_any "${MET[$n]}" cluster_primary)" = 0 ]; then
+      # Replacing the old primary can take longer than a lease, and then another node is elected: the node that
+      # stepped down takes its users from the new primary, which ends the sessions it had. That is a failover,
+      # not the rename; the node signs in again.
+      echo "    ($n stepped down while it was replaced; its sessions ended with the users' sync)"
+      relogin "$n" || { probe_stop; bad "$n's administrator can't sign in after the roll"; }
+    else
+      [ "$RS" = 200 ] || { probe_stop; bad "$n answered $RS to the pre-rename session cookie after the roll: $RB"; }
+    fi
   done
   for _ in $(seq 120); do sees_connected "$N1" 3 && break; sleep 0.5; done
   sees_connected "$N1" 3 || { probe_stop; bad "the cluster isn't whole after the roll (primary $N1 sees $(connected_count "$N1"))"; }
