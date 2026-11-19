@@ -228,25 +228,13 @@ async fn ask_redirect(url: &str, timeout: Duration) -> Result<Duration, String> 
         let mut tcp = tokio::net::TcpStream::connect(hostport)
             .await
             .map_err(|e| e.to_string())?;
-        let req = format!(
-            "GET {path} HTTP/1.1
-Host: {hostport}
-Connection: close
-
-"
-        );
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
         tcp.write_all(req.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
         let mut buf = Vec::new();
         let mut chunk = [0u8; 1024];
-        while buf.len() < 4096
-            && !buf.windows(4).any(|w| {
-                w == b"
-
-"
-            })
-        {
+        while buf.len() < 4096 && !buf.windows(4).any(|w| w == b"\r\n\r\n") {
             let n = tcp.read(&mut chunk).await.map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
@@ -262,12 +250,7 @@ Connection: close
         if status != want {
             return Err(format!("HTTP {status}, expected {want}"));
         }
-        if want == 308
-            && !head.to_ascii_lowercase().contains(
-                "
-location: https://",
-            )
-        {
+        if want == 308 && !head.to_ascii_lowercase().contains("\r\nlocation: https://") {
             return Err("the redirect has no https:// Location".to_owned());
         }
         Ok(())
@@ -577,15 +560,28 @@ http_redirect = \"0.0.0.0:80\"
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             while let Ok((mut s, _)) = l.accept().await {
+                // Strict like a real server: it answers only a request ended by CRLF CRLF, with
+                // CRLF line ends, and then keeps the connection open (keep-alive).
+                let mut raw = Vec::new();
                 let mut buf = [0u8; 512];
-                let n = s.read(&mut buf).await.unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                let head = String::from_utf8_lossy(&raw).into_owned();
+                if !head.contains("\r\nHost: ") || head.replace("\r\n", "").contains('\n') {
+                    continue;
+                }
                 let out = if head.starts_with("GET /livez ") {
                     "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nok\n"
                 } else {
                     "HTTP/1.1 308 Permanent Redirect\r\nlocation: https://127.0.0.1/\r\ncontent-length: 0\r\n\r\n"
                 };
                 let _ = s.write_all(out.as_bytes()).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         });
         let to = Duration::from_secs(5);

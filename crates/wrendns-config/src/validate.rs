@@ -1539,7 +1539,7 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
         if addr.port() == 0 {
             r.err("api.http_redirect", "the port must be 1 to 65535");
         }
-        if addr == cfg.api.listen {
+        if addrs_clash(addr, cfg.api.listen) {
             r.err("api.http_redirect", "must differ from [api] listen");
         }
     }
@@ -3006,6 +3006,14 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
             "a two-letter country code such as NL",
         );
     }
+}
+
+/// REQ: API-003 (T24.44) - two listen addresses clash when they share a port and either the
+/// addresses are equal or one is the unspecified address (0.0.0.0 or [::], which covers the
+/// other).
+#[must_use]
+pub fn addrs_clash(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
+    a.port() == b.port() && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
 }
 
 #[cfg(test)]

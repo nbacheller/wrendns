@@ -2210,6 +2210,10 @@ fn api_003_http_redirect_needs_tls() {
             "[api]\nlisten = \"0.0.0.0:8053\"\ntls = { self_signed = true }\nhttp_redirect = \"0.0.0.0:8053\"\n",
             "must differ",
         ),
+        (
+            "[api]\nlisten = \"[::]:8053\"\ntls = { self_signed = true }\nhttp_redirect = \"192.0.2.1:8053\"\n",
+            "must differ",
+        ),
     ] {
         let err = format!("{:?}", load_str(toml).unwrap_err());
         assert!(err.contains(why), "{why}: {err}");

@@ -203,6 +203,7 @@ mod tests {
             "good.example\r\nSet-Cookie: x=1",
             "good.example\nx",
             "good.example ",
+            "good.example.",
             "good .example",
             "good.example:",
             "good.example:80a",

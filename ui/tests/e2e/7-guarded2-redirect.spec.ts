@@ -20,6 +20,32 @@ async function adminPage(browser: Browser): Promise<Page> {
   return page;
 }
 
+// The guarded limiter (30 requests a minute per admin) is shared with 7-guarded.spec.ts, which runs
+// just before in the same server: when a start still answers "too many", wait out the window.
+async function startReview(page: Page, box: ReturnType<Page['getByTestId']>, id: string) {
+  const preview = box.getByTestId('guarded-preview');
+  const limited = box.getByRole('alert').filter({ hasText: 'too many guarded requests' });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await box.getByTestId(`guarded-start-${id}`).click();
+    await expect(preview.or(limited)).toBeVisible();
+    if (await preview.isVisible()) return;
+    await page.waitForTimeout(15_000);
+  }
+  await expect(preview).toBeVisible();
+}
+
+// Applies the reviewed change; an apply the limiter refuses ("too many") is retried after a wait.
+async function applyReview(page: Page, box: ReturnType<Page['getByTestId']>, done: string) {
+  const limited = box.getByRole('alert').filter({ hasText: 'too many guarded requests' });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await box.getByTestId('guarded-apply').click();
+    await expect(box.getByTestId(done).or(limited)).toBeVisible({ timeout: 30_000 });
+    if (await box.getByTestId(done).isVisible()) return;
+    await page.waitForTimeout(15_000);
+  }
+  await expect(box.getByTestId(done)).toBeVisible();
+}
+
 test.describe('api_003 http redirect setting', () => {
   test('api_003 http redirect dry run', async ({ browser }) => {
     const page = await adminPage(browser);
@@ -59,12 +85,12 @@ test.describe('api_003 http redirect setting', () => {
     const page = await adminPage(browser);
     try {
       const box = page.getByTestId('guarded-http-redirect');
+      test.setTimeout(240_000);
       await box.getByLabel('HTTP redirect address').fill('0.0.0.0:8080');
-      await box.getByTestId('guarded-start-api-http-redirect').click();
-      await expect(box.getByTestId('guarded-preview')).toBeVisible();
+      await startReview(page, box, 'api-http-redirect');
       const phrase = (await box.getByTestId('guarded-phrase').innerText()).trim();
       await box.getByTestId('guarded-phrase-input').fill(phrase);
-      await box.getByTestId('guarded-apply').click();
+      await applyReview(page, box, 'guarded-pending-restart');
       // It is staged: it takes effect at the next start, and the card says so.
       await expect(box.getByTestId('guarded-pending-restart')).toBeVisible();
       await expect(page.getByTestId('guarded-restart-item')).toContainText('api-http-redirect');
@@ -76,9 +102,9 @@ test.describe('api_003 http redirect setting', () => {
       expect(listing).not.toContain('8080');
       // The simulated restart applies it, as for the other staged settings.
       const restart = page.getByTestId('guarded-restart-now');
-      await restart.getByTestId('guarded-start-restart-now').click();
+      await startReview(page, restart, 'restart-now');
       await restart.getByTestId('guarded-phrase-input').fill(`${NODE} restart`);
-      await restart.getByTestId('guarded-apply').click();
+      await applyReview(page, restart, 'guarded-restarting');
       await expect(restart.getByTestId('guarded-result')).toContainText('is back', { timeout: 30_000 });
       await expect(page.getByTestId('guarded-outcomes')).toContainText('api-http-redirect: applied');
       await restart.getByTestId('guarded-again').click();

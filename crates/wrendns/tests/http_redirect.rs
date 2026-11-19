@@ -166,6 +166,14 @@ fn api_003_a_failed_redirect_bind_leaves_the_api_and_dns_alone() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    // The API still answers (it speaks TLS: a plain request gets an alert or a reply, not a refusal).
+    let mut api_tcp = TcpStream::connect(("127.0.0.1", api)).expect("the API port is open");
+    api_tcp
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("timeout");
+    api_tcp.write_all(b"GET / HTTP/1.1\r\n\r\n").expect("send");
+    let mut first = [0u8; 16];
+    assert!(api_tcp.read(&mut first).expect("the API answers") > 0);
     // DNS still answers (a UDP socket on the DNS port is open: a query gets a reply).
     let s = UdpSocket::bind("127.0.0.1:0").expect("udp");
     s.set_read_timeout(Some(Duration::from_secs(5)))

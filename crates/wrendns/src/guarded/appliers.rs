@@ -100,7 +100,7 @@ impl Applier for HttpRedirect {
                 ));
             }
         }
-        if addr == cx.cfg.api.listen {
+        if wrendns_config::addrs_clash(addr, cx.cfg.api.listen) {
             return Err(Problem::new(
                 Code::InvalidConfig,
                 "`address` is the API's own address; use another port",
