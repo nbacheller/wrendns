@@ -178,13 +178,13 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
-                "client": {"type": "string", "description": "Client IP or device name."},
+                "client": {"type": "string", "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these."},
                 "group": {"type": "string", "description": "Client group."},
                 "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
                 "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
                 "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
                 "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
-                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except `client`. Needs `client`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except those in `client`. Needs `client`."},
                 "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
                 "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
                 "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},
@@ -277,6 +277,13 @@ pub fn tools() -> Vec<Tool> {
                     ("devices".into(), "/api/v1/dhcp/leases".into()),
                 ])
             },
+        },
+        // REQ: UPS-004, AGT-001 (T24.36)
+        Tool {
+            name: "list_upstream_presets",
+            description: "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("presets".into(), "/api/v1/upstream-presets".into())]),
         },
         // REQ: API-015, AGT-001 (ADR-903 §5) — metadata only; setting a value is for people.
         Tool {
@@ -1557,10 +1564,11 @@ pub fn write_tools() -> Vec<WriteTool> {
         // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
         WriteTool {
             name: "plan_set_exclusions",
-            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "enabled": {"type": "boolean", "description": "Turn the exclusions on or off (the lists are kept)."},
+                "log": {"type": "object", "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.", "properties": {"clients": {"type": "array", "items": {"type": "string"}}, "domains": {"type": "array", "items": {"type": "string"}}, "own_lookups": {"type": "boolean"}}, "additionalProperties": false},
                 "names": {"type": "array", "items": {"type": "string"}, "description": "Names kept out, each with its subdomains (replaces the current list)."},
                 "clients": {"type": "array", "items": {"type": "string"}, "description": "Addresses or networks kept out (replaces the current list)."},
                 "reason": reason_schema()
@@ -1575,6 +1583,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("enabled", "enabled"),
                         ("names", "names"),
                         ("clients", "clients"),
+                        ("log", "log"),
                     ],
                 );
                 if body.is_empty() {
@@ -1590,6 +1599,9 @@ pub fn write_tools() -> Vec<WriteTool> {
                 }
                 if let Some(n) = count("clients") {
                     what.push(format!("{n} clients"));
+                }
+                if body.contains_key("log") {
+                    what.push("log-only exclusions".into());
                 }
                 Ok(Write {
                     method: "PUT",

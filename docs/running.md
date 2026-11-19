@@ -133,7 +133,7 @@ Query history, the admin password, and API tokens aren't imported. The output is
 ## Failover with a VIP (keepalived)
 Two nodes can answer for one address, the **VIP**. keepalived (VRRP) holds it on whichever node is healthy, so devices keep one DNS server address and the other node takes over when the first stops answering. This is what a Pi-hole pair does with its keepalived VIP, and TelltaleDNS needs nothing new for it: its DNS listeners bind the **wildcard address** (the default, `0.0.0.0` and `::`), so the node that holds the VIP answers on it, and each node also answers on its own address. A listener bound to one specific address doesn't answer the VIP.
 
-**What hands the VIP over.** The node's check (`check-telltale.sh` in [`deploy/keepalived`](../deploy/keepalived/README.md)) passes only while `/readyz` answers 200 and the node answers a DNS probe on its own listener. A node that stops answering loses the VIP within a few seconds. So does a node in maintenance: `/readyz` answers 503 then, while the node keeps answering the queries that still arrive, which drains a node before work on it.
+**What hands the VIP over.** The node's check (`check-telltale.sh` in [`deploy/keepalived`](../deploy/keepalived/README.md)) is one call to `/readyz`, which answers 200 only while the node's own listener answers a DNS probe ([`/readyz` asks the listener](#readyz-asks-the-listener)). Point your own check at `/readyz` too, not at a DNS query for `localhost`: the probe is never logged, and a query for `localhost` every two seconds fills the query log with client 127.0.0.1. A node that stops answering loses the VIP within a few seconds. So does a node in maintenance: `/readyz` answers 503 then, while the node keeps answering the queries that still arrive, which drains a node before work on it.
 
 **Try it in Docker first.** [`deploy/keepalived`](../deploy/keepalived/README.md) runs a two-node cluster with a witness and the VIP on an internal Docker network, and [`deploy/keepalived/e2e.sh`](../deploy/keepalived/e2e.sh) proves the failover: it kills the master, times the takeover, restarts it, and puts it into maintenance. It takes about five minutes and touches no other network.
 
@@ -142,7 +142,7 @@ Two nodes can answer for one address, the **VIP**. keepalived (VRRP) holds it on
 ### Moving a Pi-hole pair's VIP
 This moves the address your devices already use. The Pi-holes keep working until you stop their keepalived, so plan a short window, and roll back if the first checks fail.
 
-1. **Prepare two nodes.** Two Linux hosts (a Pi, a small VM) that aren't the Pi-holes, each with TelltaleDNS (for example [`deploy/systemd/install.sh`](../deploy/systemd/install.sh)) and keepalived (`apt install keepalived`), `dig` (`dnsutils` or `bind9-dnsutils`) and `wget` (the check uses both; a minimal Pi image may lack them). Import the Pi-hole setup with `telltale import pihole` and check its answers with `--compare` ([Moving from Pi-hole](#moving-from-pi-hole)). Give both nodes the same `telltale.toml`, or join them into a cluster.
+1. **Prepare two nodes.** Two Linux hosts (a Pi, a small VM) that aren't the Pi-holes, each with TelltaleDNS (for example [`deploy/systemd/install.sh`](../deploy/systemd/install.sh)) and keepalived (`apt install keepalived`) and `wget` (the check uses it; a minimal Pi image may lack it: `telltale health` does the same without it). Import the Pi-hole setup with `telltale import pihole` and check its answers with `--compare` ([Moving from Pi-hole](#moving-from-pi-hole)). Give both nodes the same `telltale.toml`, or join them into a cluster.
 2. **Check each node on its own address** before anything moves: `dig @<node address> example.com` and a name from your local records, on both nodes.
 3. **Write `/etc/keepalived/keepalived.conf` on each node**, modelled on [`deploy/keepalived/keepalived/node-a.conf`](../deploy/keepalived/keepalived/node-a.conf): the VIP the Pi-holes use, the same `virtual_router_id` the Pi-holes used, the master's priority above the backup's, and a `track_script` running a copy of [`check-telltale.sh`](../deploy/keepalived/check-telltale.sh). Change `interface eth0` to the LAN interface of each host (it differs between hosts, and the sample's value is only for the Docker example). Use `unicast_src_ip` and `unicast_peer` if the LAN doesn't carry multicast; the peer's address goes in `unicast_peer` on each side.
    The sample sets `enable_script_security` and `script_user root`, so keepalived runs the check as root and refuses it unless the file is owned by root and not writable by anyone else. Install it that way: `sudo install -o root -g root -m 0755 check-telltale.sh /usr/local/bin/check-telltale.sh`, then point `script` at that path.
@@ -763,6 +763,11 @@ telltale presets show quad9 --proto tls,https --group default >> telltale.toml
 telltale presets show nextdns --param profile=abc123    # templated presets need your account ID
 ```
 `show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. That includes the DoQ (`quic://`) endpoints.
+
+### Choosing public upstreams in the UI
+The **Upstreams** page opens on a simple view, like Pi-hole's: tick the public resolvers you want (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing, and others), each with a note on what it filters and what it does with your queries. Choose **Encrypted** (DNS over TLS, recommended; DNS over HTTPS where a provider has no TLS address) or **Plain**, and IPv4, IPv6 or both. IPv6 is greyed out, with the reason, when the node has no IPv6 route. The **Custom** row takes a bare IP (plain DNS), a `tls://` or `https://` address, or a `quic://` one; an IP-literal `tls://` address also needs the name on its certificate.
+
+Saving writes one upstream per address, named `pub-<provider>-<protocol>-<n>` (for example `pub-cloudflare-tls-1`), and sets the `default` upstream group to the `fastest` strategy over them. Entries the simple view didn't make (from your config files, a Pi-hole import, or the Advanced view) are listed under "Also set up" and left alone; they stay in the `default` group. **Advanced** is the technical list and forms, unchanged: the simple view's entries show there too, and switching views loses nothing. Each upstream on the page says where it is defined: the config file, the API or UI, or both. The catalog is `presets/upstreams.toml`; `GET /api/v1/upstream-presets` (and the MCP tool `list_upstream_presets`) read it with whether this node has an IPv6 route.
 
 ## Encrypted DNS for your devices (DoT, DoH, and DoQ)
 Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:
@@ -2626,6 +2631,17 @@ for peers. The Helm chart's node alerts leave out a node whose last reported win
 A node that's really failing during its window stays quiet until the window ends: keep windows
 short.
 
+### Entries made through the API after a failover
+Upstreams, lists, groups, devices, local names, forwards, quick rules and the other entries made
+through the API or UI are stored on the primary that took the write and published with every
+version. A node that takes over as primary adopts them as its own (the primary's last published
+set, once per version it inherits), so afterwards you can edit or delete every one of them on
+the new primary, none comes back, and a node that returns with older entries of its own has them
+replaced by the cluster's. If the node that took over runs from a version published by an older
+primary (every node needs this release for its first hand-over), a change to an entry it serves
+but doesn't hold answers 409 with that reason instead of "not found": upgrade, then change it on
+the current primary.
+
 ## Failover drills
 Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network
 a device only ever uses its first one: most systems switch to the second only when the first stops
@@ -2894,7 +2910,7 @@ An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`)
 | `/metrics` | Prometheus scrape |
 | `/livez` | the process is alive (Kubernetes liveness) |
 | `/healthz` | the process is healthy |
-| `/readyz` | 200 once every DNS listener is bound, 503 while starting, shutting down, or in [maintenance](#taking-a-node-down-for-maintenance), with the reason as JSON (Kubernetes readiness); `?startup=1` leaves maintenance out (the startup probe) |
+| `/readyz` | 200 once every DNS listener is bound and the node's own UDP listener answers a probe, 503 while starting, with the node's listener silent (`dns_unanswered`), shutting down, or in [maintenance](#taking-a-node-down-for-maintenance), with the reason as JSON (Kubernetes readiness); `?startup=1` leaves maintenance out (the startup probe) |
 
 This listener needs no sign-in and answers only clients inside `[access] allowed_networks`. The same `/metrics` is on the API port for signed-in users (a viewer token, or HTTP Basic for scrapers that can't send one).
 
@@ -2940,6 +2956,8 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 **Monitor → Network map** draws the gateway, your networks and VLANs, devices, TelltaleDNS nodes (with their answer kinds: cache, local, blocked) and upstreams, joined by flows. It is built from a sample of lookups on the aggregator thread (never the query path), over the last 60 seconds, and refreshes every 2 seconds. The data API is `GET /api/v1/map`, `/api/v1/map/stream` and `/api/v1/map/health` (scope `analytics:read`).
 - **Pulses.** Each flow with a rate has dashes moving along it: one per half query a second (at most six), wider as the rate grows. At most the 150 busiest flows move (60 on a host with 4 cores or fewer); the rest are drawn still. Motion stops when the tab is hidden, stops for good under your system's **reduce motion** setting (the rate is then written on each flow, and there is no switch to turn motion back on), and **Pause motion** stops it for the session.
 - **States.** Every node has a shape and a word as well as a colour: a circle with a check is **OK**, a triangle **Warning**, an octagon with a cross **Failing**, a dashed circle **Idle** (too few answers in the window to say). Select a node, or Tab to it and press Enter, for its numbers, the reasons for its colour and links: a device shows its [policy](#a-devices-policy) (group, where it came from, the key that matched, and what applies) with a link to the full panel, and opens its queries, Explain, anomalies and device page; an upstream opens Upstreams, a resolver Cluster, a network Networks.
+- **A dead spare doesn't make a node fail.** A resolver is **Failing** only when a whole upstream group fails (every member down) or its own health is severe. When one member of a group is down and another still answers, the resolver is at most **Warning**, and its reasons name the dead member and the one that answers. The dead upstream's own node stays red.
+- **No route.** An upstream given by IP address that this node has no route to (an IPv6 address on a host with no IPv6 default route, or IPv4 likewise) says **this node has no IPv6 route** (or IPv4) on its node and on the Upstreams page. TelltaleDNS checks at start and every 30 seconds with a `connect()` on a UDP socket, which sends nothing and never runs on the query path. A spare nobody has asked yet shows **Warning** instead of **Idle** for that reason. The Pi-hole import notes every IPv6 upstream, so you can drop it when the hosts have no IPv6.
 - **Filters** (network, group, node, state, and a device's name or address) are in the page's address, so a view can be linked. Network, group, node and device narrow the read on the server (the map then updates by polling, as the stream carries everything); state narrows what is drawn.
 - **Table** shows the same flows and nodes as text, for a screen reader or a quick scan.
 - **Banners.** "Sampled, 1 in N" says the rates are estimates; "Partial" lists a cluster node that didn't answer; at privacy level (`telemetry.qlog.privacy_level`) 2 devices are hidden (one node stands for them) and at 3 only totals show. No domain name ever appears on the map.
@@ -3156,6 +3174,29 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
 - The dashboard's totals leave them out, so they'll be lower than Prometheus's.
 - From the next query on, on every node of a cluster (`[exclusions]` is shared). Queries logged before stay (and the top lists rebuilt after a restart skip them too).
 - In the UI: **Settings → Query handling → Kept out of the log**, with a toggle, checked before it's applied, and *Revert to the file*. Under a Git-managed configuration, change `[exclusions]` in Git; the UI shows the TOML to commit. API: `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions`.
+
+### Keeping queries out of the query log only
+Some queries you want counted but not listed: the node's own lookups. keepalived's health check, a watchdog, and programs on the host ask the node every few seconds, and all of them show up as client `127.0.0.1`, group `default`, name `localhost` (the check's own question), burying the real traffic in the log. `[exclusions.log]` leaves them out of the **query log** while the statistics keep counting them:
+```toml
+[exclusions.log]
+own_lookups = true                          # loopback and this node's own addresses
+clients = ["kitchen-tablet", "10.20.0.0/24"]  # device names, addresses or networks
+domains = ["localhost", "*.lan"]            # localhost is that name only; *.lan is every name under lan
+```
+- **What stays out:** the query log, the live view and the event sinks. **What still counts:** the dashboard, top lists, device pages, anomalies, the live map and Prometheus (`telltale_queries_total`). `telltale_queries_log_excluded_total` counts what the log skipped. To remove a query from the statistics too, use `[exclusions]` above (ADR-1014).
+- **`own_lookups`** (off by default) covers `127.0.0.0/8`, `::1`, the addresses this node's listeners are bound to, `TELLTALE_NODE_IPS` (the Helm chart sets it), and the address the kernel would use to reach the outside. It does not cover the addresses of other nodes or of the gateway.
+- **Device names** are the names under Clients (`[[client]] name`, any case); a name no client has matches nothing. Domains are exact (`localhost`) or `*.` for everything below a name, never the name itself.
+- It applies when the event is written, on the node's background thread: nothing is added to answering a query beyond what was there. It takes effect on the next query on every node (`[exclusions]` is shared); queries logged before stay.
+- In the UI: **Settings → Query handling → Kept out of the log**, the three "Log only" fields. API: the `log` object of `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions` (`log`). The Pi-hole importer maps Pi-hole's excluded domains and clients here (`webserver.api.excludeDomains` and `excludeClients`, or `API_EXCLUDE_DOMAINS` and `API_EXCLUDE_CLIENTS`) and lists them in its preview; patterns that aren't plain are named as not imported.
+- **A health check that is never logged:** point keepalived, a load balancer or a monitor at `GET /readyz` (or run `telltale health`) instead of querying the node's DNS yourself: see [`/readyz` asks the listener](#readyz-asks-the-listener).
+
+### `/readyz` asks the listener
+`GET /readyz` (on the API port and the metrics port) answers 200 only while the node's own UDP listener answers a DNS question: the node sends one to its first UDP listener on loopback (a wildcard bind is asked on `127.0.0.1`) and waits up to 1.5 seconds. It answers 503 otherwise, with `{"ready":false,"reason":"dns_unanswered"}`, and for the other reasons as before (starting, shutting down, maintenance). The body says nothing else about the node or its configuration, and the route needs no sign-in (it answers only clients in `[access] allowed_networks`).
+- The question is the probe name `probe.telltale.invalid`, answered locally and never forwarded. Like the watchdog's and the synthetic probes' queries, it is kept out of the query log, the live view and the statistics (OBS-020), however often a balancer asks. It is the one thing about it that is still counted: `telltale_queries_total` on `/metrics` counts it, because that counter sits on the answer path, which is left alone.
+- What it proves, and what it does not: that the node's first UDP listener receives a query and replies (any reply counts, REFUSED included). It does not exercise the cache, the filter or the upstreams, and it does not check the TCP, DoT or DoH listeners. Pair it with an upstream check (`/api/v1/health`) if you need those.
+- The answer is reused for one second, so many callers add no more than one question a second.
+- With no UDP listener (DNS over TLS only, say) there is nothing to ask and the listeners being bound is the answer. Before the listeners are bound it is 503 `starting` as before.
+- `telltale health` (default `--url http://127.0.0.1:8053/readyz`) exits 0 on a 200: use it where `wget` is missing. [`deploy/keepalived/check-telltale.sh`](../deploy/keepalived/check-telltale.sh) is this one call.
 
 ### Internal names
 Some names are your own network talking to itself: reverse lookups of private addresses (`20.1.168.192.in-addr.arpa`) and, in Kubernetes, the cluster's names (`postgres.db.svc.cluster.local`). A pod's search list alone turns one lookup of `api.github.com` into three failed ones under `cluster.local` first. These **internal names** get their own top list, so the dashboard's **Top domains** shows what your network reaches outside:

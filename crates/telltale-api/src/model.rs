@@ -61,6 +61,54 @@ pub struct NodeAddress {
     pub network: String,
 }
 
+/// REQ: UPS-004 (T24.36) — one address a public resolver answers on.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresetEndpoint {
+    /// `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`.
+    pub url: String,
+    /// `udp`, `tcp`, `tls`, `https` or `quic`.
+    pub protocol: String,
+    /// `v4` or `v6` for an address, `name` for a host name (which resolves to either).
+    pub family: String,
+    /// The name on the server certificate, for a `tls://` address given by IP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<String>,
+}
+
+/// REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPreset {
+    pub id: String,
+    pub name: String,
+    /// The heading it is listed under (`Cloudflare`).
+    pub provider: String,
+    /// The choice under the heading (`Malware`).
+    pub variant: String,
+    /// One line: what it filters and what it does with your queries.
+    pub note: String,
+    pub homepage: String,
+    /// `none`, `malware`, `family` or `ads`.
+    pub filtering: String,
+    pub dnssec: bool,
+    /// Offered in the simple view (false: it needs a parameter, or is for the Advanced view).
+    pub simple: bool,
+    /// Placeholders in its addresses (a NextDNS profile); empty for every simple preset.
+    pub params: Vec<String>,
+    pub endpoints: Vec<UpstreamPresetEndpoint>,
+}
+
+/// REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresets {
+    /// Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+    /// times out. Unknown (another OS) reads true.
+    pub ipv6_route: bool,
+    pub items: Vec<UpstreamPreset>,
+}
+
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -512,9 +560,12 @@ pub struct QueryParams {
     /// does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
     /// `name`. Default: false.
     pub name_not: Option<bool>,
-    /// Client IP address.
+    /// Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+    /// `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+    /// (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+    /// when a cap cut the set.
     pub client: Option<String>,
-    /// Keep the rows from every client except `client`. Needs `client`. Default: false.
+    /// Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.
     pub client_not: Option<bool>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
@@ -1181,6 +1232,10 @@ pub struct UpstreamInfo {
     pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+    /// REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+    /// route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<String>,
     /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
     /// upstream sets a `source`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1234,9 +1289,10 @@ pub struct TailParams {
     /// REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
     /// Needs `name`. Default: false.
     pub name_not: Option<bool>,
-    /// Client IP address.
+    /// Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+    /// Kubernetes workloads; REQ: OBS-003, ADR-1013).
     pub client: Option<String>,
-    /// Only queries from every client except `client`. Needs `client`. Default: false.
+    /// Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.
     pub client_not: Option<bool>,
     /// The client's group (its highest-priority group).
     pub group: Option<String>,
@@ -1359,6 +1415,9 @@ pub struct DiscoveryStatus {
     /// node: its last poll, its tables and its capability record.
     #[serde(default)]
     pub agents: Vec<DiscoveryAgent>,
+    /// REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+    /// read: which ones work, and which the console refused. Empty unless one is on.
+    pub reads: Vec<DiscoveryRead>,
 }
 
 /// REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that
@@ -1526,6 +1585,30 @@ pub struct SnmpTestResult {
     pub node: Option<String>,
     /// What happens next, in a sentence.
     pub note: String,
+}
+
+/// REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+/// it. Read-only: nothing here changes a console.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryRead {
+    /// The `[[router]]` read.
+    #[schema(example = "udm")]
+    pub router: String,
+    /// `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+    #[schema(example = "all_users")]
+    pub read: String,
+    /// `ok`, `refused` (the console answered 401 or 403) or `failed`.
+    #[schema(example = "ok")]
+    pub state: String,
+    /// Rows used.
+    pub rows: u32,
+    /// More rows were offered than the 8,192 cap; the rest were left out.
+    pub truncated: bool,
+    /// Why a read did not work, in words (no credential in it).
+    pub error: Option<String>,
+    /// When the result was recorded (Unix seconds).
+    pub at: Option<u64>,
 }
 
 /// REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.

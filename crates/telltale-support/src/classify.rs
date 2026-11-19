@@ -124,6 +124,8 @@ const TABLE: &[(&str, Class)] = &[
     ("drill.tz", Plain),
     ("exclusions.clients[]", NameOrAddress(C::Device)),
     ("exclusions.names[]", Free),
+    ("exclusions.log.clients[]", NameOrAddress(C::Device)),
+    ("exclusions.log.domains[]", Free),
     ("filter.compile_memory", Plain),
     ("filter.max_list_bytes", Plain),
     ("group[].block_answer_ips[]", Scan),

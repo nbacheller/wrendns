@@ -19,6 +19,7 @@ pub(crate) mod gate;
 #[allow(dead_code)]
 pub(crate) mod inventory;
 pub(crate) mod poller;
+pub(crate) mod reads;
 pub(crate) mod runtime;
 #[cfg(test)]
 pub(crate) mod snmp_fixtures;

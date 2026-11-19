@@ -14,7 +14,10 @@
   import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
-  import { isRouterKey, routerKey, routerLabelOf } from '../lib/router-name';
+  import { isRouterKey, routerLabelOf } from '../lib/router-name';
+  import Picker, { type PickItem } from '../lib/components/Picker.svelte';
+  import { loadWorkloads, workloads } from '../lib/workloads.svelte';
+  import { deviceItems as buildDeviceItems, typedClient } from '../lib/devices';
 
   const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
@@ -31,9 +34,32 @@
   // REQ: OBS-003 (ADR-171) — `match` holds the Match select's value: a match, or `!` and a match
   // for "does not ..." (the URL keeps them apart: `match=substring&nameNot=true`).
   let match = $state('substring');
-  let client = $state('');
-  // REQ: FLT-006 (T24.9, ADR-973) — the client is an address or a device's router name.
-  let clientBy = $state<'address' | 'router'>('address');
+  // REQ: OBS-003 (T24.34, ADR-1013) — the clients: several devices, picked by name; each is an
+  // address, a router name (`hostname:<label>`) or a Kubernetes workload. The URL holds them comma-separated.
+  let clientSel = $state<string[]>([]);
+  let devices = $state<PickItem[]>([]);
+  // A client in the URL that no list names (an address, an old router-name link) still shows, by its name.
+  const clientItems = $derived([
+    ...devices,
+    ...workloads.items.map((w) => ({ value: w.name, label: w.name, secondary: 'Kubernetes workload', kind: 'workload' })),
+    ...clientSel
+      .filter((t) => !devices.some((d) => d.value === t) && !workloads.items.some((w) => w.name === t))
+      .map((t) => ({ value: t, label: isRouterKey(t) ? routerLabelOf(t) : t, secondary: isRouterKey(t) ? 'router name' : undefined, kind: 'clients' })),
+  ]);
+  $effect(() => {
+    void loadWorkloads();
+    void buildDeviceItems().then((d) => {
+      devices = d;
+      // A link holds the addresses of a multi-address device one by one; they come back as that one device.
+      let sel = clientSel;
+      for (const it of d) {
+        if (!it.value.includes(',')) continue;
+        const parts = it.value.split(',');
+        if (parts.every((x) => sel.includes(x))) sel = [...sel.filter((x) => !parts.includes(x)), it.value];
+      }
+      if (sel.length !== clientSel.length) clientSel = sel;
+    });
+  });
   let statuses = $state(new Set<string>());
   let qtype = $state('');
   let rcode = $state('');
@@ -58,9 +84,7 @@
     const p = route.params;
     name = p.get('name') ?? '';
     match = `${p.get('nameNot') === 'true' ? '!' : ''}${p.get('match') ?? 'substring'}`;
-    const clientParam = p.get('client') ?? '';
-    clientBy = isRouterKey(clientParam) ? 'router' : 'address';
-    client = isRouterKey(clientParam) ? routerLabelOf(clientParam) : clientParam;
+    clientSel = (p.get('client') ?? '').split(',').map((t) => t.trim()).filter(Boolean);
     statuses = new Set((p.get('status') ?? '').split(',').filter(Boolean));
     qtype = p.get('qtype') ?? '';
     rcode = p.get('rcode') ?? '';
@@ -180,8 +204,8 @@
       name: name.trim() || undefined,
       match: name.trim() && match.replace(/^!/, '') !== 'substring' ? match.replace(/^!/, '') : undefined,
       nameNot: name.trim() && match.startsWith('!') ? 'true' : undefined,
-      client: client.trim() ? (clientBy === 'router' ? routerKey(client.trim()) : client.trim()) : undefined,
-      clientNot: client.trim() && clientNot ? 'true' : undefined,
+      client: clientSel.length ? clientSel.join(',') : undefined,
+      clientNot: clientSel.length && clientNot ? 'true' : undefined,
       status: [...statuses].join(',') || undefined,
       statusNot: statuses.size && statusNot ? 'true' : undefined,
       qtype: qtype.trim().toUpperCase() || undefined,
@@ -205,8 +229,7 @@
   function clear() {
     name = '';
     match = 'substring';
-    client = '';
-    clientBy = 'address';
+    clientSel = [];
     statuses = new Set();
     qtype = '';
     rcode = '';
@@ -278,17 +301,12 @@
         </select>
       </label>
       <div class="pair">
-        <label class="field">Client
-          <input name="client" placeholder={clientBy === 'router' ? 'kitchen-tablet' : '192.168.1.20'} bind:value={client} />
-        </label>
-        <label class="not" title="Every client except this one"><input type="checkbox" name="clientNot" bind:checked={clientNot} />not</label>
+        <div class="field wide-pick">
+          <span>Client<HelpButton id="query-log-clients" /></span>
+          <Picker label="Client" testid="client-picker" items={clientItems} bind:selected={clientSel} custom={typedClient} placeholder="Search devices by name or address" />
+        </div>
+        <label class="not" title="Every client except these"><input type="checkbox" name="clientNot" bind:checked={clientNot} />not</label>
       </div>
-      <label class="field narrow">Client by
-        <select name="client-by" bind:value={clientBy}>
-          <option value="address">address or name</option>
-          <option value="router">router name</option>
-        </select>
-      </label>
       <div class="pair narrow">
         <label class="field">Type
           <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />
@@ -458,6 +476,9 @@
   .pair .field {
     flex: 1 1 auto;
     min-width: 0;
+  }
+  .wide-pick {
+    min-width: 260px;
   }
   .not {
     display: inline-flex;

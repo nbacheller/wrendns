@@ -1967,8 +1967,11 @@ export interface paths {
          *     off without losing the lists), `names` (each with its subdomains, e.g.
          *     `connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are
          *     still answered and still counted in `/metrics`, but left out of the query log, the live view,
-         *     the dashboard and top lists, anomalies, and every export. It replaces the whole section until
-         *     it's deleted again; it applies to every node of a cluster from the next query on.
+         *     the dashboard and top lists, anomalies, and every export. `log` (clients as addresses,
+         *     networks or device names; `domains`, exact or `*.` for everything under; `own_lookups`) keeps
+         *     queries out of the query log, the live view and the event sinks only: the statistics still
+         *     count them (OBS-903). It replaces the whole section until it's deleted again; it applies to
+         *     every node of a cluster from the next query on.
          */
         put: operations["put_exclusions"];
         post?: never;
@@ -4065,6 +4068,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/upstream-presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).
+         * @description The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses
+         *     (plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its
+         *     privacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The
+         *     picker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`
+         *     and `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a
+         *     NextDNS profile) are listed with `simple` false.
+         */
+        get: operations["upstream_presets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/upstreams": {
         parameters: {
             query?: never;
@@ -6065,6 +6093,41 @@ export interface components {
             table: string;
         };
         /**
+         * @description REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+         *     it. Read-only: nothing here changes a console.
+         */
+        DiscoveryRead: {
+            /**
+             * Format: int64
+             * @description When the result was recorded (Unix seconds).
+             */
+            at?: number | null;
+            /** @description Why a read did not work, in words (no credential in it). */
+            error?: string | null;
+            /**
+             * @description `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+             * @example all_users
+             */
+            read: string;
+            /**
+             * @description The `[[router]]` read.
+             * @example udm
+             */
+            router: string;
+            /**
+             * Format: int32
+             * @description Rows used.
+             */
+            rows: number;
+            /**
+             * @description `ok`, `refused` (the console answered 401 or 403) or `failed`.
+             * @example ok
+             */
+            state: string;
+            /** @description More rows were offered than the 8,192 cap; the rest were left out. */
+            truncated: boolean;
+        };
+        /**
          * @description REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,
          *     and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
          */
@@ -6080,6 +6143,11 @@ export interface components {
             enabled: boolean;
             /** @description The designated node's name, when `[discovery] node` is set. */
             node?: string | null;
+            /**
+             * @description REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+             *     read: which ones work, and which the console refused. Empty unless one is on.
+             */
+            reads: components["schemas"]["DiscoveryRead"][];
             /** @description The worker processes this node runs (none unless enabled and designated). */
             workers: components["schemas"]["DiscoveryWorker"][];
         };
@@ -8146,6 +8214,11 @@ export interface components {
                 /** Format: int64 */
                 requests: number;
                 /**
+                 * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+                 *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+                 */
+                routeProblem?: string | null;
+                /**
                  * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
                  *     upstream sets a `source`.
                  */
@@ -8770,7 +8843,7 @@ export interface components {
             /**
              * @description Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,
              *     `breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,
-             *     `not_configured`, `few_samples`, `children`.
+             *     `not_configured`, `few_samples`, `children`, `member_down`, `no_route`.
              */
             code: string;
             summary: string;
@@ -10932,12 +11005,57 @@ export interface components {
             /** Format: int64 */
             requests: number;
             /**
+             * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+             *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+             */
+            routeProblem?: string | null;
+            /**
              * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
              *     upstream sets a `source`.
              */
             source?: string | null;
             /** @description REQ: UPS-013 — set while this node no longer holds that address: its queries fail. */
             sourceProblem?: string | null;
+        };
+        /** @description REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers. */
+        UpstreamPreset: {
+            dnssec: boolean;
+            endpoints: components["schemas"]["UpstreamPresetEndpoint"][];
+            /** @description `none`, `malware`, `family` or `ads`. */
+            filtering: string;
+            homepage: string;
+            id: string;
+            name: string;
+            /** @description One line: what it filters and what it does with your queries. */
+            note: string;
+            /** @description Placeholders in its addresses (a NextDNS profile); empty for every simple preset. */
+            params: string[];
+            /** @description The heading it is listed under (`Cloudflare`). */
+            provider: string;
+            /** @description Offered in the simple view (false: it needs a parameter, or is for the Advanced view). */
+            simple: boolean;
+            /** @description The choice under the heading (`Malware`). */
+            variant: string;
+        };
+        /** @description REQ: UPS-004 (T24.36) — one address a public resolver answers on. */
+        UpstreamPresetEndpoint: {
+            /** @description `v4` or `v6` for an address, `name` for a host name (which resolves to either). */
+            family: string;
+            /** @description `udp`, `tcp`, `tls`, `https` or `quic`. */
+            protocol: string;
+            /** @description The name on the server certificate, for a `tls://` address given by IP. */
+            tlsServerName?: string | null;
+            /** @description `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`. */
+            url: string;
+        };
+        /** @description REQ: UPS-004 (T24.36) — the catalog, and what this node can reach. */
+        UpstreamPresets: {
+            /**
+             * @description Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+             *     times out. Unknown (another OS) reads true.
+             */
+            ipv6Route: boolean;
+            items: components["schemas"]["UpstreamPreset"][];
         };
         /** @description REQ: OBS-019 — one upstream's answers since start. */
         UpstreamQuality: {
@@ -17297,9 +17415,14 @@ export interface operations {
                  *     `name`. Default: false.
                  */
                 nameNot?: boolean;
-                /** @description Client IP address. */
+                /**
+                 * @description Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+                 *     `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+                 *     (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+                 *     when a cap cut the set.
+                 */
                 client?: string;
-                /** @description Keep the rows from every client except `client`. Needs `client`. Default: false. */
+                /** @description Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false. */
                 clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
@@ -17394,9 +17517,12 @@ export interface operations {
                  *     Needs `name`. Default: false.
                  */
                 nameNot?: boolean;
-                /** @description Client IP address. */
+                /**
+                 * @description Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+                 *     Kubernetes workloads; REQ: OBS-003, ADR-1013).
+                 */
                 client?: string;
-                /** @description Only queries from every client except `client`. Needs `client`. Default: false. */
+                /** @description Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false. */
                 clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;
@@ -19669,6 +19795,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upstream_presets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamPresets"];
                 };
             };
         };

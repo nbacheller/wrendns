@@ -34,7 +34,7 @@ use toml::{Table, Value};
 
 pub use discovery::{
     CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
-    SnmpVersion,
+    SnmpVersion, UnifiReads,
 };
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;

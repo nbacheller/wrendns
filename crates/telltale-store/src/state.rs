@@ -1057,6 +1057,52 @@ impl State {
 mod tests {
     use super::*;
 
+    /// REQ: CLU-015 (T24.37) - `replace_managed` makes the named kinds exactly the rows given,
+    /// leaves other kinds alone, and moves the version once.
+    #[test]
+    fn clu_015_replace_managed_is_exact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        s.put_managed("upstream", "old", "{}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed("upstream", "keep", "{\"v\":1}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed("oidc_provider", "sso", "{}", None, None, 1, "t")
+            .unwrap();
+        let before = s.config_version().unwrap();
+        let v = s
+            .replace_managed(
+                &["upstream", "list"],
+                &[
+                    ("upstream", "keep", "{\"v\":2}"),
+                    ("list", "ads", "{}"),
+                    ("group", "x", "{}"),
+                ],
+                5,
+                "promotion",
+            )
+            .unwrap();
+        assert_eq!(v, before + 1);
+        let names = |k: &str| {
+            s.managed(k)
+                .unwrap()
+                .into_iter()
+                .map(|m| (m.name, m.body))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names("upstream"),
+            [("keep".to_owned(), "{\"v\":2}".to_owned())]
+        );
+        assert_eq!(names("list").len(), 1);
+        assert_eq!(names("group").len(), 0, "a kind not named is not written");
+        assert_eq!(
+            names("oidc_provider").len(),
+            1,
+            "a kind not named is left alone"
+        );
+    }
+
     /// REQ: API-014 (ADR-903 §4) — a `state.db` from before migration 10 had idempotency records
     /// holding request text (an upstream's headers): after the upgrade, neither the database nor
     /// its WAL holds a byte of it, and replays start over. Deletes overwrite from then on.

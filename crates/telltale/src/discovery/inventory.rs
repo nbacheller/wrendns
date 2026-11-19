@@ -131,6 +131,8 @@ pub(crate) enum NameKind {
     Snmp,
     /// An import's host name (labelled with its source).
     Import,
+    /// A name from UniFi's client history (`stat/alluser`, ADR-912): history, so it ranks last.
+    History,
 }
 
 impl NameKind {
@@ -144,6 +146,7 @@ impl NameKind {
             Self::Mdns => 5,
             Self::Snmp => 6,
             Self::Import => 7,
+            Self::History => 8,
         }
     }
 
@@ -156,6 +159,7 @@ impl NameKind {
             Self::Mdns => Source::Mdns,
             Self::Snmp => Source::Snmp,
             Self::Import => Source::Import,
+            Self::History => Source::History,
         }
     }
 }
@@ -233,13 +237,13 @@ pub(crate) struct Entry {
     /// The OUI vendor from the preset (T25.7 fills it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vendor: Option<String>,
-    /// The LAN or VLAN name the router reports (T25.10 fills it).
+    /// The LAN or VLAN name the router reports (T25.10, DSC-009).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) network: Option<String>,
-    /// The access point the client associates with (T25.10 fills it).
+    /// The access point the client associates with (T25.10, DSC-009).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ap: Option<String>,
-    /// LLDP neighbours, at most [`MAX_LLDP`] (T25.10 fills them).
+    /// LLDP neighbours, at most [`MAX_LLDP`] (T25.10, DSC-009: a switch's neighbours).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) lldp: Vec<String>,
     /// SNMP identity (T25.7 fills it).
@@ -455,6 +459,17 @@ pub(crate) struct Observation {
     /// REQ: DSC-004 (T25.6) - where an LLDP neighbour hangs: "<agent> <local port>", for the
     /// neighbour's entry (at most [`MAX_LLDP`] are kept).
     pub(crate) lldp: Vec<String>,
+    /// REQ: DSC-009 (T25.10) — the LAN or VLAN name the router reports.
+    pub(crate) network: Option<String>,
+    /// REQ: DSC-009 — the access point a wireless client is on.
+    pub(crate) ap: Option<String>,
+    /// REQ: DSC-009 — the LLDP neighbours a switch or access point reports (the router's view,
+    /// apart from the SNMP poller's `lldp`). `Some` replaces the entry's list (an empty list
+    /// clears it); `None` leaves it.
+    pub(crate) router_lldp: Option<Vec<String>>,
+    /// REQ: DSC-009 — when the router first saw the device (Unix seconds); the entry keeps the
+    /// earliest time it has.
+    pub(crate) first_seen: Option<u64>,
     /// Unix seconds.
     pub(crate) seen: u64,
 }
@@ -472,6 +487,10 @@ impl Observation {
             port: None,
             ports: Vec::new(),
             lldp: Vec::new(),
+            network: None,
+            ap: None,
+            router_lldp: None,
+            first_seen: None,
             seen,
         }
     }
@@ -749,7 +768,14 @@ impl Inventory {
             let before = e.addrs.len();
             e.addrs
                 .retain(|b| !(b.source == source && b.seen.saturating_add(max_age) < now));
-            if e.addrs.len() != before {
+            // REQ: DSC-009 - history's names go with its last address (ADR-912).
+            let mut names_gone = false;
+            if source == Source::History && !e.addrs.iter().any(|b| b.source == Source::History) {
+                let names = e.names.len();
+                e.names.retain(|n| n.kind != NameKind::History);
+                names_gone = e.names.len() != names;
+            }
+            if e.addrs.len() != before || names_gone {
                 changed = true;
                 e.normalize();
             }
@@ -940,7 +966,15 @@ impl Inventory {
         }
         // A MAC seen for the first time after the learning period raises new_device once.
         // Randomised MACs raise none (ADR-910: no stable-identity finding for them).
-        if created && mac_kind && !entry.randomized && !self.learning(now) && !entry.new_device {
+        // REQ: DSC-009 (ADR-912) — a client UniFi remembers from before is history, not a new
+        // device: its first sight here raises no `new_device`.
+        if created
+            && mac_kind
+            && !entry.randomized
+            && !self.learning(now)
+            && !entry.new_device
+            && o.source != Source::History
+        {
             entry.new_device = true;
             report.new_devices.push(key);
         }
@@ -1025,6 +1059,33 @@ impl Inventory {
                 .lldp
                 .retain(|x| x.split(' ').next().unwrap_or_default() != agent);
             entry.lldp.push(l);
+        }
+        // REQ: DSC-009 (T25.10) — the router's network, access point and LLDP view, cut as every
+        // device string is (DSC-015).
+        if let Some(n) = o
+            .network
+            .as_ref()
+            .map(|n| sanitize(n, NAME_MAX))
+            .filter(|n| !n.is_empty())
+        {
+            entry.network = Some(n);
+        }
+        if let Some(a) =
+            o.ap.as_ref()
+                .map(|a| sanitize(a, NAME_MAX))
+                .filter(|a| !a.is_empty())
+        {
+            entry.ap = Some(a);
+        }
+        if let Some(list) = &o.router_lldp {
+            entry.lldp = list
+                .iter()
+                .map(|l| sanitize(l, TEXT_MAX))
+                .filter(|l| !l.is_empty())
+                .collect();
+        }
+        if let Some(f) = o.first_seen.filter(|f| *f > 0) {
+            entry.first_seen = entry.first_seen.min(f);
         }
         if let Some(b) = import_bit {
             entry.import_bits |= bit16(b);

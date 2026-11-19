@@ -46,6 +46,9 @@ mod kubernetes;
 mod lists;
 mod maintenance;
 mod managed;
+mod managed_adopt;
+#[cfg(test)]
+mod managed_adopt_tests;
 mod masking;
 mod mcp_stdio;
 mod mdns;
@@ -100,6 +103,7 @@ mod technitium;
 mod traces;
 mod updates;
 mod upstream_checks;
+mod upstream_presets;
 mod vqlog;
 mod warm;
 mod watchdog;

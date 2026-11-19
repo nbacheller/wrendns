@@ -23,6 +23,8 @@ services:
       args:
         # Thin LTO: about half the build time of a release build, nearly the same speed.
         PROFILE: bench-fast
+        # Its own cargo cache: builds from other checkouts on this host can't leave stale output in it.
+        BUILD_CACHE_SCOPE: -bundle
         TELLTALE_BUILD_CHANNEL: dev
     image: telltale:fork-dev
     command: ["run", "-c", "/etc/telltale/telltale.toml"]

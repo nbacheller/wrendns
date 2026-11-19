@@ -19,6 +19,7 @@ use crate::devices::Leases;
 
 use super::inventory::{Inventory, Source};
 use super::poller::{self, AgentsBoard, PollOutput, PollerCtx};
+use super::reads::{Reader, ReadsInput};
 use super::sources::{Ipv4Subnet, ifindex_names, lease_observations, neighbour_observations};
 use super::store;
 use super::supervisor::{self, Board, Requests, Spec};
@@ -64,6 +65,9 @@ pub(crate) struct Providers {
     pub(crate) workers_stop: Arc<AtomicBool>,
     /// REQ: DSC-004 - the SNMP agents to poll (none: no poller task).
     pub(crate) snmp: Option<SnmpSetup>,
+    /// REQ: DSC-009 (T25.10, ADR-912) - the extra UniFi and Home Assistant reads, run on this
+    /// thread with the session the router poll shares (`None`: none).
+    pub(crate) reads: Option<ReadsInput>,
 }
 
 /// A running inventory thread.
@@ -171,6 +175,9 @@ async fn run(
     };
     let mut next_poll = 0u64;
     let mut last_write = unix_now();
+    // REQ: DSC-009 - the extra reads run as tasks of this thread's runtime; none runs on the
+    // main runtime (ADR-912).
+    let mut reader = providers.reads.clone().map(Reader::new);
     loop {
         let now = unix_now();
         let mut publish = false;
@@ -183,7 +190,15 @@ async fn run(
         }
         if now >= next_poll {
             tick(&mut inv, &providers, now);
+            if let Some(r) = &reader {
+                r.age(&mut inv, now);
+            }
             next_poll = now.saturating_add(POLL_SECS);
+            publish |= inv.is_dirty();
+        }
+        if let Some(r) = reader.as_mut()
+            && r.step(&mut inv, now)
+        {
             publish = true;
         }
         // Readers get a copy only when something changed; an unchanged poll publishes nothing.

@@ -363,6 +363,13 @@ struct Settings {
     dnsmasq_servers: Vec<String>,
     /// `host-record=` values: names and addresses, in any order.
     dnsmasq_hosts: Vec<String>,
+    /// REQ: OBS-903 (T24.35) — Pi-hole's excluded domains and clients (`webserver.api.excludeDomains`
+    /// and `excludeClients`, regexes in v6; `API_EXCLUDE_DOMAINS` and `API_EXCLUDE_CLIENTS`, plain
+    /// values in v5), as Pi-hole holds them.
+    exclude_domains: Vec<String>,
+    exclude_clients: Vec<String>,
+    /// Whether those are regexes (v6) or plain values (v5).
+    exclude_regex: bool,
     /// Settings with no TelltaleDNS equivalent (names only: values may be secrets).
     unmapped: Vec<String>,
 }
@@ -445,6 +452,8 @@ const V6_MAPPED: &[&str] = &[
     "dns.domainNeeded",
     "dns.specialDomains.iCloudPrivateRelay",
     "dns.specialDomains.mozillaCanary",
+    "webserver.api.excludeDomains",
+    "webserver.api.excludeClients",
     "misc.dnsmasq_lines",
 ];
 
@@ -495,6 +504,9 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
         domain_needed: get("dns.domainNeeded").and_then(toml::Value::as_bool) == Some(true),
         icloud_relay: get("dns.specialDomains.iCloudPrivateRelay").and_then(toml::Value::as_bool),
         mozilla_canary: get("dns.specialDomains.mozillaCanary").and_then(toml::Value::as_bool),
+        exclude_domains: strings(get("webserver.api.excludeDomains")),
+        exclude_clients: strings(get("webserver.api.excludeClients")),
+        exclude_regex: true,
         ..Settings::default()
     };
     let num = |p: &str| {
@@ -534,6 +546,96 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
     Ok(s)
 }
 
+/// A comma-separated `setupVars.conf` value, without blanks.
+fn comma_list(v: Option<&String>) -> Vec<String> {
+    v.map(|v| {
+        v.split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// A regex made only of literal characters (`\.` an escaped dot), or `None` when it has any other
+/// operator. Pi-hole's lists are regexes, but nearly everyone writes `^name$`.
+fn literal_regex(r: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut it = r.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '\\' => out.push(it.next().filter(|n| *n == '.' || *n == '-')?),
+            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '/' => {
+                return None;
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — Pi-hole's excluded domains and clients as TelltaleDNS's
+/// log-only exclusions: `(domains, clients, what couldn't be mapped)`. A domain `^name$` is that
+/// name; `^.*\.suffix$` (or `\.suffix$`) is `*.suffix`. A client is an address, a network or a
+/// device name; in v6 `^192\.168\.1\.5$` is an address. Anything else (a real pattern, an
+/// unanchored word that matches inside names) is left out and said so, with its text, which is a
+/// name or an address and no secret.
+fn map_exclusions(s: &Settings) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (mut domains, mut clients, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    for d in &s.exclude_domains {
+        let d = d.trim();
+        let mapped = if s.exclude_regex {
+            let body = d.strip_prefix('^').and_then(|b| b.strip_suffix('$'));
+            match body {
+                Some(b) => {
+                    if let Some(rest) = b.strip_prefix("(.*\\.)?") {
+                        // matches the apex too: list both
+                        if let Some(n) = literal_regex(rest).filter(|n| !n.is_empty()) {
+                            domains.push(n.to_ascii_lowercase());
+                        }
+                        literal_regex(rest).map(|n| format!("*.{n}"))
+                    } else if let Some(rest) = b.strip_prefix(".*\\.") {
+                        literal_regex(rest).map(|n| format!("*.{n}"))
+                    } else {
+                        literal_regex(b)
+                    }
+                }
+                None => d
+                    .strip_prefix("\\.")
+                    .and_then(|r| r.strip_suffix('$'))
+                    .and_then(literal_regex)
+                    .map(|n| format!("*.{n}")),
+            }
+        } else {
+            Some(d.to_owned())
+        };
+        match mapped {
+            Some(m) if !m.is_empty() => domains.push(m.to_ascii_lowercase()),
+            _ => skipped.push(one_line(d)),
+        }
+    }
+    for c in &s.exclude_clients {
+        let c = c.trim();
+        let plain = if s.exclude_regex {
+            c.strip_prefix('^')
+                .and_then(|b| b.strip_suffix('$'))
+                .and_then(literal_regex)
+        } else {
+            Some(c.to_owned())
+        };
+        match plain {
+            Some(p)
+                if !p.is_empty() && !p.chars().any(|ch| ch.is_whitespace() || ch.is_control()) =>
+            {
+                clients.push(p);
+            }
+            _ => skipped.push(one_line(c)),
+        }
+    }
+    (domains, clients, skipped)
+}
+
 fn key_values(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -560,6 +662,8 @@ const V5_MAPPED: &[&str] = &[
     "DNS_FQDN_REQUIRED",
     "BLOCK_ICLOUD_PR",
     "MOZILLA_CANARY",
+    "API_EXCLUDE_DOMAINS",
+    "API_EXCLUDE_CLIENTS",
     // The old install's own plumbing.
     "PIHOLE_INTERFACE",
     "IPV4_ADDRESS",
@@ -587,6 +691,9 @@ fn v5_settings(src: &Source) -> Settings {
         mozilla_canary: ftl
             .get("MOZILLA_CANARY")
             .map(|v| !v.trim().eq_ignore_ascii_case("false")),
+        exclude_domains: comma_list(setup.get("API_EXCLUDE_DOMAINS")),
+        exclude_clients: comma_list(setup.get("API_EXCLUDE_CLIENTS")),
+        exclude_regex: false,
         ..Settings::default()
     };
     // PIHOLE_DNS_1, _2, ... in order.
@@ -908,6 +1015,13 @@ impl<'a> Builder<'a> {
                 toml_str(&name),
                 toml_str(&url)
             );
+            // REQ: UPS-006 (fork #25) — an IPv6 upstream fails, and turns the map yellow, on a
+            // host with no IPv6 route.
+            if url.contains('[') {
+                self.notes.push(format!(
+                    "Upstream {u} is an IPv6 address. If the hosts running TelltaleDNS have no IPv6 route, it will fail on every query; drop `{name}` (and its name in the `default` group's members) and the upstream's page will say \"this node has no IPv6 route\" if it applies."
+                ));
+            }
             if local {
                 self.notes.push(format!(
                     "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, which reaches it at the same address when they share a machine. Or let TelltaleDNS resolve from the root servers itself: `url = \"recursive://\"` (`docs/running.md`, Recursive resolution)."
@@ -1599,6 +1713,34 @@ impl<'a> Builder<'a> {
         }
         if !special.is_empty() {
             let _ = write!(head, "\n[special]\n{special}");
+        }
+        // REQ: OBS-903 (T24.35) — Pi-hole's excluded domains and clients: kept out of the query
+        // log only (Pi-hole still records them), as `[exclusions.log]`.
+        let (domains, clients, skipped) = map_exclusions(&self.s);
+        if !domains.is_empty() || !clients.is_empty() {
+            let _ = write!(
+                head,
+                "
+[exclusions.log]
+"
+            );
+            if !domains.is_empty() {
+                let _ = writeln!(head, "domains = {}", toml_array(&domains));
+            }
+            if !clients.is_empty() {
+                let _ = writeln!(head, "clients = {}", toml_array(&clients));
+            }
+            self.notes.push(format!(
+                "Excluded from Pi-hole's query log and lists: {} domain(s) and {} client(s) are imported as [exclusions.log] (kept out of the query log and the live view, but still counted in the dashboard and top lists, which Pi-hole leaves them out of: the totals will differ from Pi-hole's; add the names to [exclusions] to leave them out of the statistics too).",
+                domains.len(),
+                clients.len()
+            ));
+        }
+        if !skipped.is_empty() {
+            self.notes.push(format!(
+                "Pi-hole excluded domains or clients that aren't a plain name, address or `^name$` pattern (not imported): {}.",
+                skipped.join(", ")
+            ));
         }
         if !self.s.unmapped.is_empty() {
             let keys: Vec<String> = self.s.unmapped.iter().map(|k| one_line(k)).collect();

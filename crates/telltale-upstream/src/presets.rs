@@ -42,6 +42,19 @@ pub struct Preset {
     pub filtering: Filtering,
     pub dnssec: bool,
     pub ecs: bool,
+    /// REQ: UPS-004 (T24.36) — the provider this variant belongs to, for the simple picker's
+    /// heading (empty: the preset's name).
+    #[serde(default)]
+    pub provider: String,
+    /// The variant's name under its provider ("Malware", "Unfiltered").
+    #[serde(default)]
+    pub variant: String,
+    /// One line: what it filters and what it does with your queries, from the provider's pages.
+    #[serde(default)]
+    pub note: String,
+    /// Offered as a checkbox in the simple view (presets that need a parameter are not).
+    #[serde(default)]
+    pub simple: bool,
     /// Placeholders used in URLs as `{name}`.
     #[serde(default)]
     pub params: Vec<String>,
@@ -268,6 +281,44 @@ mod tests {
         let n = ids.len();
         ids.dedup();
         assert_eq!(ids.len(), n, "duplicate preset ids");
+    }
+
+    /// REQ: UPS-004 (T24.36) — the simple picker's rows each have a provider, a variant, a note and
+    /// something to write, and none needs a parameter.
+    #[test]
+    fn ups_004_simple_presets_are_complete() {
+        let simple: Vec<_> = catalog().unwrap().iter().filter(|p| p.simple).collect();
+        assert!(simple.len() >= 15, "{}", simple.len());
+        for p in &simple {
+            assert!(
+                !p.provider.is_empty() && !p.variant.is_empty() && !p.note.is_empty(),
+                "{}: provider, variant and note",
+                p.id
+            );
+            assert!(
+                p.params.is_empty(),
+                "{}: a simple preset takes no parameter",
+                p.id
+            );
+            assert!(
+                p.note.len() <= 220,
+                "{}: the note is one line, not a paragraph",
+                p.id
+            );
+        }
+        for id in [
+            "cloudflare",
+            "cloudflare-family",
+            "google",
+            "quad9",
+            "quad9-unfiltered",
+            "opendns",
+            "adguard",
+            "mullvad",
+            "cleanbrowsing-family",
+        ] {
+            assert!(find(id).is_some_and(|p| p.simple), "{id} is offered");
+        }
     }
 
     #[test]

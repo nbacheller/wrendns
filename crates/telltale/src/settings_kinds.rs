@@ -45,6 +45,10 @@ const DISCOVERY_KEYS: &[&str] = &[
     // REQ: DSC-004 (T25.6) - the SNMP agents and the credentials they name.
     "snmp_agent",
     "snmp_credential",
+    // REQ: DSC-009 (T25.10, ADR-912) — the extra UniFi and Home Assistant reads.
+    "unifi_reads",
+    "unifi_all_users_within_hours",
+    "home_assistant_all_devices",
 ];
 
 /// The fields a kind's API entry carries (what the UI edits).
