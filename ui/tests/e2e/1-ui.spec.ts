@@ -3554,7 +3554,8 @@ test('obs_010 pushover destination: two write-only secrets and Send test', async
     await page.getByLabel('Priority when firing (Pushover)', { exact: true }).fill('1');
     await page.getByRole('button', { name: 'Help: Pushover keys' }).click();
     await expect(page.getByTestId('help-panel')).toBeVisible();
-    await page.keyboard.press('Escape');
+    await page.getByRole('dialog', { name: 'Pushover keys' }).getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByTestId('help-panel')).toHaveCount(0);
     await page.getByRole('button', { name: 'Check' }).click();
     await page.getByRole('button', { name: 'Apply' }).click();
     const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-pushover' });
