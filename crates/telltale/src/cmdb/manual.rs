@@ -428,6 +428,7 @@ impl Engine {
         dry_run: bool,
     ) -> Result<Outcome> {
         let db = std::sync::Arc::clone(self.db());
+        let caps = self.caps;
         if dry_run {
             let pv = preview(&db, op, now)?;
             return Ok(Outcome {
@@ -436,14 +437,13 @@ impl Engine {
                 result: None,
             });
         }
-        let mut moved_rids: Vec<i64> = Vec::new();
         let outcome = db
             .write(|ops| {
                 let plan = match plan(ops, op, by, reason, now) {
                     Ok(p) => p,
                     Err(e) => return Ok(Err(e)),
                 };
-                let mut cx = Cx::new(ops, now)?;
+                let mut cx = Cx::new(ops, now, caps)?;
                 if let Some(x) = &plan.new_device {
                     ops.ci_put(x)?;
                     ops.seen_put(
@@ -490,11 +490,6 @@ impl Engine {
                 {
                     merge_ci(&mut cx, old, target)?;
                 }
-                for mv in &plan.preview.moves {
-                    if let Some(r) = ops.record_get(&mv.source, &mv.key)? {
-                        moved_rids.push(r.rid);
-                    }
-                }
                 let result = plan
                     .new_device
                     .as_ref()
@@ -508,7 +503,6 @@ impl Engine {
                 }))
             })
             .map_err(ManualError::from)??;
-        self.reload_links(&moved_rids);
         Ok(outcome)
     }
 }

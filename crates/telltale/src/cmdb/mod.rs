@@ -9,6 +9,7 @@
 
 pub(crate) mod adapters;
 pub(crate) mod apply;
+pub(crate) mod compact;
 pub(crate) mod engine;
 pub(crate) mod inbox;
 pub(crate) mod manual;
@@ -20,6 +21,8 @@ pub(crate) mod thread;
 pub(crate) mod view;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_caps;
 #[cfg(test)]
 mod tests_manual;
 #[cfg(test)]

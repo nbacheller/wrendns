@@ -38,6 +38,24 @@ pub(crate) const ABSENT_AFTER: u8 = 2;
 /// The learning period after an empty start (ADR-910).
 pub(crate) const LEARNING_SECS: i64 = 24 * 3600;
 
+/// The caps (ADR-1005 section 3). The defaults are the constants above; a test sets smaller ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Caps {
+    pub(crate) cis: i64,
+    pub(crate) records: i64,
+    pub(crate) per_ci: i64,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Self {
+            cis: MAX_CIS,
+            records: MAX_RECORDS,
+            per_ci: MAX_RECORDS_PER_CI,
+        }
+    }
+}
+
 /// What a source record, a CI or a link is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RecKind {

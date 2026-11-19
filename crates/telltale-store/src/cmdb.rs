@@ -26,8 +26,11 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "cmdb.db";
 /// The standby copy of the authored tables a replica keeps (applied only if it becomes designated).
 pub const STANDBY_NAME: &str = "cmdb-standby.db";
-/// The page cache the connections may use, in KiB (the RSS budget, ADR-1005 section 2).
-const CACHE_KIB: i64 = 1024;
+/// The writer's page cache, in KiB (the RSS budget, ADR-1005 section 2: the whole CMDB gets 8 MiB
+/// at its caps, and the index takes about 4).
+const CACHE_KIB: i64 = 512;
+/// The reader's page cache, in KiB.
+const READER_CACHE_KIB: i64 = 128;
 
 /// Errors from the CMDB database.
 #[derive(Debug, thiserror::Error)]
@@ -123,6 +126,7 @@ const MIGRATIONS: &[&str] = &[
         first_seen INTEGER NOT NULL,
         last_changed INTEGER NOT NULL,
         state TEXT NOT NULL DEFAULT 'present',
+        missed INTEGER NOT NULL DEFAULT 0,
         mac TEXT,
         serial TEXT,
         devkey TEXT,
@@ -135,6 +139,7 @@ const MIGRATIONS: &[&str] = &[
         link TEXT NOT NULL DEFAULT 'none',
         UNIQUE (source, skey)
     );
+    CREATE INDEX record_source ON record(source, state);
     CREATE INDEX record_mac ON record(mac) WHERE mac IS NOT NULL;
     CREATE INDEX record_serial ON record(serial) WHERE serial IS NOT NULL;
     CREATE INDEX record_devkey ON record(devkey) WHERE devkey IS NOT NULL;
@@ -379,6 +384,8 @@ impl CmdbDb {
         tune(&w)?;
         let r = Connection::open(path)?;
         tune(&r)?;
+        // The reader (the API's pages) needs little cache.
+        r.pragma_update(None, "cache_size", -READER_CACHE_KIB)?;
         let db = Self {
             path: path.to_path_buf(),
             w: Mutex::new(w),
@@ -439,11 +446,15 @@ impl CmdbDb {
             writable: true,
         };
         let out = f(&ops)?;
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('seq', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [ops.seq.get().to_string()],
-        )?;
+        // The stamp counter is written only when a row was stamped: a batch that changed nothing
+        // writes nothing (the write-volume bound of a stable network).
+        if ops.seq.get() != seq {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('seq', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [ops.seq.get().to_string()],
+            )?;
+        }
         tx.commit()?;
         Ok(out)
     }
@@ -465,6 +476,19 @@ impl CmdbDb {
         let conn = self.wconn();
         let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
         Ok(busy == 0)
+    }
+
+    /// Rows inserted, updated or deleted through the writer connection since it opened (the
+    /// write-volume test counts them).
+    pub fn total_changes(&self) -> u64 {
+        self.wconn().total_changes()
+    }
+
+    /// Sets the WAL auto-checkpoint, in pages (0 turns it off). The write-volume test turns it off
+    /// so the WAL's size is the bytes written; production keeps SQLite's default.
+    pub fn set_autocheckpoint(&self, pages: i64) -> Result<()> {
+        self.wconn().pragma_update(None, "wal_autocheckpoint", pages)?;
+        Ok(())
     }
 
     /// The size of the database file and its WAL, in bytes.
@@ -867,7 +891,7 @@ impl Ops<'_> {
         let rid = if let Some(o) = &old {
             self.c.execute(
                 "UPDATE record SET ty = ?2, attrs = ?3, hash = ?4, first_seen = MIN(first_seen, ?5),
-                   last_changed = ?5, state = 'present', mac = ?6, serial = ?7, devkey = ?8,
+                   last_changed = ?5, state = 'present', missed = 0, mac = ?6, serial = ?7, devkey = ?8,
                    host = ?9, net = ?10, owner = ?11, port = ?12 WHERE rid = ?1",
                 params![
                     o.rid, w.ty, w.attrs, hash, w.seen, w.mac, w.serial, w.devkey, w.host, w.net,
@@ -918,11 +942,11 @@ impl Ops<'_> {
         )? > 0)
     }
 
-    /// Sets a record's state (`present` or `absent`).
+    /// Sets a record's state (`present` or `absent`); either way the misses start again.
     pub fn record_state(&self, rid: i64, state: &str) -> Result<()> {
         self.need_write()?;
         self.c.execute(
-            "UPDATE record SET state = ?2 WHERE rid = ?1",
+            "UPDATE record SET state = ?2, missed = 0 WHERE rid = ?1",
             params![rid, state],
         )?;
         Ok(())
@@ -1732,41 +1756,68 @@ fn sql_of(v: Option<&serde_json::Value>) -> SqlValue {
     }
 }
 
-/// One row of the record index the engine keeps in memory (key, content hash, times, links).
+/// What the engine asks about a record before it decides whether to write it (ADR-1005 section 3:
+/// a record is written only when its content hash changes).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexRow {
+pub struct Probe {
     pub rid: i64,
-    pub source: String,
-    pub skey: String,
     pub hash: u64,
-    pub last_seen: i64,
     pub state: String,
+    /// Complete batches in a row that did not list it.
+    pub missed: i64,
     pub ici: Option<String>,
     pub dci: Option<String>,
+    /// The stored `last_seen`.
+    pub last_seen: i64,
 }
 
 impl Ops<'_> {
-    /// Calls `f` for every record, one row at a time (the start-up read of the in-memory index).
-    pub fn record_index_each(&self, mut f: impl FnMut(IndexRow)) -> Result<()> {
-        let mut st = self.c.prepare(
-            "SELECT r.rid, r.source, r.skey, r.hash, COALESCE(s.last_seen, r.last_changed),
-                    r.state, r.ici, r.dci
-             FROM record r LEFT JOIN seen s ON s.rid = r.rid",
+    /// The record a source holds under a key, for the unchanged-or-not decision.
+    pub fn record_probe(&self, source: &str, skey: &str) -> Result<Option<Probe>> {
+        let mut st = self.c.prepare_cached(
+            "SELECT r.rid, r.hash, r.state, r.missed, r.ici, r.dci, COALESCE(s.last_seen, r.last_changed)
+             FROM record r LEFT JOIN seen s ON s.rid = r.rid WHERE r.source = ?1 AND r.skey = ?2",
         )?;
-        let rows = st.query_map([], |r| {
-            Ok(IndexRow {
-                rid: r.get(0)?,
-                source: r.get(1)?,
-                skey: r.get(2)?,
-                hash: u64::from_ne_bytes(r.get::<_, i64>(3)?.to_ne_bytes()),
-                last_seen: r.get(4)?,
-                state: r.get(5)?,
-                ici: r.get(6)?,
-                dci: r.get(7)?,
+        Ok(st
+            .query_row(params![source, skey], |r| {
+                Ok(Probe {
+                    rid: r.get(0)?,
+                    hash: u64::from_ne_bytes(r.get::<_, i64>(1)?.to_ne_bytes()),
+                    state: r.get(2)?,
+                    missed: r.get(3)?,
+                    ici: r.get(4)?,
+                    dci: r.get(5)?,
+                    last_seen: r.get(6)?,
+                })
             })
-        })?;
-        for r in rows {
-            f(r?);
+            .optional()?)
+    }
+
+    /// The `present` records of a source and how often a complete batch missed them.
+    pub fn present_of_source(&self, source: &str) -> Result<Vec<(i64, i64)>> {
+        let mut st = self
+            .c
+            .prepare_cached("SELECT rid, missed FROM record WHERE source = ?1 AND state = 'present'")?;
+        Ok(st
+            .query_map([source], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Sets how many complete batches in a row missed a record.
+    pub fn record_set_missed(&self, rid: i64, missed: i64) -> Result<()> {
+        self.need_write()?;
+        self.c
+            .execute("UPDATE record SET missed = ?2 WHERE rid = ?1", params![rid, missed])?;
+        Ok(())
+    }
+
+    /// Calls `f` with every `(rid, last_seen)` of the `seen` table (the start-up read: two
+    /// integers a row, nothing allocated).
+    pub fn seen_each(&self, mut f: impl FnMut(i64, i64)) -> Result<()> {
+        let mut st = self.c.prepare("SELECT rid, last_seen FROM seen")?;
+        let mut rows = st.query([])?;
+        while let Some(r) = rows.next()? {
+            f(r.get(0)?, r.get(1)?);
         }
         Ok(())
     }

@@ -1,29 +1,28 @@
-//! REQ: DSC-902, DSC-903, DSC-906 (T31.2, ADR-1004, ADR-1005 sections 2 to 5) - the engine: the
-//! in-memory index over the store, one ingested batch at a time.
+//! REQ: DSC-902, DSC-903, DSC-906 (T31.2, ADR-1004, ADR-1005 sections 2 to 5) - the engine: one
+//! ingested batch at a time over the store, with almost nothing in memory.
 //!
-//! What stays in memory is a compact index (a key hash, a content hash, two times, a state and the
-//! two CI handles per record; the CI times), never the records: they are read from the database
-//! for a page and for a resolution. A batch writes only the records whose content changed; the
-//! `last_seen` of the others lives here and is flushed in one batched transaction every 15
-//! minutes, for rows whose stored value is more than 6 hours old (ADR-1005 section 3), so a stable
-//! network writes next to nothing. Everything runs on the CMDB thread.
+//! The records are not held here: each is probed in the database by its `(source, key)` (an index
+//! lookup) and compared by content hash, so a record that says the same thing again writes nothing.
+//! What stays in memory is two integers per record (its `last_seen` and the value stored, in a
+//! compact table), the CI times, and counters. The `last_seen` of an unchanged record is flushed in
+//! one batched transaction every 15 minutes, for rows whose stored value is more than 6 hours old
+//! (ADR-1005 section 3), so a stable network writes next to nothing. Everything runs on the CMDB
+//! thread.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use telltale_store::cmdb::{CmdbDb, CmdbError, FLAG_UNCONFIRMED, SeenRow};
 
 use super::apply::{Cx, Seeds, resolve_seeds};
+use super::compact::Table;
 use super::model::{
-    ABSENT_AFTER, DAYS_SEEN_CAP, FLUSH_EVERY_SECS, FLUSH_STALE_SECS, LEARNING_SECS,
-    MAX_RECORDS, MAX_RECORDS_PER_CI, SourceBatch, UNCONFIRMED_SECS, ci_num, ci_text, is_presence,
-    key_hash, prepare,
+    ABSENT_AFTER, Caps, DAYS_SEEN_CAP, FLUSH_EVERY_SECS, FLUSH_STALE_SECS, LEARNING_SECS,
+    SourceBatch, UNCONFIRMED_SECS, ci_num, ci_text, is_presence, prepare,
 };
 
 type Result<T> = std::result::Result<T, CmdbError>;
 
-const PRESENT: u8 = 0;
-const ABSENT: u8 = 1;
 /// Derived-only records not seen for this long are removed (ADR-924, ADR-1005 section 5).
 pub(crate) const RETENTION_SECS: i64 = 7 * 86_400;
 /// Import rows are kept this long (`[discovery.import]`, ADR-910).
@@ -33,22 +32,14 @@ fn t32(t: i64) -> u32 {
     u32::try_from(t.max(0)).unwrap_or(u32::MAX)
 }
 
-/// One record in the in-memory index.
-#[derive(Debug, Clone, Copy)]
-struct Seen {
-    rid: i64,
-    hash: u64,
-    src: u16,
+/// A record's times in memory: the newest `last_seen` and the value the database holds.
+#[derive(Debug, Clone, Copy, Default)]
+struct Times {
     last: u32,
     stored: u32,
-    round: u32,
-    dci: u32,
-    ici: u32,
-    state: u8,
-    missed: u8,
 }
 
-/// A CI's times in memory.
+/// A CI's times in memory (indexed by the CI's handle).
 #[derive(Debug, Clone, Copy, Default)]
 struct CiTime {
     last: u32,
@@ -56,13 +47,19 @@ struct CiTime {
     day: u32,
     days: u8,
     dirty: bool,
+    loaded: bool,
 }
 
-/// CI ids as small handles (the index would otherwise keep 35 bytes of text per link).
+/// CI ids as small handles. The table is keyed by the low 64 bits of the id; the full id is
+/// checked.
 #[derive(Debug, Default)]
 struct CiInterner {
     ids: Vec<u128>,
-    map: HashMap<u128, u32>,
+    map: Table<u32>,
+}
+
+fn low64(n: u128) -> u64 {
+    u64::try_from(n & u128::from(u64::MAX)).unwrap_or(0)
 }
 
 impl CiInterner {
@@ -70,15 +67,24 @@ impl CiInterner {
         let Some(n) = text.and_then(ci_num) else {
             return 0;
         };
-        if let Some(h) = self.map.get(&n) {
-            return *h;
+        let key = low64(n);
+        let hit = self
+            .map
+            .get(&key)
+            .copied()
+            .filter(|h| self.ids.get(usize::try_from(*h).unwrap_or(0)) == Some(&n));
+        if let Some(h) = hit {
+            return h;
         }
         if self.ids.is_empty() {
             self.ids.push(0);
         }
         let h = u32::try_from(self.ids.len()).unwrap_or(u32::MAX);
         self.ids.push(n);
-        self.map.insert(n, h);
+        // A different id with the same low 64 bits (one in 10^19) gets its own handle, unmapped.
+        if !self.map.contains_key(&key) {
+            self.map.insert(key, h);
+        }
         h
     }
 
@@ -131,16 +137,33 @@ pub(crate) struct IngestReport {
     pub(crate) dropped: usize,
 }
 
+/// An unchanged record: `(rid, seen, stored last_seen, interface CI, device CI)`.
+type UnchangedRow = (i64, i64, i64, Option<String>, Option<String>);
+/// A record written: `(rid, seen, interface CI, device CI)`.
+type WrittenRow = (i64, i64, Option<String>, Option<String>);
+
+/// What the write transaction of one batch decided, applied to memory after it commits.
+#[derive(Default)]
+struct Applied {
+    created: u64,
+    merged: u64,
+    proposals: u64,
+    dropped_ci: u64,
+    dropped_new: usize,
+    unchanged: Vec<UnchangedRow>,
+    written: Vec<WrittenRow>,
+    deleted: Vec<i64>,
+    absent: usize,
+}
+
 /// The engine.
 pub(crate) struct Engine {
     db: Arc<CmdbDb>,
-    seen: HashMap<u64, Seen>,
-    srcs: Vec<String>,
-    src_ids: HashMap<String, u16>,
+    times: Table<Times>,
     cis: CiInterner,
-    ci_times: HashMap<u32, CiTime>,
-    round: u32,
+    ci_times: Vec<CiTime>,
     pub(crate) counters: Counters,
+    pub(crate) caps: Caps,
     sources: BTreeMap<String, SourceStat>,
     learning_until: i64,
     last_flush: i64,
@@ -153,45 +176,34 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    /// Opens the engine over a database and reads the index. An empty database starts the learning
+    /// Opens the engine over a database and reads the times. An empty database starts the learning
     /// period at `now` (ADR-910, ADR-1004 section 8).
     pub(crate) fn open(db: Arc<CmdbDb>, now: i64) -> Result<Self> {
+        let records = db.read(|o| Ok(o.record_counts()?.0))?;
         let mut e = Self {
             db: Arc::clone(&db),
-            seen: HashMap::new(),
-            srcs: Vec::new(),
-            src_ids: HashMap::new(),
+            times: Table::with_capacity(usize::try_from(records).unwrap_or(0)),
             cis: CiInterner::default(),
-            ci_times: HashMap::new(),
-            round: 0,
+            ci_times: Vec::new(),
             counters: Counters::default(),
+            caps: Caps::default(),
             sources: BTreeMap::new(),
             learning_until: 0,
             last_flush: now,
         };
-        let mut rows = Vec::new();
-        db.read(|o| o.record_index_each(|r| rows.push(r)))?;
-        for r in rows {
-            let src = e.src_id(&r.source);
-            let kh = key_hash(&r.source, &r.skey);
-            let dci = e.cis.handle(r.dci.as_deref());
-            let ici = e.cis.handle(r.ici.as_deref());
-            e.seen.insert(
-                kh,
-                Seen {
-                    rid: r.rid,
-                    hash: r.hash,
-                    src,
-                    last: t32(r.last_seen),
-                    stored: t32(r.last_seen),
-                    round: 0,
-                    dci,
-                    ici,
-                    state: if r.state == "absent" { ABSENT } else { PRESENT },
-                    missed: 0,
-                },
-            );
-        }
+        // Two integers a row, read as they come.
+        let reader = Arc::clone(&db);
+        reader.read(|o| {
+            o.seen_each(|rid, last| {
+                e.times.insert(
+                    u64::try_from(rid).unwrap_or(0),
+                    Times {
+                        last: t32(last),
+                        stored: t32(last),
+                    },
+                );
+            })
+        })?;
         let learning = db.write(|o| {
             Ok(match o.meta_get("learning_until")?.and_then(|v| v.parse::<i64>().ok()) {
                 Some(t) => t,
@@ -219,124 +231,101 @@ impl Engine {
         self.learning_until
     }
 
-    /// Records in the index, and those present.
+    /// Records held, and those present.
     pub(crate) fn record_counts(&self) -> (usize, usize) {
-        let present = self.seen.values().filter(|s| s.state == PRESENT).count();
-        (self.seen.len(), present)
+        self.db.read(|o| o.record_counts()).map_or((0, 0), |(t, p)| {
+            (
+                usize::try_from(t).unwrap_or(0),
+                usize::try_from(p).unwrap_or(0),
+            )
+        })
     }
 
     pub(crate) fn sources(&self) -> &BTreeMap<String, SourceStat> {
         &self.sources
     }
 
-    fn src_id(&mut self, source: &str) -> u16 {
-        if let Some(i) = self.src_ids.get(source) {
-            return *i;
-        }
-        let i = u16::try_from(self.srcs.len()).unwrap_or(u16::MAX);
-        self.srcs.push(source.to_owned());
-        self.src_ids.insert(source.to_owned(), i);
-        i
-    }
-
-    /// The in-memory index's size, for the memory test (an estimate, in bytes).
+    /// What the engine keeps in memory, an estimate in bytes (the memory test reports it).
     pub(crate) fn index_bytes(&self) -> usize {
-        self.seen.capacity()
-            * (std::mem::size_of::<Seen>() + std::mem::size_of::<u64>() + 1)
+        self.times.capacity() * std::mem::size_of::<(u64, Times)>()
             + self.cis.ids.capacity() * 16
-            + self.cis.map.capacity() * 24
-            + self.ci_times.capacity() * (std::mem::size_of::<CiTime>() + 5)
+            + self.cis.map.capacity() * std::mem::size_of::<(u64, u32)>()
+            + self.ci_times.capacity() * std::mem::size_of::<CiTime>()
     }
 
     // -- ingestion ---------------------------------------------------------------------------
 
-    /// Ingests one batch: writes the records whose content changed, resolves the components they
-    /// touch, marks records a complete batch no longer lists, and keeps the rest in memory.
-    #[allow(clippy::too_many_lines)] // one flow: classify, cap, write, resolve, then update memory
+    /// Ingests one batch: probes each record, writes those whose content changed, resolves the
+    /// components they touch, marks the records a complete batch no longer lists, and keeps the
+    /// times in memory. One write transaction.
+    #[allow(clippy::too_many_lines)] // one flow: probe, cap, write, resolve, then update memory
     pub(crate) fn ingest(&mut self, b: SourceBatch, now: i64) -> Result<IngestReport> {
         let started = std::time::Instant::now();
-        self.round = self.round.wrapping_add(1).max(1);
-        let round = self.round;
-        let src = self.src_id(&b.source);
         let presence = is_presence(&b.source);
         let mut rep = IngestReport {
             records: b.records.len(),
             ..IngestReport::default()
         };
-        let mut changed = Vec::new();
-        let mut revive: Vec<i64> = Vec::new();
-        let mut touch: Vec<(u32, u32, i64)> = Vec::new();
+        let mut prepared = Vec::with_capacity(b.records.len());
         for rec in &b.records {
-            let Some(p) = prepare(rec) else {
-                rep.refused = rep.refused.saturating_add(1);
-                continue;
-            };
-            rep.cut = rep.cut.saturating_add(p.cut);
-            match self.seen.get_mut(&p.key_hash) {
-                Some(s) if s.hash == p.write.hash => {
-                    s.last = s.last.max(t32(p.write.seen));
-                    s.round = round;
-                    s.missed = 0;
-                    if s.state == ABSENT {
-                        s.state = PRESENT;
-                        revive.push(s.rid);
-                    }
-                    touch.push((s.dci, s.ici, p.write.seen));
-                    rep.unchanged = rep.unchanged.saturating_add(1);
+            match prepare(rec) {
+                Some(p) => {
+                    rep.cut = rep.cut.saturating_add(p.cut);
+                    prepared.push(p);
                 }
-                Some(s) => {
-                    s.round = round;
-                    s.missed = 0;
-                    changed.push(p);
-                }
-                None => changed.push(p),
-            }
-        }
-        // The cap on records: room is made from the oldest `absent` ones; a new record that finds
-        // none is dropped and counted (ADR-1005 section 3).
-        let new_count = changed
-            .iter()
-            .filter(|p| !self.seen.contains_key(&p.key_hash))
-            .count();
-        let total = self.seen.len().saturating_add(new_count);
-        let cap = usize::try_from(MAX_RECORDS).unwrap_or(usize::MAX);
-        let mut evict = total.saturating_sub(cap);
-        // A complete batch marks what it no longer lists.
-        let mut absent: Vec<(u64, i64)> = Vec::new();
-        if b.complete {
-            for (kh, s) in &self.seen {
-                if s.src == src
-                    && s.round != round
-                    && s.state == PRESENT
-                    && s.missed.saturating_add(1) >= ABSENT_AFTER
-                {
-                    absent.push((*kh, s.rid));
-                }
+                None => rep.refused = rep.refused.saturating_add(1),
             }
         }
         let db = Arc::clone(&self.db);
-        let mut deleted: Vec<i64> = Vec::new();
-        let mut dropped_new = 0usize;
-        let (applied, written) = db.write(|ops| {
-            let mut cx = Cx::new(ops, now)?;
+        let caps = self.caps;
+        let times = &self.times;
+        let applied = db.write(|ops| {
+            let mut ap = Applied::default();
+            let mut cx = Cx::new(ops, now, caps)?;
             let mut seeds = Seeds::default();
+            let mut listed: HashSet<i64> = HashSet::new();
+            let mut revive: Vec<i64> = Vec::new();
+            let mut reset: Vec<i64> = Vec::new();
+            let mut changed: Vec<(&super::model::Prepared, bool)> = Vec::new();
+            for p in &prepared {
+                match ops.record_probe(&p.write.source, &p.write.skey)? {
+                    Some(pr) if pr.hash == p.write.hash => {
+                        listed.insert(pr.rid);
+                        if pr.state == "absent" {
+                            revive.push(pr.rid);
+                        } else if pr.missed > 0 {
+                            reset.push(pr.rid);
+                        }
+                        ap.unchanged
+                            .push((pr.rid, p.write.seen, pr.last_seen, pr.ici, pr.dci));
+                    }
+                    Some(pr) => {
+                        listed.insert(pr.rid);
+                        changed.push((p, false));
+                    }
+                    None => changed.push((p, true)),
+                }
+            }
+            // The cap on records: room is made from the oldest `absent` ones; a new record that
+            // finds none is dropped and counted (ADR-1005 section 3).
+            let new_count = i64::try_from(changed.iter().filter(|(_, n)| *n).count()).unwrap_or(0);
+            let (total, _) = ops.record_counts()?;
+            let mut evict = total.saturating_add(new_count).saturating_sub(caps.records);
             if evict > 0 {
-                for rid in ops.oldest_absent_records(i64::try_from(evict).unwrap_or(i64::MAX))? {
+                for rid in ops.oldest_absent_records(evict)? {
                     if let Some(row) = ops.record_by_id(rid)? {
                         seeds.add_row(&row);
                     }
                     ops.record_delete(rid)?;
-                    deleted.push(rid);
+                    ap.deleted.push(rid);
                     evict = evict.saturating_sub(1);
                 }
             }
-            let mut written: Vec<(u64, i64, i64, u64)> = Vec::new();
-            for p in &changed {
-                let is_new = !self.seen.contains_key(&p.key_hash);
-                if is_new && evict > 0 {
+            for (p, is_new) in &changed {
+                if *is_new && evict > 0 {
                     // No `absent` record to make room for it: it is dropped.
                     evict = evict.saturating_sub(1);
-                    dropped_new = dropped_new.saturating_add(1);
+                    ap.dropped_new = ap.dropped_new.saturating_add(1);
                     continue;
                 }
                 let (rid, old) = ops.record_upsert(&p.write)?;
@@ -344,19 +333,39 @@ impl Engine {
                 if let Some(o) = &old {
                     seeds.add_row(o);
                 }
-                written.push((p.key_hash, rid, p.write.seen, p.write.hash));
+                listed.insert(rid);
+                ap.written.push((rid, p.write.seen, None, None));
             }
             for rid in &revive {
                 ops.record_state(*rid, "present")?;
             }
-            for (_, rid) in &absent {
-                ops.record_state(*rid, "absent")?;
+            for rid in &reset {
+                ops.record_set_missed(*rid, 0)?;
+            }
+            // A complete batch marks what it no longer lists: a miss, and `absent` at the second.
+            if b.complete {
+                for (rid, missed) in ops.present_of_source(&b.source)? {
+                    if listed.contains(&rid) {
+                        continue;
+                    }
+                    let m = missed.saturating_add(1);
+                    if m >= i64::from(ABSENT_AFTER) {
+                        ops.record_state(rid, "absent")?;
+                        // The last time it was seen is kept when it leaves `present`.
+                        if let Some(t) = times.get(&u64::try_from(rid).unwrap_or(0)) {
+                            ops.seen_flush(&[(rid, i64::from(t.last))])?;
+                        }
+                        ap.absent = ap.absent.saturating_add(1);
+                    } else {
+                        ops.record_set_missed(rid, m)?;
+                    }
+                }
             }
             resolve_seeds(&mut cx, &seeds)?;
             // At most 8 records per CI, counted at the CI's own level: the oldest `absent` goes,
             // else the newest written one is dropped and counted.
             let mut levels: Vec<String> = Vec::new();
-            for (_, rid, _, _) in &written {
+            for (rid, _, _, _) in &ap.written {
                 if let Some(r) = ops.record_by_id(*rid)?
                     && let Some(c) = r.ici.or(r.dci)
                     && !levels.contains(&c)
@@ -365,13 +374,13 @@ impl Engine {
                 }
             }
             for ci in &levels {
-                while ops.record_count_at_level(ci)? > MAX_RECORDS_PER_CI {
+                while ops.record_count_at_level(ci)? > caps.per_ci {
                     if let Some(rid) = ops.oldest_absent_at_level(ci)? {
                         ops.record_delete(rid)?;
-                        deleted.push(rid);
+                        ap.deleted.push(rid);
                         continue;
                     }
-                    let newest = written.iter().rev().find_map(|(_, rid, _, _)| {
+                    let newest = ap.written.iter().rev().find_map(|(rid, _, _, _)| {
                         ops.record_by_id(*rid).ok().flatten().filter(|r| {
                             r.ici.as_deref() == Some(ci.as_str())
                                 || (r.ici.is_none() && r.dci.as_deref() == Some(ci.as_str()))
@@ -380,132 +389,136 @@ impl Engine {
                     match newest {
                         Some(r) => {
                             ops.record_delete(r.rid)?;
-                            deleted.push(r.rid);
-                            dropped_new = dropped_new.saturating_add(1);
+                            ap.deleted.push(r.rid);
+                            ap.dropped_new = ap.dropped_new.saturating_add(1);
                         }
                         None => break,
                     }
                 }
             }
-            let mut links = Vec::new();
-            for (kh, rid, seen, hash) in &written {
-                if deleted.contains(rid) {
+            // Links of what was written, now that the records are resolved.
+            let mut kept = Vec::new();
+            for (rid, seen, _, _) in std::mem::take(&mut ap.written) {
+                if ap.deleted.contains(&rid) {
                     continue;
                 }
-                if let Some(r) = ops.record_by_id(*rid)? {
-                    links.push((*kh, *rid, *seen, *hash, r.dci, r.ici));
+                if let Some(r) = ops.record_by_id(rid)? {
+                    kept.push((rid, seen, r.ici, r.dci));
                 }
             }
-            Ok((
-                (
-                    cx.created,
-                    cx.merged,
-                    cx.proposals,
-                    cx.dropped_ci,
-                ),
-                links,
-            ))
+            ap.written = kept;
+            ap.created = cx.created;
+            ap.merged = cx.merged;
+            ap.proposals = cx.proposals;
+            ap.dropped_ci = cx.dropped_ci;
+            Ok(ap)
         })?;
-        // The write is committed: the index follows.
-        if !deleted.is_empty() {
-            let gone: std::collections::HashSet<i64> = deleted.iter().copied().collect();
-            self.seen.retain(|_, s| !gone.contains(&s.rid));
+        // The write is committed: memory follows.
+        if !applied.deleted.is_empty() {
+            let gone: HashSet<u64> = applied
+                .deleted
+                .iter()
+                .filter_map(|r| u64::try_from(*r).ok())
+                .collect();
+            self.times.retain(|k, _| !gone.contains(k));
         }
-        for (kh, rid) in &absent {
-            if let Some(s) = self.seen.get_mut(kh)
-                && s.rid == *rid
-            {
-                s.state = ABSENT;
-                s.missed = ABSENT_AFTER;
-                rep.went_absent = rep.went_absent.saturating_add(1);
+        for (rid, seen, stored, ici, dci) in &applied.unchanged {
+            let key = u64::try_from(*rid).unwrap_or(0);
+            match self.times.get_mut(&key) {
+                Some(t) => t.last = t.last.max(t32(*seen)),
+                None => self.times.insert(
+                    key,
+                    Times {
+                        last: t32(*seen).max(t32(*stored)),
+                        stored: t32(*stored),
+                    },
+                ),
+            }
+            if presence {
+                self.touch(ici.as_deref(), *seen);
+                self.touch(dci.as_deref(), *seen);
             }
         }
-        // Records a complete batch missed once are counted, not yet absent.
-        if b.complete {
-            for s in self.seen.values_mut() {
-                if s.src == src && s.round != round && s.state == PRESENT && s.missed < ABSENT_AFTER {
-                    s.missed = s.missed.saturating_add(1);
-                }
-            }
-        }
-        for (kh, rid, seen, hash, dci, ici) in &written {
-            let dh = self.cis.handle(dci.as_deref());
-            let ih = self.cis.handle(ici.as_deref());
-            self.seen.insert(
-                *kh,
-                Seen {
-                    rid: *rid,
-                    hash: *hash,
-                    src,
+        rep.unchanged = applied.unchanged.len();
+        for (rid, seen, ici, dci) in &applied.written {
+            self.times.insert(
+                u64::try_from(*rid).unwrap_or(0),
+                Times {
                     last: t32(*seen),
                     stored: t32(*seen),
-                    round,
-                    dci: dh,
-                    ici: ih,
-                    state: PRESENT,
-                    missed: 0,
                 },
             );
-            touch.push((dh, ih, *seen));
-            rep.written = rep.written.saturating_add(1);
-        }
-        let (created, merged, proposals, dropped_ci) = applied;
-        self.counters.cis_created = self.counters.cis_created.saturating_add(created);
-        self.counters.merged = self.counters.merged.saturating_add(merged);
-        self.counters.proposals_raised = self.counters.proposals_raised.saturating_add(proposals);
-        self.counters.dropped_ci = self.counters.dropped_ci.saturating_add(dropped_ci);
-        self.counters.dropped_record = self
-            .counters
-            .dropped_record
-            .saturating_add(u64::try_from(dropped_new).unwrap_or(u64::MAX));
-        self.counters.records_written = self
-            .counters
-            .records_written
-            .saturating_add(u64::try_from(rep.written).unwrap_or(u64::MAX));
-        self.counters.records_refused = self
-            .counters
-            .records_refused
-            .saturating_add(u64::try_from(rep.refused).unwrap_or(u64::MAX));
-        self.counters.attrs_cut = self
-            .counters
-            .attrs_cut
-            .saturating_add(u64::try_from(rep.cut).unwrap_or(u64::MAX));
-        self.counters.batches = self.counters.batches.saturating_add(1);
-        rep.dropped = dropped_new;
-        if presence {
-            for (d, i, at) in touch {
-                self.touch_ci(d, at);
-                self.touch_ci(i, at);
+            if presence {
+                self.touch(ici.as_deref(), *seen);
+                self.touch(dci.as_deref(), *seen);
             }
         }
+        rep.written = applied.written.len();
+        rep.went_absent = applied.absent;
+        rep.dropped = applied.dropped_new;
+        let c = &mut self.counters;
+        c.cis_created = c.cis_created.saturating_add(applied.created);
+        c.merged = c.merged.saturating_add(applied.merged);
+        c.proposals_raised = c.proposals_raised.saturating_add(applied.proposals);
+        c.dropped_ci = c.dropped_ci.saturating_add(applied.dropped_ci);
+        c.dropped_record = c
+            .dropped_record
+            .saturating_add(u64::try_from(applied.dropped_new).unwrap_or(u64::MAX));
+        c.records_written = c
+            .records_written
+            .saturating_add(u64::try_from(rep.written).unwrap_or(u64::MAX));
+        c.records_refused = c
+            .records_refused
+            .saturating_add(u64::try_from(rep.refused).unwrap_or(u64::MAX));
+        c.attrs_cut = c
+            .attrs_cut
+            .saturating_add(u64::try_from(rep.cut).unwrap_or(u64::MAX));
+        c.batches = c.batches.saturating_add(1);
+        c.batch_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         let st = self.sources.entry(b.source.clone()).or_default();
         st.last_at = now;
         st.records = rep.records;
         st.complete = b.complete;
         st.batches = st.batches.saturating_add(1);
-        self.counters.batch_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         Ok(rep)
     }
 
-    fn touch_ci(&mut self, handle: u32, at: i64) {
+    /// A presence source saw a CI: its newest time, and the day if it is a new one (the registry's
+    /// `last_seen` and `days_seen`, which outlive the records, ADR-1005 section 3).
+    fn touch(&mut self, ci: Option<&str>, at: i64) {
+        let handle = self.cis.handle(ci);
         if handle == 0 {
             return;
         }
-        if !self.ci_times.contains_key(&handle) {
+        let idx = usize::try_from(handle).unwrap_or(usize::MAX);
+        if self.ci_times.len() <= idx {
+            self.ci_times
+                .resize(idx.saturating_add(1), CiTime::default());
+        }
+        if !self.ci_times.get(idx).is_some_and(|t| t.loaded) {
             let row = self
                 .cis
                 .text(handle)
                 .and_then(|id| self.db.read(|o| o.seen_get(&id)).ok().flatten());
-            let t = row.map_or_else(CiTime::default, |r| CiTime {
-                last: t32(r.last_seen),
-                stored_last: t32(r.last_seen),
-                day: u32::try_from(r.day.max(0)).unwrap_or(0),
-                days: u8::try_from(r.days_seen.clamp(0, DAYS_SEEN_CAP)).unwrap_or(0),
-                dirty: false,
-            });
-            self.ci_times.insert(handle, t);
+            let t = row.map_or_else(
+                || CiTime {
+                    loaded: true,
+                    ..CiTime::default()
+                },
+                |r| CiTime {
+                    last: t32(r.last_seen),
+                    stored_last: t32(r.last_seen),
+                    day: u32::try_from(r.day.max(0)).unwrap_or(0),
+                    days: u8::try_from(r.days_seen.clamp(0, DAYS_SEEN_CAP)).unwrap_or(0),
+                    dirty: false,
+                    loaded: true,
+                },
+            );
+            if let Some(slot) = self.ci_times.get_mut(idx) {
+                *slot = t;
+            }
         }
-        if let Some(t) = self.ci_times.get_mut(&handle) {
+        if let Some(t) = self.ci_times.get_mut(idx) {
             t.last = t.last.max(t32(at));
             let day = t32(at) / 86_400;
             if day != t.day {
@@ -529,32 +542,40 @@ impl Engine {
         }
         self.last_flush = now;
         let stale = if force { 0 } else { FLUSH_STALE_SECS };
-        let recs: Vec<(u64, i64, u32)> = self
-            .seen
+        let recs: Vec<(u64, u32)> = self
+            .times
             .iter()
-            .filter(|(_, s)| s.last > s.stored && i64::from(s.last) - i64::from(s.stored) > stale)
-            .map(|(k, s)| (*k, s.rid, s.last))
+            .filter(|(_, t)| t.last > t.stored && i64::from(t.last) - i64::from(t.stored) > stale)
+            .map(|(k, t)| (*k, t.last))
             .collect();
-        let mut cis: Vec<(u32, String, SeenRow)> = Vec::new();
-        for (h, t) in &self.ci_times {
-            if t.dirty || (t.last > t.stored_last && i64::from(t.last) - i64::from(t.stored_last) > stale) {
-                if let Some(id) = self.cis.text(*h) {
-                    cis.push((
-                        *h,
-                        id,
-                        SeenRow {
-                            last_seen: i64::from(t.last),
-                            days_seen: i64::from(t.days),
-                            day: i64::from(t.day),
-                        },
-                    ));
-                }
+        let mut cis: Vec<(usize, String, SeenRow)> = Vec::new();
+        for (idx, t) in self.ci_times.iter().enumerate() {
+            let due = t.dirty
+                || (t.last > t.stored_last
+                    && i64::from(t.last) - i64::from(t.stored_last) > stale);
+            if !t.loaded || !due {
+                continue;
+            }
+            let h = u32::try_from(idx).unwrap_or(0);
+            if let Some(id) = self.cis.text(h) {
+                cis.push((
+                    idx,
+                    id,
+                    SeenRow {
+                        last_seen: i64::from(t.last),
+                        days_seen: i64::from(t.days),
+                        day: i64::from(t.day),
+                    },
+                ));
             }
         }
         if recs.is_empty() && cis.is_empty() {
             return Ok(0);
         }
-        let rows: Vec<(i64, i64)> = recs.iter().map(|(_, rid, at)| (*rid, i64::from(*at))).collect();
+        let rows: Vec<(i64, i64)> = recs
+            .iter()
+            .map(|(rid, at)| (i64::try_from(*rid).unwrap_or(0), i64::from(*at)))
+            .collect();
         let db = Arc::clone(&self.db);
         db.write(|o| {
             o.seen_flush(&rows)?;
@@ -566,13 +587,13 @@ impl Engine {
             }
             Ok(())
         })?;
-        for (k, _, at) in &recs {
-            if let Some(s) = self.seen.get_mut(k) {
-                s.stored = *at;
+        for (k, at) in &recs {
+            if let Some(t) = self.times.get_mut(k) {
+                t.stored = *at;
             }
         }
-        for (h, _, row) in &cis {
-            if let Some(t) = self.ci_times.get_mut(h) {
+        for (idx, _, row) in &cis {
+            if let Some(t) = self.ci_times.get_mut(*idx) {
                 t.stored_last = t32(row.last_seen);
                 t.dirty = false;
             }
@@ -593,12 +614,14 @@ impl Engine {
     /// outlive the records.
     pub(crate) fn maintain(&mut self, now: i64) -> Result<usize> {
         let db = Arc::clone(&self.db);
+        let caps = self.caps;
         let mut gone_rids: Vec<i64> = Vec::new();
         let n = db.write(|ops| {
-            let mut cx = Cx::new(ops, now)?;
+            let mut cx = Cx::new(ops, now, caps)?;
             let mut seeds = Seeds::default();
             ops.alias_expire(now)?;
-            let mut expired = ops.records_expired(now.saturating_sub(RETENTION_SECS), "%", "import:%")?;
+            let mut expired =
+                ops.records_expired(now.saturating_sub(RETENTION_SECS), "%", "import:%")?;
             expired.extend(ops.records_expired(
                 now.saturating_sub(IMPORT_RETENTION_SECS),
                 "import:%",
@@ -624,31 +647,13 @@ impl Engine {
             Ok(expired.len().saturating_add(removed))
         })?;
         if !gone_rids.is_empty() {
-            let gone: std::collections::HashSet<i64> = gone_rids.into_iter().collect();
-            self.seen.retain(|_, s| !gone.contains(&s.rid));
+            let gone: HashSet<u64> = gone_rids
+                .into_iter()
+                .filter_map(|r| u64::try_from(r).ok())
+                .collect();
+            self.times.retain(|k, _| !gone.contains(k));
         }
         Ok(n)
-    }
-
-    /// Makes the in-memory view of one record's CI links current after the engine changed them
-    /// outside a batch (a manual change).
-    pub(crate) fn reload_links(&mut self, rids: &[i64]) {
-        let db = Arc::clone(&self.db);
-        let rows: Vec<_> = rids
-            .iter()
-            .filter_map(|rid| db.read(|o| o.record_by_id(*rid)).ok().flatten())
-            .collect();
-        for r in rows {
-            let kh = key_hash(&r.source, &r.skey);
-            let (d, i) = (
-                self.cis.handle(r.dci.as_deref()),
-                self.cis.handle(r.ici.as_deref()),
-            );
-            if let Some(s) = self.seen.get_mut(&kh) {
-                s.dci = d;
-                s.ici = i;
-            }
-        }
     }
 }
 

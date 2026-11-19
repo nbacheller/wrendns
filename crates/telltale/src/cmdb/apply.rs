@@ -14,7 +14,7 @@ use telltale_store::cmdb::{
 };
 
 use super::model::{
-    ALIAS_SECS, MAX_CIS, RecKind, is_presence, kind_of, name_rank, new_ci_id, trailing_number,
+    ALIAS_SECS, Caps, RecKind, is_presence, kind_of, name_rank, new_ci_id, trailing_number,
 };
 use super::resolve::{Ev, Resolution, resolve};
 
@@ -107,6 +107,7 @@ impl Seeds {
 pub(crate) struct Cx<'a> {
     pub(crate) ops: &'a Ops<'a>,
     pub(crate) now: i64,
+    pub(crate) caps: Caps,
     pub(crate) ci_total: i64,
     pub(crate) dropped_ci: u64,
     pub(crate) created: u64,
@@ -127,10 +128,11 @@ pub(crate) struct Cx<'a> {
 }
 
 impl<'a> Cx<'a> {
-    pub(crate) fn new(ops: &'a Ops<'a>, now: i64) -> Result<Self> {
+    pub(crate) fn new(ops: &'a Ops<'a>, now: i64, caps: Caps) -> Result<Self> {
         Ok(Self {
             ops,
             now,
+            caps,
             ci_total: ops.ci_count(None)?,
             dropped_ci: 0,
             created: 0,
@@ -202,7 +204,7 @@ fn live_device(ops: &Ops<'_>, id: &str) -> Result<Option<CiRow>> {
 
 /// Makes room for and writes a new CI, or counts the refusal (ADR-1005 section 3).
 fn new_ci(cx: &mut Cx<'_>, row: &CiRow) -> Result<bool> {
-    if cx.ci_total >= MAX_CIS {
+    if cx.ci_total >= cx.caps.cis {
         let mut freed = false;
         for id in cx.ops.ci_eviction_candidates(64)? {
             if !cx.ops.ci_authored(&id)? && !cx.devices.contains(&id) {
