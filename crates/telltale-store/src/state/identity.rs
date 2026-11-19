@@ -203,8 +203,8 @@ impl State {
     /// a bad document changes nothing.
     #[allow(clippy::too_many_lines)] // users, then codes, then tokens, in one transaction
     pub fn import_identities(&self, ids: &Identities) -> Result<ImportReport> {
-        let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let conn = self.lock();
+        let tx = super::write_tx(&conn)?;
         let mut rep = ImportReport::default();
         // The primary's user ID → this node's.
         let mut map = std::collections::HashMap::new();

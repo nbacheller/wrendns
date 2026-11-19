@@ -88,7 +88,7 @@ impl State {
     /// prunes old ones. Returns how many were new.
     pub fn ack_anomalies(&self, acks: &[AnomalyAck], now: u64) -> Result<u64> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let mut added = 0;
         {
             let mut st = tx.prepare(
@@ -110,7 +110,7 @@ impl State {
     /// Takes acknowledgements back. Returns how many there were.
     pub fn unack_anomalies(&self, ids: &[String]) -> Result<u64> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let mut removed = 0;
         {
             let mut st = tx.prepare("DELETE FROM anomaly_acks WHERE id = ?1")?;
@@ -135,7 +135,7 @@ impl State {
             return Ok(false);
         }
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         tx.execute("DELETE FROM anomaly_acks", [])?;
         {
             let mut st = tx.prepare(
