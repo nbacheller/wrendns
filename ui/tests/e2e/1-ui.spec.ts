@@ -198,7 +198,7 @@ test('query log finds the blocked query and explains it', async () => {
   await page.getByRole('button', { name: 'Why?' }).first().click();
   const drawer = page.getByRole('dialog');
   await expect(drawer).toContainText('e2e-block');
-  await expect(drawer).toContainText('★');
+  await expect(drawer.getByTestId('rule-winner').first()).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(drawer).toBeHidden();
   // Status chips filter, and the filter lands in the URL.
@@ -1570,12 +1570,12 @@ test('api_011 help panels, diagrams, and simple/advanced', async () => {
 
 // REQ: API-011 (T3.12 AC) — a novice creates nas.home.arpa and sends corp.example elsewhere through
 // the wizards, without docs; DNS answers at once; the API does the same with dry-run.
-test('api_011 names on my network: wizards, DNS, and the API', async () => {
+test('api_011 names on your network: wizards, DNS, and the API', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/local-dns');
-  await expect(page.getByRole('heading', { name: 'Names on my network' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Names on your network' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Set up my home domain', exact: true }).click();
+  await page.getByRole('button', { name: 'Set up your home domain', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Home domain', exact: true })).toHaveValue('home.arpa');
   await page.getByRole('button', { name: 'Next' }).click();
   await page.getByRole('textbox', { name: 'Device name', exact: true }).fill('nas');
@@ -1790,7 +1790,7 @@ test('clu_008 cluster topology', async () => {
   // Long pod and site names are shortened in the middle to fit (the full name is in the tooltip).
   await expect(topo.getByTestId('topology-node').first()).toContainText(/wrend.*….*-8j9h9/);
   // The primary is marked as such; the Pi is a replica.
-  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('PRIMARY');
+  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('Primary');
   await expect(topo.getByTestId('topology-node').nth(1).getByTestId('topology-role')).toHaveText('replica');
   await expect(topo.getByTestId('topology-site').nth(1).locator('text').first()).toHaveText(/^home-.*….*closet$/);
   await expect(topo.locator('.pod.bad')).toHaveCount(1);
@@ -1878,7 +1878,7 @@ test('clu_009 a witness is a voter, not a full node', async () => {
   await page.keyboard.press('Escape');
   // The tabs count nothing for it: Health is clean.
   await page.getByRole('tab', { name: /^Health/ }).click();
-  await expect(page.getByTestId('cluster-check').filter({ hasText: '✗' })).toHaveCount(0);
+  await expect(page.locator('[data-testid="cluster-check"].fail')).toHaveCount(0);
   // Down: still a failing check (automatic failover needs its vote), and red in the topology.
   current = view(false);
   await expect(page.getByTestId('cluster-health')).toContainText('Needs attention', { timeout: 10_000 });

@@ -1,7 +1,9 @@
 // REQ: API-005, DOC-006 (T33.2, ADR-1030) — the brand in the UI: the tokens from brand/tokens.json as
 // CSS variables for Day and Night (the system's choice, and the header's toggle kept per viewer),
 // Figtree and IBM Plex Mono, the logo files (byte for byte from brand/logos) and the app icon as the
-// favicon, and status colours that always come with a word. These tests sign in as the admin
+// favicon, and status colours that always come with a word. T33.6 (the brand pass): the focus ring on
+// every kind of control in both themes, status badges with a word on their tint, disabled controls
+// that aren't faded, and reduced motion. These tests sign in as the admin
 // `1-ui.spec.ts` created; the file is named `9-z` so it runs after it and after `9-categories.spec.ts`, whose timing it must not shift.
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
@@ -43,8 +45,8 @@ let ctx: BrowserContext;
 let page: Page;
 const problems: string[] = [];
 
-async function open(browser: import('@playwright/test').Browser, colorScheme: 'light' | 'dark') {
-  ctx = await browser.newContext({ colorScheme });
+async function open(browser: import('@playwright/test').Browser, colorScheme: 'light' | 'dark', reducedMotion: 'reduce' | 'no-preference' = 'no-preference') {
+  ctx = await browser.newContext({ colorScheme, reducedMotion });
   page = await ctx.newPage();
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
   await page.goto('/');
@@ -263,5 +265,179 @@ test.describe('dark system', () => {
     });
     expect(contrast(c.text, c.bg)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(c.link, c.card)).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+// REQ: API-005, DOC-006 (T33.6) — the brand pass, in Day and Night.
+/** The ring the focused element (or the box it sits in, for the header's search) shows. */
+async function ringOf(target: import('@playwright/test').Locator, ringOn?: string) {
+  // Keyboard modality first, so a programmatic focus counts as keyboard focus (:focus-visible).
+  await page.keyboard.press('Shift');
+  await target.focus();
+  return target.evaluate((el, sel) => {
+    const ringEl = sel ? (el.closest(sel) as Element) : el;
+    const s = getComputedStyle(ringEl);
+    const bg = (e: Element | null): string => {
+      for (let x = e; x; x = x.parentElement) {
+        const c = getComputedStyle(x).backgroundColor;
+        if (c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') return c;
+      }
+      return getComputedStyle(document.body).backgroundColor;
+    };
+    return {
+      visible: el.matches(':focus-visible') || !!sel,
+      style: s.outlineStyle,
+      width: s.outlineWidth,
+      offset: s.outlineOffset,
+      color: s.outlineColor,
+      around: bg(ringEl.parentElement),
+    };
+  }, ringOn);
+}
+
+for (const theme of ['light', 'dark'] as const) {
+  test.describe(`brand pass (${theme})`, () => {
+    test.beforeAll(async ({ browser }) => {
+      await open(browser, theme);
+    });
+    test.afterAll(async () => {
+      await ctx.close();
+    });
+
+    test(`api_005 doc_006 the focus ring is 2px of focus-ring, 2px outside, on every kind of control (${theme})`, async () => {
+      await page.goto('/#/');
+      await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+      const want = rgb(color('focus-ring', theme));
+      const controls: [string, import('@playwright/test').Locator, string?][] = [
+        ['a nav link', page.locator('nav.side a.nav').nth(1)],
+        ['a segmented button', page.getByRole('group', { name: 'Detail level', exact: true }).getByRole('button', { name: 'Simple' })],
+        ['an icon button', page.getByTestId('theme-toggle')],
+        ['a switch', page.locator('input[role="switch"]').first()],
+        ['a select', page.locator('main select').first()],
+        ['the search box', page.getByLabel('Search names or clients'), '.search'],
+      ];
+      for (const [what, loc, ringOn] of controls) {
+        await expect(loc, what).toBeVisible();
+        const r = await ringOf(loc, ringOn);
+        expect(r.visible, `${what} matches :focus-visible`).toBe(true);
+        expect([r.style, r.width, r.offset, r.color], `${what}'s ring`).toEqual(['solid', '2px', '2px', want]);
+        expect(contrast(r.color, r.around), `${what}'s ring against what is around it`).toBeGreaterThanOrEqual(3);
+      }
+      // A tab (the Clients page) and a primary button (Names on your network).
+      await page.goto('/#/clients');
+      const tab = page.getByRole('tab').first();
+      await expect(tab).toBeVisible();
+      const t = await ringOf(tab);
+      expect([t.style, t.width, t.offset, t.color], 'a tab').toEqual(['solid', '2px', '2px', want]);
+      await page.goto('/#/local-dns');
+      const primary = page.getByRole('button', { name: 'Set up your home domain', exact: true });
+      await expect(primary).toBeVisible();
+      const p = await ringOf(primary);
+      expect([p.style, p.width, p.offset, p.color], 'a primary button').toEqual(['solid', '2px', '2px', want]);
+    });
+
+    test(`api_005 doc_006 status badges carry a word, on their own tint (${theme})`, async () => {
+      for (const path of ['/#/', '/#/queries', '/#/lists', '/#/upstreams', '/#/cluster', '/#/groups', '/#/clients', '/#/settings?tab=system']) {
+        await page.goto(path);
+        await expect(page.locator('main')).toBeVisible();
+        await page.waitForTimeout(400);
+        const bad = await page.locator('.badge.ok, .badge.bad, .badge.warn').evaluateAll((els) =>
+          els
+            .filter((e) => !(e.textContent ?? '').trim() && !(e.getAttribute('aria-label') ?? '').trim())
+            .map((e) => e.outerHTML.slice(0, 80)),
+        );
+        expect(bad, `badges without a word on ${path}`).toEqual([]);
+      }
+      // Each tone: the status colour on its -soft tint.
+      const tones = await page.evaluate(() =>
+        ['ok', 'warn', 'bad'].map((tone) => {
+          const b = document.createElement('span');
+          b.className = `badge ${tone}`;
+          b.textContent = tone;
+          document.querySelector('main')!.append(b);
+          const s = getComputedStyle(b);
+          const out = [s.color, s.backgroundColor];
+          b.remove();
+          return out;
+        }),
+      );
+      const names = [
+        ['ok', 'ok-soft'],
+        ['warn', 'warn-soft'],
+        ['alert', 'alert-soft'],
+      ];
+      tones.forEach(([fg, bg], i) => {
+        expect([fg, bg]).toEqual([rgb(color(names[i][0], theme)), rgb(color(names[i][1], theme))]);
+        expect(contrast(fg, bg), `${names[i][0]} on its tint`).toBeGreaterThanOrEqual(4.5);
+      });
+    });
+
+    test(`api_005 doc_006 disabled controls are muted with a hairline edge, never faded (${theme})`, async () => {
+      await page.goto('/#/lists');
+      await expect(page.locator('main')).toBeVisible();
+      const looks = await page.evaluate(() => {
+        const main = document.querySelector('main')!;
+        const made = ['<button disabled>Off</button>', '<button class="primary" disabled>Off</button>', '<input disabled value="off">', '<select disabled><option>off</option></select>'].map(
+          (h) => {
+            const t = document.createElement('template');
+            t.innerHTML = h;
+            const el = t.content.firstElementChild as HTMLElement;
+            main.append(el);
+            const s = getComputedStyle(el);
+            const out = { opacity: s.opacity, color: s.color, border: s.borderTopColor };
+            el.remove();
+            return out;
+          },
+        );
+        // And every disabled control the page shows.
+        const real = [...document.querySelectorAll('button:disabled, input:disabled, select:disabled, textarea:disabled')].map((e) => {
+          let o = 1;
+          for (let x: Element | null = e; x; x = x.parentElement) o *= Number(getComputedStyle(x).opacity);
+          return o;
+        });
+        return { made, real };
+      });
+      for (const m of looks.made) {
+        expect(m).toEqual({ opacity: '1', color: rgb(color('ink-muted', theme)), border: rgb(color('line', theme)) });
+      }
+      expect(looks.real.filter((o) => o < 1), 'disabled controls drawn with opacity').toEqual([]);
+    });
+  });
+}
+
+test.describe('reduced motion', () => {
+  test.beforeAll(async ({ browser }) => {
+    await open(browser, 'light', 'reduce');
+  });
+  test.afterAll(async () => {
+    await ctx.close();
+  });
+
+  test('api_005 doc_006 reduced motion turns every transition and animation off', async () => {
+    for (const path of ['/#/', '/#/traffic', '/#/cluster', '/#/settings?tab=system']) {
+      await page.goto(path);
+      await expect(page.locator('main')).toBeVisible();
+      await page.waitForTimeout(300);
+      const moving = await page.evaluate(() =>
+        [...document.querySelectorAll('*')]
+          .filter((e) => {
+            const s = getComputedStyle(e);
+            const secs = (v: string) => Math.max(...v.split(',').map((x) => parseFloat(x) || 0));
+            return secs(s.transitionDuration) > 0 || (s.animationName !== 'none' && secs(s.animationDuration) > 0);
+          })
+          .map((e) => `${e.tagName.toLowerCase()}.${[...e.classList].join('.')}`),
+      );
+      expect(moving, `moving things on ${path}`).toEqual([]);
+    }
+  });
+
+  test('api_005 doc_006 without it, things move in the one motion: 160 ms ease-out', async ({ browser }) => {
+    const c = await browser.newContext({ storageState: await ctx.storageState() });
+    const p = await c.newPage();
+    await p.goto('/#/');
+    const sw = p.locator('input[role="switch"]').first();
+    await expect(sw).toBeVisible();
+    expect(await sw.evaluate((e) => [getComputedStyle(e).transitionDuration, getComputedStyle(e).transitionTimingFunction])).toEqual(['0.16s', 'ease-out']);
+    await c.close();
   });
 });
