@@ -2367,6 +2367,18 @@ telltale cluster set-failover auto
   "not serving", and the Health checks, rollouts and Compare leave it out for those. One that
   is unreachable still fails the "nodes up" check and raises the `node_down` health reason and
   alert, because automatic failover needs its vote.
+- **Every voter reaches every other voter** (REQ: CLU-005, T24.38). Voting needs a link
+  between each pair, so the nodes keep one beside the one a replica holds to the primary: a replica
+  that moves to another replica while the primary restarts, and back when the primary answers,
+  keeps its voter links. The Cluster page's Failover line counts the voters this node reaches, and
+  shows a warning (the **Voter links** check on the Health tab) when one voter's link has dropped
+  three or more times in ten minutes: it is up now but can't be counted on, so look at the network
+  between the nodes. One restart is one drop and is not a warning. The log's
+  `cluster: the main link ended` lines say how long a replica's link to its primary or fallback
+  lasted and why it ended. Before this fix a rolling restart (replicas, then the primary)
+  could leave two replicas with no usable link to each other for good: the Failover line then read
+  "2 of 3 voters reachable" and the replicas kept moving between the primary and each other; a
+  restart of the replica that shows it (or of the other) cleared it.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator

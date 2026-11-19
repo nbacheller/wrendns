@@ -81,6 +81,8 @@ const REPROBE_MAX: Duration = Duration::from_secs(30);
 const REPROBE_MIN: Duration = Duration::from_millis(100);
 #[cfg(test)]
 const REPROBE_MAX: Duration = Duration::from_millis(400);
+/// REQ: CLU-005 (T24.38, ADR-1018) — how many link drops are remembered per peer.
+const LINK_DROPS_KEPT: usize = 16;
 /// A look at the primary that takes longer than this counts as no answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -806,8 +808,17 @@ pub struct Cluster {
     fence: Mutex<()>,
     /// `gitops` or `file`: how this node's own configuration is managed (ADR-048).
     config_source: Mutex<String>,
-    /// Extra frames to send on the stream to each peer (RPC), by peer node ID.
-    outbox: Mutex<HashMap<String, tokio::sync::mpsc::Sender<Frame>>>,
+    /// Extra frames to send on the streams to each peer (RPC), by peer node ID. REQ: CLU-001,
+    /// CLU-005 (T24.38, ADR-1018) — a peer can have several streams at once (the one this node
+    /// dials as its main link, the one the voter mesh keeps, the one the peer dialed): each is
+    /// listed, newest last, and leaves the list only when it ends.
+    outbox: Mutex<HashMap<String, Vec<tokio::sync::mpsc::Sender<Frame>>>>,
+    /// REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — how many streams are open to each peer (counted
+    /// from its Hello to the end of the stream): a peer is `connected` while there is one.
+    live_streams: Mutex<HashMap<String, u32>>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — when each peer last lost its last stream (newest last,
+    /// at most [`LINK_DROPS_KEPT`]): a voter whose link comes and goes shows on the Cluster page.
+    link_drops: Mutex<HashMap<String, VecDeque<std::time::Instant>>>,
     /// RPCs awaiting an answer, by request ID.
     pending: Mutex<PendingCalls>,
     next_rpc: std::sync::atomic::AtomicU64,
@@ -925,6 +936,8 @@ impl Cluster {
             fence: Mutex::new(()),
             config_source: Mutex::new("file".into()),
             outbox: Mutex::new(HashMap::new()),
+            live_streams: Mutex::new(HashMap::new()),
+            link_drops: Mutex::new(HashMap::new()),
             withheld: Mutex::new(std::collections::HashSet::new()),
             ephemeral: std::sync::atomic::AtomicBool::new(false),
             joins: Mutex::new(std::collections::VecDeque::new()),
@@ -1561,8 +1574,65 @@ impl Cluster {
     /// peer that left would otherwise stay listed (and show up as a node that didn't answer).
     pub fn reachable_peers(&self) -> Vec<String> {
         let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
-        outbox.retain(|_, tx| !tx.is_closed());
+        Self::purge_closed(&mut outbox);
         outbox.keys().cloned().collect()
+    }
+
+    /// REQ: CLU-005 (T24.38, ADR-1018) — remembers that `peer` lost its last stream.
+    fn note_link_drop(&self, peer: &str) {
+        let mut drops = self
+            .link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let q = drops.entry(peer.to_owned()).or_default();
+        q.push_back(std::time::Instant::now());
+        while q.len() > LINK_DROPS_KEPT {
+            q.pop_front();
+        }
+    }
+
+    /// REQ: CLU-005 (T24.38, ADR-1018) — for each peer that lost its link within `window`: how
+    /// many times, and how long ago the last time was.
+    pub fn link_drops(&self, window: Duration) -> BTreeMap<String, (u32, Duration)> {
+        let now = std::time::Instant::now();
+        let drops = self
+            .link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        drops
+            .iter()
+            .filter_map(|(id, q)| {
+                let recent: Vec<_> = q
+                    .iter()
+                    .filter(|t| now.duration_since(**t) <= window)
+                    .collect();
+                let last = recent.last()?;
+                Some((
+                    id.clone(),
+                    (
+                        u32::try_from(recent.len()).unwrap_or(u32::MAX),
+                        now.duration_since(**last),
+                    ),
+                ))
+            })
+            .collect()
+    }
+
+    /// Drops the senders of streams that ended, and the peers left with none.
+    fn purge_closed(outbox: &mut HashMap<String, Vec<tokio::sync::mpsc::Sender<Frame>>>) {
+        outbox.retain(|_, v| {
+            v.retain(|tx| !tx.is_closed());
+            !v.is_empty()
+        });
+    }
+
+    /// The newest open stream to `peer` that RPCs can go out on.
+    fn rpc_sender(&self, peer: &str) -> Option<tokio::sync::mpsc::Sender<Frame>> {
+        self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(peer)
+            .and_then(|v| v.iter().rev().find(|tx| !tx.is_closed()).cloned())
     }
 
     /// Calls `kind` on `peer` over its stream; fails fast when no stream is open, and after
@@ -1575,11 +1645,7 @@ impl Cluster {
         timeout: Duration,
     ) -> Result<Vec<u8>, String> {
         let tx = self
-            .outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(peer)
-            .cloned()
+            .rpc_sender(peer)
             .ok_or_else(|| format!("no stream to {peer}"))?;
         let id = self
             .next_rpc
@@ -1629,13 +1695,7 @@ impl Cluster {
 
     /// Answers an RPC from a peer on its stream.
     fn on_rpc(self: &Arc<Self>, peer: &str, req: RpcRequest) {
-        let Some(tx) = self
-            .outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(peer)
-            .cloned()
-        else {
+        let Some(tx) = self.rpc_sender(peer) else {
             return;
         };
         let handler = self.rpc_handler.get().map(|h| Arc::clone(&h.0));
@@ -2728,29 +2788,96 @@ async fn read_frames(
     via: &'static str,
     echo: &EchoSlot,
 ) -> Result<(), String> {
-    let result = read_loop(cluster, body, &mut peer, via, echo).await;
-    // Streams that ended can't carry RPCs any more.
-    cluster
-        .outbox
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .retain(|_, tx| !tx.is_closed());
-    if let Some(id) = &peer {
+    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — the guard ends this stream's part in the peer's
+    // connected state wherever the stream stops, even when the caller drops this future (a
+    // replica moving back to the primary leaves its stream to another replica that way).
+    let mut count = StreamCount::new(cluster, peer.as_deref());
+    let result = read_loop(cluster, body, &mut peer, via, echo, &mut count).await;
+    count.why = result
+        .as_ref()
+        .err()
+        .map_or("stream closed".to_owned(), Clone::clone);
+    result
+}
+
+/// One open stream's share of its peer's `connected` state. A peer can have several streams
+/// at once (the main link, the voter mesh's, the one the peer dialed): it stays connected until
+/// the last one ends, and an event says so then.
+struct StreamCount {
+    cluster: Arc<Cluster>,
+    counted: Option<String>,
+    why: String,
+}
+
+impl StreamCount {
+    fn new(cluster: &Arc<Cluster>, peer: Option<&str>) -> Self {
+        let mut c = Self {
+            cluster: Arc::clone(cluster),
+            counted: None,
+            why: "stream closed".to_owned(),
+        };
+        if let Some(p) = peer {
+            c.count(p);
+        }
+        c
+    }
+
+    /// Counts this stream for `peer`, once.
+    fn count(&mut self, peer: &str) {
+        if self.counted.is_some() {
+            return;
+        }
+        *self
+            .cluster
+            .live_streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(peer.to_owned())
+            .or_default() += 1;
+        self.counted = Some(peer.to_owned());
+    }
+}
+
+impl Drop for StreamCount {
+    fn drop(&mut self) {
+        let cluster = &self.cluster;
+        // Streams that ended can't carry RPCs any more.
+        Cluster::purge_closed(
+            &mut cluster
+                .outbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        let Some(id) = self.counted.take() else {
+            return;
+        };
+        let last = {
+            let mut live = cluster
+                .live_streams
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let n = live.entry(id.clone()).or_default();
+            *n = n.saturating_sub(1);
+            let last = *n == 0;
+            if last {
+                live.remove(&id);
+            }
+            last
+        };
+        if !last {
+            return;
+        }
         let mut members = cluster
             .members
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(m) = members.get_mut(id) {
+        if let Some(m) = members.get_mut(&id) {
             m.connected = false;
         }
         drop(members);
-        let why = result
-            .as_ref()
-            .err()
-            .map_or("stream closed".to_owned(), Clone::clone);
-        cluster.event("disconnected", id, why);
+        cluster.note_link_drop(&id);
+        cluster.event("disconnected", &id, std::mem::take(&mut self.why));
     }
-    result
 }
 
 async fn read_loop(
@@ -2759,6 +2886,7 @@ async fn read_loop(
     peer: &mut Option<String>,
     via: &'static str,
     echo: &EchoSlot,
+    count: &mut StreamCount,
 ) -> Result<(), String> {
     let mut buf = Vec::new();
     while let Some(frame) = body.frame().await {
@@ -2767,10 +2895,36 @@ async fn read_loop(
             buf.extend_from_slice(&data);
             for f in wire::decode_all(&mut buf)? {
                 cluster.on_frame(peer, f, via, echo)?;
+                if let Some(p) = peer.as_deref() {
+                    count.count(p);
+                }
             }
         }
     }
     Ok(())
+}
+
+/// A stream's entry in the outbox, removed when the stream ends (or its task is dropped).
+struct Listed {
+    cluster: Arc<Cluster>,
+    peer: String,
+    tx: tokio::sync::mpsc::Sender<Frame>,
+}
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        let mut outbox = self
+            .cluster
+            .outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(v) = outbox.get_mut(&self.peer) {
+            v.retain(|t| !t.same_channel(&self.tx));
+            if v.is_empty() {
+                outbox.remove(&self.peer);
+            }
+        }
+    }
 }
 
 /// Sends our Hello, then heartbeats, until the receiver goes away.
@@ -2793,13 +2947,22 @@ async fn write_frames(
     let mut changed = cluster.local_changed.subscribe();
     // RPC frames for this peer go out on this stream (CLU-002).
     let (out_tx, mut outbox) = tokio::sync::mpsc::channel::<Frame>(64);
-    if let Some(p) = &peer {
+    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — listed next to the peer's other streams, and
+    // taken off again when this one ends: it never replaces another stream's entry.
+    let _listed = peer.as_ref().map(|p| {
         cluster
             .outbox
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(p.clone(), out_tx);
-    }
+            .entry(p.clone())
+            .or_default()
+            .push(out_tx.clone());
+        Listed {
+            cluster: Arc::clone(&cluster),
+            peer: p.clone(),
+            tx: out_tx,
+        }
+    });
     let mut tick = tokio::time::interval(HEARTBEAT);
     tick.tick().await;
     // A heartbeat right away, so the peer can echo it and both sides know the round-trip
@@ -3456,10 +3619,25 @@ async fn stream_once(
             node: server_id.clone(),
         });
     }
+    let linked_at = std::time::Instant::now();
+    let node_for_log = server_id.clone();
+    let mut switched = false;
     let result = tokio::select! {
         done = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo) => done,
-        () = switch.notified() => Ok(()),
+        () = switch.notified() => { switched = true; Ok(()) },
     };
+    // REQ: CLU-005 (T24.38, ADR-1018) — the end of a main link is said at info level with how
+    // long it lasted and why, so a link that comes and goes can be read from the log.
+    if main {
+        info!(
+            %url,
+            node = node_for_log.as_deref().unwrap_or("unknown"),
+            up_s = linked_at.elapsed().as_secs(),
+            switched,
+            reason = result.as_ref().err().map_or("stream closed", String::as_str),
+            "cluster: the main link ended"
+        );
+    }
     writer.abort();
     cluster
         .connected
