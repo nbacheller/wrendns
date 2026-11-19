@@ -468,3 +468,390 @@ fn api_013_a_replica_answers_without_the_primarys_router_data() {
         assert!(r["status"].get("readBy").is_none(), "{label}: {r}");
     }
 }
+
+/// REQ: API-013, API-016 (T24.41 recheck, T24.42) - with no primary known (an election: no member
+/// reports itself primary) the routers read still names "the primary" as missing, and answers
+/// 200 from the replica's own data.
+#[test]
+fn api_013_no_known_primary_still_names_the_primary() {
+    let silent: telltale_cluster::net::RpcHandler =
+        Arc::new(|_p, _k, _b| Box::pin(std::future::pending::<Result<Vec<u8>, String>>()));
+    let body = finish_within(move || {
+        let rt = multi_thread_runtime(2);
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of(silent));
+        let h = rt.block_on(async { harness_in(STORED_ROUTER, Some(Arc::clone(&replica))) });
+        h.src.routers.put("udm", replica_status());
+        // The old primary steps down: no member says it is the primary any more.
+        primary
+            .set_role(telltale_cluster::node::Role::Replica, 99)
+            .unwrap();
+        let known = rt.block_on(async {
+            for _ in 0..600 {
+                if replica.members().iter().all(|m| !m.primary) {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            true
+        });
+        let out = rt.block_on(async {
+            let (status, _, text) = h.send(h.request("GET", "/api/v1/routers", None)).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        });
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        (known, out)
+    });
+    let (still_known, routers) = body;
+    // The role change reaches the replica with a heartbeat; when it has not within the wait the
+    // primary is still "known" and the label names it instead.
+    let missing = routers["missingNodes"].as_array().expect("missingNodes");
+    assert_eq!(missing.len(), 1, "{routers}");
+    if !still_known {
+        assert_eq!(missing[0], "the primary", "{routers}");
+    }
+}
+
+/// How many requests reached the primary's handler for `read` (a substring of the read's JSON).
+fn counting_handler(
+    read: &'static str,
+    count: Arc<std::sync::atomic::AtomicUsize>,
+    answer: bool,
+) -> telltale_cluster::net::RpcHandler {
+    Arc::new(move |_peer, _kind, body| {
+        let hit = String::from_utf8_lossy(&body).contains(read);
+        if hit {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Box::pin(async move {
+            if hit && !answer {
+                // A primary that is away: the call waits out its deadline.
+                std::future::pending::<()>().await;
+            }
+            Err("unknown read".to_owned())
+        })
+    })
+}
+
+/// REQ: API-013 (T24.42, T24.41 recheck L1) - a failed read of the primary's routers is
+/// remembered for a few seconds: a page that makes several reads (Networks, leases, the profile
+/// picker) asks the away primary once, not once per read.
+#[test]
+fn api_013_a_failed_primary_router_read_is_cached() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler = counting_handler("router_view", Arc::clone(&count), false);
+    let reads = router_reads(handler);
+    for v in &reads[..3] {
+        assert_eq!(v["missingNodes"].as_array().map(Vec::len), Some(1), "{v}");
+    }
+    assert_eq!(
+        count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "three reads, one call to the away primary"
+    );
+}
+
+/// REQ: API-013, CLU-004 (T24.42) - the groups the category and list pages and the support
+/// package use come from this node alone: with the primary away they ask it nothing.
+#[test]
+fn api_013_internal_group_reads_never_wait_on_the_primary() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler = counting_handler("router_view", Arc::clone(&count), false);
+    let (took, n) = finish_within(move || {
+        let rt = multi_thread_runtime(2);
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of(handler));
+        let h = rt.block_on(async { harness_in(STORED_ROUTER, Some(Arc::clone(&replica))) });
+        h.src.routers.put("udm", replica_status());
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let fed = Arc::new(crate::federated::Federated::new(
+            local,
+            Arc::clone(&replica),
+        ));
+        let started = std::time::Instant::now();
+        let f2 = Arc::clone(&fed);
+        let n = rt.block_on(async move {
+            tokio::task::spawn_blocking(move || f2.groups_local().len())
+                .await
+                .unwrap()
+        });
+        let took = started.elapsed();
+        // The user-facing list does ask the primary (the contrast that gives the test its point).
+        rt.block_on(async move {
+            tokio::task::spawn_blocking(move || fed.groups().len())
+                .await
+                .unwrap()
+        });
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        (took, n)
+    });
+    assert!(n >= 1, "the default group is listed");
+    assert!(took < Duration::from_millis(1500), "waited {took:?}");
+    // Only the user-facing `groups()` asked: one call, after the local read had finished.
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+use telltale_api::secrets_api::{SecretMeta, SecretNode, SecretStamp, SecretsStatus};
+
+fn meta(name: &str, seq: u64, health: &str) -> SecretMeta {
+    SecretMeta {
+        name: name.into(),
+        kind: "text".into(),
+        set: true,
+        stamp: SecretStamp { epoch: 1, seq },
+        updated: None,
+        updated_by: None,
+        origin: Some("cluster".into()),
+        health: Some(health.into()),
+        used_by: Vec::new(),
+        nodes: vec![SecretNode {
+            node: "x".into(),
+            applied: true,
+            unreadable: health != "readable",
+            state: String::new(),
+            stamp: None,
+        }],
+    }
+}
+
+fn roster(
+    label: &str,
+    kind: crate::secrets_api::MemberKind,
+    items: Option<Vec<SecretMeta>>,
+) -> crate::secrets_api::RosterNode {
+    crate::secrets_api::RosterNode {
+        label: label.into(),
+        kind,
+        items,
+    }
+}
+
+/// REQ: API-015, CLU-002 (T24.42) - every full member is listed for each secret with the stamp it
+/// holds and a state (applied, missing, behind, unreadable, unknown); a resolver pod and a witness
+/// are listed as not holding any, by design; warnings name each full member that lacks one; the
+/// answer carries stamps and health only.
+#[test]
+fn api_015_t24_42_every_member_is_listed_with_what_it_holds() {
+    use crate::secrets_api::MemberKind::{Full, Resolver, Witness};
+    let canonical = SecretsStatus {
+        items: vec![meta("unifi", 3, "readable"), meta("hook", 2, "readable")],
+        ..SecretsStatus::default()
+    };
+    let members = [
+        roster(
+            "node-b",
+            Full,
+            Some(vec![
+                meta("unifi", 3, "readable"),
+                meta("hook", 2, "readable"),
+            ]),
+        ),
+        roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
+        roster(
+            "node-c",
+            Full,
+            Some(vec![
+                meta("unifi", 2, "readable"),
+                meta("hook", 2, "unreadable"),
+            ]),
+        ),
+        roster("node-d", Full, None),
+        roster("pod-a", Resolver, None),
+        roster("w", Witness, None),
+    ];
+    let out = crate::secrets_api::with_members(canonical, &members);
+    let state = |item: usize, node: &str| {
+        out.items[item]
+            .nodes
+            .iter()
+            .find(|n| n.node == node)
+            .map(|n| (n.state.clone(), n.stamp.map(|s| s.seq)))
+            .unwrap()
+    };
+    assert_eq!(state(0, "node-b"), ("applied".into(), Some(3)));
+    assert_eq!(state(0, "node-a"), ("applied".into(), Some(3)));
+    assert_eq!(state(0, "node-c"), ("behind".into(), Some(2)));
+    assert_eq!(state(0, "node-d"), ("unknown".into(), None));
+    assert_eq!(state(1, "node-a"), ("missing".into(), None));
+    assert_eq!(state(1, "node-c"), ("unreadable".into(), Some(2)));
+    // Only full members are per-secret rows.
+    assert_eq!(out.items[0].nodes.len(), 4);
+    let kinds: Vec<(&str, &str, u32)> = out
+        .members
+        .iter()
+        .map(|m| (m.kind.as_str(), m.state.as_str(), m.held))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("full", "answered", 2),
+            ("full", "answered", 1),
+            ("full", "answered", 2),
+            ("full", "unknown", 0),
+            ("resolver", "not_held", 0),
+            ("witness", "not_held", 0),
+        ]
+    );
+    assert_eq!(out.missing_nodes, ["node-d"]);
+    let w = out.warnings.join("\n");
+    assert!(w.contains("`hook` is missing on node-a"), "{w}");
+    assert!(w.contains("node-c holds an older version of `unifi`"), "{w}");
+    assert!(w.contains("node-c holds `hook` but can't read it"), "{w}");
+    assert!(!w.contains("pod-a") && !w.contains("node-d"), "{w}");
+    // No value, ciphertext or hash can be in it: the type has no such field.
+    let json = serde_json::to_string(&out).unwrap();
+    assert!(
+        !json.contains("value") && !json.contains("cipher"),
+        "{json}"
+    );
+}
+
+/// REQ: API-015 (T24.42) - the same list whichever node is asked: the order of the roster does
+/// not change what each secret shows per member.
+#[test]
+fn api_015_t24_42_the_list_is_the_same_on_every_node() {
+    use crate::secrets_api::MemberKind::Full;
+    let canon = || SecretsStatus {
+        items: vec![meta("unifi", 3, "readable")],
+        ..SecretsStatus::default()
+    };
+    let forward = [
+        roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
+        roster("node-b", Full, Some(vec![meta("unifi", 3, "readable")])),
+    ];
+    let reversed = [forward[1].clone(), forward[0].clone()];
+    let (from_one, from_two) = (
+        crate::secrets_api::with_members(canon(), &forward),
+        crate::secrets_api::with_members(canon(), &reversed),
+    );
+    let sorted = |s: &SecretsStatus| {
+        let mut rows: Vec<(String, String)> = s.items[0]
+            .nodes
+            .iter()
+            .map(|n| (n.node.clone(), n.state.clone()))
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(sorted(&from_one), sorted(&from_two));
+    let members = |s: &SecretsStatus| {
+        let mut rows: Vec<(String, String, String, u32)> = s
+            .members
+            .iter()
+            .map(|m| (m.node.clone(), m.kind.clone(), m.state.clone(), m.held))
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(members(&from_one), members(&from_two));
+    assert_eq!(from_one.warnings.len(), from_two.warnings.len());
+    assert!(from_one.warnings.is_empty() && from_one.missing_nodes.is_empty());
+}
+
+/// What a primary answers to a secrets read: one stored secret, stamp 1.3, readable.
+fn secrets_handler(answer: bool) -> telltale_cluster::net::RpcHandler {
+    Arc::new(move |_peer, _kind, body| {
+        let hit = answer && String::from_utf8_lossy(&body).contains("secrets_status");
+        Box::pin(async move {
+            if !hit {
+                return Err("unknown read".to_owned());
+            }
+            let st = SecretsStatus {
+                items: vec![meta("unifi", 3, "readable")],
+                ..SecretsStatus::default()
+            };
+            serde_json::to_vec(&st).map_err(|e| e.to_string())
+        })
+    })
+}
+
+fn secrets_list(handler: telltale_cluster::net::RpcHandler) -> serde_json::Value {
+    finish_within(move || {
+        let rt = multi_thread_runtime(2);
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of(handler));
+        let h = rt.block_on(async { harness_in("", Some(Arc::clone(&replica))) });
+        let out = rt.block_on(async {
+            let (status, _, text) = h.send(h.request("GET", "/api/v1/secrets", None)).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        });
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        out
+    })
+}
+
+/// REQ: API-015, CLU-002 (T24.42) - on a replica of a real two-node cluster the list shows both
+/// full members for the primary's secret: the primary applied, this replica (which has none)
+/// missing, with a warning.
+#[test]
+fn api_015_t24_42_a_replica_lists_every_full_member() {
+    let v = secrets_list(secrets_handler(true));
+    let item = &v["items"][0];
+    assert_eq!(item["name"], "unifi", "{v}");
+    let nodes = item["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 2, "{v}");
+    let by = |n: &str| nodes.iter().find(|x| x["node"] == n).unwrap();
+    assert_eq!(by("k8s")["state"], "applied", "{v}");
+    assert_eq!(by("pi")["state"], "missing", "{v}");
+    assert_eq!(v["members"].as_array().unwrap().len(), 2, "{v}");
+    assert!(
+        v["warnings"][0].as_str().unwrap().contains("missing on pi"),
+        "{v}"
+    );
+    assert!(v.get("missingNodes").is_none(), "{v}");
+}
+
+/// REQ: API-015, CLU-002 (T24.42, N-1) - a primary that does not answer (or is too old to know
+/// the read) is shown as unknown and named in `missingNodes`; the list is this node's own, marked
+/// stale, and the answer is still a 200.
+#[test]
+fn api_015_t24_42_a_member_that_does_not_answer_is_unknown() {
+    let v = secrets_list(secrets_handler(false));
+    assert_eq!(v["stale"], true, "{v}");
+    assert_eq!(v["missingNodes"], serde_json::json!(["k8s"]), "{v}");
+    let primary = v["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["node"] == "k8s")
+        .unwrap();
+    assert_eq!(primary["state"], "unknown", "{v}");
+}
+
+/// REQ: API-015 (T24.42) - an `ahead` member warns that the list is stale, and a member still
+/// holding a name the list no longer has set is named.
+#[test]
+fn api_015_t24_42_ahead_and_deleted_secrets_warn() {
+    use crate::secrets_api::MemberKind::Full;
+    let canon = SecretsStatus {
+        items: vec![meta("unifi", 3, "readable")],
+        ..SecretsStatus::default()
+    };
+    let out = crate::secrets_api::with_members(
+        canon,
+        &[
+            roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
+            roster(
+                "node-b",
+                Full,
+                Some(vec![
+                    meta("unifi", 4, "readable"),
+                    meta("gone", 1, "readable"),
+                ]),
+            ),
+        ],
+    );
+    let w = out.warnings.join(
+        "
+",
+    );
+    assert!(w.contains("node-b holds a newer version of `unifi`"), "{w}");
+    assert!(w.contains("node-b still holds `gone`"), "{w}");
+}

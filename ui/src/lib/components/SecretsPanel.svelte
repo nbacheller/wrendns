@@ -103,6 +103,42 @@
       </p>
     </section>
 
+    {#if (status.members?.length ?? 0) > 0}
+      <!-- REQ: API-015 (T24.42) — every member of the cluster, the same list on every node. -->
+      <section class="card" data-testid="secrets-members">
+        <h2>Cluster members<HelpButton id="secrets-members" /></h2>
+        <p class="small muted">
+          Every full member keeps its own encrypted copy of every stored secret, so a node that becomes the primary can use them.
+          A resolver pod or a witness holds none, by design.
+        </p>
+        {#if status.missingNodes && status.missingNodes.length > 0}
+          <p class="notice warn small" data-testid="secrets-missing-nodes">
+            {status.missingNodes.join(', ')} didn't answer (offline, or an older version that can't say), so what it holds isn't known.
+          </p>
+        {/if}
+        {#each status.warnings ?? [] as w (w)}
+          <p class="notice warn small" data-testid="secrets-warning">{w}</p>
+        {/each}
+        <ul class="members small">
+          {#each status.members ?? [] as m, i (`${m.node}#${i}`)}
+            <li data-testid="secrets-member" data-kind={m.kind} data-state={m.state}>
+              <strong>{m.node}</strong>
+              {#if m.state === 'not_held'}
+                <span class="badge">{m.kind === 'witness' ? 'witness' : 'resolver pod'}</span>
+                <span class="muted">holds none, by design</span>
+              {:else if m.state === 'unknown'}
+                <span class="badge">unknown</span>
+                <span class="muted">didn't answer</span>
+              {:else}
+                <span class="badge ok">full member</span>
+                <span class="muted">holds {m.held} of {status.items.filter((i) => i.set).length}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
     <section class="card" data-testid="secrets-stored">
       <h2>Stored secrets</h2>
       {#if status.items.length === 0}
@@ -135,9 +171,17 @@
                     {/each}
                   </td>
                   <td class="small">
-                    {#each s.nodes as n (n.node)}
-                      <div>
-                        {n.node}{#if n.unreadable}<span class="badge bad">can't read it</span>{:else if !n.applied}<span class="badge warn">not yet</span>{/if}
+                    {#each s.nodes as n, j (`${n.node}#${j}`)}
+                      <div data-testid="secret-holder" data-state={n.state || (n.applied ? 'applied' : 'missing')}>
+                        {n.node}
+                        {#if n.state === 'unknown'}<span class="badge">unknown</span>
+                        {:else if n.state === 'missing'}<span class="badge warn">missing</span>
+                        {:else if n.state === 'behind'}<span class="badge warn">older version</span>
+                        {:else if n.state === 'ahead'}<span class="badge warn">newer version</span>
+                        {:else if n.unreadable || n.state === 'unreadable'}<span class="badge bad">can't read it</span>
+                        {:else if !n.applied}<span class="badge warn">not yet</span>
+                        {:else}<span class="badge ok">has it</span>{/if}
+                        {#if n.stamp}<span class="muted mono">{n.stamp.epoch}.{n.stamp.seq}</span>{/if}
                       </div>
                     {:else}
                       <span class="muted">no node</span>
@@ -227,6 +271,13 @@
 </div>
 
 <style>
+  .members {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+  }
   .secrets {
     display: grid;
     gap: 16px;

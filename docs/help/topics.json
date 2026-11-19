@@ -1175,6 +1175,16 @@
       "docs": "stored-secrets"
     },
     {
+      "id": "secrets-members",
+      "title": "Which nodes hold a stored secret",
+      "term": "Secret held by every member",
+      "summary": "A stored secret is replicated, encrypted, to every full member of the cluster, so the node that becomes the primary can use it (a router's API key keeps working after a failover). This list is the same on every node: for each full member it shows whether it has the secret, can read it, holds an older version, or didn't answer. Only stamps and health are exchanged, never a value or a ciphertext. A resolver pod or a witness holds none, by design.",
+      "when": "You see the secret on one node and wonder whether the cluster really keeps a copy on the others, or a warning says a member is missing one.",
+      "example": "node-a, node-b and node-c each show \"has it\" with the same stamp for the secret unifi: if node-b is lost, node-a reads the router with its own copy.",
+      "caution": "A member that is missing a secret, holds an older one or can't read it raises a warning and a degraded health reason (secret_not_held), never an unhealthy DNS: DNS doesn't use stored secrets. A member that didn't answer is shown as unknown, not as missing. Give it a minute, then check its secrets key.",
+      "docs": "stored-secrets"
+    },
+    {
       "id": "credentials-in-forms",
       "title": "Who may change a credential",
       "term": "Credential rules in forms",

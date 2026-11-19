@@ -894,10 +894,16 @@ pub(crate) struct Federated {
     /// REQ: OBS-901 (ADR-958 section 6) — the live map's per-peer last-good parts and the gather
     /// task that fills them, shared by every handle (each request has its own).
     map: Arc<MapPeers>,
-    /// REQ: API-013 (T24.41) - the primary's last good router read, kept a few seconds so one
-    /// page load or map snapshot makes one call; shared by every handle.
-    router_view: Arc<Mutex<Option<(std::time::Instant, String, routers_view::RouterView)>>>,
+    /// REQ: API-013 (T24.41, T24.42) - the primary's last router read, or its failure, kept a few
+    /// seconds so one page load or map snapshot makes one call (and waits once while the primary
+    /// is away); shared by every handle.
+    router_view: Arc<Mutex<RouterViewCache>>,
+    secrets_since: Arc<Mutex<crate::health::SecretsSince>>,
 }
+
+/// When the primary was last asked for its router view, whom, and what it answered (`None`: it
+/// did not).
+type RouterViewCache = Option<(std::time::Instant, String, Option<routers_view::RouterView>)>;
 
 /// How long a replica reuses the primary's router read.
 const ROUTER_VIEW_TTL: Duration = Duration::from_secs(5);
@@ -915,6 +921,19 @@ impl MapPeers {
         Self {
             cache: Arc::new(telltale_api::map_api::PeerCache::new(now)),
             demand: Arc::new(telltale_api::map_api::Demand::new(now)),
+        }
+    }
+}
+
+/// Two roster members never share a label (pods on one site): the node ID tells them apart.
+fn unique_labels(roster: &mut [(String, crate::secrets_api::RosterNode)]) {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for (_, r) in roster.iter() {
+        *counts.entry(r.label.clone()).or_default() += 1;
+    }
+    for (id, r) in roster.iter_mut() {
+        if counts.get(&r.label).copied().unwrap_or(0) > 1 {
+            r.label.clone_from(id);
         }
     }
 }
@@ -953,6 +972,7 @@ impl Federated {
             only: None,
             map: Arc::new(MapPeers::new()),
             router_view: Arc::new(Mutex::new(None)),
+            secrets_since: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -974,6 +994,7 @@ impl Federated {
             only: Some(Only { me, peers }),
             map: Arc::clone(&self.map),
             router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
         }
     }
 
@@ -1093,34 +1114,39 @@ impl Federated {
         }
         let known = self.cluster.members().into_iter().find(|m| m.primary);
         let primary = self.cluster.reachable_primary();
-        if let Some(p) = &primary {
-            let cached = self
-                .router_view
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((at, id, v)) = cached.as_ref()
-                && id == p
-                && at.elapsed() < ROUTER_VIEW_TTL
-            {
-                return Some((self.label_of(p), v.clone()));
-            }
-        }
-        let asked = primary.and_then(|primary| {
-            let body = self.call_one(&primary, &Read::RouterView, DEADLINE)?.ok()?;
-            let view: routers_view::RouterView = serde_json::from_slice(&body).ok()?;
+        // REQ: API-013 (T24.42) - the answer, or the failure to get one, is remembered for
+        // `ROUTER_VIEW_TTL`, so a page that makes several reads waits at most once while the
+        // primary is away (the key is the primary asked, empty during an election).
+        let key = primary.clone().unwrap_or_default();
+        let cached = self
+            .router_view
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(at, id, _)| *id == key && at.elapsed() < ROUTER_VIEW_TTL)
+            .map(|(_, _, v)| v.clone());
+        let view = if let Some(v) = cached {
+            v
+        } else {
+            let v = primary.as_ref().and_then(|p| {
+                let body = self.call_one(p, &Read::RouterView, DEADLINE)?.ok()?;
+                serde_json::from_slice::<routers_view::RouterView>(&body).ok()
+            });
             *self
                 .router_view
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((std::time::Instant::now(), primary.clone(), view.clone()));
-            Some((self.label_of(&primary), view))
-        });
-        if asked.is_none() {
+                Some((std::time::Instant::now(), key, v.clone()));
+            v
+        };
+        if let (Some(p), Some(v)) = (primary, view) {
+            Some((self.label_of(&p), v))
+        } else {
             // No member is primary during an election: the note still names who is missing.
             let who = known.map_or_else(|| "the primary".to_owned(), |m| self.label_of(&m.node_id));
             self.record_missing(vec![who]);
+            None
         }
-        asked
     }
 
     fn own_label(&self) -> String {
@@ -1446,6 +1472,7 @@ impl Backend for Federated {
             only: Some(only),
             map: Arc::clone(&self.map),
             router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
         }))
     }
     fn local(&self) -> Option<Shared> {
@@ -1467,6 +1494,7 @@ impl Backend for Federated {
             only: self.only.clone(),
             map: Arc::clone(&self.map),
             router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
         }))
     }
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
@@ -2135,6 +2163,10 @@ impl Backend for Federated {
     fn groups(&self) -> Vec<GroupInfo> {
         self.local.groups_with(&self.networks())
     }
+    // REQ: API-013, CLU-004 (T24.42) - the internal callers' groups never wait on the primary.
+    fn groups_local(&self) -> Vec<GroupInfo> {
+        self.local.groups()
+    }
     // REQ: OBS-025 — each named device with the cluster's most confident identity.
     fn clients(&self) -> Vec<ClientInfo> {
         let mut rows = self.local.clients();
@@ -2526,6 +2558,18 @@ impl Backend for Federated {
         crate::health::soften_not_serving(&mut reasons, reporting);
         let view = self.local.cluster();
         reasons.extend(crate::health::cluster_reasons(&view));
+        // REQ: API-015 (T24.42) - a full member without the cluster's stored secrets.
+        {
+            let mut since = self
+                .secrets_since
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            reasons.extend(crate::health::secret_reasons(
+                &view,
+                &mut since,
+                std::time::Instant::now(),
+            ));
+        }
         // REQ: OPS-010 (ADR-118) — nodes in maintenance: their conditions are left out (a
         // node that serves still counted as serving above) and they're listed instead.
         let maintenance = crate::health::exclude_maintenance(&mut reasons, &mut missing, &view);
@@ -3399,20 +3443,108 @@ impl Backend for Federated {
     // store, credential fields and node-local references); without the primary, or with one too
     // old to answer, its own copy marked stale.
     fn secrets_status(&self) -> Result<telltale_api::secrets_api::SecretsStatus, Problem> {
+        use crate::secrets_api::{MemberKind, RosterNode};
+        use telltale_api::secrets_api::SecretsStatus;
         let local = self.local.secrets_status()?;
-        if self.cluster.is_primary() {
-            return Ok(local);
+        // REQ: API-015, CLU-002 (T24.42) - every full member is asked for its own stamps and
+        // health (the same read a replica makes of the primary: metadata only, never a value or
+        // a ciphertext), so the list is the same on every node. A member that doesn't answer, or
+        // is too old to, is `unknown` and in `missingNodes`; DNS is untouched.
+        let me = self.cluster.identity.meta.node_id.clone();
+        let registry = self.cluster.identity.registry();
+        let members = self.cluster.members();
+        let mut roster: Vec<(String, RosterNode)> = Vec::new();
+        for n in &registry {
+            let live = members.iter().find(|m| m.node_id == n.node_id);
+            let kind = if n.witness {
+                MemberKind::Witness
+            } else if n.ephemeral {
+                MemberKind::Resolver
+            } else {
+                MemberKind::Full
+            };
+            // A resolver pod that has gone is no longer listed; a full member or witness stays.
+            if kind == MemberKind::Resolver && live.is_none() && n.node_id != me {
+                continue;
+            }
+            let label = if n.node_id == me {
+                self.own_label()
+            } else if let Some(m) = live {
+                member_label(m)
+            } else if n.site.is_empty() {
+                n.node_id.clone()
+            } else {
+                n.site.clone()
+            };
+            roster.push((
+                n.node_id.clone(),
+                RosterNode {
+                    label,
+                    kind,
+                    items: None,
+                },
+            ));
         }
-        if let Some(primary) = self.cluster.reachable_primary()
-            && let Some(Ok(body)) = self.call_one(&primary, &Read::SecretsStatus, VERSION_DEADLINE)
-            && let Ok(p) = serde_json::from_slice::<telltale_api::secrets_api::SecretsStatus>(&body)
+        // A live member the registry doesn't list is a resolver pod (as the RPC handler treats
+        // it), unless it is the primary or eligible (a registry can lag a join): then it is
+        // asked like any full member, and `unknown` if it doesn't answer.
+        for m in &members {
+            if !roster.iter().any(|(id, _)| *id == m.node_id) {
+                roster.push((
+                    m.node_id.clone(),
+                    RosterNode {
+                        label: member_label(m),
+                        kind: if m.primary || m.eligible {
+                            MemberKind::Full
+                        } else {
+                            MemberKind::Resolver
+                        },
+                        items: None,
+                    },
+                ));
+            }
+        }
+        // Two members never share a label (pods on one site): the node ID tells them apart.
+        unique_labels(&mut roster);
+        let reachable = self.cluster.reachable_peers();
+        let reads: Vec<(String, Read)> = roster
+            .iter()
+            .filter(|(id, r)| *id != me && r.kind == MemberKind::Full && reachable.contains(id))
+            .map(|(id, _)| (id.clone(), Read::SecretsStatus))
+            .collect();
+        let (answers, _) = self.round(reads);
+        let answered: std::collections::HashMap<String, SecretsStatus> = answers
+            .into_iter()
+            .filter_map(|(_, peer, body)| serde_json::from_slice(&body).ok().map(|s| (peer, s)))
+            .collect();
+        for (id, r) in &mut roster {
+            if *id == me {
+                r.items = Some(local.items.clone());
+            } else if let Some(a) = answered.get(id) {
+                r.items = Some(a.items.clone());
+            }
+        }
+        let mut base = if self.cluster.is_primary() {
+            local.clone()
+        } else if let Some(primary) = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| answered.get(&p))
         {
-            return Ok(crate::secrets_api::merge_with_primary(p, local));
+            crate::secrets_api::merge_with_primary(primary.clone(), local.clone())
+        } else {
+            SecretsStatus {
+                stale: true,
+                ..local.clone()
+            }
+        };
+        // Standalone nodes and a registry with no full member but this one keep the plain list.
+        if roster.iter().any(|(_, r)| r.kind != MemberKind::Full) || roster.len() > 1 {
+            let roster: Vec<RosterNode> = roster.into_iter().map(|(_, r)| r).collect();
+            base = crate::secrets_api::with_members(base, &roster);
         }
-        Ok(telltale_api::secrets_api::SecretsStatus {
-            stale: true,
-            ..local
-        })
+        self.record_missing(base.missing_nodes.clone());
+        Ok(base)
     }
     fn secret_refs(&self) -> Vec<(String, telltale_api::secrets_api::SecretUse)> {
         self.local.secret_refs()
