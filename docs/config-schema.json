@@ -320,6 +320,7 @@
         "secret_file_dirs": [
           "/run/secrets",
           "/var/run/secrets",
+          "/etc/wrendns/secrets",
           "/etc/telltale/secrets"
         ],
         "secrets_key_file": "",
@@ -3102,6 +3103,7 @@
           "default": [
             "/run/secrets",
             "/var/run/secrets",
+            "/etc/wrendns/secrets",
             "/etc/telltale/secrets"
           ],
           "items": {

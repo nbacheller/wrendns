@@ -245,8 +245,12 @@ pub struct NodeConfig {
 
 /// REQ: API-014 — `[node] secret_file_dirs` when not set: where Docker, Kubernetes and the
 /// packages put secrets.
-pub const DEFAULT_SECRET_FILE_DIRS: &[&str] =
-    &["/run/secrets", "/var/run/secrets", "/etc/wrendns/secrets"];
+pub const DEFAULT_SECRET_FILE_DIRS: &[&str] = &[
+    "/run/secrets",
+    "/var/run/secrets",
+    "/etc/wrendns/secrets",
+    "/etc/telltale/secrets", // rebrand:keep (ADR-1028: the pre-rename directory, for one release)
+];
 
 impl Default for NodeConfig {
     fn default() -> Self {

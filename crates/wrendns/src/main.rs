@@ -46,6 +46,7 @@ mod http;
 mod identify;
 mod import;
 mod kubernetes;
+mod legacy;
 mod lists;
 mod maintenance;
 mod managed;
@@ -917,6 +918,23 @@ enum ConfigCommand {
 fn main() -> ExitCode {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
+    // REQ: OPS-005, OPS-006 (ADR-1028) — pre-rename names, first thing: nothing else is running yet.
+    let old_env = wrendns_net::legacy_env::adopt();
+    if legacy::is_legacy_command(std::env::args_os().next().as_deref()) {
+        eprintln!("{}", legacy::COMMAND_WARNING);
+    }
+    for a in &old_env {
+        eprintln!(
+            "warning: {} is now {}{}; the old name works for this release only",
+            a.legacy,
+            a.name,
+            if a.shadowed {
+                " (both are set, so the new one is used)"
+            } else {
+                ""
+            }
+        );
+    }
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Run { config } => run(config),
@@ -1758,8 +1776,12 @@ fn config_files(cli: Vec<PathBuf>) -> Vec<PathBuf> {
     if let Ok(p) = std::env::var("WRENDNS_CONFIG") {
         return vec![PathBuf::from(p)];
     }
-    if Path::new(DEFAULT_CONFIG).exists() {
-        return vec![PathBuf::from(DEFAULT_CONFIG)];
+    // REQ: OPS-006 (ADR-1028) — the pre-rename path, while the new one doesn't exist.
+    if let Some((path, old)) = legacy::default_config(DEFAULT_CONFIG, |p| p.exists()) {
+        if old {
+            warn!(path = %path.display(), "{}", legacy::config_warning(DEFAULT_CONFIG));
+        }
+        return vec![path];
     }
     Vec::new()
 }

@@ -65,7 +65,10 @@ fn load_files_logging(files: &[PathBuf], warnings: bool) -> Option<Config> {
                     warn!("config: {w}");
                 }
             }
-            Some(l.config)
+            let mut config = l.config;
+            // REQ: OPS-006 (ADR-1028) — the pre-rename data directory, until it is moved.
+            crate::legacy::adopt_data_dir(&mut config, warnings);
+            Some(config)
         }
         Err(errors) => {
             for e in &errors {

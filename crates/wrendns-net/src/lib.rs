@@ -12,6 +12,7 @@ pub mod doq;
 pub mod handler;
 pub mod iface;
 pub mod ifaddrs;
+pub mod legacy_env;
 pub mod neigh;
 pub mod peer_limit;
 pub mod proxy;
