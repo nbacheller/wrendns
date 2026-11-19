@@ -1,1 +1,12 @@
-blank_issues_enabled: true
+# Issues are for bugs (bug_report.yml). Questions, support and security reports go elsewhere.
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/nbacheller/wrendns/discussions
+    about: Questions, ideas and show-and-tell go to GitHub Discussions.
+  - name: Get support
+    url: https://www.wrendns.com/support
+    about: Help by email (support@wrendns.com), what to expect, and the guides.
+  - name: Report a security vulnerability
+    url: https://github.com/nbacheller/wrendns/security/policy
+    about: Please report security problems privately, as the security policy says, not in a public issue.
