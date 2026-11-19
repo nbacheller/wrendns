@@ -1777,7 +1777,7 @@ fn config_files(cli: Vec<PathBuf>) -> Vec<PathBuf> {
         return vec![PathBuf::from(p)];
     }
     // REQ: OPS-006 (ADR-1028) — the pre-rename path, while the new one doesn't exist.
-    if let Some((path, old)) = legacy::default_config(DEFAULT_CONFIG, |p| p.exists()) {
+    if let Some((path, old)) = legacy::default_config(DEFAULT_CONFIG, Path::exists) {
         if old {
             warn!(path = %path.display(), "{}", legacy::config_warning(DEFAULT_CONFIG));
         }

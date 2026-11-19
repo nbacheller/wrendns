@@ -56,7 +56,7 @@ pub(crate) fn data_dir(configured: &str, exists: impl Fn(&Path) -> bool) -> Opti
 
 /// Applies [`data_dir`] to a loaded configuration, saying so when `warnings` is set.
 pub(crate) fn adopt_data_dir(cfg: &mut wrendns_config::Config, warnings: bool) {
-    if let Some(old) = data_dir(cfg.node.data_dir.as_str(), |p| p.exists()) {
+    if let Some(old) = data_dir(cfg.node.data_dir.as_str(), Path::exists) {
         if warnings {
             warn!(
                 "{LEGACY_DATA_DIR} exists and {DATA_DIR} doesn't, so the node keeps using it; \

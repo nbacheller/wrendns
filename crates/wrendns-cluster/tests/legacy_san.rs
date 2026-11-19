@@ -4,7 +4,7 @@
 use wrendns_cluster::net::peer_node_id;
 
 fn id_of(san: &str) -> Option<String> {
-    let ck = rcgen::generate_simple_self_signed(vec![san.to_owned()]).unwrap();
+    let ck = rcgen::generate_simple_self_signed(vec![san.to_owned()]).ok()?;
     peer_node_id(ck.cert.der())
 }
 

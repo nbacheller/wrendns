@@ -3254,11 +3254,11 @@ async fn clu_001_a_certificate_with_the_next_cluster_name_is_accepted() {
     tokio::spawn(async move {
         // The first handshake (the name issued today) fails; the second succeeds.
         for _ in 0..2 {
-            if let Ok((tcp, _)) = listener.accept().await {
-                if let Ok(s) = acceptor.accept(tcp).await {
-                    let _keep = s;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
+            if let Ok((tcp, _)) = listener.accept().await
+                && let Ok(s) = acceptor.accept(tcp).await
+            {
+                let _keep = s;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     });
