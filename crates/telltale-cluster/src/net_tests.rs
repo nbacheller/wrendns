@@ -959,6 +959,7 @@ fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1052,6 +1053,7 @@ fn clu_005_only_voters_can_fence_the_primary() {
             applied_seq: 0,
             primary: true,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1259,6 +1261,7 @@ fn clu_005_an_unknown_member_is_trusted_with_nothing() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1637,6 +1640,7 @@ fn clu_001_primary_urls_leave_out_nodes_known_not_to_be_primary() {
             applied_seq: 0,
             primary,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1807,6 +1811,7 @@ fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
             applied_seq: 0,
             primary: false,
             config_source: source.into(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1888,6 +1893,7 @@ fn clu_005_deference_follows_the_lease_not_a_members_hello_flag() {
                 applied_seq: 0,
                 primary: false,
                 config_source: "gitops".into(),
+                instance: String::new(),
                 source_commit: String::new(),
             })),
         },
@@ -2007,6 +2013,7 @@ fn clu_001_removing_a_node_drops_it_and_refuses_it() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2278,6 +2285,7 @@ fn clu_005_a_promotion_reaches_a_replica_in_the_heartbeats() {
             applied_seq: 0,
             primary: false,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2392,6 +2400,7 @@ fn clu_001_a_replica_learns_that_another_replica_is_up_from_the_primarys_heartbe
             applied_seq: 0,
             primary: true,
             config_source: String::new(),
+            instance: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -3071,17 +3080,21 @@ mod voters_linked {
         let old = std::time::Instant::now()
             .checked_sub(Duration::from_hours(2))
             .unwrap();
-        c.link_drops
-            .lock()
-            .unwrap()
-            .insert("stale".into(), std::collections::VecDeque::from([old]));
+        c.link_drops.lock().unwrap().drops.insert(
+            "stale".into(),
+            std::collections::VecDeque::from([LinkDrop {
+                at: old,
+                instance: String::new(),
+                settled: true,
+            }]),
+        );
         c.note_link_drop("fresh");
         let map = c.link_drops.lock().unwrap();
-        assert!(!map.contains_key("stale"));
-        assert!(map.contains_key("fresh"));
+        assert!(!map.drops.contains_key("stale"));
+        assert!(map.drops.contains_key("fresh"));
         drop(map);
         c.adopt_removed(&["fresh".to_owned()]);
-        assert!(c.link_drops.lock().unwrap().is_empty());
+        assert!(c.link_drops.lock().unwrap().drops.is_empty());
     }
 
     // REQ: CLU-005 (T24.38, ADR-1018) — a peer's streams are listed side by side: one ending
@@ -3147,5 +3160,77 @@ mod voters_linked {
         assert_eq!(c.reachable_peers().len(), 0);
         assert!(c.members().iter().all(|m| !m.connected));
         assert_eq!(c.link_drops(Duration::from_secs(60))["peer"].0, 1);
+    }
+    /// One link from `peer` as process `instance`: its Hello is accepted, the stream is counted,
+    /// and the returned guard ends it (one drop, the peer's last stream) when dropped.
+    fn t24_38_link(c: &Arc<Cluster>, peer: &str, instance: &str) -> StreamCount {
+        let mut id = None;
+        c.on_frame(
+            &mut id,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: peer.into(),
+                    instance: instance.into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        let mut count = StreamCount::new(c);
+        count.count(peer);
+        count
+    }
+
+    fn t24_38_cluster(dir: &std::path::Path) -> Arc<Cluster> {
+        let id = Identity::init(dir, "home", vec!["https://127.0.0.1:1".into()], "k8s").unwrap();
+        Cluster::new(id, "0.1.0")
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a peer restarted three times in ten minutes (a rolling
+    // upgrade, a graceful shutdown) comes back as another process each time: no drop counts, so
+    // it is not an unstable voter. One it hasn't come back from yet counts until it does.
+    #[test]
+    fn clu_005_t24_38_a_restarted_peer_is_not_an_unstable_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = t24_38_cluster(dir.path());
+        for i in 0..3 {
+            drop(t24_38_link(&c, "peer", &format!("proc-{i}")));
+            // Down now (stopped, not back yet): the drop counts until its Hello says otherwise.
+            assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 1);
+        }
+        let up = t24_38_link(&c, "peer", "proc-3");
+        assert_eq!(c.link_drops(Duration::from_secs(600)).len(), 0);
+        // An upgrade from a peer older than the instance field ("" then an id) is a restart too.
+        drop(t24_38_link(&c, "old", ""));
+        let _old = t24_38_link(&c, "old", "new-proc");
+        assert_eq!(c.link_drops(Duration::from_secs(600)).len(), 0);
+        drop(up);
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a live peer (the same process) whose link drops three
+    // times counts three drops; an older peer without the instance field counts as before.
+    #[test]
+    fn clu_005_t24_38_three_drops_of_a_live_peer_are_an_unstable_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = t24_38_cluster(dir.path());
+        for _ in 0..3 {
+            drop(t24_38_link(&c, "peer", "same-proc"));
+        }
+        let up = t24_38_link(&c, "peer", "same-proc");
+        assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 3);
+        for _ in 0..3 {
+            drop(t24_38_link(&c, "legacy", ""));
+        }
+        let _legacy = t24_38_link(&c, "legacy", "");
+        assert_eq!(c.link_drops(Duration::from_secs(600))["legacy"].0, 3);
+        // A settled drop stays counted when the peer later restarts: only the drop it came back
+        // from as another process is forgotten.
+        drop(up);
+        let _restarted = t24_38_link(&c, "peer", "next-proc");
+        assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 3);
     }
 }

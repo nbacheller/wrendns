@@ -5501,7 +5501,8 @@ export interface components {
             reachableVoters: number;
             /**
              * @description REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
-             *     times in the last ten minutes (a link that comes and goes). Empty when all are steady.
+             *     times in the last ten minutes while both processes stayed up (a link that comes and goes;
+             *     a restart or an upgrade of either node is not counted). Empty when all are steady.
              */
             unstableVoters?: components["schemas"]["UnstableVoter"][];
             /**
@@ -11131,7 +11132,8 @@ export interface components {
         UnstableVoter: {
             /**
              * Format: int32
-             * @description How many times its link dropped within `windowSeconds`.
+             * @description How many times its link dropped within `windowSeconds` (not counting a drop the voter
+             *     came back from as a restarted process).
              */
             drops: number;
             /**

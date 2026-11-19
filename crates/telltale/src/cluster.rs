@@ -778,7 +778,8 @@ fn failover_check(f: &telltale_api::model::ClusterFailover) -> telltale_api::mod
 }
 
 /// REQ: CLU-005 (T24.38, ADR-1018) — a voter's link that drops this many times within
-/// [`UNSTABLE_WINDOW`] is reported as reached only some of the time. One restart is one drop.
+/// [`UNSTABLE_WINDOW`] is reported as reached only some of the time. A restart of either node
+/// (a rolling upgrade) is not a drop: the peer comes back as another process (`Hello.instance`).
 const UNSTABLE_DROPS: u32 = 3;
 const UNSTABLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
 
