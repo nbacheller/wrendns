@@ -4,7 +4,7 @@ Status: design only (T31.1, fork #21). Requirements DSC-901..907; ADR-1004 (mode
 
 ## What it is
 
-One **configuration item (CI)** for each real thing on the owner's network, built from every source that reports on it. The CMDB keeps each source's record as reported, links it to its CI, lets the owner say which source is **definitive** for each attribute, and records changes (move, add, change, delete) through a **MACD** lifecycle. M25's inventory (keyed by MAC, ADR-910) is the first matching rule and a source of records, not something the CMDB replaces.
+One **configuration item (CI)** for each real thing on the operator's network, built from every source that reports on it. The CMDB keeps each source's record as reported, links it to its CI, lets the owner say which source is **definitive** for each attribute, and records changes (move, add, change, delete) through a **MACD** lifecycle. M25's inventory (keyed by MAC, ADR-910) is the first matching rule and a source of records, not something the CMDB replaces.
 
 ## What it is not
 

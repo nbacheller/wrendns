@@ -187,6 +187,6 @@ The owner accepted the recommendations for all eleven questions. One commit each
 | 04 q2 keyed level-1 hash | e396ea6 | `blake3::keyed_hash` with a per-node key; the primary publishes it (`privacy_key` in the manifest) and every node adopts it |
 | 06 q5 agents' checks | f830ca1 | link-local and cloud-metadata addresses refused for every fetch (opt-in `[filter] allow_link_local_urls` for lists); agents get "unreachable" for failed checks; checks stay reads, not plans |
 
-Also done on the owner's go, outside this branch: DNSSEC set to `off` in gitops-repo (0f8f1e9, pushed). On the Pi, uncached lookups went from a ~128 ms mean with ~9 upstream exchanges each to 26.5 ms and ~1.2 exchanges; validation stays off until the validator caches the key chain.
+Also done on the owner's go, outside this branch: DNSSEC set to `off` in the GitOps repository (<commit>, pushed). On the Pi, uncached lookups went from a ~128 ms mean with ~9 upstream exchanges each to 26.5 ms and ~1.2 exchanges; validation stays off until the validator caches the key chain.
 
 Not done here, queued by the owner for after this reaches edge: the dashboard's per-node view, and group chips on the top-clients table.

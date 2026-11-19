@@ -4,11 +4,11 @@ Status: design for M25 (DSC-001..015; ADR-907..913, 923..925, 928..930). The mod
 
 ## What it is
 
-One list of the devices on the owner's networks, keyed by MAC, built from what the network already knows and from scans the owner ran and uploaded. It tells the owner what a device is, where it is, and when it was last seen. It is for looking, not for controlling.
+One list of the devices on the operator's networks, keyed by MAC, built from what the network already knows and from scans the operator ran and uploaded. It tells the operator what a device is, where it is, and when it was last seen. It is for looking, not for controlling.
 
 ## What it is not
 
-- **No probing.** WrenDNS never sweeps a range, never sends ICMP, TCP connect probes, ARP or NDP solicitations, or mDNS queries, and never schedules a scan (ADR-907). Scans come from the owner's own tools and are uploaded.
+- **No probing.** WrenDNS never sweeps a range, never sends ICMP, TCP connect probes, ARP or NDP solicitations, or mDNS queries, and never schedules a scan (ADR-907). Scans come from the operator's own tools and are uploaded.
 - **Not DNS policy.** Inventory data never names a device in DNS (except the opt-in address rule, DSC-012, which supplies an address and never a name), never feeds client matching (`wrendns_policy::Neighbors`), and never changes `identify`'s seen chain (ADR-910).
 - **Off by default.** `[discovery]` (T25.2) switches it on. It runs on one designated node (`spec/12` §11).
 
@@ -89,4 +89,4 @@ At privacy level 1 and above, names are hashed like client names (ADR-102). At l
 - Networks utilisation counts inventory addresses on the designated node (T25.15).
 - The MCP tools `get_discovery_status` and `list_discovered_devices` (T25.13).
 
-The owner's walkthrough and help are in T25.14. The decisions are in `spec/11` ADR-907 to ADR-913 and ADR-923 to ADR-925.
+The operator's walkthrough and help are in T25.14. The decisions are in `spec/11` ADR-907 to ADR-913 and ADR-923 to ADR-925.

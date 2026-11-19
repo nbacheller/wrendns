@@ -30,7 +30,7 @@ No new storage. One new federated read that fans out and **computes on the entry
 For each metric *m* and node *i*, `x_i` is the window ratio (e.g. SERVFAIL / answered). With *n* nodes:
 - `n ≥ 3`: robust z = (x_i − median) / (1.4826 × MAD), with MAD floored at the metric's floor
   (ratios: 0.0005; latency µs: 10 % of median). Flag `|z| ≥ 3` as *odd*.
-- `n = 2` (the owner's cluster): no median is meaningful. Compare the **Wilson 95 % intervals** of the
+- `n = 2` (a two-node cluster): no median is meaningful. Compare the **Wilson 95 % intervals** of the
   two ratios; flag *odd* only when they don't overlap. For latency compare p99s with the 10 % floor.
 - Always attach the evidence: `observed`, `others` (median or the other node), `spread`, `answered`.
   Say "same bad count, smaller base" when `bad_i ≈ bad_others` and `answered_i < answered_others / 3`.

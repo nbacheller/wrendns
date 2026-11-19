@@ -1046,7 +1046,7 @@ args = ["--datacenter", "home"]
 *(REQ: UPS-013; ADR-997)* Devices ask WrenDNS (DHCP hands out its address), and WrenDNS asks a commercial filter for the names it doesn't answer itself. You keep WrenDNS's per-device policy and visibility, and the commercial categories apply on top.
 
 ### With a gateway that filters traffic (UniFi content filtering, CyberSecure)
-A gateway's content filtering may work on DNS, not on traffic. That was measured on a UniFi Cloud Gateway Fiber (2026-11-18): its content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (WrenDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and WrenDNS for a name the filter should block, then try the site's address directly. On such a gateway:
+A gateway's content filtering may work on DNS, not on traffic. On UniFi gateways tested in 2026, the content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (WrenDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and WrenDNS for a name the filter should block, then try the site's address directly. On such a gateway:
 - **A device that uses WrenDNS is filtered only by WrenDNS** (its lists and categories), unless WrenDNS forwards that device's group to the gateway's DNS from the device's own network (the `source` setting below, with the node on that VLAN, see "Serving several networks"), so the gateway applies that network's profile.
 - **WrenDNS** decides what a name resolves to, per device and group, and records who asked what.
 - **The gateway** catches a device that bypasses the LAN resolver with plain DNS to the internet; DoH or DoT in an app bypasses both unless the gateway blocks encrypted DNS.
@@ -1740,7 +1740,7 @@ Home Assistant knows your IoT devices by the names you gave them ("Porch light",
 [[router]]
 name = "home-assistant"
 type = "home_assistant"
-url = "http://192.0.2.20:8123"
+url = "http://homeassistant.local:8123"
 api_key_file = "/etc/wrendns/ha-token"   # Profile → Security → Long-lived access tokens
 ```
 On the Routers page, choose **Home Assistant** and enter the address and the token (stored, never shown again). The token belongs to an administrator's account; Home Assistant renders the template only with one.
@@ -3766,7 +3766,7 @@ A credential that comes from a file can instead name a **stored secret**: a valu
 name = "unifi"
 type = "unifi"
 url = "https://192.168.1.1"
-api_key_ref = "unifi"     # the secret named `unifi`
+api_key_ref = "router-key"   # the secret named `router-key`
 ```
 
 - **One source per credential.** A field takes its inline value, its `_file`, or its `_ref`: setting two is a configuration error. `<redacted>` (what a redacted copy shows) is never a value: in the files it is an error too.
@@ -4166,7 +4166,8 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
 ```
 The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts, except for setting a stored secret, where it must be listed as well ([Setting a stored secret](#setting-a-stored-secret)).
 
-**Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Wrendns-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
+### Audit log
+Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Wrendns-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 
 If the audit log can't be written (a full disk, a broken database), the change that failed to be recorded is logged as an error, and the next change first writes an `audit.gap` entry saying how many went unrecorded and why. Until that works, changes through the API and UI are refused with 503; DNS keeps answering.
 

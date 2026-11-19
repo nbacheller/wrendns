@@ -63,8 +63,8 @@ Ring), Roku, Samsung (TV, phone), LG TV, Sony (Bravia, PlayStation), Microsoft (
 Nintendo Switch, Sonos, Philips Hue, TP-Link (Kasa, Tapo), Wyze, Ecobee, Tesla, HP/Brother/Canon/
 Epson printers, Synology/QNAP, Ubiquiti, Eero, Roborock/iRobot, Peloton, Meta Quest, Steam Deck.
 Domains come from what those devices are documented to contact (vendor docs for firewall allowlists
-are a good public source) and from the owner's own query log; keep each list short (3–8 domains) and
-weighted. The owner's network is the first validation set (§10).
+are a good public source) and from a real network's query log; keep each list short (3–8 domains) and
+weighted. A real home network is the first validation set (§10).
 
 `[identify] signatures_file = "/etc/wrendns/devices.toml"` adds signatures in the same shape; an
 `id` that collides with a shipped one **replaces** it (so a user can fix ours), and `enabled = false`
@@ -183,7 +183,7 @@ device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "va
 
 ## 11. Implementation order
 1. `presets/build-oui.py` + `oui.bin` + `oui.rs` lookup + tests; measure size.
-2. `presets/devices.toml` (start with 20, grow to 40+ from the owner's network) + parser + validation.
+2. `presets/devices.toml` (start with 20, grow to 40+ from a real network) + parser + validation.
 3. Scoring + golden fixture (pure functions, no I/O).
 4. `Identifier` task: inputs, cache, persistence, privacy gate; `[identify]`, `kind`,
    `device_classes`.
@@ -191,7 +191,7 @@ device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "va
 6. Clients page, naming form, dashboard card, alert/anomaly text; help; docs; site. Tick the task.
 
 ## 12. Decisions taken with the owner (2026-10-09)
-- **Ship the product catalog in v1** (≥ 40 signatures), so the owner's network can test it at once;
+- **Ship the product catalog in v1** (≥ 40 signatures), so a real network can test it at once;
   the misses found there feed signature fixes before the task is ticked (§10, owner validation).
 - `likely` identities **pre-fill the naming form only**; they don't become the device's name on their
   own (a guess shouldn't label the query log). Revisit after the first weeks of real hit rates.
