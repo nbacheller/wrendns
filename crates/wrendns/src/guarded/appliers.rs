@@ -10,11 +10,12 @@
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
+use wrendns_api::problem::{Code, Problem};
 use wrendns_config::Config;
 use wrendns_config::guarded::{self, Mode};
 use wrendns_store::state::State;
 
-use super::engine::{Applier, NoOp, RowDef};
+use super::engine::{Applier, CheckCx, Checked, NoOp, RowDef};
 use super::store::{self, EntryState, Stored};
 
 /// The rows a production node has, each with its applier. The registry's rows that have an
@@ -34,6 +35,7 @@ pub(crate) fn rows() -> Vec<RowDef> {
 fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
     match id {
         guarded::RESTART_NOW => Some(Arc::new(NoOp)),
+        guarded::API_HTTP_REDIRECT => Some(Arc::new(HttpRedirect)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
@@ -41,6 +43,93 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         #[cfg(feature = "e2e")]
         "e2e-staged" => Some(Arc::new(test::StagedRow)),
         _ => None,
+    }
+}
+
+/// REQ: API-003, API-902 (T24.44, ADR-1053) — `api-http-redirect`: `{address}`, a socket address such as
+/// `0.0.0.0:80`, or empty or null for off. `staged`: the listener opens with the API at the next
+/// start. It needs `[api] tls` (the end-to-end build has none, so there it is a warning).
+pub(crate) struct HttpRedirect;
+
+impl HttpRedirect {
+    /// The address in a value: `None` is off.
+    fn address(v: &Value) -> Result<Option<std::net::SocketAddr>, Problem> {
+        let bad = |why: &str| Problem::new(Code::InvalidConfig, format!("`address`: {why}"));
+        match v.get("address") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+            Some(Value::String(s)) => {
+                let a: std::net::SocketAddr = s.trim().parse().map_err(|_| {
+                    bad("must look like 0.0.0.0:80 or [::]:80, or be empty for off")
+                })?;
+                if a.port() == 0 {
+                    return Err(bad("the port must be 1 to 65535"));
+                }
+                Ok(Some(a))
+            }
+            Some(_) => Err(bad("must be text")),
+        }
+    }
+}
+
+impl Applier for HttpRedirect {
+    fn current(&self, cfg: &Config) -> Value {
+        serde_json::json!({"address": cfg.api.http_redirect.map(|a| a.to_string())})
+    }
+    fn check(&self, cx: &CheckCx<'_>) -> Result<Checked, Problem> {
+        let Some(addr) = Self::address(cx.value)? else {
+            return Ok(Checked {
+                effect: format!(
+                    "Turns the HTTP to HTTPS redirect off on {} at its next start.",
+                    cx.node
+                ),
+                restart_required: true,
+                ..Checked::default()
+            });
+        };
+        let mut warnings = Vec::new();
+        if cx.cfg.api.tls.is_none() {
+            if cfg!(feature = "e2e") {
+                warnings.push(
+                    "[api] tls is off on this test build; a real node refuses this.".to_owned(),
+                );
+            } else {
+                return Err(Problem::new(
+                    Code::InvalidConfig,
+                    "the redirect sends browsers to HTTPS, so [api] tls has to be set first",
+                ));
+            }
+        }
+        if addr == cx.cfg.api.listen {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                "`address` is the API's own address; use another port",
+            ));
+        }
+        if addr.port() < 1024 {
+            warnings.push(
+                "Port below 1024 needs CAP_NET_BIND_SERVICE (the systemd unit grants it; Docker and Kubernetes publish the port themselves). If the bind fails it is logged and nothing else is affected."
+                    .to_owned(),
+            );
+        }
+        Ok(Checked {
+            effect: format!(
+                "Opens a plain-HTTP listener on {addr} at {}'s next start. It answers every request with a 308 to the HTTPS address (and /livez, /readyz, /healthz), and serves nothing else.",
+                cx.node
+            ),
+            restart_required: true,
+            warnings,
+            ..Checked::default()
+        })
+    }
+    fn overlay(&self, cfg: &mut Config, value: &Value) {
+        // A stored address whose TLS was turned off since stays unused (the file's `[api]`
+        // would otherwise fail validation).
+        if cfg.api.tls.is_some()
+            && let Ok(a) = Self::address(value)
+        {
+            cfg.api.http_redirect = a;
+        }
     }
 }
 
@@ -231,4 +320,98 @@ pub(crate) fn value_in_force(entries: &[Stored], node: &str, id: &str) -> Option
         .find(|e| e.node == node && e.id == id)
         .filter(|e| matches!(e.state, EntryState::Active | EntryState::Probation))
         .map(|e| e.value.clone())
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use serde_json::json;
+    use wrendns_api::auth::Actor;
+    use wrendns_api::guarded::GuardedCaller;
+
+    use super::*;
+
+    fn caller() -> GuardedCaller {
+        GuardedCaller {
+            actor: Actor {
+                name: "admin".to_owned(),
+                kind: "session",
+                remote: None,
+                reason: None,
+            },
+            username: "admin".to_owned(),
+            session: None,
+            signed_in_at: None,
+            arrived_on: None,
+            remote: None,
+            remote_under_pending: None,
+            tls: false,
+        }
+    }
+
+    fn check(cfg: &Config, value: &Value) -> Result<Checked, Problem> {
+        let (options, c) = (Value::Null, caller());
+        HttpRedirect.check(&CheckCx {
+            cfg,
+            node: "pi-a",
+            value,
+            options: &options,
+            caller: &c,
+        })
+    }
+
+    fn with_tls() -> Config {
+        let mut cfg = Config::default();
+        cfg.api.tls = Some(wrendns_config::ApiTls {
+            self_signed: true,
+            ..wrendns_config::ApiTls::default()
+        });
+        cfg
+    }
+
+    // REQ: API-003, API-902 (T24.44, ADR-1053) — the dry run: a good address stages for the next
+    // start and says what it opens; empty turns it off; a bad address, port 0, the API's own
+    // address, and (outside the end-to-end build) no TLS are refused.
+    #[test]
+    fn api_003_redirect_dry_run() {
+        let cfg = with_tls();
+        let ok = check(&cfg, &json!({"address": "0.0.0.0:80"})).unwrap();
+        assert!(ok.restart_required && ok.effect.contains("0.0.0.0:80"));
+        assert!(
+            ok.warnings
+                .iter()
+                .any(|w| w.contains("CAP_NET_BIND_SERVICE"))
+        );
+        let high = check(&cfg, &json!({"address": "0.0.0.0:8080"})).unwrap();
+        assert_eq!(high.warnings, Vec::<String>::new());
+        let off = check(&cfg, &json!({"address": ""})).unwrap();
+        assert!(off.restart_required && off.effect.contains("off"));
+        assert!(check(&cfg, &json!({"address": null})).is_ok());
+        for bad in [
+            "80",
+            "host:80",
+            "0.0.0.0:0",
+            "0.0.0.0:8053",
+            "0.0.0.0:99999",
+        ] {
+            assert!(check(&cfg, &json!({"address": bad})).is_err(), "{bad}");
+        }
+        assert!(check(&cfg, &json!({"address": 80})).is_err());
+        #[cfg(not(feature = "e2e"))]
+        assert!(check(&Config::default(), &json!({"address": "0.0.0.0:80"})).is_err());
+    }
+
+    // REQ: API-003, API-902 (T24.44) — the stored value enters the merged configuration only next
+    // to `[api] tls`, (the file wins before this runs).
+    #[test]
+    fn api_003_redirect_overlay_needs_tls() {
+        let mut cfg = with_tls();
+        HttpRedirect.overlay(&mut cfg, &json!({"address": "0.0.0.0:80"}));
+        assert_eq!(cfg.api.http_redirect, Some("0.0.0.0:80".parse().unwrap()));
+        HttpRedirect.overlay(&mut cfg, &json!({"address": ""}));
+        assert_eq!(cfg.api.http_redirect, None);
+        let mut plain = Config::default();
+        HttpRedirect.overlay(&mut plain, &json!({"address": "0.0.0.0:80"}));
+        assert_eq!(plain.api.http_redirect, None);
+        assert_eq!(HttpRedirect.current(&cfg), json!({"address": null}));
+    }
 }

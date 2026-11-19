@@ -4157,6 +4157,16 @@ tls = { self_signed = true }                 # a certificate made on first start
 - Over HTTPS the session cookie is `Secure` and HTTP Basic works, as behind a TLS proxy.
 - `wrendns ctl` and `wrendns mcp --stdio` on the node use `https://` and trust its self-signed certificate by themselves. From another machine, copy `cert.pem` and pass `--ca-file cert.pem` (with `--url https://<node>:8053`).
 - Changing `[api] tls` needs a restart. If the certificate can't be made or loaded, the API stays off (it's logged), rather than falling back to plain HTTP; DNS keeps answering.
+- **Port 80 to HTTPS.** With the UI on 443, `http://dns.example.com/` on port 80 can be sent to it too: set `[api] http_redirect` (off by default; it needs `[api] tls`):
+  ```toml
+  [api]
+  listen = "0.0.0.0:443"
+  tls = { cert = "/etc/wrendns/api.crt", key = "/etc/wrendns/api.key" }
+  http_redirect = "0.0.0.0:80"
+  ```
+  A second, plain-HTTP listener answers every request with a `308` to `https://<the request's host, without its port>/<same path and query>` (with `:<port>` added when the UI isn't on 443), and `/livez`, `/readyz` and `/healthz` as on the UI's port. It serves nothing else, every response is `no-store`, and a `Host` that isn't a plain hostname or IP address (userinfo, a path, spaces) gets a `400`, so it can't redirect anywhere but this host. It also shows in **Listener checks** (`/livez` must answer 200, `/` must redirect). It is set on **Settings → System → HTTP to HTTPS redirect** (a guarded change: review, the phrase, and it takes effect at the next start) or in the file, which wins.
+  - **systemd:** port 80 is below 1024; the shipped unit grants `CAP_NET_BIND_SERVICE` (`AmbientCapabilities`), so nothing else is needed. A node started another way without that capability logs `[api] http_redirect ...: Permission denied` and carries on: DNS and the UI are not affected, only port 80 isn't redirected.
+  - **Docker Compose and Helm:** there is no default port 80 mapping. Publish it yourself (Compose: `ports: ["80:80"]` with `http_redirect = "0.0.0.0:80"` in the file; Helm: add a container port and a Service or ingress rule for it) if you want it.
 - **Settings → System → Listener checks** shows the web UI's certificate: self-signed or yours, the names it covers, its SHA-256 fingerprint (compare it with your browser's before trusting it), and for your own, the days left, with the same health level and alerts as the DNS listeners' certificates ([Listener checks](#listener-checks)).
 
 **Behind a reverse proxy or ingress,** tell WrenDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):

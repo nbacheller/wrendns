@@ -164,7 +164,12 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
     let listeners: Vec<_> = l
         .probes
         .iter()
-        .filter(|p| p.listener && p.skipped.is_none() && p.proto != crate::probes::API_PROTO)
+        .filter(|p| {
+            p.listener
+                && p.skipped.is_none()
+                && p.proto != crate::probes::API_PROTO
+                && p.proto != crate::probes::REDIRECT_PROTO
+        })
         .collect();
     if l.serving && !listeners.is_empty() && listeners.iter().all(failing) {
         out.push(reason(
@@ -177,6 +182,9 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
         for p in l.probes.iter().filter(failing) {
             let what = if p.proto == crate::probes::API_PROTO {
                 "the web UI at"
+            } else if p.proto == crate::probes::REDIRECT_PROTO {
+                // REQ: API-003 (T24.44) — the plain-HTTP redirect isn't a DNS listener either.
+                "the HTTP to HTTPS redirect at"
             } else if p.listener {
                 "listener"
             } else {

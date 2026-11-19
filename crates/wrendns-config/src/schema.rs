@@ -3037,6 +3037,15 @@ pub struct ApiConfig {
     /// probes. Default: none (plain HTTP, for a TLS proxy or ingress in front).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<ApiTls>,
+    /// REQ: API-003 (T24.44, ADR-1053) — a second, plain-HTTP listener at this address (for
+    /// example `"0.0.0.0:80"`) that answers every request with a `308` to the same path over
+    /// `https://`, on this host's own name (the request's `Host` without its port, plus the API's
+    /// port when it isn't 443), so `http://host/` reaches the UI on 443. It also answers `/livez`,
+    /// `/readyz` and `/healthz` as the API does, and serves nothing else. Needs `tls` above. A bind
+    /// failure (port 80 needs `CAP_NET_BIND_SERVICE`, which the systemd unit grants) is logged and
+    /// affects neither DNS nor the API. Default: off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_redirect: Option<SocketAddr>,
     /// REQ: API-015 (ADR-903 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over
     /// plain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`
     /// above, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node
@@ -3062,6 +3071,7 @@ impl Default for ApiConfig {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
             trusted_proxies: Vec::new(),
             tls: None,
+            http_redirect: None,
             allow_secrets_over_http: false,
             confirm_window_secs: DEFAULT_CONFIRM_WINDOW_SECS,
         }

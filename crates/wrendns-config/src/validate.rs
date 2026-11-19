@@ -1527,6 +1527,22 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
             ),
         }
     }
+    // REQ: API-003 (T24.44, ADR-1053) — the plain-HTTP redirect listener only makes sense next
+    // to HTTPS, and must not take the API's own address.
+    if let Some(addr) = cfg.api.http_redirect {
+        if cfg.api.tls.is_none() {
+            r.err(
+                "api.http_redirect",
+                "needs [api] tls: it sends browsers to the HTTPS address, so there must be one",
+            );
+        }
+        if addr.port() == 0 {
+            r.err("api.http_redirect", "the port must be 1 to 65535");
+        }
+        if addr == cfg.api.listen {
+            r.err("api.http_redirect", "must differ from [api] listen");
+        }
+    }
     // REQ: API-902 (ADR-956 §3) — the confirmation window of a guarded address change.
     if !(30..=600).contains(&cfg.api.confirm_window_secs) {
         r.err("api.confirm_window_secs", "must be 30 to 600 seconds");

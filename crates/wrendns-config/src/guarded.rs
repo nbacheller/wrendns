@@ -121,7 +121,22 @@ static REAL: &[Row] = &[
         weakens: never,
         test_only: false,
     },
+    // REQ: API-003, API-902 (T24.44, ADR-1053) — the plain-HTTP redirect listener. `staged`: it is
+    // opened with the API at the next start, never rebinding a live socket; a bind failure only
+    // logs. It sends browsers to HTTPS and serves nothing else, so it never weakens anything.
+    Row {
+        id: API_HTTP_REDIRECT,
+        label: "HTTP to HTTPS redirect",
+        paths: &["api.http_redirect"],
+        mode: Mode::Staged,
+        proof: None,
+        weakens: never,
+        test_only: false,
+    },
 ];
+
+/// The ID of the HTTP-to-HTTPS redirect row (T24.44, ADR-1053).
+pub const API_HTTP_REDIRECT: &str = "api-http-redirect";
 
 /// The rows the end-to-end tests use. They exist only in a build with the cargo feature `e2e`
 /// (the e2e server is built with it, the release binary is not).

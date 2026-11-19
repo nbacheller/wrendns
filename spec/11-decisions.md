@@ -5625,3 +5625,17 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 6. `credential_redirected`: a pushover destination holds credentials, so changing its `url` (or `type`, or dropping the `url` to Pushover's default) is an admin's, the existing rule (API-014), and raises the alert.
 
 **Consequences:** the config schema, OpenAPI and `api-types.ts` gain the six fields and the `pushover` type; the support-bundle classify table lists the four string fields; one help topic (`pushover`) says where to find the two values. No new dependency; the image size is unchanged.
+
+## ADR-1053 - A plain-HTTP redirect listener for the HTTPS web UI: staged, TLS-only, validated Host (Proposed 2026-11-19, T24.44, owner request)
+
+**Context:** the test Pis serve the UI and API on 443 with `[api] tls`. `http://host/` on port 80 should reach them. The API port already redirects plain requests on its own port (307), but a browser typing a bare name asks port 80.
+
+**Decision:**
+1. `[api] http_redirect`: off by default, or a socket address such as `"0.0.0.0:80"`. It opens a second, plain-HTTP listener that answers every request with a `308` to `https://<the request's Host without its port>[:<the API's port when it isn't 443>]<path and query>`, and `/livez`, `/readyz` and `/healthz` as the API port does (limited to `[access] allowed_networks` like it). Nothing else is served; every response carries `Cache-Control: no-store`.
+2. **No open redirect.** The `Host` header is echoed into `Location`, so it must be a hostname (labels of letters, digits and hyphens; a numeric last label is refused unless the whole is an IPv4 address), an IPv4 address or a bracketed IPv6 address without a zone, with an optional numeric port, and exactly one Host header. Anything else (userinfo, a path, spaces, control characters, a second header) is a 400 with no `Location`. The path and query come from the request line and can't change the host part.
+3. **Valid only with `[api] tls`**, and the address may not be `[api] listen` or have port 0: otherwise a validation error. A stored value whose TLS was removed later is ignored, not applied.
+4. **Guarded as a `staged` row** (`api-http-redirect`, ADR-914, ADR-956), not `window`: opening a listener that serves only a redirect cannot lock anyone out, so there is nothing to confirm through a new address; and the listener is started once with the API at start (like `[api] listen` and `tls`), so the change waits for the next start (Restart now where a supervisor is declared). It never weakens anything. A file value wins and locks the control. The UI field is on Settings -> System with the guarded card, with a help topic.
+5. **Failure.** A bind failure (port 80 without `CAP_NET_BIND_SERVICE`, or taken) is logged and affects neither DNS nor the API, and is not a failed start for the staged entry's probation. The systemd unit already grants the capability; Helm and Compose are documented only (no default ports).
+6. **Listener checks** gain two plain-HTTP probes of the redirect listener: `GET /livez` must answer 200 and `GET /` must answer 308 with an `https://` `Location`. They are not DNS listeners and never count toward "not answering DNS".
+
+**Consequences:** the config schema, the support-bundle classify table and `docs/recovery.md` list the new field and ID; no API route, MCP tool or OpenAPI change (the guarded routes carry any row); no new dependency. The API port's own same-port 307 still echoes the raw Host header; hardening it with the new validator is left for the owner to schedule.

@@ -36,6 +36,7 @@
   let weaken = $state(false);
   let port = $state(0);
   let fail = $state(false);
+  let redirect = $state('');
 
   const outcomeText = (o: { outcome: string; reason?: string | null }) =>
     o.outcome === 'rolled_back' ? `rolled back: ${reasonText(o.reason)}` : o.outcome;
@@ -145,6 +146,16 @@
         </tbody>
       </table>
     {/if}
+    <!-- REQ: API-003, API-902 (T24.44, ADR-1053) — [api] http_redirect: port 80 to HTTPS. -->
+    {#each listed.filter((x) => x.id === 'api-http-redirect') as s (s.id)}
+      <div class="test" data-testid="guarded-http-redirect" data-setting="api.http_redirect">
+        <h4>{s.label}<HelpButton id="api-http-redirect" />{#if s.setByFile} <span class="muted small" data-testid="guarded-set-by-file">(set by file)</span>{/if}</h4>
+        <label class="small">Address (empty: off)
+          <input bind:value={redirect} placeholder="0.0.0.0:80" aria-label="HTTP redirect address" disabled={s.setByFile} />
+        </label>
+        <GuardedChange id={s.id} label={s.label} value={{ address: redirect.trim() }} node={target} disabled={s.setByFile} />
+      </div>
+    {/each}
     {#if n.outcomes.length}
       <h3>Latest outcomes</h3>
       <ul class="small" data-testid="guarded-outcomes">
