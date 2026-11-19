@@ -49,6 +49,7 @@
 
 <script lang="ts">
   import { untrack } from 'svelte';
+  import Picker from './Picker.svelte';
   import { api, type S } from '../api';
   import { can } from '../session.svelte';
   import { currentMode } from '../mode.svelte';
@@ -424,6 +425,20 @@
                 else delete editing!.values[f.key];
               }}
             />
+          {:else if f.type === 'multi'}
+            <!-- REQ: UI-901 (T24.34) — choose from the list with the searchable picker. Values chosen
+                 earlier that aren't offered now (a node gone) stay visible as chips. -->
+            <div class="mfield">
+              <span class="mlabel">{f.label}</span>
+              <Picker
+                label={f.label}
+                items={[...new Set([...(f.options ?? []), ...(((editing.values[f.key] as string[] | undefined) ?? []))])].map((o) => ({ value: o, label: f.optionLabels?.[o] ?? o }))}
+                selected={(editing.values[f.key] as string[] | undefined) ?? []}
+                disabled={locked(f)}
+                onchange={(v) => (editing!.values[f.key] = v)}
+                maxChips={4}
+              />
+            </div>
           {:else}
           <label>
             {f.label}
@@ -432,24 +447,6 @@
                 <option value={undefined}>(default)</option>
                 {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
               </select>
-            {:else if f.type === 'multi'}
-              <!-- Values chosen earlier that aren't offered now (a node gone) stay visible. -->
-              {@const chosen = (editing.values[f.key] as string[] | undefined) ?? []}
-              <span class="multi" role="group" aria-label={f.label}>
-                {#each [...new Set([...(f.options ?? []), ...chosen])] as o (o)}
-                  {@const arr = (editing.values[f.key] as string[] | undefined) ?? []}
-                  <label class="check"
-                    ><input
-                      type="checkbox"
-                      checked={arr.includes(o)}
-                      onchange={(ev) =>
-                        (editing!.values[f.key] = (ev.currentTarget as HTMLInputElement).checked
-                          ? [...arr, o]
-                          : arr.filter((x) => x !== o))}
-                    />{f.optionLabels?.[o] ?? o}</label
-                  >
-                {/each}
-              </span>
             {:else if f.type === 'lines' && f.fromText}
               <textarea
                 rows="4"
@@ -544,10 +541,9 @@
     display: grid;
     gap: 4px;
   }
-  .multi {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
+  .mfield {
+    display: grid;
+    gap: 4px;
   }
   .check {
     display: inline-flex !important;

@@ -77,7 +77,7 @@ pub enum MapNodeKind {
 pub struct MapReason {
     /// Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,
     /// `breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,
-    /// `not_configured`, `few_samples`, `children`.
+    /// `not_configured`, `few_samples`, `children`, `member_down`, `no_route`.
     pub code: String,
     pub summary: String,
 }
@@ -245,12 +245,18 @@ pub struct MapSettings {
 // What a node reports
 
 /// An upstream's state on one node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartUpstream {
     pub id: u16,
     pub name: String,
     /// `closed`, `open` or `half_open`.
     pub breaker: String,
+    /// REQ: OBS-901 (fork #25) — the upstream groups it is a member of (ADR-1012).
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// REQ: UPS-006 — why this node can't reach it ("this node has no IPv6 route"), if known.
+    #[serde(default)]
+    pub route_problem: Option<String>,
 }
 
 /// One node's part of the map: its window and what it knows of its own health.
@@ -497,6 +503,51 @@ pub fn classify(
         MapHealth::Green
     };
     (h, reasons)
+}
+
+/// REQ: OBS-901 (fork #25, ADR-1012) — the resolver's view of its upstreams. An upstream that is
+/// red but belongs only to groups that have a member that is not red (the group still answers)
+/// counts as yellow for the resolver, and a reason names it and the member that answers. An
+/// upstream in no group, or in a group with no healthy member, stays red: the group itself fails.
+/// The upstream's own node on the map keeps its colour; only the roll-up changes.
+pub fn group_aware(ups: &[(&PartUpstream, MapHealth)]) -> (Vec<MapHealth>, Vec<MapReason>) {
+    let mut out = Vec::with_capacity(ups.len());
+    let mut notes = Vec::new();
+    for (u, h) in ups {
+        if *h != MapHealth::Red || u.groups.is_empty() {
+            out.push(*h);
+            continue;
+        }
+        // The first healthy member of each of its groups, or None when a group has none.
+        let mut answering: Vec<&str> = Vec::new();
+        let mut covered = true;
+        for g in &u.groups {
+            let alive = ups
+                .iter()
+                .find(|(m, mh)| *mh != MapHealth::Red && m.groups.iter().any(|x| x == g));
+            let Some((m, _)) = alive else {
+                covered = false;
+                break;
+            };
+            answering.push(m.name.as_str());
+        }
+        if covered {
+            answering.sort_unstable();
+            answering.dedup();
+            out.push(MapHealth::Yellow);
+            notes.push(reason(
+                "member_down",
+                format!(
+                    "upstream {} is down; its group still answers through {}",
+                    u.name,
+                    answering.join(", ")
+                ),
+            ));
+        } else {
+            out.push(MapHealth::Red);
+        }
+    }
+    (out, notes)
 }
 
 /// A parent takes the worst of its children (`idle` ones don't count unless they all are), and
@@ -942,9 +993,21 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
         up_total.entry(name.clone()).or_default().plus(a);
     }
     let mut up_health: BTreeMap<String, MapHealth> = BTreeMap::new();
+    // REQ: UPS-006 (fork #25) — the nodes that have no route to an upstream's address.
+    let mut no_route: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    for (i, p) in parts.parts.iter().enumerate() {
+        for u in &p.upstreams {
+            if let Some(why) = u.route_problem.as_deref() {
+                no_route
+                    .entry(u.name.as_str())
+                    .or_default()
+                    .push((labels[i].as_str(), why));
+            }
+        }
+    }
     for (name, a) in &up_total {
         let b = breakers.get(name).copied().unwrap_or(Breaker::Closed);
-        let (h, why) = classify(
+        let (mut h, mut why) = classify(
             a,
             th,
             Scope::Upstream,
@@ -953,6 +1016,14 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
                 ..Facts::default()
             },
         );
+        // A route that is missing is worth saying, and an upstream nobody has asked (a spare)
+        // is not "idle" when it cannot be reached: it is a warning.
+        for (node, problem) in no_route.get(name.as_str()).into_iter().flatten() {
+            why.push(reason("no_route", format!("{node}: {problem}")));
+            if h == MapHealth::Idle {
+                h = MapHealth::Yellow;
+            }
+        }
         up_health.insert(name.clone(), h);
         nodes.push(MapNode {
             id: format!("up:{name}"),
@@ -1000,6 +1071,7 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
             });
             edges.push(edge_of(res_id.clone(), id, &a, h));
         }
+        let mut ups: Vec<(&PartUpstream, MapHealth)> = Vec::new();
         for u in &p.upstreams {
             let a = up_edge
                 .get(&(i, u.name.clone()))
@@ -1018,9 +1090,13 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
                     ..Facts::default()
                 },
             );
-            children.push(up_health.get(&u.name).copied().unwrap_or(h));
+            ups.push((u, up_health.get(&u.name).copied().unwrap_or(h)));
             edges.push(edge_of(res_id.clone(), format!("up:{}", u.name), &a, h));
         }
+        // REQ: OBS-901 (fork #25, ADR-1012) — a dead member of a group that still answers
+        // through a healthy one is a warning for the resolver, not a failure.
+        let (member_health, member_notes) = group_aware(&ups);
+        children.extend(member_health);
         // The resolver: its own level (ADR-104) and what is downstream of it.
         let (below, why) = rollup(&children);
         let mut reasons: Vec<MapReason> = Vec::new();
@@ -1039,6 +1115,7 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
                 format!("{code}: {summary}"),
             ));
         }
+        reasons.extend(member_notes);
         reasons.extend(why);
         // A node that says it is healthy is green even when nobody asked it anything.
         let floor = if p.level == "healthy" {

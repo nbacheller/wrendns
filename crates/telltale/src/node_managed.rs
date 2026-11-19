@@ -36,6 +36,35 @@ pub(crate) const KINDS: &[&str] = &[
     UPDATES,
     crate::guarded::KIND,
 ];
+/// REQ: CLU-015 (T24.37, ADR-1016) — the kinds of the shared configuration that the API stores:
+/// the blob also carries their rows, whole, so a replica that is promoted adopts exactly what the
+/// cluster last published. A replica applies the shared configuration, not these rows; a build
+/// that doesn't know the kinds skips them (CLU-010).
+pub(crate) const SHARED_KINDS: &[&str] = &[
+    crate::managed::CLIENT,
+    crate::managed::RECORD,
+    crate::managed::FORWARD,
+    crate::managed::RULE,
+    crate::managed::UPSTREAM,
+    crate::managed::UPSTREAM_GROUP,
+    crate::managed::LIST,
+    crate::managed::GROUP,
+    crate::managed::ALERT_DESTINATION,
+    crate::managed::ALERT_RULE,
+    crate::managed::SCHEDULE,
+    crate::managed::ANOMALY_MUTE,
+    crate::managed::RATELIMIT,
+    crate::managed::EXCLUSIONS,
+    crate::managed::SIMULATE,
+    crate::managed::MAP,
+    crate::managed::ROLLOUT,
+    crate::managed::KUBERNETES_MAP,
+    crate::managed::SPECIAL,
+    crate::managed::LOCAL,
+    crate::managed::CLIENTS,
+    crate::managed::DISCOVERY,
+    crate::managed::ROUTER,
+];
 /// The fields that hold or point at a secret outside the store: a provider's `client_secret` and
 /// its file, a sink's `token_file` (and `tls_ca`, a path), OTLP's inline `headers`. A blob never
 /// carries them: only the references (`client_secret_ref`, `token_ref`, `header_refs`: names)
@@ -54,6 +83,11 @@ const SEEDED: &str = "node-managed-seeded";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Doc {
     pub(crate) version: u32,
+    /// REQ: CLU-015 (T24.37) — the document carries the rows of [`SHARED_KINDS`] (possibly none).
+    /// A blob from a build that doesn't publish them lacks the flag, and a promoted primary then
+    /// keeps the rows it has.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) managed: bool,
     #[serde(default)]
     pub(crate) entries: Vec<Entry>,
 }
@@ -85,10 +119,20 @@ fn carries_secret(body: &Value) -> bool {
 pub(crate) fn encode(rows: &[(String, String, String)]) -> Vec<u8> {
     let mut entries: Vec<Entry> = rows
         .iter()
-        .filter(|(k, _, _)| KINDS.contains(&k.as_str()))
+        .filter(|(k, _, _)| KINDS.contains(&k.as_str()) || SHARED_KINDS.contains(&k.as_str()))
         .filter_map(|(kind, name, body)| {
             let mut body: Value = serde_json::from_str(body).ok()?;
-            if let Some(o) = body.as_object_mut() {
+            // REQ: CLU-006 — a row the operator pinned to this node stays here: the shared
+            // configuration keeps such entries on their node, and so does the blob.
+            if SHARED_KINDS.contains(&kind.as_str())
+                && body.get("node_only") == Some(&Value::Bool(true))
+            {
+                return None;
+            }
+            // The shared kinds travel whole, as the shared configuration does.
+            if KINDS.contains(&kind.as_str())
+                && let Some(o) = body.as_object_mut()
+            {
                 for f in SECRET_FIELDS {
                     o.remove(*f);
                 }
@@ -103,6 +147,7 @@ pub(crate) fn encode(rows: &[(String, String, String)]) -> Vec<u8> {
     entries.sort_by(|a, b| (&a.kind, &a.name).cmp(&(&b.kind, &b.name)));
     serde_json::to_vec(&Doc {
         version: VERSION,
+        managed: true,
         entries,
     })
     .unwrap_or_default()
@@ -111,7 +156,7 @@ pub(crate) fn encode(rows: &[(String, String, String)]) -> Vec<u8> {
 /// The primary's rows of the node-managed kinds, as [`encode`] takes them.
 fn rows_of(state: &State) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
-    for kind in KINDS {
+    for kind in KINDS.iter().chain(SHARED_KINDS) {
         match state.managed(kind) {
             Ok(r) => rows.extend(r.into_iter().map(|m| (m.kind, m.name, m.body))),
             Err(e) => warn!(kind, "node-managed entries can't be read to publish: {e}"),
@@ -153,6 +198,27 @@ pub(crate) fn parse_kinds(bytes: &[u8], kinds: &[&str]) -> Result<Vec<Entry>, St
             !refused
         })
         .collect())
+}
+
+/// REQ: CLU-015 (T24.37) — the rows of the shared kinds a blob carries: `Ok(None)` for a blob from
+/// a build that doesn't publish them, `Err` for one that can't be read.
+pub(crate) fn parse_shared(bytes: &[u8]) -> Result<Option<Vec<Entry>>, String> {
+    let doc: Doc = serde_json::from_slice(bytes).map_err(|e| format!("not readable: {e}"))?;
+    if doc.version > VERSION {
+        return Err(format!(
+            "written by a newer version (document version {}, this build reads {VERSION}): upgrade this node",
+            doc.version
+        ));
+    }
+    if !doc.managed {
+        return Ok(None);
+    }
+    Ok(Some(
+        doc.entries
+            .into_iter()
+            .filter(|e| SHARED_KINDS.contains(&e.kind.as_str()))
+            .collect(),
+    ))
 }
 
 /// The providers among `entries` that validate, and what was wrong with the others.
@@ -567,6 +633,7 @@ mod tests {
         // A blob built by hand with a secret is dropped, entry by entry.
         let forged = serde_json::to_vec(&Doc {
             version: 1,
+            managed: false,
             entries: vec![Entry {
                 kind: OIDC_PROVIDER.into(),
                 name: "sso".into(),
@@ -585,6 +652,7 @@ mod tests {
         assert!(parse(newer).unwrap_err().contains("upgrade"));
         let doc = Doc {
             version: 1,
+            managed: false,
             entries: vec![
                 Entry {
                     kind: OIDC_PROVIDER.into(),

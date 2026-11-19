@@ -340,6 +340,26 @@
       "docs": "encrypted-upstreams"
     },
     {
+      "id": "upstream-picker",
+      "title": "Pick your upstream servers",
+      "term": "Upstream picker (simple view)",
+      "summary": "Tick the public DNS servers you want, choose encrypted or plain DNS and IPv4 and/or IPv6, and Save. TelltaleDNS asks the fastest of the servers you ticked. The Custom row takes an address of your own. The Advanced view is the technical list and forms.",
+      "when": "Setting up, or changing which public servers answer for you, without writing addresses by hand.",
+      "example": "Tick Quad9 and Cloudflare, leave Encrypted on, and Save: DNS over TLS to both, using whichever answers faster.",
+      "caution": "Every server you tick sees the names you look up, so read its note. Plain DNS isn't private. IPv6 is greyed out when this node has no IPv6 route. Servers set up another way (config files, an import, the Advanced view) are shown and left alone, and stay in the default group.",
+      "docs": "upstream-presets"
+    },
+    {
+      "id": "upstream-route",
+      "title": "\"This node has no IPv6 route\"",
+      "term": "No route to an upstream",
+      "summary": "This node can't reach the server's address: it is an IPv6 (or IPv4) address and the machine has no default route for that family. TelltaleDNS checks with a connection attempt that sends nothing, at start and every 30 seconds, never on the query path. The server fails on every query until the route exists.",
+      "when": "A server you imported from Pi-hole, or added by address, is always failing.",
+      "example": "Cloudflare's [2606:4700:4700::1111] on a Pi with only IPv4: remove it from the group, or give the host IPv6. On the map the group's resolver stays yellow while the others answer.",
+      "caution": "A server given by hostname isn't checked this way; its failures show as connection errors.",
+      "docs": "network-map"
+    },
+    {
       "id": "upstream-source",
       "title": "Send an upstream's queries from one address",
       "term": "Source address (bind address)",
@@ -1270,6 +1290,16 @@
       "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {
+      "id": "inventory-unifi-reads",
+      "title": "More from your routers",
+      "term": "Extra router reads",
+      "summary": "The inventory can ask UniFi for more than its device list: more fields of each connected client (port or access point, VLAN, network, first seen), clients it has seen before (history), and its own devices with each switch port's MAC table and LLDP neighbours. It can also ask Home Assistant for devices that have a MAC address and no entity. Every read only reads, adds to the inventory only, and is capped at 4 MiB and 8,192 rows (Home Assistant 1 MiB).",
+      "when": "Turn these on when the inventory shows a device with no place: you want to know which switch port or access point a device is on, or to keep the name of a phone that left last week.",
+      "example": "With the devices read on, a printer's row shows the switch and port it plugs into. With history on, a laptop that has been away for ten days is listed as history, with the last address UniFi saw, and it never answers for the address now.",
+      "caution": "History is never a current address: it can't give a device a DNS name, and it never replaces an address a router reports now. A console that refuses a read (a key without the right to read devices, for example) is reported once in the table, and the other reads carry on. Home Assistant can only list a device with no entity when the device sits in an area or has a label.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
       "id": "block-response",
       "title": "How blocked names are answered",
       "term": "Block response",
@@ -1418,6 +1448,27 @@
       "example": "A backup without the history is small; with it, the file can be over 256 MiB, and the API then refuses it.",
       "caution": "The history shows what devices looked up. Keep the backup as private as the network it came from.",
       "docs": "backups-and-moving-to-a-new-machine"
+    },
+    {
+      "id": "query-log-clients",
+      "title": "Show queries from several devices",
+      "term": "Client filter",
+      "summary": "Search by a device's name, or by its address, and pick as many devices as you like; the log shows the queries from all of them, and \"not\" shows every other device.",
+      "when": "You want one person's phone and laptop together, or everything except the server that asks the most.",
+      "example": "Type \"tv\", pick the living room and bedroom TVs, and the log lists both. Tick \"not\" to see everything else.",
+      "caution": "A device is found by the address it has now (a router name or a Kubernetes workload is followed to its addresses); at most 100 devices and 256 addresses per search.",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "picker",
+      "title": "Choosing from a long list",
+      "term": "Search and multi-select",
+      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick.",
+      "when": "A setting offers many devices, groups, lists or networks.",
+      "example": "In a group's networks, type \"10.20.2\" and Select all.",
+      "caution": "Escape closes the list without changing the choice.",
+      "general": true,
+      "docs": "groups-and-devices"
     },
     {
       "id": "list-too-large",

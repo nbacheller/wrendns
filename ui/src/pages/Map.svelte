@@ -379,6 +379,7 @@
                       onclick={() => pick(p.node.id)}
                       onkeydown={(e) => keyPick(e, p.node.id)}
                     >
+                      {#if p.node.reasons.length}<title>{p.node.label}: {p.node.reasons.map((r) => r.summary).join('; ')}</title>{/if}
                       <rect width={NODE_W} height={NODE_H} rx="8" />
                       <path class="shape" d={HEALTH_SHAPE[p.node.health]} transform="translate(15 {NODE_H / 2})" />
                       <text class="nlabel" x="30" y="13">{trunc(p.node.label, 19)}</text>
@@ -427,7 +428,7 @@
         {/if}
         <p class="legend small muted" aria-label="Legend">
           {#each HEALTH_ORDER as h (h)}
-            <span class="lg {h}"><svg width="16" height="16" viewBox="-9 -9 18 18" aria-hidden="true"><path d={HEALTH_SHAPE[h]} /></svg>{HEALTH_SHORT[h]}</span>
+            <span class="lg {h}" data-testid="legend-item"><svg class="hicon" width="16" height="16" viewBox="-9 -9 18 18" aria-hidden="true"><path d={HEALTH_SHAPE[h]} /></svg>{HEALTH_SHORT[h]}</span>
           {/each}
           <span>Wider and denser pulses mean more lookups a second. {Math.round(snap.windowSecs)}-second window.</span>
         </p>
@@ -441,7 +442,7 @@
               <button type="button" class="small" onclick={() => (selected = null)} aria-label="Close the details">Close</button>
             </div>
             <p>
-              <span class="hbadge {sel.health}"><svg width="16" height="16" viewBox="-9 -9 18 18" aria-hidden="true"><path d={HEALTH_SHAPE[sel.health]} /></svg>{HEALTH_SHORT[sel.health]}</span>
+              <span class="hbadge {sel.health}"><svg class="hicon" width="16" height="16" viewBox="-9 -9 18 18" aria-hidden="true"><path d={HEALTH_SHAPE[sel.health]} /></svg>{HEALTH_SHORT[sel.health]}</span>
               <span class="muted small">{KIND_WORDS[sel.kind]}{sel.network ? ` in ${sel.network}` : ''}{sel.group ? `, group ${sel.group}` : ''}</span>
             </p>
             {#if sel.address && snap.privacy < 2}<p class="mono small" data-testid="panel-address">{sel.address}</p>{/if}
@@ -450,7 +451,7 @@
               <p class="small">{rate(sel.qps)} over the window ({num(sel.count)} answers, {num(sel.sampled)} sampled){sel.folded ? `; ${num(sel.folded)} devices folded` : ''}.</p>
             {/if}
             {#if sel.reasons.length}
-              <ul class="reasons small">{#each sel.reasons as r (r.code)}<li><b>{r.code.replace(/_/g, ' ')}</b>: {r.summary}</li>{/each}</ul>
+              <ul class="reasons small">{#each sel.reasons as r, i (`${r.code}#${i}`)}<li><b>{r.code.replace(/_/g, ' ')}</b>: {r.summary}</li>{/each}</ul>
             {/if}
             <!-- REQ: FLT-006, API-010 (T24.30, ADR-996) — what applies to this device, and why. -->
             {#if sel.kind === 'device' && sel.address && snap.privacy < 2}
@@ -523,7 +524,8 @@
   .mapfig figcaption {
     margin-bottom: 6px;
   }
-  svg {
+  /* Only the map itself: the legend's and the panel's icons keep their own 16 px (fork #25). */
+  .mapscroll > svg {
     display: block;
     min-width: 760px;
     max-width: 100%;
@@ -662,6 +664,11 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
+  }
+  .hicon {
+    width: 16px;
+    height: 16px;
+    flex: none;
   }
   .lg path,
   .hbadge path {

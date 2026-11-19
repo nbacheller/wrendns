@@ -770,6 +770,11 @@ telltale presets show nextdns --param profile=abc123    # templated presets need
 ```
 `show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. That includes the DoQ (`quic://`) endpoints.
 
+### Choosing public upstreams in the UI
+The **Upstreams** page opens on a simple view, like Pi-hole's: tick the public resolvers you want (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing, and others), each with a note on what it filters and what it does with your queries. Choose **Encrypted** (DNS over TLS, recommended; DNS over HTTPS where a provider has no TLS address) or **Plain**, and IPv4, IPv6 or both. IPv6 is greyed out, with the reason, when the node has no IPv6 route. The **Custom** row takes a bare IP (plain DNS), a `tls://` or `https://` address, or a `quic://` one; an IP-literal `tls://` address also needs the name on its certificate.
+
+Saving writes one upstream per address, named `pub-<provider>-<protocol>-<n>` (for example `pub-cloudflare-tls-1`), and sets the `default` upstream group to the `fastest` strategy over them. Entries the simple view didn't make (from your config files, a Pi-hole import, or the Advanced view) are listed under "Also set up" and left alone; they stay in the `default` group. **Advanced** is the technical list and forms, unchanged: the simple view's entries show there too, and switching views loses nothing. Each upstream on the page says where it is defined: the config file, the API or UI, or both. The catalog is `presets/upstreams.toml`; `GET /api/v1/upstream-presets` (and the MCP tool `list_upstream_presets`) read it with whether this node has an IPv6 route.
+
 ## Encrypted DNS for your devices (DoT, DoH, and DoQ)
 Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:
 ```toml
@@ -2639,6 +2644,17 @@ for peers. The Helm chart's node alerts leave out a node whose last reported win
 A node that's really failing during its window stays quiet until the window ends: keep windows
 short.
 
+### Entries made through the API after a failover
+Upstreams, lists, groups, devices, local names, forwards, quick rules and the other entries made
+through the API or UI are stored on the primary that took the write and published with every
+version. A node that takes over as primary adopts them as its own (the primary's last published
+set, once per version it inherits), so afterwards you can edit or delete every one of them on
+the new primary, none comes back, and a node that returns with older entries of its own has them
+replaced by the cluster's. If the node that took over runs from a version published by an older
+primary (every node needs this release for its first hand-over), a change to an entry it serves
+but doesn't hold answers 409 with that reason instead of "not found": upgrade, then change it on
+the current primary.
+
 ## Failover drills
 Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network
 a device only ever uses its first one: most systems switch to the second only when the first stops
@@ -2955,6 +2971,8 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 **Monitor → Network map** draws the gateway, your networks and VLANs, devices, TelltaleDNS nodes (with their answer kinds: cache, local, blocked) and upstreams, joined by flows. It is built from a sample of lookups on the aggregator thread (never the query path), over the last 60 seconds, and refreshes every 2 seconds. The data API is `GET /api/v1/map`, `/api/v1/map/stream` and `/api/v1/map/health` (scope `analytics:read`).
 - **Pulses.** Each flow with a rate has dashes moving along it: one per half query a second (at most six), wider as the rate grows. At most the 150 busiest flows move (60 on a host with 4 cores or fewer); the rest are drawn still. Motion stops when the tab is hidden, stops for good under your system's **reduce motion** setting (the rate is then written on each flow, and there is no switch to turn motion back on), and **Pause motion** stops it for the session.
 - **States.** Every node has a shape and a word as well as a colour: a circle with a check is **OK**, a triangle **Warning**, an octagon with a cross **Failing**, a dashed circle **Idle** (too few answers in the window to say). Select a node, or Tab to it and press Enter, for its numbers, the reasons for its colour and links: a device shows its [policy](#a-devices-policy) (group, where it came from, the key that matched, and what applies) with a link to the full panel, and opens its queries, Explain, anomalies and device page; an upstream opens Upstreams, a resolver Cluster, a network Networks.
+- **A dead spare doesn't make a node fail.** A resolver is **Failing** only when a whole upstream group fails (every member down) or its own health is severe. When one member of a group is down and another still answers, the resolver is at most **Warning**, and its reasons name the dead member and the one that answers. The dead upstream's own node stays red.
+- **No route.** An upstream given by IP address that this node has no route to (an IPv6 address on a host with no IPv6 default route, or IPv4 likewise) says **this node has no IPv6 route** (or IPv4) on its node and on the Upstreams page. TelltaleDNS checks at start and every 30 seconds with a `connect()` on a UDP socket, which sends nothing and never runs on the query path. A spare nobody has asked yet shows **Warning** instead of **Idle** for that reason. The Pi-hole import notes every IPv6 upstream, so you can drop it when the hosts have no IPv6.
 - **Filters** (network, group, node, state, and a device's name or address) are in the page's address, so a view can be linked. Network, group, node and device narrow the read on the server (the map then updates by polling, as the stream carries everything); state narrows what is drawn.
 - **Table** shows the same flows and nodes as text, for a screen reader or a quick scan.
 - **Banners.** "Sampled, 1 in N" says the rates are estimates; "Partial" lists a cluster node that didn't answer; at privacy level (`telemetry.qlog.privacy_level`) 2 devices are hidden (one node stands for them) and at 3 only totals show. No domain name ever appears on the map.

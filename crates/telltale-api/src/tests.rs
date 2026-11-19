@@ -1874,7 +1874,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // CLU-014's /dnssec-settings/default, /filter-settings/default and /drill-settings/default
     // (T27.2, T27.11), plus FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28) and
     // FLT-006's /clients/{id}/policy (T24.30), which the merge of feat/ipam-integrations adds.
-    assert_eq!(paths.len(), 170);
+    // 171 with UPS-004's /upstream-presets (T24.36), from the same merge.
+    assert_eq!(paths.len(), 171);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

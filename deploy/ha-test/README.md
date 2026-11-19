@@ -42,6 +42,15 @@ What it does, in order:
    it; the `pi_hole.disable` service with a 5 minute duration makes a 5 minute pause. The audit log
    shows each change by `token:pihole-api` and never holds the token. A rotated token is refused.
 
+8. Stops the node gracefully (it saves its network inventory then), copies `inventory.json` out and
+   checks it (T25.10, DSC-009, ADR-912). The node runs with `[discovery]` on. The three devices with
+   entities are there, named as Home Assistant names them (`ha_user` for a name a person gave,
+   `ha_integration` for the integration's), with no address of their own other than the tracker's
+   claim. The seed also holds two devices with a MAC and no entity: `Hall Hub` sits in the Hall
+   area and is read by the second, fixed template (`area_devices` and `label_devices`); `Loose
+   Bridge` sits in no area and has no label, which no template can list, so it must be absent.
+   That absence is the documented limit of reading the registry through templates.
+
 A trap always removes the node container, the Home Assistant containers and volumes, and the
 temporary directory, also when a step fails. The failure output shows the last lines of the node's
 and Home Assistant's logs.
