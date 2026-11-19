@@ -18,7 +18,7 @@ Include what you can: the version (`wrendns --version`), how WrenDNS runs (nativ
 - **A fix** in a release as soon as it is ready, aimed at 30 days for high and critical issues, then a GitHub security advisory (with a CVE where it applies). You are credited in the advisory unless you prefer not to be.
 - Progress updates at least every two weeks until it is closed, and a heads-up before anything is published. Please give us a reasonable time to ship the fix before you disclose it.
 
-WrenDNS is maintained by one person for MySummitKeep LLC, so these are commitments in good faith, not a service level.
+WrenDNS is maintained by one person for MySummitKeep, LLC, so these are commitments in good faith, not a service level.
 
 ## Supported versions
 

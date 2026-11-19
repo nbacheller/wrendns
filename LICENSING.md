@@ -4,7 +4,7 @@ This page says, in plain language, under which terms you can use WrenDNS. The li
 
 ## WrenDNS is AGPL-3.0-or-later
 
-WrenDNS is free and open-source software under the [GNU Affero General Public License, version 3 or (at your option) any later version](LICENSE) (SPDX: `AGPL-3.0-or-later`). Copyright MySummitKeep LLC.
+WrenDNS is free and open-source software under the [GNU Affero General Public License, version 3 or (at your option) any later version](LICENSE) (SPDX: `AGPL-3.0-or-later`). Copyright MySummitKeep, LLC.
 
 In practice:
 
@@ -15,7 +15,7 @@ In practice:
 
 ## A commercial licence
 
-MySummitKeep LLC, which holds the copyright, can also license WrenDNS under other terms, for example to a company that wants to build WrenDNS into a product without the AGPL's obligations. There is no standard commercial licence text yet: ask at **[support@wrendns.com](mailto:support@wrendns.com)** and say what you want to do.
+MySummitKeep, LLC, which holds the copyright, can also license WrenDNS under other terms, for example to a company that wants to build WrenDNS into a product without the AGPL's obligations. There is no standard commercial licence text yet: ask at **[support@wrendns.com](mailto:support@wrendns.com)** and say what you want to do.
 
 Payments through the [Support WrenDNS](https://www.wrendns.com/download.html#support) links are voluntary support, not a licence: they buy no rights, features or priority support (see the [Terms](https://www.wrendns.com/terms)).
 
@@ -53,4 +53,4 @@ Contributions are welcome under the [Contributor Licence Agreement](CONTRIBUTING
 
 ## The name
 
-The licences cover the code, not the name. "WrenDNS" and the wren logo are MySummitKeep LLC's; a fork of the code needs its own name and logo.
+The licences cover the code, not the name. "WrenDNS" and the wren logo are MySummitKeep, LLC's; a fork of the code needs its own name and logo.

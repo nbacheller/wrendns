@@ -3,9 +3,9 @@
 Effective: on publication at www.wrendns.com
 Last updated: 19 November 2026
 
-<!-- DRAFT adapted from the MySummitKeep LLC Privacy Policy (www.mysummitkeep.com/privacy), for the owner and counsel to review before launch. Values to confirm are marked [confirm]. Every statement about the website and the software must stay true: re-check it whenever the site adds a script, or the software adds an outbound connection. -->
+<!-- DRAFT adapted from the MySummitKeep, LLC Privacy Policy (www.mysummitkeep.com/privacy), for the owner and counsel to review before launch. Values to confirm are marked [confirm]. Every statement about the website and the software must stay true: re-check it whenever the site adds a script, or the software adds an outbound connection. -->
 
-MySummitKeep LLC ("we", "us" or "our") makes WrenDNS and runs the website at www.wrendns.com and wrendns.com (the "Site"). This policy describes what information we collect through the Site, through Support Payments and through support email, how we use it, who we disclose it to, and how we protect it. It also explains what the WrenDNS software (the "Software") does with information, because the Software runs on your network rather than on ours.
+MySummitKeep, LLC ("we", "us" or "our") makes WrenDNS and runs the website at www.wrendns.com and wrendns.com (the "Site"). This policy describes what information we collect through the Site, through Support Payments and through support email, how we use it, who we disclose it to, and how we protect it. It also explains what the WrenDNS software (the "Software") does with information, because the Software runs on your network rather than on ours.
 
 ## 1. Notice at collection
 
@@ -32,7 +32,7 @@ The Site, Support Payments and support are for adults. They are not directed at 
 
 ## 3. The WrenDNS software and your information
 
-The Software runs on devices you control, such as a Raspberry Pi, a server or a Kubernetes cluster. It keeps its data there: DNS queries and answers, device names, the network inventory, the CMDB, and, if you enable the browser and endpoint agent, browsing history. **None of it is sent to MySummitKeep LLC.** We never receive it, including any data about minors who use devices on your network. You decide what it records and for how long, and you are responsible for how you use that data, including the laws on monitoring the people and devices on your network.
+The Software runs on devices you control, such as a Raspberry Pi, a server or a Kubernetes cluster. It keeps its data there: DNS queries and answers, device names, the network inventory, the CMDB, and, if you enable the browser and endpoint agent, browsing history. **None of it is sent to MySummitKeep, LLC.** We never receive it, including any data about minors who use devices on your network. You decide what it records and for how long, and you are responsible for how you use that data, including the laws on monitoring the people and devices on your network.
 
 The Software makes its own outbound connections only for features you can control:
 
@@ -108,7 +108,7 @@ We may update this policy. Material changes are posted on the Site with a new "L
 
 ## 13. Contact us
 
-MySummitKeep LLC (WrenDNS), Attn: Privacy
+MySummitKeep, LLC (WrenDNS), Attn: Privacy
 5005 W Laurel St, Ste 100 #3250
 Tampa, FL 33607
 Phone: (813) 418-6800

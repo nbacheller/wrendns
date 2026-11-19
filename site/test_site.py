@@ -128,7 +128,7 @@ class Legal(unittest.TestCase):
 
     def test_every_page_has_the_footer_with_support_privacy_terms_and_the_maker(self):
         footer = read("partials", "footer.html")
-        for needle in ('href="support.html"', 'href="privacy.html"', 'href="terms.html"', "WrenDNS is a product of MySummitKeep LLC"):
+        for needle in ('href="support.html"', 'href="privacy.html"', 'href="terms.html"', "WrenDNS is wholly owned by MySummitKeep, LLC.", "© 2026 MySummitKeep, LLC", "The WrenDNS name and logo are trademarks of MySummitKeep, LLC."):
             self.assertIn(needle, footer)
         for name in build.PAGES:
             self.assertIn("<!-- @footer -->", read(name), name)
@@ -171,6 +171,90 @@ class Licence(unittest.TestCase):
         for name in build.PAGES:
             self.assertNotIn("built-with-claude", read(name).lower(), name)
             self.assertNotIn("Co-Authored-By: Claude", read(name), name)
+
+
+class Prominence(unittest.TestCase):
+    """REQ: DOC-006 (T33.3, owner decisions 2026-11-19) — the support links in the hero, the header and the homepage."""
+
+    index = read("index.html")
+    header = read("partials", "header.html")
+    full = Support.full
+    empty = {"support": {"one_time_url": "", "monthly": []}}
+
+    def test_hero_button_header_link_and_section_exist_when_links_are_configured(self):
+        page = build.render_support_home(self.index, self.full)
+        self.assertIn('<a class="btn" href="#support">Support WrenDNS</a>', page)
+        self.assertIn('<section id="support"', page)
+        self.assertIn("WrenDNS is free to use. If it helps your network, you can support its development.", page)
+        self.assertIn("Support payments are not tax-deductible.", page)
+        self.assertIn('href="terms.html#4-5-refunds"', page)
+        self.assertIn('href="support.html"', page)
+        for url in ("https://donate.stripe.com/aaa", "https://buy.stripe.com/bbb", "https://buy.stripe.com/ccc"):
+            self.assertIn('href="{}" rel="noopener noreferrer"'.format(url), page)
+        self.assertLess(page.index('href="start.html">Get started'), page.index("Support WrenDNS</a>"))
+        nav = build.render_support_nav(self.header, self.full)
+        self.assertIn('<a href="support.html#give" data-page="support">Support</a>', nav)
+        self.assertNotIn("@support", page + nav)
+
+    def test_all_three_are_hidden_while_no_link_is_set(self):
+        page = build.render_support_home(self.index, self.empty)
+        self.assertNotIn("Support WrenDNS", page)
+        self.assertNotIn('id="support"', page)
+        self.assertNotIn("@support", page)
+        # The header keeps its link to the Support page, which also holds the help.
+        self.assertIn('href="support.html" data-page="support"', build.render_support_nav(self.header, self.empty))
+
+    def test_the_support_section_sits_after_the_content_and_the_download_page_keeps_its_block(self):
+        self.assertIn("<!-- @support-home -->", self.index)
+        self.assertIn("<!-- @support -->", read("download.html"))
+        self.assertIn("<!-- @support-nav -->", self.header)
+
+
+class LinkPreviews(unittest.TestCase):
+    """REQ: DOC-006 (T33.3, owner decisions 2026-11-19) — Open Graph and Twitter tags on every page."""
+
+    def test_every_page_has_the_tags_with_absolute_https_urls(self):
+        import re
+
+        for name in build.PAGES:
+            page = read(name)
+            tagged = build.add_social_tags(name, page)
+            url = build.page_url(name)
+            self.assertTrue(url.startswith("https://www.wrendns.com/"), name)
+            for needle in (
+                '<link rel="canonical" href="{}">'.format(url),
+                '<meta property="og:type" content="website">',
+                '<meta property="og:site_name" content="WrenDNS">',
+                '<meta property="og:url" content="{}">'.format(url),
+                '<meta property="og:image" content="https://www.wrendns.com/assets/brand/social-preview.png">',
+                '<meta property="og:image:width" content="1280">',
+                '<meta property="og:image:height" content="640">',
+                '<meta property="og:image:alt" content="',
+                '<meta name="twitter:card" content="summary_large_image">',
+                '<meta property="og:title" content="',
+                '<meta property="og:description" content="',
+            ):
+                self.assertIn(needle, tagged, name)
+            desc = re.search(r'<meta name="description" content="([^"]+)"', page)
+            self.assertTrue(desc and len(desc.group(1)) > 40, name)
+            self.assertNotIn("!", re.sub("Put a bird on it!", "", desc.group(1)), name)
+            for m in re.finditer(r'<(?:meta property="og:(?:url|image)"|link rel="canonical"|meta name="twitter:image")[^>]*?(?:content|href)="([^"]+)"', tagged):
+                self.assertTrue(m.group(1).startswith("https://"), (name, m.group(1)))
+
+    def test_the_image_exists_and_is_1280_by_640(self):
+        import struct
+
+        with open(build.SOCIAL_IMAGE_SRC, "rb") as f:
+            head = f.read(24)
+        self.assertEqual(head[1:4], b"PNG")
+        self.assertEqual(struct.unpack(">II", head[16:24]), build.SOCIAL_IMAGE_SIZE)
+        self.assertTrue(build.SOCIAL_IMAGE_PATH.endswith("social-preview.png"))
+
+    def test_the_homepage_is_the_site_root_and_titles_are_escaped(self):
+        self.assertEqual(build.page_url("index.html"), "https://www.wrendns.com/")
+        self.assertEqual(build.page_url("faq.html"), "https://www.wrendns.com/faq")
+        tagged = build.add_social_tags("x.html", '<head><title>A &amp; "B" — WrenDNS</title><meta name="description" content="It&#x27;s calm."></head>')
+        self.assertIn('content="A &amp; &quot;B&quot; — WrenDNS"', tagged)
 
 
 class Headers(unittest.TestCase):

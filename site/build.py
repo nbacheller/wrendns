@@ -51,7 +51,7 @@ STRIPE_HOSTS = ("https://buy.stripe.com/", "https://donate.stripe.com/")
 STRIPE_SECRET = re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+")
 # Said wherever a gift is offered: the account belongs to a for-profit company.
 SUPPORT_TAX = (
-    "Support is a payment to MySummitKeep LLC, the company that makes WrenDNS. It is not a tax-deductible donation, "
+    "Support is a payment to MySummitKeep, LLC, the company that makes WrenDNS. It is not a tax-deductible donation, "
     "and no tax receipt is issued. WrenDNS stays free either way."
 )
 
@@ -142,6 +142,88 @@ def render_support(page, cfg):
     empty = '  <p class="muted">Supporter links are not set up yet. Everything here is free in the meantime.</p>\n'
     page = page.replace("<!-- @support-cards -->", cards or empty)
     return page.replace("<!-- @support-tax -->", html.escape(SUPPORT_TAX))
+
+
+# REQ: DOC-006 (T33.3; owner decisions 2026-11-19) — where the support links show beyond the Download and Support
+# pages: a "Support WrenDNS" button in the homepage hero, a "Support" link in every page's header, and a short
+# section near the end of the homepage. All three are left out while site.json has no link, as the cards are.
+def support_configured(cfg):
+    sup = cfg.get("support", {})
+    return bool(sup.get("one_time_url") or sup.get("monthly"))
+
+
+def render_support_home(page, cfg):
+    """`<!-- @support-hero -->` (a secondary button) and `<!-- @support-home -->` (the section); both vanish when no link is set."""
+    sup = cfg.get("support", {})
+    hero, section = "", ""
+    if support_configured(cfg):
+        hero = '<a class="btn" href="#support">Support WrenDNS</a>'
+        links = []
+        if sup.get("one_time_url"):
+            links.append('<a class="btn primary" href="{}" rel="noopener noreferrer">Give once</a>'.format(html.escape(sup["one_time_url"], quote=True)))
+        for t in sup.get("monthly", []):
+            links.append('<a class="btn" href="{}" rel="noopener noreferrer">{}</a>'.format(html.escape(t["url"], quote=True), html.escape(t["label"])))
+        section = (
+            '<section id="support" aria-labelledby="support-title">\n  <p class="eyebrow">Optional</p>\n'
+            '  <h2 id="support-title">Support WrenDNS</h2>\n'
+            '  <p class="lede">WrenDNS is free to use. If it helps your network, you can support its development.</p>\n'
+            '  <p class="cta" role="group" aria-label="Ways to support WrenDNS">' + " ".join(links) + "</p>\n"
+            '  <p class="muted small">Support payments are not tax-deductible. See the <a href="terms.html#4-5-refunds">terms</a> for refunds, '
+            'or <a href="support.html">contact us</a>.</p>\n</section>'
+        )
+    page = page.replace("      <!-- @support-hero -->\n", ("      " + hero + "\n") if hero else "")
+    return page.replace("<!-- @support-home -->\n\n", (section + "\n\n") if section else "").replace("<!-- @support-home -->", section)
+
+
+def render_support_nav(header, cfg):
+    """The header's Support link: to the Support page's giving section when links are set, else to the Support page."""
+    href = "support.html#give" if support_configured(cfg) else "support.html"
+    return header.replace("<!-- @support-nav -->", '<a href="{}" data-page="support">Support</a>'.format(href))
+
+
+# REQ: DOC-006 (T33.3; owner decisions 2026-11-19) — link previews. One place makes the Open Graph and Twitter card
+# tags and the canonical link for every page, from the page's own title and description. The image is the brand's
+# social-preview.png (1280x640), copied into assets/brand/ by the build.
+SITE_URL = "https://www.wrendns.com/"
+SOCIAL_IMAGE_PATH = "assets/brand/social-preview.png"
+SOCIAL_IMAGE_SRC = os.path.join(ROOT, "brand", "social-preview.png")
+SOCIAL_IMAGE_SIZE = (1280, 640)
+SOCIAL_IMAGE_ALT = "WrenDNS, with the tagline Put a bird on it!, beside its wren logo on a sky-blue panel."
+
+
+def page_url(name):
+    return SITE_URL if name == "index.html" else SITE_URL + name[:-5]
+
+
+def social_tags(name, page):
+    m = re.search(r"<title>(.*?)</title>", page, re.S)
+    d = re.search(r'<meta name="description" content="([^"]*)"', page)
+    if not m or not d:
+        sys.exit("{}: needs a <title> and a meta description for its link preview".format(name))
+    q = lambda v: html.escape(html.unescape(v), quote=True)
+    url = page_url(name)
+    rows = [
+        '<link rel="canonical" href="{}">'.format(url),
+        '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="WrenDNS">',
+        '<meta property="og:title" content="{}">'.format(q(m.group(1).strip())),
+        '<meta property="og:description" content="{}">'.format(q(d.group(1))),
+        '<meta property="og:url" content="{}">'.format(url),
+        '<meta property="og:image" content="{}{}">'.format(SITE_URL, SOCIAL_IMAGE_PATH),
+        '<meta property="og:image:width" content="{}">'.format(SOCIAL_IMAGE_SIZE[0]),
+        '<meta property="og:image:height" content="{}">'.format(SOCIAL_IMAGE_SIZE[1]),
+        '<meta property="og:image:alt" content="{}">'.format(q(SOCIAL_IMAGE_ALT)),
+        '<meta name="twitter:card" content="summary_large_image">',
+        '<meta name="twitter:title" content="{}">'.format(q(m.group(1).strip())),
+        '<meta name="twitter:description" content="{}">'.format(q(d.group(1))),
+        '<meta name="twitter:image" content="{}{}">'.format(SITE_URL, SOCIAL_IMAGE_PATH),
+        '<meta name="twitter:image:alt" content="{}">'.format(q(SOCIAL_IMAGE_ALT)),
+    ]
+    return "".join("{}\n".format(r) for r in rows)
+
+
+def add_social_tags(name, page):
+    return page.replace("</head>", social_tags(name, page) + "</head>", 1)
 
 
 # REQ: DOC-006 (T33.5, ADR-1033) — the licence is said the same way everywhere: AGPL-3.0-or-later, a commercial
@@ -1308,6 +1390,7 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     shutil.copytree(os.path.join(SITE, "assets"), os.path.join(out, "assets"))
+    shutil.copyfile(SOCIAL_IMAGE_SRC, os.path.join(out, SOCIAL_IMAGE_PATH))
     header = read(os.path.join(SITE, "partials", "header.html"))
     footer = read(os.path.join(SITE, "partials", "footer.html")).replace("@@BUILD@@", build_stamp())
     data = json.loads(read(os.path.join(SITE, "data", "standards.json")))
@@ -1319,6 +1402,7 @@ def main():
     swa_cfg = json.loads(read(os.path.join(SITE, "staticwebapp.config.json")))
     adrs, reqs = repo_ids()
     values_rows = parse_values(read(HELM_VALUES))
+    header = render_support_nav(header, site_cfg)
     written = []
     for name in PAGES:
         page = read(os.path.join(SITE, name))
@@ -1343,6 +1427,8 @@ def main():
             page = render_standards(page, data)
         if name in ("download.html", "support.html", "thanks.html"):
             page = render_support(page, site_cfg)
+        if name == "index.html":
+            page = render_support_home(page, site_cfg)
         if name in LEGAL:
             title, body = render_legal(read(os.path.join(ROOT, "docs", "legal", LEGAL[name])))
             page = page.replace("<!-- @legal-title -->", html.escape(title)).replace("<!-- @legal -->", body)
@@ -1356,7 +1442,7 @@ def main():
             if "<!-- @" in gpage:
                 sys.exit("{}: unreplaced marker".format(gname))
             with open(os.path.join(out, gname), "w", encoding="utf-8") as f:
-                f.write(gpage)
+                f.write(add_social_tags(gname, gpage))
             written.append(gname)
     shutil.copyfile(os.path.join(SITE, "staticwebapp.config.json"), os.path.join(out, "staticwebapp.config.json"))
     built = {n: read(os.path.join(out, n)) for n in written}

@@ -1,5 +1,5 @@
 # REQ: ADR-1033 §3 (T33.5) — outside contributions need the Contributor Licence Agreement in CONTRIBUTING.md,
-# which lets MySummitKeep LLC offer WrenDNS under a commercial licence as well as the AGPL.
+# which lets MySummitKeep, LLC offer WrenDNS under a commercial licence as well as the AGPL.
 #
 # CLA Assistant Lite: a contributor signs by commenting the sentence below on their pull request; the
 # signature (GitHub login and id, the PR, the time) is committed to signatures/cla.json on the branch
@@ -50,6 +50,6 @@ jobs:
             Thank you for your pull request. Before it can be merged, please read the WrenDNS
             [Contributor Licence Agreement](https://github.com/nbacheller/wrendns/blob/main/CONTRIBUTING.md#contributor-licence-agreement)
             and sign it by adding a comment to this pull request with exactly the sentence below. You keep the
-            copyright in your work; the agreement lets MySummitKeep LLC license it under the AGPL and under a
+            copyright in your work; the agreement lets MySummitKeep, LLC license it under the AGPL and under a
             commercial licence. You only sign once.
           custom-allsigned-prcomment: Everyone in this pull request has signed the CLA. Thank you.
