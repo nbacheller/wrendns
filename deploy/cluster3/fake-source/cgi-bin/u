@@ -1,0 +1,17 @@
+#!/bin/sh
+# REQ: API-015, CLU-002 (T24.42): a fake UniFi console that says which key each read came with. The
+# router's url is http://fake-source:8080/cgi-bin/u, so a poll asks /cgi-bin/u/proxy/network/api/s/...
+# (PATH_INFO); the answer is the same file the plain fake serves. BusyBox's httpd passes the request's
+# headers as HTTP_* and sends this script's stderr to the log e2e.sh reads: one line per request with
+# the key it carried and the address it came from (never real credentials: the key is the test's own).
+echo "unifi key=${HTTP_X_API_KEY:-none} from=$REMOTE_ADDR path=$PATH_INFO" >&2
+case "$PATH_INFO" in
+  *..*) printf 'Status: 400 Bad Request\r\n\r\n'; exit 0 ;;
+esac
+f="/www${PATH_INFO}"
+if [ -f "$f" ]; then
+  printf 'Content-Type: application/json\r\n\r\n'
+  cat "$f"
+else
+  printf 'Status: 404 Not Found\r\n\r\n'
+fi

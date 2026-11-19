@@ -22,6 +22,11 @@
 #      40 s later, the other follows, DNS on both survivors keeps answering (0 SERVFAIL), an edit on
 #      the new primary reaches the other survivor, the upstream added through the old primary is deleted on the
 #      new one and stays deleted, and the killed node, started again, steps down;
+#      T24.42 (inside h): a fake UniFi read with the stored key by the primary (the fake source's CGI logs
+#      the key and the address of each read), every node's Secrets list shows all three members holding
+#      the key with one stamp, the killed primary's replacement reads the fake UniFi with its replicated
+#      copy within one interval plus the election while the other replica never polls, and after the old
+#      primary is back all three members hold the key (ONLY=secrets runs a to e2 and h, and stops).
 #   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout;
 #   c2. (FLT-901, T24.29) a content category chosen on a replica's API is stored by the primary, which
 #       downloads its list from the fake source once; every node blocks the list's names from the
@@ -409,6 +414,7 @@ call primary DELETE /api/v1/routers/fake-udm
 pass "both replicas list the router's networks, clients and state; only the primary polled; a paused primary is named, not an error"
 [ "${ONLY:-}" != routers ] || { echo "== all checks passed (ONLY=routers: the bring-up and a to e2)"; exit 0; }
 
+if [ "${ONLY:-}" != secrets ]; then
 step "f. queries sent to each node show up on the primary, labelled by node"
 for n in "${NODES[@]}"; do
   for _ in 1 2 3 4 5; do dnsans "$n" ok.cluster3.test >/dev/null; done
@@ -454,6 +460,8 @@ for _ in $(seq 120); do primary_linked replica-a && break; sleep 0.5; done
 primary_linked replica-a || bad "replica-a doesn't see the primary again after the unpause"
 pass
 
+fi
+
 step "h. failover with three nodes: the lease holder is killed, a survivor is promoted, the other follows"
 for _ in $(seq 120); do
   call replica-a GET /api/v1/cluster
@@ -496,6 +504,37 @@ for n in "${survivors[@]}"; do
   for _ in $(seq 60); do call "$n" GET /api/v1/upstreams; has '"t2437-fo"' && break; sleep 0.5; done
   has '"t2437-fo"' || bad "$n doesn't list the upstream added on $killed"
 done
+# REQ: API-015, CLU-002, CLU-015 (T24.42): a stored key held by every full member, and used by the one
+# that becomes primary. A fake UniFi (the fake source's CGI, which logs the key each read carried and
+# where it came from) is read with the stored key by the primary, 30 s apart; every node's Secrets
+# page lists all three members as holding it (applied, the same stamp); the primary is then killed.
+declare -A NODE_IP
+for n in "${NODES[@]}"; do
+  NODE_IP[$n]=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container "$n")" | tr -d '\r')
+done
+secrets_all_held() { # node: 0 when its Secrets list shows every full member holding the stored key, with one stamp
+  call "$1" GET /api/v1/secrets
+  [ "$RS" = 200 ] || return 1
+  [ "$(jget 'sorted(n["state"] for i in d["items"] if i["name"] == "cluster3-router-key" for n in i["nodes"]) == ["applied"] * 3')" = True ] || return 1
+  [ "$(jget 'len({(n["stamp"]["epoch"], n["stamp"]["seq"]) for i in d["items"] if i["name"] == "cluster3-router-key" for n in i["nodes"]}) == 1')" = True ] || return 1
+  [ "$(jget 'sorted(m["kind"] + ":" + m["state"] for m in d["members"]) == ["full:answered"] * 3')" = True ]
+}
+put_json router3.json '{"type":"unifi","url":"http://fake-source:8080/cgi-bin/u","api_key_ref":"cluster3-router-key","interval_secs":30}'
+call "$killed" PUT /api/v1/routers/fake-udm-h "$E/router3.json"
+[ "$RS" = 200 ] || bad "the fake UniFi's write on $killed answered $RS: $RB"
+polled_by() { # node: 0 when the fake source saw a read from that node's address carrying the stored key
+  "${COMPOSE[@]}" logs --no-color fake-source 2>&1 | grep -F 'unifi key=' | grep -F "key=$SECRET " | grep -qF "from=[::ffff:${NODE_IP[$1]}]"
+}
+for _ in $(seq 90); do polled_by "$killed" && break; sleep 1; done
+polled_by "$killed" || bad "the primary $killed never read the fake UniFi with the stored key: $("${COMPOSE[@]}" logs --no-color fake-source 2>&1 | tail -5)"
+for n in "${NODES[@]}"; do
+  for _ in $(seq 90); do secrets_all_held "$n" && break; sleep 1; done
+  secrets_all_held "$n" || bad "$n's Secrets list doesn't show all three members holding the key: ${RB:0:700}"
+  has "$SECRET" && bad "$n's Secrets list shows the key's value"
+done
+for n in "${survivors[@]}"; do
+  polled_by "$n" && bad "the replica $n read the fake UniFi (only the primary polls)"
+done
 docker kill "$(container "$killed")" >/dev/null
 election=$("${PY[@]}" failover 40 20 "${fo[@]}")
 echo "$election"
@@ -515,6 +554,18 @@ sent=sum(v['sent'] for v in d['loops'].values()); ok=sum(v['ok'] for v in d['loo
 print(f'{100.0*(sent-ok)/max(sent,1):.2f}% ({sent-ok} of {sent} not answered)')")
 echo "   survivors' loss: $loss"
 [ "$servfail" = 0 ] || bad "$servfail SERVFAIL answers during the failover (cluster-caused)"
+# T24.42: the newly elected primary reads the fake UniFi with its replicated copy of the key, within one
+# interval (30 s) plus the election (the promotion was at $first_at s; the poll loop starts at once), and
+# the other survivor, a replica, still does not poll.
+promoted_at=$(date +%s)
+polled_ok=
+for _ in $(seq 90); do polled_by "$new" && { polled_ok=1; break; }; sleep 1; done
+[ -n "$polled_ok" ] || bad "the new primary $new never read the fake UniFi with its replicated key within a minute and a half: $("${COMPOSE[@]}" logs --no-color fake-source 2>&1 | tail -5)"
+echo "   $new read the fake UniFi $(( $(date +%s) - promoted_at )) s after the election result"
+polled_by "$other" && bad "the replica $other read the fake UniFi after the failover (only the primary polls)"
+call "$new" GET /api/v1/routers
+[ "$(jget 'next((r["status"]["state"] for r in d["items"] if r["name"] == "fake-udm-h"), "")')" = ok ] \
+  || bad "the new primary $new doesn't show a good read of the fake UniFi: ${RB:0:500}"
 put_json rec-fo.json '{"records":[{"type":"A","value":"10.0.0.9"}]}'
 call "$new" PUT /api/v1/records/after-failover.cluster3.test "$E/rec-fo.json"
 [ "$RS" = 200 ] || bad "an edit on the new primary $new answered $RS: $RB"
@@ -544,7 +595,15 @@ await_dns 30000 "$killed" after-failover.cluster3.test 10.0.0.9 || bad "the old 
 # bring it back.
 for _ in $(seq 60); do call "$killed" GET /api/v1/upstreams; has '"t2437-fo"' || break; sleep 0.5; done
 ! has '"t2437-fo"' || bad "the old primary $killed brought the deleted upstream back"
-pass "$killed (the lease holder) killed; $new promoted at $first_at s after the kill; loss $loss; the old primary follows"
+# T24.42: with the old primary back, every node's Secrets list shows all three members holding the key.
+for n in "${NODES[@]}"; do
+  for _ in $(seq 120); do secrets_all_held "$n" && break; sleep 1; done
+  secrets_all_held "$n" || bad "after the failover $n's Secrets list doesn't show all three members holding the key: ${RB:0:700}"
+done
+call "$new" DELETE /api/v1/routers/fake-udm-h
+[ "$RS" = 200 ] || [ "$RS" = 204 ] || bad "removing fake-udm-h on $new answered $RS: $RB"
+pass "$killed (the lease holder) killed; $new promoted at $first_at s after the kill; loss $loss; the old primary follows; the new primary read the fake UniFi with its replicated key; every node lists all three members holding it"
+[ "${ONLY:-}" != secrets ] || { echo "== all checks passed (ONLY=secrets: the bring-up, a to e2 and h)"; exit 0; }
 
 step "i. rolling restart: each node in turn, at least two nodes answer DNS throughout"
 "${PY[@]}" rolling 2 60 "${COMPOSE[@]}" -- primary:2153 replica-a:2253 replica-b:2353 >"$E/rolling.json" \

@@ -2623,6 +2623,17 @@ Each member holds it encrypted under its own key ([`docs/secrets.md`](secrets.md
   was behind on the old primary catches up from the new one.
 - **Resolver pods hold none.** A Kubernetes resolver pod never gets a stored secret: an
   integration that needs one there uses a file, or runs on a full member.
+- **Every node shows the same list.** `GET /api/v1/secrets` (Settings -> Integrations & secrets, **Cluster
+  members**) lists, for each stored secret, every full member of the cluster with the stamp it holds and
+  whether it has it (`applied`), can't read it (`unreadable`), holds an older or newer version (`behind`,
+  `ahead`), lacks it (`missing`) or didn't answer (`unknown`). Whichever node you ask asks every other
+  full member for its stamps and health, so the primary and a replica show the same thing; no value or
+  ciphertext crosses the cluster for it. A member that is offline, or an older version that can't answer,
+  is `unknown` and named in `missingNodes` (the list is the asking node's own, marked `stale`, when the
+  primary is among them). A resolver pod and a witness are listed as holding none, by design. A full member
+  that lacks a secret shows a warning (`warnings`), and after a minute raises the health reason
+  `secret_not_held` (degraded, never severe: DNS doesn't use a stored secret). The newly elected primary
+  reads a router with its own copy of the key within one poll interval of the election.
 - **The Cluster page** has a Secrets column per node: its head (`epoch.seq`), the head it has
   applied from the primary, whether it's in sync, and how many secrets it can't read here or
   holds only as the primary's "held" copy.
@@ -3585,7 +3596,7 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | Icon | Level | When |
 |---|---|---|
 | circle with a check (quiet) | healthy | nothing below |
-| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days; the [stored secrets](#stored-secrets) are locked (`secrets_locked`), or kept in a data directory that doesn't survive a restart (`secrets_ephemeral`) |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days; the [stored secrets](#stored-secrets) are locked (`secrets_locked`), or kept in a data directory that doesn't survive a restart (`secrets_ephemeral`); a cluster member [lacks a stored secret](#replicated-secrets) for a minute (`secret_not_held`) |
 | octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS (its listeners aren't bound, or none answers its own check), SERVFAIL for 25% or more, or a listener's certificate has expired |
 
 Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. A node in [maintenance](#taking-a-node-down-for-maintenance) is left out of the level (its conditions, and its being unreachable) and listed instead ("1 node in maintenance until 14:00 (SD card swap)"); a node in maintenance that still answers counts as serving. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.

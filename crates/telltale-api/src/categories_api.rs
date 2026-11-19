@@ -458,7 +458,7 @@ fn selection_of(name: &str, content: &GroupContent, tier: AdsTier) -> GroupSelec
 
 /// Every group's content as config values (a group with none selects nothing).
 fn group_contents(b: &dyn Backend) -> Vec<(String, GroupContent)> {
-    b.groups()
+    b.groups_local()
         .into_iter()
         .map(|g| {
             let c = g
