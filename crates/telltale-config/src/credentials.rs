@@ -126,6 +126,10 @@ pub const NOT_CREDENTIALS: &[(&str, &str)] = &[
         "a router account's name: grants nothing without the password or key file",
     ),
     (
+        "discovery.snmp_credential[].user",
+        "a USM user name: names the account, grants nothing without the authentication password",
+    ),
+    (
         "auth.oidc.provider[].client_id",
         "an OAuth client's public identifier (it travels in every browser redirect)",
     ),

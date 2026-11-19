@@ -66,6 +66,9 @@ const READABLE: Record<string, (detail: string) => string> = {
   primary_unreachable: () => "This node can't reach the cluster's primary to record the change, so it wasn't kept.",
   not_primary: (d) => `Only the primary forwards a change for another node. ${d}`,
   lists_not_here: () => "This node doesn't download lists. Ask a node that does.",
+  // REQ: DSC-004 (T25.6) — the SNMP Test runs on the designated node.
+  discovery_not_here: () =>
+    "This node doesn't run the network inventory's SNMP poller. Open this page on the designated node to test an agent.",
 };
 
 /** An API error (RFC 9457 problem+json). `message` reads as a sentence; `detail` is the server's text. */
@@ -154,7 +157,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings' | 'sinks';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -287,6 +290,10 @@ export const api = {
   oidcProviders: () => get<S['OidcProviderList']>('/oidc-providers'),
   putOidcProvider: (id: string, b: Record<string, unknown>) => call<unknown>('PUT', `/oidc-providers/${encodeURIComponent(id)}`, { body: b }),
   deleteOidcProvider: (id: string) => call<unknown>('DELETE', `/oidc-providers/${encodeURIComponent(id)}`),
+  // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — a node's own sections (cache, support,
+  // updates) with the fields the files set and whether a restart is pending. No node: this node.
+  nodeSettings: (node?: string | null) =>
+    get<S['NodeSettings']>(node ? `/node-settings/${encodeURIComponent(node)}` : '/node-settings'),
   // REQ: API-016, OBS-010, OBS-006 (T23.11) — event sinks (written through `putEntry`/`deleteEntry` on
   // `sinks`) and the OTLP export: what this node runs, and the admin's write of the one OTLP entry.
   sinks: () => get<S['SinkList']>('/sinks'),
@@ -553,6 +560,14 @@ export const api = {
   configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
   // REQ: DSC-014 (T25.3) — the network inventory's status and its discovery workers.
   discoveryStatus: () => get<S['DiscoveryStatus']>('/discovery/status'),
+  // REQ: DSC-004 (T25.6, ADR-1002) — Test one configured SNMP agent (by name, never an address). A dry
+  // run lists the OIDs and sends nothing; a test waits 60 s after the last one.
+  snmpTest: (agent: string, dryRun: boolean) =>
+    call<S['SnmpTestResult']>('POST', '/discovery/snmp/test', {
+      body: { agent },
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
   putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/${path}/${encodeURIComponent(name)}`, {
       body,

@@ -112,6 +112,28 @@ pub fn prepare_spawn(cmd: &mut std::process::Command) -> io::Result<()> {
     }
 }
 
+/// REQ: DSC-002, DSC-003 (ADR-908, ADR-1001) - a UDP socket connected to `target`, for the SNMP client
+/// in a discovery worker. The worker's seccomp filter refuses `bind`, so the socket is made with
+/// `socket(2)` and `connect(2)` alone (the kernel picks the source port); the kernel then drops every
+/// datagram that does not come from `target`. Off Linux (development builds) it binds and connects as
+/// std does.
+pub fn connected_udp_socket(target: std::net::SocketAddr) -> io::Result<std::net::UdpSocket> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::sys::connect_udp(target)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let bind: std::net::SocketAddr = match target {
+            std::net::SocketAddr::V4(_) => (std::net::Ipv4Addr::UNSPECIFIED, 0).into(),
+            std::net::SocketAddr::V6(_) => (std::net::Ipv6Addr::UNSPECIFIED, 0).into(),
+        };
+        let sock = std::net::UdpSocket::bind(bind)?;
+        sock.connect(target)?;
+        Ok(sock)
+    }
+}
+
 /// The worker's current limits, as [`WorkerLimits`].
 pub fn limits() -> WorkerLimits {
     #[cfg(target_os = "linux")]
@@ -203,7 +225,18 @@ mod tests {
     #[test]
     fn dsc_002_worker_privileges_are_dropped() {
         if std::env::var("TT_HARDEN_CHILD").as_deref() == Ok("privs") {
+            // A receiver made before the filter, standing in for an SNMP agent on the loopback.
+            let agent = std::net::UdpSocket::bind("127.0.0.1:0").expect("agent socket");
             harden(64 * 1024 * 1024).expect("harden");
+            // REQ: DSC-003 (ADR-1001): a connected client socket still works under the filter, made
+            // with socket and connect alone, and it is connected to its agent.
+            let client = connected_udp_socket(agent.local_addr().expect("addr")).expect("client");
+            client.send(b"ping").expect("send");
+            let mut buf = [0u8; 8];
+            let (n, from) = agent.recv_from(&mut buf).expect("recv");
+            assert_eq!(buf.get(..n), Some(&b"ping"[..]));
+            assert_eq!(Some(from), client.local_addr().ok());
+            assert_eq!(client.peer_addr().ok(), agent.local_addr().ok());
             // The capability sets, NoNewPrivs and the seccomp filter are per thread: read this thread's.
             let status = std::fs::read_to_string("/proc/thread-self/status").expect("status");
             for field in ["CapInh:", "CapPrm:", "CapEff:", "CapAmb:"] {

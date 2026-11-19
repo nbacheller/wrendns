@@ -257,6 +257,7 @@
   <div class="page-head">
     <h1>Network map<HelpButton id="network-map" /></h1>
     <div class="row">
+      <a class="small" href="#/settings?tab=queries" data-testid="map-settings-link">Map settings</a>
       <span class="small muted" data-testid="map-state" data-stream={mode} role="status">{stateWords[mode]}</span>
       <div class="seg" role="group" aria-label="View">
         <button type="button" aria-pressed={!tableView} onclick={() => setParams({ view: undefined })} data-testid="view-map">Map</button>

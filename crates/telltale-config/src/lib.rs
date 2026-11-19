@@ -32,7 +32,10 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
-pub use discovery::{DiscoveryConfig, DiscoverySubnet, UnifiReads};
+pub use discovery::{
+    CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
+    SnmpVersion, UnifiReads,
+};
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, SourceSpec, parse_rfc3339, parse_source};
@@ -178,7 +181,20 @@ impl Loader {
 /// overridden by the file.
 fn explicit_keys(root: &Table) -> Vec<String> {
     let mut keys = Vec::new();
-    for section in ["special", "local", "clients", "discovery"] {
+    // REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) — the
+    // sections the API and UI edit: a field a file sets is read-only there (ADR-040).
+    for section in [
+        "special",
+        "local",
+        "clients",
+        "discovery",
+        "cache",
+        "support",
+        "updates",
+        "dnssec",
+        "filter",
+        "drill",
+    ] {
         if let Some(Value::Table(t)) = root.get(section) {
             keys.extend(t.keys().map(|k| format!("{section}.{k}")));
         }

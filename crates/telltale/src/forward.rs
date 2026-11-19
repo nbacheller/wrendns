@@ -16,7 +16,7 @@ use telltale_api::model::{ClientChange, ClientInput, ConfigChange};
 use telltale_api::problem::{Code, Problem};
 use telltale_api::{
     AnomalyAckWrite, ClientWrite, ListsRefreshWrite, ManagedKind, ManagedWrite, Shared,
-    SimulateOpts,
+    SimulateOpts, SnmpTestWrite,
 };
 use telltale_cluster::net::Cluster;
 
@@ -28,6 +28,9 @@ pub(crate) const KIND: &str = "api.write";
 const DEADLINE: Duration = Duration::from_secs(10);
 /// REQ: OBS-024 — a dry run with `simulate` also replays the cluster's logs: at most
 /// `[simulate] max_secs` (300 s at most), plus the peers' list downloads.
+/// REQ: DSC-004 — a forwarded SNMP Test: up to 10 s for the primary to take it, 90 s for the worker's
+/// probe (which can wait behind a poll), plus the answer.
+const SNMP_TEST_DEADLINE: Duration = Duration::from_secs(10 + 90 + 5);
 const SIMULATE_DEADLINE: Duration = Duration::from_secs(10 + 300 + 30);
 
 /// A configuration write, as sent to the primary. Its `Debug` redacts credentials (API-014).
@@ -67,6 +70,9 @@ pub(crate) enum Write {
     /// REQ: FLT-004, CLU-003 — "update lists now": the primary downloads the lists (not
     /// configuration either). An older primary refuses the unknown write: the replica says 503.
     ListsRefresh(ListsRefreshWrite),
+    /// REQ: DSC-004 (ADR-1002) - the SNMP **Test** runs on the designated node, the primary unless
+    /// `[discovery] node` names another. An older primary refuses the unknown write (503).
+    SnmpTest(SnmpTestWrite),
 }
 
 /// REQ: API-014 (ADR-903 §4) — what forward logging shows of a write: everything but a
@@ -114,6 +120,7 @@ impl std::fmt::Debug for Write {
                 .finish(),
             Self::AnomalyAck(a) => f.debug_tuple("AnomalyAck").field(a).finish(),
             Self::ListsRefresh(a) => f.debug_tuple("ListsRefresh").field(a).finish(),
+            Self::SnmpTest(a) => f.debug_tuple("SnmpTest").field(a).finish(),
         }
     }
 }
@@ -256,6 +263,12 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Local => "local",
                 ManagedKind::Clients => "clients",
                 ManagedKind::Discovery => "discovery",
+                ManagedKind::Cache => "cache",
+                ManagedKind::Support => "support",
+                ManagedKind::Updates => "updates",
+                ManagedKind::Dnssec => "dnssec",
+                ManagedKind::Filter => "filter",
+                ManagedKind::Drill => "drill",
             };
             let deleting = body.is_none();
             let r = local
@@ -300,6 +313,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
         }
         Write::AnomalyAck(w) => return apply_ack(src, local, peer, via, w).await,
         Write::ListsRefresh(w) => return apply_lists_refresh(src, local, peer, via, w).await,
+        Write::SnmpTest(w) => return apply_snmp_test(src, local, peer, via, w).await,
     };
     match result {
         Ok(c) => {
@@ -409,6 +423,46 @@ async fn apply_lists_refresh(
     }
 }
 
+/// REQ: DSC-004 (ADR-1002) - a forwarded SNMP test, run here (the designated node) and audited with
+/// the user and the entry node.
+async fn apply_snmp_test(
+    src: &Sources,
+    local: &Shared,
+    peer: &str,
+    via: &str,
+    mut w: SnmpTestWrite,
+) -> Answer {
+    let by = w.by.clone();
+    w.by = format!("{by} via {via}");
+    let dry_run = w.dry_run;
+    let reason = w.reason.clone();
+    let target = w.agent.clone();
+    let r = local.snmp_test(w).await;
+    if let (Ok(res), Some(auth), false) = (&r, src.auth.get(), dry_run) {
+        let actor = Actor {
+            name: format!("{by} via {via}"),
+            kind: "cluster",
+            remote: Some(format!("node {peer}")),
+            reason,
+        };
+        auth.record(
+            &actor,
+            "discovery.snmp_test",
+            &target,
+            &serde_json::json!({
+                "ok": res.ok,
+                "level": res.capability.as_ref().map(|c| c.level.clone()),
+                "error": res.error,
+                "node": res.node,
+            }),
+        );
+    }
+    match r {
+        Ok(res) => Answer::Ok(serde_json::to_value(res).unwrap_or_default()),
+        Err(p) => Answer::Err(p.into()),
+    }
+}
+
 /// An answer to a peer's request, with the problem's code kept (REQ: OPS-010 reuses it).
 pub(crate) fn encode_answer<T: Serialize>(r: Result<T, Problem>) -> Result<Vec<u8>, String> {
     let a = match r {
@@ -453,6 +507,7 @@ async fn send<T: serde::de::DeserializeOwned>(
         | Write::Client {
             simulate: Some(_), ..
         } => SIMULATE_DEADLINE,
+        Write::SnmpTest { .. } => SNMP_TEST_DEADLINE,
         _ => DEADLINE,
     };
     tracing::debug!(?primary, write = ?w, "forwarding a write to the primary");
@@ -620,6 +675,15 @@ pub(crate) async fn lists_refresh(
     w: ListsRefreshWrite,
 ) -> Result<telltale_api::model::ListsRefreshResult, Problem> {
     send(&cluster, primary, Write::ListsRefresh(w)).await
+}
+
+/// REQ: DSC-004 (ADR-1002) - forwards an SNMP test to the primary.
+pub(crate) async fn snmp_test(
+    cluster: Arc<Cluster>,
+    primary: Option<String>,
+    w: SnmpTestWrite,
+) -> Result<telltale_api::model::SnmpTestResult, Problem> {
+    send(&cluster, primary, Write::SnmpTest(w)).await
 }
 
 /// Forwards a device write.
@@ -887,6 +951,62 @@ mod tests {
         let wire = encode_answer::<()>(Err(telltale_api::lists_api::not_here())).unwrap();
         let e = decode_answer::<()>(&wire).unwrap_err();
         assert_eq!(e.code, Code::ListsNotHere);
+    }
+
+    // REQ: DSC-004 (ADR-1002), CLU-003 - an SNMP test crosses the channel intact (who, which agent, dry
+    // run, why), the designated node's answer comes back as the same result, and a refusal keeps its
+    // code (a node that isn't designated answers 409, a cooldown 429).
+    #[test]
+    fn dsc_004_snmp_test_round_trips() {
+        let w = Write::SnmpTest(SnmpTestWrite {
+            agent: "gateway".into(),
+            dry_run: true,
+            by: "alice".into(),
+            reason: Some("the gateway was replaced".into()),
+        });
+        let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
+        let Write::SnmpTest(r) = back else {
+            panic!("expected an SNMP test")
+        };
+        assert_eq!(
+            (
+                r.agent.as_str(),
+                r.dry_run,
+                r.by.as_str(),
+                r.reason.as_deref()
+            ),
+            ("gateway", true, "alice", Some("the gateway was replaced"))
+        );
+        let res = telltale_api::model::SnmpTestResult {
+            agent: "gateway".into(),
+            dry_run: false,
+            ok: true,
+            oids: Vec::new(),
+            capability: Some(telltale_api::model::AgentCapability {
+                probed_unix: 5,
+                level: "authPriv".into(),
+                ..Default::default()
+            }),
+            error: None,
+            duration_ms: Some(40),
+            node: Some("primary".into()),
+            note: "n".into(),
+        };
+        let wire = encode_answer(Ok(res)).unwrap();
+        let got: telltale_api::model::SnmpTestResult = decode_answer(&wire).unwrap();
+        assert_eq!(
+            (got.node.as_deref(), got.capability.map(|c| c.level)),
+            (Some("primary"), Some("authPriv".to_owned()))
+        );
+        let wire = encode_answer::<()>(Err(telltale_api::discovery_api::not_here(
+            true,
+            Some("pi-a"),
+        )))
+        .unwrap();
+        let e = decode_answer::<()>(&wire).unwrap_err();
+        assert_eq!(e.code, Code::DiscoveryNotHere);
+        // The debug form of a forwarded write names no secret (there is none in it).
+        assert!(format!("{w:?}").contains("gateway"));
     }
 
     // REQ: FLT-004, CLU-003, AGT-005 — the primary queues a forwarded refresh on its own

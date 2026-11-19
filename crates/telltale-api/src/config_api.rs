@@ -2324,6 +2324,471 @@ pub(crate) async fn delete_clients_settings(
     .await
 }
 
+/// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — a per-node section (`[cache]`,
+/// `[support] persist_logs`, `[updates] check`) changed for the node named in the path. The
+/// plan checks the role (admins only) and that the node is one of the cluster's.
+#[allow(clippy::too_many_arguments)] // the extractors, plus the kind, the node and the prefix
+async fn put_node_settings(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    q: DryRun,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+    kind: ManagedKind,
+    node: String,
+    prefix: &str,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT {prefix}/{node} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        node,
+        Op::Managed(kind, Some(input)),
+    )
+    .await
+}
+
+/// The shared body of the `DELETE`s of the per-node sections.
+#[allow(clippy::too_many_arguments)] // the extractors, plus the kind, the node and the prefix
+async fn delete_node_settings(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    q: DryRun,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    kind: ManagedKind,
+    node: String,
+    prefix: &str,
+) -> Response {
+    let request = format!("DELETE {prefix}/{node}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        node,
+        Op::Managed(kind, None),
+    )
+    .await
+}
+
+/// The `[cache]` section of one node (DNS-006, T27.2): the 15 fields, admins only.
+///
+/// Every field takes effect after a restart of that node; the files' fields win (`set_by_file`).
+#[utoipa::path(put, path = "/api/v1/cache-settings/{node}", tag = "config",
+    params(("node" = String, Path, description = "The node ID the settings apply to."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change a node's cache settings."),
+        (status = 404, body = Problem, description = "No node of this cluster has that ID."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this field, which is read-only here."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_cache_settings(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_node_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Cache,
+        node,
+        "/cache-settings",
+    )
+    .await
+}
+
+/// Removes the `[cache]` section the API set for one node (the files' apply again).
+///
+/// The node then runs with the config files' cache settings, or the defaults, after a restart.
+#[utoipa::path(delete, path = "/api/v1/cache-settings/{node}", tag = "config",
+    params(("node" = String, Path, description = "The node ID."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change a node's cache settings."),
+        (status = 404, body = Problem, description = "The API sets no cache settings on that node."),
+    ))]
+pub(crate) async fn delete_cache_settings(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_node_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Cache,
+        node,
+        "/cache-settings",
+    )
+    .await
+}
+
+/// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node. Admins only.
+///
+/// The node's log files are kept on disk (or not) from its next start; the files' value wins.
+#[utoipa::path(put, path = "/api/v1/support-settings/{node}", tag = "config",
+    params(("node" = String, Path, description = "The node ID the settings apply to."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change this."),
+        (status = 404, body = Problem, description = "No node of this cluster has that ID."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this field."),
+        (status = 422, body = Problem, description = "A field is wrong."),
+    ))]
+pub(crate) async fn put_support_settings(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_node_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Support,
+        node,
+        "/support-settings",
+    )
+    .await
+}
+
+/// Removes the `[support]` setting the API set for one node.
+///
+/// The node then runs with the config files' setting, or the default, after a restart.
+#[utoipa::path(delete, path = "/api/v1/support-settings/{node}", tag = "config",
+    params(("node" = String, Path, description = "The node ID."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change this."),
+        (status = 404, body = Problem, description = "The API sets nothing on that node."),
+    ))]
+pub(crate) async fn delete_support_settings(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_node_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Support,
+        node,
+        "/support-settings",
+    )
+    .await
+}
+
+/// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node. Admins only.
+///
+/// The node checks for a newer build once a day (or not), from its next start; the files' value wins.
+#[utoipa::path(put, path = "/api/v1/updates-settings/{node}", tag = "config",
+    params(("node" = String, Path, description = "The node ID the settings apply to."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change this."),
+        (status = 404, body = Problem, description = "No node of this cluster has that ID."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this field."),
+        (status = 422, body = Problem, description = "A field is wrong."),
+    ))]
+pub(crate) async fn put_updates_settings(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_node_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Updates,
+        node,
+        "/updates-settings",
+    )
+    .await
+}
+
+/// Removes the `[updates]` setting the API set for one node.
+///
+/// The node then runs with the config files' setting, or the default, after a restart.
+#[utoipa::path(delete, path = "/api/v1/updates-settings/{node}", tag = "config",
+    params(("node" = String, Path, description = "The node ID."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change this."),
+        (status = 404, body = Problem, description = "The API sets nothing on that node."),
+    ))]
+pub(crate) async fn delete_updates_settings(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_node_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Updates,
+        node,
+        "/updates-settings",
+    )
+    .await
+}
+
+/// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+///
+/// The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
+#[utoipa::path(put, path = "/api/v1/dnssec-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this field."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_dnssec_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Dnssec,
+        "/dnssec-settings/default",
+    )
+    .await
+}
+
+/// Removes the `[dnssec]` settings the API set (the files' apply again).
+///
+/// The config files' DNSSEC settings, or the defaults, apply again on every node.
+#[utoipa::path(delete, path = "/api/v1/dnssec-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "The API sets no DNSSEC settings."),
+    ))]
+pub(crate) async fn delete_dnssec_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Dnssec,
+        "DELETE /dnssec-settings/default",
+    )
+    .await
+}
+
+/// REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` `refresh_secs` and `stale_after_days`.
+///
+/// The list refresh interval and the stale-list age apply after a restart of every node; the files' fields win.
+#[utoipa::path(put, path = "/api/v1/filter-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this field."),
+        (status = 422, body = Problem, description = "A field is out of range."),
+    ))]
+pub(crate) async fn put_filter_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Filter,
+        "/filter-settings/default",
+    )
+    .await
+}
+
+/// Removes the `[filter]` settings the API set (the files' apply again).
+///
+/// The config files' list settings, or the defaults, apply again after a restart of every node.
+#[utoipa::path(delete, path = "/api/v1/filter-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "The API sets no list settings."),
+    ))]
+pub(crate) async fn delete_filter_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Filter,
+        "DELETE /filter-settings/default",
+    )
+    .await
+}
+
+/// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`. Admins only.
+///
+/// The schedule and the nodes that drill themselves apply without a restart; the files' fields win.
+#[utoipa::path(put, path = "/api/v1/drill-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change the drill schedule."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this field."),
+        (status = 422, body = Problem, description = "A field is wrong."),
+    ))]
+pub(crate) async fn put_drill_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Drill,
+        "/drill-settings/default",
+    )
+    .await
+}
+
+/// Removes the drill schedule the API set (the files' apply again).
+///
+/// The config files' drill schedule, or off, applies again without a restart.
+#[utoipa::path(delete, path = "/api/v1/drill-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change the drill schedule."),
+        (status = 404, body = Problem, description = "The API sets no drill schedule."),
+    ))]
+pub(crate) async fn delete_drill_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Drill,
+        "DELETE /drill-settings/default",
+    )
+    .await
+}
+
+/// REQ: DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2, T27.11, ADR-1006) — the
+/// per-node sections and the shared singletons added for the cache and the small settings. The
+/// operator role is required on the router (`lib.rs`); the plans check the rest (admins only for
+/// the support and update switches and the drill schedule).
+pub(crate) fn node_settings_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
+    Router::new()
+        // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections.
+        .route(
+            "/api/v1/cache-settings/{node}",
+            axum::routing::put(put_cache_settings).delete(delete_cache_settings),
+        )
+        .route(
+            "/api/v1/support-settings/{node}",
+            axum::routing::put(put_support_settings).delete(delete_support_settings),
+        )
+        .route(
+            "/api/v1/updates-settings/{node}",
+            axum::routing::put(put_updates_settings).delete(delete_updates_settings),
+        )
+        // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the shared singletons.
+        .route(
+            "/api/v1/dnssec-settings/default",
+            axum::routing::put(put_dnssec_settings).delete(delete_dnssec_settings),
+        )
+        .route(
+            "/api/v1/filter-settings/default",
+            axum::routing::put(put_filter_settings).delete(delete_filter_settings),
+        )
+        .route(
+            "/api/v1/drill-settings/default",
+            axum::routing::put(put_drill_settings).delete(delete_drill_settings),
+        )
+        .with_state((backend, auth))
+}
+
 /// The shared body of the three `PUT`s above.
 #[allow(clippy::too_many_arguments)] // the extractors, plus the kind and the request line
 async fn put_settings(
@@ -2413,6 +2878,12 @@ impl Op {
             // LOW 5: not one letter from the device writes' `client.put`.
             Self::Managed(ManagedKind::Clients, _) => "clients_settings",
             Self::Managed(ManagedKind::Discovery, _) => "discovery",
+            Self::Managed(ManagedKind::Cache, _) => "cache",
+            Self::Managed(ManagedKind::Support, _) => "support",
+            Self::Managed(ManagedKind::Updates, _) => "updates",
+            Self::Managed(ManagedKind::Dnssec, _) => "dnssec",
+            Self::Managed(ManagedKind::Filter, _) => "filter",
+            Self::Managed(ManagedKind::Drill, _) => "drill",
         }
     }
     fn deleting(&self) -> bool {
