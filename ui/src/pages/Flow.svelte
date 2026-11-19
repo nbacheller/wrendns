@@ -10,6 +10,7 @@
   import { STAGES, STAGE_LABEL, fold, layout, share, type FlowLink, type FlowNode, type PlacedLink, type PlacedNode } from '../lib/sankey';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import PolicyLine from '../lib/components/PolicyLine.svelte';
 
   const windows = [
     { id: '15m', label: '15 min', from: '-15m', device: true },
@@ -50,6 +51,21 @@
       const w = windows.find((x) => x.id === q.get('window')) ?? windows[1];
       if (w.id !== win.id) win = w;
     });
+  });
+
+  // REQ: FLT-006, API-010 (T24.30, ADR-996) — the policy step for the device shown: its group and
+  // the key that matched, from the same read the Clients panel uses.
+  let policy = $state<S['ClientPolicy'] | null>(null);
+  $effect(() => {
+    const c = device ? client : '';
+    policy = null;
+    if (!c) return;
+    let live = true;
+    api
+      .clientPolicy(c)
+      .then((p) => live && (policy = p))
+      .catch(() => live && (policy = null));
+    return () => (live = false);
   });
 
   async function load() {
@@ -201,6 +217,9 @@
   {/if}
 
   <ErrorNote {error} />
+  {#if device && client && policy}
+    <PolicyLine device={policy.device ?? client} group={policy.group} groupFrom={policy.groupFrom} groupKey={policy.groupKey} matchedKey={policy.matchedKey} identifiedBy={policy.identifiedBy} />
+  {/if}
 
   <section class="card" data-testid="flow">
     <div class="card-head">

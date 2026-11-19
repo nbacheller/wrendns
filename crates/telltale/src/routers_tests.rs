@@ -622,13 +622,31 @@ async fn api_016_stored_credential_router_polls_on_primary_only() {
         Arc::new(|_: &str| None),
     ));
     // A replica: skipped, reported as the primary's to read.
-    super::start_due(&mut slots, now, false, false, &resolver, &store, &tx);
+    super::start_due(
+        &mut slots,
+        now,
+        false,
+        false,
+        &resolver,
+        &store,
+        &tx,
+        super::Keep::default(),
+    );
     assert_eq!(slots["lab"].skipped, Some("primary"));
     assert!(!slots["lab"].in_flight);
     super::publish(&slots, &board);
     assert_eq!(board.snapshot()["lab"].polled_by, "the primary");
     // Failover: this node is the primary now, and the router is due at once.
-    super::start_due(&mut slots, now, false, true, &resolver, &store, &tx);
+    super::start_due(
+        &mut slots,
+        now,
+        false,
+        true,
+        &resolver,
+        &store,
+        &tx,
+        super::Keep::default(),
+    );
     assert_eq!(slots["lab"].skipped, None);
     assert!(
         slots["lab"].in_flight,
@@ -673,7 +691,16 @@ fn api_016_ephemeral_member_skips_routers() {
         &telltale_config::Config::default(),
         Arc::new(|_: &str| None),
     ));
-    super::start_due(&mut slots, now, true, true, &resolver, &store, &tx);
+    super::start_due(
+        &mut slots,
+        now,
+        true,
+        true,
+        &resolver,
+        &store,
+        &tx,
+        super::Keep::default(),
+    );
     assert!(
         slots
             .values()

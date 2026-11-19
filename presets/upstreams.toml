@@ -5,6 +5,9 @@
 #
 # Fields:
 #   id, name, homepage   identity
+#   provider, variant    how the simple picker groups it (one heading per provider, one checkbox per variant)
+#   note                 one line: what it filters and its privacy, from the provider pages
+#   simple               true = offered as a checkbox in the simple view of the Upstreams page
 #   sources              which incumbent offers it as a preset ("pihole", "technitium")
 #   filtering            none | malware | family | ads
 #   dnssec, ecs          whether the service validates DNSSEC / forwards EDNS Client Subnet
@@ -19,6 +22,10 @@
 [[preset]]
 id = "google"
 name = "Google"
+provider = "Google"
+variant = "No filtering"
+note = "Does not block anything. Google logs your IP address for a day or two and keeps some location data longer."
+simple = true
 homepage = "https://developers.google.com/speed/public-dns"
 sources = ["pihole", "technitium"]
 filtering = "none"
@@ -32,11 +39,17 @@ endpoint = [
   { url = "tls://8.8.8.8", tls_server_name = "dns.google" },
   { url = "tls://8.8.4.4", tls_server_name = "dns.google" },
   { url = "https://dns.google/dns-query" },
+  { url = "tls://[2001:4860:4860::8888]", tls_server_name = "dns.google" },
+  { url = "tls://[2001:4860:4860::8844]", tls_server_name = "dns.google" },
 ]
 
 [[preset]]
 id = "opendns"
 name = "OpenDNS (Cisco)"
+provider = "OpenDNS"
+variant = "Malware and phishing"
+note = "Cisco blocks malware and phishing sites. OpenDNS keeps query logs tied to your account or IP address."
+simple = true
 homepage = "https://www.opendns.com/"
 sources = ["pihole"]
 filtering = "malware"
@@ -48,11 +61,35 @@ endpoint = [
   { url = "udp://[2620:119:35::35]" },
   { url = "udp://[2620:119:53::53]" },
   { url = "https://doh.opendns.com/dns-query" },
+  { url = "tls://208.67.222.222", tls_server_name = "dns.opendns.com" },
+  { url = "tls://208.67.220.220", tls_server_name = "dns.opendns.com" },
+]
+
+[[preset]]
+id = "opendns-family"
+name = "OpenDNS FamilyShield (malware + adult)"
+provider = "OpenDNS"
+variant = "FamilyShield (adult content)"
+note = "Cisco FamilyShield blocks adult sites on top of malware and phishing. OpenDNS keeps query logs tied to your IP address."
+simple = true
+homepage = "https://www.opendns.com/home-internet-security/"
+sources = []
+filtering = "family"
+dnssec = true
+ecs = true
+endpoint = [
+  { url = "udp://208.67.222.123" },
+  { url = "udp://208.67.220.123" },
+  { url = "https://doh.familyshield.opendns.com/dns-query" },
 ]
 
 [[preset]]
 id = "level3"
 name = "Level3 (Lumen)"
+provider = "Level3 (Lumen)"
+variant = "No filtering"
+note = "Does not block anything and is plain DNS only. Run by a US carrier, which can see and log your queries."
+simple = true
 homepage = "https://www.lumen.com/"
 sources = ["pihole"]
 filtering = "none"
@@ -66,6 +103,10 @@ endpoint = [
 [[preset]]
 id = "comodo"
 name = "Comodo Secure DNS"
+provider = "Comodo"
+variant = "Malware"
+note = "Blocks known malware. Plain DNS only. Run by a commercial security company, which can see and log your queries."
+simple = true
 homepage = "https://www.comodo.com/secure-dns/"
 sources = ["pihole"]
 filtering = "malware"
@@ -79,6 +120,10 @@ endpoint = [
 [[preset]]
 id = "quad9"
 name = "Quad9 (filtered, DNSSEC)"
+provider = "Quad9"
+variant = "Malware blocked"
+note = "Blocks known malicious domains and checks DNSSEC. Run by a Swiss non-profit that does not log client IP addresses."
+simple = true
 homepage = "https://quad9.net/"
 sources = ["pihole", "technitium"]
 filtering = "malware"
@@ -92,11 +137,17 @@ endpoint = [
   { url = "tls://9.9.9.9", tls_server_name = "dns.quad9.net" },
   { url = "tls://149.112.112.112", tls_server_name = "dns.quad9.net" },
   { url = "https://dns.quad9.net/dns-query" },
+  { url = "tls://[2620:fe::fe]", tls_server_name = "dns.quad9.net" },
+  { url = "tls://[2620:fe::9]", tls_server_name = "dns.quad9.net" },
 ]
 
 [[preset]]
 id = "quad9-unfiltered"
 name = "Quad9 (unfiltered, no DNSSEC)"
+provider = "Quad9"
+variant = "Unfiltered"
+note = "Does not block anything and does not check DNSSEC. Same privacy terms as Quad9: no client IP addresses logged."
+simple = true
 homepage = "https://quad9.net/"
 sources = ["pihole", "technitium"]
 filtering = "none"
@@ -109,11 +160,16 @@ endpoint = [
   { url = "udp://[2620:fe::fe:10]" },
   { url = "tls://9.9.9.10", tls_server_name = "dns10.quad9.net" },
   { url = "https://dns10.quad9.net/dns-query" },
+  { url = "tls://149.112.112.10", tls_server_name = "dns10.quad9.net" },
+  { url = "tls://[2620:fe::10]", tls_server_name = "dns10.quad9.net" },
+  { url = "tls://[2620:fe::fe:10]", tls_server_name = "dns10.quad9.net" },
 ]
 
 [[preset]]
 id = "quad9-ecs"
 name = "Quad9 (filtered, ECS, DNSSEC)"
+provider = "Quad9"
+variant = "Malware blocked, ECS"
 homepage = "https://quad9.net/"
 sources = ["pihole", "technitium"]
 filtering = "malware"
@@ -131,6 +187,10 @@ endpoint = [
 [[preset]]
 id = "cloudflare"
 name = "Cloudflare (DNSSEC)"
+provider = "Cloudflare"
+variant = "No filtering"
+note = "Does not block anything. Cloudflare says it keeps no client IP addresses in its logs and wipes the rest within 25 hours."
+simple = true
 homepage = "https://one.one.one.one/"
 sources = ["pihole", "technitium"]
 filtering = "none"
@@ -144,6 +204,8 @@ endpoint = [
   { url = "tls://1.1.1.1", tls_server_name = "cloudflare-dns.com" },
   { url = "tls://1.0.0.1", tls_server_name = "cloudflare-dns.com" },
   { url = "https://cloudflare-dns.com/dns-query" },
+  { url = "tls://[2606:4700:4700::1111]", tls_server_name = "cloudflare-dns.com" },
+  { url = "tls://[2606:4700:4700::1001]", tls_server_name = "cloudflare-dns.com" },
 ]
 
 # ------------------------------------------------- Encrypted resolvers common in Technitium setups
@@ -151,6 +213,10 @@ endpoint = [
 [[preset]]
 id = "cloudflare-security"
 name = "Cloudflare for Families (malware)"
+provider = "Cloudflare"
+variant = "Malware"
+note = "Blocks known malware and phishing sites. Same privacy terms as Cloudflare 1.1.1.1: no client IPs kept, logs wiped within 25 hours."
+simple = true
 homepage = "https://one.one.one.one/family/"
 sources = ["technitium"]
 filtering = "malware"
@@ -161,11 +227,20 @@ endpoint = [
   { url = "udp://1.0.0.2" },
   { url = "tls://1.1.1.2", tls_server_name = "security.cloudflare-dns.com" },
   { url = "https://security.cloudflare-dns.com/dns-query" },
+  { url = "tls://1.0.0.2", tls_server_name = "security.cloudflare-dns.com" },
+  { url = "udp://[2606:4700:4700::1112]" },
+  { url = "udp://[2606:4700:4700::1002]" },
+  { url = "tls://[2606:4700:4700::1112]", tls_server_name = "security.cloudflare-dns.com" },
+  { url = "tls://[2606:4700:4700::1002]", tls_server_name = "security.cloudflare-dns.com" },
 ]
 
 [[preset]]
 id = "cloudflare-family"
 name = "Cloudflare for Families (malware + adult)"
+provider = "Cloudflare"
+variant = "Malware and adult content"
+note = "Blocks malware, phishing and adult sites. Same privacy terms as Cloudflare 1.1.1.1."
+simple = true
 homepage = "https://one.one.one.one/family/"
 sources = ["technitium"]
 filtering = "family"
@@ -176,11 +251,83 @@ endpoint = [
   { url = "udp://1.0.0.3" },
   { url = "tls://1.1.1.3", tls_server_name = "family.cloudflare-dns.com" },
   { url = "https://family.cloudflare-dns.com/dns-query" },
+  { url = "tls://1.0.0.3", tls_server_name = "family.cloudflare-dns.com" },
+  { url = "udp://[2606:4700:4700::1113]" },
+  { url = "udp://[2606:4700:4700::1003]" },
+  { url = "tls://[2606:4700:4700::1113]", tls_server_name = "family.cloudflare-dns.com" },
+  { url = "tls://[2606:4700:4700::1003]", tls_server_name = "family.cloudflare-dns.com" },
+]
+
+[[preset]]
+id = "cleanbrowsing-family"
+name = "CleanBrowsing Family (malware + adult + proxies, safe search)"
+provider = "CleanBrowsing"
+variant = "Family (adult content, proxies, SafeSearch)"
+note = "Blocks adult content, proxy and VPN sites and mixed-content sites, and forces SafeSearch. Operated by CleanBrowsing; see its privacy policy."
+simple = true
+homepage = "https://cleanbrowsing.org/filters"
+sources = []
+filtering = "family"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "tls://family-filter-dns.cleanbrowsing.org" },
+  { url = "https://doh.cleanbrowsing.org/doh/family-filter/" },
+  { url = "udp://185.228.168.168" },
+  { url = "udp://185.228.169.168" },
+  { url = "udp://[2a0d:2a00:1::]" },
+  { url = "udp://[2a0d:2a00:2::]" },
+]
+
+[[preset]]
+id = "cleanbrowsing-adult"
+name = "CleanBrowsing Adult (malware + adult)"
+provider = "CleanBrowsing"
+variant = "Adult content"
+note = "Blocks adult content and malware, without the proxy and mixed-content blocks. Operated by CleanBrowsing; see its privacy policy."
+simple = true
+homepage = "https://cleanbrowsing.org/filters"
+sources = []
+filtering = "family"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "tls://adult-filter-dns.cleanbrowsing.org" },
+  { url = "https://doh.cleanbrowsing.org/doh/adult-filter/" },
+  { url = "udp://185.228.168.10" },
+  { url = "udp://185.228.169.11" },
+  { url = "udp://[2a0d:2a00:1::1]" },
+  { url = "udp://[2a0d:2a00:2::1]" },
+]
+
+[[preset]]
+id = "cleanbrowsing-security"
+name = "CleanBrowsing Security (malware and phishing only)"
+provider = "CleanBrowsing"
+variant = "Security (malware and phishing)"
+note = "Blocks only malware and phishing. Operated by CleanBrowsing; see its privacy policy."
+simple = true
+homepage = "https://cleanbrowsing.org/filters"
+sources = []
+filtering = "malware"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "tls://security-filter-dns.cleanbrowsing.org" },
+  { url = "https://doh.cleanbrowsing.org/doh/security-filter/" },
+  { url = "udp://185.228.168.9" },
+  { url = "udp://185.228.169.9" },
+  { url = "udp://[2a0d:2a00:1::2]" },
+  { url = "udp://[2a0d:2a00:2::2]" },
 ]
 
 [[preset]]
 id = "adguard"
 name = "AdGuard DNS (ads + trackers)"
+provider = "AdGuard"
+variant = "Ads and trackers"
+note = "Blocks ads, trackers and malware domains. AdGuard says it keeps only anonymous totals, not your queries or IP address."
+simple = true
 homepage = "https://adguard-dns.io/en/public-dns.html"
 sources = ["technitium"]
 filtering = "ads"
@@ -192,11 +339,20 @@ endpoint = [
   { url = "tls://94.140.14.14", tls_server_name = "dns.adguard-dns.com" },
   { url = "https://dns.adguard-dns.com/dns-query" },
   { url = "quic://dns.adguard-dns.com" },
+  { url = "tls://94.140.15.15", tls_server_name = "dns.adguard-dns.com" },
+  { url = "udp://[2a10:50c0::ad1:ff]" },
+  { url = "udp://[2a10:50c0::ad2:ff]" },
+  { url = "tls://[2a10:50c0::ad1:ff]", tls_server_name = "dns.adguard-dns.com" },
+  { url = "tls://[2a10:50c0::ad2:ff]", tls_server_name = "dns.adguard-dns.com" },
 ]
 
 [[preset]]
 id = "adguard-family"
 name = "AdGuard DNS Family"
+provider = "AdGuard"
+variant = "Family (ads, adult content)"
+note = "Blocks ads, trackers, malware and adult sites, and turns on SafeSearch. Same privacy terms as AdGuard DNS."
+simple = true
 homepage = "https://adguard-dns.io/en/public-dns.html"
 sources = ["technitium"]
 filtering = "family"
@@ -208,11 +364,20 @@ endpoint = [
   { url = "tls://94.140.14.15", tls_server_name = "family.adguard-dns.com" },
   { url = "https://family.adguard-dns.com/dns-query" },
   { url = "quic://family.adguard-dns.com" },
+  { url = "tls://94.140.15.16", tls_server_name = "family.adguard-dns.com" },
+  { url = "udp://[2a10:50c0::bad1:ff]" },
+  { url = "udp://[2a10:50c0::bad2:ff]" },
+  { url = "tls://[2a10:50c0::bad1:ff]", tls_server_name = "family.adguard-dns.com" },
+  { url = "tls://[2a10:50c0::bad2:ff]", tls_server_name = "family.adguard-dns.com" },
 ]
 
 [[preset]]
 id = "adguard-unfiltered"
 name = "AdGuard DNS (unfiltered)"
+provider = "AdGuard"
+variant = "Unfiltered"
+note = "Does not block anything. Same privacy terms as AdGuard DNS: only anonymous totals are kept."
+simple = true
 homepage = "https://adguard-dns.io/en/public-dns.html"
 sources = ["technitium"]
 filtering = "none"
@@ -224,11 +389,20 @@ endpoint = [
   { url = "tls://94.140.14.140", tls_server_name = "unfiltered.adguard-dns.com" },
   { url = "https://unfiltered.adguard-dns.com/dns-query" },
   { url = "quic://unfiltered.adguard-dns.com" },
+  { url = "tls://94.140.14.141", tls_server_name = "unfiltered.adguard-dns.com" },
+  { url = "udp://[2a10:50c0::1:ff]" },
+  { url = "udp://[2a10:50c0::2:ff]" },
+  { url = "tls://[2a10:50c0::1:ff]", tls_server_name = "unfiltered.adguard-dns.com" },
+  { url = "tls://[2a10:50c0::2:ff]", tls_server_name = "unfiltered.adguard-dns.com" },
 ]
 
 [[preset]]
 id = "mullvad"
 name = "Mullvad DNS (no filtering)"
+provider = "Mullvad"
+variant = "No filtering"
+note = "Does not block anything. Mullvad says it keeps no logs of your queries. Encrypted only (no plain DNS)."
+simple = true
 homepage = "https://mullvad.net/en/help/dns-over-https-and-dns-over-tls"
 sources = ["technitium"]
 filtering = "none"
@@ -237,11 +411,16 @@ ecs = false
 endpoint = [
   { url = "tls://194.242.2.2", tls_server_name = "dns.mullvad.net" },
   { url = "https://dns.mullvad.net/dns-query" },
+  { url = "tls://[2a07:e340::2]", tls_server_name = "dns.mullvad.net" },
 ]
 
 [[preset]]
 id = "mullvad-adblock"
 name = "Mullvad DNS (ads + trackers)"
+provider = "Mullvad"
+variant = "Ads and trackers"
+note = "Blocks ads and trackers. Mullvad says it keeps no logs of your queries. Encrypted only."
+simple = true
 homepage = "https://mullvad.net/en/help/dns-over-https-and-dns-over-tls"
 sources = ["technitium"]
 filtering = "ads"
@@ -250,11 +429,16 @@ ecs = false
 endpoint = [
   { url = "tls://194.242.2.3", tls_server_name = "adblock.dns.mullvad.net" },
   { url = "https://adblock.dns.mullvad.net/dns-query" },
+  { url = "tls://[2a07:e340::3]", tls_server_name = "adblock.dns.mullvad.net" },
 ]
 
 [[preset]]
 id = "controld-free"
 name = "Control D (free, unfiltered)"
+provider = "Control D"
+variant = "Free, no filtering"
+note = "Does not block anything. Control D is a commercial service; see its privacy policy."
+simple = true
 homepage = "https://controld.com/free-dns"
 sources = ["technitium"]
 filtering = "none"
@@ -270,6 +454,8 @@ endpoint = [
 [[preset]]
 id = "controld"
 name = "Control D (your resolver)"
+provider = "Control D"
+variant = "Your resolver"
 homepage = "https://controld.com/"
 sources = ["technitium"]
 filtering = "ads"
@@ -285,6 +471,8 @@ endpoint = [
 [[preset]]
 id = "nextdns"
 name = "NextDNS (your profile)"
+provider = "NextDNS"
+variant = "Your profile"
 homepage = "https://nextdns.io/"
 sources = ["technitium"]
 filtering = "ads"

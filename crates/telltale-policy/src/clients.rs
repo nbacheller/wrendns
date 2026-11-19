@@ -265,6 +265,46 @@ pub struct Client {
     pub inherit: bool,
 }
 
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — where a device's group came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupFrom {
+    /// The `[[client]]`'s own `groups`.
+    Device,
+    /// A group's `networks` (ADR-050).
+    Network,
+    /// A group's `router_names` (ADR-973).
+    RouterName,
+    /// A Kubernetes workload's group (labels, map, or default; FLT-017).
+    Workload,
+    /// No client and no network claims it: the `default` group.
+    Default,
+}
+
+impl GroupFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Device => "device",
+            Self::Network => "network",
+            Self::RouterName => "router_name",
+            Self::Workload => "kubernetes",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key an [`Identity`] matched on, and where its
+/// group came from, derived from the same state `identify` read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedKey {
+    /// The key as a `[[client]] match` is written (`id:kids`, `aa:bb:..`, `192.168.1.20`,
+    /// `10.0.5.0/24`, `hostname:tv`); `None` for a workload (the caller names it) and the default.
+    pub key: Option<String>,
+    pub group_from: GroupFrom,
+    /// What gave the group when it isn't the device's own: the network (`10.20.2.0/24`) or the
+    /// router name (`hostname:tv`).
+    pub group_key: Option<String>,
+}
+
 /// How a client was recognized (shown in the query log and explain).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdSource {
@@ -316,6 +356,17 @@ impl Neighbors {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// REQ: FLT-006 (T24.30) — an address the neighbor table knows this MAC at (the lowest, so
+    /// the answer is stable). Off the query path: it scans the table.
+    pub fn address_of(&self, mac: [u8; 6]) -> Option<IpAddr> {
+        self.map
+            .load()
+            .iter()
+            .filter(|(_, m)| **m == mac)
+            .map(|(ip, _)| *ip)
+            .min()
     }
 }
 
@@ -758,6 +809,62 @@ impl ClientTable {
             client: None,
             source: IdSource::Default,
             net,
+        }
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key `ident` (from [`Self::identify`] with the
+    /// same inputs) matched on, and where its group came from. Off the query path: it allocates.
+    /// The inputs must be the ones given to `identify`, so the answer can't name another key.
+    pub fn match_key(
+        &self,
+        ident: Identity,
+        peer: IpAddr,
+        client_id: Option<&str>,
+        edns_mac: Option<[u8; 6]>,
+        neighbors: &Neighbors,
+    ) -> MatchedKey {
+        let peer = peer.to_canonical();
+        let mac_text = |m: [u8; 6]| {
+            format!(
+                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                m[0], m[1], m[2], m[3], m[4], m[5]
+            )
+        };
+        let key = match ident.source {
+            IdSource::ClientId => client_id.map(|c| format!("id:{c}")),
+            IdSource::EdnsMac => edns_mac.map(mac_text),
+            IdSource::NeighborMac => neighbors.get(peer).map(mac_text),
+            IdSource::Workload | IdSource::Default => None,
+            IdSource::Hostname => self.router_name(peer).map(|l| format!("hostname:{l}")),
+            IdSource::Ip => Some(peer.to_string()),
+            IdSource::Cidr => self
+                .cidrs
+                .iter()
+                .find(|(n, _)| n.contains(peer))
+                .map(|(n, _)| n.to_string()),
+        };
+        let own = self.client(ident).is_some_and(|c| !c.inherit);
+        let net_key = || {
+            self.group_nets
+                .iter()
+                .find(|(n, _)| n.contains(peer))
+                .map(|(n, _)| n.to_string())
+        };
+        let (group_from, group_key) = if own {
+            (GroupFrom::Device, None)
+        } else if ident.source == IdSource::Workload {
+            (GroupFrom::Workload, None)
+        } else if ident.source == IdSource::Hostname && ident.client.is_none() {
+            (GroupFrom::RouterName, key.clone())
+        } else if ident.net.is_some() {
+            (GroupFrom::Network, net_key())
+        } else {
+            (GroupFrom::Default, None)
+        };
+        MatchedKey {
+            key,
+            group_from,
+            group_key,
         }
     }
 

@@ -135,6 +135,16 @@
       "docs": "a-devices-rhythm"
     },
     {
+      "id": "device-policy",
+      "title": "Which filters apply to this device?",
+      "term": "A device's effective policy",
+      "summary": "Every filter and rule that applies to one device, and why: the group it is in, the key that matched it (a MAC, an address, a network, a client ID, a router name), then its lists, blocked services, SafeSearch, rewrites, schedules, quick rules and upstream group, each linking to where it is set.",
+      "when": "A device is blocked, or not blocked, and you want to know which group, list, schedule or rule is responsible. Or you want to check that the right group took a new device.",
+      "example": "The kids' tablet matched by its MAC lands in group kids; its bedtime schedule is in effect now, so every name is blocked until 07:00; a quick rule for game.example ends at 22:00.",
+      "caution": "It is read the way a query from the device is matched. A device known only by a MAC that has not been seen at an address has no network, so a network group is not shown for it.",
+      "docs": "a-devices-policy"
+    },
+    {
       "id": "kubernetes-workloads",
       "title": "Pods named by what they run",
       "term": "Kubernetes workloads as devices",
@@ -252,10 +262,10 @@
       "id": "networks",
       "title": "The networks your routers know",
       "term": "Network",
-      "summary": "A LAN or VLAN your router reports: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
+      "summary": "A LAN or VLAN your router reports, or one this node is directly on: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
       "when": "You want to see which networks are filling up, or which networks no group covers yet.",
       "example": "IoT (192.168.20.0/24, VLAN 20): 42 of 254 addresses in use, 38 of them from the DHCP pool.",
-      "caution": "Networks come from your routers and from your groups' networks. A network no router reports shows as group only."
+      "caution": "Networks come from your routers, from the networks this node is directly on (marked this node: its own LAN and any tagged VLAN interface), and from your groups' networks. A network nothing reports shows as group only. A VLAN reached through the gateway is not on the node, so it shows only if a router reports it. This node means the node answering the API, so through a replica the list differs from the primary's; inside a bridged Docker container there are none (set TELLTALE_HOST_NETWORK=1 on host networking)."
     },
     {
       "id": "network-group",
@@ -328,6 +338,36 @@
       "caution": "If every server is benched, only cached and local answers work.",
       "diagram": "upstream",
       "docs": "encrypted-upstreams"
+    },
+    {
+      "id": "upstream-picker",
+      "title": "Pick your upstream servers",
+      "term": "Upstream picker (simple view)",
+      "summary": "Tick the public DNS servers you want, choose encrypted or plain DNS and IPv4 and/or IPv6, and Save. TelltaleDNS asks the fastest of the servers you ticked. The Custom row takes an address of your own. The Advanced view is the technical list and forms.",
+      "when": "Setting up, or changing which public servers answer for you, without writing addresses by hand.",
+      "example": "Tick Quad9 and Cloudflare, leave Encrypted on, and Save: DNS over TLS to both, using whichever answers faster.",
+      "caution": "Every server you tick sees the names you look up, so read its note. Plain DNS isn't private. IPv6 is greyed out when this node has no IPv6 route. Servers set up another way (config files, an import, the Advanced view) are shown and left alone, and stay in the default group.",
+      "docs": "upstream-presets"
+    },
+    {
+      "id": "upstream-route",
+      "title": "\"This node has no IPv6 route\"",
+      "term": "No route to an upstream",
+      "summary": "This node can't reach the server's address: it is an IPv6 (or IPv4) address and the machine has no default route for that family. TelltaleDNS checks with a connection attempt that sends nothing, at start and every 30 seconds, never on the query path. The server fails on every query until the route exists.",
+      "when": "A server you imported from Pi-hole, or added by address, is always failing.",
+      "example": "Cloudflare's [2606:4700:4700::1111] on a Pi with only IPv4: remove it from the group, or give the host IPv6. On the map the group's resolver stays yellow while the others answer.",
+      "caution": "A server given by hostname isn't checked this way; its failures show as connection errors.",
+      "docs": "network-map"
+    },
+    {
+      "id": "upstream-source",
+      "title": "Send an upstream's queries from one address",
+      "term": "Source address (bind address)",
+      "summary": "The address on this node that an upstream's queries leave from. A network such as 198.51.100.0/24 means the address each node holds in it, so one shared upstream works on every node.",
+      "when": "A DNS filter knows your network by the address its queries come from, or the node sits on several networks and you want one of them.",
+      "example": "The family filter is asked from the 198.51.100.x address, so a service that keys on that network sees it.",
+      "caution": "The node must hold the address (on a real interface); saving one it doesn't is refused. If it is missing at start or disappears later, only that upstream's queries fail and the health icon says why. Binding an address doesn't pick the interface: add a routing rule for it (see the runbook). In a cluster, name a network, not one node's address. This is not what makes a gateway's content filtering apply: that works on traffic, whatever DNS is used.",
+      "docs": "commercial-filters-behind-telltaledns"
     },
     {
       "id": "routes",
@@ -655,6 +695,16 @@
       "docs": "replicated-secrets"
     },
     {
+      "id": "cluster-witness",
+      "title": "A witness only votes",
+      "term": "Witness",
+      "summary": "A witness is a small vote-only member (telltale cluster witness). It holds no configuration, no secrets and no DNS, so the Cluster page shows those as not applicable instead of behind or not ready. What it shows is whether it is up and linked, its version and uptime, and its vote: when it last answered this node's vote request or lease renewal, and the epoch it voted in.",
+      "when": "Your cluster has two full nodes and a witness so that automatic failover has three voters, and the witness's row shows no configuration version.",
+      "example": "node-c (witness, votes only): up, last vote 4 s ago, epoch 7; configuration, secrets and DNS: not applicable. It is green in the topology while it is up.",
+      "caution": "A witness that is down is a real problem: with two voters left, one more failure leaves no majority and no primary can keep its lease. The checks, health reasons and the node_down alert still name it, but it never counts as behind, not serving or odd.",
+      "docs": "clusters"
+    },
+    {
       "id": "host-resources",
       "title": "The machines your nodes run on",
       "term": "Host resources",
@@ -866,6 +916,16 @@
       "docs": "keeping-names-and-devices-out-of-the-log"
     },
     {
+      "id": "qlog-exclusions",
+      "title": "Kept out of the query log only",
+      "term": "Log-only exclusions",
+      "summary": "Devices, domains and this node's own lookups whose queries are answered and counted in the dashboard and top lists, but never written to the query log, the live view or the event sinks.",
+      "when": "The log fills with the node's own lookups (client 127.0.0.1, name localhost) from a health check or a watchdog, or with one chatty device or domain, and you still want them in the statistics.",
+      "example": "Turn on the node's own lookups and add *.lan: the log shows only real devices asking for real names, while the dashboard's totals stay complete.",
+      "caution": "Excluded queries can't be searched later. Queries logged before stay. A device name that no client has matches nothing. To leave a query out of the statistics too, use the Names and Devices fields above.",
+      "docs": "keeping-queries-out-of-the-query-log-only"
+    },
+    {
       "id": "exemplars",
       "title": "Trace IDs",
       "term": "Exemplars and traces",
@@ -960,10 +1020,20 @@
       "id": "list-overlap",
       "title": "Unique names and overlap",
       "term": "List overlap",
-      "summary": "Unique names are the ones no other list has. When almost everything in a list is also in another, the list adds little.",
+      "summary": "Unique names are the ones no other list of the same side (block or allow) has, so an exception list never makes a block list look covered. When almost everything in a list is also in another, the list adds little.",
       "when": "Deciding which lists to drop to save memory and compile time.",
       "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
       "caution": "Hits count since each node started (every node's added up), so a list with no hits after a restart may just be new.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-prune",
+      "title": "Prune lists",
+      "term": "Prune",
+      "summary": "Previews the block lists that add less than a threshold of their own entries (names no other list has, plus their regexes), and turns them off after you confirm. They stay in the configuration; Undo turns them on again.",
+      "when": "Several big lists overlap and you want fewer lists to download and compile.",
+      "example": "At 1%, a list where 99.5% of the names are also in hagezi-pro is proposed; turning it off could stop blocking at most the 0.5%.",
+      "caution": "Allow lists, shadow lists and lists a group names are never proposed. Overlap is by name, so a regex or a wildcard another list covers isn't seen: the plan only errs toward keeping a list.",
       "docs": "filter-lists"
     },
     {
@@ -1220,6 +1290,16 @@
       "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {
+      "id": "inventory-unifi-reads",
+      "title": "More from your routers",
+      "term": "Extra router reads",
+      "summary": "The inventory can ask UniFi for more than its device list: more fields of each connected client (port or access point, VLAN, network, first seen), clients it has seen before (history), and its own devices with each switch port's MAC table and LLDP neighbours. It can also ask Home Assistant for devices that have a MAC address and no entity. Every read only reads, adds to the inventory only, and is capped at 4 MiB and 8,192 rows (Home Assistant 1 MiB).",
+      "when": "Turn these on when the inventory shows a device with no place: you want to know which switch port or access point a device is on, or to keep the name of a phone that left last week.",
+      "example": "With the devices read on, a printer's row shows the switch and port it plugs into. With history on, a laptop that has been away for ten days is listed as history, with the last address UniFi saw, and it never answers for the address now.",
+      "caution": "History is never a current address: it can't give a device a DNS name, and it never replaces an address a router reports now. A console that refuses a read (a key without the right to read devices, for example) is reported once in the table, and the other reads carry on. Home Assistant can only list a device with no entity when the device sits in an area or has a label.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
       "id": "block-response",
       "title": "How blocked names are answered",
       "term": "Block response",
@@ -1288,6 +1368,57 @@
       "example": "A home network with a few chatty devices: leave the defaults. A network with one flaky upstream you accept: raise the failing threshold from 25% to 50% so it stays Warning.",
       "caution": "The preview on the card is an estimate: it reclassifies the flows drawn now, one by one, while the server judges each device or upstream as a whole, so a value right at a threshold can colour differently once applied. The thresholds change only what the map shows, never an answer or an alert (alerts use the service-level objectives). A higher sampling rate costs a little CPU on every node and, above the default, is worth it only on a busy network. Slow means slower than the latency objective unless you set your own.",
       "docs": "network-map"
+    },
+    {
+      "id": "query-log-clients",
+      "title": "Show queries from several devices",
+      "term": "Client filter",
+      "summary": "Search by a device's name, or by its address, and pick as many devices as you like; the log shows the queries from all of them, and \"not\" shows every other device.",
+      "when": "You want one person's phone and laptop together, or everything except the server that asks the most.",
+      "example": "Type \"tv\", pick the living room and bedroom TVs, and the log lists both. Tick \"not\" to see everything else.",
+      "caution": "A device is found by the address it has now (a router name or a Kubernetes workload is followed to its addresses); at most 100 devices and 256 addresses per search.",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "picker",
+      "title": "Choosing from a long list",
+      "term": "Search and multi-select",
+      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick.",
+      "when": "A setting offers many devices, groups, lists or networks.",
+      "example": "In a group's networks, type \"10.20.2\" and Select all.",
+      "caution": "Escape closes the list without changing the choice.",
+      "general": true,
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "list-too-large",
+      "title": "A list is over its size limit",
+      "term": "List size limit",
+      "summary": "A download bigger than the list's limit (64 MiB unless the list or [filter] max_list_bytes says otherwise) is refused so a wrong address can't fill the disk or memory; the last good copy stays in use. Raise the limit sets this list's own max_bytes (the size the server announced plus a quarter, or double the old limit) and downloads it again.",
+      "when": "A list's row says it is larger than its limit.",
+      "example": "A big hosts list grew past 64 MiB: one click sets that list's limit to 128 MiB and the next download works.",
+      "caution": "A big list costs memory: about 20 bytes a name while running and about three times that while a snapshot compiles. The page offers up to 128 MiB for one list; past that, remove it or pick a smaller list. Check the address first: a limit hit on a list that should be small usually means the address returns something else.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-not-found",
+      "title": "A list's address returns not found",
+      "term": "List not found (404)",
+      "summary": "The server answered HTTP 404 or 410 for the list's address: the maintainer moved or deleted it. TelltaleDNS keeps the last good copy, if there was one, but it will never update. Remove the list, or edit it to the new address in Manage lists.",
+      "when": "A list's row says the address returns not found.",
+      "example": "A project renamed its file: remove the old list and add the new address.",
+      "caution": "Removing a list that came from a configuration file hides it on this node; the file still lists it (Manage lists can revert that).",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-redundant",
+      "title": "A list that adds nothing",
+      "term": "Redundant list",
+      "summary": "Every name this list puts in the snapshot is also in one other enabled, enforcing list of the same kind, so removing it loses no blocking. It still costs a download and memory. Turn it off to keep it in the configuration, or remove it.",
+      "when": "The Unique column reads 0 and the row says every name is in another list.",
+      "example": "A small list is wholly inside a bigger one you also use: turn the small one off.",
+      "caution": "Unique counts names, not regex rules, and is measured on the active snapshot: if you later remove the other list, this one is no longer redundant. Lists assigned to different groups overlap on purpose, so check the groups before removing.",
+      "docs": "filter-lists"
     }
   ]
 }

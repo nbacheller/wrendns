@@ -126,6 +126,9 @@ pub(crate) fn unpinned(file: &Config) -> Config {
             &crate::managed::state_path(file),
             &node::dir_of(data_dir(file)),
         );
+        // REQ: CLU-015 (T24.37, ADR-1016) — the same for the shared kinds: this node's rows are
+        // stale while it follows a primary, and the next promotion adopts the blob it inherits.
+        crate::managed_adopt::forget(&crate::managed::state_path(file));
     }
     let m = match id.meta.role {
         Some(node::Role::Primary) if gitops_source => None,
@@ -144,7 +147,12 @@ pub(crate) fn unpinned(file: &Config) -> Config {
     match merged_with(file, &m, overlay) {
         // REQ: API-014 (review of T23.2) — the stored paths are judged against this node's own
         // files, not the version it builds on.
-        Ok(c) if with_managed => crate::managed::effective_on(&c, file),
+        Ok(mut c) if with_managed => {
+            // REQ: CLU-015 (T24.37, ADR-1016) — the entries the cluster last published are this
+            // node's rows now, and the version it builds on no longer carries them.
+            adopt_shared(file, &m, &mut c);
+            crate::managed::effective_on(&c, file)
+        }
         Ok(c) => c,
         Err(e) => {
             error!(
@@ -226,6 +234,52 @@ fn seed_node_managed(file: &Config, m: &ClusterManifest) -> bool {
         return false;
     };
     crate::node_managed::seed_once(&crate::managed::state_path(file), &cdir, &b.hash, &bytes)
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — a primary promoted from replica adopts the API entries of the
+/// version it inherited as its own rows (once per blob) and takes them out of `cfg`, the
+/// configuration it builds on. Returns whether it did; a blob without the rows, or a store it
+/// can't write, leaves `cfg` as it was.
+fn adopt_shared(file: &Config, m: &ClusterManifest, cfg: &mut Config) -> bool {
+    let Some(b) = &m.node_managed else {
+        return false;
+    };
+    let adopted = crate::managed_adopt::adopt(&crate::managed::state_path(file), &b.hash, || {
+        BlobStore::open(data_dir(file))
+            .ok()
+            .and_then(|store| store.read(b).ok())
+    });
+    match adopted {
+        Some(entries) => {
+            crate::managed_adopt::strip(cfg, &entries, file);
+            true
+        }
+        None => false,
+    }
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — what the API's entries are written onto on a primary promoted
+/// from replica: the cluster version it builds on, without the entries it adopted. `None` on any
+/// other node (the config files are the base), and when nothing was adopted.
+pub(crate) fn managed_base(file: &Config) -> Option<Config> {
+    let id = identity(file)?;
+    if !matches!(id.meta.role, Some(node::Role::Primary)) || file.cluster.git.is_some() {
+        return None;
+    }
+    if id.meta.config_authority == "gitops" && gitops_capable(file) {
+        return None;
+    }
+    let m = last_applied(file)?;
+    let overlay = !seed_node_managed(file, &m);
+    let mut c = merged_with(file, &m, overlay).ok()?;
+    adopt_shared(file, &m, &mut c).then_some(c)
+}
+
+/// Whether this node is a primary that was promoted from replica (it has applied a cluster
+/// version). Only such a node can serve entries it does not hold as its own.
+pub(crate) fn promoted_primary(file: &Config) -> bool {
+    identity(file).is_some_and(|id| matches!(id.meta.role, Some(node::Role::Primary)))
+        && last_applied(file).is_some()
 }
 
 /// Whether this node's own configuration comes from Git: rendered from a repository (the Helm
@@ -1278,6 +1332,9 @@ impl Primary {
         } else {
             if let Some(m) = inherited {
                 seed_node_managed(&cfg, m);
+                // REQ: CLU-015 (T24.37) — adopted before this node exports its own rows.
+                let mut scratch = Config::default();
+                adopt_shared(&cfg, m, &mut scratch);
             }
             let h = export_node_managed(&self.sources, &mut self.nm_cache)
                 .await
@@ -1387,6 +1444,8 @@ impl Primary {
             .members()
             .into_iter()
             .filter(|m| m.connected && m.rollouts)
+            // REQ: CLU-009 (T24.33) — a witness holds no configuration: never a canary.
+            .filter(|m| !registry.iter().any(|r| r.node_id == m.node_id && r.witness))
             .filter(|m| {
                 let ephemeral = registry
                     .iter()
@@ -1714,16 +1773,25 @@ impl Primary {
             sync_error: None,
             probe_failing: me.probe_failing,
         }];
-        v.extend(self.cluster.members().into_iter().map(|m| rollout::Sample {
-            node: m.node_id,
-            qps: m.qps,
-            servfail_permille: m.servfail_permille,
-            ready: m.ready,
-            connected: m.connected,
-            applied_seq: m.applied_seq,
-            sync_error: (!m.sync_error.is_empty()).then_some(m.sync_error),
-            probe_failing: m.probe_failing,
-        }));
+        // REQ: CLU-009 (T24.33) — a witness has no configuration version and serves no DNS: the
+        // rollout's nodes leave it out.
+        let registry = self.cluster.identity.registry();
+        v.extend(
+            self.cluster
+                .members()
+                .into_iter()
+                .filter(|m| !registry.iter().any(|r| r.node_id == m.node_id && r.witness))
+                .map(|m| rollout::Sample {
+                    node: m.node_id,
+                    qps: m.qps,
+                    servfail_permille: m.servfail_permille,
+                    ready: m.ready,
+                    connected: m.connected,
+                    applied_seq: m.applied_seq,
+                    sync_error: (!m.sync_error.is_empty()).then_some(m.sync_error),
+                    probe_failing: m.probe_failing,
+                }),
+        );
         v
     }
 

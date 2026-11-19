@@ -8,7 +8,9 @@ import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
+import { pick } from './picker';
 import { alertConditions } from '../../src/lib/alert-conditions';
+import { customUrl, nextCustomName, planFor, readSaved, type Transport } from '../../src/lib/upstream-picker';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
@@ -612,6 +614,265 @@ test('api_005 upstream health reads in plain words', async () => {
   }
 });
 
+// REQ: UPS-006 (fork #25) — an upstream the node has no route to says so on the Upstreams page.
+test('ups_006 upstream with no route says why', async () => {
+  const upstream = (id: number, name: string, extra: object) => ({
+    breaker: 'open',
+    endpoint: `udp://192.0.2.${id}`,
+    failures: 0,
+    failuresByKind: {},
+    groups: ['default'],
+    id,
+    latencyEwmaMs: 5,
+    name,
+    requests: 10,
+    ...extra,
+  });
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const stub = (route: Route) =>
+    route.fulfill({
+      json: { items: [upstream(1, 'up-fine', { breaker: 'closed' }), upstream(2, 'up-v6', { routeProblem: 'this node has no IPv6 route' })] },
+    });
+  await page.route(isUpstreams, stub);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload(); // the previous test left this route open, and the page polls every 10 s
+    const row = (name: string) => page.getByRole('row', { name: new RegExp(name) });
+    await expect(row('up-v6').getByTestId('route-problem')).toContainText('this node has no IPv6 route');
+    await expect(row('up-fine').getByTestId('route-problem')).toHaveCount(0);
+  } finally {
+    await page.unroute(isUpstreams, stub);
+  }
+});
+
+// REQ: UPS-013 (T24.31, ADR-997) — an upstream's source address: the Upstreams form offers this
+// node's own addresses and networks, and a source the node lost shows as a problem on its row.
+test('ups_013 upstream source address: suggestions and a lost-address problem', async () => {
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const isInfo = (url: URL) => url.pathname === '/api/v1/system/info';
+  const upstreams = (route: Route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { breaker: 'closed', endpoint: 'tls://192.0.2.1', failures: 0, failuresByKind: {}, groups: ['default'], id: 1, latencyEwmaMs: 5, name: 'from-vlan', requests: 3, source: '198.51.100.252' },
+          { breaker: 'closed', endpoint: 'tls://192.0.2.2', failures: 0, failuresByKind: {}, groups: ['default'], id: 2, latencyEwmaMs: 5, name: 'lost-src', requests: 3, source: '198.51.100.9', sourceProblem: 'its source address 198.51.100.9 is no longer held by this node: queries to it fail' },
+        ],
+      },
+    });
+  const info = async (route: Route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.addresses = [{ interface: 'eth0.100', address: '198.51.100.252', network: '198.51.100.0/24' }];
+    await route.fulfill({ response: res, json: body });
+  };
+  await page.route(isUpstreams, upstreams);
+  await page.route(isInfo, info);
+  try {
+    await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
+    await page.reload();
+    await expect(page.getByTestId('upstream-source').first()).toHaveText('from 198.51.100.252');
+    await expect(page.getByTestId('upstream-source-problem')).toContainText('no longer held by this node');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    const field = page.getByRole('combobox', { name: 'Source address', exact: true });
+    await expect(field).toBeVisible();
+    const listId = await field.getAttribute('list');
+    expect(listId).toBeTruthy();
+    const opts = await page.locator(`datalist#${listId} option`).evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
+    expect(opts).toEqual(['198.51.100.0/24', '198.51.100.252']);
+  } finally {
+    await page.unroute(isUpstreams, upstreams);
+    await page.unroute(isInfo, info);
+  }
+});
+
+// REQ: UPS-013 (ADR-997 §4) — a real save of a `source` this node doesn't hold is refused with a
+// message that names the problem, on a dry run too, and nothing is stored.
+test('ups_013 a source this node does not hold is refused on save', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const body = { url: 'udp://192.0.2.1', source: '203.0.113.9' };
+  for (const q of ['?dryRun=true', '']) {
+    const put = await r.put(`/api/v1/upstreams/ups013-foreign${q}`, { headers: h, data: body });
+    expect(put.status(), await put.text()).toBe(422);
+    expect(await put.text()).toContain('holds no such address');
+  }
+  const list = await (await r.get('/api/v1/upstreams')).json();
+  expect(list.items.some((u: { name: string }) => u.name === 'ups013-foreign')).toBe(false);
+  // The loopback network is held by every node: saved, and shown on the row.
+  const ok = await r.put('/api/v1/upstreams/ups013-held', { headers: h, data: { url: 'udp://192.0.2.1', source: '127.0.0.0/8' } });
+  expect(ok.status(), await ok.text()).toBe(200);
+  try {
+    const row = (await (await r.get('/api/v1/upstreams')).json()).items.find((u: { name: string }) => u.name === 'ups013-held');
+    expect(row.source).toBe('127.0.0.1');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
+// REQ: UPS-004 (T24.36) — what the simple view's ticks mean as upstream entries, and back.
+test('ups_004 picker plans entries from ticks and reads them back', async () => {
+  const r = page.request;
+  const { items, ipv6Route } = await (await r.get('/api/v1/upstream-presets')).json();
+  expect(typeof ipv6Route).toBe('boolean');
+  const cf = items.find((p: { id: string }) => p.id === 'cloudflare');
+  const nd = items.find((p: { id: string }) => p.id === 'nextdns');
+  expect(cf.simple).toBe(true);
+  expect(nd.simple, 'a preset that needs a parameter is for the Advanced view').toBe(false);
+  const providers = items.filter((p: { simple: boolean }) => p.simple).map((p: { provider: string }) => p.provider);
+  for (const want of ['Cloudflare', 'Google', 'Quad9', 'OpenDNS', 'AdGuard', 'Mullvad', 'CleanBrowsing']) expect(providers).toContain(want);
+  const urls = (t: Transport, v4: boolean, v6: boolean) =>
+    planFor(items, new Set(['cloudflare']), t, v4, v6).entries.map((e) => e.url);
+  expect(urls('encrypted', true, false)).toEqual(['tls://1.1.1.1', 'tls://1.0.0.1']);
+  expect(urls('encrypted', false, true)).toEqual(['tls://[2606:4700:4700::1111]', 'tls://[2606:4700:4700::1001]']);
+  expect(urls('plain', true, false)).toEqual(['udp://1.1.1.1', 'udp://1.0.0.1']);
+  expect(urls('plain', true, true)).toHaveLength(4);
+  const first = planFor(items, new Set(['cloudflare']), 'encrypted', true, false).entries[0];
+  expect(first).toEqual({ name: 'pub-cloudflare-tls-1', url: 'tls://1.1.1.1', tls_server_name: 'cloudflare-dns.com' });
+  // Mullvad has no plain address: the encrypted one is used, and the plan says so.
+  const mv = planFor(items, new Set(['mullvad']), 'plain', true, false);
+  expect(mv.fellBack).toEqual(['mullvad']);
+  expect(mv.entries.every((e) => e.url.startsWith('tls://'))).toBe(true);
+  // Entries come back as the same ticks, transport and families.
+  const saved = (name: string, url: string) => ({ kind: 'upstream', name, source: 'added', definition: { url } }) as never;
+  const back = readSaved(
+    [saved('pub-cloudflare-tls-1', 'tls://1.1.1.1'), saved('pub-custom-2', 'udp://9.9.9.9'), saved('nowhere', 'udp://127.0.0.1:9')],
+    items,
+  );
+  expect([...back.ticked]).toEqual(['cloudflare']);
+  expect(back.transport).toBe('encrypted');
+  expect(back.v4).toBe(true);
+  expect(back.v6).toBe(false);
+  expect(back.customs.map((c) => c.url)).toEqual(['udp://9.9.9.9']);
+  expect(customUrl('9.9.9.9')).toBe('udp://9.9.9.9');
+  expect(customUrl('2606:4700:4700::1111')).toBe('udp://[2606:4700:4700::1111]');
+  expect(customUrl('https://dns.example.net/dns-query')).toBe('https://dns.example.net/dns-query');
+  expect(customUrl('not an address')).toBeNull();
+  expect(nextCustomName(['pub-custom-1', 'pub-custom-3'])).toBe('pub-custom-2');
+});
+
+// REQ: UPS-004, API-002 (T24.36) — the Upstreams page opens on the simple view; ticking providers
+// writes upstream entries and the default group (fastest); the config file's upstream is kept;
+// Advanced shows what the simple view made, and switching views loses nothing.
+test('ups_004 the simple view writes upstreams and the default group', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  await page.goto('/#/upstreams');
+  await page.evaluate(() => localStorage.removeItem('upstreams-view'));
+  await page.reload();
+  await expect(page.getByTestId('upstream-picker')).toBeVisible();
+  await expect(page.getByTestId('editor-upstream')).toBeHidden();
+  await expect(page.getByTestId('pick-cloudflare')).not.toBeChecked();
+  // The file's own upstream is listed and left alone.
+  await expect(page.getByTestId('picker-others')).toContainText('nowhere');
+  try {
+    // Encrypted is the default; this node's IPv6 route decides whether IPv6 is on.
+    await expect(page.getByTestId('transport-encrypted')).toBeChecked();
+    await page.getByTestId('pick-cloudflare').check();
+    await page.getByTestId('pick-quad9-unfiltered').check();
+    await page.getByTestId('family-v4').check();
+    if (await page.getByTestId('family-v6').isEnabled()) await page.getByTestId('family-v6').uncheck();
+    // Switching views keeps the unsaved ticks.
+    await page.getByTestId('view-advanced').click();
+    await expect(page.getByTestId('upstream-picker')).toBeHidden();
+    await expect(page.getByTestId('editor-upstream')).toBeVisible();
+    await page.getByTestId('view-simple').click();
+    await expect(page.getByTestId('pick-cloudflare')).toBeChecked();
+    await page.getByTestId('custom-address').fill('9.9.9.9');
+    await page.getByTestId('custom-add').click();
+    await expect(page.getByTestId('custom-entry')).toContainText('udp://9.9.9.9');
+    await page.getByTestId('picker-save').click();
+    await expect(page.getByTestId('picker-note')).toContainText('Saved');
+    const entries = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items;
+    const get = (n: string) => entries.find((e: { name: string }) => e.name === n);
+    expect(get('pub-cloudflare-tls-1').definition.url).toBe('tls://1.1.1.1');
+    expect(get('pub-cloudflare-tls-1').definition.tls_server_name).toBe('cloudflare-dns.com');
+    expect(get('pub-quad9-unfiltered-tls-1').source).toBe('added');
+    expect(get('pub-custom-1').definition.url).toBe('udp://9.9.9.9');
+    expect(get('nowhere').source, 'the file entry is untouched').toBe('file');
+    const group = (await (await r.get('/api/v1/config/entries?kind=upstream_group')).json()).items.find((e: { name: string }) => e.name === 'default');
+    expect(group.definition.strategy).toBe('fastest');
+    expect(group.definition.members).toEqual(expect.arrayContaining(['nowhere', 'pub-cloudflare-tls-1', 'pub-quad9-unfiltered-tls-1', 'pub-custom-1']));
+    // Reloading shows the saved choices; Advanced lists the same entries, labelled where they come from.
+    await page.reload();
+    await expect(page.getByTestId('pick-cloudflare')).toBeChecked();
+    await expect(page.getByTestId('pick-google')).not.toBeChecked();
+    await expect(page.getByTestId('custom-entry')).toContainText('udp://9.9.9.9');
+    await page.getByTestId('view-advanced').click();
+    const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'pub-cloudflare-tls-1' });
+    await expect(row).toContainText('added here');
+    await expect(row).not.toContainText('config file');
+    // Unticking removes what the simple view made; the rest stays.
+    await page.getByTestId('view-simple').click();
+    await page.getByTestId('pick-cloudflare').uncheck();
+    await page.getByTestId('picker-save').click();
+    await expect(page.getByTestId('picker-note')).toContainText('Saved');
+    const after = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items.map((e: { name: string }) => e.name);
+    expect(after).not.toContain('pub-cloudflare-tls-1');
+    expect(after).toEqual(expect.arrayContaining(['pub-quad9-unfiltered-tls-1', 'pub-custom-1', 'nowhere']));
+  } finally {
+    // Back to the file's configuration.
+    await r.delete('/api/v1/upstream-groups/default', { headers: h });
+    const all = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items;
+    for (const e of all) if (e.name.startsWith('pub-')) await r.delete(`/api/v1/upstreams/${e.name}`, { headers: h });
+    await page.evaluate(() => localStorage.setItem('upstreams-view', 'advanced'));
+  }
+});
+
+// REQ: UPS-004 (T24.36) — IPv6 is greyed out, with the reason, on a node with no IPv6 route; plain
+// DNS says it isn't private; nothing ticked can't be saved.
+test('ups_004 IPv6 is disabled without a route and plain DNS is warned about', async () => {
+  const stub = async (route: Route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: { ...(await res.json()), ipv6Route: false } });
+  };
+  await page.route('**/api/v1/upstream-presets', stub);
+  try {
+    await page.goto('/#/upstreams');
+    await page.evaluate(() => localStorage.removeItem('upstreams-view'));
+    await page.reload();
+    await expect(page.getByTestId('family-v6')).toBeDisabled();
+    await expect(page.getByTestId('family-v6')).not.toBeChecked();
+    await expect(page.getByTestId('ipv6-reason')).toContainText('no IPv6 route');
+    await expect(page.getByTestId('picker-save')).toBeDisabled();
+    await page.getByTestId('transport-plain').check();
+    await expect(page.getByTestId('plain-warning')).toContainText('isn’t private');
+    await page.getByTestId('pick-mullvad').check();
+    await expect(page.getByTestId('plain-warning')).toContainText('no plain address');
+    await page.getByTestId('pick-mullvad').uncheck();
+    // Nothing ticked and nothing else in the group to keep is refused; the file's upstream is kept
+    // here, so this saves nothing new but is allowed.
+    await expect(page.getByTestId('picker-save')).toBeEnabled();
+  } finally {
+    await page.unroute('**/api/v1/upstream-presets', stub);
+    await page.evaluate(() => localStorage.setItem('upstreams-view', 'advanced'));
+  }
+});
+
+// REQ: API-002 (T24.36, fork #27) — each upstream says where it is defined: an upstream made through
+// the API (the form, a Pi-hole import) reads "added through the API or UI", the file's reads "config file".
+test('ups_004 an upstream made through the API is not labelled config file', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/upstreams/ups004-api', { headers: h, data: { url: 'udp://192.0.2.44' } });
+  expect(put.status(), await put.text()).toBe(200);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload();
+    const origin = (name: string) =>
+      page.locator('table tbody tr', { has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) }).first().getByTestId('upstream-origin');
+    await expect(origin('ups004-api')).toHaveText('defined in: added through the API or UI');
+    await expect(origin('nowhere')).toHaveText('defined in: config file');
+    await page.getByTestId('view-advanced').click();
+    const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ups004-api' });
+    await expect(row).toContainText('added here');
+    await expect(row).not.toContainText('config file');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups004-api', { headers: h });
+  }
+});
+
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
 // (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
 // disagreement.
@@ -742,7 +1003,7 @@ test('obs_038 mute a kind of finding for a device', async () => {
   await page.getByTestId('mute').click();
   const form = page.getByTestId('mute-form');
   await expect(form.getByLabel('Device')).toHaveValue('192.168.1.30');
-  await expect(form.getByRole('checkbox', { name: 'Burst of failed lookups' })).toBeChecked();
+  await expect(form.getByTestId('picker-chip').filter({ hasText: 'Burst of failed lookups' })).toHaveCount(1);
   await expect(page.getByTestId('mute-preview')).toContainText('findings created from now on');
   await form.getByLabel('Note').fill('hourly reverse-DNS sweep');
   await page.getByTestId('mute-save').click();
@@ -1207,8 +1468,10 @@ test('api_010 match a client by router name', async () => {
   await page.unroute('**/api/v1/rules/**');
   // The query log filters by the name: the addresses it has now.
   await page.goto('/#/queries');
-  await page.locator('select[name="client-by"]').selectOption('router');
-  await page.locator('input[name="client"]').fill('kitchen-tablet');
+  const clientBox = page.getByRole('group', { name: 'Client', exact: true }).getByRole('combobox');
+  await clientBox.fill('hostname:kitchen-tablet');
+  await clientBox.press('Enter');
+  await clientBox.press('Escape');
   const logged = page.waitForRequest((r) => r.url().includes('/api/v1/queries') && decodeURIComponent(r.url()).includes('client=hostname:kitchen-tablet'));
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await logged;
@@ -1547,6 +1810,81 @@ test('clu_008 cluster topology', async () => {
   await page.unroute('**/api/v1/cluster/versions');
 });
 
+// REQ: CLU-009 (T24.33, ADR-1011) — a witness only votes. Its row says "witness, votes only" and
+// shows "not applicable" for configuration, secrets and DNS (whatever an older witness reports),
+// its vote state and real uptime; the topology draws it green; the Health tab counts only real
+// failures, and a witness that is down is red there and in the checks.
+test('clu_009 a witness is a voter, not a full node', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.9.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 14, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  const view = (witnessUp: boolean) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-pi1', newestConfigSeq: 14, events: [], conflicts: [],
+    authority: 'primary',
+    healthy: witnessUp,
+    checks: [
+      { id: 'peers_up', ok: witnessUp, summary: witnessUp ? 'All 3 nodes are up' : 'Not heard from in 15 s: id-pi3', fix: witnessUp ? null : 'Check the node.' },
+      { id: 'in_sync', ok: true, summary: 'Every reachable node runs configuration version 14' },
+    ],
+    failover: { mode: 'auto', active: true, voters: 3, reachableVoters: witnessUp ? 3 : 2, leaseHeld: true, leaseSecondsLeft: 12, votedEpoch: 7, votedFor: 'id-pi1' },
+    nodes: [
+      node({ nodeId: 'id-pi1', site: 'node-a', role: 'primary', thisNode: true, link: 'self', rttMs: null }),
+      node({ nodeId: 'id-pi2', site: 'node-b' }),
+      // The witness as an older build would report it: no configuration, "not ready", behind, no secrets.
+      node({
+        nodeId: 'id-pi3', site: 'node-c', witness: true, eligible: false, up: witnessUp, connected: witnessUp, ready: false,
+        configSeq: 0, configLag: 13, behindSeconds: 1920, qps: 0, uptimeSeconds: 7200, secrets: null,
+        vote: { lastReplySecondsAgo: 4, lastGrantSecondsAgo: 4, votedEpoch: 7 },
+      }),
+    ],
+  });
+  let current = view(true);
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  // A fresh document, so the route's data is fetched even if the page is already on #/cluster.
+  await page.goto('about:blank');
+  await page.goto('/#/cluster');
+  const row = page.locator('#node-id-pi3');
+  await expect(row).toContainText('witness, votes only');
+  await expect(row.getByTestId('cluster-node-config-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-secrets-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-dns-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-vote')).toContainText(/last vote .* ago.*epoch 7/);
+  await expect(row).not.toContainText('not ready');
+  await expect(row).not.toContainText('behind');
+  await expect(row).not.toContainText('not reported');
+  await expect(row).toContainText('2h'); // its real uptime, not 0s
+  await expect(row).toContainText('0.9.0');
+  // A full node still shows all three.
+  await expect(page.locator('#node-id-pi2')).toContainText('in sync');
+  await expect(page.locator('#node-id-pi2').getByTestId('cluster-node-dns-na')).toHaveCount(0);
+  // The topology: green while it is up, not amber.
+  const topo = page.getByTestId('cluster-topology');
+  await expect(topo.getByTestId('topology-node')).toHaveCount(3);
+  await expect(topo.locator('.chip.warn')).toHaveCount(0);
+  await expect(topo).toContainText('votes only');
+  await expect(topo.locator('.chip.bad')).toHaveCount(0);
+  // The help topic explains it.
+  await row.getByTestId('cluster-node-vote').getByRole('button').click();
+  await expect(page.getByTestId('help-panel')).toContainText('vote-only member');
+  await page.keyboard.press('Escape');
+  // The tabs count nothing for it: Health is clean.
+  await page.getByRole('tab', { name: /^Health/ }).click();
+  await expect(page.getByTestId('cluster-check').filter({ hasText: '✗' })).toHaveCount(0);
+  // Down: still a failing check (automatic failover needs its vote), and red in the topology.
+  current = view(false);
+  await expect(page.getByTestId('cluster-health')).toContainText('Needs attention', { timeout: 10_000 });
+  await expect(page.getByTestId('cluster-check').filter({ hasText: 'Not heard from' })).toHaveCount(1);
+  await page.getByRole('tab', { name: /^Nodes/ }).click();
+  await expect(page.getByTestId('cluster-topology').locator('.chip.bad')).toHaveCount(1);
+  await page.unroute('**/api/v1/cluster');
+  await page.unroute('**/api/v1/cluster/rollout');
+  await page.unroute('**/api/v1/cluster/versions');
+});
+
 // REQ: DNS-006, API-005 (T6.13) — the cache: a cached answer shows up in a lookup (the UI
 // card and the API), a flush removes it and says how many, and viewers can look but not flush.
 test('dns_006 cache lookup and flush', async () => {
@@ -1823,6 +2161,7 @@ test('api_002 lists and upstreams are edited from the UI', async () => {
 
   // An upstream from the files: overridden, then back to the files' version.
   await page.goto('/#/upstreams');
+  await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
   const ups = page.getByTestId('editor-upstream');
   const router = ups.getByTestId('entry-row').filter({ hasText: 'router' });
   await expect(router).toContainText('config file');
@@ -1945,6 +2284,137 @@ test('flt_004 update one list now', async () => {
   await page.reload();
 });
 
+// REQ: FLT-004, API-005 (T24.28, ADR-992) — a list whose names another list already has shows what it
+// adds and who covers it; Prune previews the lists that add little at a threshold, turns them off after
+// a confirmation (the list stays in the configuration), and Undo turns it on again.
+test('flt_004 prune lists that add little, then undo', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const names = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `||n${from + i}.prune.e2e.test^`);
+  // prune-big has 60 names, prune-small the first 10 of them: nothing of its own.
+  for (const [name, rules] of [['prune-big', names(0, 60)], ['prune-small', names(0, 10)]] as const) {
+    const r = await page.request.put(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf }, data: { rules, kind: 'block' } });
+    expect(r.ok(), `${name}: ${await r.text()}`).toBeTruthy();
+  }
+  const listed = async () =>
+    ((await (await page.request.get('/api/v1/lists')).json()).items as { name: string; enabled: boolean; entries: number; unique: number }[]);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.entries, { timeout: 45_000 }).toBe(10);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-big')?.unique, { timeout: 45_000 }).toBe(50);
+
+  await page.goto('/#/lists');
+  await page.reload(); // the page may already be on /#/lists, with the lists read before these two existed
+  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  await expect(row('prune-small').getByTestId('list-adds')).toHaveText('adds 0%');
+  await expect(row('prune-small').getByTestId('list-covered-by')).toContainText('100% also in prune-big');
+  // prune-small's row names prune-big too ("also in prune-big"), so look for the figure, not the row's only cell.
+  await expect(row('prune-big').getByTestId('list-adds').filter({ hasText: 'adds 83.3%' })).toHaveCount(1);
+
+  // The read API: the overlap rows and the plan agree with the page.
+  const ov = (await (await page.request.get('/api/v1/lists/overlap')).json()).items as { name: string; addsPercent: number; coveredBy: { list: string }[] }[];
+  expect(ov.find((o) => o.name === 'prune-small')?.coveredBy[0].list).toBe('prune-big');
+  const planned = await (await page.request.get('/api/v1/lists/prune-plan?thresholdPercent=1')).json();
+  expect(planned.candidates.map((c: { name: string }) => c.name)).toContain('prune-small');
+  expect(planned.candidates.map((c: { name: string }) => c.name)).not.toContain('prune-big');
+  expect((await page.request.get('/api/v1/lists/prune-plan?thresholdPercent=90')).status()).toBe(400);
+
+  await page.getByTestId('lists-prune').click();
+  const panel = page.getByTestId('prune-panel');
+  await expect(panel).toBeVisible();
+  const cand = panel.getByTestId('prune-candidate');
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+  await expect(cand.filter({ has: page.locator('strong', { hasText: /^prune-big$/ }) })).toHaveCount(0); // it adds 83%
+  await expect(cand.filter({ hasText: 'prune-small' })).toContainText('prune-big (100%)');
+  await panel.locator('summary').click();
+  await expect(panel.getByTestId('prune-kept')).toContainText('prune-big: adds 83.3% of its entries, above 1%');
+  await expect(panel.getByTestId('prune-kept')).toContainText('e2e-shadow: shadow mode');
+
+  // A threshold outside 0-50 is refused in the form; 0 still proposes a list that adds nothing.
+  await panel.getByTestId('prune-threshold').fill('90');
+  await expect(panel.getByText('Enter a number from 0 to 50.')).toBeVisible();
+  await expect(panel.getByTestId('prune-preview')).toBeDisabled();
+  await panel.getByTestId('prune-threshold').fill('0');
+  await panel.getByTestId('prune-preview').click();
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+
+  // Nothing changes until it is confirmed; Back leaves the list on.
+  await panel.getByTestId('prune-apply').click();
+  await expect(panel.getByTestId('prune-confirm-text')).toBeVisible();
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await panel.getByRole('button', { name: 'Back' }).click();
+  await expect(panel.getByTestId('prune-apply')).toBeVisible();
+
+  // A stale preview: the configuration changed after it (any edit), so the confirmation is refused with
+  // a 409, nothing is turned off, and previewing again brings the versions up to date.
+  await panel.getByTestId('prune-apply').click();
+  const touch = await page.request.put('/api/v1/lists/prune-touch', { headers: { 'x-csrf-token': csrf }, data: { rules: ['||touch.prune.e2e.test^'], kind: 'block' } });
+  expect(touch.ok(), await touch.text()).toBeTruthy();
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-touch')?.entries, { timeout: 45_000 }).toBe(1);
+  const refusedApply = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
+  await panel.getByTestId('prune-confirm').click();
+  expect((await refusedApply).status()).toBe(409);
+  await expect(page.getByText(/preview again/i).first()).toBeVisible();
+  await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1); // the expected refusal
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await panel.getByTestId('prune-preview').click();
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+  await panel.getByTestId('prune-apply').click();
+  const applied = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
+  await panel.getByTestId('prune-confirm').click();
+  const res = await applied;
+  expect(res.status()).toBe(200);
+  expect(res.request().postDataJSON().names).toContain('prune-small');
+  const done = page.getByTestId('prune-done');
+  await expect(done).toContainText('prune-small');
+  await expect(panel).toHaveCount(0);
+  await expect(row('prune-small')).toContainText('off');
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(false);
+  expect((await listed()).find((l) => l.name === 'prune-big')?.enabled).toBe(true);
+  const audit = (await (await page.request.get('/api/v1/audit?action=lists.prune')).json()).items;
+  expect(audit.length).toBeGreaterThan(0);
+
+  // Undo: the list is on again, with its rules.
+  await done.getByTestId('prune-undo').click();
+  await expect(done).toHaveCount(0);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await expect(row('prune-small').getByText('off', { exact: true })).toHaveCount(0); // the "Turn it off" button is not the badge
+  const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
+  expect(def.definition.rules).toHaveLength(10);
+
+  // A group that names a list keeps it: the preview says so.
+  const grp = await page.request.put('/api/v1/groups/prune-grp', { headers: { 'x-csrf-token': csrf }, data: { networks: ['10.78.0.0/24'], lists: ['prune-small'] } });
+  expect(grp.ok(), await grp.text()).toBeTruthy();
+  await page.getByTestId('lists-prune').click();
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('prune-candidate').filter({ hasText: 'prune-small' })).toHaveCount(0);
+  await panel.locator('summary').click();
+  await expect(panel.getByTestId('prune-kept')).toContainText('prune-small: group `prune-grp` names it');
+  await panel.getByTestId('prune-close').click();
+  expect((await page.request.delete('/api/v1/groups/prune-grp', { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
+
+  // Agents don't get to apply it.
+  const tok = await page.request.post('/api/v1/tokens', { headers: { 'x-csrf-token': csrf }, data: { name: 'prune-agent', kind: 'agent', scopes: ['config:read', 'config:write:lists'] } });
+  expect(tok.status()).toBe(201);
+  const agent = (await tok.json()).token as string;
+  const asAgent = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  const plan = await asAgent.request.get('/api/v1/lists/prune-plan', { headers: { authorization: `Bearer ${agent}` } });
+  expect(plan.status()).toBe(200);
+  const refused = await asAgent.request.post('/api/v1/lists/prune', {
+    headers: { authorization: `Bearer ${agent}`, 'x-telltale-reason': 'tidy up the lists' },
+    data: { names: ['prune-small'], snapshotVersion: 1, configVersion: 1 },
+  });
+  expect(refused.status()).toBe(403);
+  expect((await refused.json()).code).toBe('agent_not_allowed');
+  await asAgent.close();
+
+  // Clean up: the lists, and the agent token.
+  for (const name of ['prune-small', 'prune-big', 'prune-touch']) {
+    expect((await page.request.delete(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
+  }
+  const tokens = (await (await page.request.get('/api/v1/tokens')).json()).items as { id: string; name: string }[];
+  for (const t of tokens.filter((x) => x.name === 'prune-agent')) await page.request.delete(`/api/v1/tokens/${t.id}`, { headers: { 'x-csrf-token': csrf } });
+});
+
 // REQ: FLT-004 (T24.17) — a viewer sees the lists and when each was confirmed, with no update button.
 test('flt_004 viewer sees no update buttons', async ({ browser }) => {
   const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || BASE_URL });
@@ -2001,6 +2471,116 @@ test('flt_004 lists fit a phone width (375 px)', async () => {
     await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) }).getByRole('button', { name: 'Update e2e-block now' })).toBeVisible();
   } finally {
     await page.setViewportSize({ width: 1280, height: 800 });
+  }
+});
+
+// REQ: T24.27 — a list that failed shows why and offers the fix on its row: a raised limit for one
+// that is over its size limit, remove-or-replace for a 404, and turn-off/remove for a list whose names
+// are all in another. The changes are answered by a stand-in here (the lists stay as the suite expects).
+test('t24_27 list failures offer a fix', async () => {
+  const rowOf = (name: string) =>
+    page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  const failing = {
+    'e2e-block': {
+      state: 'failed',
+      source: 'https://lists.e2e.test/big.txt',
+      error: 'larger than the 67108864-byte limit (the server says it is 70000000 bytes; raise max_bytes for this list)',
+    },
+    'e2e-shadow': { state: 'failed', source: 'https://lists.e2e.test/gone.txt', error: 'HTTP 404 Not Found' },
+  } as Record<string, object>;
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
+    await route.fulfill({ response: r, json });
+  });
+  const changes: { method: string; url: string; body: Record<string, unknown> | null }[] = [];
+  await page.route(/\/api\/v1\/lists\/e2e-(block|shadow)$/, async (route) => {
+    const req = route.request();
+    changes.push({ method: req.method(), url: req.url(), body: req.postDataJSON() });
+    await route.fulfill({ status: 200, json: { applied: true, configVersion: 1 } });
+  });
+  try {
+    await page.goto('/#/lists');
+    await page.reload(); // the page is read through the stand-in
+    // Over the size limit: the size seen, plus a quarter, in whole MiB; one click sets this list's limit.
+    const big = rowOf('e2e-block');
+    await expect(big.getByTestId('list-too-large')).toContainText('bigger than its 64.0 MiB limit');
+    const raise = big.getByTestId('list-raise-limit');
+    await expect(raise).toHaveText('Raise the limit to 84 MiB');
+    await raise.click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('the limit is now 84 MiB');
+    expect(changes).toHaveLength(1);
+    expect(changes[0].method).toBe('PUT');
+    expect(changes[0].body).toMatchObject({ max_bytes: '84MiB', rules: ['||ads.e2e.test^'] });
+    // Not found: said plainly, with remove (asking first).
+    const gone = rowOf('e2e-shadow');
+    await expect(gone.getByTestId('list-not-found')).toContainText('returns "not found" (HTTP 404)');
+    await expect(gone.getByTestId('list-not-found')).toContainText('Remove it, or replace it');
+    await gone.getByTestId('list-remove').click();
+    expect(changes).toHaveLength(1);
+    await gone.getByTestId('list-remove-confirm').click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('e2e-shadow was removed');
+    expect(changes[1].method).toBe('DELETE');
+    expect(changes[1].url).toMatch(/\/api\/v1\/lists\/e2e-shadow$/);
+  } finally {
+    await page.unroute('**/api/v1/lists');
+    await page.unroute(/\/api\/v1\/lists\/e2e-(block|shadow)$/);
+  }
+  // Above the cap the page doesn't offer a limit it won't allow.
+  failing['e2e-block'] = {
+    state: 'failed',
+    source: 'https://lists.e2e.test/huge.txt',
+    error: `larger than the ${128 * 1024 * 1024}-byte limit (raise max_bytes for this list)`,
+  };
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
+    await route.fulfill({ response: r, json });
+  });
+  try {
+    await page.reload();
+    await expect(rowOf('e2e-block').getByTestId('list-too-large')).toContainText('remove it or use a smaller list');
+    await expect(rowOf('e2e-block').getByTestId('list-raise-limit')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/lists');
+  }
+  // Pruning: every name is in another list.
+  const redundantChanges: Record<string, unknown>[] = [];
+  // A shadow list never blocks, so it is not a cover: no offer until the cover enforces.
+  let coverOverride: Record<string, unknown> = { state: 'ok', enabled: true, mode: 'shadow', kind: 'block', unique: 5 };
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) =>
+      l.name === 'e2e-block'
+        ? { ...l, state: 'ok', enabled: true, entries: 5, unique: 0, overlap: [{ list: 'e2e-shadow', names: 5 }] }
+        : l.name === 'e2e-shadow'
+          ? { ...l, ...coverOverride }
+          : l,
+    );
+    await route.fulfill({ response: r, json });
+  });
+  await page.route(/\/api\/v1\/lists\/e2e-block$/, async (route) => {
+    redundantChanges.push(route.request().postDataJSON());
+    await route.fulfill({ status: 200, json: { applied: true, configVersion: 1 } });
+  });
+  try {
+    await page.reload();
+    const row = rowOf('e2e-block');
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId('list-redundant')).toHaveCount(0);
+    coverOverride = { state: 'ok', enabled: true, mode: 'enforce', kind: 'block', unique: 5, entries: 5 };
+    await page.reload();
+    await expect(row.getByTestId('list-redundant')).toContainText('Every name in it is also in e2e-shadow');
+    await row.getByTestId('list-turn-off').click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('e2e-block is off');
+    expect(redundantChanges[0]).toMatchObject({ enabled: false });
+  } finally {
+    await page.unroute('**/api/v1/lists');
+    await page.unroute(/\/api\/v1\/lists\/e2e-block$/);
+    await page.goto('/#/lists');
   }
 });
 
@@ -2152,7 +2732,7 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-disk');
     await page.getByLabel('When', { exact: true }).selectOption('disk_full');
     // exact: the config file's destination (file-ntfy) is listed too, and its name contains no ui-hook.
-    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: 'ui-hook', exact: true }).check();
+    await pick(page.locator('body'), 'Send to', 'ui-hook');
     await page.getByRole('spinbutton', { name: 'For at least (seconds)' }).fill('0');
     await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0.1');
     await page.getByRole('button', { name: 'Check' }).click();
@@ -2198,7 +2778,7 @@ test('obs_010 every alert condition can be chosen', async () => {
       await page.getByLabel('When', { exact: true }).selectOption(kind);
       // The config file's destination (file-ntfy) is the one every rule here sends to; its checkbox is
       // named "Send to file-ntfy", so match the name by part.
-      await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+      await pick(page.locator('body'), 'Send to', /file-ntfy/);
       await page.getByRole('button', { name: 'Check' }).click();
       await page.getByRole('button', { name: 'Apply' }).click();
       await expect(rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) })).toContainText(`${kind} → file-ntfy`);
@@ -2234,7 +2814,7 @@ test('obs_010 threshold shown per condition and out-of-range refused', async () 
     await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toHaveCount(0);
     await page.getByLabel('When', { exact: true }).selectOption('cert_expiring');
     await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toBeVisible();
-    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+    await pick(page.locator('body'), 'Send to', /file-ntfy/);
     await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0');
     await page.getByRole('button', { name: 'Check' }).click();
     await expect(page.getByText('days from 1 to 365')).toBeVisible();
@@ -2345,6 +2925,7 @@ test('api_014 upstream url is admin-only when it holds a credential', async () =
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-cred-up' });
     await expect(row.getByTestId('kept-badge')).toHaveText('kept: re-enter to change', { timeout: 20_000 });
@@ -2375,6 +2956,7 @@ test('api_014 a credential file on an upstream holds its address too', async () 
       await route.fulfill({ response: res, json: body });
     });
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-keyfile-up' });
     await row.getByRole('button', { name: 'Edit' }).click();
@@ -2390,6 +2972,7 @@ test('api_014 upstream exec draft is held for an operator', async () => {
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Add upstream', exact: true }).click();
     await op.p.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-exec-draft');
     await op.p.getByRole('textbox', { name: 'Address', exact: true }).fill('exec:///usr/bin/true');
@@ -2412,6 +2995,7 @@ test('api_014 operator re-times a saved program upstream', async () => {
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-exec-up' });
     await row.getByRole('button', { name: 'Edit' }).click();
@@ -2441,6 +3025,7 @@ test('api_014 a viewer sees credential entries and changes nothing', async () =>
   const v = await operatorPage(VIEWER.user, VIEWER.pass, 'viewer');
   try {
     await v.p.goto('/#/upstreams');
+    await v.p.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     const editor = v.p.getByTestId('editor-upstream');
     const row = editor.getByTestId('entry-row').filter({ hasText: 'ui-view-up' });
     await expect(row.getByTestId('kept-badge')).toBeVisible({ timeout: 20_000 });
@@ -2482,6 +3067,7 @@ test("api_014 changing a header upstream's url says which credential to re-enter
   expect(put.status(), await put.text()).toBe(200);
   try {
     await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-hdr-up' });
     await row.getByRole('button', { name: 'Edit' }).click();
     await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://other.e2e.test/dns-query');
@@ -2542,6 +3128,7 @@ test('api_015 errors read as sentences', async () => {
   });
   try {
     await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click(); // T24.36: the editors are in the Advanced view
     await page.reload();
     await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-err-up');
@@ -3022,7 +3609,7 @@ test('flt_010 schedules are edited from the UI', async () => {
   const groups = page.getByTestId('editor-group');
   const g = groups.getByTestId('entry-row').filter({ hasText: 'ipv6only' });
   await g.getByRole('button', { name: 'Edit' }).click();
-  await page.getByRole('group', { name: 'Schedules' }).getByLabel('ui-bedtime').check();
+  await pick(page.locator('body'), 'Schedules', 'ui-bedtime');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await page.getByRole('button', { name: 'Apply' }).click();
   const card = page.getByTestId('group-card').filter({ hasText: 'ipv6only' });
@@ -3507,6 +4094,59 @@ test('obs_022 exclusions from Settings', async () => {
   await expect(row).toContainText('config file');
 });
 
+// REQ: OBS-903 (T24.35, ADR-1014) — Settings → Query handling → "Log only" leaves a domain out of
+// the query log while it is still answered and counted (the log-excluded counter); then back to
+// the file's (nothing excluded). The node's-own-lookups switch is there, off.
+test('obs_903 log-only exclusions from Settings', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=queries');
+  const editor = page.getByTestId('editor-exclusions');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('nothing excluded');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const own = page.getByRole('switch', { name: "Leave this node's own lookups out of the query log" });
+  await expect(own).not.toBeChecked();
+  await page.getByRole('textbox', { name: 'Log only: domains', exact: true }).fill('hushed.cache.e2e.test');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('log only: 1 domains');
+  expect(await query('hushed.cache.e2e.test')).toBe(0);
+  expect(await query('audible.cache.e2e.test')).toBe(0);
+  const logged = async () =>
+    ((await (await page.request.get('/api/v1/queries?name=.cache.e2e.test&from=-10m')).json()).items as { name: string }[]).map(
+      (r) => r.name,
+    );
+  await expect.poll(logged, { timeout: 20_000 }).toContain('audible.cache.e2e.test');
+  expect(await logged()).not.toContain('hushed.cache.e2e.test');
+  // Answered and counted, only not logged: the counter says how many the log skipped.
+  await expect
+    .poll(async () => (await (await page.request.get('/metrics')).text()).match(/telltale_queries_log_excluded_total (\d+)/)?.[1], {
+      timeout: 20_000,
+    })
+    .not.toBe('0');
+  // Its help topic opens beside the form.
+  await page.getByRole('button', { name: 'Help: Kept out of the query log only' }).click();
+  await expect(page.getByTestId('help-panel')).toContainText('never written to the query log');
+  await page.keyboard.press('Escape');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('nothing excluded');
+});
+
+// REQ: OPS-901 (T24.35, ADR-1014) — /readyz answers 200 only while the node's own listener answers
+// a DNS query, with nothing about the configuration in the body, and what it asks is never logged.
+test('ops_901 readyz asks the listener and is never logged', async () => {
+  for (let i = 0; i < 3; i++) {
+    const r = await page.request.get('/readyz');
+    expect(r.status()).toBe(200);
+    expect(await r.text()).toBe('{"ready":true}\n');
+    await page.waitForTimeout(1100);
+  }
+  const probes = ((await (await page.request.get('/api/v1/queries?name=probe.telltale.invalid&from=-10m')).json()).items as unknown[])
+    .length;
+  expect(probes).toBe(0);
+});
+
 // REQ: OBS-024 (T13.1) — "What would this have done?" on a quick block rule counts the queries
 // this test makes (nothing is saved); Settings → System → Change simulation turns
 // plans_by_default on, and it's reverted to the file.
@@ -3577,8 +4217,7 @@ test('clu_013 staged rollouts: pick a canary in Settings', async () => {
   const row = editor.getByTestId('entry-row');
   await expect(row).toContainText('off: changes reach every node at once');
   await row.getByRole('button', { name: 'Edit' }).click();
-  const pi = page.getByRole('checkbox', { name: 'pi (bbbb2222)' });
-  await pi.check();
+  await pick(page.locator('body'), 'Canary nodes', 'pi (bbbb2222)');
   await expect(page.getByTestId('editor-note')).toContainText('Changes reach pi (bbbb2222) (and the primary) first');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByTestId('entry-preview')).toBeVisible();
@@ -5590,6 +6229,7 @@ test('api_012 discovered devices name the type of their router', async () => {
 const NETWORKS = [
   { name: 'Home', subnet: '10.20.2.0/24', gateway: '10.20.2.1', dhcpStart: '10.20.2.100', dhcpEnd: '10.20.2.200', domain: 'home.arpa', purpose: 'corporate', source: 'router', router: 'udm', group: 'lab', addresses: 254, devices: 60, usedPercent: 24, outsidePool: 4 },
   { name: 'IoT', subnet: '192.168.20.0/24', vlan: 20, gateway: '192.168.20.1', dhcpStart: '192.168.20.100', dhcpEnd: '192.168.20.200', purpose: 'iot', source: 'router', router: 'udm', addresses: 254, devices: 42, usedPercent: 17, outsidePool: 4 },
+  { name: 'eth0.100', subnet: '198.51.100.0/24', vlan: 100, source: 'interface', addresses: 254, devices: 3, usedPercent: 1.2, outsidePool: 0 },
   { name: 'guests', subnet: '10.50.0.0/24', source: 'group', group: 'guests', addresses: 254, devices: 0, usedPercent: 0, outsidePool: 0 },
 ];
 const DEVICES_ON_NETWORKS = [
@@ -5611,6 +6251,12 @@ test('api_013 networks page lists router networks', async () => {
     await expect(iot.getByRole('img', { name: '17% used' })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: '10.50.0.0/24' }).getByTestId('group-only')).toHaveText('group only');
     await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('group-only')).toHaveCount(0);
+    // REQ: API-013 (T24.32) — a network this node is directly on (a tagged VLAN interface) is badged, with its VLAN ID.
+    const vlan = page.getByRole('row').filter({ hasText: '198.51.100.0/24' });
+    await expect(vlan.getByTestId('this-node')).toHaveText('this node');
+    await expect(vlan).toContainText('eth0.100');
+    await expect(vlan).toContainText('100');
+    await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('this-node')).toHaveCount(0);
   } finally {
     await page.unroute('**/api/v1/networks');
     await page.unroute('**/api/v1/dhcp/leases');
@@ -5791,6 +6437,10 @@ test('dsc_001 network inventory settings are admin-only', async () => {
     await expect(mine.getByText('Only an administrator can change the network inventory')).toBeVisible({ timeout: 30_000 });
     await expect(mine.getByRole('button', { name: 'Check', exact: true })).toHaveCount(0);
     await expect(mine.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    // REQ: DSC-009 — the extra read switches are read-only for an operator too.
+    for (const name of ['UniFi client fields', 'UniFi client history', 'UniFi devices and ports', 'Home Assistant devices without entities']) {
+      await expect(mine.getByRole('switch', { name })).toBeDisabled();
+    }
     const ocsrf = await csrfOf(op.request);
     const moved = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { enabled: true, worker_memory_mib: 64 } });
     expect(moved.status()).toBe(403);
@@ -5913,6 +6563,70 @@ test('dsc_001 a poll keeps unsaved edits', async () => {
   await page.waitForTimeout(16_000);
   await expect(node).toHaveValue('pi-unsaved');
   await node.fill('');
+});
+
+// REQ: DSC-009 (T25.10, ADR-912) — an admin turns on the extra UniFi reads, sets the history window and
+// the Home Assistant switch, checks and applies; the server keeps them across a reload; a window out of
+// range is refused with the server's message. UniFi's reads start off, Home Assistant's on.
+test('dsc_009 unifi read toggles', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  const unifi = ['UniFi client fields', 'UniFi client history', 'UniFi devices and ports'];
+  const ha = settings.getByRole('switch', { name: 'Home Assistant devices without entities' });
+  const window_ = settings.getByLabel('History window in hours');
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).not.toBeChecked();
+  await expect(ha).toBeChecked();
+  await expect(window_).toHaveValue('720');
+  for (const name of unifi) await settings.getByRole('switch', { name }).check();
+  await ha.uncheck();
+  await window_.fill('48');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.reload();
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).toBeChecked();
+  await expect(settings.getByRole('switch', { name: 'Home Assistant devices without entities' })).not.toBeChecked();
+  await expect(settings.getByLabel('History window in hours')).toHaveValue('48');
+  // A window out of range is refused, and nothing is offered to apply.
+  await settings.getByLabel('History window in hours').fill('0');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'from 1 to 8,760' })).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+  // The refusal is expected: the browser logs the 422 as a console error, which the test removes.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+  // Back to the file's settings (the defaults here).
+  await page.reload();
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).not.toBeChecked();
+  await expect(settings.getByRole('switch', { name: 'Home Assistant devices without entities' })).toBeChecked();
+});
+
+// REQ: DSC-009 (ADR-912) — a read the console refuses shows in the status with its reason; the reads
+// that work show their rows (and say when they were cut at the cap).
+test('dsc_009 refused read shows on the inventory page', async () => {
+  const status = {
+    enabled: true, designated: true, node: null, workers: [],
+    reads: [
+      { router: 'udm', read: 'devices', state: 'refused', rows: 0, truncated: false, error: 'http://192.168.1.1/proxy/network/api/s/default/stat/device: HTTP 403 Forbidden (the key or user cannot read it)', at: 1 },
+      { router: 'udm', read: 'all_users', state: 'ok', rows: 8192, truncated: true, error: null, at: 1 },
+    ],
+  };
+  await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const dev = page.getByTestId('read-udm-devices');
+    await expect(dev.getByTestId('read-state')).toHaveText('refused');
+    await expect(dev).toContainText('HTTP 403');
+    const hist = page.getByTestId('read-udm-all_users');
+    await expect(hist.getByTestId('read-state')).toHaveText('ok');
+    await expect(hist).toContainText('8192');
+    await expect(hist).toContainText('cut at 8,192');
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
 });
 
 // REQ: OBS-039 (ADR-167) — domain icons: a brand tile for a name the map knows (Netflix), a monogram
@@ -6565,5 +7279,164 @@ test('api_007 passphrase backup from settings', async () => {
     await page.reload();
   } finally {
     await r.delete('/api/v1/secrets/backup-ui-test', { headers: h });
+  }
+});
+
+// REQ: UI-901, OBS-003 (T24.34, ADR-1013) — the picker: search over names and addresses, several
+// devices, Select all on the filtered results, the keyboard, and 5,000 items without a stall.
+test('ui_901 the query log picks devices by name: search, several, keyboard, 5,000 items', async () => {
+  const items = Array.from({ length: 5000 }, (_, i) => ({
+    name: `device-${String(i).padStart(4, '0')}`,
+    match: [`10.${(i >> 8) & 255}.${i & 255}.7`, `aa:bb:cc:00:${(i >> 8).toString(16).padStart(2, '0')}:${(i & 255).toString(16).padStart(2, '0')}`],
+    groups: ['default'],
+    source: 'api',
+    effectiveGroups: ['default'],
+    groupsFrom: 'default',
+  }));
+  await page.route('**/api/v1/clients', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: { items } }) : r.fallback()));
+  try {
+    await page.goto('/#/queries');
+    const group = page.getByRole('group', { name: 'Client', exact: true });
+    const box = group.getByRole('combobox');
+    await box.click();
+    await expect(box).toHaveAttribute('aria-expanded', 'true');
+    await expect(group.getByTestId('picker-count')).toContainText('of 5');
+    // Only a window of the 5,000 rows is in the page.
+    expect(await group.getByRole('option').count()).toBeLessThan(60);
+    // Search by name, and by address.
+    const t0 = Date.now();
+    await box.fill('device-04');
+    await expect(group.getByTestId('picker-count')).toContainText('100 of');
+    expect(Date.now() - t0).toBeLessThan(2000);
+    await box.fill('10.3.9.7');
+    await expect(group.getByRole('option').first()).toContainText('device-0777');
+    await box.fill('device-04');
+    // Keyboard: arrows move, Enter picks, Backspace takes the last chip off.
+    await box.press('ArrowDown');
+    await box.press('Enter');
+    await box.press('ArrowDown');
+    await box.press('Enter');
+    await expect(group.getByTestId('picker-chip')).toHaveCount(2);
+    await box.fill('');
+    await box.press('Backspace');
+    await expect(group.getByTestId('picker-chip')).toHaveCount(1);
+    // Select all and Deselect all act on the filtered results (100 of them), with "+N" for the rest.
+    await box.fill('device-04');
+    await group.getByTestId('picker-all').click();
+    await expect(group.getByTestId('picker-count')).toContainText('100 selected');
+    await expect(group.getByTestId('picker-more')).toContainText('+97');
+    await group.getByTestId('picker-none').click();
+    await expect(group.getByTestId('picker-count')).not.toContainText('selected');
+    // Escape closes without clearing; two devices are searched together, by their addresses.
+    await box.fill('device-0003');
+    await box.press('Enter');
+    await box.fill('device-0005');
+    await box.press('Enter');
+    await box.press('Escape');
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
+    // Focus moving out of the picker (Tab past its buttons) closes the open list (it doesn't stay over the next controls).
+    await box.click();
+    await expect(box).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Search', exact: true }).focus();
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
+    const sent = page.waitForRequest((r) => r.url().includes('/api/v1/queries') && decodeURIComponent(r.url()).includes('client=10.0.3.7,10.0.5.7'));
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await sent;
+  } finally {
+    await page.unroute('**/api/v1/clients');
+  }
+});
+
+test('ui_901 the rows are exactly the picked devices, and "not" shows every other client', async () => {
+  const all = await (await page.context().request.get('/api/v1/queries?limit=1000')).json();
+  const ips = [...new Set<string>(all.items.map((x: { client: string }) => x.client))];
+  expect(ips.length).toBeGreaterThan(0);
+  const picked = ips.slice(0, 2);
+  await page.goto('/#/queries');
+  const group = page.getByRole('group', { name: 'Client', exact: true });
+  const box = group.getByRole('combobox');
+  for (const ip of picked) {
+    await box.fill(ip);
+    await box.press('Enter');
+  }
+  await expect(group.getByTestId('picker-chip')).toHaveCount(picked.length);
+  await box.press('Escape');
+  const search = async () => {
+    const res = page.waitForResponse((r) => r.url().includes('/api/v1/queries?') && r.request().method() === 'GET');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    return (await (await res).json()) as { items: { client: string }[] };
+  };
+  const inSet = await search();
+  expect(inSet.items.length).toBeGreaterThan(0);
+  expect(inSet.items.every((x) => picked.includes(x.client))).toBe(true);
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  // "not" goes with the set: no row is from it.
+  await page.getByRole('checkbox', { name: 'not', exact: true }).first().check();
+  const rest = await search();
+  expect(rest.items.every((x) => !picked.includes(x.client))).toBe(true);
+});
+
+test('ui_901 the API takes several clients and the not option works with them', async () => {
+  const r = page.context().request;
+  const all = await (await r.get('/api/v1/queries?limit=1000')).json();
+  const ips = [...new Set<string>(all.items.map((x: { client: string }) => x.client))];
+  expect(ips.length).toBeGreaterThan(0);
+  const one = ips[0];
+  const some = await (await r.get(`/api/v1/queries?limit=1000&client=${encodeURIComponent(`${one},10.99.99.99`)}`)).json();
+  expect(some.items.length).toBeGreaterThan(0);
+  expect(some.items.every((x: { client: string }) => x.client === one)).toBe(true);
+  const rest = await (await r.get(`/api/v1/queries?limit=1000&clientNot=true&client=${encodeURIComponent(`${one},10.99.99.99`)}`)).json();
+  expect(rest.items.every((x: { client: string }) => x.client !== one)).toBe(true);
+  expect(some.items.length + rest.items.length).toBe(all.items.length);
+  const bad = await r.get('/api/v1/queries?client=' + encodeURIComponent(`${one},nope`));
+  expect(bad.status()).toBe(400);
+  // A router name nobody holds matches nothing (and "not" everything); a name and an address mix;
+  // a trailing comma is still one address.
+  const none = await (await r.get('/api/v1/queries?limit=1000&client=hostname:nobody-here')).json();
+  expect(none.items.length).toBe(0);
+  const notNone = await (await r.get('/api/v1/queries?limit=1000&clientNot=true&client=hostname:nobody-here')).json();
+  expect(notNone.items.length).toBe(all.items.length);
+  const mix = await (await r.get(`/api/v1/queries?limit=1000&client=${encodeURIComponent(`hostname:nobody-here,${one}`)}`)).json();
+  expect(mix.items.length).toBe(some.items.length);
+  const comma = await (await r.get(`/api/v1/queries?limit=1000&client=${encodeURIComponent(`${one},`)}`)).json();
+  expect(comma.items.length).toBe(some.items.length);
+});
+
+// REQ: CLU-005 (T24.26) — the Events tab names a lapsed lease and its renewal in words: "Lease
+// lapsed" in the bad colour, "Lease renewed" in the ok one (the e2e server cannot lapse a lease,
+// so the cluster view is a stub).
+test('clu_005 lease lapse and renewal events have labels', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const at = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+  const view = {
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-p', newestConfigSeq: 9, healthy: true,
+    checks: [{ id: 'peers_up', ok: true, summary: 'All 1 node is up' }],
+    events: [
+      { at: at(60), kind: 'lease_lost', nodeId: 'id-p', detail: 'publishing paused until a majority renews the lease' },
+      { at: at(30), kind: 'lease_renewed', nodeId: 'id-p', detail: 'publishing resumed after 4200 ms' },
+    ],
+    conflicts: [], authority: 'primary',
+    failover: { mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: true, leaseSecondsLeft: 11, votedEpoch: 1, votedFor: 'id-p' },
+    nodes: [{
+      nodeId: 'id-p', site: 'primary', ephemeral: false, witness: false, protocol: 1, role: 'primary', thisNode: true, eligible: true,
+      version: '0.8.0', up: true, connected: true, link: 'self', lastSeenSecondsAgo: 1, rttMs: null, configSeq: 9, configLag: 0, ready: true,
+      qps: 1, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 5, cacheHitPercent: 80, querySharePercent: 10,
+    }],
+  };
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  try {
+    await page.goto('/#/cluster?tab=events');
+    const items = page.locator('ol.events li');
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0).locator('.badge')).toHaveText('Lease lapsed');
+    await expect(items.nth(0).locator('.badge')).toHaveClass(/bad/);
+    await expect(items.nth(1).locator('.badge')).toHaveText('Lease renewed');
+    await expect(items.nth(1).locator('.badge')).toHaveClass(/ok/);
+  } finally {
+    await page.unroute('**/api/v1/cluster');
+    await page.unroute('**/api/v1/cluster/rollout');
+    await page.unroute('**/api/v1/cluster/versions');
   }
 });

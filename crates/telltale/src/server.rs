@@ -278,27 +278,61 @@ fn apex_soa_ns(
     (soa, ns)
 }
 
+/// REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — the IP to MAC map for MAC-keyed clients: the kernel's
+/// neighbor table (every interface, so every VLAN the node is directly on), then, for an address the
+/// table doesn't hold, the MAC the router's DHCP leases give it. A device behind a router never has
+/// a neighbor entry of its own (the table shows the router's MAC for the router's address only), so
+/// the leases are the only source of its MAC. The kernel's entry wins where both exist; an offline
+/// lease is not a device on the network now and is left out.
+pub(crate) fn merged_macs(
+    kernel: &[telltale_net::Neighbor],
+    leases: &crate::devices::Leases,
+) -> Vec<(std::net::IpAddr, [u8; 6])> {
+    let mut out: Vec<(std::net::IpAddr, [u8; 6])> = kernel.iter().map(|n| (n.ip, n.mac)).collect();
+    let have: std::collections::HashSet<std::net::IpAddr> =
+        out.iter().map(|(ip, _)| ip.to_canonical()).collect();
+    for l in leases.values().filter(|l| !l.offline) {
+        let Some(mac) = crate::discovery::sources::parse_mac(&l.mac).filter(|m| *m != [0; 6])
+        else {
+            continue;
+        };
+        let v6 = l.ipv6.iter().map(|a| std::net::IpAddr::V6(*a));
+        for ip in std::iter::once(std::net::IpAddr::V4(l.ip)).chain(v6) {
+            if !have.contains(&ip.to_canonical()) {
+                out.push((ip, mac));
+            }
+        }
+    }
+    out
+}
+
 /// REQ: FLT-006 — keeps the IP → MAC map fresh while any client is identified by MAC.
 fn spawn_neighbor_refresh(pipeline: Arc<Pipeline>, every: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut warned = false;
+        // The last good kernel read: a transient read error keeps it instead of wiping the map.
+        let mut last_kernel = Vec::new();
         loop {
             if pipeline.current().policy.clients.uses_macs() {
-                match tokio::task::spawn_blocking(telltale_net::neighbors).await {
+                let kernel = match tokio::task::spawn_blocking(telltale_net::neighbors).await {
                     Ok(Ok(n)) => {
-                        pipeline
-                            .neighbors
-                            .replace(n.into_iter().map(|x| (x.ip, x.mac)));
                         warned = false;
+                        last_kernel.clone_from(&n);
+                        n
                     }
-                    Ok(Err(e)) if !warned => {
-                        warn!(
-                            "cannot read the neighbor table (MAC-based clients won't match): {e}"
-                        );
-                        warned = true;
+                    Ok(Err(e)) => {
+                        if !warned {
+                            warn!(
+                                "cannot read the neighbor table (MAC-based clients match only from router leases): {e}"
+                            );
+                            warned = true;
+                        }
+                        last_kernel.clone()
                     }
-                    _ => {}
-                }
+                    Err(_) => last_kernel.clone(),
+                };
+                let leases = pipeline.router_leases.load();
+                pipeline.neighbors.replace(merged_macs(&kernel, &leases));
             }
             tokio::time::sleep(every).await;
         }
@@ -754,6 +788,100 @@ pub(crate) fn exclusions(cfg: &Config) -> Option<telltale_telemetry::exclude::Ex
     Some(telltale_telemetry::exclude::Exclusions::new(names, &nets))
 }
 
+/// REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log only, from
+/// `[exclusions.log]`; applied by the aggregator from its next drain (at start and on every
+/// reload). Device names become the configured clients' references (`client_ref`: index + 1);
+/// a name no client has matches nothing. `own_lookups` adds loopback and this node's own addresses.
+pub(crate) fn log_exclusions(cfg: &Config) -> Option<telltale_telemetry::exclude::LogExclusions> {
+    log_exclusions_with(cfg, &own_addresses(cfg))
+}
+
+pub(crate) fn log_exclusions_with(
+    cfg: &Config,
+    own: &[std::net::IpAddr],
+) -> Option<telltale_telemetry::exclude::LogExclusions> {
+    let x = &cfg.exclusions;
+    if !x.log_active() {
+        return None;
+    }
+    let wire = |n: &str| {
+        let bare = n.trim().trim_start_matches("*.");
+        telltale_proto::NameBuf::from_presentation(bare)
+            .ok()
+            .map(|b| b.as_wire().to_vec())
+    };
+    let exact = x
+        .log
+        .domains
+        .iter()
+        .filter(|d| !d.trim().starts_with("*."))
+        .filter_map(|d| wire(d));
+    let under = x
+        .log
+        .domains
+        .iter()
+        .filter(|d| d.trim().starts_with("*."))
+        .filter_map(|d| wire(d));
+    let mut nets: Vec<(std::net::IpAddr, u8)> = Vec::new();
+    let mut refs: Vec<u32> = Vec::new();
+    for c in &x.log.clients {
+        if let Ok(cidr) = telltale_config::Cidr::parse(c) {
+            nets.push((cidr.addr, cidr.prefix));
+        } else {
+            let want = c.trim();
+            refs.extend(
+                cfg.client
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, k)| k.name.trim().eq_ignore_ascii_case(want))
+                    .filter_map(|(i, _)| u32::try_from(i).ok().map(|i| i + 1)),
+            );
+        }
+    }
+    if x.log.own_lookups {
+        nets.push((std::net::Ipv4Addr::new(127, 0, 0, 0).into(), 8));
+        nets.push((std::net::Ipv6Addr::LOCALHOST.into(), 128));
+        nets.extend(
+            own.iter()
+                .map(|ip| (*ip, if ip.is_ipv4() { 32 } else { 128 })),
+        );
+    }
+    Some(telltale_telemetry::exclude::LogExclusions::new(
+        exact, under, &nets, refs,
+    ))
+}
+
+/// This node's own addresses, as far as it can know them without asking the network: the
+/// addresses its listeners are bound to (not wildcards), `TELLTALE_NODE_IPS` (the Helm chart sets
+/// it), and the local address the kernel would use to reach the outside (a connected UDP socket
+/// sends nothing).
+fn own_addresses(cfg: &Config) -> Vec<std::net::IpAddr> {
+    let mut out: Vec<std::net::IpAddr> = cfg
+        .listen
+        .iter()
+        .map(|l| l.addr.ip())
+        .filter(|ip| !ip.is_unspecified())
+        .collect();
+    if let Ok(v) = std::env::var("TELLTALE_NODE_IPS") {
+        out.extend(
+            v.split([',', ' '])
+                .filter_map(|s| s.trim().parse::<std::net::IpAddr>().ok()),
+        );
+    }
+    for (bind, target) in [("0.0.0.0:0", "192.0.2.1:9"), ("[::]:0", "[2001:db8::1]:9")] {
+        if let Ok(sock) = std::net::UdpSocket::bind(bind)
+            && sock.connect(target).is_ok()
+            && let Ok(a) = sock.local_addr()
+            && !a.ip().is_unspecified()
+        {
+            out.push(a.ip());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// REQ: OBS-901 (T26.2, ADR-958) — the live map's sampler, from `[map]` (`None`: off, and the
 /// aggregator thread keeps no window). The slow threshold follows `[slo] latency_ms` unless
 /// `[map] warn_latency_ms` is set.
@@ -770,6 +898,8 @@ pub(crate) fn map_sampler(cfg: &Config) -> Option<telltale_telemetry::map::Setti
 
 fn set_client_metrics(cfg: &Config, pipeline: &Pipeline) {
     pipeline.telemetry.set_exclusions(exclusions(cfg));
+    // REQ: OBS-903 — what stays out of the query log only.
+    pipeline.telemetry.set_log_exclusions(log_exclusions(cfg));
     // REQ: OBS-901 — the map's sampler follows `[map]`, at start and on every reload.
     pipeline.telemetry.set_map(map_sampler(cfg));
     let m = &cfg.telemetry.metrics;
@@ -1087,7 +1217,13 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
-        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
+        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| {
+            // The origin labels (file / API) are only as good as this; say so loudly.
+            warn!(
+                "config: files alone failed to load; entry origins will read as file until they do"
+            );
+            cfg.clone()
+        })),
         config_files: files.clone(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(
             cfg.updates.check,
@@ -1279,6 +1415,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // An ephemeral resolver pod waits for the cluster's configuration too, so it never serves
     // unfiltered (CLU-009).
     readiness.set_bound();
+    // REQ: OPS-901 (ADR-1014) — from here `/readyz` also asks the UDP listener.
+    readiness.enable_dns_check();
     // REQ: NFR-001 (T10.2) — once start-up has settled, the code that ran only for it (config
     // loading, the API router and OpenAPI document) stops counting as resident.
     tokio::spawn(async {
@@ -1676,11 +1814,21 @@ fn reconcile_discovery(sources: &http::Sources, pipeline: &Pipeline, cfg: &Confi
         Arc::clone(&pipeline.router_leases),
         Arc::clone(&pipeline.mdns_names),
     );
+    // REQ: DSC-009 - the sessions the router poll shares with the inventory thread.
+    let shared = sources.routers.share();
     // REQ: DSC-001 — the generation is taken here, in reload order; the blocking task applies it.
     let generation = rt.next_generation();
     // A stopping inventory saves and joins its thread: that happens off the runtime's workers.
     drop(tokio::task::spawn_blocking(move || {
-        rt.reconcile(generation, &cfg, &data_dir, &own, Some(routers), Some(mdns));
+        rt.reconcile(
+            generation,
+            &cfg,
+            &data_dir,
+            &own,
+            Some(routers),
+            Some(mdns),
+            Some(shared),
+        );
     }));
 }
 
@@ -1768,6 +1916,60 @@ mod tests {
     use super::*;
     use crate::pipeline::{Handler, Policy};
 
+    // REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — a device behind a router has no neighbor entry of
+    // its own, so its MAC comes from the router's lease; the kernel's entry wins where both exist;
+    // an offline lease and an empty or zero MAC are left out; a device's IPv6 address carries it too.
+    #[test]
+    fn flt_006_routed_devices_get_their_mac_from_router_leases() {
+        use crate::devices::{Lease, Leases};
+        use std::net::{IpAddr, Ipv4Addr};
+        let kernel = [telltale_net::Neighbor {
+            ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            mac: [2, 0, 0, 0, 0, 0x20],
+            ifindex: 2,
+            state: 0x02,
+        }];
+        let lease = |last: u8, mac: &str, offline: bool, third: u8| {
+            let ip = Ipv4Addr::new(192, 168, third, last);
+            (
+                ip,
+                Lease {
+                    mac: mac.into(),
+                    ip,
+                    hostname: None,
+                    expires: 0,
+                    router: Some("udm".into()),
+                    offline,
+                    ipv6: vec![format!("2001:db8:{third}::{last}").parse().unwrap()],
+                },
+            )
+        };
+        let leases: Leases = [
+            // On the IoT VLAN, behind the router: not in the kernel table.
+            lease(41, "aa:bb:cc:dd:ee:41", false, 200),
+            // Also in the kernel table, with another MAC: the kernel's wins.
+            lease(20, "aa:bb:cc:dd:ee:99", false, 10),
+            lease(42, "aa:bb:cc:dd:ee:42", true, 200),
+            lease(43, "", false, 200),
+            lease(44, "00:00:00:00:00:00", false, 200),
+        ]
+        .into_iter()
+        .collect();
+        let n = telltale_policy::Neighbors::default();
+        n.replace(merged_macs(&kernel, &leases));
+        let mac41 = Some([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x41]);
+        assert_eq!(n.get("203.0.113.41".parse().unwrap()), mac41);
+        assert_eq!(n.get("2001:db8:200::41".parse().unwrap()), mac41);
+        assert_eq!(
+            n.get("192.0.2.20".parse().unwrap()),
+            Some([2, 0, 0, 0, 0, 0x20]),
+            "the kernel's entry wins"
+        );
+        for gone in ["203.0.113.42", "203.0.113.43", "203.0.113.44"] {
+            assert_eq!(n.get(gone.parse().unwrap()), None, "{gone}");
+        }
+    }
+
     // REQ: OBS-037 — `cluster.local` is internal only with Kubernetes on; `[telemetry]
     // internal_names` adds suffixes; private reverse lookups always are; validation refuses a
     // name that isn't one.
@@ -1796,6 +1998,116 @@ mod tests {
                 .any(|e| e.to_string().contains("telemetry.internal_names[0]")),
             "{errs:?}"
         );
+    }
+
+    // REQ: OBS-903 (T24.35, ADR-1014) — `[exclusions.log]` becomes the aggregator's filter:
+    // addresses, networks and device names (the configured client's reference, case-blind);
+    // exact and wildcard domains; `own_lookups` adds loopback and the node's addresses; off, or
+    // nothing set, is no filter at all; a bad entry is refused by validation.
+    #[test]
+    fn obs_903_log_exclusions_from_config() {
+        use telltale_telemetry::event::{Name, Record};
+        let parse = |t: &str| toml::from_str::<Config>(t).unwrap();
+        let q = |ip: &str, client_ref: u32, name: &str| {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            let mapped = match ip {
+                std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+                std::net::IpAddr::V6(v6) => v6.octets(),
+            };
+            let ev = telltale_telemetry::QueryEvent {
+                ts_us: 0,
+                client_ip: mapped,
+                client_ref,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: telltale_telemetry::Status::Forwarded,
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0,
+                rule: None,
+                upstream: 0,
+                attempts: 0,
+                t_total_us: 0,
+                t_upstream_us: 0,
+                resp_size: 0,
+                answers: 0,
+            };
+            let wire = NameBuf::from_presentation(name).unwrap();
+            Record::Query(ev, Name::from_wire(wire.as_wire()))
+        };
+        assert!(log_exclusions_with(&Config::default(), &[]).is_none());
+        let cfg = parse(
+            "[[client]]
+name = \"Tablet\"
+match = [\"192.168.1.40\"]
+             [[client]]
+name = \"Phone\"
+match = [\"192.168.1.41\"]
+             [exclusions.log]
+clients = [\"phone\", \"10.9.0.0/16\", \"192.168.1.99\", \"no-such-device\"]
+             domains = [\"localhost\", \"*.lan\"]
+own_lookups = true
+",
+        );
+        assert!(telltale_config::validate_config(&cfg).is_ok());
+        let own: Vec<std::net::IpAddr> = vec!["192.168.1.2".parse().unwrap()];
+        let x = log_exclusions_with(&cfg, &own).unwrap();
+        assert!(
+            x.excludes(&q("192.168.1.41", 2, "shop.example")),
+            "device name"
+        );
+        assert!(
+            !x.excludes(&q("192.168.1.40", 1, "shop.example")),
+            "another client"
+        );
+        assert!(x.excludes(&q("10.9.4.4", 0, "shop.example")), "network");
+        assert!(x.excludes(&q("192.168.1.99", 0, "shop.example")), "address");
+        assert!(
+            x.excludes(&q("192.168.1.50", 0, "localhost")),
+            "exact domain"
+        );
+        assert!(!x.excludes(&q("192.168.1.50", 0, "a.localhost")));
+        assert!(
+            x.excludes(&q("192.168.1.50", 0, "nas.lan")),
+            "wildcard domain"
+        );
+        assert!(!x.excludes(&q("192.168.1.50", 0, "lan")));
+        assert!(
+            x.excludes(&q("127.0.0.1", 0, "shop.example")),
+            "own: loopback"
+        );
+        assert!(x.excludes(&q("::1", 0, "shop.example")), "own: loopback v6");
+        assert!(
+            x.excludes(&q("192.168.1.2", 0, "shop.example")),
+            "own: node address"
+        );
+        assert!(!x.excludes(&q("192.168.1.3", 0, "shop.example")));
+        // Own lookups off: loopback is logged like anyone else's.
+        let no_own = parse(
+            "[exclusions.log]
+domains = [\"localhost\"]
+",
+        );
+        let x = log_exclusions_with(&no_own, &own).unwrap();
+        assert!(!x.excludes(&q("127.0.0.1", 0, "shop.example")));
+        // The switch turns the lot off without losing it.
+        let off = parse(
+            "[exclusions]
+enabled = false
+[exclusions.log]
+own_lookups = true
+",
+        );
+        assert!(log_exclusions_with(&off, &own).is_none());
+        for bad in ["domains = [\"not a name\"]", "clients = [\"10.0.0.0/99\"]"] {
+            let cfg = parse(&format!(
+                "[exclusions.log]
+{bad}
+"
+            ));
+            assert!(telltale_config::validate_config(&cfg).is_err(), "{bad}");
+        }
     }
 
     /// The OPT record's UDP payload size in the answer to a `localhost A` query that carries EDNS.

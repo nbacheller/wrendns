@@ -148,6 +148,8 @@
     maintenance_ended: 'Back in service',
     handover: 'Maintenance handover',
     handover_failed: 'Handover failed',
+    lease_lost: 'Lease lapsed',
+    lease_renewed: 'Lease renewed',
     lease_released: 'Lease released',
     stepped_down: 'Stepped down',
     rollout_started: 'Rollout',
@@ -157,11 +159,11 @@
     unpinned: 'Unpinned',
   };
   const kindClass = (k: string) =>
-    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'rollout_failed'
+    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'lease_lost' || k === 'rollout_failed'
       ? 'bad'
       : k === 'restarted' || k === 'maintenance' || k === 'handover' || k === 'rollout_started' || k === 'pinned'
         ? 'warn'
-        : k === 'published' || k === 'applied' || k === 'rollout_promoted'
+        : k === 'published' || k === 'applied' || k === 'lease_renewed' || k === 'rollout_promoted'
           ? 'ok'
           : '';
   // REQ: CLU-013 — the nodes running the version baking.
@@ -213,7 +215,7 @@
   // REQ: API-005 (ADR-121) — the page in tabs, the summary above them. A tab with something
   // wrong says so: failing checks and conflicts, a pin or a version baking, problem events in
   // the last hour.
-  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'rollout_failed']);
+  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'lease_lost', 'rollout_failed']);
   const recentProblems = $derived.by(() => {
     const since = Date.now() - 3600_000;
     return (view?.events ?? []).filter((e) => problemKinds.has(e.kind) && Date.parse(e.at) >= since).length;
@@ -454,6 +456,7 @@ telltale cluster join tt_join_…</pre>
                   <td>
                     <strong>{n.site}</strong>
                     <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.witness ? 'witness' : n.role}</span>
+                    {#if n.witness}<span class="muted small" data-testid="cluster-node-witness">witness, votes only</span>{/if}
                     {#if n.ephemeral}<span class="muted small">pod</span>{/if}
                     {#if n.thisNode}<span class="muted small">this node</span>{/if}
                     <div class="mono muted small" title={n.nodeId}>
@@ -499,17 +502,34 @@ telltale cluster join tt_join_…</pre>
                     <div class="muted small">
                       {#if n.thisNode}—{:else}<span title={n.link === 'relayed' ? 'No stream to this node (manual failover keeps replicas linked to the primary only): another node reports it up.' : undefined}>{n.link}</span>{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
                     </div>
+                    <!-- REQ: CLU-009 (T24.33) — a witness's vote: the last reply to this node's vote request or lease renewal, and the epoch it voted in. -->
+                    {#if n.witness && n.vote}
+                      <div class="small" data-testid="cluster-node-vote">
+                        {#if n.vote.lastReplySecondsAgo != null}
+                          last vote {duration(n.vote.lastReplySecondsAgo)} ago{#if n.vote.lastGrantSecondsAgo != null && n.vote.lastGrantSecondsAgo !== n.vote.lastReplySecondsAgo}, last grant {duration(n.vote.lastGrantSecondsAgo)} ago{/if}{#if n.vote.votedEpoch != null}, epoch {n.vote.votedEpoch}{/if}
+                        {:else}
+                          <span class="muted">no vote asked of it by this node yet</span>
+                        {/if}
+                        <HelpButton id="cluster-witness" />
+                      </div>
+                    {/if}
                   </td>
                   <td>
+                    {#if n.witness}
+                      <span class="muted" data-testid="cluster-node-config-na">not applicable</span>
+                    {:else}
                     version {num(n.configSeq)}
                     {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
                     {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
                     <div class="small {n.configLag ? 'warn-text' : 'muted'}">
                       {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
                     </div>
+                    {/if}
                   </td>
                   <td class="small" data-testid="cluster-node-secrets">
-                    {#if n.secrets}
+                    {#if n.witness}
+                      <span class="muted" data-testid="cluster-node-secrets-na">not applicable</span>
+                    {:else if n.secrets}
                       {@const sec = n.secrets}
                       <span class="badge {n.role.includes('primary') || sec.inSync ? 'ok' : sec.applied ? 'warn' : ''}" data-testid="cluster-node-secrets-state">
                         {n.role.includes('primary') ? 'primary' : sec.inSync ? 'in sync' : sec.applied ? 'behind' : 'not reported'}
@@ -522,12 +542,16 @@ telltale cluster join tt_join_…</pre>
                     {/if}
                   </td>
                   <td>
+                    {#if n.witness}
+                      <span class="muted" data-testid="cluster-node-dns-na">not applicable</span>
+                    {:else}
                     <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
                     <div class="muted small">
                       {rate(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
                     </div>
                     {#if n.cacheEntries != null}
                       <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
+                    {/if}
                     {/if}
                   </td>
                   <td class="small">{n.version}</td>

@@ -5,6 +5,11 @@
 # from the router in the query log. REQ: T22.1–T22.3 (DNS-023, API-012, API-013) — UniFi reservations and
 # networks, a fake Home Assistant's device registry (a name you gave wins over the router's; a tracker
 # supplies an address), the networks API, and the device names answered in DNS with their PTRs.
+# REQ: T25.10 (DSC-009, ADR-912) - the inventory's extra read-only reads against the same fakes: UniFi's
+# client fields, `stat/device` (infrastructure, switch-port MAC tables, LLDP) and `POST stat/alluser`
+# (history), Home Assistant's entity-less devices, and a second console that refuses `stat/device` and
+# `stat/alluser` (403): the refusal is on the status, the other reads work, and nothing reaches the leases
+# or DNS. The inventory file is read after a graceful stop (it is saved then).
 # Needs python3, dig, curl.
 # Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
@@ -47,6 +52,14 @@ class UniFi(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("content-length", 0))
         creds = json.loads(self.rfile.read(n) or b"{}")
+        if self.path == "/proxy/network/api/s/default/stat/alluser":
+            # T25.10: a query for clients seen within a window (it changes nothing); the fake notes the body.
+            if "TOKEN=abc123" not in (self.headers.get("cookie") or ""):
+                return self.reply(401, {"meta": {"rc": "error"}})
+            open(sys.argv[1] + "/alluser.body", "w").write(json.dumps(creds))
+            return self.reply(200, {"meta": {"rc": "ok"}, "data": [
+                {"mac": "02:00:00:00:00:0a", "last_ip": "192.168.1.77", "name": "Old TV", "last_seen": int(time.time()) - 86400, "first_seen": 1700000000},
+                {"mac": "02:00:00:00:00:0b", "last_ip": "192.168.1.78", "hostname": "ancient", "last_seen": int(time.time()) - 400 * 86400}]})
         if self.path == "/api/auth/login" and creds.get("username") == "telltale" and creds.get("password") == "s3cret":
             self.reply(200, {}, [("set-cookie", "TOKEN=abc123; Path=/; HttpOnly"), ("x-csrf-token", "x")])
         else:
@@ -56,8 +69,23 @@ class UniFi(http.server.BaseHTTPRequestHandler):
             return self.reply(401, {"meta": {"rc": "error", "msg": "api.err.LoginRequired"}})
         if self.path == "/proxy/network/api/s/default/stat/sta":
             self.reply(200, {"meta": {"rc": "ok"}, "data": [
-                {"mac": "02:00:00:00:00:01", "ip": "127.0.0.1", "hostname": "laptop-77", "name": "Desk laptop"},
-                {"mac": "02:00:00:00:00:02", "ip": "192.168.1.31", "hostname": "roku"}]})
+                {"mac": "02:00:00:00:00:01", "ip": "127.0.0.1", "hostname": "laptop-77", "name": "Desk laptop",
+                 "is_wired": True, "sw_mac": "aa:bb:cc:00:00:01", "sw_port": 3, "network": "Default", "vlan": 1, "first_seen": 1690000000},
+                {"mac": "02:00:00:00:00:02", "ip": "192.168.1.31", "hostname": "roku",
+                 "is_wired": False, "ap_mac": "aa:bb:cc:00:00:02", "network": "IoT", "vlan": 20}]})
+        elif self.path == "/proxy/network/api/s/default/stat/device":
+            # T25.10: a switch (a port with two MACs, a trunk with nine, an uplink) and an access point.
+            trunk = [{"mac": "02:00:00:00:02:%02x" % i, "vlan": 1} for i in range(9)]
+            self.reply(200, {"meta": {"rc": "ok"}, "data": [
+                {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.2", "name": "USW-Pro", "type": "usw",
+                 "uplink": {"port_idx": 24},
+                 "lldp_table": [{"chassis_id": "aa:bb:cc:00:00:09", "chassis_name": "UCG", "port_id": "eth3", "local_port_idx": 24}],
+                 "port_table": [
+                     {"port_idx": 3, "mac_table": [{"mac": "02:00:00:00:00:01", "vlan": 1, "age": 20}, {"mac": "02:00:00:00:00:77", "vlan": 1, "static": True}]},
+                     {"port_idx": 4, "mac_table": [{"mac": "02:00:00:00:00:42", "vlan": 20, "age": 5}]},
+                     {"port_idx": 7, "mac_table": trunk},
+                     {"port_idx": 24, "is_uplink": True, "mac_table": [{"mac": "02:00:00:00:00:55"}]}]},
+                {"mac": "aa:bb:cc:00:00:02", "ip": "192.168.1.3", "name": "AP-Lounge", "type": "uap"}]})
         elif self.path == "/proxy/network/api/s/default/rest/user":
             # T22.2: an offline printer with a reservation, a reserved camera, and a known client without one.
             self.reply(200, {"meta": {"rc": "ok"}, "data": [
@@ -100,6 +128,11 @@ class HA(UniFi):
         body = json.loads(self.rfile.read(n) or b"{}")
         if self.path != "/api/template" or self.headers.get("authorization") != "Bearer ha-token":
             return self.reply(401, {"message": "unauthorized"})
+        if "area_devices" in body.get("template", ""):
+            # T25.10: the second, fixed template: devices that have a MAC and no entity.
+            open(sys.argv[1] + "/ha-entityless.template", "w").write(body["template"])
+            return self.reply(200, {"devices": [
+                {"name_by_user": "Hall hub", "name": "Hub", "macs": ["02:00:00:00:00:b1"], "area": "Hall"}]})
         if "device_attr(d, 'connections')" not in body.get("template", ""):
             return self.reply(400, {"message": "unexpected template"})
         self.reply(200, {
@@ -108,7 +141,30 @@ class HA(UniFi):
                 {"name_by_user": "", "name": "Shelly Plug S", "macs": ["02:00:00:00:00:09"], "area": ""},
                 {"name_by_user": "Somewhere else", "name": "x", "macs": ["02:00:00:00:00:99"]}],
             "trackers": [{"mac": "02:00:00:00:00:09", "ip": "192.168.20.9"}]})
+class Refusing(UniFi):
+    # T25.10: a console whose key can't read devices or history: it answers 403 to both, and the
+    # ordinary reads (clients, reservations, networks) still work.
+    def do_POST(self):
+        n = int(self.headers.get("content-length", 0))
+        creds = json.loads(self.rfile.read(n) or b"{}")
+        if self.path == "/api/auth/login" and creds.get("username") == "telltale" and creds.get("password") == "s3cret":
+            return self.reply(200, {}, [("set-cookie", "TOKEN=abc123; Path=/; HttpOnly"), ("x-csrf-token", "x")])
+        if self.path.endswith("/stat/alluser"):
+            return self.reply(403, {"meta": {"rc": "error", "msg": "api.err.NoPermission"}})
+        self.reply(401, {"error": "bad login"})
+    def do_GET(self):
+        if "TOKEN=abc123" not in (self.headers.get("cookie") or ""):
+            return self.reply(401, {"meta": {"rc": "error"}})
+        if self.path.endswith("/stat/device"):
+            return self.reply(403, {"meta": {"rc": "error", "msg": "api.err.NoPermission"}})
+        if self.path.endswith("/stat/sta") or "/rest/" in self.path:
+            return self.reply(200, {"meta": {"rc": "ok"}, "data": []})
+        if "/clients/history" in self.path:
+            return self.reply(200, [])
+        self.reply(404, {"meta": {"rc": "error"}})
 s1 = http.server.ThreadingHTTPServer(("127.0.0.1", 26981), UniFi)
+s4 = http.server.ThreadingHTTPServer(("127.0.0.1", 26984), Refusing)
+threading.Thread(target=s4.serve_forever, daemon=True).start()
 s2 = http.server.ThreadingHTTPServer(("127.0.0.1", 26982), OPN)
 s3 = http.server.ThreadingHTTPServer(("127.0.0.1", 26983), HA)
 threading.Thread(target=s1.serve_forever, daemon=True).start()
@@ -145,6 +201,12 @@ url = "http://127.0.0.1:26981"
 username = "telltale"
 password_file = "$E/unifi-pass"
 [[router]]
+name = "udm2"
+type = "unifi"
+url = "http://127.0.0.1:26984"
+username = "telltale"
+password_file = "$E/unifi-pass"
+[[router]]
 name = "opnsense"
 type = "opnsense"
 url = "http://127.0.0.1:26982"
@@ -155,6 +217,16 @@ name = "ha"
 type = "home_assistant"
 url = "http://127.0.0.1:26983"
 api_key_file = "$E/ha-token"
+[discovery]
+enabled = true
+unifi_all_users_within_hours = 720
+home_assistant_all_devices = true
+[discovery.unifi_reads]
+client_fields = true
+all_users = true
+devices = true
+[[discovery.subnet]]
+cidr = "192.168.1.0/24"
 [local]
 device_domain = "home.arpa"
 [clients]
@@ -257,4 +329,71 @@ rows = [r for r in json.load(sys.stdin)["items"] if r["client"] == "127.0.0.2"]
 assert rows and rows[0]["clientName"] == "nas-box", rows[:1]
 print("query log: the mDNS device is named nas-box")
 ' || fail "mDNS naming"
+
+# REQ: T25.10 (DSC-009, ADR-912) - the extra reads. First what the status says about each read: the
+# working console's three reads are ok, the refusing console's two are `refused`, and Home Assistant's
+# entity-less read is ok.
+for _ in $(seq 100); do
+  n=$(curl -sf -b "$E/jar" "$API/api/v1/discovery/status" | field 'len(d["reads"])' 2>/dev/null || echo 0)
+  [ "$n" -ge 6 ] && break
+  sleep 0.2
+done
+curl -sf -b "$E/jar" "$API/api/v1/discovery/status" | python3 -c '
+import json, sys
+reads = {(r["router"], r["read"]): r for r in json.load(sys.stdin)["reads"]}
+for k in [("udm", "devices"), ("udm", "all_users"), ("udm", "client_fields"), ("ha", "home_assistant_all_devices")]:
+    assert reads[k]["state"] == "ok", (k, reads.get(k))
+for k in [("udm2", "devices"), ("udm2", "all_users")]:
+    assert reads[k]["state"] == "refused" and "403" in reads[k]["error"], (k, reads.get(k))
+print("extra reads: udm ok x3, udm2 refused x2, Home Assistant ok")
+' || fail "the extra reads' status"
+# The query was a window of 720 hours, and the template was the fixed read-only one.
+python3 -c "
+import json
+b = json.load(open('$E/alluser.body'))
+assert b == {'type': 'all', 'conn': 'all', 'within': 720}, b
+t = open('$E/ha-entityless.template').read()
+assert 'device_entities' in t and 'service' not in t and 'set_state' not in t, t
+print('stat/alluser asked for 720 hours; the Home Assistant template is the read-only one')
+" || fail "the extra reads' requests"
+# Nothing the extra reads found reaches the leases or DNS (ADR-910, ADR-912).
+curl -sf -b "$E/jar" "$API/api/v1/dhcp/leases" | python3 -c '
+import json, sys
+items = json.load(sys.stdin)["items"]
+ips = {x["ip"] for x in items}
+macs = {x["mac"].lower() for x in items}
+assert "192.168.1.77" not in ips, "a history address is in the leases"
+assert "02:00:00:00:00:42" not in macs and "02:00:00:00:00:b1" not in macs, macs
+' || fail "the leases must not hold what only the inventory reads found"
+[ -z "$(ask old-tv.home.arpa)" ] || fail "a history name answers in DNS"
+[ -z "$(ask hall-hub.home.arpa)" ] || fail "an entity-less Home Assistant name answers in DNS"
+# The inventory is saved when the node stops: stop it, then read the file.
+kill -TERM "$P"
+for _ in $(seq 100); do kill -0 "$P" 2>/dev/null || break; sleep 0.1; done
+P=
+[ -f "$E/data/inventory.json" ] || fail "the inventory was not saved at shutdown"
+python3 -c "
+import json
+inv = json.load(open('$E/data/inventory.json'))
+def mac(b): return ':'.join('%02x' % x for x in b)
+by = {mac(e['key']['value']): e for e in inv['entries'] if e['key']['kind'] == 'mac'}
+laptop = by['02:00:00:00:00:01']
+assert laptop['port'] == 'USW-Pro port 3' and laptop['network'] == 'Default' and laptop['vlan'] == 1, laptop
+assert laptop['first_seen'] == 1690000000, laptop['first_seen']
+roku = by['02:00:00:00:00:02']
+assert roku['ap'] == 'AP-Lounge' and roku['network'] == 'IoT', roku
+plug = by['02:00:00:00:00:42']
+assert plug['port'] == 'USW-Pro port 4' and plug['vlan'] == 20 and plug['addrs'] == [], plug
+assert '02:00:00:00:00:55' not in by and '02:00:00:00:00:77' not in by, 'an uplink or a static row gave a place'
+assert not any(m.startswith('02:00:00:00:02:') for m in by), 'a trunk port gave places'
+sw = by['aa:bb:cc:00:00:01']
+assert sw['addrs'][0]['ip'] == '192.168.1.2' and sw['addrs'][0]['source'] == 'router' and sw['lldp'] == ['UCG eth3 on port 24'], sw
+old = by['02:00:00:00:00:0a']
+assert [(a['ip'], a['source']) for a in old['addrs']] == [('192.168.1.77', 'history')], old
+assert old['names'][0]['kind'] == 'history' and old['names'][0]['label'] == 'Old TV', old
+assert '02:00:00:00:00:0b' not in by, 'a client older than the window is in'
+hub = by['02:00:00:00:00:b1']
+assert hub['names'][0]['label'] == 'Hall hub' and hub['names'][0]['kind'] == 'ha_user' and hub['addrs'] == [], hub
+print('inventory: places, AP, network, first seen, infrastructure with LLDP, history, entity-less Home Assistant')
+" || fail "the saved inventory"
 echo "routers-e2e: ok"

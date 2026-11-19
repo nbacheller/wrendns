@@ -2873,6 +2873,49 @@
         }
       }
     },
+    "/api/v1/clients/{id}/policy": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "A device's effective policy (FLT-006, API-010).",
+        "description": "`id` is a configured device's name, an address, or a Kubernetes workload\n(`namespace/kind/name`). The answer names the group the device lands in and the key that\nmatched (the precedence is client ID, MAC, workload, address, network, router name, default),\nthen lists what applies as `sections`: the block response, the group's lists and blocked\nservices, safe search, rewrites, schedules with whether each is in effect now, the quick and\ngroup rules with their expiry, and the upstream group. It is resolved with the same\nidentification a query and `GET /explain` use, so the two agree. In a cluster a replica asks\nthe primary. Needs `config:read` for an agent.",
+        "operationId": "client_policy",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "A device's name, an address, or a workload.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The effective policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientPolicy"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Neither a configured device, an address, nor a known workload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{id}/rhythm": {
       "get": {
         "tags": [
@@ -4430,7 +4473,7 @@
           "config"
         ],
         "summary": "Keep names and devices out of the query log and analytics (OBS-022).",
-        "description": "The body has the same fields as `[exclusions]` in `telltale.toml`: `enabled` (turn them on or\noff without losing the lists), `names` (each with its subdomains, e.g.\n`connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are\nstill answered and still counted in `/metrics`, but left out of the query log, the live view,\nthe dashboard and top lists, anomalies, and every export. It replaces the whole section until\nit's deleted again; it applies to every node of a cluster from the next query on.",
+        "description": "The body has the same fields as `[exclusions]` in `telltale.toml`: `enabled` (turn them on or\noff without losing the lists), `names` (each with its subdomains, e.g.\n`connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are\nstill answered and still counted in `/metrics`, but left out of the query log, the live view,\nthe dashboard and top lists, anomalies, and every export. `log` (clients as addresses,\nnetworks or device names; `domains`, exact or `*.` for everything under; `own_lookups`) keeps\nqueries out of the query log, the live view and the event sinks only: the statistics still\ncount them (OBS-903). It replaces the whole section until it's deleted again; it applies to\nevery node of a cluster from the next query on.",
         "operationId": "put_exclusions",
         "parameters": [
           {
@@ -5966,6 +6009,134 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_ListInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lists/overlap": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "How much each filter list adds.",
+        "description": "Every enabled list with its entries, the names no other list of its kind has (`unique`:\nwhat turning it off would lose), its modifier rules and regexes (counted as unique: overlap\nis by name), what it adds as a share of its entries, the lists that cover the rest, and the\ngroups that name it. Counted while the lists are compiled, once per compile; a list not\ncompiled yet shows zeros. Names a block list and an allow list both have don't count as\nshared.",
+        "operationId": "overlap",
+        "responses": {
+          "200": {
+            "description": "Each enabled list's overlap.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ListOverlapRow"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lists/prune": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Turn off the lists that add little.",
+        "description": "Recomputes the plan for `thresholdPercent` and turns the lists in it off (`enabled = false`;\neach stays in the configuration with its source, so turning it on again is one edit). With\n`names` (the ones the person previewed), each must still be in the plan or nothing changes\n(409: preview again). Needs the operator role and a person: agent tokens are refused\n(`agent_not_allowed`); they read the plan. Audit-logged as `lists.prune`.",
+        "operationId": "prune",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListsPruneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The lists now off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListsPruneResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body, a threshold outside 0 to 50, or too many names.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs the operator role; agent tokens are refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A named list isn't in the plan any more: preview again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lists/prune-plan": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Which lists a prune would turn off.",
+        "description": "The block lists in enforce mode that add at most `thresholdPercent` (default 1) of their own\nentries, least-adding first, chosen so that turning all of them off together still loses at\nmost that share of each; `kept` says why every other enabled list stays (an allow list, a\nshadow list, a group names it, it adds more). `losesAtMost` is an upper bound on the names\nthat would stop being blocked. Changes nothing; the apply is `POST /api/v1/lists/prune`, for\na person.",
+        "operationId": "prune_plan",
+        "parameters": [
+          {
+            "name": "thresholdPercent",
+            "in": "query",
+            "description": "Turn off lists adding at most this share of their entries, 0 to 50 (default 1).",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What would be turned off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPrunePlan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A threshold outside 0 to 50.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -7808,7 +7979,7 @@
           {
             "name": "client",
             "in": "query",
-            "description": "Client IP address.",
+            "description": "Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,\n`hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads\n(`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says\nwhen a cap cut the set.",
             "required": false,
             "schema": {
               "type": "string"
@@ -7817,7 +7988,7 @@
           {
             "name": "clientNot",
             "in": "query",
-            "description": "Keep the rows from every client except `client`. Needs `client`. Default: false.",
+            "description": "Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -8037,7 +8208,7 @@
           {
             "name": "client",
             "in": "query",
-            "description": "Client IP address.",
+            "description": "Client IP address, or several, comma-separated (addresses, `hostname:<label>` and\nKubernetes workloads; REQ: OBS-003, ADR-1013).",
             "required": false,
             "schema": {
               "type": "string"
@@ -8046,7 +8217,7 @@
           {
             "name": "clientNot",
             "in": "query",
-            "description": "Only queries from every client except `client`. Needs `client`. Default: false.",
+            "description": "Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -11288,6 +11459,28 @@
         }
       }
     },
+    "/api/v1/upstream-presets": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).",
+        "description": "The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses\n(plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its\nprivacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The\npicker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`\nand `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a\nNextDNS profile) are listed with `simple` false.",
+        "operationId": "upstream_presets",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamPresets"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/upstreams": {
       "get": {
         "tags": [
@@ -13848,6 +14041,118 @@
         },
         "additionalProperties": false
       },
+      "ClientPolicy": {
+        "type": "object",
+        "description": "REQ: FLT-006, API-010 (T24.30) — a device's effective policy.",
+        "required": [
+          "client",
+          "identifiedBy",
+          "group",
+          "groupFrom",
+          "groups",
+          "precedence",
+          "sections",
+          "atUnixSeconds"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address the policy was resolved for."
+          },
+          "atUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was read (Unix seconds); schedules and rule expiry are as of then.",
+            "minimum": 0
+          },
+          "client": {
+            "type": "string",
+            "description": "What was asked for: a device's name, an address, or a workload."
+          },
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configured device it is (a `[[client]]`'s name, or the workload's)."
+          },
+          "group": {
+            "type": "string",
+            "description": "The group whose settings apply."
+          },
+          "groupFrom": {
+            "type": "string",
+            "description": "Where it came from: `device`, `network`, `router_name`, `kubernetes`, `default`."
+          },
+          "groupKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The network or router name that gave the group, when it isn't the device's own."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every group it is in, the first one's settings applying (the same as Explain's)."
+          },
+          "identifiedBy": {
+            "type": "string",
+            "description": "How it was recognized: the same word Explain's `client.identifiedBy` says."
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "matchedKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key that matched, written as a `[[client]] match` is. Absent for `default`."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node whose configuration answered (a replica asks the primary)."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Caveats: the address was a stand-in, another device wins, no filter snapshot yet."
+          },
+          "precedence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRung"
+            },
+            "description": "The ladder a device is matched down, with the rung that decided."
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicySection"
+            }
+          }
+        }
+      },
       "ClientRhythm": {
         "type": "object",
         "description": "REQ: OBS-031 — a device's rhythm per domain.",
@@ -14406,9 +14711,20 @@
           "version": {
             "type": "string"
           },
+          "vote": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterVote",
+                "description": "REQ: CLU-009 (T24.33) — for a witness: its vote state (absent for other nodes)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "witness": {
             "type": "boolean",
-            "description": "Votes in automatic failover only (ADR-056)."
+            "description": "Votes in automatic failover only (ADR-056). A witness has no configuration version, no\nsecrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it\n(REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it."
           }
         }
       },
@@ -14895,6 +15211,39 @@
               "null"
             ],
             "description": "The node answering this request."
+          }
+        }
+      },
+      "ClusterVote": {
+        "type": "object",
+        "description": "REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A\nwitness only votes: it has no configuration, no secrets and no DNS.",
+        "properties": {
+          "lastGrantSecondsAgo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds since it last granted one.",
+            "minimum": 0
+          },
+          "lastReplySecondsAgo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds since it last answered a vote request or lease renewal from this node (absent: this\nnode hasn't asked it, as in manual failover or on a node that isn't the primary).",
+            "minimum": 0
+          },
+          "votedEpoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The epoch it reported in its last reply (the epoch it voted in).",
+            "minimum": 0
           }
         }
       },
@@ -15580,13 +15929,68 @@
           }
         }
       },
+      "DiscoveryRead": {
+        "type": "object",
+        "description": "REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw\nit. Read-only: nothing here changes a console.",
+        "required": [
+          "router",
+          "read",
+          "state",
+          "rows",
+          "truncated"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the result was recorded (Unix seconds).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a read did not work, in words (no credential in it)."
+          },
+          "read": {
+            "type": "string",
+            "description": "`client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.",
+            "example": "all_users"
+          },
+          "router": {
+            "type": "string",
+            "description": "The `[[router]]` read.",
+            "example": "udm"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows used.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`ok`, `refused` (the console answered 401 or 403) or `failed`.",
+            "example": "ok"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More rows were offered than the 8,192 cap; the rest were left out."
+          }
+        }
+      },
       "DiscoveryStatus": {
         "type": "object",
         "description": "REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,\nand each discovery worker process. Health reasons for the workers never mark DNS unhealthy.",
         "required": [
           "enabled",
           "designated",
-          "workers"
+          "workers",
+          "reads"
         ],
         "properties": {
           "designated": {
@@ -15603,6 +16007,13 @@
               "null"
             ],
             "description": "The designated node's name, when `[discovery] node` is set."
+          },
+          "reads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryRead"
+            },
+            "description": "REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant\nread: which ones work, and which the console refused. Empty unless one is on."
           },
           "workers": {
             "type": "array",
@@ -16331,6 +16742,8 @@
         "required": [
           "ip",
           "identifiedBy",
+          "group",
+          "groupFrom",
           "groups"
         ],
         "properties": {
@@ -16340,6 +16753,21 @@
               "null"
             ],
             "description": "The configured device it was recognized as."
+          },
+          "group": {
+            "type": "string",
+            "description": "The group whose settings apply (the first of `groups`)."
+          },
+          "groupFrom": {
+            "type": "string",
+            "description": "Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`."
+          },
+          "groupKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The network or router name that gave the group, when it isn't the device's own."
           },
           "groups": {
             "type": "array",
@@ -16360,6 +16788,13 @@
               "string",
               "null"
             ]
+          },
+          "matchedKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, written as a\n`[[client]] match` is (`id:kids`, a MAC, an address, a network, `hostname:tv`), or the\nworkload's name. Absent for the `default` group."
           },
           "workload": {
             "oneOf": [
@@ -19346,6 +19781,12 @@
                   "description": "REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot\nleaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.",
                   "minimum": 0
                 },
+                "rules": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts\nnames only, so these are never shown covered by another list.",
+                  "minimum": 0
+                },
                 "source": {
                   "type": "string",
                   "description": "URL, file path, or `inline`."
@@ -19367,6 +19808,90 @@
                   "type": "integer",
                   "format": "int64",
                   "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_ListOverlapRow": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others.",
+              "required": [
+                "name",
+                "kind",
+                "mode",
+                "entries",
+                "unique",
+                "rules",
+                "addsPercent",
+                "coveredBy",
+                "groups"
+              ],
+              "properties": {
+                "addsPercent": {
+                  "type": "number",
+                  "format": "double",
+                  "description": "`(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has\nno entries compiled yet."
+                },
+                "coveredBy": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ListCover"
+                  },
+                  "description": "The lists it shares names with, most shared first (at most 5)."
+                },
+                "entries": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Entries in the active snapshot (names, regexes and modifier rules).",
+                  "minimum": 0
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Groups that name this list in their own `lists` (a list they use by name is never\nproposed for turning off)."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`block` or `allow`."
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "`enforce` or `shadow`."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "rules": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Modifier rules and regexes: counted as unique, since overlap is by name.",
+                  "minimum": 0
+                },
+                "unique": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Names no other list of its kind has: what turning it off would lose.",
                   "minimum": 0
                 }
               }
@@ -19518,7 +20043,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+                  "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
                 },
                 "subnet": {
                   "type": "string",
@@ -20563,6 +21088,27 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "routeProblem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6\nroute` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing."
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the\nupstream sets a `source`."
+                },
+                "sourceProblem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
                 }
               }
             }
@@ -20894,6 +21440,32 @@
           }
         }
       },
+      "ListCover": {
+        "type": "object",
+        "description": "REQ: FLT-004 (T24.28, ADR-992) - names a list shares with another list that does the same\nthing, as a share of this list's own entries.",
+        "required": [
+          "list",
+          "names",
+          "percent"
+        ],
+        "properties": {
+          "list": {
+            "type": "string",
+            "description": "The other list."
+          },
+          "names": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Names both have.",
+            "minimum": 0
+          },
+          "percent": {
+            "type": "number",
+            "format": "double",
+            "description": "`names` as a share of this list's entries, 0-100."
+          }
+        }
+      },
       "ListInfo": {
         "type": "object",
         "description": "A filter list and its download state.",
@@ -20999,6 +21571,12 @@
             "description": "REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot\nleaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.",
             "minimum": 0
           },
+          "rules": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts\nnames only, so these are never shown covered by another list.",
+            "minimum": 0
+          },
           "source": {
             "type": "string",
             "description": "URL, file path, or `inline`."
@@ -21021,6 +21599,200 @@
             "format": "int64",
             "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
             "minimum": 0
+          }
+        }
+      },
+      "ListOverlapRow": {
+        "type": "object",
+        "description": "REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others.",
+        "required": [
+          "name",
+          "kind",
+          "mode",
+          "entries",
+          "unique",
+          "rules",
+          "addsPercent",
+          "coveredBy",
+          "groups"
+        ],
+        "properties": {
+          "addsPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "`(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has\nno entries compiled yet."
+          },
+          "coveredBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListCover"
+            },
+            "description": "The lists it shares names with, most shared first (at most 5)."
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries in the active snapshot (names, regexes and modifier rules).",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups that name this list in their own `lists` (a list they use by name is never\nproposed for turning off)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`block` or `allow`."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`enforce` or `shadow`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Modifier rules and regexes: counted as unique, since overlap is by name.",
+            "minimum": 0
+          },
+          "unique": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Names no other list of its kind has: what turning it off would lose.",
+            "minimum": 0
+          }
+        }
+      },
+      "ListPruneCandidate": {
+        "type": "object",
+        "description": "A list a prune would turn off.",
+        "required": [
+          "name",
+          "entries",
+          "unique",
+          "addsPercent",
+          "losesAtMost",
+          "coveredBy"
+        ],
+        "properties": {
+          "addsPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "What it adds as a share of its entries (the same number as in the overlap)."
+          },
+          "coveredBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListCover"
+            },
+            "description": "Lists that still have most of its names."
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "losesAtMost": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The most names turning it off, together with the others in this plan, could stop\nblocking: its own unique names and rules, and names it shares with other lists in the\nplan (an upper bound: a name another enabled list still has isn't lost).",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "unique": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ListPruneKept": {
+        "type": "object",
+        "description": "An enabled list a prune keeps, and why.",
+        "required": [
+          "name",
+          "reason"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ListPrunePlan": {
+        "type": "object",
+        "description": "REQ: FLT-004 (T24.28, ADR-992) - what a prune would turn off at a threshold.",
+        "required": [
+          "thresholdPercent",
+          "candidates",
+          "kept",
+          "losesAtMost",
+          "ofNames",
+          "note",
+          "compilePending",
+          "snapshotVersion",
+          "configVersion"
+        ],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListPruneCandidate"
+            },
+            "description": "Lists that would be turned off, least-adding first."
+          },
+          "compilePending": {
+            "type": "boolean",
+            "description": "True when the lists changed after the last compile finished (a list turned off or\nedited): what each adds isn't known yet, so nothing is proposed. Preview again."
+          },
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Configuration version the plan was read at (send it back to apply).",
+            "minimum": 0
+          },
+          "kept": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListPruneKept"
+            },
+            "description": "Every other enabled list, with the reason it stays."
+          },
+          "losesAtMost": {
+            "type": "integer",
+            "format": "int64",
+            "description": "An upper bound on the names the whole plan stops blocking (a share of the snapshot is\n`of_names`).",
+            "minimum": 0
+          },
+          "note": {
+            "type": "string",
+            "description": "In a sentence."
+          },
+          "ofNames": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Names in the active snapshot.",
+            "minimum": 0
+          },
+          "snapshotVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version of the compiled snapshot the numbers come from (send it back to apply).",
+            "minimum": 0
+          },
+          "thresholdPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "The threshold used: lists adding at most this share of their own entries."
           }
         }
       },
@@ -21258,6 +22030,72 @@
                 }
               }
             }
+          }
+        }
+      },
+      "ListsPruneRequest": {
+        "type": "object",
+        "description": "REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.",
+        "required": [
+          "names",
+          "snapshotVersion",
+          "configVersion"
+        ],
+        "properties": {
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The preview's `configVersion`: any configuration change since is a 409.",
+            "minimum": 0
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The lists the person saw in the preview. Each must still be in the plan, or nothing is\nchanged (409)."
+          },
+          "snapshotVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The preview's `snapshotVersion`: another compile since is a 409.",
+            "minimum": 0
+          },
+          "thresholdPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Lists adding at most this share of their entries, 0 to 50 (default 1)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListsPruneResult": {
+        "type": "object",
+        "description": "REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off.",
+        "required": [
+          "disabled",
+          "configVersion",
+          "note"
+        ],
+        "properties": {
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration version after the last change.",
+            "minimum": 0
+          },
+          "disabled": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The lists now off. They stay in the configuration: turn one on again in Manage lists."
+          },
+          "note": {
+            "type": "string"
           }
         }
       },
@@ -21718,7 +22556,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,\n`breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,\n`not_configured`, `few_samples`, `children`."
+            "description": "Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,\n`breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,\n`not_configured`, `few_samples`, `children`, `member_down`, `no_route`."
           },
           "summary": {
             "type": "string"
@@ -22148,7 +22986,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+            "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
           },
           "subnet": {
             "type": "string",
@@ -22239,6 +23077,29 @@
           "token": {
             "type": "string",
             "description": "The token, shown only now: send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "NodeAddress": {
+        "type": "object",
+        "description": "One address this node holds, for the Upstreams form's `source` suggestions.",
+        "required": [
+          "interface",
+          "address",
+          "network"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "`198.51.100.252`"
+          },
+          "interface": {
+            "type": "string",
+            "description": "The interface (`eth0`, `eth0.100`)."
+          },
+          "network": {
+            "type": "string",
+            "description": "The network it is in, which a shared upstream can name instead: `198.51.100.0/24`."
           }
         }
       },
@@ -23244,6 +24105,145 @@
           "tool": {
             "type": "string",
             "description": "The MCP tool that made it, e.g. `plan_block_domain`."
+          }
+        }
+      },
+      "PolicyItem": {
+        "type": "object",
+        "description": "One line of a section: a list, a service, a schedule, a rule, a rewrite, an upstream group.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "More, in words (`Mon-Fri 21:00-07:00`)."
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What gives the device this line: `group kids`, `device`, `everyone`, `a schedule`."
+          },
+          "label": {
+            "type": "string",
+            "description": "What it is (`ads`, `tiktok`, `bedtime`, `example.com`)."
+          },
+          "link": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PolicyLink",
+                "description": "Where to change it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`on`, `off`, `in_effect`, `not_in_effect`, `not_applied`, `expired`, `shadow`, or absent when a line has no\nstate of its own."
+          },
+          "untilUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it stops applying (a rule's expiry), Unix seconds.",
+            "minimum": 0
+          }
+        }
+      },
+      "PolicyLink": {
+        "type": "object",
+        "description": "A page in the UI a line comes from.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "params": {
+            "type": "object",
+            "description": "Its query parameters.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "path": {
+            "type": "string",
+            "description": "A UI route (`/groups`, `/lists`, `/rules`, ...)."
+          }
+        }
+      },
+      "PolicyRung": {
+        "type": "object",
+        "description": "One rung of the identification ladder (ADR-973, ADR-976).",
+        "required": [
+          "source",
+          "label",
+          "matched"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "matched": {
+            "type": "boolean",
+            "description": "The rung that decided."
+          },
+          "source": {
+            "type": "string",
+            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, `router_name`, `default`\n(the values Explain's `identifiedBy` uses)."
+          }
+        }
+      },
+      "PolicySection": {
+        "type": "object",
+        "description": "A titled group of lines. Sections are the panel's unit; it renders whatever arrives, in order.",
+        "required": [
+          "id",
+          "title",
+          "summary",
+          "items"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`block`, `lists`, `services`, `safe_search`, `rewrites`, `schedules`, `rules`, `upstream`;\nnew sections get new ids."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyItem"
+            }
+          },
+          "link": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PolicyLink",
+                "description": "Where the whole section is edited."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "description": "One sentence: what this part of the policy does for this device."
+          },
+          "title": {
+            "type": "string"
           }
         }
       },
@@ -25729,9 +26729,17 @@
           "queryLog",
           "filterNames",
           "build",
-          "update"
+          "update",
+          "addresses"
         ],
         "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeAddress"
+            },
+            "description": "REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and\nlink-local left out), which an upstream's `source` can name. They differ per node."
+          },
           "build": {
             "$ref": "#/components/schemas/BuildInfo",
             "description": "Exactly which build this is (ADR-046)."
@@ -26580,6 +27588,141 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "routeProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6\nroute` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the\nupstream sets a `source`."
+          },
+          "sourceProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
+          }
+        }
+      },
+      "UpstreamPreset": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "variant",
+          "note",
+          "homepage",
+          "filtering",
+          "dnssec",
+          "simple",
+          "params",
+          "endpoints"
+        ],
+        "properties": {
+          "dnssec": {
+            "type": "boolean"
+          },
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamPresetEndpoint"
+            }
+          },
+          "filtering": {
+            "type": "string",
+            "description": "`none`, `malware`, `family` or `ads`."
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "One line: what it filters and what it does with your queries."
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Placeholders in its addresses (a NextDNS profile); empty for every simple preset."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The heading it is listed under (`Cloudflare`)."
+          },
+          "simple": {
+            "type": "boolean",
+            "description": "Offered in the simple view (false: it needs a parameter, or is for the Advanced view)."
+          },
+          "variant": {
+            "type": "string",
+            "description": "The choice under the heading (`Malware`)."
+          }
+        }
+      },
+      "UpstreamPresetEndpoint": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — one address a public resolver answers on.",
+        "required": [
+          "url",
+          "protocol",
+          "family"
+        ],
+        "properties": {
+          "family": {
+            "type": "string",
+            "description": "`v4` or `v6` for an address, `name` for a host name (which resolves to either)."
+          },
+          "protocol": {
+            "type": "string",
+            "description": "`udp`, `tcp`, `tls`, `https` or `quic`."
+          },
+          "tlsServerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name on the server certificate, for a `tls://` address given by IP."
+          },
+          "url": {
+            "type": "string",
+            "description": "`tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`."
+          }
+        }
+      },
+      "UpstreamPresets": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.",
+        "required": [
+          "ipv6Route",
+          "items"
+        ],
+        "properties": {
+          "ipv6Route": {
+            "type": "boolean",
+            "description": "Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only\ntimes out. Unknown (another OS) reads true."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamPreset"
+            }
           }
         }
       },

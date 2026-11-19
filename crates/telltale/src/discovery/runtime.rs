@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::ArcSwap;
-use telltale_api::model::{DiscoveryStatus, DiscoveryWorker};
+use telltale_api::model::{DiscoveryRead, DiscoveryStatus, DiscoveryWorker};
 use telltale_config::{Config, DiscoveryConfig};
 
 use super::gate::{self, Me};
@@ -75,6 +75,8 @@ pub(crate) struct Runtime {
     header: ArcSwap<(bool, bool, Option<String>)>,
     /// The workers' state, written by their supervisors and read by the API and metrics.
     board: Board,
+    /// REQ: DSC-009 - the last result of each extra read, written by the inventory thread.
+    reads: Arc<ArcSwap<Vec<DiscoveryRead>>>,
     /// Jobs queued for the SNMP worker (T25.4 queues its walks here).
     requests: Requests,
     running: Mutex<Option<Running>>,
@@ -95,6 +97,7 @@ impl Default for Runtime {
         Self {
             header: ArcSwap::from_pointee((false, false, None)),
             board: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            reads: Arc::new(ArcSwap::from_pointee(Vec::new())),
             requests: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             running: Mutex::new(None),
             generation: AtomicU64::new(0),
@@ -112,6 +115,7 @@ impl Runtime {
             designated,
             node,
             workers: (**self.board.load()).clone(),
+            reads: (**self.reads.load()).clone(),
         }
     }
 
@@ -142,6 +146,8 @@ impl Runtime {
     /// REQ: DSC-001 (ADR-928) — reconciles run one at a time, and a reconcile whose `generation` is
     /// older than the newest applied one is skipped: two quick reloads (on, then off) can't leave
     /// the inventory running when the configuration says off.
+    // REQ: DSC-009 - `shared` is the one new input: the router poll's hand-over to the reads.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconcile(
         &self,
         generation: u64,
@@ -150,6 +156,7 @@ impl Runtime {
         own: &Own,
         routers: Option<Arc<ArcSwap<Leases>>>,
         mdns: Option<Arc<ArcSwap<Leases>>>,
+        shared: Option<Arc<ArcSwap<crate::routers::Shared>>>,
     ) {
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
         if generation < *applied {
@@ -172,7 +179,7 @@ impl Runtime {
             return;
         }
         if let Some(r) = running.take() {
-            stop_running(r, &self.board);
+            stop_running(r, &self.board, &self.reads);
         }
         if !want {
             return;
@@ -193,6 +200,12 @@ impl Runtime {
             board: Some(Arc::clone(&self.board)),
             requests: Arc::clone(&self.requests),
             workers_stop: Arc::clone(&stop),
+            reads: shared.map(|share| super::reads::ReadsInput {
+                share,
+                cfg: super::reads::ReadsConfig::of(&cfg.discovery),
+                status: Arc::clone(&self.reads),
+                resolver: None,
+            }),
         };
         match thread::spawn(data_dir.to_path_buf(), providers) {
             Ok(handle) => {
@@ -217,7 +230,7 @@ impl Runtime {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(r) = r {
-            stop_running(r, &self.board);
+            stop_running(r, &self.board, &self.reads);
         }
     }
 
@@ -257,10 +270,11 @@ impl Runtime {
 }
 
 /// Stops a running inventory: its workers first, then its thread (which saves and exits).
-fn stop_running(r: Running, board: &Board) {
+fn stop_running(r: Running, board: &Board, reads: &ArcSwap<Vec<DiscoveryRead>>) {
     r.workers_stop.store(true, Ordering::Release);
     r.handle.stop();
     board.store(Arc::new(Vec::<DiscoveryWorker>::new()));
+    reads.store(Arc::new(Vec::new()));
 }
 
 #[cfg(test)]
@@ -281,7 +295,15 @@ mod tests {
             witness: false,
         };
         let generation = rt.next_generation();
-        rt.reconcile(generation, &Config::default(), dir.path(), &own, None, None);
+        rt.reconcile(
+            generation,
+            &Config::default(),
+            dir.path(),
+            &own,
+            None,
+            None,
+            None,
+        );
         let s = rt.status();
         assert!(!s.enabled);
         assert!(
@@ -312,8 +334,16 @@ mod tests {
             .config;
         let g_on = rt.next_generation();
         let g_off = rt.next_generation();
-        rt.reconcile(g_off, &Config::default(), dir.path(), &own, None, None);
-        rt.reconcile(g_on, &on, dir.path(), &own, None, None);
+        rt.reconcile(
+            g_off,
+            &Config::default(),
+            dir.path(),
+            &own,
+            None,
+            None,
+            None,
+        );
+        rt.reconcile(g_on, &on, dir.path(), &own, None, None, None);
         let s = rt.status();
         assert!(!s.enabled, "the older reconcile was skipped");
         assert!(s.workers.is_empty(), "nothing was started");

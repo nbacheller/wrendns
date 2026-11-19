@@ -1167,3 +1167,20 @@ url = \"https://l:{URL_PASSWORD}@127.0.0.1:9/x\"
     );
     lists.stop();
 }
+
+/// REQ: API-002, UPS-004 (T24.36) — an upstream made through the API (the picker, the form, a
+/// Pi-hole import) says `added`, and one the file also defines says `override`; never `file`.
+#[tokio::test]
+async fn ups_004_api_made_upstream_is_not_labelled_file() {
+    let h = harness("");
+    let body = json!({"url": "tls://1.1.1.1", "tls_server_name": "cloudflare-dns.com"});
+    let (s, _, r) = h
+        .call("PUT", "/api/v1/upstreams/picker-cloudflare", Some(&body))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (_, _, v) = h
+        .call("GET", "/api/v1/config/entries?kind=upstream", None)
+        .await;
+    assert_eq!(entry(&v, "picker-cloudflare")["source"], "added", "{v}");
+    assert_eq!(entry(&v, "nextdns")["source"], "file", "{v}");
+}

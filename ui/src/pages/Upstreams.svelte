@@ -11,24 +11,35 @@
   import { href } from '../lib/router.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
+  import UpstreamPicker from '../lib/components/UpstreamPicker.svelte';
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let latency = $state<S['LatencyRow'][]>([]);
   // REQ: OBS-019 — what the upstreams' answers said, per node.
   let checks = $state<S['UpstreamChecks'][]>([]);
+  // REQ: API-002 (T24.36) — where each upstream is defined: the config files, the API or UI (the
+  // picker, the form, a Pi-hole import), or both (the API's overrides the file's).
+  let origins = $state<Map<string, string>>(new Map());
+  const originLabel: Record<string, string> = {
+    file: 'config file',
+    added: 'added through the API or UI',
+    override: 'API or UI, overriding the config file',
+  };
   let error = $state<unknown>(null);
 
   $effect(() =>
     poll(async () => {
       try {
-        const [u, l, c] = await Promise.all([
+        const [u, l, c, o] = await Promise.all([
           api.upstreams(),
           api.latency('upstream'),
           api.upstreamChecks().catch(() => ({ items: [] as S['UpstreamChecks'][] })),
+          api.configEntries('upstream').catch(() => ({ items: [] as S['ConfigEntry'][] })),
         ]);
         upstreams = u.items;
         latency = l.items;
         checks = c.items;
+        origins = new Map(o.items.map((e) => [e.name, e.source]));
         error = null;
       } catch (e) {
         error = e;
@@ -78,14 +89,26 @@
     const args = (v: unknown) => (filled(v) ? JSON.stringify(v) : 'null');
     return String(saved.url ?? '').trim() !== String(d.url ?? '').trim() || args(saved.args) !== args(d.args);
   };
-  const upstreamFields: Field[] = [
+  // REQ: UPS-013 (T24.31, ADR-997) — this node's own addresses (and the networks they are in) for
+  // the `source` field. They differ per node, so a shared upstream names a network.
+  let nodeAddrs = $state<S['NodeAddress'][]>([]);
+  $effect(() => {
+    api.info().then((i) => (nodeAddrs = i.addresses ?? [])).catch(() => {});
+  });
+  const sourceSuggestions = $derived([
+    ...new Set([...nodeAddrs.map((a) => a.network), ...nodeAddrs.map((a) => a.address)]),
+  ]);
+  const upstreamFields = $derived<Field[]>([
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
       help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. An exec:// or unix:// address runs a program: only an admin sets one.',
       admin: (d, r) => keepsCredential(d, r) || isProgram(d.url) },
     { key: 'tls_server_name', label: 'TLS server name', type: 'text', placeholder: 'dns.quad9.net', advanced: true,
       help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.', admin: keepsCredential },
+    { key: 'source', label: 'Source address', type: 'text', placeholder: '198.51.100.0/24 or 198.51.100.252', advanced: true,
+      suggest: sourceSuggestions, helpTopic: 'upstream-source',
+      help: 'Send the queries to this upstream from one of the addresses this node holds (udp://, tcp://, tls://, https://). A network, such as 198.51.100.0/24, means the address each node holds in it: in a cluster use a network, since one node’s address is missing on the others. Saving an address this node doesn’t hold is refused.' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },
-  ];
+  ]);
   const names = $derived(upstreams.map((u) => u.name).filter((n) => !n.startsWith('forward:')));
   const groupFields = $derived<Field[]>([
     { key: 'members', label: 'Upstreams', type: 'multi', options: names },
@@ -107,8 +130,11 @@
   const opinions = (q: S['UpstreamQuality']) => results.reduce((n, [k]) => n + (q[k] as number), 0);
   const multiNode = $derived(checks.length > 1);
   const anyQuality = $derived(checks.some((c) => c.upstreams.length > 0));
+  let picker = $state<{ refresh: () => Promise<void> }>();
   const reload = async () => {
+    void picker?.refresh();
     upstreams = (await api.upstreams()).items;
+    origins = new Map((await api.configEntries('upstream')).items.map((e) => [e.name, e.source]));
   };
   // REQ: API-002 (T9.12) — ask the draft upstream before saving it.
   const tryUpstream = {
@@ -122,11 +148,37 @@
   };
   // REQ: OBS-030 — the upstream whose answer times the heatmap shows.
   let latencyOf = $state('');
+  // REQ: UPS-004 (T24.36) — the page opens on the simple view (tick the providers); Advanced is the
+  // technical list and forms. Both stay mounted, so switching never drops what is typed in either.
+  type View = 'simple' | 'advanced';
+  const stored = (): View => {
+    try {
+      return localStorage.getItem('upstreams-view') === 'advanced' ? 'advanced' : 'simple';
+    } catch {
+      return 'simple';
+    }
+  };
+  let view = $state<View>(stored());
+  const setView = (v: View) => {
+    view = v;
+    try {
+      localStorage.setItem('upstreams-view', v);
+    } catch {
+      // The choice just isn't remembered.
+    }
+  };
 </script>
 
 <div class="page">
   <h1>Upstreams<HelpButton id="upstreams" /></h1>
+  <div class="seg" role="tablist" aria-label="Upstreams view">
+    <button role="tab" aria-selected={view === 'simple'} class:on={view === 'simple'} onclick={() => setView('simple')} data-testid="view-simple">Simple</button>
+    <button role="tab" aria-selected={view === 'advanced'} class:on={view === 'advanced'} onclick={() => setView('advanced')} data-testid="view-advanced">Advanced</button>
+  </div>
   <ErrorNote {error} />
+  <div hidden={view !== 'simple'} data-testid="upstreams-simple">
+    <UpstreamPicker bind:this={picker} onchanged={reload} onadvanced={() => setView('advanced')} />
+  </div>
   <section class="card">
     <div class="table-wrap">
       <table>
@@ -140,9 +192,12 @@
           {#each upstreams as u (u.id)}
             {@const l = byKey.get(u.name)}
             <tr>
-              <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}</td>
+              <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}
+                {#if origins.get(u.name)}<div class="muted small" data-testid="upstream-origin">defined in: {originLabel[origins.get(u.name) ?? ''] ?? origins.get(u.name)}</div>{/if}
+                {#if u.source}<div class="muted small" data-testid="upstream-source">from {u.source}</div>{/if}
+                {#if u.sourceProblem}<div class="small bad-text" data-testid="upstream-source-problem">{u.sourceProblem}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
-              <td><BreakerBadge value={u.breaker} /></td>
+              <td><BreakerBadge value={u.breaker} />{#if u.routeProblem}<div class="small warn" data-testid="route-problem">{u.routeProblem}<HelpButton id="upstream-route" /></div>{/if}</td>
               <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>
               <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" />
                 {#if u.failures > 0}<div class="muted small">{breakdown(u)}</div>{/if}</td>
@@ -232,11 +287,13 @@
       </ul>
     {/each}
   </section>
+  <div hidden={view !== 'advanced'} data-testid="upstreams-advanced">
   <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
     summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream}
     adminOnly={(d, saved) => (programDraft(d, saved) ? 'Only an admin can set an address that runs a program (exec:// or unix://).' : null)} />
   <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
     summary={(d) => `${String(d.strategy ?? 'failover')}: ${((d.members as string[]) ?? []).join(', ')}`} onchanged={reload} />
+  </div>
   <p class="muted small">
     To send one domain to a different server (a work network, your router), add a forwarded domain on the
     <a href={href('/local-dns')}>Names on my network</a> page.<HelpButton id="routes" />
@@ -244,6 +301,24 @@
 </div>
 
 <style>
+  .seg {
+    display: inline-flex;
+    gap: 0;
+    margin: 4px 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .seg button {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 6px 16px;
+  }
+  .seg button.on {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
   .chip {
     display: inline-block;
     padding: 0 6px;

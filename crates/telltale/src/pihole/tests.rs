@@ -91,6 +91,18 @@ fn load(toml: &str) -> telltale_config::Config {
     }
 }
 
+// REQ: UPS-006 (fork #25) — the preview notes an IPv6 upstream, with the hint to drop it when the
+// hosts have no IPv6, and says nothing of the IPv4 ones.
+#[test]
+fn ups_006_pihole_import_notes_ipv6_upstreams() {
+    let src = Source::from_entries(v5_entries()).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let v6: Vec<&String> = im.notes.iter().filter(|n| n.contains("IPv6")).collect();
+    assert_eq!(v6.len(), 1, "{:?}", im.notes);
+    assert!(v6[0].contains("2620:fe::fe") && v6[0].contains("no IPv6 route"));
+    assert!(v6[0].contains("pihole-3"), "{}", v6[0]);
+}
+
 // REQ: API-007 — a v5 Teleporter archive becomes a configuration that loads, with groups,
 // clients, lists, records, upstreams, and conditional forwarding carried over.
 #[test]
@@ -580,4 +592,141 @@ fn api_007_pihole_toml_error_hides_the_line() {
         .unwrap_or_default();
     assert!(!err.contains("secret-hash-xyz"), "{err}");
     assert!(err.contains("pihole.toml"), "{err}");
+}
+
+/// REQ: OBS-903, API-007 (T24.35, ADR-1014) — Pi-hole's excluded domains and clients become
+/// `[exclusions.log]` (v6 regexes: `^name$`, `^.*\.suffix$`, `^192\.168\.1\.5$`; v5 plain
+/// values), shown in the preview's notes; patterns that aren't plain are named, not imported;
+/// left empty, nothing is written.
+#[test]
+fn obs_903_pihole_excluded_domains_and_clients() {
+    let v6 = |toml: &str| {
+        let mut e = archive::Entries::new();
+        e.insert("etc/pihole/pihole.toml".into(), toml.as_bytes().to_vec());
+        convert(&Source::from_entries(e).unwrap(), "pihole.toml").unwrap()
+    };
+    let im = v6(r#"[dns]
+  upstreams = [ "9.9.9.9" ] ### CHANGED, default = []
+
+[webserver.api]
+  excludeClients = [ "^192\\.168\\.1\\.5$", "^10\\.0\\.0\\.7$", "^kitchen-.*$", "nas" ] ### CHANGED, default = []
+  excludeDomains = [ "^localhost$", "^.*\\.lan$", "^(.*\\.)?corp\\.example$", "^(ads|trk)\\..*$", "internal" ] ### CHANGED, default = []
+"#);
+    let cfg = load(&im.toml);
+    let log = &cfg.exclusions.log;
+    assert_eq!(
+        log.domains
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["localhost", "*.lan", "corp.example", "*.corp.example"]
+    );
+    assert_eq!(
+        log.clients
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["192.168.1.5", "10.0.0.7"]
+    );
+    assert!(!log.own_lookups, "never switched on by an import");
+    let notes = im.notes.join("\n");
+    assert!(
+        notes.contains("4 domain(s) and 2 client(s) are imported"),
+        "{notes}"
+    );
+    for skipped in ["kitchen-.*", "nas", "internal", "(ads|trk)"] {
+        assert!(
+            notes.contains(skipped),
+            "{skipped} is named as not imported:\n{notes}"
+        );
+    }
+    assert!(
+        !notes.contains("webserver.api"),
+        "mapped keys aren't 'unmapped':\n{notes}"
+    );
+
+    let im = v6("[dns]\n  upstreams = [ \"9.9.9.9\" ] ### CHANGED, default = []\n");
+    assert!(
+        !im.toml.contains("exclusions"),
+        "nothing excluded: nothing written"
+    );
+
+    let mut e = archive::Entries::new();
+    e.insert(
+        "setupVars.conf".into(),
+        b"PIHOLE_DNS_1=9.9.9.9\nAPI_EXCLUDE_DOMAINS=localhost, printer.lan\nAPI_EXCLUDE_CLIENTS=192.168.1.9,tv\n"
+            .to_vec(),
+    );
+    let im = convert(&Source::from_entries(e).unwrap(), "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    assert_eq!(cfg.exclusions.log.domains.len(), 2);
+    assert_eq!(
+        cfg.exclusions
+            .log
+            .clients
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["192.168.1.9", "tv"]
+    );
+    let notes = im.notes.join("\n");
+    assert!(!notes.contains("API_EXCLUDE"), "{notes}");
+}
+
+// REQ: T24.27 — a GitHub page URL becomes the raw file URL.
+#[test]
+fn t24_27_github_page_url_becomes_raw() {
+    assert_eq!(
+        github_raw("https://github.com/mmotti/pihole-regex/blob/master/regex.list").as_deref(),
+        Some("https://raw.githubusercontent.com/mmotti/pihole-regex/master/regex.list")
+    );
+    assert_eq!(
+        github_raw("https://github.com/o/r/raw/main/dir/hosts.txt?raw=true#L3").as_deref(),
+        Some("https://raw.githubusercontent.com/o/r/main/dir/hosts.txt")
+    );
+    for not in [
+        "https://raw.githubusercontent.com/o/r/main/hosts",
+        "https://github.com/o/r",
+        "https://github.com/o/r/tree/main/dir",
+        "https://github.com/o/r/blob/main",
+        "https://example.com/github.com/o/r/blob/main/x",
+    ] {
+        assert_eq!(github_raw(not), None, "{not}");
+    }
+}
+
+// REQ: T24.27 — the import rewrites a GitHub page adlist and says so; a regex list is not
+// imported and the preview says why.
+#[test]
+fn t24_27_import_rewrites_github_and_skips_regex_lists() {
+    let mut e = v5_entries();
+    e.insert(
+        "adlist.json".to_owned(),
+        br#"[{"id":1,"address":"https://github.com/o/r/blob/master/hosts.txt","enabled":1,"comment":""},
+ {"id":2,"address":"https://github.com/mmotti/pihole-regex/blob/master/regex.list","enabled":1,"comment":""}]"#
+            .to_vec(),
+    );
+    e.insert(
+        "adlist_by_group.json".to_owned(),
+        br#"[{"adlist_id":1,"group_id":0},{"adlist_id":2,"group_id":0}]"#.to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    let urls: Vec<_> = cfg.list.iter().filter_map(|l| l.url.as_deref()).collect();
+    assert!(urls.contains(&"https://raw.githubusercontent.com/o/r/master/hosts.txt"));
+    assert!(
+        !urls.iter().any(|u| u.contains("regex.list")),
+        "a regex list isn't imported: {urls:?}"
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("GitHub page") && n.contains("raw.githubusercontent.com/o/r"))
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("regular expressions") && n.contains("regex.list"))
+    );
 }

@@ -983,4 +983,43 @@ async fn flt_017_a_deployment_is_one_device() {
     assert!(all >= 1_300, "{all}");
     assert_eq!(router(false), 0);
     assert_eq!(router(true), all);
+    // REQ: OBS-003 (T24.34, ADR-1013): `client` lists several, as addresses and workloads; with
+    // `clientNot` the rest of the log is what's left.
+    let (a, b) = (
+        page("10.42.0.11").items.len(),
+        page("10.42.0.12").items.len(),
+    );
+    let two = page("10.42.0.11, 10.42.0.12").items.len();
+    assert_eq!(two, a + b, "two addresses");
+    let mixed = page("10.42.0.11,media/deploy/jellyfin,hostname:nobody")
+        .items
+        .len();
+    assert!(mixed >= a && mixed <= a + 1_000, "{mixed}");
+    let rest = api
+        .queries(
+            &telltale_api::model::QueryParams {
+                client: Some("10.42.0.11,10.42.0.12".into()),
+                client_not: Some(true),
+                ..telltale_api::model::QueryParams::default()
+            },
+            t0 * 1_000_000,
+            0,
+            5_000,
+        )
+        .unwrap()
+        .items
+        .len();
+    assert_eq!(rest, all - two, "not: every other client");
+    assert!(
+        api.queries(
+            &telltale_api::model::QueryParams {
+                client: Some("10.42.0.11,not-an-address".into()),
+                ..telltale_api::model::QueryParams::default()
+            },
+            t0 * 1_000_000,
+            0,
+            10,
+        )
+        .is_err()
+    );
 }

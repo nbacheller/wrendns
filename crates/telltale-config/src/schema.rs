@@ -569,6 +569,17 @@ pub struct Upstream {
     /// Extra HTTP headers for DoH (e.g. an auth token).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address this upstream's sockets are bound to
+    /// before they connect (`udp://`, `tcp://`, `tls://`, `https://`): `198.51.100.252` or
+    /// `198.51.100.252:0`, or a network, `198.51.100.0/24`, meaning "the address this node
+    /// holds in it" (so a shared upstream works on nodes whose addresses differ; in a cluster
+    /// name a network, not one node's address). The address must be on a real interface (a VLAN
+    /// interface, not an alias on an untagged one). Binding it does not choose the interface the
+    /// packet leaves by: Linux routes by destination, so add a source-based routing rule for it
+    /// (see docs/running.md). Saving an address the node doesn't hold is refused; a node that
+    /// lacks it at start or on a replica runs only this upstream degraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SafeString>,
     /// Max pooled connections for TCP/DoT/DoH.
     #[serde(default = "default_pool_size")]
     pub pool_size: u16,
@@ -1978,6 +1989,11 @@ pub struct ExclusionsConfig {
     pub names: Vec<SafeString>,
     /// Devices left out: addresses or networks.
     pub clients: Vec<Cidr>,
+    /// REQ: OBS-903 (T24.35, ADR-1014) — queries kept out of the query log (and the live view and
+    /// event sinks) only. Unlike the lists above they are still counted in the statistics
+    /// (dashboard, top lists, anomalies) and `/metrics`.
+    #[serde(skip_serializing_if = "LogExclusions::is_default")]
+    pub log: LogExclusions,
 }
 
 impl Default for ExclusionsConfig {
@@ -1986,6 +2002,7 @@ impl Default for ExclusionsConfig {
             enabled: true,
             names: Vec::new(),
             clients: Vec::new(),
+            log: LogExclusions::default(),
         }
     }
 }
@@ -1995,9 +2012,36 @@ impl ExclusionsConfig {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-    /// Whether anything is excluded at all.
+    /// Whether anything is excluded from the statistics too (`names` and `clients`).
     pub fn active(&self) -> bool {
         self.enabled && !(self.names.is_empty() && self.clients.is_empty())
+    }
+    /// Whether anything is kept out of the query log only (`log`).
+    pub fn log_active(&self) -> bool {
+        self.enabled && !self.log.is_default()
+    }
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log but still counts in the
+/// statistics. Applied when the event is written, on the aggregator thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct LogExclusions {
+    /// Clients left out of the log: addresses (`192.168.1.10`), networks (`10.20.0.0/24`), or
+    /// device names (`[[client]] name`, resolved on every reload).
+    pub clients: Vec<SafeString>,
+    /// Domains left out of the log: `localhost` is that name only; `*.lan` is every name under it
+    /// (not `lan` itself).
+    pub domains: Vec<SafeString>,
+    /// This node's own lookups (loopback and the node's own addresses: a health check, a
+    /// watchdog, programs on the host) stay out of the log.
+    pub own_lookups: bool,
+}
+
+impl LogExclusions {
+    /// Whether nothing is left out (the default; not written back).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 

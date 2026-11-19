@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::election::{Ask, Ballot, Elector, LEASE_MS, Out, Reply};
 use crate::net::Cluster;
@@ -258,6 +258,8 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         // Manual mode: roles change only by `promote` (ADR-051).
         *guard = None;
         drop(guard);
+        // REQ: CLU-005 (T24.26): leaving automatic mode ends a lapse without a "renewed" claim.
+        cluster.end_lease_lapse_for_manual_mode();
         cluster.set_lease_ok(true);
         return Vec::new();
     }
@@ -268,12 +270,11 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         .as_ref()
         .is_none_or(|e| e.voters != voters || e.eligible != can_lead)
     {
-        let mut el = Elector::new(
-            &id.meta.node_id,
-            voters,
-            can_lead,
-            load_ballot(cluster, now),
-        );
+        // REQ: CLU-005 (T24.26, ADR-990) — renewals extend a lease in memory only, so a new elector
+        // starts from the running one's ballot, or from a stored one with a full lease from now.
+        let previous = guard.as_ref().map(|e| e.ballot.clone());
+        let ballot = Ballot::for_new_elector(previous, load_ballot(cluster, now), now);
+        let mut el = Elector::new(&id.meta.node_id, voters, can_lead, ballot);
         // A reply to the previous elector may still arrive: number this one's rounds apart.
         el.start_rounds_at(1 + (ELECTOR_GEN.fetch_add(1, Ordering::Relaxed) << 20));
         // REQ: CLU-005 (ADR-947) — a node that isn't the primary waits one lease period before its
@@ -338,10 +339,14 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         .fold(cluster.role().1, u64::max);
     let mut outs = el.observe(seen);
     if let Some((from, r)) = reply {
+        cluster.note_voter_reply(&from, r.granted, r.epoch);
         outs.extend(el.on_reply(&from, &r, now));
     }
     let jitter = rand::random::<u64>() % (LEASE_MS / 2);
+    // REQ: CLU-005 (T24.26) — the round a leader is about to leave, for the debug line below.
+    let before = leader_round(el);
     outs.extend(el.tick(now, jitter));
+    log_round(el, before, now);
     // A primary writes only while its lease holds.
     cluster.set_lease_ok(!cluster.is_primary() || el.writable(now));
     cluster.set_failover_view(FailoverView {
@@ -366,6 +371,51 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
     outs
 }
 
+/// REQ: CLU-005 (T24.26) — debug lines for a leader's renewal rounds: when one is sent, and when
+/// it is left, with the grants it had (`before` is the round at the start of the turn).
+fn log_round(el: &Elector, before: Option<(u64, usize, u64)>, now: u64) {
+    let after = leader_round(el);
+    if let (Some((round, grants, started)), Some((next, ..))) = (before, after)
+        && round != next
+    {
+        debug!(
+            round,
+            grants,
+            need = el.voters.len() / 2 + 1,
+            voters = el.voters.len(),
+            round_age_ms = now.saturating_sub(started),
+            lease_ms_left = lease_left(el, now),
+            "cluster: lease renewal round ended"
+        );
+    }
+    if let Some((round, ..)) = after
+        && before.is_none_or(|(r, ..)| r != round)
+    {
+        debug!(round, "cluster: lease renewal round sent");
+    }
+}
+
+/// `(round, grants so far, started_ms)` of a leader's current renewal round.
+fn leader_round(el: &Elector) -> Option<(u64, usize, u64)> {
+    match &el.phase {
+        crate::election::Phase::Leader {
+            round,
+            grants,
+            round_started_ms,
+            ..
+        } => Some((*round, grants.len(), *round_started_ms)),
+        _ => None,
+    }
+}
+
+/// How long a leader's lease still runs.
+fn lease_left(el: &Elector, now: u64) -> u64 {
+    match el.phase {
+        crate::election::Phase::Leader { lease_until_ms, .. } => lease_until_ms.saturating_sub(now),
+        _ => 0,
+    }
+}
+
 /// Sends vote requests (their replies come back on `tx`) and applies role changes.
 fn dispatch(
     cluster: &Arc<Cluster>,
@@ -379,10 +429,31 @@ fn dispatch(
                 let (c, tx) = (Arc::clone(cluster), tx.clone());
                 tokio::spawn(async move {
                     let body = serde_json::to_vec(&ask).unwrap_or_default();
-                    if let Ok(b) = c.call(&to, KIND, body, ASK_DEADLINE).await
-                        && let Ok(r) = serde_json::from_slice::<Reply>(&b)
-                    {
-                        let _ = tx.send((to, r)).await;
+                    let sent = tokio::time::Instant::now();
+                    // REQ: CLU-005 (T24.26) — each vote request and renewal logs how long its
+                    // answer took (debug), so a lapse shows which voter was slow or silent.
+                    match c.call(&to, KIND, body, ASK_DEADLINE).await {
+                        Ok(b) => match serde_json::from_slice::<Reply>(&b) {
+                            Ok(r) => {
+                                debug!(
+                                    voter = %to,
+                                    round = ask.round,
+                                    pre = ask.pre,
+                                    granted = r.granted,
+                                    took_ms = u64::try_from(sent.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                    "cluster: vote answer"
+                                );
+                                let _ = tx.send((to, r)).await;
+                            }
+                            Err(e) => debug!(voter = %to, "cluster: vote answer unreadable: {e}"),
+                        },
+                        Err(e) => debug!(
+                            voter = %to,
+                            round = ask.round,
+                            pre = ask.pre,
+                            took_ms = u64::try_from(sent.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            "cluster: no vote answer: {e}"
+                        ),
                     }
                 });
             }
@@ -438,6 +509,18 @@ fn elected(cluster: &Cluster, id: &Identity, epoch: u64) {
         }
         Err(e) => warn!("cluster: elected but can't store the new role: {e}"),
     }
+}
+
+/// REQ: CLU-009 (T24.33) — the last vote reply a voter gave this node, on the wall clock.
+#[derive(Debug, Clone, Default)]
+pub struct VoterReply {
+    /// When the reply came (Unix ms).
+    pub at_ms: u64,
+    pub granted: bool,
+    /// The epoch the voter reported.
+    pub epoch: u64,
+    /// When it last granted a vote or lease renewal (Unix ms).
+    pub last_grant_ms: Option<u64>,
 }
 
 /// What the Cluster page shows about the election (ADR-056).

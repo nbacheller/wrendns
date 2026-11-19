@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from .const import DEVICES, DOMAIN
+from .const import AREA, DEVICES, DOMAIN, ENTITYLESS
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -39,6 +40,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "home",
                 {"mac": mac, "ip": dev["address"], "source_type": "router"},
             )
+    # REQ: T25.10 - devices that have a MAC connection and no entity (the second template's read).
+    areas = ar.async_get(hass)
+    for dev in ENTITYLESS:
+        device = devices.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            connections={(dr.CONNECTION_NETWORK_MAC, str(dev["mac"]))},
+            name=str(dev["name"]),
+        )
+        if dev["name_by_user"]:
+            devices.async_update_device(device.id, name_by_user=str(dev["name_by_user"]))
+        if dev["area"]:
+            area = areas.async_get_area_by_name(AREA) or areas.async_create(AREA)
+            devices.async_update_device(device.id, area_id=area.id)
     return True
 
 
