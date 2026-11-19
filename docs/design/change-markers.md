@@ -69,12 +69,12 @@ markers into `get_overview` as `changes` (count + the last three summaries) — 
 changed?" shouldn't need a second call.
 
 **Prometheus signals** (for Grafana, no new cardinality):
-- `telltale_config_seq` gauge (the applied configuration sequence) — `changes(telltale_config_seq[5m]) > 0`
+- `wrendns_config_seq` gauge (the applied configuration sequence) — `changes(wrendns_config_seq[5m]) > 0`
   is the marker.
-- `telltale_build_info{version,commit}` already exists? If not, add it (value 1); `changes()` on it
+- `wrendns_build_info{version,commit}` already exists? If not, add it (value 1); `changes()` on it
   marks a new build.
-- `telltale_filter_snapshot_version` exists → list refreshes.
-- `telltale_annotations_total{kind}` counter — one per line written; `increase()` marks the rest.
+- `wrendns_filter_snapshot_version` exists → list refreshes.
+- `wrendns_annotations_total{kind}` counter — one per line written; `increase()` marks the rest.
 
 ## 5. UI (decision)
 - `Chart.svelte` gains `markers?: Marker[]` (`{ time, kind, summary, href? }`) and draws them as 1 px
@@ -96,7 +96,7 @@ changed?" shouldn't need a second call.
 
 ## 6. Grafana
 `build.py`: add dashboard-level annotations (Prometheus datasource) for
-`changes(telltale_config_seq[5m]) > 0` ("config {{seq}}"), `changes(telltale_filter_snapshot_version[5m]) > 0`
+`changes(wrendns_config_seq[5m]) > 0` ("config {{seq}}"), `changes(wrendns_filter_snapshot_version[5m]) > 0`
 ("lists"), and `resets(process_start_time_seconds)`/build changes ("restart"). Document in
 `docs/monitoring`.
 
@@ -109,7 +109,7 @@ changed?" shouldn't need a second call.
    error).
 3. Federated read merges two nodes by time desc; `missingNodes` for a down node; `truncated` at the
    cap.
-4. `telltale_config_seq` equals the applied sequence on every node; `telltale_annotations_total{kind}`
+4. `wrendns_config_seq` equals the applied sequence on every node; `wrendns_annotations_total{kind}`
    increments per line.
 5. Notes: a posted note appears in the federated read from another node with the writer's `node`
    label; a 201-character text → 422 `annotation_text`; a future time → 422 `annotation_time`; `PUT`

@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../crates/telltale/src/discovery/inventory.rs"]
+#[path = "../../crates/wrendns/src/discovery/inventory.rs"]
 #[allow(dead_code)]
 mod inventory;
 

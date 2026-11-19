@@ -1,0 +1,273 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "wrendns.fullname" . }}
+  labels:
+    {{- include "wrendns.labels" . | nindent 4 }}
+spec:
+  # allInOne: one replica (its users, query log, and lists live on its volume).
+  replicas: 1
+  serviceName: {{ include "wrendns.fullname" . }}-metrics
+  selector:
+    matchLabels:
+      {{- include "wrendns.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "wrendns.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      {{- end }}
+      {{- with include "wrendns.podDns" . | trim }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      enableServiceLinks: false
+      {{- if .Values.kubernetes.enabled }}
+      # REQ: FLT-017 — only this pod reads the Kubernetes API (pods and namespaces, read-only).
+      serviceAccountName: {{ include "wrendns.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: wrendns
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "-c", "/etc/wrendns/00-chart.toml", "-c", "/etc/wrendns/10-values.toml"{{ if include "wrendns.scaled" . }}, "-c", "/etc/wrendns/20-controller.toml"{{ end }}]
+          securityContext:
+            {{- if .Values.hostNetwork }}
+            # Binding 53 on the host needs root; it keeps only NET_BIND_SERVICE.
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE]
+            {{- else }}
+            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- end }}
+          env:
+            - name: WRENDNS_LOG
+              value: info
+            # REQ: OPS-004 (ADR-046) — how this node updates (shown with the update status).
+            - name: WRENDNS_INSTALL
+              value: helm
+            # REQ: API-902 (T27.13, ADR-956 §4a) - the kubelet restarts an exited container, so the UI may
+            # offer "Restart now" (exit status 75).
+            - name: WRENDNS_SUPERVISOR
+              value: kubernetes
+            # REQ: OPS-003 — node addresses count as infrastructure for the masked-client-IP check.
+            - name: WRENDNS_NODE_IPS
+              valueFrom:
+                fieldRef: { fieldPath: status.hostIP }
+            # REQ: CLU-008 (T6.14) — the Cluster page groups pods by Kubernetes node.
+            - name: WRENDNS_KUBE_NODE
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            - name: WRENDNS_POD
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            # REQ: OPS-007 — keep answering briefly on shutdown while the Service moves away.
+            # An environment variable, not a config key: an older image only warns about it.
+            - name: WRENDNS_DRAIN_DELAY_SECS
+              value: {{ .Values.drainDelaySeconds | quote }}
+            {{- with .Values.auth.bootstrapAdmin.existingSecret }}
+            - name: WRENDNS_BOOTSTRAP_ADMIN_USER
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.usernameKey }} }
+            - name: WRENDNS_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.passwordKey }}, optional: true }
+            - name: WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.passwordHashKey }}, optional: true }
+            {{- end }}
+            {{- if include "wrendns.secretsKeySecret" . }}
+            # REQ: OPS-014 (ADR-903 §3) — the secrets store's key, from a Secret mounted read-only
+            # (this pod only: resolver pods hold no stored secrets).
+            - name: WRENDNS_NODE_SECRETS_KEY_FILE
+              value: /etc/wrendns-secrets-key/{{ .Values.secretsKey.key }}
+            {{- end }}
+            {{- if not .Values.persistence.enabled }}
+            # REQ: OPS-014 — the data directory isn't kept: stored secrets don't survive a restart
+            # (health: `secrets_ephemeral`).
+            - name: WRENDNS_DATA_EPHEMERAL
+              value: "1"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: dns-udp
+              containerPort: {{ include "wrendns.dnsPort" . }}
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: {{ include "wrendns.dnsPort" . }}
+              protocol: TCP
+            {{- if .Values.encrypted.dot.enabled }}
+            - name: dns-dot
+              containerPort: {{ include "wrendns.dotPort" . }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.encrypted.doh.enabled }}
+            - name: dns-doh
+              containerPort: {{ include "wrendns.dohPort" . }}
+              protocol: TCP
+            {{- end }}
+            {{- if and .Values.encrypted.doh.enabled .Values.encrypted.doh.http3 }}
+            - name: dns-doh3
+              containerPort: {{ include "wrendns.dohPort" . }}
+              protocol: UDP
+            {{- end }}
+            {{- if .Values.encrypted.doq.enabled }}
+            - name: dns-doq
+              containerPort: {{ include "wrendns.doqPort" . }}
+              protocol: UDP
+            {{- end }}
+            - name: api
+              containerPort: {{ .Values.service.api.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.service.metrics.port }}
+              protocol: TCP
+            {{- if include "wrendns.scaled" . }}
+            - name: cluster
+              containerPort: {{ .Values.cluster.port }}
+              protocol: TCP
+            {{- end }}
+          # REQ: OPS-006 — ready once every listener is bound; lists load in the background.
+          # REQ: OPS-010 — the startup probe leaves maintenance out (`startup=1`): a pod restarted
+          # inside its window has started and mustn't be killed; readiness keeps it out of the
+          # Services until the window ends.
+          startupProbe:
+            httpGet: { path: "/readyz?startup=1", port: metrics }
+            periodSeconds: 2
+            failureThreshold: 60
+          # Leaves the Service within about 4 s of turning not ready (maintenance, a drill, a
+          # failure); at 5 s × 3 a live drill measured 13 s of queries still sent to it.
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /livez, port: metrics }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/wrendns
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/wrendns
+            {{- if include "wrendns.encrypted" . }}
+            # REQ: DNS-002/003 — renewed in place by cert-manager; re-read every 10 s.
+            - name: dns-tls
+              mountPath: /etc/wrendns-tls
+              readOnly: true
+            {{- end }}
+            {{- range .Values.secretMounts }}
+            - name: secret-{{ .name }}
+              mountPath: /etc/wrendns-secrets/{{ .name }}
+              readOnly: true
+            {{- end }}
+            {{- if include "wrendns.secretsKeySecret" . }}
+            - name: secrets-key
+              mountPath: /etc/wrendns-secrets-key
+              readOnly: true
+            {{- end }}
+            {{- if include "wrendns.scaled" . }}
+            - name: cluster-secret
+              mountPath: /etc/wrendns-cluster
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wrendns.fullname" . }}
+        {{- if include "wrendns.scaled" . }}
+        - name: cluster-secret
+          secret:
+            secretName: {{ include "wrendns.clusterSecret" . }}
+        {{- end }}
+        {{- if include "wrendns.encrypted" . }}
+        - name: dns-tls
+          secret:
+            secretName: {{ required "encrypted: set tls.secretName or tls.certManager" (include "wrendns.tlsSecret" .) }}
+        {{- end }}
+        {{- range .Values.secretMounts }}
+        - name: secret-{{ .name }}
+          secret:
+            secretName: {{ .secretName }}
+            optional: {{ .optional | default false }}
+        {{- end }}
+        {{- with include "wrendns.secretsKeySecret" . }}
+        - name: secrets-key
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0440
+            items:
+              - key: {{ $.Values.secretsKey.key }}
+                path: {{ $.Values.secretsKey.key }}
+        {{- end }}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        # REQ: OPS-002 (T9.26) — an existing volume claim, e.g. one from another chart.
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "wrendns.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

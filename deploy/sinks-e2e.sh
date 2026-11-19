@@ -4,10 +4,10 @@
 # webhook, and sends an alert (and nothing on the DNS path waits for any of them). T9.11: a
 # webhook whose collector is down keeps its batches on disk and sends them when it's back.
 # Needs python3, dig, curl, openssl.
-# Usage: deploy/sinks-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/sinks-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -88,7 +88,7 @@ while True:
 EOF
 python3 "$E/tls_syslog.py" "$E" & T=$!
 
-cat > "$E/telltale.toml" <<EOF
+cat > "$E/wrendns.toml" <<EOF
 [node]
 data_dir = "$E/data"
 [[listen]]
@@ -163,7 +163,7 @@ when = "list_failing"
 for_secs = 0
 to = ["hook"]
 EOF
-"$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
+"$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "http://127.0.0.1:26994/api/v1/auth/status" && break; sleep 0.1; done
 # The first snapshot waits for the unreachable list's fetch to give up (about 10 s).
 for _ in $(seq 60); do [[ $(dig +time=1 -p 25994 @127.0.0.1 ads.sinks.test) == *'EDE: 15'* ]] && break; sleep 0.5; done
@@ -184,13 +184,13 @@ EOF
 
 # Syslog: RFC 5424, blocked events only (statuses filter), severity notice (local0 → 133).
 for _ in $(seq 50); do grep -q 'ads.sinks.test' "$E/syslog" 2>/dev/null && break; sleep 0.2; done
-grep -q '^<133>1 .* telltale - query - {.*"name":"ads.sinks.test"' "$E/syslog" || fail "syslog: $(head -c 300 "$E/syslog")"
+grep -q '^<133>1 .* wrendns - query - {.*"name":"ads.sinks.test"' "$E/syslog" || fail "syslog: $(head -c 300 "$E/syslog")"
 ! grep -q 'nas.sinks.test' "$E/syslog" || fail "syslog got an event its statuses filter excludes"
 echo "syslog sink: ok"
 
 # REQ: OBS-010 (T9.11) — syslog over TLS: octet-counted RFC 5424 frames.
 for _ in $(seq 50); do grep -q 'ads.sinks.test' "$E/syslog-tls" 2>/dev/null && break; sleep 0.2; done
-grep -Eq '^[0-9]+ <133>1 .* telltale - query - \{.*"name":"ads.sinks.test"' "$E/syslog-tls" || fail "syslog over TLS: $(head -c 300 "$E/syslog-tls" 2>/dev/null)"
+grep -Eq '^[0-9]+ <133>1 .* wrendns - query - \{.*"name":"ads.sinks.test"' "$E/syslog-tls" || fail "syslog over TLS: $(head -c 300 "$E/syslog-tls" 2>/dev/null)"
 echo "syslog over TLS: ok"
 
 # Webhook: newline-delimited JSON batches.
@@ -224,11 +224,11 @@ for f in sorted(os.listdir(d)):
 assert metrics, "no OTLP metrics"
 rm = metrics["resourceMetrics"][0]
 names = {m["name"]: m for m in rm["scopeMetrics"][0]["metrics"]}
-assert names["telltale_queries_total"]["sum"]["isMonotonic"], names["telltale_queries_total"]
-assert "histogram" in names["telltale_query_duration_seconds"]
+assert names["wrendns_queries_total"]["sum"]["isMonotonic"], names["wrendns_queries_total"]
+assert "histogram" in names["wrendns_query_duration_seconds"]
 assert any(a["key"] == "service.name" for a in rm["resource"]["attributes"])
 attrs = [{a["key"]: a["value"].get("stringValue") for a in r["attributes"]} for r in logs]
-assert any(a.get("dns.question.name") == "ads.sinks.test" and a.get("telltale.status") == "blocked" for a in attrs), attrs[:3]
+assert any(a.get("dns.question.name") == "ads.sinks.test" and a.get("wrendns.status") == "blocked" for a in attrs), attrs[:3]
 print(f"OTLP: {len(names)} metrics, {len(logs)} log records")
 EOF
 

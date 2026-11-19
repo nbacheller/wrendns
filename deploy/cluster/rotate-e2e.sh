@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # REQ: CLU-001, CLU-005 — T5.4c acceptance (ADR-066): rotate the CA of a running cluster (a
 # primary, an eligible replica, a witness) while a client queries the replica.
-#   1. `telltale cluster rotate-ca`: every node trusts both CAs, then the new one signs and
+#   1. `wrendns cluster rotate-ca`: every node trusts both CAs, then the new one signs and
 #      every node renews from it, then the old CA is retired, with no step before every
 #      member is ready;
 #   2. afterwards every node trusts only the new CA, every certificate is from it, the eligible
@@ -9,9 +9,9 @@
 #   3. configuration still replicates (manifests signed with the new key), and a restarted
 #      replica reconnects with its new certificate;
 #   4. DNS answered every query throughout the rotation.
-# Usage: deploy/cluster/rotate-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/rotate-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= R_PID= W_PID= LOAD=

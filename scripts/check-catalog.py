@@ -41,7 +41,7 @@ def repo_of(source):
 
 
 def get(url, token, limit=None):
-    req = urllib.request.Request(url, headers={"User-Agent": "telltale-catalog-check"})
+    req = urllib.request.Request(url, headers={"User-Agent": "wrendns-catalog-check"})
     if token and "api.github.com" in url:
         req.add_header("Authorization", f"Bearer {token}")
     if limit:

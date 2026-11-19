@@ -1,7 +1,7 @@
 # The screenshot demo (run.sh): a made-up home network on loopback addresses. Nothing here is
 # real: devices, groups, and names are invented, and the upstreams are local stubs (stub.py).
 [node]
-data_dir = "/tmp/telltale-demo/data"
+data_dir = "/tmp/wrendns-demo/data"
 name = "home-dns"
 
 [[listen]]

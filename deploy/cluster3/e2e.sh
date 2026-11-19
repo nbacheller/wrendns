@@ -32,7 +32,7 @@
 #       downloads its list from the fake source once; every node blocks the list's names from the
 #       compiled snapshot, and the fake source saw no request from a replica.
 #   j. (T24.40, ADR-1019) a cluster upgraded from an older version keeps its API entries: nodes on an
-#      older image (OLD_IMAGE, default telltale:lapse-base, a build before ADR-1016) take entries
+#      older image (OLD_IMAGE, default wrendns:lapse-base, a build before ADR-1016) take entries
 #      through the API and fail over once, every node is then upgraded, and after two more failovers
 #      the new primary dry-runs, edits and deletes the entries the old primary's API added, the others
 #      stay served, and the edit and the delete stick. Skipped when OLD_IMAGE isn't there
@@ -40,6 +40,19 @@
 #   k. (T24.38) after a rolling restart in the owner's order (replicas, then the primary) every node
 #      reports reachableVoters = voters for 1 minute with no "leaving this node" churn, and the
 #      primary's death is still an election within the lease time, with no flapping after it.
+# rebrand:keep-start
+#   l. (T33.2, ADR-1028) a rolling upgrade across the rename: every node on the pre-rename image
+#      (PRE_RENAME_IMAGE, default telltale:pre-rename, built from the commit before the rename), then
+#      each node on the renamed image, replicas first and the primary last, with DNS asked of all three
+#      nodes throughout (at least two answer at every sample), no sign-in again (the old session cookie
+#      still works on the new node), an API token made on the old primary still working, the cluster
+#      whole after every step (the mTLS names of both versions are accepted), the entries made on the
+#      old nodes served by all, and both metric names on a new node. Skipped when the old image isn't
+#      there (REQUIRE_PRERENAME=1 makes that a failure). ONLY=prerename runs the bring-up, (a) and (l)
+#      alone. Build the old image from a checkout of the base:
+#      git archive <commit before the rename> | tar -x -C <dir>; docker build -t telltale:pre-rename <dir>
+#      (--build-arg PROFILE=bench-fast --build-arg CARGO_FEATURES=e2e --build-arg TELLTALE_BUILD_CHANNEL=dev).
+# rebrand:keep-end
 # And, between a and b, a2: in manual failover each replica reports the other as up (relayed by the
 # primary), then `set-failover auto` on the running primary is adopted with no restart: it holds a
 # lease, keeps its role and its epoch, and no replica stands for 45 s.
@@ -47,7 +60,7 @@
 # primary adopts it without a restart and no replica deposes it (T21.7, ADR-960).
 #
 # It never touches the single-node bundle (deploy/docker-desktop): its own compose project
-# (telltale-cluster3), its own volumes, and host ports 2153-2353 (DNS), 8153-8353 (API), 9163-9363
+# (wrendns-cluster3), its own volumes, and host ports 2153-2353 (DNS), 8153-8353 (API), 9163-9363
 # (metrics). Every credential is made here, in a temp directory that is removed at exit.
 #
 # Usage: deploy/cluster3/e2e.sh            (needs Docker with Compose v2, and python3)
@@ -62,8 +75,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Docker and Python on Windows (Git Bash) need the Windows form of the same path.
 HERE_W=$HERE
 if command -v cygpath >/dev/null 2>&1; then HERE_W=$(cygpath -m "$HERE"); fi
-PROJECT=telltale-cluster3
-IMAGE=telltale:cluster3-test
+PROJECT=wrendns-cluster3
+IMAGE=wrendns:cluster3-test
 COMPOSE=(docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml")
 PY=(python3 "$HERE_W/probe.py")
 NODES=(primary replica-a replica-b)
@@ -116,7 +129,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-step() { echo "== $1"; }
+step() { echo "== $1 ($(date +%T))"; }
 pass() { echo "ok${1:+ ($1)}"; }
 bad() { echo "FAIL: $*"; exit 1; }
 now_ms() { date +%s%3N; }
@@ -190,8 +203,8 @@ login() { # node [setup-token]
 
 # A join token from the primary, for a replica to join with (reusable until it expires).
 join_token() {
-  "${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster token create --ttl 30m --eligible \
-    -c /etc/telltale/telltale.toml | tr -d '\r' | grep '^tt_join_'
+  "${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster token create --ttl 30m --eligible \
+    -c /etc/wrendns/wrendns.toml | tr -d '\r' | grep '^tt_join_'
 }
 
 container() { "${COMPOSE[@]}" ps -q "$1"; }
@@ -211,11 +224,11 @@ TOKEN=$(join_token)
 [ -n "$TOKEN" ] || bad "no join token from the primary"
 for r in replica-a replica-b; do
   "${COMPOSE[@]}" run --rm -T --no-deps "$r" cluster join "$TOKEN" --site "$r" --eligible \
-    --advertise "https://$r:8443" -c /etc/telltale/telltale.toml >"$E/join-$r.log" 2>&1 \
+    --advertise "https://$r:8443" -c /etc/wrendns/wrendns.toml >"$E/join-$r.log" 2>&1 \
     || { cat "$E/join-$r.log"; bad "$r couldn't join the cluster"; }
   "${COMPOSE[@]}" up -d --wait "$r" >/dev/null 2>&1 || bad "$r didn't come up healthy after joining"
 done
-SETUP=$("${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml \
+SETUP=$("${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns auth setup-token -c /etc/wrendns/wrendns.toml \
   | tr -d '\r' | sed -n 1p)
 [ -n "$SETUP" ] || bad "no setup token on the primary"
 login primary "$SETUP" || bad "the primary's first admin couldn't be created"
@@ -229,7 +242,7 @@ done
 [ "$(connected_count primary)" = 3 ] || bad "the primary doesn't list three connected nodes"
 pass "$(connected_count primary) connected nodes"
 
-if [ "${ONLY:-}" != upgrade ]; then
+if [ "${ONLY:-}" != upgrade ] && [ "${ONLY:-}" != prerename ]; then
 step "a2. automatic failover is turned on under the running cluster: no restart, no deposition"
 # Manual mode first: a replica has a stream only to its primary, and reports the other replica up
 # from the heartbeats the primary relays (T21.5 open (1)).
@@ -242,34 +255,34 @@ for n in replica-a replica-b; do
   done
   [ -n "$ok" ] || bad "$n doesn't report all three nodes up in manual mode: $(jget '[(x["site"], x["up"], x["link"]) for x in d["nodes"]]')"
 done
-epoch0=$(metric "${MET[primary]}" telltale_cluster_epoch)
-[ "$(metric "${MET[primary]}" telltale_cluster_primary)" = 1 ] || bad "the primary isn't primary before the switch"
-"${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null   || bad "couldn't turn automatic failover on"
+epoch0=$(metric "${MET[primary]}" wrendns_cluster_epoch)
+[ "$(metric "${MET[primary]}" wrendns_cluster_primary)" = 1 ] || bad "the primary isn't primary before the switch"
+"${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null   || bad "couldn't turn automatic failover on"
 for n in "${NODES[@]}"; do
   ok=
   for _ in $(seq 60); do
-    [ "$(metric "${MET[$n]}" telltale_cluster_failover_auto)" = 1 ] && { ok=1; break; }
+    [ "$(metric "${MET[$n]}" wrendns_cluster_failover_auto)" = 1 ] && { ok=1; break; }
     sleep 0.5
   done
   [ -n "$ok" ] || bad "$n never adopted automatic failover"
 done
 ok=
 for _ in $(seq 40); do
-  [ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] && { ok=1; break; }
+  [ "$(metric "${MET[primary]}" wrendns_cluster_lease_held)" = 1 ] && { ok=1; break; }
   sleep 0.5
 done
 [ -n "$ok" ] || bad "the running primary never held a lease after the switch"
 # 45 s: longer than a replica's wait (15 s) plus a lease (15 s). The primary stays primary, in the
 # same epoch, with its lease; the replicas never become primary.
 for i in $(seq 45); do
-  [ "$(metric "${MET[primary]}" telltale_cluster_primary)" = 1 ] || bad "the primary was deposed ($i s after the switch)"
-  [ "$(metric "${MET[primary]}" telltale_cluster_epoch)" = "$epoch0" ] || bad "the epoch moved ($i s after the switch)"
+  [ "$(metric "${MET[primary]}" wrendns_cluster_primary)" = 1 ] || bad "the primary was deposed ($i s after the switch)"
+  [ "$(metric "${MET[primary]}" wrendns_cluster_epoch)" = "$epoch0" ] || bad "the epoch moved ($i s after the switch)"
   for n in replica-a replica-b; do
-    [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 0 ] || bad "$n stood for election ($i s after the switch)"
+    [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 0 ] || bad "$n stood for election ($i s after the switch)"
   done
   sleep 1
 done
-[ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] || bad "the primary's lease isn't held after 45 s"
+[ "$(metric "${MET[primary]}" wrendns_cluster_lease_held)" = 1 ] || bad "the primary's lease isn't held after 45 s"
 pass "epoch $epoch0 kept; the primary holds its lease"
 
 step "b. a config edit on the primary answers on all three nodes' DNS within 5 s"
@@ -326,7 +339,7 @@ done
 # A replica's copy arrives by the cluster's replication (ADR-917), a few heartbeats after the write.
 for n in replica-a replica-b; do
   for _ in $(seq 60); do
-    "${COMPOSE[@]}" exec -T "$n" /usr/local/bin/telltale secrets status -c /etc/telltale/telltale.toml \
+    "${COMPOSE[@]}" exec -T "$n" /usr/local/bin/wrendns secrets status -c /etc/wrendns/wrendns.toml \
       >"$E/secrets-$n.txt" 2>&1 && grep -q '1 readable' "$E/secrets-$n.txt" && break
     sleep 0.5
   done
@@ -493,8 +506,8 @@ done
 killed=
 for _ in $(seq 120); do
   for n in "${NODES[@]}"; do
-    if [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] \
-      && [ "$(metric "${MET[$n]}" telltale_cluster_lease_held)" = 1 ]; then killed=$n; fi
+    if [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] \
+      && [ "$(metric "${MET[$n]}" wrendns_cluster_lease_held)" = 1 ]; then killed=$n; fi
   done
   [ -n "$killed" ] && break
   sleep 0.5
@@ -504,7 +517,7 @@ survivors=()
 fo=()
 for n in "${NODES[@]}"; do
   [ "$n" = "$killed" ] && continue
-  [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 0 ] || bad "$n is primary before the kill"
+  [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 0 ] || bad "$n is primary before the kill"
   survivors+=("$n")
   fo+=("$n" "http://127.0.0.1:${API[$n]}" "${DNS[$n]}" "$E_PY/jar-$n.json")
 done
@@ -639,7 +652,7 @@ step "k. replicas stay linked (T24.38): after a rolling restart (replicas, then 
 # replicas for good (one stream's end marked the peer disconnected and took the other's place in the
 # outbox), so reachableVoters stayed at 2 and the replicas moved between the primary and each other.
 cur=
-for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] && cur=$n; done
+for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] && cur=$n; done
 [ -n "$cur" ] || bad "no node is primary before the restart"
 order=()
 for n in "${NODES[@]}"; do [ "$n" = "$cur" ] || order+=("$n"); done
@@ -684,7 +697,7 @@ done
 echo "   $samples samples, every node reached 3 of 3 voters each time; no link churn"
 # The primary dies: an election within the lease time, and nobody flaps afterwards.
 killed=
-for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] && killed=$n; done
+for n in "${NODES[@]}"; do [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] && killed=$n; done
 [ -n "$killed" ] || bad "no node is primary before the kill"
 survivors=()
 fo=()
@@ -716,12 +729,20 @@ fi
 # without ADR-1016, a failover in that state, then every node upgraded: the primary then holds
 # entries it serves but has no rows for, and used to answer a dry-run write with before: null and to
 # publish a candidate without the other entries.
-OLD_IMAGE=${OLD_IMAGE:-telltale:lapse-base}
+OLD_IMAGE=${OLD_IMAGE:-wrendns:lapse-base}
 
 # Recreates one node on an image (its data volume stays) and waits until it is healthy.
+# rebrand:keep-start
+# An image from before the rename (its entrypoint is `telltale`) keeps its data in /var/lib/telltale and
+# has its own health command: compose-prerename.yaml says so (T33.2, ADR-1028).
 at_image() { # image node
-  TT_IMAGE=$1 "${COMPOSE[@]}" up -d --no-deps --no-build --force-recreate --wait "$2" >/dev/null 2>&1
+  local files=(-f "$HERE_W/compose.yaml")
+  if docker image inspect -f '{{json .Config.Entrypoint}}' "$1" 2>/dev/null | grep -q telltale; then
+    files+=(-f "$HERE_W/compose-prerename.yaml")
+  fi
+  TT_IMAGE=$1 docker compose -p "$PROJECT" "${files[@]}" up -d --no-deps --no-build --force-recreate --wait "$2" >/dev/null 2>&1
 }
+# rebrand:keep-end
 
 # Signs in to a node again (a recreated node's session may be gone).
 relogin() { # node
@@ -730,17 +751,24 @@ relogin() { # node
   return 1
 }
 
-# The node that is primary and holds its lease, waiting up to budget seconds; nodes named after the
-# budget are skipped (a killed one).
-wait_primary() { # budget [excluded-node...]
+# rebrand:keep-start
+# A node's metric by its new name, or by the pre-rename one when the node runs the old image.
+metric_any() { # port name-without-prefix
+  local v
+  v=$(metric "$1" "wrendns_$2")
+  [ -n "$v" ] || v=$(metric "$1" "telltale_$2")
+  echo "$v"
+}
+
+# The node that is primary and holds its lease, by either metric name; nodes named after the budget are skipped.
+wait_primary_any() { # budget [excluded-node...]
   local budget=$1 n end
   shift
   end=$(( $(date +%s) + budget ))
   while [ "$(date +%s)" -lt "$end" ]; do
     for n in "${NODES[@]}"; do
       case " $* " in *" $n "*) continue ;; esac
-      if [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] \
-        && [ "$(metric "${MET[$n]}" telltale_cluster_lease_held)" = 1 ]; then
+      if [ "$(metric_any "${MET[$n]}" cluster_primary)" = 1 ] && [ "$(metric_any "${MET[$n]}" cluster_lease_held)" = 1 ]; then
         echo "$n"
         return 0
       fi
@@ -749,6 +777,11 @@ wait_primary() { # budget [excluded-node...]
   done
   return 1
 }
+
+# The node that is primary and holds its lease (by either metric name: an image from before the rename
+# calls them telltale_*), waiting up to budget seconds; nodes named after the budget are skipped.
+wait_primary() { wait_primary_any "$@"; }
+# rebrand:keep-end
 
 # 0 once a node lists a list by name (present) or stops listing it (absent), within 30 s.
 list_is() { # node present|absent name
@@ -762,16 +795,18 @@ list_is() { # node present|absent name
 }
 
 step "j. a cluster upgraded from an older version keeps its API entries (T24.40)"
-if ! docker image inspect "$OLD_IMAGE" >/dev/null 2>&1; then
+if [ "${ONLY:-}" = prerename ]; then
+  echo "SKIP: ONLY=prerename"
+elif ! docker image inspect "$OLD_IMAGE" >/dev/null 2>&1; then
   if [ "${REQUIRE_UPGRADE:-}" = 1 ]; then bad "the older image $OLD_IMAGE is not here (build one from a commit before ADR-1016)"; fi
-  echo "SKIP: the older image $OLD_IMAGE is not here (set OLD_IMAGE, or build telltale:lapse-base from a commit before ADR-1016)"
+  echo "SKIP: the older image $OLD_IMAGE is not here (set OLD_IMAGE, or build wrendns:lapse-base from a commit before ADR-1016)"
 else
   # Automatic failover on (check a2 did it in a full run; ONLY=upgrade skips a2): the failovers below
   # are leases running out.
-  if [ "$(metric "${MET[primary]}" telltale_cluster_failover_auto)" != 1 ]; then
-    "${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null       || bad "couldn't turn automatic failover on"
+  if [ "$(metric_any "${MET[primary]}" cluster_failover_auto)" != 1 ]; then
+    "${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null       || bad "couldn't turn automatic failover on"
     for _ in $(seq 60); do
-      [ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] && break
+      [ "$(metric_any "${MET[primary]}" cluster_lease_held)" = 1 ] && break
       sleep 0.5
     done
   fi
@@ -856,5 +891,129 @@ else
   at_image "$IMAGE" "$N2" || bad "$N2 didn't come back"
   pass "older primary $P, older failover to $S, upgraded; $N1 then $N2 then $N3 primary; dry run, edit and delete kept"
 fi
+
+# rebrand:keep-start
+# ---------------------------------------------------------------------------------------------
+# T33.2 (ADR-1028): a rolling upgrade across the rename. The old nodes call themselves `telltale`
+# (the command, the metrics, the session cookie, the mTLS names in their certificates); the new ones
+# are `wrendns`. A cluster of both must stay whole and keep answering through the roll.
+PRE_IMAGE=${PRE_RENAME_IMAGE:-telltale:pre-rename}
+
+# Asks every node's DNS for a name every 0.3 s, one line per round: the time, then 1 (NOERROR with the
+# address) or 0 for each node.
+PROBE_PID=
+probe_start() { # name ip
+  rm -f "$E/probe.stop"
+  (
+    while [ ! -e "$E/probe.stop" ]; do
+      line=$(now_ms)
+      for n in "${NODES[@]}"; do
+        if [ "$(dnsans "$n" "$1")" = "NOERROR $2" ]; then line="$line 1"; else line="$line 0"; fi
+      done
+      echo "$line"
+      sleep 0.3
+    done
+  ) >"$E/probe.log" 2>/dev/null &
+  PROBE_PID=$!
+}
+# The loop ends at its next round once the stop file exists (a kill of the subshell isn't reliable under
+# Git Bash on Windows, and `wait` would then never return).
+probe_stop() {
+  [ -z "$PROBE_PID" ] || { : > "$E/probe.stop"; wait "$PROBE_PID" 2>/dev/null; }
+  PROBE_PID=
+}
+
+step "l. a rolling upgrade from the pre-rename image keeps the cluster whole and DNS answering (T33.2)"
+if ! docker image inspect "$PRE_IMAGE" >/dev/null 2>&1; then
+  if [ "${REQUIRE_PRERENAME:-}" = 1 ]; then bad "the pre-rename image $PRE_IMAGE is not here (build it from the commit before the rename)"; fi
+  echo "SKIP: the pre-rename image $PRE_IMAGE is not here (set PRE_RENAME_IMAGE, or build telltale:pre-rename from the commit before the rename)"
+else
+  # Automatic failover on, as in j: the primary's replacement below is a lease running out.
+  if [ "$(metric_any "${MET[primary]}" cluster_failover_auto)" != 1 ]; then
+    "${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null \
+      || bad "couldn't turn automatic failover on"
+    for _ in $(seq 60); do
+      [ "$(metric_any "${MET[primary]}" cluster_lease_held)" = 1 ] && break
+      sleep 0.5
+    done
+  fi
+  # Every node on the pre-rename image, one at a time.
+  for n in "${NODES[@]}"; do at_image "$PRE_IMAGE" "$n" || bad "$n didn't come up on $PRE_IMAGE"; done
+  for n in "${NODES[@]}"; do relogin "$n" || bad "$n's administrator can't sign in on the pre-rename image"; done
+  P=$(wait_primary_any 120) || bad "no primary on the pre-rename image"
+  for _ in $(seq 120); do sees_connected "$P" 3 && break; sleep 0.5; done
+  sees_connected "$P" 3 || bad "the pre-rename cluster isn't whole (primary $P)"
+  grep -q telltale_session "$E/jar-$P.json" || bad "the pre-rename node set no telltale_session cookie: this check needs the old image"
+  # What the old nodes hold: a record, a list entry, and an API token made on the old primary.
+  put_json l-rec.json '{"records":[{"type":"A","value":"10.0.0.77"}]}'
+  call "$P" PUT /api/v1/records/l.cluster3.test "$E/l-rec.json"
+  [ "$RS" = 200 ] || bad "adding a record on the pre-rename primary $P answered $RS: $RB"
+  put_json l-list.json '{"url":"https://lists.example/t332.txt"}'
+  call "$P" PUT /api/v1/lists/t332-keep "$E/l-list.json"
+  [ "$RS" = 200 ] || bad "adding a list on the pre-rename primary $P answered $RS: $RB"
+  put_json l-token.json '{"name":"t332","kind":"agent","scopes":["analytics:read","config:read"]}'
+  call "$P" POST /api/v1/tokens "$E/l-token.json"
+  TOK=$(jget 'd["token"]')
+  [ -n "$TOK" ] || bad "no API token from the pre-rename primary ($RS): $RB"
+  for n in "${NODES[@]}"; do
+    await_dns 15000 "$n" l.cluster3.test 10.0.0.77 || bad "$n doesn't answer the record on the pre-rename image"
+    list_is "$n" present t332-keep || bad "$n doesn't list t332-keep on the pre-rename image"
+  done
+  # The roll: replicas first, the primary last (the owner's order), DNS asked of every node throughout.
+  probe_start l.cluster3.test 10.0.0.77
+  for n in "${NODES[@]}"; do
+    [ "$n" = "$P" ] && continue
+    at_image "$IMAGE" "$n" || { probe_stop; bad "$n didn't come up on the renamed image"; }
+    # No sign-in again: the session the old node gave still works on the new one.
+    call "$n" GET /api/v1/lists
+    [ "$RS" = 200 ] || { probe_stop; bad "$n answered $RS to the pre-rename session cookie after its upgrade: $RB"; }
+    for _ in $(seq 120); do sees_connected "$P" 3 && break; sleep 0.5; done
+    sees_connected "$P" 3 || { probe_stop; bad "the cluster isn't whole after $n moved to the renamed image (old primary $P sees $(connected_count "$P"))"; }
+    [ -n "$(metric "${MET[$n]}" wrendns_cluster_primary)" ] && [ -n "$(metric "${MET[$n]}" telltale_cluster_primary)" ] \
+      || { probe_stop; bad "$n doesn't export both metric names"; }
+  done
+  at_image "$IMAGE" "$P" || { probe_stop; bad "$P didn't come up on the renamed image"; }
+  N1=$(wait_primary_any 120) || { probe_stop; bad "no primary after the roll"; }
+  # An old Compose healthcheck (`/usr/local/bin/<old name> health`) still passes on the new image (ADR-1028 §1).
+  for n in "${NODES[@]}"; do
+    docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml" exec -T "$n" /usr/local/bin/telltale health >/dev/null 2>&1       || { probe_stop; bad "the old health command (/usr/local/bin/telltale health) fails on $n's renamed image"; } # rebrand:keep
+  done
+  for n in "${NODES[@]}"; do
+    call "$n" GET /api/v1/lists
+    if [ "$RS" = 401 ] && [ "$n" = "$P" ] && [ "$N1" != "$P" ]; then
+      # Replacing the old primary can take longer than a lease, and then another node is elected: the node that
+      # stepped down takes its users from the new primary, which ends the sessions it had. That is a failover,
+      # not the rename; the node signs in again.
+      echo "    ($n stepped down while it was replaced; its sessions ended with the users' sync)"
+      relogin "$n" || { probe_stop; bad "$n's administrator can't sign in after the roll"; }
+    else
+      [ "$RS" = 200 ] || { probe_stop; bad "$n answered $RS to the pre-rename session cookie after the roll: $RB"; }
+    fi
+  done
+  for _ in $(seq 120); do sees_connected "$N1" 3 && break; sleep 0.5; done
+  sees_connected "$N1" 3 || { probe_stop; bad "the cluster isn't whole after the roll (primary $N1 sees $(connected_count "$N1"))"; }
+  probe_stop
+  rounds=$(awk 'END {print NR}' "$E/probe.log")
+  thin=$(awk '{ if ($2 + $3 + $4 < 2) bad++ } END {print bad + 0}' "$E/probe.log")
+  [ "$rounds" -ge 20 ] || bad "the DNS monitor made only $rounds samples"
+  [ "$thin" = 0 ] || bad "DNS had fewer than two answering nodes in $thin of $rounds samples during the roll"
+  # Every node runs the renamed image now; what the old nodes held is served by all of them.
+  for n in "${NODES[@]}"; do
+    [ "$(docker inspect -f '{{.Config.Image}}' "$(container "$n")")" = "$IMAGE" ] || bad "$n isn't on $IMAGE"
+    list_is "$n" present t332-keep || bad "$n lost t332-keep in the roll"
+    await_dns 10000 "$n" l.cluster3.test 10.0.0.77 || bad "$n lost the record in the roll"
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $TOK" "http://127.0.0.1:${API[$n]}/api/v1/lists")
+    [ "$code" = 200 ] || bad "the API token made on the old primary answered $code on $n"
+  done
+  # A write on the new primary reaches the others (the new nodes talk to each other as before).
+  # (The session cookie survived the roll; a CSRF token is per process, so a write signs in once more.)
+  relogin "$N1" || bad "$N1's administrator can't sign in after the roll"
+  put_json l-rec2.json '{"records":[{"type":"A","value":"10.0.0.78"}]}'
+  call "$N1" PUT /api/v1/records/l2.cluster3.test "$E/l-rec2.json"
+  [ "$RS" = 200 ] || bad "a write on the new primary $N1 answered $RS: $RB"
+  for n in "${NODES[@]}"; do await_dns 10000 "$n" l2.cluster3.test 10.0.0.78 || bad "$n doesn't answer the record written after the roll"; done
+  pass "pre-rename image, then the renamed one (replicas first); $N1 primary; $rounds DNS samples, always two or more answering; sessions, token and entries kept"
+fi
+# rebrand:keep-end
 
 echo "== all checks passed"

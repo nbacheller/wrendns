@@ -4,9 +4,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
-use telltale_snmp::pdu::Value;
-use telltale_snmp::secret::SecretValue;
-use telltale_snmp::usm::{self, AuthProto, PrivProto, RoundKeys, UsmUser};
+use wrendns_snmp::pdu::Value;
+use wrendns_snmp::secret::SecretValue;
+use wrendns_snmp::usm::{self, AuthProto, PrivProto, RoundKeys, UsmUser};
 
 // Ku is two 1 MiB password expansions: derive once, not per input.
 static KEYS: OnceLock<Option<RoundKeys>> = OnceLock::new();

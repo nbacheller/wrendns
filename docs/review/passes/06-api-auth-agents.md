@@ -7,16 +7,16 @@ The management surface: the REST API, sign-in (local users, TOTP, OIDC), tokens 
 the audit log, configuration changes made through the API, and AI-agent access over MCP
 with plans and approvals.
 
-- `crates/telltale-api/` (`lib.rs` router, `auth/`, `mcp.rs`, `plans.rs`, `config_api.rs`,
+- `crates/wrendns-api/` (`lib.rs` router, `auth/`, `mcp.rs`, `plans.rs`, `config_api.rs`,
   `problem.rs`, `vqlog.rs` API, `ui.rs` static UI serving)
-- `crates/telltale/src/`: `api_backend.rs` (the backend the API calls), `auth_setup.rs`,
+- `crates/wrendns/src/`: `api_backend.rs` (the backend the API calls), `auth_setup.rs`,
   `mcp_stdio.rs`, `ctl.rs`, `checks.rs`, `managed.rs` (UI-made config overrides)
 - `docs/api/openapi.json`, `docs/api/mcp-tools.json` (generated; tests check they match)
 
 ## Read first
 1. `spec/07-api-and-ui.md`, `spec/13-agent-api-and-mcp.md`, `spec/08` §5 (security);
    ADR-028 to ADR-030, ADR-033, ADR-034, ADR-040, ADR-064, ADR-065, ADR-069 to ADR-071.
-2. `crates/telltale-api/src/lib.rs` (routes and middleware) → `auth/` → `mcp.rs` + `plans.rs`.
+2. `crates/wrendns-api/src/lib.rs` (routes and middleware) → `auth/` → `mcp.rs` + `plans.rs`.
 
 ## Look for
 - **Authentication and sessions:** password hashing parameters, lockout, TOTP replay,
@@ -38,7 +38,7 @@ through MCP tools.
 
 ## Useful
 ```sh
-cargo test -p telltale-api
+cargo test -p wrendns-api
 bash deploy/agent-e2e.sh; bash deploy/mcp-e2e.sh             # if prerequisites are present
-UPDATE_OPENAPI=1 cargo test -p telltale-api api_001_committed_openapi   # regenerate only if you change the API
+UPDATE_OPENAPI=1 cargo test -p wrendns-api api_001_committed_openapi   # regenerate only if you change the API
 ```

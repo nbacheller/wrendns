@@ -1,0 +1,32 @@
+//! Client identification, groups, schedules, rate limiting, rewrites, and local data.
+//!
+//! Part of WrenDNS. See `spec/02-architecture.md` §2 and `spec/03` §3.
+
+// REQ: NFR-003 — no unsafe outside wrendns-net.
+#![forbid(unsafe_code)]
+
+pub mod clients;
+pub mod local;
+pub mod quick;
+pub mod ratelimit;
+pub mod special;
+pub mod workloads;
+
+use std::net::IpAddr;
+
+use wrendns_config::Cidr;
+
+pub use clients::{
+    AnswerFilter, BlockPolicy, Client, ClientTable, Group, GroupFrom, IdSource, Identity,
+    MatchedKey, Neighbors, Pause, Rewrite, RewriteTarget,
+};
+pub use local::{LoadReport, LocalData, device_label, reverse_name};
+pub use quick::{QuickMatch, QuickRule, QuickRules, RuleScope, quick_ref};
+pub use ratelimit::RateLimiter;
+pub use special::{Special, classify, ddr_records, is_ddr_query};
+pub use workloads::{GroupOrigin, Interval, Pod, Workload, WorkloadTable, Workloads};
+
+/// True if `ip` may use the resolver (`spec/08` §6: refuse everyone outside these networks).
+pub fn is_allowed(networks: &[Cidr], ip: IpAddr) -> bool {
+    networks.iter().any(|n| n.contains(ip))
+}

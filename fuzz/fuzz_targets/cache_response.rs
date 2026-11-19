@@ -7,8 +7,8 @@
 use std::time::Instant;
 
 use libfuzzer_sys::fuzz_target;
-use telltale_cache::{Cache, CacheKey, CachePolicy, Client, Lookup};
-use telltale_proto::{
+use wrendns_cache::{Cache, CacheKey, CachePolicy, Client, Lookup};
+use wrendns_proto::{
     EdnsOut, NameBuf, build_query, parse_query, response_edns, rtype, summarize, truncate_for_udp,
 };
 

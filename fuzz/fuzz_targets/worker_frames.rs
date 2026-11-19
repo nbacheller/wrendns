@@ -14,7 +14,7 @@ use std::task::{Context, Poll, Waker};
 
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../crates/telltale/src/discovery/frames.rs"]
+#[path = "../../crates/wrendns/src/discovery/frames.rs"]
 #[allow(dead_code)]
 mod frames;
 

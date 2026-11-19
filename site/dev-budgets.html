@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Size and performance budgets — TelltaleDNS</title>
-<meta name="description" content="The limits a change to TelltaleDNS must stay within: the 15 MiB image, the 400 KiB web UI, and the DNS path's speed. What we cut, what we measured and refused, and how to measure without fooling yourself.">
+<title>Size and performance budgets — WrenDNS</title>
+<meta name="description" content="The limits a change to WrenDNS must stay within: the 15 MiB image, the 400 KiB web UI, and the DNS path's speed. What we cut, what we measured and refused, and how to measure without fooling yourself.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Developers</p>
   <h1>Size and performance budgets</h1>
-  <p class="lede">TelltaleDNS runs on a Raspberry Pi next to other things, so footprint and speed are features with hard limits. This page lists the limits, where the bytes and the microseconds are, what we have already cut, what we measured and refused (so nobody has to measure it again), and how to measure your own change.</p>
+  <p class="lede">WrenDNS runs on a Raspberry Pi next to other things, so footprint and speed are features with hard limits. This page lists the limits, where the bytes and the microseconds are, what we have already cut, what we measured and refused (so nobody has to measure it again), and how to measure your own change.</p>
   <ul class="onpage">
     <li><a href="#rules">The rules</a></li>
     <li><a href="#image">The image: 15 MiB</a></li>
@@ -33,7 +33,7 @@
   <ul>
     <li><b>Performance ranks above footprint, and footprint above everything else but speed.</b> If a size saving costs speed on the DNS path, the speed wins. We have refused savings of 0.3 MiB for that reason (below).</li>
     <li><b>Never add allocation, locking, or I/O to the hot path</b> without a benchmark that shows it is within budget. The steady-state cache-hit and blocked-answer paths allocate nothing (NFR-002, checked by an allocation-counting test).</li>
-    <li><b>A new runtime dependency</b> needs a one-line justification and must not push the image past 15 MiB (<a href="https://github.com/paimonsoror/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>, rule 8).</li>
+    <li><b>A new runtime dependency</b> needs a one-line justification and must not push the image past 15 MiB (<a href="https://github.com/nbacheller/telltaledns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>, rule 8).</li>
     <li><b>Measure, don't assume.</b> Every number in an ADR came from a real build. If you cannot say how you measured it, it is a guess.</li>
   </ul>
 </section>
@@ -41,10 +41,10 @@
 <section id="image">
   <h2>The image: 15 MiB per architecture</h2>
   <ul>
-    <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 15 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
+    <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/nbacheller/telltaledns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 15 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
     <li><b>Where the bytes are.</b> About 97% of the image is the one static binary. Its largest parts are the DNS and TLS code, SQLite, and the embedded web UI.</li>
     <li><b>Where we are.</b> About 13.0 MiB on amd64, 12.3 on arm64, and 12.8 on armv7 after the cuts below (it was 14.84, 14.16, and 14.82 when the margin ran out). The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
-    <li><b>Measure it like CI does.</b> Build the image with BuildKit and OCI output as the <a href="https://github.com/paimonsoror/telltaledns/blob/main/.github/workflows/image.yml"><code>image</code> workflow</a> does, then run <code>python3 deploy/image/size.py --oci image.tar</code>. A debug build says nothing: the release profile uses fat LTO, one codegen unit, and abort on panic.</li>
+    <li><b>Measure it like CI does.</b> Build the image with BuildKit and OCI output as the <a href="https://github.com/nbacheller/telltaledns/blob/main/.github/workflows/image.yml"><code>image</code> workflow</a> does, then run <code>python3 deploy/image/size.py --oci image.tar</code>. A debug build says nothing: the release profile uses fat LTO, one codegen unit, and abort on panic.</li>
   </ul>
 </section>
 
@@ -71,7 +71,7 @@
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>Idea</th><th>What it would save</th><th>Why not</th></tr></thead>
     <tbody>
-      <tr><td><code>opt-level = "s"</code> for <code>telltale-config</code></td><td>0.6 MiB</td><td>Its per-query client lookup grew and cache-hot throughput fell about 10%. Speed wins.</td></tr>
+      <tr><td><code>opt-level = "s"</code> for <code>wrendns-config</code></td><td>0.6 MiB</td><td>Its per-query client lookup grew and cache-hot throughput fell about 10%. Speed wins.</td></tr>
       <tr><td>SQLite's C code at <code>-Os</code></td><td>0.31 MiB</td><td>On the rollup store's real queries the dashboard's week-wide top list was 10.5% slower, minute reads 11%, point reads 22%, bulk inserts 38%.</td></tr>
       <tr><td><code>opt-level = "s"</code> for <code>rusqlite</code></td><td>tiny</td><td>On the same query path, with no measurable gain to pay for it.</td></tr>
       <tr><td>zstd image layers</td><td>about 2.1 MiB</td><td>Docker before 23.0 and containerd before 1.5 cannot pull them, and Debian 12's <code>docker.io</code> is 20.10.</td></tr>
@@ -81,7 +81,7 @@
       <tr><td>Re-compressing the layer with zopfli</td><td>about 0.95 MiB</td><td>A new build step and a provenance question for a one-time gain.</td></tr>
     </tbody>
   </table></div>
-  <div class="callout"><p><b>A guard test keeps the profile honest.</b> <code>crates/telltale-config/tests/profile.rs</code> fails if a crate known to be on the DNS path is added to the size-optimized list, if an entry is not exactly <code>"s"</code>, or if an entry no longer matches <code>Cargo.lock</code>. The last one matters: a <code>name@version</code> entry that a dependency update makes stale is only a cargo warning, and the saving would vanish unseen. A crate present in two versions must be written <code>name@version</code>.</p></div>
+  <div class="callout"><p><b>A guard test keeps the profile honest.</b> <code>crates/wrendns-config/tests/profile.rs</code> fails if a crate known to be on the DNS path is added to the size-optimized list, if an entry is not exactly <code>"s"</code>, or if an entry no longer matches <code>Cargo.lock</code>. The last one matters: a <code>name@version</code> entry that a dependency update makes stale is only a cargo warning, and the saving would vanish unseen. A crate present in two versions must be written <code>name@version</code>.</p></div>
 </section>
 
 <section id="ui">
@@ -97,7 +97,7 @@
 <section id="speed">
   <h2>The DNS path's speed</h2>
   <ul>
-    <li><b>The path.</b> Receive, parse, policy, cache or forward, answer. Everything else (telemetry, storage, the API, the cluster) runs off it and may fail without a query going unanswered. The crates on the path: <code>telltale-proto</code>, <code>-net</code>, <code>-cache</code>, <code>-filter</code>, <code>-policy</code>, <code>-telemetry</code>, <code>-upstream</code>, and the per-query lookups in <code>telltale-config</code>. Run <code>make bench-smoke</code> after a change to any of them.</li>
+    <li><b>The path.</b> Receive, parse, policy, cache or forward, answer. Everything else (telemetry, storage, the API, the cluster) runs off it and may fail without a query going unanswered. The crates on the path: <code>wrendns-proto</code>, <code>-net</code>, <code>-cache</code>, <code>-filter</code>, <code>-policy</code>, <code>-telemetry</code>, <code>-upstream</code>, and the per-query lookups in <code>wrendns-config</code>. Run <code>make bench-smoke</code> after a change to any of them.</li>
     <li><b>CI cannot judge speed.</b> Hosted runners are too noisy for a regression gate, so the <code>bench-smoke</code> job fails only on lost queries or errors. You compare before and after yourself.</li>
     <li><b>Benchmark with a control.</b> On a shared build machine two runs of the same binary differed by up to about 15% for the DNS benchmark (about 0.5 to 4% for a single-thread SQLite workload). So build the baseline, the change, and a second copy of the baseline (the control), run them in rotation five or more times, and compare medians: a difference inside the control's spread is noise.</li>
     <li><b>Benchmark the build you ship.</b> <code>make bench-smoke</code> uses the <code>bench-fast</code> profile (thin LTO, 16 codegen units). The release build is fat LTO with one codegen unit and per-crate overrides, so a change to the release profile needs a release build of each variant (<code>cargo build --release --config 'profile.release.package.X.opt-level="s"'</code> sets an override without editing the manifest).</li>

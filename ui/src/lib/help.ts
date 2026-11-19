@@ -40,5 +40,5 @@ export function topic(id: string): Topic {
 
 /** Where a topic's full documentation lives. */
 export function docsUrl(t: Topic): string | undefined {
-  return t.docs ? `https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#${t.docs}` : undefined;
+  return t.docs ? `https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#${t.docs}` : undefined;
 }

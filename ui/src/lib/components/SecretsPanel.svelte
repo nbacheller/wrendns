@@ -99,7 +99,7 @@
         </p>
       {/if}
       <p class="small muted">
-        The key itself is never shown. To rotate it, stop the node and run <code>telltale secrets rotate-key</code> (offline).
+        The key itself is never shown. To rotate it, stop the node and run <code>wrendns secrets rotate-key</code> (offline).
       </p>
     </section>
 

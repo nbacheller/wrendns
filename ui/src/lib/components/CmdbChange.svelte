@@ -1,7 +1,7 @@
 <script lang="ts">
   // REQ: DSC-903 (T31.2, ADR-1004 section 4, rule R1) — a manual link, unlink, merge or split, shown as
   // a preview first: the records that would move (a dry run, nothing written), then Apply. The reason
-  // goes with the pin and the audit entry (X-Telltale-Reason). Cancel drops it.
+  // goes with the pin and the audit entry (X-Wrendns-Reason). Cancel drops it.
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';

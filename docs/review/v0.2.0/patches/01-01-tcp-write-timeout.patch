@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-net/src/tcp.rs b/crates/telltale-net/src/tcp.rs
+diff --git a/crates/wrendns-net/src/tcp.rs b/crates/wrendns-net/src/tcp.rs
 index 8a5a049..8d1d597 100644
---- a/crates/telltale-net/src/tcp.rs
-+++ b/crates/telltale-net/src/tcp.rs
+--- a/crates/wrendns-net/src/tcp.rs
++++ b/crates/wrendns-net/src/tcp.rs
 @@ -78,6 +78,9 @@ pub struct TcpStats {
      pub tls_failed: AtomicU64,
      /// Connections closed for a missing or malformed PROXY header.
@@ -67,10 +67,10 @@ index 8a5a049..8d1d597 100644
 +        }
 +    }
 +}
-diff --git a/crates/telltale-net/tests/tcp.rs b/crates/telltale-net/tests/tcp.rs
+diff --git a/crates/wrendns-net/tests/tcp.rs b/crates/wrendns-net/tests/tcp.rs
 index b780757..34ce727 100644
---- a/crates/telltale-net/tests/tcp.rs
-+++ b/crates/telltale-net/tests/tcp.rs
+--- a/crates/wrendns-net/tests/tcp.rs
++++ b/crates/wrendns-net/tests/tcp.rs
 @@ -138,6 +138,48 @@ async fn dns_001_tcp_connection_cap() {
      server.shutdown().await;
  }

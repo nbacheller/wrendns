@@ -19,7 +19,7 @@
   "the chart is linted (`helm lint --strict`) and installed on kind and k3d in CI (the `helm` jobs, `deploy/helm/scaled-e2e.sh`)",
 ]
 "DOC-001" = [
-  "`site/build.py --check` in the CI `site` job; published by `.github/workflows/pages.yml` on every push to `main`",
+  "`site/build.py --check` in the CI `site` job; published to wrendns.com by `.github/workflows/site.yml` on every push to `main` that touches the site",
 ]
 "DOC-003" = [
   "`site/how-it-works.html`, `site/nerds.html`, `site/performance.html`, `site/config.html` (generated from the schema)",
@@ -28,7 +28,7 @@
   "`site/standards.html`: every RFC with its status",
 ]
 "DNS-013" = [
-  "EDE 15/17 on blocked answers: `flt_008_blocked_a_and_aaaa_null_answers`, `flt_008_nxdomain_and_nodata_with_soa` (`telltale-proto`)",
+  "EDE 15/17 on blocked answers: `flt_008_blocked_a_and_aaaa_null_answers`, `flt_008_nxdomain_and_nodata_with_soa` (`wrendns-proto`)",
   "EDE 3 on stale answers: `dns_007_serve_stale_window`, `dns_007_refreshed_answers_come_from_the_cache_at_once`",
   "EDE 22 when no upstream answers: `dns_013_no_upstream_answer_is_servfail_with_ede_22`; EDE 21 on refused zone transfers: `dns_019_zone_transfers_are_refused_without_upstream`",
 ]

@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-upstream/src/health.rs b/crates/telltale-upstream/src/health.rs
+diff --git a/crates/wrendns-upstream/src/health.rs b/crates/wrendns-upstream/src/health.rs
 index 4d4a28b..8eb557b 100644
---- a/crates/telltale-upstream/src/health.rs
-+++ b/crates/telltale-upstream/src/health.rs
+--- a/crates/wrendns-upstream/src/health.rs
++++ b/crates/wrendns-upstream/src/health.rs
 @@ -27,6 +27,59 @@ pub enum Breaker {
      HalfOpen,
  }
@@ -92,7 +92,7 @@ index 4d4a28b..8eb557b 100644
      }
  
 +    /// REQ: UPS-006, OBS-011 — records an attempt with what went wrong, so that failures can
-+    /// be told apart (`telltale_upstream_failures_total{kind}`); then as [`Self::record`].
++    /// be told apart (`wrendns_upstream_failures_total{kind}`); then as [`Self::record`].
 +    pub fn record_outcome(&self, outcome: Outcome, latency: Duration, now: Instant) {
 +        if let Some(i) = outcome.index() {
 +            self.0.lock().by_kind[i] += 1;
@@ -138,10 +138,10 @@ index 4d4a28b..8eb557b 100644
      #[test]
      fn ups_005_ewma_tracks_latency() {
          let h = Health::default();
-diff --git a/crates/telltale-upstream/src/upstream.rs b/crates/telltale-upstream/src/upstream.rs
+diff --git a/crates/wrendns-upstream/src/upstream.rs b/crates/wrendns-upstream/src/upstream.rs
 index 18a01b9..a7d046f 100644
---- a/crates/telltale-upstream/src/upstream.rs
-+++ b/crates/telltale-upstream/src/upstream.rs
+--- a/crates/wrendns-upstream/src/upstream.rs
++++ b/crates/wrendns-upstream/src/upstream.rs
 @@ -20,7 +20,7 @@ use crate::doh::Doh;
  use crate::doh3::Doh3;
  use crate::doq::Doq;
@@ -185,10 +185,10 @@ index 18a01b9..a7d046f 100644
          result
      }
  
-diff --git a/crates/telltale-upstream/tests/upstream.rs b/crates/telltale-upstream/tests/upstream.rs
+diff --git a/crates/wrendns-upstream/tests/upstream.rs b/crates/wrendns-upstream/tests/upstream.rs
 index f5a3250..7fea78d 100644
---- a/crates/telltale-upstream/tests/upstream.rs
-+++ b/crates/telltale-upstream/tests/upstream.rs
+--- a/crates/wrendns-upstream/tests/upstream.rs
++++ b/crates/wrendns-upstream/tests/upstream.rs
 @@ -393,6 +393,37 @@ async fn ups_006_chaos_one_upstream_blackholed() {
      }
  }
@@ -196,7 +196,7 @@ index f5a3250..7fea78d 100644
 +/// REQ: UPS-006, OBS-011 — what went wrong is counted by kind, not only as "failure".
 +#[tokio::test]
 +async fn ups_006_failure_kinds_are_counted() {
-+    use telltale_upstream::health::Outcome;
++    use wrendns_upstream::health::Outcome;
 +    let kind = |u: &Upstream, k: Outcome| {
 +        let s = u.health.snapshot();
 +        Outcome::FAILURES
@@ -227,16 +227,16 @@ index f5a3250..7fea78d 100644
  /// REQ: DNS-015 (T9.9) — `ecs = "client"`: the query carries the client's /24, and a
  /// question without a subnet (a private client) carries none.
  #[tokio::test]
-diff --git a/crates/telltale/src/http.rs b/crates/telltale/src/http.rs
+diff --git a/crates/wrendns/src/http.rs b/crates/wrendns/src/http.rs
 index fab903f..e6bef67 100644
---- a/crates/telltale/src/http.rs
-+++ b/crates/telltale/src/http.rs
-@@ -24,7 +24,7 @@ use telltale_net::{DohStats, TcpStats, WorkerStats};
- use telltale_telemetry::Metrics;
- use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
- use telltale_upstream::Router;
--use telltale_upstream::health::Breaker;
-+use telltale_upstream::health::{Breaker, Outcome};
+--- a/crates/wrendns/src/http.rs
++++ b/crates/wrendns/src/http.rs
+@@ -24,7 +24,7 @@ use wrendns_net::{DohStats, TcpStats, WorkerStats};
+ use wrendns_telemetry::Metrics;
+ use wrendns_telemetry::prom::{CONTENT_TYPE, PromWriter};
+ use wrendns_upstream::Router;
+-use wrendns_upstream::health::Breaker;
++use wrendns_upstream::health::{Breaker, Outcome};
  
  /// Everything `/metrics` reads.
  #[derive(Debug)]
@@ -246,39 +246,39 @@ index fab903f..e6bef67 100644
      }
 +    // REQ: UPS-006, OBS-011 — the failures by kind, so a failure rate can be read.
 +    w.family(
-+        "telltale_upstream_failures_total",
++        "wrendns_upstream_failures_total",
 +        "counter",
 +        "Failed upstream attempts by kind: timeout, network, bad_response, unresolved, servfail, refused, other_rcode.",
 +    );
 +    for (name, s) in &snaps {
 +        for (kind, n) in Outcome::FAILURES.iter().zip(s.failures_by_kind) {
 +            w.sample(
-+                "telltale_upstream_failures_total",
++                "wrendns_upstream_failures_total",
 +                &[("upstream", name), ("kind", kind.label())],
 +                n,
 +            );
 +        }
 +    }
      w.family(
-         "telltale_upstream_breaker_state",
+         "wrendns_upstream_breaker_state",
          "gauge",
 @@ -1285,6 +1300,7 @@ mod tests {
-             "telltale_query_duration_seconds",
-             "telltale_cache_hits_total",
-             "telltale_upstream_requests_total",
-+            "telltale_upstream_failures_total",
-             "telltale_udp_received_total",
-             "telltale_tcp_connections_total",
+             "wrendns_query_duration_seconds",
+             "wrendns_cache_hits_total",
+             "wrendns_upstream_requests_total",
++            "wrendns_upstream_failures_total",
+             "wrendns_udp_received_total",
+             "wrendns_tcp_connections_total",
          ] {
 diff --git a/docs/running.md b/docs/running.md
 index ca9a240..8fa647a 100644
 --- a/docs/running.md
 +++ b/docs/running.md
 @@ -1580,6 +1580,7 @@ Main metrics:
- | `telltale_responses_total{rcode}`, `telltale_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
- | `telltale_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
- | `telltale_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
-+| `telltale_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
- | `telltale_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
- | `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
- | `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list |
+ | `wrendns_responses_total{rcode}`, `wrendns_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
+ | `wrendns_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
+ | `wrendns_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
++| `wrendns_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
+ | `wrendns_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
+ | `wrendns_upstream_breaker_state`, `wrendns_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
+ | `wrendns_blocked_total{group,list}` | blocks by the client's group and the deciding list |

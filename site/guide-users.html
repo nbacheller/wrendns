@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Users and sign-in — TelltaleDNS</title>
+<title>Users and sign-in — WrenDNS</title>
 <meta name="description" content="Create the first admin, add people with the right role, turn on two-factor sign-in, sign in with Keycloak or Authentik over OpenID Connect, and give scripts and AI agents their own tokens.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
@@ -34,8 +34,8 @@
 <section id="first-admin">
   <h2>Create the first admin</h2>
   <p>On first start the server creates a one-time <b>setup token</b> and saves it in <code>&lt;data_dir&gt;/setup-token</code>, readable by its owner only. The log says where the file is, never the token itself. Print it with:</p>
-<pre><code>telltale auth setup-token</code></pre>
-  <p class="muted">On a native install, run it as the service user: <code>sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>.</p>
+<pre><code>wrendns auth setup-token</code></pre>
+  <p class="muted">On a native install, run it as the service user: <code>sudo -u wrendns wrendns auth setup-token -c /etc/wrendns/wrendns.toml</code>.</p>
   <div class="tabs">
     <div role="tablist" aria-label="First admin">
       <button role="tab" type="button">Web UI</button>
@@ -44,7 +44,7 @@
     </div>
     <div class="panel" id="first-ui"><h3>Web UI</h3>
       <ol class="guide">
-        <li>Open <code>http://&lt;server&gt;:8053/</code>. On first start it shows <b>Welcome to TelltaleDNS</b>.</li>
+        <li>Open <code>http://&lt;server&gt;:8053/</code>. On first start it shows <b>Welcome to WrenDNS</b>.</li>
         <li>Paste the <b>Setup token</b>, choose an <b>Admin username</b>, and enter a password twice (at least 10 characters).</li>
         <li>Choose <b>Create admin and sign in</b>. The token file is then deleted.</li>
       </ol>
@@ -57,13 +57,13 @@
     </div>
     <div class="panel" id="first-secret"><h3>From a secret (Kubernetes, Ansible)</h3>
       <p>For a deployment that must come up configured, set these environment variables instead. They're read only while no user exists:</p>
-<pre><code>TELLTALE_BOOTSTRAP_ADMIN_USER=admin
-TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a long passphrase' | telltale auth hash-password
-# or TELLTALE_BOOTSTRAP_ADMIN_PASSWORD=...</code></pre>
+<pre><code>WRENDNS_BOOTSTRAP_ADMIN_USER=admin
+WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a long passphrase' | wrendns auth hash-password
+# or WRENDNS_BOOTSTRAP_ADMIN_PASSWORD=...</code></pre>
       <p>With the Helm chart, create a Secret with the keys <code>username</code> and <code>password</code> or <code>password-hash</code>, and name it in the values:</p>
 <pre><code>auth:
   bootstrapAdmin:
-    existingSecret: telltale-admin</code></pre>
+    existingSecret: wrendns-admin</code></pre>
       <p class="muted">The <a href="guide-kubernetes.html">Kubernetes guide</a> and <a href="helm-values.html">Helm values</a> cover the rest of the chart.</p>
     </div>
   </div>
@@ -106,7 +106,7 @@ TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a lo
 
 <section id="two-factor">
   <h2>Turn on two-factor sign-in</h2>
-  <p>After the password, TelltaleDNS asks for a 6-digit code from an authenticator app. Anyone who can change settings should turn it on.</p>
+  <p>After the password, WrenDNS asks for a 6-digit code from an authenticator app. Anyone who can change settings should turn it on.</p>
   <div class="tabs">
     <div role="tablist" aria-label="Two-factor sign-in">
       <button role="tab" type="button">Web UI</button>
@@ -139,7 +139,7 @@ totp_required_roles = ["admin"]</code></pre>
 
 <section id="sso">
   <h2>Single sign-on with OpenID Connect</h2>
-  <p>Sign in with Keycloak, Authentik, or another OpenID Connect provider. Each provider gets a "Sign in with ..." button. People are created in TelltaleDNS the first time they sign in, and their role comes from their groups at every sign-in.</p>
+  <p>Sign in with Keycloak, Authentik, or another OpenID Connect provider. Each provider gets a "Sign in with ..." button. People are created in WrenDNS the first time they sign in, and their role comes from their groups at every sign-in.</p>
   <ol class="steps">
     <li class="step"><b>Add the provider to the config file.</b>
 <pre><code>[auth.oidc]
@@ -148,8 +148,8 @@ public_url = "https://dns.example.com"     # where people open the UI
 [[auth.oidc.provider]]
 id = "authentik"                           # used in URLs
 name = "Authentik"                         # the button label
-issuer = "https://auth.example.com/application/o/telltale/"
-client_id = "telltale"
+issuer = "https://auth.example.com/application/o/wrendns/"
+client_id = "wrendns"
 client_secret_file = "/run/secrets/oidc"   # or client_secret = "..."
 groups_claim = "groups"                    # Keycloak realm roles: "realm_access.roles"
 
@@ -162,10 +162,10 @@ group = "family"
 role = "viewer"</code></pre></li>
     <li class="step"><b>Create a confidential client at the provider</b> with the redirect URI <code>&lt;public_url&gt;/api/v1/auth/oidc/&lt;id&gt;/callback</code> (here <code>https://dns.example.com/api/v1/auth/oidc/authentik/callback</code>), and allow <code>&lt;public_url&gt;/</code> after sign-out.</li>
     <li class="step"><b>Make sure the ID token carries the groups</b> (see the tabs below).</li>
-    <li class="step"><b>Restart TelltaleDNS</b> once, for <code>public_url</code> (it is read at start). Providers themselves apply without a restart: after that, add them in <b>Settings → Sign-in</b> (below), or reload the file with <code>SIGHUP</code>.</li>
+    <li class="step"><b>Restart WrenDNS</b> once, for <code>public_url</code> (it is read at start). Providers themselves apply without a restart: after that, add them in <b>Settings → Sign-in</b> (below), or reload the file with <code>SIGHUP</code>.</li>
   </ol>
   <p><b>Or add providers in the UI.</b> Admins add, change and remove providers in <b>Settings → Sign-in</b>, with no file edit and no restart, on every node of a cluster within seconds. The client secret is typed into a write-only field and stored encrypted by name (never shown again), and replicated to the cluster's nodes. A provider the config file defines is read-only there (<b>Set by file</b>). Each node keeps its own <code>public_url</code> in its file: a node without it shows the providers as <b>Inactive on this node</b> and says why. Removing a provider ends the sessions it opened; the break-glass admin and password sign-in are never touched.</p>
-  <p>What a sign-in accepts: the provider's ID token must be signed with an RSA key of at least 2048 bits, an EC key on P-256 or P-384, or an Ed25519 key, and must be for this client alone. An HTTPS issuer needs HTTPS endpoints. A client without a client secret is a public client (PKCE), and the key set is refetched at most once a minute when a token's key is unknown. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">The details are in the running guide</a>.</p>
+  <p>What a sign-in accepts: the provider's ID token must be signed with an RSA key of at least 2048 bits, an EC key on P-256 or P-384, or an Ed25519 key, and must be for this client alone. An HTTPS issuer needs HTTPS endpoints. A client without a client secret is a public client (PKCE), and the key set is refetched at most once a minute when a token's key is unknown. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md">The details are in the running guide</a>.</p>
   <div class="tabs">
     <div role="tablist" aria-label="Identity provider">
       <button role="tab" type="button">Authentik</button>
@@ -181,9 +181,9 @@ role = "viewer"</code></pre></li>
   <ul>
     <li><b>Roles:</b> someone in several mapped groups gets the highest role. Someone in none can't sign in unless you set <code>default_role</code>. <code>require_verified_email = true</code> refuses addresses the provider hasn't verified.</li>
     <li><b>Usernames</b> come from <code>preferred_username</code> (or <code>username_claim</code>). A provider account is never attached to an existing local user: if the name is taken, the new account is called <code>name@provider</code>.</li>
-    <li><b>Signing out</b> also signs out at the provider. Provider accounts have no TelltaleDNS password, but they can still create API tokens.</li>
+    <li><b>Signing out</b> also signs out at the provider. Provider accounts have no WrenDNS password, but they can still create API tokens.</li>
     <li><b>Sessions are local:</b> the provider is only contacted while signing in. If a provider can't be set up (for example, its secret file is missing), it's logged, the other providers keep working, and so does password sign-in. A provider that can't be read after a change keeps its previous settings, and its card says so.</li>
-    <li><b>On Kubernetes,</b> mount the client secret with <code>secretMounts</code> (at <code>/etc/telltale-secrets/&lt;name&gt;</code>) and point <code>client_secret_file</code> at it. Put <code>[auth.oidc]</code> under <code>config:</code> in the values (<code>public_url</code> is node-local: set it per release). Providers added in the UI need no values change, and a resolver pod skips them: it holds no stored secrets and serves no sign-in.</li>
+    <li><b>On Kubernetes,</b> mount the client secret with <code>secretMounts</code> (at <code>/etc/wrendns-secrets/&lt;name&gt;</code>) and point <code>client_secret_file</code> at it. Put <code>[auth.oidc]</code> under <code>config:</code> in the values (<code>public_url</code> is node-local: set it per release). Providers added in the UI need no values change, and a resolver pod skips them: it holds no stored secrets and serves no sign-in.</li>
   </ul>
   <div class="callout">
     <p><b>Break-glass admin.</b> <code>disable_local_login = true</code> in <code>[auth.oidc]</code> turns off password sign-in and HTTP Basic, except for admins signing in from <code>allowed_admin_networks</code>. Keep a local admin account: it's your way in when the provider is down.</p>
@@ -225,13 +225,13 @@ role = "viewer"</code></pre></li>
     </div>
   </div>
 
-  <h3>Use it with <code>telltale ctl</code></h3>
+  <h3>Use it with <code>wrendns ctl</code></h3>
   <p>The same API from a terminal:</p>
-<pre><code>export TELLTALE_TOKEN=tt_...                 # or --token-file /path/to/token
-telltale ctl status                          # version, uptime, the last day's numbers
-telltale ctl top blocked --limit 20
-telltale ctl queries --status blocked --from -1h</code></pre>
-  <p class="muted">It talks to the node in <code>[api] listen</code> from your config, or the one you give with <code>--url http://dns.example.com:8053</code>. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#from-the-shell-telltale-ctl">Every <code>ctl</code> command in the docs</a>.</p>
+<pre><code>export WRENDNS_TOKEN=tt_...                 # or --token-file /path/to/token
+wrendns ctl status                          # version, uptime, the last day's numbers
+wrendns ctl top blocked --limit 20
+wrendns ctl queries --status blocked --from -1h</code></pre>
+  <p class="muted">It talks to the node in <code>[api] listen</code> from your config, or the one you give with <code>--url http://dns.example.com:8053</code>. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#from-the-shell-wrendns-ctl">Every <code>ctl</code> command in the docs</a>.</p>
 
   <h3 id="agents">Agent tokens for AI assistants</h3>
   <p>Give an AI assistant an <b>agent token</b> instead of your own account: <b>Settings → API tokens</b>, pick <b>for an AI agent</b>, and tick what it may do. The default is read-only, without the query log. Agents can't touch users, tokens, passwords, backups, or the audit log, must give a reason for every change, and all stop at once with <code>[agents] enabled = false</code>. See <a href="agents.html">AI agents</a>.</p>
@@ -249,13 +249,13 @@ allow_insecure_basic = true   # default false; on plain HTTP anyone on the path 
   <h2>Encrypt sign-ins with HTTPS</h2>
   <p>Out of the box the web UI on port 8053 is plain HTTP, so a password typed into the sign-in form crosses your network unencrypted. One line turns on HTTPS on the same port:</p>
 <pre><code>[api]
-tls = { self_signed = true }      # or: tls = { cert = "/etc/telltale/api.crt", key = "/etc/telltale/api.key" }</code></pre>
+tls = { self_signed = true }      # or: tls = { cert = "/etc/wrendns/api.crt", key = "/etc/wrendns/api.key" }</code></pre>
   <ul>
-    <li><b>Self-signed:</b> TelltaleDNS makes a certificate on first start, for this host's name and addresses, and keeps it in <code>&lt;data_dir&gt;/api-tls/</code>. Your browser warns the first time: accept it, or import <code>cert.pem</code> into your trusted certificates to make the warning go away for good.</li>
+    <li><b>Self-signed:</b> WrenDNS makes a certificate on first start, for this host's name and addresses, and keeps it in <code>&lt;data_dir&gt;/api-tls/</code>. Your browser warns the first time: accept it, or import <code>cert.pem</code> into your trusted certificates to make the warning go away for good.</li>
     <li><b>Your own certificate</b> (your CA, or Let's Encrypt with a DNS challenge): no warning, renewals are picked up within 10 s, and browsers are told to always use HTTPS for the name (HSTS).</li>
     <li><b>Check before you trust it:</b> <b>Settings → System → Listener checks</b> shows the certificate's SHA-256 fingerprint and names. Compare the fingerprint with the one your browser's certificate viewer shows. Your own certificate's expiry is watched there too, with the same warnings as the DNS listeners'.</li>
     <li>Old <code>http://</code> links and bookmarks are redirected to <code>https://</code>. Health checks on <code>/livez</code>, <code>/readyz</code>, and <code>/healthz</code> keep working over plain HTTP.</li>
-    <li><code>telltale ctl</code> and <code>telltale mcp --stdio</code> on the node switch to HTTPS by themselves; from another machine, pass the node's <code>cert.pem</code> with <code>--ca-file</code>.</li>
+    <li><code>wrendns ctl</code> and <code>wrendns mcp --stdio</code> on the node switch to HTTPS by themselves; from another machine, pass the node's <code>cert.pem</code> with <code>--ca-file</code>.</li>
   </ul>
   <p class="muted">Restart after changing <code>[api] tls</code>. In Kubernetes, terminate TLS at the ingress instead (below).</p>
 </section>
@@ -288,7 +288,7 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
     <li>A promoted replica becomes the place to manage users, with everything it had synced.</li>
     <li><code>[auth]</code> and <code>[api]</code> are per node: set them in each node's own file. <a href="guide-settings.html#shared">Shared or per node</a>.</li>
   </ul>
-  <p class="muted">More in <a href="guide-cluster.html">Build a cluster</a> and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+  <p class="muted">More in <a href="guide-cluster.html">Build a cluster</a> and the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
 </section>
 
 <section id="trouble">
@@ -296,7 +296,7 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
     <tbody>
-      <tr><td>You can't find the setup token</td><td>Run <code>telltale auth setup-token</code> as the service user. The log only says which file holds it. It's gone once the first admin exists, and replicas never have one.</td></tr>
+      <tr><td>You can't find the setup token</td><td>Run <code>wrendns auth setup-token</code> as the service user. The log only says which file holds it. It's gone once the first admin exists, and replicas never have one.</td></tr>
       <tr><td>Sign-in answers <b>429</b></td><td>Too many failed sign-ins for that username or address. Wait (up to 15 minutes); a successful sign-in clears the count. Behind a proxy, set <code>[api] trusted_proxies</code> so one person can't lock out everyone.</td></tr>
       <tr><td>Sign-in answers <b>503</b></td><td>Four password checks are already running. Try again in a second; it isn't counted as a failure.</td></tr>
       <tr><td>Lost your authenticator app</td><td>Choose <b>Use a recovery code instead</b>. Without recovery codes, an admin resets two-factor sign-in in <b>Settings → Users</b>.</td></tr>
@@ -307,7 +307,7 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
       <tr><td>Every change answers <b>503</b></td><td>The audit log can't be written (a full disk, a broken database). Fix that; DNS keeps answering meanwhile.</td></tr>
     </tbody>
   </table></div>
-  <p class="muted">Full detail: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in">Users and sign-in in the docs</a>.</p>
+  <p class="muted">Full detail: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#users-and-sign-in">Users and sign-in in the docs</a>.</p>
 </section>
 
 <section>

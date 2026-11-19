@@ -7,11 +7,11 @@
 use std::time::{Duration, Instant};
 
 use libfuzzer_sys::fuzz_target;
-use telltale_snmp::agent::AgentError;
-use telltale_snmp::oid::Oid;
-use telltale_snmp::pdu::Response;
-use telltale_snmp::v2c;
-use telltale_snmp::walk::{self, Bulk, Limits, Pacer};
+use wrendns_snmp::agent::AgentError;
+use wrendns_snmp::oid::Oid;
+use wrendns_snmp::pdu::Response;
+use wrendns_snmp::v2c;
+use wrendns_snmp::walk::{self, Bulk, Limits, Pacer};
 
 struct Replay {
     replies: Vec<Vec<u8>>,

@@ -3,7 +3,7 @@
 //   2. the "why is the TV slow?" story (spec/13 §3.3) as a scripted agent: get_client_profile
 //      finds the device and its slow queries, upstream_health shows the upstreams, and
 //      explain_decision answers for a blocked name;
-//   3. stdio: `telltale mcp --stdio` relays the same tools;
+//   3. stdio: `wrendns mcp --stdio` relays the same tools;
 //   4. a tool that needs a scope the token lacks reports an error, not data;
 //   4b. AGT-010 (T7.2): resources (cluster status, the configuration, the daily summary) read
 //      through the REST routes, and prompts fill in their arguments;
@@ -15,7 +15,7 @@
 //      has it (and a writer without querylog:read is refused), simulate_change answers without
 //      a plan, and with the operator's `plans_by_default` on every plan has it; no agent can
 //      turn that on.
-// Usage: node check.mjs <api url> <telltale binary> <catalog json>
+// Usage: node check.mjs <api url> <wrendns binary> <catalog json>
 // Env: AGENT_TOKEN (analytics, config, query log), NARROW_TOKEN (analytics only),
 //      WRITER_TOKEN (config:write:rules, analytics), SIM_TOKEN (the writer's scopes plus
 //      querylog:read), ADMIN_PASSWORD (user `admin`).
@@ -33,7 +33,7 @@ const fail = (msg) => {
 const data = (r) => r.structuredContent ?? JSON.parse(r.content?.[0]?.text ?? 'null');
 
 async function connect(transport) {
-  const c = new Client({ name: 'telltale-mcp-e2e', version: '1.0.0' });
+  const c = new Client({ name: 'wrendns-mcp-e2e', version: '1.0.0' });
   await c.connect(transport);
   return c;
 }
@@ -45,7 +45,7 @@ const http = (token) =>
 // 1. HTTP
 const c = await connect(http(process.env.AGENT_TOKEN));
 const info = c.getServerVersion();
-if (info?.name !== 'telltaledns') fail(`server name ${JSON.stringify(info)}`);
+if (info?.name !== 'wrendns') fail(`server name ${JSON.stringify(info)}`);
 const { tools } = await c.listTools();
 const committed = JSON.parse(readFileSync(catalogPath, 'utf8')).map((t) => t.name);
 const listed = tools.map((t) => t.name);
@@ -89,15 +89,15 @@ console.log(`ok: vqlog (tv-portal ${tv[1]} times, p95 ${byClient.result.rows[0][
 // 4b. Resources and prompts (AGT-010).
 const { resources } = await c.listResources();
 const uris = resources.map((r) => r.uri).sort();
-if (JSON.stringify(uris) !== JSON.stringify(['telltale://cluster/status', 'telltale://config', 'telltale://reports/daily']))
+if (JSON.stringify(uris) !== JSON.stringify(['wrendns://cluster/status', 'wrendns://config', 'wrendns://reports/daily']))
   fail(`resources ${uris}`);
 const doc = async (uri) => JSON.parse((await c.readResource({ uri })).contents[0].text);
-const daily = await doc('telltale://reports/daily');
+const daily = await doc('wrendns://reports/daily');
 if (!(daily.summary?.queries > 0)) fail(`daily summary: ${JSON.stringify(daily).slice(0, 300)}`);
-const cfg = await doc('telltale://config');
+const cfg = await doc('wrendns://config');
 if (!cfg.devices?.items?.some((d) => d.name === 'living-room-tv')) fail(`config resource: ${JSON.stringify(cfg).slice(0, 300)}`);
 if (JSON.stringify(cfg).includes('password')) fail('the config resource mentions a password');
-if (!(await doc('telltale://cluster/status')).system?.version) fail('cluster status resource');
+if (!(await doc('wrendns://cluster/status')).system?.version) fail('cluster status resource');
 const { prompts } = await c.listPrompts();
 if (prompts.length !== 4) fail(`prompts: ${prompts.map((x) => x.name)}`);
 const inv = await c.getPrompt({ name: 'investigate_device', arguments: { client: 'living-room-tv' } });
@@ -111,7 +111,7 @@ const s = await connect(
   new StdioClientTransport({
     command: binary,
     args: ['mcp', '--stdio', '--url', api],
-    env: { ...process.env, TELLTALE_TOKEN: process.env.AGENT_TOKEN },
+    env: { ...process.env, WRENDNS_TOKEN: process.env.AGENT_TOKEN },
   }),
 );
 const viaStdio = await s.callTool({ name: 'get_overview', arguments: {} });
@@ -174,7 +174,7 @@ const [staleErr, stale] = await call('apply_plan', { planId: a.planId });
 if (!staleErr || stale.state !== 'stale') fail(`expected stale: ${JSON.stringify(stale).slice(0, 300)}`);
 // A rejected plan can't be applied; agents can't approve.
 const [, c2] = await call('plan_allow_domain', { domain: 'three.mcp.test', reason });
-const self = await fetch(`${api}/api/v1/plans/${c2.planId}/approve`, { method: 'POST', headers: { authorization: `Bearer ${process.env.WRITER_TOKEN}`, 'x-telltale-reason': 'x' } });
+const self = await fetch(`${api}/api/v1/plans/${c2.planId}/approve`, { method: 'POST', headers: { authorization: `Bearer ${process.env.WRITER_TOKEN}`, 'x-wrendns-reason': 'x' } });
 if (self.status !== 403) fail(`an agent approved its own plan: ${self.status}`);
 await admin('POST', `/api/v1/plans/${c2.planId}/reject`);
 if (!(await call('apply_plan', { planId: c2.planId }))[0]) fail('a rejected plan applied');
@@ -206,7 +206,7 @@ const sc = data(await sim.callTool({ name: 'simulate_change', arguments: { kind:
 if (!blocked5(sc?.simulation)) fail(`simulate_change: ${JSON.stringify(sc).slice(0, 600)}`);
 const settings = (method, headers, body) =>
   fetch(`${api}/api/v1/simulate-settings/default`, { method, headers: { 'content-type': 'application/json', ...headers }, body });
-const agentFlip = await settings('PUT', { authorization: `Bearer ${process.env.SIM_TOKEN}`, 'x-telltale-reason': 'x' }, '{"plans_by_default": true}');
+const agentFlip = await settings('PUT', { authorization: `Bearer ${process.env.SIM_TOKEN}`, 'x-wrendns-reason': 'x' }, '{"plans_by_default": true}');
 if (agentFlip.status !== 403) fail(`an agent changed the simulation settings: ${agentFlip.status}`);
 if (tools.some((t) => /simulat\w*_settings/.test(t.name))) fail('an MCP tool changes the simulation settings');
 const on = await settings('PUT', { cookie, 'x-csrf-token': csrf }, '{"plans_by_default": true}');

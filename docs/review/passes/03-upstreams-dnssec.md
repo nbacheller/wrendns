@@ -7,11 +7,11 @@ Everything that asks other servers: forwarding over UDP, TCP, DoT, DoH (HTTP/2 a
 DNSCrypt; upstream groups, health, hedging, routes; the built-in recursive resolver; DNSSEC
 validation.
 
-- `crates/telltale-upstream/` (`upstream.rs`, `conn.rs` pooled stream connections, `doh*.rs`,
+- `crates/wrendns-upstream/` (`upstream.rs`, `conn.rs` pooled stream connections, `doh*.rs`,
   `doq.rs`, `dnscrypt.rs`, `tls.rs` pins and client certificates, `proxy.rs`, `plugin.rs`,
   `group.rs`, `health.rs`, `router.rs`, `bootstrap.rs`, `dnssec.rs`, `nsec.rs`)
-- `crates/telltale-recursor/`
-- the upstream parts of `crates/telltale/src/pipeline.rs` (`resolve_shared`,
+- `crates/wrendns-recursor/`
+- the upstream parts of `crates/wrendns/src/pipeline.rs` (`resolve_shared`,
   `resolve_validated`, `fallback`)
 
 ## Read first
@@ -33,7 +33,7 @@ validation.
 - **Hedging and groups:** does hedging ever multiply load badly, starve a slow upstream's
   health signal, or return a worse answer? Routes by suffix, qtype, client group (ADR-096).
 - **Recursion:** referral handling, glue, loops, 0x20, limits (ADR-074).
-- **The "failure" counter** (`telltale_upstream_requests_total{outcome="failure"}`) lumps
+- **The "failure" counter** (`wrendns_upstream_requests_total{outcome="failure"}`) lumps
   timeouts, connection errors, and SERVFAIL/REFUSED together: the live Pi showed 4-6 %
   failures against Quad9 that couldn't be attributed. Propose how to make it diagnosable.
 
@@ -44,8 +44,8 @@ or looping upstreams.
 
 ## Useful
 ```sh
-cargo test -p telltale-upstream                                  # includes dnssec_offline, pool_retry
-TELLTALE_LOG=debug TELLTALE_LOG_DNSSEC_LIBRARY=1 target/debug/telltale run -c it.toml
+cargo test -p wrendns-upstream                                  # includes dnssec_offline, pool_retry
+WRENDNS_LOG=debug WRENDNS_LOG_DNSSEC_LIBRARY=1 target/debug/wrendns run -c it.toml
 dig @127.0.0.1 -p <port> www.netflix.com +dnssec                 # unsigned CNAME chain
 dig @127.0.0.1 -p <port> dnssec-failed.org                       # deliberately broken
 bash deploy/dnssec-e2e.sh                                        # if its prerequisites are present

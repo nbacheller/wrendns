@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-recursor/src/lib.rs b/crates/telltale-recursor/src/lib.rs
+diff --git a/crates/wrendns-recursor/src/lib.rs b/crates/wrendns-recursor/src/lib.rs
 index 78eb443..8817391 100644
---- a/crates/telltale-recursor/src/lib.rs
-+++ b/crates/telltale-recursor/src/lib.rs
+--- a/crates/wrendns-recursor/src/lib.rs
++++ b/crates/wrendns-recursor/src/lib.rs
 @@ -623,7 +623,8 @@ impl Recursor {
          let t0 = Instant::now();
          let mut res = net::ask(addr, qn, qt, dnssec_ok, mix, timeout).await;
@@ -12,10 +12,10 @@ index 78eb443..8817391 100644
              self.caches.no_case(ip);
              res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
          }
-diff --git a/crates/telltale-recursor/src/net.rs b/crates/telltale-recursor/src/net.rs
+diff --git a/crates/wrendns-recursor/src/net.rs b/crates/wrendns-recursor/src/net.rs
 index 4e99717..398fbce 100644
---- a/crates/telltale-recursor/src/net.rs
-+++ b/crates/telltale-recursor/src/net.rs
+--- a/crates/wrendns-recursor/src/net.rs
++++ b/crates/wrendns-recursor/src/net.rs
 @@ -3,6 +3,7 @@
  //! randomization of the name (checked on the way back).
  
@@ -23,7 +23,7 @@ index 4e99717..398fbce 100644
 +use std::sync::atomic::{AtomicBool, Ordering};
  use std::time::Duration;
  
- use telltale_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
+ use wrendns_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
 @@ -94,9 +95,18 @@ pub(crate) async fn ask(
  ) -> Result<Vec<u8>, NetError> {
      let id: u16 = rand::random();
@@ -69,10 +69,10 @@ index 4e99717..398fbce 100644
              // Stray or spoofed: keep waiting for the real one.
              Err(_) => {}
          }
-diff --git a/crates/telltale-recursor/tests/recursor.rs b/crates/telltale-recursor/tests/recursor.rs
+diff --git a/crates/wrendns-recursor/tests/recursor.rs b/crates/wrendns-recursor/tests/recursor.rs
 index ffc44ea..a59e091 100644
---- a/crates/telltale-recursor/tests/recursor.rs
-+++ b/crates/telltale-recursor/tests/recursor.rs
+--- a/crates/wrendns-recursor/tests/recursor.rs
++++ b/crates/wrendns-recursor/tests/recursor.rs
 @@ -15,6 +15,7 @@ use tokio::net::UdpSocket;
  
  /// A zone: its records, its delegations (child, server name, glue), and quirks.

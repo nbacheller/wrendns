@@ -19,7 +19,7 @@ the kind of picture the Anomalies page has been missing.
   Pi can afford.
 
 ## 3. Data (decision)
-`Tracked` (`crates/telltale-telemetry/src/anomaly.rs`) keeps `intervals: [u16; 16]` — the last 16 gaps
+`Tracked` (`crates/wrendns-telemetry/src/anomaly.rs`) keeps `intervals: [u16; 16]` — the last 16 gaps
 in seconds. Sixteen gaps is enough to decide "regular", too thin to draw, and it saturates at 65,535 s
 and floors at 1 s (a 2.5 s gap is 2 or 3). Changes, all on the telemetry thread:
 

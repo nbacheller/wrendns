@@ -91,7 +91,7 @@
     maintNote = note ?? null;
     await load();
     void refreshHealth();
-    window.dispatchEvent(new Event('telltale:maintenance-changed'));
+    window.dispatchEvent(new Event('wrendns:maintenance-changed'));
   }
   async function endMaintenance(node: string) {
     maintBusy = true;
@@ -297,14 +297,14 @@
     <section class="card" data-testid="cluster-standalone">
       <h2>This node runs on its own</h2>
       <p>
-        A cluster keeps several TelltaleDNS nodes on one configuration: change it in one place, and every node (a Pi, a
+        A cluster keeps several WrenDNS nodes on one configuration: change it in one place, and every node (a Pi, a
         Kubernetes pod, another machine) follows within seconds, keeps answering if the others are down, and shows up here
         with its health.
       </p>
-      <pre class="mono small">telltale cluster init --name home --advertise https://this-node:8443
-telltale cluster token create        # then, on the other node:
-telltale cluster join tt_join_…</pre>
-      <p class="muted small">Run these as the user TelltaleDNS runs as, then restart it. See the help for what's shared and what stays per node.</p>
+      <pre class="mono small">wrendns cluster init --name home --advertise https://this-node:8443
+wrendns cluster token create        # then, on the other node:
+wrendns cluster join tt_join_…</pre>
+      <p class="muted small">Run these as the user WrenDNS runs as, then restart it. See the help for what's shared and what stays per node.</p>
     </section>
     {#if can('operator') && !mine}
       <!-- REQ: OPS-010 — a standalone node can be put in maintenance too (readiness, banner, alerts). -->
@@ -637,7 +637,7 @@ telltale cluster join tt_join_…</pre>
           </table>
         </div>
         {#if view.nodes.length === 1}
-          <p class="muted small">No other node has connected yet. On another node: <span class="mono">telltale cluster join</span> with a token from <span class="mono">telltale cluster token create</span>.</p>
+          <p class="muted small">No other node has connected yet. On another node: <span class="mono">wrendns cluster join</span> with a token from <span class="mono">wrendns cluster token create</span>.</p>
         {/if}
       </section>
     {:else if tab === 'health'}

@@ -1,11 +1,11 @@
-diff --git a/crates/telltale/src/http.rs b/crates/telltale/src/http.rs
+diff --git a/crates/wrendns/src/http.rs b/crates/wrendns/src/http.rs
 index fab903f..f6c1dd0 100644
---- a/crates/telltale/src/http.rs
-+++ b/crates/telltale/src/http.rs
+--- a/crates/wrendns/src/http.rs
++++ b/crates/wrendns/src/http.rs
 @@ -600,13 +600,22 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
  
  /// REQ: OBS-002 — event rings: emitted and dropped per producing thread.
- fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
+ fn render_telemetry(w: &mut PromWriter, hub: &wrendns_telemetry::Hub) {
 -    let rings = hub.ring_stats();
 +    // Tokio's workers all carry the runtime's thread name: one series per name, summed. A
 +    // label set repeated within a scrape is a duplicate sample, and Prometheus keeps only
@@ -18,23 +18,23 @@ index fab903f..f6c1dd0 100644
 +        e.1 += dropped;
 +    }
      w.family(
-         "telltale_telemetry_events_total",
+         "wrendns_telemetry_events_total",
          "counter",
          "Query and upstream events written to the event rings.",
      );
 -    for (ring, emitted, _) in &rings {
 +    for (ring, (emitted, _)) in &rings {
          w.sample(
-             "telltale_telemetry_events_total",
+             "wrendns_telemetry_events_total",
              &[("ring", ring.as_str())],
-@@ -618,7 +627,7 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
+@@ -618,7 +627,7 @@ fn render_telemetry(w: &mut PromWriter, hub: &wrendns_telemetry::Hub) {
          "counter",
          "Events dropped because a ring was full (counters and histograms never drop).",
      );
 -    for (ring, _, dropped) in &rings {
 +    for (ring, (_, dropped)) in &rings {
          w.sample(
-             "telltale_telemetry_dropped_total",
+             "wrendns_telemetry_dropped_total",
              &[("ring", ring.as_str())],
 @@ -1340,4 +1349,55 @@ mod tests {
          assert_eq!((m.share_percent, m.queries), (100, 141));
@@ -46,8 +46,8 @@ index fab903f..f6c1dd0 100644
 +    /// only the first sample).
 +    #[test]
 +    fn obs_005_ring_series_are_unique_per_thread_name() {
-+        let hub = telltale_telemetry::Hub::new(1 << 16);
-+        let ev = telltale_telemetry::QueryEvent {
++        let hub = wrendns_telemetry::Hub::new(1 << 16);
++        let ev = wrendns_telemetry::QueryEvent {
 +            ts_us: 1,
 +            client_ip: [0; 16],
 +            client_ref: 0,
@@ -82,11 +82,11 @@ index fab903f..f6c1dd0 100644
 +        render_telemetry(&mut w, &hub);
 +        let text = w.finish();
 +        assert!(
-+            text.contains("telltale_telemetry_events_total{ring=\"twin\"} 3"),
++            text.contains("wrendns_telemetry_events_total{ring=\"twin\"} 3"),
 +            "{text}"
 +        );
 +        assert!(
-+            text.contains("telltale_telemetry_dropped_total{ring=\"twin\"} 0"),
++            text.contains("wrendns_telemetry_dropped_total{ring=\"twin\"} 0"),
 +            "{text}"
 +        );
 +        assert_eq!(text.matches("ring=\"twin\"").count(), 2, "{text}");
@@ -100,8 +100,8 @@ index ca9a240..dc658a5 100644
  
  | Metric | What it tells you |
  |---|---|
--| `telltale_telemetry_events_total{ring}` | events written, per thread |
-+| `telltale_telemetry_events_total{ring}` | events written, per thread name (`udp-<port>-<n>` for the UDP workers; Tokio's workers share `telltale-rt` and are summed) |
- | `telltale_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
+-| `wrendns_telemetry_events_total{ring}` | events written, per thread |
++| `wrendns_telemetry_events_total{ring}` | events written, per thread name (`udp-<port>-<n>` for the UDP workers; Tokio's workers share `wrendns-rt` and are summed) |
+ | `wrendns_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
  
  ### Query log

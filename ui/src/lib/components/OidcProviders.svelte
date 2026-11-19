@@ -239,7 +239,7 @@
         </label>
         <label>
           <span>Client ID</span>
-          <input bind:value={form.client_id} placeholder="telltale" autocomplete="off" aria-label="Client ID" />
+          <input bind:value={form.client_id} placeholder="wrendns" autocomplete="off" aria-label="Client ID" />
         </label>
         <label>
           <span>Scopes</span>

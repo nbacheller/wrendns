@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Choose how you manage settings — TelltaleDNS</title>
-<meta name="description" content="Manage TelltaleDNS settings with the web UI, a config file, Git (Helm, Argo CD, Flux), or the API: what each style is good for, how the layers stack, and which settings a cluster shares.">
+<title>Choose how you manage settings — WrenDNS</title>
+<meta name="description" content="Manage WrenDNS settings with the web UI, a config file, Git (Helm, Argo CD, Flux), or the API: what each style is good for, how the layers stack, and which settings a cluster shares.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Guide</p>
   <h1>Choose how you manage settings</h1>
-  <p class="lede">You can change TelltaleDNS from the web UI, a config file, Git, or the API. Pick the style that fits how you run it; they work together, and your config file is never rewritten.</p>
+  <p class="lede">You can change WrenDNS from the web UI, a config file, Git, or the API. Pick the style that fits how you run it; they work together, and your config file is never rewritten.</p>
   <ul class="onpage">
     <li><a href="#ways">Four ways to change a setting</a></li>
     <li><a href="#styles">Pick a style</a></li>
@@ -36,7 +36,7 @@
     </div>
     <div class="card">
       <h3>Config file</h3>
-      <p><code>telltale.toml</code>, plus more files if you like. Check it with <code>telltale config check</code>, then apply it with a reload. Every key is in the <a href="config.html">configuration reference</a>.</p>
+      <p><code>wrendns.toml</code>, plus more files if you like. Check it with <code>wrendns config check</code>, then apply it with a reload. Every key is in the <a href="config.html">configuration reference</a>.</p>
     </div>
     <div class="card">
       <h3>Git</h3>
@@ -44,7 +44,7 @@
     </div>
     <div class="card">
       <h3>API, CLI, and AI agents</h3>
-      <p>Everything the UI changes, the API changes too (<code>?dryRun=true</code> previews). <code>telltale ctl</code> wraps it for the shell, and <a href="agents.html">AI agents</a> propose plans that a person approves.</p>
+      <p>Everything the UI changes, the API changes too (<code>?dryRun=true</code> previews). <code>wrendns ctl</code> wraps it for the shell, and <a href="agents.html">AI agents</a> propose plans that a person approves.</p>
     </div>
   </div>
 </section>
@@ -82,12 +82,12 @@
     <div class="panel" id="style-file"><h3>Config file only</h3>
       <p><b>Good for:</b> Ansible, Puppet, or a dotfiles repository, where every change is a reviewed diff.</p>
       <ol class="guide">
-        <li>Edit <code>telltale.toml</code>. Split it if you like: later files override earlier ones (<code>telltale run -c base.toml -c site.toml</code>).</li>
-        <li>Check it: <code>telltale config check base.toml site.toml</code> reports every problem at once with its key path. <code>--print</code> shows the effective configuration.</li>
-        <li>Apply it without a restart: <code>systemctl reload telltale</code>, or <code>docker kill -s HUP telltale</code>. A file that doesn't validate is refused and the previous configuration keeps serving.</li>
+        <li>Edit <code>wrendns.toml</code>. Split it if you like: later files override earlier ones (<code>wrendns run -c base.toml -c site.toml</code>).</li>
+        <li>Check it: <code>wrendns config check base.toml site.toml</code> reports every problem at once with its key path. <code>--print</code> shows the effective configuration.</li>
+        <li>Apply it without a restart: <code>systemctl reload wrendns</code>, or <code>docker kill -s HUP wrendns</code>. A file that doesn't validate is refused and the previous configuration keeps serving.</li>
       </ol>
-<pre><code>telltale config check /etc/telltale/telltale.toml   # "config OK", or every error with its path
-sudo systemctl reload telltale                       # applied with no dropped queries</code></pre>
+<pre><code>wrendns config check /etc/wrendns/wrendns.toml   # "config OK", or every error with its path
+sudo systemctl reload wrendns                       # applied with no dropped queries</code></pre>
       <div class="callout"><p>Upstreams, groups, routes, local names, access, rate limits, special names, and listeners apply at once. <code>[cache]</code>, <code>[telemetry]</code>, and <code>[node]</code> wait for a restart (the log names them).</p></div>
       <p class="muted">To keep the file the only source, give everyone else the <b>viewer</b> role: viewers see everything but change nothing.</p>
     </div>
@@ -96,7 +96,7 @@ sudo systemctl reload telltale                       # applied with no dropped q
       <p><b>Good for:</b> Kubernetes, where Argo CD or Flux applies the Helm values from your repository.</p>
       <ol class="guide">
         <li>Put your settings under <code>config:</code> in the Helm values. The chart writes them after its own (listeners, data directory, ports).</li>
-        <li>Tell TelltaleDNS the file comes from Git, so the UI can help you keep the repository in step:</li>
+        <li>Tell WrenDNS the file comes from Git, so the UI can help you keep the repository in step:</li>
       </ol>
 <pre><code>config: |
   [cluster]
@@ -117,15 +117,15 @@ sudo systemctl reload telltale                       # applied with no dropped q
 [cluster.git]
 repo = "https://github.com/me/homelab"
 ref = "main"
-path = "telltale/shared.toml"
+path = "wrendns/shared.toml"
 # require_signed = true                 # only SSH-signed commits...
-# allowed_signers_file = "/etc/telltale/allowed_signers"
-# webhook_secret_file = "/etc/telltale/git-hook"   # push webhook: applied in seconds</code></pre>
+# allowed_signers_file = "/etc/wrendns/allowed_signers"
+# webhook_secret_file = "/etc/wrendns/git-hook"   # push webhook: applied in seconds</code></pre>
       <ul>
         <li>A commit is used only if it validates and descends from the one in use; anything else is refused, and the cluster stays on the last good commit.</li>
         <li>If the repository is unreachable, every node keeps serving the last commit. DNS never waits for Git.</li>
       </ul>
-      <p><b>Option 2: only Git-managed nodes may publish.</b> On the primary: <code>telltale cluster set-authority gitops</code> (or <code>telltale cluster init --config-authority gitops</code>), then restart. Only nodes with <code>[cluster] config_source = "gitops"</code> may publish the cluster's configuration. Any other node can only take over as an <i>emergency</i> primary, which keeps the last version until a Git-managed node is back. When one is back it takes the role again by itself after about a minute: with automatic failover it asks the emergency primary to hand over and is elected, with manual failover it promotes itself.</p>
+      <p><b>Option 2: only Git-managed nodes may publish.</b> On the primary: <code>wrendns cluster set-authority gitops</code> (or <code>wrendns cluster init --config-authority gitops</code>), then restart. Only nodes with <code>[cluster] config_source = "gitops"</code> may publish the cluster's configuration. Any other node can only take over as an <i>emergency</i> primary, which keeps the last version until a Git-managed node is back. When one is back it takes the role again by itself after about a minute: with automatic failover it asks the emergency primary to hand over and is elected, with manual failover it promotes itself.</p>
       <div class="callout warn"><p>In both cases the UI and API stop changing shared settings: they answer <b>409 <code>gitops_managed</code></b>, and every change goes through your repository.</p></div>
     </div>
   </div>
@@ -137,12 +137,12 @@ path = "telltale/shared.toml"
   <ol class="steps">
     <li class="step"><b>Built-in defaults.</b> Every key is optional.</li>
     <li class="step"><b>Config files</b>, in the order given. Tables merge key by key; lists such as <code>[[listen]]</code> replace the earlier one entirely.</li>
-    <li class="step"><b>Environment variables</b> <code>TELLTALE_&lt;SECTION&gt;_&lt;KEY&gt;</code>, such as <code>TELLTALE_CACHE_MAX_TTL=3600</code>. Handy in containers.</li>
+    <li class="step"><b>Environment variables</b> <code>WRENDNS_&lt;SECTION&gt;_&lt;KEY&gt;</code>, such as <code>WRENDNS_CACHE_MAX_TTL=3600</code>. Handy in containers.</li>
     <li class="step"><b>Command-line flags.</b></li>
     <li class="step"><b>The web UI and API</b>, entry by entry: they add an upstream, list, or group, or override or hide one of the file's by name.</li>
     <li class="step"><b>In a cluster, the primary.</b> Its shared settings replace the shared sections of every other node's own files.</li>
   </ol>
-  <p class="muted"><code>telltale config check telltale.toml --print</code> shows layers 1 to 4 merged. The UI's entries are listed with their source by <code>GET /api/v1/config/entries</code>.</p>
+  <p class="muted"><code>wrendns config check wrendns.toml --print</code> shows layers 1 to 4 merged. The UI's entries are listed with their source by <code>GET /api/v1/config/entries</code>.</p>
   <p class="muted"><b>Credentials are never shown.</b> An upstream's <code>headers</code> and <code>args</code>, a password in any URL, an OIDC <code>client_secret</code>, and OTLP headers read <code>&lt;redacted&gt;</code> in the API, the audit log, the TOML to keep in Git, agents' plans, MCP, and <code>--print</code> (<code>--show-secrets</code> prints them on the node). Editing an entry keeps them while it points where it did; change its URL, proxy, TLS name, CA, bootstrap addresses, certificate checks (skip verify, pins) or an alert destination's type and the credential has to be typed again. <b>Test it</b> never uses a stored credential: type it into the draft. On a replica, keeping a credential this way needs a primary on the same version (until then, <code>409 upgrade_required</code>).</p>
 </section>
 
@@ -157,13 +157,13 @@ path = "telltale/shared.toml"
       <tr><td>Inline (OIDC client secret and OTLP headers only)</td><td><code>client_secret = "..."</code></td><td>Trying something out</td></tr>
     </tbody>
   </table></div>
-  <p>A stored secret is write-only: nothing shows it again, admins included. It is encrypted in <code>state.db</code> with the node's own key (<code>secrets.key</code> in the data directory, made on the first start, or one you keep elsewhere with <code>TELLTALE_SECRETS_KEY</code> or <code>[node] secrets_key_file</code>; the Helm chart's <code>secretsKey.existingSecret</code>). A backup leaves them out unless you give it a passphrase (Settings → System → Backup, or <code>telltale backup create --secrets-passphrase-file</code>): then they travel encrypted with a key made from it, and a restore stores them under the new node's own key. The node's key is never in a backup, and resolver pods hold neither.</p>
-  <pre><code>telltale ctl secrets set unifi --from-file /root/unifi-key   # or: ... set unifi &lt; key
-telltale ctl secrets list                                     # names and users, never a value
-telltale ctl secrets clear unifi                              # refused while a field names it</code></pre>
+  <p>A stored secret is write-only: nothing shows it again, admins included. It is encrypted in <code>state.db</code> with the node's own key (<code>secrets.key</code> in the data directory, made on the first start, or one you keep elsewhere with <code>WRENDNS_SECRETS_KEY</code> or <code>[node] secrets_key_file</code>; the Helm chart's <code>secretsKey.existingSecret</code>). A backup leaves them out unless you give it a passphrase (Settings → System → Backup, or <code>wrendns backup create --secrets-passphrase-file</code>): then they travel encrypted with a key made from it, and a restore stores them under the new node's own key. The node's key is never in a backup, and resolver pods hold neither.</p>
+  <pre><code>wrendns ctl secrets set unifi --from-file /root/unifi-key   # or: ... set unifi &lt; key
+wrendns ctl secrets list                                     # names and users, never a value
+wrendns ctl secrets clear unifi                              # refused while a field names it</code></pre>
   <p class="muted"><b>Who sets one.</b> Admins only (<code>PUT /api/v1/secrets/&lt;name&gt;</code> with <code>{"value": "..."}</code>), never an agent token (<code>403 agent_not_allowed</code>), and only over HTTPS or on the node itself: plain HTTP from another machine is <code>403 insecure_transport</code> unless <code>[api] allow_secrets_over_http = true</code> (turn on <code>[api] tls = { self_signed = true }</code> instead). A TLS proxy in front, even one on the same host, must be listed in <code>[api] trusted_proxies</code> for this. Operators and agents with <code>config:read</code> see the names, who set them, and which fields use them (<code>GET /api/v1/secrets</code>, the MCP tool <code>secrets_status</code>). In a cluster the primary keeps them; a replica sends the change there. A secret a field still uses can't be deleted (<code>409 secret_in_use</code>).</p>
   <p class="muted"><b>Settings → Integrations &amp; secrets.</b> Operators and admins see this node's secrets store (its key's source and state), every stored secret with the fields that use it and the nodes that hold it, and every credential field with where its value comes from. Admins add, replace or delete a secret there. Every password or token field in the UI is a secret field: it shows that a secret is set, never the value, and clearing it stops the entry using it when you apply. <b>Who may change a credential in a form.</b> Only an admin changes where a credential is sent: an alert destination's address or type when it holds a token or password, an upstream's address or TLS server name when it keeps a header, a password or a credential file, and an address that runs a program (<code>exec://</code>, <code>unix://</code>). An operator sees those fields read-only, with the reason. A kept value is never shown again: its entry says <b>kept: re-enter to change</b>, and a change that would send it somewhere new is refused with the field's name. The help topic "Who may change a credential" says more.</p>
-  <p class="muted"><b>The files win.</b> A credential the config file sets can't be changed in the UI (<code>409 set_by_file</code>). <b>If the key is missing or wrong</b>, the store is locked: integrations that use a stored secret say "not configured", health is degraded (<code>secrets_locked</code>), and DNS keeps answering. <code>telltale secrets status</code> shows what the node can read; <code>telltale secrets rotate-key</code> replaces the key. Custody, rotation and recovery: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/secrets.md">docs/secrets.md</a>.</p>
+  <p class="muted"><b>The files win.</b> A credential the config file sets can't be changed in the UI (<code>409 set_by_file</code>). <b>If the key is missing or wrong</b>, the store is locked: integrations that use a stored secret say "not configured", health is degraded (<code>secrets_locked</code>), and DNS keeps answering. <code>wrendns secrets status</code> shows what the node can read; <code>wrendns secrets rotate-key</code> replaces the key. Custody, rotation and recovery: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/secrets.md">docs/secrets.md</a>.</p>
 </section>
 
 <section id="guarded">
@@ -175,7 +175,7 @@ telltale ctl secrets clear unifi                              # refused while a 
     <li><b>Confirm through the new address.</b> A change to an address, certificate or proxy list is applied next to the old one and kept only if you open the new address and press <b>Confirm</b> within the window (120 seconds by default). If you can't reach it, do nothing: it rolls back by itself and says why.</li>
   </ol>
   <p>A change that needs a restart is shown as <b>pending restart</b>. The <b>Restart now</b> button is offered only where the install declares something that will start the node again (the shipped systemd unit, Compose bundles and Helm chart do); otherwise the page shows the manual steps. If a staged change keeps the node from starting healthy, two starts later it is dropped and the node starts from its file.</p>
-  <p class="muted"><b>A file always wins</b> over what you set here, and the control says "set by file". <b>If you do get locked out,</b> no recovery needs the UI: set the value in the config file and restart, run <code>telltale guarded list</code> and <code>telltale guarded clear</code> with the node stopped, or start it once with <code>TELLTALE_IGNORE_GUARDED=1</code>. Every change and rollback is in the audit log, and the <code>guarded_setting_changed</code> alert tells a second channel. See <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/recovery.md">docs/recovery.md</a> for the symptom-by-symptom table.</p>
+  <p class="muted"><b>A file always wins</b> over what you set here, and the control says "set by file". <b>If you do get locked out,</b> no recovery needs the UI: set the value in the config file and restart, run <code>wrendns guarded list</code> and <code>wrendns guarded clear</code> with the node stopped, or start it once with <code>WRENDNS_IGNORE_GUARDED=1</code>. Every change and rollback is in the audit log, and the <code>guarded_setting_changed</code> alert tells a second channel. See <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/recovery.md">docs/recovery.md</a> for the symptom-by-symptom table.</p>
 </section>
 
 <section id="shared">

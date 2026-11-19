@@ -8,8 +8,8 @@ One list of the devices on the owner's networks, keyed by MAC, built from what t
 
 ## What it is not
 
-- **No probing.** TelltaleDNS never sweeps a range, never sends ICMP, TCP connect probes, ARP or NDP solicitations, or mDNS queries, and never schedules a scan (ADR-907). Scans come from the owner's own tools and are uploaded.
-- **Not DNS policy.** Inventory data never names a device in DNS (except the opt-in address rule, DSC-012, which supplies an address and never a name), never feeds client matching (`telltale_policy::Neighbors`), and never changes `identify`'s seen chain (ADR-910).
+- **No probing.** WrenDNS never sweeps a range, never sends ICMP, TCP connect probes, ARP or NDP solicitations, or mDNS queries, and never schedules a scan (ADR-907). Scans come from the owner's own tools and are uploaded.
+- **Not DNS policy.** Inventory data never names a device in DNS (except the opt-in address rule, DSC-012, which supplies an address and never a name), never feeds client matching (`wrendns_policy::Neighbors`), and never changes `identify`'s seen chain (ADR-910).
 - **Off by default.** `[discovery]` (T25.2) switches it on. It runs on one designated node (`spec/12` §11).
 
 ## Sources
@@ -30,7 +30,7 @@ One list of the devices on the owner's networks, keyed by MAC, built from what t
 
 ## The extra reads (DSC-009, ADR-912)
 
-With `[discovery] unifi_reads` and `home_assistant_all_devices` the designated node makes more read-only requests to the routers it already reads. The router poll only stores the session it used and a copy of the answers it already holds; every extra request and every parse runs on the `telltale-inventory` thread, never on the query runtime.
+With `[discovery] unifi_reads` and `home_assistant_all_devices` the designated node makes more read-only requests to the routers it already reads. The router poll only stores the session it used and a copy of the answers it already holds; every extra request and every parse runs on the `wrendns-inventory` thread, never on the query runtime.
 
 - `unifi_reads.client_fields`: more of `stat/sta` and `rest/user`, with no extra request.
 - `unifi_reads.all_users`: `POST stat/alluser` within `unifi_all_users_within_hours` (default 720, 1 to 8,760). The `POST` is UniFi's query form; it changes nothing. History is class 5: never a current address, never SNMP-eligible, no `new_device`, aged out when its window passes (at once when the read is turned off).
@@ -77,7 +77,7 @@ A missing or unreadable file starts an empty inventory with a new learning perio
 
 ## Threads and failure
 
-The merge runs on its own OS thread, `telltale-inventory`, with a current-thread runtime and idle priority. It never runs on the query runtime, and DNS never waits for it (DSC-002, CLU-004). A failed source logs once and keeps its last data. Nothing here blocks or moves a device.
+The merge runs on its own OS thread, `wrendns-inventory`, with a current-thread runtime and idle priority. It never runs on the query runtime, and DNS never waits for it (DSC-002, CLU-004). A failed source logs once and keeps its last data. Nothing here blocks or moves a device.
 
 ## Privacy
 

@@ -356,7 +356,7 @@
           <button class="primary" disabled={busy || !password} onclick={signInAgain} data-testid="guarded-reauth-go">
             {busy ? 'Working…' : 'Sign in again and apply'}
           </button>
-          <div class="muted small">Signed in with single sign-on? Sign out, sign in again, and retry. API tokens can't change guarded settings: use the configuration file or `telltale guarded`.</div>
+          <div class="muted small">Signed in with single sign-on? Sign out, sign in again, and retry. API tokens can't change guarded settings: use the configuration file or `wrendns guarded`.</div>
         </div>
       {:else}
         <div class="row">
@@ -402,8 +402,8 @@
       {#if restartTimedOut}
         <div class="notice bad" role="alert" data-testid="guarded-restart-timeout">
           It hasn't come back. If nothing starts it again, start it by hand; if it starts and stops, see the
-          recovery steps (the configuration file, <code>telltale guarded clear</code>,
-          <code>TELLTALE_IGNORE_GUARDED=1</code>).<HelpButton id="guarded-recovery" />
+          recovery steps (the configuration file, <code>wrendns guarded clear</code>,
+          <code>WRENDNS_IGNORE_GUARDED=1</code>).<HelpButton id="guarded-recovery" />
         </div>
       {/if}
     </section>

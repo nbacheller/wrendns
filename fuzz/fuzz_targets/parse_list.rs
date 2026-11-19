@@ -2,8 +2,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use telltale_config::{ListKind, ListMatch};
-use telltale_filter::parse::{ListOptions, Pattern, normalize, parse_list};
+use wrendns_config::{ListKind, ListMatch};
+use wrendns_filter::parse::{ListOptions, Pattern, normalize, parse_list};
 
 fuzz_target!(|data: &[u8]| {
     let Some((&flags, body)) = data.split_first() else {

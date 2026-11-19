@@ -1,0 +1,23 @@
+[package]
+name = "wrendns-recursor"
+description = "Iterative resolver and DNSSEC validator."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wrendns-proto = { version = "0.8.0", path = "../wrendns-proto" }
+parking_lot = "0.13.0"
+rand = "0.10.3"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["net", "time", "io-util", "macros"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["net", "time", "io-util", "rt", "macros"] }

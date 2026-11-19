@@ -2,7 +2,7 @@
 where `bench.py run smoke` can't warm its 10,000-name cache (a UDP bind() of 10 ms makes the
 warm-up miss at ~98 a second, so every number it prints is the host's).
 
-  python3 bench/ab_hot.py --base /path/to/old/telltale --new /path/to/new/telltale [--rounds 7]
+  python3 bench/ab_hot.py --base /path/to/old/wrendns --new /path/to/new/wrendns [--rounds 7]
 
 The corpus is only a few hundred names, so one warm-up pass fills the cache in seconds and the
 run measures what `cache-hot` is for: cache hits through the workers and the event rings, with the
@@ -65,7 +65,7 @@ def main():
     gate.URL = f"http://127.0.0.1:{bench.METRICS_PORT}"
     gate.TARGET = ("127.0.0.1", bench.DNS_PORT)
 
-    tmp = tempfile.mkdtemp(prefix="telltale-ab-")
+    tmp = tempfile.mkdtemp(prefix="wrendns-ab-")
     data = corpus(pathlib.Path(tmp) / "hot.corpus", args.names)
     res = {"base": [], "new": []}
     for r in range(args.rounds):

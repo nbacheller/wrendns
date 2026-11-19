@@ -1,7 +1,7 @@
 """REQ: OBS-901 (T26.2) -- the live map against a real node: queries from several devices, then the
 snapshot, the stream, the short version and the settings, over HTTP, as a person or an agent would.
 
-  E2E_HTTP_PORT=19340 TELLTALE_BIN=/path/to/telltale python3 bench/map_e2e.py
+  E2E_HTTP_PORT=19340 WRENDNS_BIN=/path/to/wrendns python3 bench/map_e2e.py
 
 Starts the Playwright suite's server (`ui/tests/e2e/server.mjs`: a real binary, a stub upstream
 that answers every name, a blocklist, loopback devices in the `lab` group), creates the admin

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kubernetes workloads — TelltaleDNS</title>
-<meta name="description" content="TelltaleDNS names your cluster's pods by the workload that runs them: see which Deployment asked for which domain, keep one history across rollouts, and filter per namespace with the groups you already use.">
+<title>Kubernetes workloads — WrenDNS</title>
+<meta name="description" content="WrenDNS names your cluster's pods by the workload that runs them: see which Deployment asked for which domain, keep one history across rollouts, and filter per namespace with the groups you already use.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -17,7 +17,7 @@
   <div>
     <p class="eyebrow">Kubernetes</p>
     <h1>Which workload asked<br>for that domain?</h1>
-    <p class="lede">TelltaleDNS watches your cluster's pods and names each one by the workload that runs it. <code>media/deploy/jellyfin</code> is one device, whichever pods it runs, so you see what your apps talk to, keep one history across rollouts, and filter each namespace with the groups you already use.</p>
+    <p class="lede">WrenDNS watches your cluster's pods and names each one by the workload that runs it. <code>media/deploy/jellyfin</code> is one device, whichever pods it runs, so you see what your apps talk to, keep one history across rollouts, and filter each namespace with the groups you already use.</p>
     <div class="cta">
       <a class="btn primary" href="guide-kubernetes.html#workloads">Set it up</a>
       <a class="btn" href="#how">How it works</a>
@@ -39,7 +39,7 @@
   <div class="grid">
     <div class="card"><h3>One device per workload</h3><p>A Deployment's three replicas are one device. Its top domains, its anomaly baseline, its rhythm, its new-device alert, and its day on the timeline carry on when pods are replaced, rescheduled, or scaled. Every run of a CronJob counts under the CronJob, even a run that asks DNS the moment it starts.</p></div>
     <div class="card"><h3>Names that stay true</h3><p>The query log keeps each pod's own address. Each row is named by the workload that held the address when the query was made, so an address reused after a rollout never relabels the past.</p></div>
-    <div class="card"><h3>Policy per namespace</h3><p>Label a namespace <code>telltaledns.io/group=iot</code> and every pod in it gets the iot group's lists, quick rules, blocked services, schedules, and upstreams. No new kind of rule to learn.</p></div>
+    <div class="card"><h3>Policy per namespace</h3><p>Label a namespace <code>wrendns.com/group=iot</code> and every pod in it gets the iot group's lists, quick rules, blocked services, schedules, and upstreams. No new kind of rule to learn.</p></div>
     <div class="card"><h3>From the cluster, not a guess</h3><p>A workload's identity is certain: it's what the API server says, with its pods and app labels as evidence. "Name this device" is off for workloads, because Kubernetes already named them.</p></div>
     <div class="card"><h3>Read-only, controller only</h3><p>Only the controller pod gets a service-account token, and its role can only get, list, and watch pods and namespaces. Resolver pods have no token, and no Kubernetes client library is added.</p></div>
     <div class="card"><h3>DNS never waits on it</h3><p>The watcher runs on its own background thread. If the API server is unreachable, pods keep their last names, DNS answers as always, and after 15 minutes the health icon turns amber and an alert can fire.</p></div>
@@ -57,13 +57,13 @@
 
 <section id="how">
   <p class="eyebrow">How it works</p>
-  <h2>Pods ask TelltaleDNS directly</h2>
+  <h2>Pods ask WrenDNS directly</h2>
   <ol class="steps">
     <li class="step"><b>The controller watches pods and namespaces</b> (read-only) and maps each pod address to its workload from the pod's owner: a ReplicaSet's Deployment, a StatefulSet, a DaemonSet, a Job or its CronJob, or the pod itself.</li>
     <li class="step"><b>Every node gets the table</b> over the cluster channel within a couple of seconds, and asks again every minute, so resolver pods recognize pods on the query path and a Pi in the cluster names the rows it ships.</li>
-    <li class="step"><b>Pods send their DNS to TelltaleDNS</b>: the kubelet's cluster DNS for the whole cluster, or a workload's own <code>dnsConfig</code>. TelltaleDNS sends <code>cluster.local</code> on to CoreDNS, so Service names work as before.</li>
+    <li class="step"><b>Pods send their DNS to WrenDNS</b>: the kubelet's cluster DNS for the whole cluster, or a workload's own <code>dnsConfig</code>. WrenDNS sends <code>cluster.local</code> on to CoreDNS, so Service names work as before.</li>
   </ol>
-  <div class="callout"><p>Through CoreDNS forwarding, every pod would look like CoreDNS: pods have to ask TelltaleDNS themselves. The <a href="guide-kubernetes.html#cluster-dns">guide</a> shows both ways, with the k3s setting.</p></div>
+  <div class="callout"><p>Through CoreDNS forwarding, every pod would look like CoreDNS: pods have to ask WrenDNS themselves. The <a href="guide-kubernetes.html#cluster-dns">guide</a> shows both ways, with the k3s setting.</p></div>
 </section>
 
 <section>

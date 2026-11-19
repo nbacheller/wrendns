@@ -1,12 +1,12 @@
 # A three-node cluster test (`deploy/cluster3`)
 
-A throwaway TelltaleDNS cluster of three containers, from the same image as the Docker Desktop
+A throwaway WrenDNS cluster of three containers, from the same image as the Docker Desktop
 bundle, that checks the cluster the way it runs in a home or a small site: a **primary** and two
 **replicas**, one of them with two CPUs. It's the acceptance run for T21.5 (`spec/10`), and CI runs
 it on every change to the cluster code.
 
-It never touches the single-node bundle (`deploy/docker-desktop`, project `telltale-dev`, ports
-1053 and 8053). This cluster has its own compose project (`telltale-cluster3`), its own volumes, and
+It never touches the single-node bundle (`deploy/docker-desktop`, project `wrendns-dev`, ports
+1053 and 8053). This cluster has its own compose project (`wrendns-cluster3`), its own volumes, and
 its own ports, every one bound to `127.0.0.1` so nothing on the LAN can reach the test cluster:
 
 | node | role | DNS | API / UI | metrics |
@@ -38,7 +38,7 @@ Each check prints `== <name>` and then `ok` or `FAIL:` with the reason. The brac
 requirements each one covers.
 
 Automatic failover is turned on after the replicas join, on the running primary, with no restart
-(`telltale cluster set-failover auto`, check **a2**). Every check after that runs with failover on,
+(`wrendns cluster set-failover auto`, check **a2**). Every check after that runs with failover on,
 so a check that pauses the primary for longer than its lease can promote a replica.
 
 | check | what it proves | requirements |
@@ -52,12 +52,40 @@ so a check that pauses the primary for longer than its lease can promote a repli
 | **e.** routers and `[discovery]` | a router (`api_key_ref` to that secret) added on the primary is listed by all three; the first `[discovery]` write passes as a dry run with all three up, and as a real write with replica-b stopped (ADR-928 refuses only older or unreadable members; ADR-948); replica-b then reads back the non-default value it was given (48 MiB; the default is 64) | API-016, ADR-921, ADR-922, ADR-928, CLU-010 |
 | **f.** federated reads | queries sent to each node show up in the primary's query log, labelled with the node, and the top clients have a count for each node | CLU-002, OBS-008 |
 | **g.** upstream #7 on the 2-CPU replica | the primary is paused for longer than its lease, so the cluster promotes a replica (the reads still answer). Twenty concurrent reads at replica-a (the clients list, config entries, discovery status, the cluster) each return within 15 s; `/livez` and `/metrics` keep answering; DNS on replica-a answers a steady loop with no timeouts; replica-a's runtime starts with two workers (`runtime_workers=2` in its log, from the container's CPU quota). The primary is unpaused after | CLU-004, CLU-002, ADR-946 |
-| **h.** failover | the node that holds the lease (`telltale_cluster_lease_held` 1, `telltale_cluster_primary` 1) is killed, so the election is the lease running out; the promotion comes 5 to 40 s after the kill; the other survivor follows it; DNS on both survivors answers with no SERVFAIL, and no more than 1% of the queries go unanswered (the probe fails on any timeout); an edit on the new primary reaches the other survivor; the killed node, started again, steps down and follows | CLU-005, ADR-051, ADR-056, ADR-947 |
+| **h.** failover | the node that holds the lease (`wrendns_cluster_lease_held` 1, `wrendns_cluster_primary` 1) is killed, so the election is the lease running out; the promotion comes 5 to 40 s after the kill; the other survivor follows it; DNS on both survivors answers with no SERVFAIL, and no more than 1% of the queries go unanswered (the probe fails on any timeout); an edit on the new primary reaches the other survivor; the killed node, started again, steps down and follows | CLU-005, ADR-051, ADR-056, ADR-947 |
 | **i.** rolling restart | each node is restarted in turn; a monitor asks every node's DNS five times a second, and at least two must answer at every sample | CLU-004 |
 | **e2.** a replica shows the primary's router data (T24.41) | a fake UniFi (served by the fake source over http, read with the stored key) is polled by the primary only; both replicas list its networks (VLAN 30, a domain), its clients and its state, labelled as read by the primary; with the primary paused a replica answers 200 and names it in `missingNodes` | API-013, API-016, API-010, CLU-002 |
 | **h (T24.42).** every member holds the stored key, and the new primary uses it | in the failover check: a fake UniFi (the fake source's CGI, which logs the key each read carried and the address it came from) is read with the stored key by the primary only; every node's `GET /api/v1/secrets` lists all three members holding it, with one stamp; the primary is killed, and its replacement reads the fake UniFi with its replicated copy of the key within one interval plus the election while the other replica never polls; with the old primary back all three members hold the key. `ONLY=secrets` runs the bring-up, (a) to (e2) and (h), and stops | API-015, CLU-002, CLU-015, ADR-903, ADR-917 |
-| **j.** upgrade from an older version (T24.40) | every node runs `OLD_IMAGE` (default `telltale:lapse-base`, a build before ADR-1016) and takes entries through the API, fails over once, is upgraded, and after two more failovers the new primary dry-runs, edits and deletes the inherited entries: the others stay served and the edit and the delete stick. Skipped when `OLD_IMAGE` isn't there (`REQUIRE_UPGRADE=1` makes that a failure); `ONLY=upgrade` runs the bring-up, (a) and (j) alone. It runs after (k) | CLU-015 |
+| **j.** upgrade from an older version (T24.40) | every node runs `OLD_IMAGE` (default `wrendns:lapse-base`, a build before ADR-1016) and takes entries through the API, fails over once, is upgraded, and after two more failovers the new primary dry-runs, edits and deletes the inherited entries: the others stay served and the edit and the delete stick. Skipped when `OLD_IMAGE` isn't there (`REQUIRE_UPGRADE=1` makes that a failure); `ONLY=upgrade` runs the bring-up, (a) and (j) alone. It runs after (k) | CLU-015 |
 | **k.** replicas stay linked (T24.38) | after a rolling restart in the owner's order (replicas, then the primary), every node reports `reachableVoters` = `voters` at every sample for 1 minute (`J_WATCH_S` changes it; the whole run takes about 7 minutes at the default) with no `leaving this node` log lines, and no `unstableVoters`; then the primary is killed: a survivor is elected within the lease time and neither survivor moves its link after it | CLU-001, CLU-005 |
+
+### Check l: a rolling upgrade across the rename (T33.2)
+
+<!-- rebrand:keep-start -->
+Check **l** moves a running cluster from an image built before the rename to the renamed one, the
+way an owner would upgrade: every node on the old image first, then each node on the new one,
+replicas first and the primary last (it runs after **j**). Through the whole roll a monitor asks every
+node's DNS every third of a second or so, and at least two of the three nodes must answer at every sample.
+It also checks what must survive the rename: a session cookie made by the old node (`telltale_session`)
+still signs in on the new one with no new sign-in, an API token made on the old primary still works,
+the cluster is whole after every step (a node's certificate carries the cluster name of its version,
+and each version accepts the other's), the record and the list entry made on the old nodes are
+served by all three, a write on the new primary reaches the others, and a new node exports both
+`wrendns_*` and `telltale_*` metrics.
+
+The old image is not built by the run (it is another commit). Build it once from the commit before the
+rename and tag it `telltale:pre-rename` (`PRE_RENAME_IMAGE` names another):
+
+```sh
+git archive <commit before the rename> | tar -x -C /tmp/pre-rename
+docker build -t telltale:pre-rename --build-arg PROFILE=bench-fast --build-arg CARGO_FEATURES=e2e   --build-arg WRENDNS_BUILD_CHANNEL=dev /tmp/pre-rename
+ONLY=prerename deploy/cluster3/e2e.sh        # the bring-up, (a) and (l) alone; REQUIRE_PRERENAME=1 fails when the image is missing
+```
+
+`compose-prerename.yaml` is the overlay a node on the old image needs: its command is `telltale`, it
+keeps its data in `/var/lib/telltale` (the same volume the new image mounts at `/var/lib/wrendns`),
+and its health command differs. `e2e.sh` adds it by itself for any image whose entrypoint is `telltale`.
+<!-- rebrand:keep-end -->
 
 Two things the owner's wording named differently, and how the test handles them:
 
@@ -93,7 +121,7 @@ refuses connections; the test reads only the router's listing.
 
 ## When it fails
 
-- The log tails are printed. For more, `docker compose -p telltale-cluster3 -f deploy/cluster3/compose.yaml logs <node>`
+- The log tails are printed. For more, `docker compose -p wrendns-cluster3 -f deploy/cluster3/compose.yaml logs <node>`
   works while the cluster is up (`KEEP=1` keeps the temp directory and the image).
 - A failure in **e** after a build that reports no readable version (a bare `dev`, from a build made
   before T21.6) is the gate, not a bug: see the note above and ADR-948.
@@ -110,7 +138,7 @@ the build cache small on a laptop).
 ## The lease-lapse soak (`lapse-soak.sh`, T24.26)
 
 Two eligible nodes and a witness (the owner's Pi layout) under automatic failover, in their own
-compose project (`telltale-lapse`, `compose-lapse.yaml`), nothing published on the host. It soaks for
+compose project (`wrendns-lapse`, `compose-lapse.yaml`), nothing published on the host. It soaks for
 `SOAK_S` seconds (default 600) and counts "lease lapsed" in the primary's log; any lapse prints the
 renewal-round debug lines. `DISK_DEV=/dev/sdd WRITE_BPS=8192` caps every node's disk writes (a slow
 SD card); `FSYNC_STALL_S=4` pauses a random node for that long every 40 s; `LAPSE_IMAGE` soaks an

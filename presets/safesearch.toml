@@ -1,4 +1,4 @@
-# TelltaleDNS safe-search table (REQ: FLT-011, `spec/05` §4).
+# WrenDNS safe-search table (REQ: FLT-011, `spec/05` §4).
 #
 # Data, not code: compiled into the binary. For a group with `safe_search = true`, a query for
 # one of an engine's domains is answered as a CNAME to its `target` (the engine's own

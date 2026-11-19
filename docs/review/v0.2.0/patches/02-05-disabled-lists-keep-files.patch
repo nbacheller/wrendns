@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-filter/src/fetch/mod.rs b/crates/telltale-filter/src/fetch/mod.rs
+diff --git a/crates/wrendns-filter/src/fetch/mod.rs b/crates/wrendns-filter/src/fetch/mod.rs
 index f8bbab6..3d41d56 100644
---- a/crates/telltale-filter/src/fetch/mod.rs
-+++ b/crates/telltale-filter/src/fetch/mod.rs
+--- a/crates/wrendns-filter/src/fetch/mod.rs
++++ b/crates/wrendns-filter/src/fetch/mod.rs
 @@ -53,15 +53,18 @@ pub struct ListSpec {
      pub source: ListSource,
      pub refresh: Duration,
@@ -65,7 +65,7 @@ index f8bbab6..3d41d56 100644
 +    /// needs no download), so it stays in the spec set, marked, and is never due.
 +    #[test]
 +    fn flt_004_disabled_lists_stay_known_but_never_due() {
-+        let cfg: Config = telltale_config::Loader::new()
++        let cfg: Config = wrendns_config::Loader::new()
 +            .toml_str(
 +                "t.toml",
 +                "[[list]]\nname = \"on\"\nurl = \"https://example.com/on.txt\"\n\
@@ -96,10 +96,10 @@ index f8bbab6..3d41d56 100644
      #[test]
      fn flt_004_schedule() {
          let s = spec(ListSource::Url("https://example.com/l.txt".into()));
-diff --git a/crates/telltale-filter/tests/fetch.rs b/crates/telltale-filter/tests/fetch.rs
+diff --git a/crates/wrendns-filter/tests/fetch.rs b/crates/wrendns-filter/tests/fetch.rs
 index 6aafc4b..584ffba 100644
---- a/crates/telltale-filter/tests/fetch.rs
-+++ b/crates/telltale-filter/tests/fetch.rs
+--- a/crates/wrendns-filter/tests/fetch.rs
++++ b/crates/wrendns-filter/tests/fetch.rs
 @@ -203,6 +203,7 @@ fn spec(name: &str, url: String) -> ListSpec {
          source: ListSource::Url(url),
          refresh: Duration::from_hours(24),
@@ -108,10 +108,10 @@ index 6aafc4b..584ffba 100644
      }
  }
  
-diff --git a/crates/telltale-filter/tests/lists_online.rs b/crates/telltale-filter/tests/lists_online.rs
+diff --git a/crates/wrendns-filter/tests/lists_online.rs b/crates/wrendns-filter/tests/lists_online.rs
 index e6d59cc..73bf58e 100644
---- a/crates/telltale-filter/tests/lists_online.rs
-+++ b/crates/telltale-filter/tests/lists_online.rs
+--- a/crates/wrendns-filter/tests/lists_online.rs
++++ b/crates/wrendns-filter/tests/lists_online.rs
 @@ -61,6 +61,7 @@ async fn flt_001_real_lists_parse_cleanly() {
              source: ListSource::Url((*url).to_owned()),
              refresh: Duration::from_hours(24),
@@ -120,13 +120,13 @@ index e6d59cc..73bf58e 100644
          })
          .collect();
      let mut failures = Vec::new();
-diff --git a/crates/telltale/src/lists.rs b/crates/telltale/src/lists.rs
+diff --git a/crates/wrendns/src/lists.rs b/crates/wrendns/src/lists.rs
 index 7a8613e..1f65018 100644
---- a/crates/telltale/src/lists.rs
-+++ b/crates/telltale/src/lists.rs
+--- a/crates/wrendns/src/lists.rs
++++ b/crates/wrendns/src/lists.rs
 @@ -135,7 +135,7 @@ impl Lists {
          };
-         let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
+         let specs = ListSpec::from_config(&wrendns_config::services::expand(cfg));
          info!(
 -            lists = specs.len(),
 +            lists = specs.iter().filter(|s| s.enabled).count(),
@@ -134,11 +134,11 @@ index 7a8613e..1f65018 100644
              "list fetcher started"
          );
 @@ -601,7 +601,10 @@ pub(crate) fn source_reader(cfg: &Config) -> impl Fn(&str) -> Option<Vec<u8>> +
- /// `telltale lists fetch`: refresh every enabled list once and print the result.
+ /// `wrendns lists fetch`: refresh every enabled list once and print the result.
  pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool, String> {
      let fetcher = build_fetcher(cfg)?;
--    let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
-+    let specs: Vec<ListSpec> = ListSpec::from_config(&telltale_config::services::expand(cfg))
+-    let specs = ListSpec::from_config(&wrendns_config::services::expand(cfg));
++    let specs: Vec<ListSpec> = ListSpec::from_config(&wrendns_config::services::expand(cfg))
 +        .into_iter()
 +        .filter(|s| s.enabled)
 +        .collect();

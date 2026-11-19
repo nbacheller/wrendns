@@ -3,48 +3,48 @@
 # published. Each node's data volume sits on the Docker data disk; DISK_DEV (a block device
 # of the Docker VM, e.g. /dev/sdb) with WRITE_BPS caps the write rate of every node, which is
 # how a slow SD card is imitated (compose's blkio_config).
-name: telltale-lapse
+name: wrendns-lapse
 
-x-telltale: &telltale
-  image: "${LAPSE_IMAGE:-telltale:lapse-test}"
+x-wrendns: &wrendns
+  image: "${LAPSE_IMAGE:-wrendns:lapse-test}"
   pull_policy: never
   restart: "no"
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   read_only: true
-  command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  command: ["run", "-c", "/etc/wrendns/wrendns.toml"]
   healthcheck:
-    test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+    test: ["CMD", "/usr/local/bin/wrendns", "health", "--url", "http://127.0.0.1:8053/readyz"]
     interval: 5s
     timeout: 5s
     retries: 30
     start_period: 10s
   environment:
-    TELLTALE_LOG: "${LAPSE_LOG:-debug}"
+    WRENDNS_LOG: "${LAPSE_LOG:-debug}"
 
 services:
   primary:
-    <<: *telltale
+    <<: *wrendns
     build:
       context: ../..
       dockerfile: Dockerfile
       args:
         PROFILE: bench-fast
-        TELLTALE_BUILD_CHANNEL: dev
+        WRENDNS_BUILD_CHANNEL: dev
     volumes:
-      - ./config/primary.toml:/etc/telltale/telltale.toml:ro
-      - primary-data:/var/lib/telltale
+      - ./config/primary.toml:/etc/wrendns/wrendns.toml:ro
+      - primary-data:/var/lib/wrendns
   replica-a:
-    <<: *telltale
+    <<: *wrendns
     volumes:
-      - ./config/replica-a.toml:/etc/telltale/telltale.toml:ro
-      - replica-a-data:/var/lib/telltale
+      - ./config/replica-a.toml:/etc/wrendns/wrendns.toml:ro
+      - replica-a-data:/var/lib/wrendns
   witness:
-    <<: *telltale
-    command: ["cluster", "witness", "-c", "/etc/telltale/telltale.toml"]
+    <<: *wrendns
+    command: ["cluster", "witness", "-c", "/etc/wrendns/wrendns.toml"]
     volumes:
-      - ./config/witness.toml:/etc/telltale/telltale.toml:ro
-      - witness-data:/var/lib/telltale
+      - ./config/witness.toml:/etc/wrendns/wrendns.toml:ro
+      - witness-data:/var/lib/wrendns
 
 volumes:
   primary-data:

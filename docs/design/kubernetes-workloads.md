@@ -7,7 +7,7 @@ time, ADR-125), OBS-025 (device identification), ADR-050 (network groups), ADR-1
 resolver pods).
 
 ## 1. What it is, in one paragraph
-A pod becomes a device TelltaleDNS can name, group, and watch, exactly like a laptop or a TV: the
+A pod becomes a device WrenDNS can name, group, and watch, exactly like a laptop or a TV: the
 controller watches the Kubernetes API for pods, maps each pod address to its **workload**
 (`media/deploy/jellyfin`), and every view that shows a device shows the workload instead of a pod
 address. A Deployment with three replicas is **one device**, not three, so its anomaly baseline, rhythm,
@@ -18,7 +18,7 @@ which today needs a service mesh or Hubble; here it costs one hash lookup.
 
 ## 2. Non-goals (v1)
 - Answering `cluster.local` ourselves (watching Services and Endpoints). CoreDNS stays authoritative for
-  the cluster domain; TelltaleDNS forwards it there (§7).
+  the cluster domain; WrenDNS forwards it there (§7).
 - Namespace egress allowlists as a policy type. A group whose schedule or quick rules block everything
   but an allowlist already behaves like one; a proper "allow only these names" policy mode is a
   follow-up (T15.3, not in this pack).
@@ -53,7 +53,7 @@ pod address **for analytics only**, in one place (`agg.rs`, where an event is dr
 the truth, §6). At 50k q/s that is one hash lookup per event on the telemetry thread: measure it with
 `bench.py sustain` and report.
 
-**On the query path (decision).** `ClientTable::identify` (`crates/telltale-policy/src/clients.rs`) gains
+**On the query path (decision).** `ClientTable::identify` (`crates/wrendns-policy/src/clients.rs`) gains
 a `workloads: &Workloads` argument, consulted **after** client ID, EDNS MAC, and neighbor MAC, and
 **before** IP/CIDR and the network group, and only when the table is non-empty (one branch for non-
 Kubernetes installs; `Neighbors` is the model). A hit returns `IdSource::Workload` and the workload's
@@ -67,8 +67,8 @@ workload by its text form instead). The QueryEvent's `client_ref` stays 0 (unkno
 
 ## 4. Groups (decision)
 A workload's group is the first that applies:
-1. the pod label `telltaledns.io/group=<group>`;
-2. the namespace label `telltaledns.io/group=<group>`;
+1. the pod label `wrendns.com/group=<group>`;
+2. the namespace label `wrendns.com/group=<group>`;
 3. the first matching `[[kubernetes.map]]` rule: `{ namespace = "media*", group = "iot" }` (glob on
    namespace; optional `kind`);
 4. `[kubernetes] default_group` if set;
@@ -95,12 +95,12 @@ error, like `[[client]] groups`).
   ownerReferences}`, `spec.hostNetwork`, `status.{phase,podIPs}`). `GET /api/v1/namespaces` the same way
   for namespace labels (list + watch). A `410 Gone` or any error → full re-list after a jittered backoff
   (1 s → 60 s). A full re-list every 10 minutes regardless (drift guard). `fieldSelector=status.phase!=
-  Succeeded,status.phase!=Failed` on the list. Budget: about 400 lines in a new `crates/telltale/src/
+  Succeeded,status.phase!=Failed` on the list. Budget: about 400 lines in a new `crates/wrendns/src/
   kubernetes.rs`, with the parser unit-tested on fixture JSON (a Deployment pod, a StatefulSet pod, a
   CronJob's Job pod, a bare pod, a host-network pod, a pod with two IPs, a terminating pod).
 - **Optional scope:** `[kubernetes] namespaces = ["media", "home"]` watches only those (one watch per
   namespace); default: all. `exclude_namespaces` default `[]`.
-- **The table:** `Workloads` (new, `crates/telltale-policy/src/workloads.rs`): `ArcSwap` of
+- **The table:** `Workloads` (new, `crates/wrendns-policy/src/workloads.rs`): `ArcSwap` of
   `{ by_ip: HashMap<[u8;16], (workload_idx, group)>, workloads: Vec<Workload{ns, kind, name, key:
   [u8;16], pods: SmallVec<PodRef>}> }`, rebuilt on every change (debounced 500 ms; a homelab has
   hundreds of pods, not thousands). Cap: 20,000 pod addresses; beyond that log once an hour and stop
@@ -130,25 +130,25 @@ synthetic address; the handler expands either to the addresses the workload held
 (cap 64 addresses; `truncated: true` beyond it). `top`, `timeline`, `rhythm`, `identity` take the
 synthetic address or the text form directly.
 
-## 7. Getting pod traffic to TelltaleDNS (decision; chart + docs, no resolver change)
-Pods must query TelltaleDNS **directly**; forwarding from CoreDNS hides them behind CoreDNS's address.
+## 7. Getting pod traffic to WrenDNS (decision; chart + docs, no resolver change)
+Pods must query WrenDNS **directly**; forwarding from CoreDNS hides them behind CoreDNS's address.
 Two supported paths, documented in `running.md` ("Kubernetes workloads as devices") and NOTES:
-1. **Cluster-wide (recommended):** point the kubelet's cluster DNS at TelltaleDNS's Service address
+1. **Cluster-wide (recommended):** point the kubelet's cluster DNS at WrenDNS's Service address
    (k3s: `--cluster-dns=<clusterIP>` in `/etc/rancher/k3s/config.yaml`; kubeadm: `clusterDNS` in the
-   kubelet config), and let TelltaleDNS forward the cluster domain to CoreDNS. The chart writes, when
+   kubelet config), and let WrenDNS forward the cluster domain to CoreDNS. The chart writes, when
    `kubernetes.enabled`, a `[[forward]]` for `kubernetes.clusterDomain` (default `cluster.local`) and
    for the reverse zones of `kubernetes.podCidr` / `kubernetes.serviceCidr` (optional values) to
    `kubernetes.clusterDns` (**required when enabled**, the CoreDNS Service IP; the NOTES print
    `kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'`), with a DNSSEC NTA, exactly
    as the UI's "send a domain to another server" does. Give the DNS Service a fixed `clusterIP`
    (`service.dns.clusterIP`, new value) so the kubelet setting survives reinstalls.
-2. **Per workload:** `dnsPolicy: None` + `dnsConfig.nameservers: [<TelltaleDNS Service IP>]` with the
+2. **Per workload:** `dnsPolicy: None` + `dnsConfig.nameservers: [<WrenDNS Service IP>]` with the
    cluster search domains, for the workloads you care about and nothing else.
 Source addresses are preserved on pod → ClusterIP traffic by kube-proxy and Cilium (no SNAT), so the
 masked-client-IP detector (OPS-003) is not affected; an e2e asserts a pod's own address in the query log.
-`ndots:5` means TelltaleDNS receives `grafana.com.media.svc.cluster.local`-style questions; they route
+`ndots:5` means WrenDNS receives `grafana.com.media.svc.cluster.local`-style questions; they route
 to CoreDNS and come back NXDOMAIN, as today. **Decision:** no special casing; the probe-name exclusion
-(ADR for `probe.telltale.invalid`) already keeps NXDOMAIN share honest in the log, and search-suffix
+(ADR for `probe.wrendns.invalid`) already keeps NXDOMAIN share honest in the log, and search-suffix
 noise is a known Kubernetes shape worth seeing in the traffic map, not hiding.
 
 ## 8. Device identification, UI, API, MCP (decision)
@@ -173,7 +173,7 @@ noise is a known Kubernetes shape worth seeing in the traffic map, not hiding.
   under its text form; `get_client_profile` accepts the text form too). Writes go through the existing
   `plan_add_to_group`-style plan tool with the workload's text form as the device.
 - **Help topic** `kubernetes-workloads`; glossary entry "workload"; site page section with the
-  "pods → TelltaleDNS → CoreDNS behind it" diagram.
+  "pods → WrenDNS → CoreDNS behind it" diagram.
 
 ## 9. Chart and config (decision)
 ```yaml
@@ -197,16 +197,16 @@ service:
 `kubernetes.enabled` sets `automountServiceAccountToken: true` **on the controller/allInOne pod only**;
 resolver pods keep `false`. The ClusterRole is read-only on `pods` and `namespaces` and nothing else; the
 values schema refuses `enabled: true` with an empty `clusterDns`. TOML (`[kubernetes]`, shared section):
-`enabled`, `namespaces`, `exclude_namespaces`, `default_group`, `label = "telltaledns.io/group"`,
+`enabled`, `namespaces`, `exclude_namespaces`, `default_group`, `label = "wrendns.com/group"`,
 `[[kubernetes.map]] { namespace, kind?, group }`. A non-Kubernetes install setting `enabled = true` gets
 an `info` line and nothing else (not an error: the section is shared).
 
 ## 10. Metrics, health, alerts (decision)
-`telltale_kubernetes_pods` and `telltale_kubernetes_workloads` gauges, `telltale_kubernetes_table_age_
-seconds`, `telltale_kubernetes_watch_errors_total`, `telltale_kubernetes_sync_total{result}`. Health
+`wrendns_kubernetes_pods` and `wrendns_kubernetes_workloads` gauges, `wrendns_kubernetes_table_age_
+seconds`, `wrendns_kubernetes_watch_errors_total`, `wrendns_kubernetes_sync_total{result}`. Health
 (OBS-015): `kubernetes_stale` is **degraded** when enabled on this node and the table is older than 15
 minutes (reason text: "pods may be named by address until the API server is reachable"). PrometheusRule
-`TelltaleDNSKubernetesWatchStale` on the same condition. No new `AlertWhen` (the health level covers it).
+`WrenDNSKubernetesWatchStale` on the same condition. No new `AlertWhen` (the health level covers it).
 
 ## 11. Performance
 - Query path: one `ArcSwap` load plus one hash lookup, only when the table is non-empty. A/B

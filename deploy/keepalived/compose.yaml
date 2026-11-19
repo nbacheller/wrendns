@@ -1,29 +1,29 @@
-# Two TelltaleDNS nodes behind one keepalived VIP (REQ: CLU-004, OPS-001; deploy/keepalived/README.md).
+# Two WrenDNS nodes behind one keepalived VIP (REQ: CLU-004, OPS-001; deploy/keepalived/README.md).
 #
 #   docker compose up -d
-#   docker run --rm --network telltale-keepalived_vip --entrypoint dig telltale-keepalived:alpine-3.20 \
+#   docker run --rm --network wrendns-keepalived_vip --entrypoint dig wrendns-keepalived:alpine-3.20 \
 #     +nsid @10.231.250.10 gateway.vip.home.arpa A   # from a container on the vip network: the NSID names the node
 #
 # The two nodes form a cluster and the witness votes for it (profile `witness`); README.md has the
 # commands, and e2e.sh runs them.
 #
 # Each node is two containers that share one network namespace: keepalived-* owns it (it holds the
-# VIP and runs the health check), telltale-* joins it with `network_mode: service:keepalived-*`. So
+# VIP and runs the health check), wrendns-* joins it with `network_mode: service:keepalived-*`. So
 # the VIP lands on the node that is healthy, and the node's wildcard DNS listener answers on it.
 # The network is an isolated bridge with no route out (`internal`); this file proves the failover on
 # it. On a LAN, use the runbook in docs/running.md ("Failover with a VIP") instead: the same two
-# services with the VIP on the LAN subnet, with keepalived and telltale on the host or a macvlan.
+# services with the VIP on the LAN subnet, with keepalived and wrendns on the host or a macvlan.
 #
 # Nothing here publishes a host port: the DNS and the API are reachable on the vip network only.
 # The e2e test (e2e.sh) builds the image and runs the whole failover; it never touches the LAN.
-name: telltale-keepalived
+name: wrendns-keepalived
 
-x-telltale: &telltale
-  # Set TELLTALE_IMAGE to a local build (e2e.sh does); otherwise the published image is pulled.
-  image: ${TELLTALE_IMAGE:-ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-latest}}
+x-wrendns: &wrendns
+  # Set WRENDNS_IMAGE to a local build (e2e.sh does); otherwise the published image is pulled.
+  image: ${WRENDNS_IMAGE:-ghcr.io/nbacheller/wrendns:${WRENDNS_TAG:-latest}}
   pull_policy: missing
   restart: "no"
-  command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  command: ["run", "-c", "/etc/wrendns/wrendns.toml"]
   # The image's unprivileged user, with no capabilities. Port 53 is allowed by the sysctl the
   # keepalived service sets for the shared network namespace (see there and README.md).
   user: "65532:65532"
@@ -31,9 +31,9 @@ x-telltale: &telltale
   security_opt: ["no-new-privileges:true"]
   read_only: true
   environment:
-    TELLTALE_LOG: info
+    WRENDNS_LOG: info
   healthcheck:
-    test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+    test: ["CMD", "/usr/local/bin/wrendns", "health", "--url", "http://127.0.0.1:8053/readyz"]
     interval: 5s
     timeout: 5s
     retries: 30
@@ -43,7 +43,7 @@ x-keepalived: &keepalived
   build:
     context: .
     dockerfile: Dockerfile
-  image: telltale-keepalived:alpine-3.20
+  image: wrendns-keepalived:alpine-3.20
   pull_policy: build
   restart: "no"
   # keepalived needs to add and remove the VIP, send adverts, and run its check as root (setgroups
@@ -57,7 +57,7 @@ x-keepalived: &keepalived
 services:
   keepalived-a:
     <<: *keepalived
-    # The network namespace is shared with telltale-a, so this sysctl lets the unprivileged node
+    # The network namespace is shared with wrendns-a, so this sysctl lets the unprivileged node
     # bind port 53 (the same setting as the Pi docs use on the host, net.ipv4.ip_unprivileged_port_start).
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "0"
@@ -69,18 +69,18 @@ services:
     volumes:
       - ./keepalived/node-a.conf:/etc/keepalived/keepalived.conf:ro
 
-  telltale-a:
-    <<: *telltale
+  wrendns-a:
+    <<: *wrendns
     network_mode: "service:keepalived-a"
     depends_on:
       - keepalived-a
     volumes:
-      - ./config/node-a.toml:/etc/telltale/telltale.toml:ro
-      - telltale-a-data:/var/lib/telltale
+      - ./config/node-a.toml:/etc/wrendns/wrendns.toml:ro
+      - wrendns-a-data:/var/lib/wrendns
 
   keepalived-b:
     <<: *keepalived
-    # The network namespace is shared with telltale-b, so this sysctl lets the unprivileged node
+    # The network namespace is shared with wrendns-b, so this sysctl lets the unprivileged node
     # bind port 53 (the same setting as the Pi docs use on the host, net.ipv4.ip_unprivileged_port_start).
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "0"
@@ -92,23 +92,23 @@ services:
     volumes:
       - ./keepalived/node-b.conf:/etc/keepalived/keepalived.conf:ro
 
-  telltale-b:
-    <<: *telltale
+  wrendns-b:
+    <<: *wrendns
     network_mode: "service:keepalived-b"
     depends_on:
       - keepalived-b
     volumes:
-      - ./config/node-b.toml:/etc/telltale/telltale.toml:ro
-      - telltale-b-data:/var/lib/telltale
+      - ./config/node-b.toml:/etc/wrendns/wrendns.toml:ro
+      - wrendns-b-data:/var/lib/wrendns
 
   # The witness of the cluster (CLU-005): a vote-only process, started with `--profile witness` after it
   # has joined (README.md). It has no DNS listener, no API and no VIP; it only votes on promotion.
-  telltale-witness:
-    image: ${TELLTALE_IMAGE:-ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-latest}}
+  wrendns-witness:
+    image: ${WRENDNS_IMAGE:-ghcr.io/nbacheller/wrendns:${WRENDNS_TAG:-latest}}
     pull_policy: missing
     profiles: [witness]
     restart: "no"
-    command: ["cluster", "witness", "-c", "/etc/telltale/telltale.toml"]
+    command: ["cluster", "witness", "-c", "/etc/wrendns/wrendns.toml"]
     user: "65532:65532"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -117,8 +117,8 @@ services:
       vip:
         ipv4_address: 10.231.250.13
     volumes:
-      - ./config/witness.toml:/etc/telltale/telltale.toml:ro
-      - witness-data:/var/lib/telltale
+      - ./config/witness.toml:/etc/wrendns/wrendns.toml:ro
+      - witness-data:/var/lib/wrendns
 
 networks:
   vip:
@@ -138,6 +138,6 @@ networks:
         - subnet: 10.231.251.0/24
 
 volumes:
-  telltale-a-data:
-  telltale-b-data:
+  wrendns-a-data:
+  wrendns-b-data:
   witness-data:

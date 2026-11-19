@@ -8,7 +8,7 @@ names of bench/lists, as `gate.py` writes them) and an upstream that answers any
 corpus (cache-hot, then blocked) this finds the saturating rate (median of 3 runs), then runs at
 half of it and reads two latencies:
 
-  - the server's own: `telltale_query_duration_seconds` (receive → answer ready), the delta of
+  - the server's own: `wrendns_query_duration_seconds` (receive → answer ready), the delta of
     two scrapes around the run, for the path the corpus takes. The gate is met when at least
     99 % of those queries fall in the 250 µs bucket. This is the "added latency" figure.
   - end to end: dnsperf's p99, which includes the network between the machines.
@@ -30,12 +30,12 @@ import gate
 
 
 def histogram(url):
-    """Cumulative `telltale_query_duration_seconds` buckets: {path: [(le, count), ...]}."""
+    """Cumulative `wrendns_query_duration_seconds` buckets: {path: [(le, count), ...]}."""
     with urllib.request.urlopen(url, timeout=5) as r:
         body = r.read().decode()
     out = {}
     for path, le, n in re.findall(
-        r'^telltale_query_duration_seconds_bucket\{path="(\w+)",le="([^"]+)"\} (\d+)', body, re.M
+        r'^wrendns_query_duration_seconds_bucket\{path="(\w+)",le="([^"]+)"\} (\d+)', body, re.M
     ):
         out.setdefault(path, []).append((float("inf") if le == "+Inf" else float(le), int(n)))
     return out
@@ -89,10 +89,10 @@ def main():
     hot, _ = corpus.generate("cache-hot", bench.HERE / "corpora")
     names = gate.blocked_names(args.names)
     rng = random.Random(0x7E1A)
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-remote-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-remote-")
     blocked = gate.write_lines(pathlib.Path(tmp.name) / "blocked.corpus",
                                [f"{rng.choice(names)} A" for _ in range(200_000)])
-    print(f"target {args.target}; index built: {bench.metric(args.metrics, 'telltale_filter_lookup_index_bytes')}")
+    print(f"target {args.target}; index built: {bench.metric(args.metrics, 'wrendns_filter_lookup_index_bytes')}")
     results = {"cache_hit": run(hot, args, "cache hit"), "blocked": run(blocked, args, "blocked")}
     print(results)
     return 0

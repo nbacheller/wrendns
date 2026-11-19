@@ -3,19 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Install — TelltaleDNS</title>
+<title>Install — WrenDNS</title>
 <meta name="description" content="The install guides are now part of Get started.">
 <meta name="robots" content="noindex">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 <!-- The install guides moved into Get started (old #pi, #native, #k8s, #router, … links still land). -->
-<script>
-  (function () {
-    var map = { hybrid: "cluster" };
-    var h = location.hash.slice(1);
-    location.replace("start.html" + (h ? "#" + (map[h] || h) : "#install"));
-  })();
-</script>
+<script src="assets/install-redirect.js"></script>
 <meta http-equiv="refresh" content="0; url=start.html#install">
 </head>
 <body data-page="install">

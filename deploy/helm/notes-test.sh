@@ -11,7 +11,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-cp -r "$here/telltale" "$tmp/chart"
+cp -r "$here/wrendns" "$tmp/chart"
 {
   echo '{{- define "zz.notes" -}}'
   cat "$tmp/chart/templates/NOTES.txt"
@@ -39,7 +39,7 @@ expect() {
     fail=1
     return
   fi
-  if ! grep -q "TelltaleDNS is starting" <<<"$out"; then
+  if ! grep -q "WrenDNS is starting" <<<"$out"; then
     echo "FAIL: $label: the notes did not render"
     fail=1
     return

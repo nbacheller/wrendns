@@ -7,10 +7,10 @@
 #      (the import worker runs hardened under its 1 GiB limit and unpacks into the data directory).
 # Before ADR-988 every musl release build answered the import with "<path>: <path>", and the
 # discovery worker's memory limit bounded nothing (it started fine; its limit was not enforced).
-# Usage: deploy/worker-image-e2e.sh [image]   (default: telltale:dev; build it with
-#   docker buildx build --platform linux/amd64 --load -t telltale:dev .)
+# Usage: deploy/worker-image-e2e.sh [image]   (default: wrendns:dev; build it with
+#   docker buildx build --platform linux/amd64 --load -t wrendns:dev .)
 set -euo pipefail
-IMG=${1:-telltale:dev}
+IMG=${1:-wrendns:dev}
 E=$(mktemp -d)
 # The same directory as a path the docker CLI understands (a Windows shell needs a drive path).
 EH=$(cygpath -m "$E" 2>/dev/null || echo "$E")
@@ -63,7 +63,7 @@ with zipfile.ZipFile(d + "/teleporter.zip", "w", zipfile.ZIP_DEFLATED) as z:
     z.write(d + "/gravity.db", "gravity.db")
 PYEOF
 
-cat > "$E/telltale.toml" <<'EOF'
+cat > "$E/wrendns.toml" <<'EOF'
 [node]
 name = "worker-e2e"
 [[listen]]
@@ -76,20 +76,20 @@ enabled = true
 [[discovery.subnet]]
 cidr = "192.168.1.0/24"
 EOF
-chmod 644 "$E/telltale.toml"
+chmod 644 "$E/wrendns.toml"
 
 # The image as it ships: read-only root, its one writable volume, the default user, no /tmp.
 docker volume create "$C-data" >/dev/null
 # (The config is copied into the volume rather than bind-mounted, so the script also works against a remote
 # or Docker Desktop daemon.)
-docker create --name "$C" --read-only -v "$C-data:/var/lib/telltale"   -p 127.0.0.1:18053:8053 "$IMG" run -c /var/lib/telltale/node.toml >/dev/null
-docker cp "$EH/telltale.toml" "$C:/var/lib/telltale/node.toml" >/dev/null
+docker create --name "$C" --read-only -v "$C-data:/var/lib/wrendns"   -p 127.0.0.1:18053:8053 "$IMG" run -c /var/lib/wrendns/node.toml >/dev/null
+docker cp "$EH/wrendns.toml" "$C:/var/lib/wrendns/node.toml" >/dev/null
 docker start "$C" >/dev/null
 API=http://127.0.0.1:18053
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.2; done
 curl -s -o /dev/null "$API/api/v1/auth/status" || fail "the node didn't start"
 
-docker cp "$C:/var/lib/telltale/setup-token" "$EH/setup-token" >/dev/null
+docker cp "$C:/var/lib/wrendns/setup-token" "$EH/setup-token" >/dev/null
 CSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
   -d "{\"setupToken\":\"$(cat "$E/setup-token")\",\"username\":\"admin\",\"password\":\"worker-e2e-pass-1\"}" \
   "$API/api/v1/auth/setup" | field 'd["csrfToken"]') || fail "first-run setup"

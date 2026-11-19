@@ -1,16 +1,16 @@
-# TelltaleDNS on a Raspberry Pi (or any Linux box) with Docker Compose (REQ: OPS-004, spec/08 §3.4).
+# WrenDNS on a Raspberry Pi (or any Linux box) with Docker Compose (REQ: OPS-004, spec/08 §3.4).
 #
 #   docker compose up -d
-#   docker compose exec telltale telltale auth setup-token   # then open http://<pi>:8053/
+#   docker compose exec wrendns wrendns auth setup-token   # then open http://<pi>:8053/
 #
 # Host networking: queries keep the real client addresses and the neighbor table shows
 # MAC addresses, so per-device statistics and rules work. Nothing else may use port 53 on
 # the host (see README.md for systemd-resolved).
-name: telltale
+name: wrendns
 services:
-  telltale:
-    image: ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-latest}
-    command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  wrendns:
+    image: ghcr.io/nbacheller/wrendns:${WRENDNS_TAG:-latest}
+    command: ["run", "-c", "/etc/wrendns/wrendns.toml"]
     network_mode: host
     restart: unless-stopped
     # Port 53 needs NET_BIND_SERVICE: run as root with only that capability. To run as the
@@ -23,20 +23,20 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     volumes:
-      - ./telltale.toml:/etc/telltale/telltale.toml:ro
+      - ./wrendns.toml:/etc/wrendns/wrendns.toml:ro
       # Lists, the query log, users. Docker creates ./data owned by root; when switching to the
       # unprivileged user, first run `sudo chown -R 65532:65532 data`.
-      - ./data:/var/lib/telltale
+      - ./data:/var/lib/wrendns
     environment:
-      TELLTALE_LOG: info
+      WRENDNS_LOG: info
       # REQ: API-013 (ADR-1000) - this container is on the host network, so its interfaces are the Pi's own
       # networks (VLANs); without this the Networks page treats it as a bridged container and lists none.
-      TELLTALE_HOST_NETWORK: "1"
+      WRENDNS_HOST_NETWORK: "1"
       # REQ: API-902 (T27.13, ADR-956 §4a) - `restart: unless-stopped` starts the container again after
       # any exit, so the UI may offer "Restart now" (exit status 75).
-      TELLTALE_SUPERVISOR: docker
+      WRENDNS_SUPERVISOR: docker
     healthcheck:
-      test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+      test: ["CMD", "/usr/local/bin/wrendns", "health", "--url", "http://127.0.0.1:8053/readyz"]
       interval: 30s
       timeout: 5s
       start_period: 30s

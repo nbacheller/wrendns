@@ -1,6 +1,6 @@
-"""Fixtures: a real TelltaleDNS node (the fork's debug build) with an agent token.
+"""Fixtures: a real WrenDNS node (the fork's debug build) with an agent token.
 
-Set TELLTALE_BIN to use another binary; the default is the workspace's `target/debug/telltale`.
+Set WRENDNS_BIN to use another binary; the default is the workspace's `target/debug/wrendns`.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import pytest_socket
 pytest_plugins = "pytest_homeassistant_custom_component"
 
 ROOT = Path(__file__).resolve().parents[3]
-BIN = Path(os.environ.get("TELLTALE_BIN", ROOT / "target" / "debug" / "telltale"))
+BIN = Path(os.environ.get("WRENDNS_BIN", ROOT / "target" / "debug" / "wrendns"))
 API_PORT = 36992
 DNS_PORT = 35992
 
@@ -90,17 +90,17 @@ def _wait(url: str, seconds: float = 20) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError("TelltaleDNS didn't start")
+    raise RuntimeError("WrenDNS didn't start")
 
 
 @pytest.fixture(scope="session")
-def telltale_node() -> Iterator[Node]:
+def wrendns_node() -> Iterator[Node]:
     if not BIN.exists():
-        pytest.skip(f"no TelltaleDNS binary at {BIN} (cargo build -p telltale)")
+        pytest.skip(f"no WrenDNS binary at {BIN} (cargo build -p wrendns)")
     tmp = Path(tempfile.mkdtemp(prefix="tt-ha-"))
-    (tmp / "telltale.toml").write_text(CONFIG.format(data=tmp / "data", dns=DNS_PORT, api=API_PORT))
+    (tmp / "wrendns.toml").write_text(CONFIG.format(data=tmp / "data", dns=DNS_PORT, api=API_PORT))
     log = open(tmp / "node.log", "w")  # noqa: SIM115 (open for the process's lifetime; closed below)
-    proc = subprocess.Popen([str(BIN), "run", "-c", str(tmp / "telltale.toml")], stdout=log, stderr=log)
+    proc = subprocess.Popen([str(BIN), "run", "-c", str(tmp / "wrendns.toml")], stdout=log, stderr=log)
     url = f"http://127.0.0.1:{API_PORT}"
     # The Home Assistant test plugin blocks sockets per test; this fixture outlives one.
     pytest_socket.enable_socket()

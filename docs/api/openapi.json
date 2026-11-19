@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "TelltaleDNS API",
-    "description": "Read and control a TelltaleDNS resolver. JSON is camelCase; field names carry units (`totalMs`, `ttlSeconds`). Errors are RFC 9457 problem+json with a stable `code` and a `hint`. Time parameters take RFC 3339 or a relative offset (`-24h`). Collections page with `cursor`/`limit`. Analytics calls take `scope` (`cluster` or `node:local`; both mean this node until clustering is available).",
+    "title": "WrenDNS API",
+    "description": "Read and control a WrenDNS resolver. JSON is camelCase; field names carry units (`totalMs`, `ttlSeconds`). Errors are RFC 9457 problem+json with a stable `code` and a `hint`. Time parameters take RFC 3339 or a relative offset (`-24h`). Collections page with `cursor`/`limit`. Analytics calls take `scope` (`cluster` or `node:local`; both mean this node until clustering is available).",
     "license": {
       "name": "Apache-2.0 OR MIT"
     },
@@ -684,7 +684,7 @@
           "stats"
         ],
         "summary": "Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).",
-        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.\nNewest first. In a cluster every node's findings are included (each node learns from the\nqueries it answers), with `nodes` saying which found each. Each has a stable `id` for\nacknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`\nreturns only the ones nobody has. A finding an anomaly mute matched (OBS-038) is left out\nunless `muted=true`; it then carries `mutedBy`, the mute's name.",
+        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; WrenDNS never blocks on them.\nNewest first. In a cluster every node's findings are included (each node learns from the\nqueries it answers), with `nodes` saying which found each. Each has a stable `id` for\nacknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`\nreturns only the ones nobody has. A finding an anomaly mute matched (OBS-038) is left out\nunless `muted=true`; it then carries `mutedBy`, the mute's name.",
         "operationId": "anomalies",
         "parameters": [
           {
@@ -1194,7 +1194,7 @@
           "config"
         ],
         "summary": "Mute kinds of device anomaly for some devices or groups (OBS-038).",
-        "description": "The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):\n`devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,\n`domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally\n`expires` (RFC 3339) and `note`, e.g. `{\"devices\": [\"lg-tv-living\"], \"kinds\":\n[\"nxdomain_storm\"], \"expires\": \"2026-12-31T00:00:00Z\", \"note\": \"hourly PTR sweep\"}`. A finding\na mute matches when it is created is still recorded and listed (`GET\n/analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in\n`telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level\n(`telltale_anomalies_muted_total` counts it). The same kind still counts for every other\ndevice. The mute is shared: it applies on every node. There is no mute for everyone: name at\nleast one device or group.",
+        "description": "The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):\n`devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,\n`domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally\n`expires` (RFC 3339) and `note`, e.g. `{\"devices\": [\"lg-tv-living\"], \"kinds\":\n[\"nxdomain_storm\"], \"expires\": \"2026-12-31T00:00:00Z\", \"note\": \"hourly PTR sweep\"}`. A finding\na mute matches when it is created is still recorded and listed (`GET\n/analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in\n`wrendns_anomalies_total`, the badge, the `anomaly` alert rule, or the health level\n(`wrendns_anomalies_muted_total` counts it). The same kind still counts for every other\ndevice. The mute is shared: it applies on every node. There is no mute for everyone: name at\nleast one device or group.",
         "operationId": "put_anomaly_mute",
         "parameters": [
           {
@@ -1512,7 +1512,7 @@
           "auth"
         ],
         "summary": "The audit log (admin).",
-        "description": "Every change to users, passwords, two-factor sign-in, and API tokens, sign-ins and\nlockouts, and configuration reloads, newest first, with who (attributed to the token and\nits owner for API tokens), from where, why (`X-Telltale-Reason`), and what changed. Append-only and\nhash-chained; check it with GET /audit/verify.",
+        "description": "Every change to users, passwords, two-factor sign-in, and API tokens, sign-ins and\nlockouts, and configuration reloads, newest first, with who (attributed to the token and\nits owner for API tokens), from where, why (`X-Wrendns-Reason`), and what changed. Append-only and\nhash-chained; check it with GET /audit/verify.",
         "operationId": "audit_log",
         "parameters": [
           {
@@ -1593,7 +1593,7 @@
           "auth"
         ],
         "summary": "Verify the audit log (admin).",
-        "description": "Recomputes every entry's hash and link. `ok: false` with `firstBadSeq` means the log was\nedited at or before that entry outside TelltaleDNS. Compare `headHash` with a value you\nsaved earlier to detect removed entries at the end.",
+        "description": "Recomputes every entry's hash and link. `ok: false` with `firstBadSeq` means the log was\nedited at or before that entry outside WrenDNS. Compare `headHash` with a value you\nsaved earlier to detect removed entries at the end.",
         "operationId": "audit_verify",
         "responses": {
           "200": {
@@ -1820,7 +1820,7 @@
           {
             "name": "state",
             "in": "query",
-            "description": "The value TelltaleDNS sent at the start, checked against the sign-in cookie.",
+            "description": "The value WrenDNS sent at the start, checked against the sign-in cookie.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1948,7 +1948,7 @@
           "auth"
         ],
         "summary": "Create the first admin.",
-        "description": "Only while no user exists. `setupToken` is saved in `<data_dir>/setup-token` at startup\n(`telltale auth setup-token` prints it; the log names the file, not the token). Signs the\nnew admin in (sets the session cookie).",
+        "description": "Only while no user exists. `setupToken` is saved in `<data_dir>/setup-token` at startup\n(`wrendns auth setup-token` prints it; the log names the file, not the token). Signs the\nnew admin in (sets the session cookie).",
         "operationId": "setup",
         "requestBody": {
           "content": {
@@ -2131,13 +2131,13 @@
           "system"
         ],
         "summary": "Download a backup of this node.",
-        "description": "One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and\nnames made through the API, the audit log, statistics history, and anomaly baselines.\nSign-in sessions, lists, and the cluster identity aren't included, and neither is the\nquery log (use `POST /api/v1/backup` with `includeQlog`, or `telltale backup create\n--include-qlog`, for that). **The stored secrets are left out** (they are encrypted with this\nnode's key, which no backup holds): `X-Telltale-Backup-Secrets: omitted; count=N` says how\nmany. `POST /api/v1/backup` with a passphrase carries them. Restore it with\n`telltale backup restore FILE` on the new machine.\n\nThe file holds password hashes: keep it private. Admin only; audited as `backup.create`.",
+        "description": "One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and\nnames made through the API, the audit log, statistics history, and anomaly baselines.\nSign-in sessions, lists, and the cluster identity aren't included, and neither is the\nquery log (use `POST /api/v1/backup` with `includeQlog`, or `wrendns backup create\n--include-qlog`, for that). **The stored secrets are left out** (they are encrypted with this\nnode's key, which no backup holds): `X-Wrendns-Backup-Secrets: omitted; count=N` says how\nmany. `POST /api/v1/backup` with a passphrase carries them. Restore it with\n`wrendns backup restore FILE` on the new machine.\n\nThe file holds password hashes: keep it private. Admin only; audited as `backup.create`.",
         "operationId": "backup_download",
         "responses": {
           "200": {
-            "description": "The backup, as an attachment named `telltale-<node>-<time>.ttbk`.",
+            "description": "The backup, as an attachment named `wrendns-<node>-<time>.ttbk`.",
             "headers": {
-              "X-Telltale-Backup-Secrets": {
+              "X-Wrendns-Backup-Secrets": {
                 "schema": {
                   "type": "string"
                 },
@@ -2174,7 +2174,7 @@
           "system"
         ],
         "summary": "Make a backup, optionally with the stored secrets.",
-        "description": "Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:\n- `includeQlog`: the query log too;\n- `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made\n  from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.\n  The archive is then format 2, which builds before this one refuse. Restore needs the\n  passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.\n\n`X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left\nout), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the\nconfiguration are copied as they are).\n\nAdmin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node\nitself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in\nwithin the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to\nrun `telltale backup create` on the node. One key derivation runs at a time: a second request\ngets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which\nholds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and\na backup with secrets raises the alert event `secrets_exported`. It takes no\n`Idempotency-Key`: it changes no state.",
+        "description": "Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:\n- `includeQlog`: the query log too;\n- `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made\n  from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.\n  The archive is then format 2, which builds before this one refuse. Restore needs the\n  passphrase (`wrendns backup restore --secrets-passphrase-file`) or `--skip-secrets`.\n\n`X-Wrendns-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left\nout), and `X-Wrendns-Backup-Warnings` lists what to know (credentials held inline in the\nconfiguration are copied as they are).\n\nAdmin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node\nitself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in\nwithin the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to\nrun `wrendns backup create` on the node. One key derivation runs at a time: a second request\ngets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which\nholds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and\na backup with secrets raises the alert event `secrets_exported`. It takes no\n`Idempotency-Key`: it changes no state.",
         "operationId": "backup_create",
         "requestBody": {
           "description": "Optional: `includeQlog`, `passphrase`.",
@@ -2189,15 +2189,15 @@
         },
         "responses": {
           "200": {
-            "description": "The backup, as an attachment named `telltale-<node>-<time>.ttbk`.",
+            "description": "The backup, as an attachment named `wrendns-<node>-<time>.ttbk`.",
             "headers": {
-              "X-Telltale-Backup-Secrets": {
+              "X-Wrendns-Backup-Secrets": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "`included; count=N` or `omitted; count=N`."
               },
-              "X-Telltale-Backup-Warnings": {
+              "X-Wrendns-Backup-Warnings": {
                 "schema": {
                   "type": "string"
                 },
@@ -3071,7 +3071,7 @@
           "config"
         ],
         "summary": "Set the `[clients]` setting this API changes (DNS-023, T24.13, ADR-914).",
-        "description": "Only `mdns` is here: when on, TelltaleDNS listens for mDNS announcements on every node, which\nnames devices that announce themselves (`[local] device_mdns` answers for them). `mdns_port`\nstays in the file. This is admin-only: an operator's change is 403 naming `mdns`, and no agent\ncan change it.",
+        "description": "Only `mdns` is here: when on, WrenDNS listens for mDNS announcements on every node, which\nnames devices that announce themselves (`[local] device_mdns` answers for them). `mdns_port`\nstays in the file. This is admin-only: an operator's change is 403 naming `mdns`, and no agent\ncan change it.",
         "operationId": "put_clients_settings",
         "parameters": [
           {
@@ -3809,7 +3809,7 @@
           "system"
         ],
         "summary": "Remove a node from the cluster.",
-        "description": "The primary drops the node from the member list (so it stops counting as a voter, and the\nCluster page and the `TelltaleDNSClusterPeerDown` alert stop listing it) and adds its ID to\nthe list of removed nodes that travels with every version: no node accepts a connection from\nit again, even while its certificate is valid. The node's own data isn't touched. A node that\nis up is removed only with `force=true`; the answer then says it was up. The primary can't\nbe removed, and neither can a node by site or pod name: use the ID the Cluster page shows.\n\nIf the node was eligible it holds a copy of the cluster key (`heldClusterKey`): removal\nstops the cluster accepting its certificate, but if the node is lost or can't be trusted,\nrotate the CA too (`telltale cluster rotate-ca`). Removing a voter can leave fewer than three,\nwhich turns automatic failover into manual (`automaticFailoverAfter`, and a note).\n\nA replica sends the request to the primary. It changes no configuration, so a GitOps-managed\ncluster takes it too. `?dryRun=true` runs every check and says what would happen. Admin\n(agents: `cluster:admin`); audit-logged as `cluster.node.remove`.",
+        "description": "The primary drops the node from the member list (so it stops counting as a voter, and the\nCluster page and the `WrenDNSClusterPeerDown` alert stop listing it) and adds its ID to\nthe list of removed nodes that travels with every version: no node accepts a connection from\nit again, even while its certificate is valid. The node's own data isn't touched. A node that\nis up is removed only with `force=true`; the answer then says it was up. The primary can't\nbe removed, and neither can a node by site or pod name: use the ID the Cluster page shows.\n\nIf the node was eligible it holds a copy of the cluster key (`heldClusterKey`): removal\nstops the cluster accepting its certificate, but if the node is lost or can't be trusted,\nrotate the CA too (`wrendns cluster rotate-ca`). Removing a voter can leave fewer than three,\nwhich turns automatic failover into manual (`automaticFailoverAfter`, and a note).\n\nA replica sends the request to the primary. It changes no configuration, so a GitOps-managed\ncluster takes it too. `?dryRun=true` runs every check and says what would happen. Admin\n(agents: `cluster:admin`); audit-logged as `cluster.node.remove`.",
         "operationId": "remove_node",
         "parameters": [
           {
@@ -3890,7 +3890,7 @@
           "system"
         ],
         "summary": "Unpin the cluster.",
-        "description": "The primary publishes its current configuration again (through a staged rollout when\ncanaries are set) and serves it itself. `?dryRun=true` checks and shows the diff. The reason\n(`X-Telltale-Reason`) goes into the audit log. Admin (agents: `cluster:admin` with human\napproval); audit-logged as `cluster.unpin`.",
+        "description": "The primary publishes its current configuration again (through a staged rollout when\ncanaries are set) and serves it itself. `?dryRun=true` checks and shows the diff. The reason\n(`X-Wrendns-Reason`) goes into the audit log. Admin (agents: `cluster:admin` with human\napproval); audit-logged as `cluster.unpin`.",
         "operationId": "unpin_cluster",
         "parameters": [
           {
@@ -4096,7 +4096,7 @@
           "system"
         ],
         "summary": "Staged rollouts' settings (CLU-013).",
-        "description": "The body has the same fields as `[cluster.rollout]` in `telltale.toml`: `canaries` (node\nIDs, `site:<name>`, or `ephemeral` for the resolver pods; empty = no rollouts), `bake_secs`\n(at least 5), `servfail_pct`, `require_traffic`, `max_bake_secs`, `fail_on_disconnect`, and\n`history` (versions kept for pinning). It replaces the whole section until deleted again,\non every node. A change to these settings is published at once, never staged itself.\nAdmins only (agents: `cluster:admin`).",
+        "description": "The body has the same fields as `[cluster.rollout]` in `wrendns.toml`: `canaries` (node\nIDs, `site:<name>`, or `ephemeral` for the resolver pods; empty = no rollouts), `bake_secs`\n(at least 5), `servfail_pct`, `require_traffic`, `max_bake_secs`, `fail_on_disconnect`, and\n`history` (versions kept for pinning). It replaces the whole section until deleted again,\non every node. A change to these settings is published at once, never staged itself.\nAdmins only (agents: `cluster:admin`).",
         "operationId": "put_rollout_settings",
         "parameters": [
           {
@@ -4767,7 +4767,7 @@
           "stats"
         ],
         "summary": "Link a record to a device.",
-        "description": "Puts the record under the device in the path. A record with a MAC moves its interface, with every\nrecord of that MAC (a MAC identifies an interface), and pins it there: a serial or a device key\nwill not move it. A record with no key moves alone. With `?dryRun=true` nothing is written and the\nanswer lists the records that would move. Operators; audit-logged as `cmdb.link` with the reason\n(`X-Telltale-Reason`); `Idempotency-Key` replays the first answer for 24 hours.",
+        "description": "Puts the record under the device in the path. A record with a MAC moves its interface, with every\nrecord of that MAC (a MAC identifies an interface), and pins it there: a serial or a device key\nwill not move it. A record with no key moves alone. With `?dryRun=true` nothing is written and the\nanswer lists the records that would move. Operators; audit-logged as `cmdb.link` with the reason\n(`X-Wrendns-Reason`); `Idempotency-Key` replays the first answer for 24 hours.",
         "operationId": "cmdb_link",
         "parameters": [
           {
@@ -5192,7 +5192,7 @@
           "config"
         ],
         "summary": "The configuration's upstreams, upstream groups, lists, and groups, with their sources.",
-        "description": "Each definition in effect, with the same fields as in `telltale.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back.\n\nCredentials never come back (API-014): upstream `headers` and `args`, and the password in a\nURL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending\n`<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,\n`proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,\n`spki_pins`, a destination's `type`) is unchanged; with a new destination the\ncredential has to be entered again (422 `credential_reentry_required`).",
+        "description": "Each definition in effect, with the same fields as in `wrendns.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back.\n\nCredentials never come back (API-014): upstream `headers` and `args`, and the password in a\nURL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending\n`<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,\n`proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,\n`spki_pins`, a destination's `type`) is unchanged; with a new destination the\ncredential has to be entered again (422 `credential_reentry_required`).",
         "operationId": "config_entries",
         "parameters": [
           {
@@ -5225,7 +5225,7 @@
           "config"
         ],
         "summary": "Devices found on the network (API-010; T8.2, T8.3).",
-        "description": "The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, and the\ndevices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),\neach with the name the device has in TelltaleDNS and, with `[local] device_domain`, the\nname it answers as in DNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name\nbecause these are the router's DHCP leases.",
+        "description": "The DHCP clients of the routers WrenDNS reads (`[[router]]`: UniFi, OPNsense, and the\ndevices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),\neach with the name the device has in WrenDNS and, with `[local] device_domain`, the\nname it answers as in DNS. WrenDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name\nbecause these are the router's DHCP leases.",
         "operationId": "dhcp_leases",
         "responses": {
           "200": {
@@ -6057,7 +6057,7 @@
           "config"
         ],
         "summary": "Keep names and devices out of the query log and analytics (OBS-022).",
-        "description": "The body has the same fields as `[exclusions]` in `telltale.toml`: `enabled` (turn them on or\noff without losing the lists), `names` (each with its subdomains, e.g.\n`connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are\nstill answered and still counted in `/metrics`, but left out of the query log, the live view,\nthe dashboard and top lists, anomalies, and every export. `log` (clients as addresses,\nnetworks or device names; `domains`, exact or `*.` for everything under; `own_lookups`) keeps\nqueries out of the query log, the live view and the event sinks only: the statistics still\ncount them (OBS-903). It replaces the whole section until it's deleted again; it applies to\nevery node of a cluster from the next query on.",
+        "description": "The body has the same fields as `[exclusions]` in `wrendns.toml`: `enabled` (turn them on or\noff without losing the lists), `names` (each with its subdomains, e.g.\n`connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are\nstill answered and still counted in `/metrics`, but left out of the query log, the live view,\nthe dashboard and top lists, anomalies, and every export. `log` (clients as addresses,\nnetworks or device names; `domains`, exact or `*.` for everything under; `own_lookups`) keeps\nqueries out of the query log, the live view and the event sinks only: the statistics still\ncount them (OBS-903). It replaces the whole section until it's deleted again; it applies to\nevery node of a cluster from the next query on.",
         "operationId": "put_exclusions",
         "parameters": [
           {
@@ -6640,7 +6640,7 @@
           "config"
         ],
         "summary": "Add or change a client group (ADR-069).",
-        "description": "The body has the same fields as `[[group]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"lists\": [\"stevenblack\"], \"block_mode\": \"null_ip\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "description": "The body has the same fields as `[[group]]` in `wrendns.toml` (the name comes from the path),\ne.g. `{\"lists\": [\"stevenblack\"], \"block_mode\": \"null_ip\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
         "operationId": "put_group",
         "parameters": [
           {
@@ -7529,9 +7529,9 @@
             }
           },
           {
-            "name": "telltale",
+            "name": "wrendns",
             "in": "query",
-            "description": "The TelltaleDNS to compare with (default `127.0.0.1:53`).",
+            "description": "The WrenDNS to compare with (default `127.0.0.1:53`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -7742,7 +7742,7 @@
           "config"
         ],
         "summary": "Put Kubernetes workloads in a group (FLT-017).",
-        "description": "Writes a `[[kubernetes.map]]` rule: the key in the path is `namespace/kind/name` with `*` for\nany (`media/deploy/jellyfin` for one workload, `media*/*/*` for every namespace starting with\n`media`), the body names the group: `{\"group\": \"iot\"}`. Rules made here are checked before\nthe configuration files' (first match wins); a pod or namespace label\n(`telltaledns.io/group`) still wins over any rule (the way to do the same from Git).\nThe workload's next query uses the group.",
+        "description": "Writes a `[[kubernetes.map]]` rule: the key in the path is `namespace/kind/name` with `*` for\nany (`media/deploy/jellyfin` for one workload, `media*/*/*` for every namespace starting with\n`media`), the body names the group: `{\"group\": \"iot\"}`. Rules made here are checked before\nthe configuration files' (first match wins); a pod or namespace label\n(`wrendns.com/group`) still wins over any rule (the way to do the same from Git).\nThe workload's next query uses the group.",
         "operationId": "put_kubernetes_map",
         "parameters": [
           {
@@ -7931,7 +7931,7 @@
         "tags": [
           "config"
         ],
-        "summary": "The Kubernetes workloads TelltaleDNS names (FLT-017).",
+        "summary": "The Kubernetes workloads WrenDNS names (FLT-017).",
         "description": "One row per workload (`namespace/kind/name`, from its pods' owners: a Deployment's replicas\nare one device across rollouts), sorted by name: its group and where that came from (a pod\nlabel, a namespace label, a `[[kubernetes.map]]` rule, or `default_group`), its pods and\ntheir addresses, queries and blocked answers in the last 24 hours (summed over every node in\na cluster; `missingNodes` lists nodes whose counts are missing), and when it last asked.\nEvery node holds the watcher's table, so the list itself never depends on one node. Use the\nname or `key` as `client` anywhere a device goes: the query log, the timeline, rhythm,\nidentity. `kubernetes_disabled` (409) when the feature is off. Example:\n`GET /api/v1/kubernetes/workloads?namespace=media`.",
         "operationId": "workloads",
         "parameters": [
@@ -8273,7 +8273,7 @@
           "config"
         ],
         "summary": "Add or change a filter list (ADR-069).",
-        "description": "The body has the same fields as `[[list]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"url\": \"https://example.com/hosts.txt\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "description": "The body has the same fields as `[[list]]` in `wrendns.toml` (the name comes from the path),\ne.g. `{\"url\": \"https://example.com/hosts.txt\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
         "operationId": "put_list",
         "parameters": [
           {
@@ -8601,7 +8601,7 @@
           "map"
         ],
         "summary": "The live network map.",
-        "description": "The network as a graph: the gateway, networks and VLANs, devices (the 200 busiest; the rest\nfold into `+N more` per network), one resolver per TelltaleDNS node with its answer kinds, and\nthe upstreams. Edges carry the rate over the last 60 seconds and the shares of slow, failing and\nblocked answers. Every node and edge has a `health`: `green`, `yellow`, `red`, or `idle` (too\nfew answers to say). The map is built from a sample of the lookups, never from the query path;\n`sampleRate` says how thin the sample is. No domain name appears anywhere. `partial` and\n`missingNodes` say when a cluster node didn't answer (it is a red resolver).",
+        "description": "The network as a graph: the gateway, networks and VLANs, devices (the 200 busiest; the rest\nfold into `+N more` per network), one resolver per WrenDNS node with its answer kinds, and\nthe upstreams. Edges carry the rate over the last 60 seconds and the shares of slow, failing and\nblocked answers. Every node and edge has a `health`: `green`, `yellow`, `red`, or `idle` (too\nfew answers to say). The map is built from a sample of the lookups, never from the query path;\n`sampleRate` says how thin the sample is. No domain name appears anywhere. `partial` and\n`missingNodes` say when a cluster node didn't answer (it is a red resolver).",
         "operationId": "get_map",
         "parameters": [
           {
@@ -8634,7 +8634,7 @@
           {
             "name": "node",
             "in": "query",
-            "description": "Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).",
+            "description": "Only this WrenDNS node (its pod, site or ID, as the Cluster page shows it).",
             "required": false,
             "schema": {
               "type": "string"
@@ -8691,7 +8691,7 @@
           "config"
         ],
         "summary": "The live network map's settings (OBS-901).",
-        "description": "The body has the same fields as `[map]` in `telltale.toml`: `enabled`, `event_rate` (lookups\nper second each node samples, 10 to 2,000), `min_sample` (answers before a device or edge is\ncoloured, 1 to 1,000), `warn_latency_ms` (unset: the latency objective's), and the percent\nthresholds `warn_slow_pct`, `warn_error_pct`, `error_pct` and `warn_blocked_pct` (1 to 100;\n`error_pct` at least `warn_error_pct`). It replaces the whole section until it's deleted\nagain, on every node of a cluster, and applies within a few seconds with no restart.",
+        "description": "The body has the same fields as `[map]` in `wrendns.toml`: `enabled`, `event_rate` (lookups\nper second each node samples, 10 to 2,000), `min_sample` (answers before a device or edge is\ncoloured, 1 to 1,000), `warn_latency_ms` (unset: the latency objective's), and the percent\nthresholds `warn_slow_pct`, `warn_error_pct`, `error_pct` and `warn_blocked_pct` (1 to 100;\n`error_pct` at least `warn_error_pct`). It replaces the whole section until it's deleted\nagain, on every node of a cluster, and applies within a few seconds with no restart.",
         "operationId": "put_map_settings",
         "parameters": [
           {
@@ -8948,7 +8948,7 @@
           {
             "name": "node",
             "in": "query",
-            "description": "Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).",
+            "description": "Only this WrenDNS node (its pod, site or ID, as the Cluster page shows it).",
             "required": false,
             "schema": {
               "type": "string"
@@ -9033,7 +9033,7 @@
           {
             "name": "node",
             "in": "query",
-            "description": "Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).",
+            "description": "Only this WrenDNS node (its pod, site or ID, as the Cluster page shows it).",
             "required": false,
             "schema": {
               "type": "string"
@@ -11036,7 +11036,7 @@
           "config"
         ],
         "summary": "Set the per-client rate limit (DNS-014).",
-        "description": "The body has the same fields as `[ratelimit]` in `telltale.toml`: `enabled`, `queries` (allowed\nper window, per client; bursts up to this), `window_secs`, `action` (`refused` or `drop`),\n`exempt` (CIDRs never limited), `ipv4_prefix`, and `ipv6_prefix` (how clients are grouped: 32\nis one address, 64 groups a device's rotating IPv6 addresses). It replaces the whole section\n(fields left out take the defaults, not the config file's values) until it's deleted again.\nA router or proxy that forwards for a whole network shows up as one client: add it to\n`exempt`, or raise `queries`. Applies on the next query, with no restart; every client's count\nstarts over.",
+        "description": "The body has the same fields as `[ratelimit]` in `wrendns.toml`: `enabled`, `queries` (allowed\nper window, per client; bursts up to this), `window_secs`, `action` (`refused` or `drop`),\n`exempt` (CIDRs never limited), `ipv4_prefix`, and `ipv6_prefix` (how clients are grouped: 32\nis one address, 64 groups a device's rotating IPv6 addresses). It replaces the whole section\n(fields left out take the defaults, not the config file's values) until it's deleted again.\nA router or proxy that forwards for a whole network shows up as one client: add it to\n`exempt`, or raise `queries`. Applies on the next query, with no restart; every client's count\nstarts over.",
         "operationId": "put_ratelimit",
         "parameters": [
           {
@@ -11175,7 +11175,7 @@
         "tags": [
           "config"
         ],
-        "summary": "Names on my network: the names TelltaleDNS answers itself.",
+        "summary": "Names on my network: the names WrenDNS answers itself.",
         "description": "Every local name with its records and where it's defined (`file`: read-only here; `api`:\neditable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.",
         "operationId": "local_names",
         "responses": {
@@ -11198,7 +11198,7 @@
           "config"
         ],
         "summary": "Set a local name's records (API-011, \"Names on my network\").",
-        "description": "Replaces every record of `name` made through the API with `records` (A and AAAA addresses,\nCNAME aliases, and in Advanced PTR, TXT, MX, SRV). TelltaleDNS then answers the name itself,\nbefore the cache and upstreams; reverse lookups for addresses are added automatically\n(`[local] auto_ptr`). Names defined in the config files are read-only here (409). Needs the\noperator role (or a `write` token).",
+        "description": "Replaces every record of `name` made through the API with `records` (A and AAAA addresses,\nCNAME aliases, and in Advanced PTR, TXT, MX, SRV). WrenDNS then answers the name itself,\nbefore the cache and upstreams; reverse lookups for addresses are added automatically\n(`[local] auto_ptr`). Names defined in the config files are read-only here (409). Needs the\noperator role (or a `write` token).",
         "operationId": "put_records",
         "parameters": [
           {
@@ -11296,7 +11296,7 @@
           "config"
         ],
         "summary": "Remove a local name made through the API.",
-        "description": "TelltaleDNS stops answering it itself; queries for it go to the upstreams (or a route) as\nusual. Names from the config files can't be removed here (409).",
+        "description": "WrenDNS stops answering it itself; queries for it go to the upstreams (or a route) as\nusual. Names from the config files can't be removed here (409).",
         "operationId": "delete_records",
         "parameters": [
           {
@@ -12289,7 +12289,7 @@
           "config"
         ],
         "summary": "What a candidate configuration would have done (OBS-024).",
-        "description": "The body's `config` is a shared configuration as JSON: the sections a cluster replicates,\nas a Git commit's `telltale/shared.toml` becomes (`telltale config simulate` reads the TOML\nand sends this). Node-local sections are ignored: this node's own apply. Each logged query\nover `window` (default `[simulate] default_window`, at most 7 days; newest first, at most\n`[simulate] max_rows` rows and `max_secs` seconds) is decided again under the configuration\nin effect and under the candidate, and the differences are counted: newly blocked, newly\nallowed, a changed route, a changed answer, by name, device, and group. In a cluster every\nnode replays its own log (and the logs shipped to it) and the counts are summed; nodes that\ndidn't answer are in `missingNodes`. Nothing changes and nothing is audited. Needs the\nviewer role (agents: `config:read` and `querylog:read`).",
+        "description": "The body's `config` is a shared configuration as JSON: the sections a cluster replicates,\nas a Git commit's `wrendns/shared.toml` becomes (`wrendns config simulate` reads the TOML\nand sends this). Node-local sections are ignored: this node's own apply. Each logged query\nover `window` (default `[simulate] default_window`, at most 7 days; newest first, at most\n`[simulate] max_rows` rows and `max_secs` seconds) is decided again under the configuration\nin effect and under the candidate, and the differences are counted: newly blocked, newly\nallowed, a changed route, a changed answer, by name, device, and group. In a cluster every\nnode replays its own log (and the logs shipped to it) and the counts are summed; nodes that\ndidn't answer are in `missingNodes`. Nothing changes and nothing is audited. Needs the\nviewer role (agents: `config:read` and `querylog:read`).",
         "operationId": "simulate",
         "requestBody": {
           "content": {
@@ -12341,7 +12341,7 @@
           "config"
         ],
         "summary": "Change simulation's settings (OBS-024).",
-        "description": "The body has the same fields as `[simulate]` in `telltale.toml`: `enabled` (simulations at\nall), `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs`\n(1 to 300), `max_rows` (at least 1,000), and `default_window` (`24h`; at most `7d`). It\nreplaces the whole section until it's deleted again, on every node of a cluster.",
+        "description": "The body has the same fields as `[simulate]` in `wrendns.toml`: `enabled` (simulations at\nall), `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs`\n(1 to 300), `max_rows` (at least 1,000), and `default_window` (`24h`; at most `7d`). It\nreplaces the whole section until it's deleted again, on every node of a cluster.",
         "operationId": "put_simulate_settings",
         "parameters": [
           {
@@ -12861,7 +12861,7 @@
           "config"
         ],
         "summary": "Set the special-name handling (DNS-019, ADR-904).",
-        "description": "The body has the fields of `[special]` in `telltale.toml`: `block_firefox_canary`, `localhost`,\n`private_ptr_nxdomain`, `refuse_chaos`, `block_icloud_private_relay`, `single_label_nxdomain`,\nand `ddr_name` (the name the encrypted listeners' certificates carry, for DDR). It replaces the\nwhole section (fields left out take the defaults), except fields the config files set: those\nwin, and a body that sets one to another value is 409 `set_by_file`. Applies on the next query,\nwith no restart. `ddr_name` is admin-only: an operator's change is 403 naming the field, and\nno agent changes it.",
+        "description": "The body has the fields of `[special]` in `wrendns.toml`: `block_firefox_canary`, `localhost`,\n`private_ptr_nxdomain`, `refuse_chaos`, `block_icloud_private_relay`, `single_label_nxdomain`,\nand `ddr_name` (the name the encrypted listeners' certificates carry, for DDR). It replaces the\nwhole section (fields left out take the defaults), except fields the config files set: those\nwin, and a body that sets one to another value is 409 `set_by_file`. Applies on the next query,\nwith no restart. `ddr_name` is admin-only: an operator's change is 403 naming the field, and\nno agent changes it.",
         "operationId": "put_special",
         "parameters": [
           {
@@ -13362,7 +13362,7 @@
           "stats"
         ],
         "summary": "Answers per latency bucket.",
-        "description": "The latency histogram over time: for each minute (up to 48 hours) or hour (up to 400 days),\nhow many answers landed in each `telltale_query_duration_seconds` bucket (`boundsUs`: 50 µs\nto 5 s, then everything slower), per answer path (`by=path`: `cache`, `upstream`, `local`,\n`synthesized` for blocked and special answers) or per upstream (`by=upstream`). Every node's,\nsummed. `partial` says some steps had answers without bucket counts (an older build's). Use\nit to see a latency tail as a shape over time rather than a p99. Example:\n`GET /api/v1/stats/latency/heatmap?from=-6h&by=path`.",
+        "description": "The latency histogram over time: for each minute (up to 48 hours) or hour (up to 400 days),\nhow many answers landed in each `wrendns_query_duration_seconds` bucket (`boundsUs`: 50 µs\nto 5 s, then everything slower), per answer path (`by=path`: `cache`, `upstream`, `local`,\n`synthesized` for blocked and special answers) or per upstream (`by=upstream`). Every node's,\nsummed. `partial` says some steps had answers without bucket counts (an older build's). Use\nit to see a latency tail as a shape over time rather than a p99. Example:\n`GET /api/v1/stats/latency/heatmap?from=-6h&by=path`.",
         "operationId": "latency_heatmap",
         "parameters": [
           {
@@ -14011,7 +14011,7 @@
         "tags": [
           "system"
         ],
-        "summary": "How TelltaleDNS is doing: healthy, degraded, or severe, and why.",
+        "summary": "How WrenDNS is doing: healthy, degraded, or severe, and why.",
         "description": "`severe`: DNS is failing for some devices (every upstream of a group down, no node serving,\nSERVFAIL for 25% or more of the last 5 minutes' queries). `degraded`: DNS answers, but\nsomething needs a look (one upstream down, a cluster node unreachable or behind, a list\nfailing to download, devices rate-limited in the last 5 minutes, SERVFAIL for 5% or more, a\ndata disk over 90% full). Each reason names its node and where to look in the web UI. In a\ncluster every node is asked; one that doesn't answer is listed in `missingNodes`. Each\ncondition is judged over its own window (the circuit breaker, the last 5 minutes, the\ncluster heartbeat), so a brief blip doesn't change the level. Device anomalies don't count.",
         "operationId": "system_health",
         "responses": {
@@ -14056,7 +14056,7 @@
           "system"
         ],
         "summary": "Synthetic probes of the DNS listeners.",
-        "description": "Every `[probe] interval_secs` (30), each node asks each of its own DNS listeners a question\n(`probe.telltale.invalid`, answered NXDOMAIN locally) through the listener's protocol (UDP,\nTCP, DoT, DoH, DoH3, DoQ), plus any extra `[probe] targets` (a load balancer's address). Per\nprobe: whether the last one answered, how long it took, the error, failures in a row, and for\nTLS listeners the certificate's expiry. Two failures in a row, or a certificate within\n`cert_warn_days`, degrade the health level (an expired one is severe). Every node, in a\ncluster; one that doesn't answer is in `missingNodes`.",
+        "description": "Every `[probe] interval_secs` (30), each node asks each of its own DNS listeners a question\n(`probe.wrendns.invalid`, answered NXDOMAIN locally) through the listener's protocol (UDP,\nTCP, DoT, DoH, DoH3, DoQ), plus any extra `[probe] targets` (a load balancer's address). Per\nprobe: whether the last one answered, how long it took, the error, failures in a row, and for\nTLS listeners the certificate's expiry. Two failures in a row, or a certificate within\n`cert_warn_days`, degrade the health level (an expired one is severe). Every node, in a\ncluster; one that doesn't answer is in `missingNodes`.",
         "operationId": "system_probes",
         "responses": {
           "200": {
@@ -14104,7 +14104,7 @@
         },
         "responses": {
           "200": {
-            "description": "The package, as an attachment named `telltale-support-<node>-<time>.tar.gz`. With dryRun: the manifest as JSON.",
+            "description": "The package, as an attachment named `wrendns-support-<node>-<time>.tar.gz`. With dryRun: the manifest as JSON.",
             "content": {
               "application/gzip": {
                 "schema": {
@@ -14668,7 +14668,7 @@
           "config"
         ],
         "summary": "Add or change an upstream group (ADR-069).",
-        "description": "The body has the same fields as `[[upstream_group]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"members\": [\"quad9\", \"cloudflare\"], \"strategy\": \"fastest\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "description": "The body has the same fields as `[[upstream_group]]` in `wrendns.toml` (the name comes from the path),\ne.g. `{\"members\": [\"quad9\", \"cloudflare\"], \"strategy\": \"fastest\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
         "operationId": "put_upstream_group",
         "parameters": [
           {
@@ -14890,7 +14890,7 @@
           "config"
         ],
         "summary": "Add or change an upstream resolver (ADR-069).",
-        "description": "The body has the same fields as `[[upstream]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"url\": \"tls://9.9.9.9\", \"tls_server_name\": \"dns.quad9.net\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "description": "The body has the same fields as `[[upstream]]` in `wrendns.toml` (the name comes from the path),\ne.g. `{\"url\": \"tls://9.9.9.9\", \"tls_server_name\": \"dns.quad9.net\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
         "operationId": "put_upstream",
         "parameters": [
           {
@@ -15359,7 +15359,7 @@
           "config"
         ],
         "summary": "Authoritative zones (DNS-018).",
-        "description": "The zones from `[[zone]]` in the configuration files: TelltaleDNS answers everything under\neach one itself (NXDOMAIN for names it doesn't have), for the listed groups only when\n`groups` is set (split horizon). Read-only here; zones live in the files.",
+        "description": "The zones from `[[zone]]` in the configuration files: WrenDNS answers everything under\neach one itself (NXDOMAIN for names it doesn't have), for the listed groups only when\n`groups` is set (split horizon). Read-only here; zones live in the files.",
         "operationId": "zones",
         "responses": {
           "200": {
@@ -16145,7 +16145,7 @@
       },
       "AnomalyFinding": {
         "type": "object",
-        "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
+        "description": "A device anomaly and its evidence (OBS-013). Alert-only: WrenDNS never acts on it.",
         "required": [
           "id",
           "kind",
@@ -16216,7 +16216,7 @@
               "string",
               "null"
             ],
-            "description": "REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it\nwas created. A muted finding is kept and listed, but not counted in\n`telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no\nmute matched; listed only with `muted=true`.",
+            "description": "REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it\nwas created. A muted finding is kept and listed, but not counted in\n`wrendns_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no\nmute matched; listed only with `muted=true`.",
             "example": "lg-tv-ptr-sweep"
           },
           "nodes": {
@@ -16466,7 +16466,7 @@
               "string",
               "null"
             ],
-            "description": "The caller's `X-Telltale-Reason`, when sent."
+            "description": "The caller's `X-Wrendns-Reason`, when sent."
           },
           "remote": {
             "type": [
@@ -18376,7 +18376,7 @@
           },
           "name": {
             "type": "string",
-            "description": "The name given at `telltale cluster init`.",
+            "description": "The name given at `wrendns cluster init`.",
             "example": "home"
           },
           "nodeId": {
@@ -19462,7 +19462,7 @@
       },
       "CmdbDropped": {
         "type": "object",
-        "description": "What the CMDB dropped at a cap (`telltale_cmdb_dropped_total`).",
+        "description": "What the CMDB dropped at a cap (`wrendns_cmdb_dropped_total`).",
         "required": [
           "ci",
           "record",
@@ -20087,7 +20087,7 @@
               "object",
               "null"
             ],
-            "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
+            "description": "The definition in effect, with the same fields as in `wrendns.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
           },
           "kind": {
             "type": "string",
@@ -20592,7 +20592,7 @@
               "string",
               "null"
             ],
-            "description": "The device's name in TelltaleDNS (a named client, else the host name)."
+            "description": "The device's name in WrenDNS (a named client, else the host name)."
           },
           "dnsName": {
             "type": [
@@ -22827,7 +22827,7 @@
           },
           "ignored": {
             "type": "boolean",
-            "description": "`TELLTALE_IGNORE_GUARDED` is set: every guarded entry is ignored (health reason\n`guarded_ignored`)."
+            "description": "`WRENDNS_IGNORE_GUARDED` is set: every guarded entry is ignored (health reason\n`guarded_ignored`)."
           },
           "node": {
             "type": "string"
@@ -23179,7 +23179,7 @@
       },
       "Health": {
         "type": "object",
-        "description": "REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons.",
+        "description": "REQ: OBS-015 (ADR-104) — how WrenDNS is doing, in one word, with the reasons.",
         "required": [
           "level",
           "reasons",
@@ -23864,7 +23864,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
+              "description": "A device anomaly and its evidence (OBS-013). Alert-only: WrenDNS never acts on it.",
               "required": [
                 "id",
                 "kind",
@@ -23935,7 +23935,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it\nwas created. A muted finding is kept and listed, but not counted in\n`telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no\nmute matched; listed only with `muted=true`.",
+                  "description": "REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it\nwas created. A muted finding is kept and listed, but not counted in\n`wrendns_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no\nmute matched; listed only with `muted=true`.",
                   "example": "lg-tv-ptr-sweep"
                 },
                 "nodes": {
@@ -24359,7 +24359,7 @@
                     "object",
                     "null"
                   ],
-                  "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
+                  "description": "The definition in effect, with the same fields as in `wrendns.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
                 },
                 "kind": {
                   "type": "string",
@@ -24557,7 +24557,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "The device's name in TelltaleDNS (a named client, else the host name)."
+                  "description": "The device's name in WrenDNS (a named client, else the host name)."
                 },
                 "dnsName": {
                   "type": [
@@ -25221,7 +25221,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "A name TelltaleDNS answers itself.",
+              "description": "A name WrenDNS answers itself.",
               "required": [
                 "name",
                 "records",
@@ -25673,7 +25673,7 @@
                 },
                 "certSelfSigned": {
                   "type": "boolean",
-                  "description": "TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it\ndoesn't expire."
+                  "description": "WrenDNS made the certificate itself (`[api] tls = { self_signed = true }`); it\ndoesn't expire."
                 },
                 "certSha256": {
                   "type": [
@@ -26074,7 +26074,7 @@
                 },
                 "latencyHist": {
                   "type": "object",
-                  "description": "REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
+                  "description": "REQ: OBS-030 — answers per latency bucket (the `wrendns_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
                   "additionalProperties": {
                     "type": "array",
                     "items": {
@@ -27512,7 +27512,7 @@
       },
       "LocalName": {
         "type": "object",
-        "description": "A name TelltaleDNS answers itself.",
+        "description": "A name WrenDNS answers itself.",
         "required": [
           "name",
           "records",
@@ -27855,7 +27855,7 @@
               "string",
               "null"
             ],
-            "description": "The TelltaleDNS node a resolver or an answer node belongs to."
+            "description": "The WrenDNS node a resolver or an answer node belongs to."
           },
           "qps": {
             "type": "number",
@@ -28813,7 +28813,7 @@
         "properties": {
           "fields": {
             "type": "object",
-            "description": "The fields in effect, with the same names as in `telltale.toml`."
+            "description": "The fields in effect, with the same names as in `wrendns.toml`."
           },
           "pendingRestart": {
             "type": "boolean",
@@ -29767,7 +29767,7 @@
           },
           "certSelfSigned": {
             "type": "boolean",
-            "description": "TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it\ndoesn't expire."
+            "description": "WrenDNS made the certificate itself (`[api] tls = { self_signed = true }`); it\ndoesn't expire."
           },
           "certSha256": {
             "type": [
@@ -29902,7 +29902,7 @@
           "hint": "Use a relative offset such as -24h, or RFC 3339 such as 2026-10-03T00:00:00Z.",
           "status": 400,
           "title": "Invalid parameter",
-          "type": "https://telltaledns.dev/problems/invalid_parameter"
+          "type": "https://wrendns.com/problems/invalid_parameter"
         }
       },
       "ProfileDevices": {
@@ -32623,7 +32623,7 @@
         "properties": {
           "how": {
             "type": "string",
-            "description": "How the node knows: `TELLTALE_SUPERVISOR`, or `not declared`."
+            "description": "How the node knows: `WRENDNS_SUPERVISOR`, or `not declared`."
           },
           "kind": {
             "type": "string",
@@ -32790,7 +32790,7 @@
           },
           "version": {
             "type": "string",
-            "description": "TelltaleDNS version.",
+            "description": "WrenDNS version.",
             "example": "0.1.0"
           }
         }
@@ -32926,7 +32926,7 @@
           },
           "latencyHist": {
             "type": "object",
-            "description": "REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
+            "description": "REQ: OBS-030 — answers per latency bucket (the `wrendns_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -34009,7 +34009,7 @@
       },
       "WorkloadInfo": {
         "type": "object",
-        "description": "REQ: FLT-017 (T15.1) — one Kubernetes workload: a device TelltaleDNS names, groups, and\nwatches (`GET /api/v1/kubernetes/workloads`).",
+        "description": "REQ: FLT-017 (T15.1) — one Kubernetes workload: a device WrenDNS names, groups, and\nwatches (`GET /api/v1/kubernetes/workloads`).",
         "required": [
           "name",
           "namespace",
@@ -34375,7 +34375,7 @@
       "session": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "telltale_session"
+        "name": "wrendns_session"
       }
     }
   },
@@ -34405,7 +34405,7 @@
     },
     {
       "name": "map",
-      "description": "REQ: OBS-901 - the live network map: the gateway, networks, devices, TelltaleDNS nodes and upstreams, coloured by health, from a sample of the lookups (never from the query path)."
+      "description": "REQ: OBS-901 - the live network map: the gateway, networks, devices, WrenDNS nodes and upstreams, coloured by health, from a sample of the lookups (never from the query path)."
     },
     {
       "name": "config",

@@ -3,7 +3,7 @@
 # It replaces the hand-built wrendns-dev container: the same toolchain, pinned, plus sccache, mold,
 # nextest, deny and bloat. Release images are built by the root Dockerfile, not this one.
 #
-#   docker build -t telltale-dev:1 deploy/dev
+#   docker build -t wrendns-dev:1 deploy/dev
 #   deploy/dev/up.sh            # volumes + container wrendns-dev2 (see README.md)
 #
 # The Rust version comes from the repo's rust-toolchain.toml (1.99.0); the image preinstalls it so

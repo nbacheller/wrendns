@@ -1,5 +1,5 @@
-# A throwaway 3-node TelltaleDNS cluster for the cluster acceptance run (deploy/cluster3/README.md).
-# It never touches the single-node Docker Desktop bundle (deploy/docker-desktop, project telltale-dev,
+# A throwaway 3-node WrenDNS cluster for the cluster acceptance run (deploy/cluster3/README.md).
+# It never touches the single-node Docker Desktop bundle (deploy/docker-desktop, project wrendns-dev,
 # ports 1053/8053): its own project name, its own volumes, and host ports 2153-2353 / 8153-8353.
 #
 #   primary      creates the cluster ([cluster.init]) and serves the UI and API
@@ -8,30 +8,30 @@
 #
 # e2e.sh generates the join tokens, the admin password and the secret it writes; nothing secret is
 # kept in this file or in the repository. Run it: deploy/cluster3/e2e.sh (see the README).
-name: telltale-cluster3
+name: wrendns-cluster3
 
-x-telltale: &telltale
+x-wrendns: &wrendns
   # TT_IMAGE: e2e.sh's upgrade step (j) runs nodes on an older image, one at a time.
-  image: ${TT_IMAGE:-telltale:cluster3-test}
+  image: ${TT_IMAGE:-wrendns:cluster3-test}
   pull_policy: never
   restart: "no"
   # The image's unprivileged user; the same hardening as the Docker Desktop bundle.
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   read_only: true
-  command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  command: ["run", "-c", "/etc/wrendns/wrendns.toml"]
   environment:
     # The cluster links and the federated reads at debug level: a failed check names the stream
     # or the call that didn't come back (a few lines a minute).
-    TELLTALE_LOG: "info,telltale_cluster::net=debug,telltale::federated=debug"
+    WRENDNS_LOG: "info,wrendns_cluster::net=debug,wrendns::federated=debug"
     # REQ: FLT-901 (T24.29): the image is built with the `e2e` feature, which lets this fake stand in
     # for the hosts the category lists come from, so the test can see which node fetched what.
-    TELLTALE_E2E_CATALOG_BASE: "http://fake-source:8080/"
+    WRENDNS_E2E_CATALOG_BASE: "http://fake-source:8080/"
   depends_on:
     fake-source:
       condition: service_started
   healthcheck:
-    test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+    test: ["CMD", "/usr/local/bin/wrendns", "health", "--url", "http://127.0.0.1:8053/readyz"]
     interval: 5s
     timeout: 5s
     retries: 30
@@ -48,7 +48,7 @@ services:
       - ./fake-source:/www:ro
 
   primary:
-    <<: *telltale
+    <<: *wrendns
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -57,7 +57,7 @@ services:
         # `<crate version>-dev`, which its peers read as that version, so the version gates (the
         # [discovery] first write, ADR-928) let it through (ADR-948, T21.6).
         PROFILE: bench-fast
-        TELLTALE_BUILD_CHANNEL: dev
+        WRENDNS_BUILD_CHANNEL: dev
         # The category lists' fake source (see `fake-source`); never set for a shipped image.
         CARGO_FEATURES: e2e
         # Its own build cache, not the default one every worktree shares: that one can hold a
@@ -65,8 +65,8 @@ services:
         # Set CLUSTER3_CACHE_SCOPE (e.g. -mybranch) to keep a worktree's cache apart too.
         BUILD_CACHE_SCOPE: ${CLUSTER3_CACHE_SCOPE:--cluster3}
     volumes:
-      - ./config/primary.toml:/etc/telltale/telltale.toml:ro
-      - primary-data:/var/lib/telltale
+      - ./config/primary.toml:/etc/wrendns/wrendns.toml:ro
+      - primary-data:/var/lib/wrendns
     ports:
       - "127.0.0.1:2153:2153/udp"   # DNS
       - "127.0.0.1:2153:2153/tcp"
@@ -74,11 +74,11 @@ services:
       - "127.0.0.1:9163:9153"       # /metrics (its own listener)
 
   replica-a:
-    <<: *telltale
+    <<: *wrendns
     cpus: 2
     volumes:
-      - ./config/replica-a.toml:/etc/telltale/telltale.toml:ro
-      - replica-a-data:/var/lib/telltale
+      - ./config/replica-a.toml:/etc/wrendns/wrendns.toml:ro
+      - replica-a-data:/var/lib/wrendns
     ports:
       - "127.0.0.1:2253:2153/udp"
       - "127.0.0.1:2253:2153/tcp"
@@ -86,10 +86,10 @@ services:
       - "127.0.0.1:9263:9153"
 
   replica-b:
-    <<: *telltale
+    <<: *wrendns
     volumes:
-      - ./config/replica-b.toml:/etc/telltale/telltale.toml:ro
-      - replica-b-data:/var/lib/telltale
+      - ./config/replica-b.toml:/etc/wrendns/wrendns.toml:ro
+      - replica-b-data:/var/lib/wrendns
     ports:
       - "127.0.0.1:2353:2153/udp"
       - "127.0.0.1:2353:2153/tcp"

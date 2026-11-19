@@ -1,14 +1,14 @@
 """REQ: FLT-901 (T24.29, ADR-994 item 5) -- the memory a category selection costs, for the catalog's
 `[measured]` table (`presets/categories/catalog.toml`) and design section 2.4.
 
-  python3 bench/categories_rss.py --bin /target/categories-e2e/bench-fast/telltale \
+  python3 bench/categories_rss.py --bin /target/categories-e2e/bench-fast/wrendns \
       --content '{ level = "basic" }' --mem 128 --cpus 4
 
 Runs one node in a Docker container limited to `--mem` MiB (and `--cpus`), with the category lists
 served from a local HTTP server that fetches each real file once from the internet and caches it
 (`--cache`), so the byte counts are the real ones. The node must be built with the cargo feature
-`e2e` (`cargo build --profile bench-fast -p telltale --features e2e`): only that build can point the
-catalog's two hosts at `TELLTALE_E2E_CATALOG_BASE`. The binary is read from the `--volumes-from`
+`e2e` (`cargo build --profile bench-fast -p wrendns --features e2e`): only that build can point the
+catalog's two hosts at `WRENDNS_E2E_CATALOG_BASE`. The binary is read from the `--volumes-from`
 container (`wrendns-dev`, where it was built), so no copy is needed.
 
 Prints one JSON line: the source bytes the node downloaded, VmHWM (the peak resident set, which
@@ -103,7 +103,7 @@ content = {content}
 """
     sh("docker", "run", "-d", "--name", name, "--memory", f"{a.mem}m", "--memory-swap", f"{a.mem}m",
        "--cpus", str(a.cpus), "--volumes-from", a.volumes_from,
-       "-e", f"TELLTALE_E2E_CATALOG_BASE=http://host.docker.internal:{a.port}/",
+       "-e", f"WRENDNS_E2E_CATALOG_BASE=http://host.docker.internal:{a.port}/",
        "ubuntu:24.04", "bash", "-c",
        f"cat > /tmp/t.toml <<'EOF'\n{cfg}EOF\nexec {a.bin} run -c /tmp/t.toml")
     try:
@@ -128,12 +128,12 @@ content = {content}
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--bin", required=True, help="the e2e-feature telltale binary, as seen in --volumes-from")
+    ap.add_argument("--bin", required=True, help="the e2e-feature wrendns binary, as seen in --volumes-from")
     ap.add_argument("--content", default='{ level = "basic" }', help="the default group's `content` (TOML)")
     ap.add_argument("--mem", type=int, default=1024, help="container memory limit, MiB")
     ap.add_argument("--cpus", type=float, default=4)
     ap.add_argument("--volumes-from", default="wrendns-dev")
-    ap.add_argument("--cache", default=str(pathlib.Path.home() / ".cache" / "telltale-categories-rss"))
+    ap.add_argument("--cache", default=str(pathlib.Path.home() / ".cache" / "wrendns-categories-rss"))
     ap.add_argument("--port", type=int, default=18947)
     ap.add_argument("--timeout", type=int, default=240)
     a = ap.parse_args()

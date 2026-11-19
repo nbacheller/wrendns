@@ -6,10 +6,10 @@
 #   - a deliberately broken signed name (dnssec-failed.org) is SERVFAIL with EDE 6;
 #   - with CD=1 it's answered anyway; under a negative trust anchor it's answered;
 #   - signed denials (NXDOMAIN/NODATA) validate;
-#   - verdicts are counted in telltale_dnssec_validation_total.
-# Usage: deploy/dnssec-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+#   - verdicts are counted in wrendns_dnssec_validation_total.
+# Usage: deploy/dnssec-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -80,25 +80,25 @@ echo "$out" | grep -q "EDE: 6" || fail "dnssec-failed.org has no EDE 6"
 [ "$(status dnssec-failed.org A +cd)" = NOERROR ] || fail "CD=1 didn't return the unvalidated answer"
 echo ok
 echo "== signed denials"
-[[ "$(flags nonexistent-zz9-telltale.cloudflare.com A +dnssec)" == *ad* ]] || fail "a signed denial didn't validate"
+[[ "$(flags nonexistent-zz9-wrendns.cloudflare.com A +dnssec)" == *ad* ]] || fail "a signed denial didn't validate"
 [[ "$(flags cloudflare.com SRV +dnssec)" == *ad* ]] || fail "a signed NODATA didn't validate"
 echo ok
 echo "== aggressive NSEC (RFC 8198)"
 # One made-up TLD teaches the root's NSEC ranges; the next one in the same range is answered
 # from them: NXDOMAIN with AD, the NSEC records for DO clients, and counted as synthesized.
-synth() { curl -s 127.0.0.1:29951/metrics | sed -n 's/^telltale_dnssec_synthesized_total \([0-9]*\)/\1/p'; }
-[ "$(status zz-telltale-a1 A)" = NXDOMAIN ] || fail "a made-up TLD wasn't NXDOMAIN"
+synth() { curl -s 127.0.0.1:29951/metrics | sed -n 's/^wrendns_dnssec_synthesized_total \([0-9]*\)/\1/p'; }
+[ "$(status zz-wrendns-a1 A)" = NXDOMAIN ] || fail "a made-up TLD wasn't NXDOMAIN"
 before=$(synth)
-out=$(d zz-telltale-b2 A +dnssec)
+out=$(d zz-wrendns-b2 A +dnssec)
 echo "$out" | grep -q "status: NXDOMAIN" || fail "the second made-up TLD wasn't NXDOMAIN"
 echo "$out" | grep -qE "flags: [a-z ]* ad" || fail "the synthesized NXDOMAIN has no AD"
 echo "$out" | grep -qE "IN[[:space:]]+NSEC" || fail "no NSEC records for a DO client: $(echo "$out" | head -30)"
 after=$(synth)
 [ "${after:-0}" -gt "${before:-0}" ] || fail "not answered from the NSEC cache ($before -> $after)"
-[ "$(status zz-telltale-c3 AAAA +nodnssec)" = NXDOMAIN ] || fail "a non-DO client didn't get NXDOMAIN"
+[ "$(status zz-wrendns-c3 AAAA +nodnssec)" = NXDOMAIN ] || fail "a non-DO client didn't get NXDOMAIN"
 echo ok
 echo "== counted"
-m=$(curl -s 127.0.0.1:29951/metrics | grep '^telltale_dnssec_validation_total')
+m=$(curl -s 127.0.0.1:29951/metrics | grep '^wrendns_dnssec_validation_total')
 echo "$m" | grep -q 'result="secure"} [1-9]' || fail "no secure verdicts counted: $m"
 echo "$m" | grep -q 'result="bogus"} [1-9]' || fail "no bogus verdicts counted: $m"
 echo ok

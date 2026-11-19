@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-api/src/mcp.rs b/crates/telltale-api/src/mcp.rs
+diff --git a/crates/wrendns-api/src/mcp.rs b/crates/wrendns-api/src/mcp.rs
 index 17558e1..b6a2bbe 100644
---- a/crates/telltale-api/src/mcp.rs
-+++ b/crates/telltale-api/src/mcp.rs
+--- a/crates/wrendns-api/src/mcp.rs
++++ b/crates/wrendns-api/src/mcp.rs
 @@ -28,6 +28,8 @@ const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
  /// Most rows a tool returns, and most bytes of text (AGT-009).
  pub const MAX_ROWS: u64 = 200;
@@ -27,10 +27,10 @@ index 17558e1..b6a2bbe 100644
          let mut out = Vec::new();
          for m in batch {
              let (r, sid) = mcp
-diff --git a/crates/telltale-api/src/tests.rs b/crates/telltale-api/src/tests.rs
+diff --git a/crates/wrendns-api/src/tests.rs b/crates/wrendns-api/src/tests.rs
 index bcd2b89..397b2d6 100644
---- a/crates/telltale-api/src/tests.rs
-+++ b/crates/telltale-api/src/tests.rs
+--- a/crates/wrendns-api/src/tests.rs
++++ b/crates/wrendns-api/src/tests.rs
 @@ -1402,3 +1402,29 @@ async fn api_003_trusted_proxy_forwards_the_client_address() {
          .unwrap();
      assert_eq!(login[0].remote.as_deref(), Some("192.168.1.20"));

@@ -200,7 +200,7 @@ export function whyUnavailable(reason: string | null | undefined): Why | null {
       return {
         code: reason,
         title: "Answer addresses aren't recorded",
-        body: "TelltaleDNS doesn't keep the address each answer points at (it would make every query-log record bigger on the DNS path), so arcs can't be drawn yet. The upstreams' own locations are shown instead.",
+        body: "WrenDNS doesn't keep the address each answer points at (it would make every query-log record bigger on the DNS path), so arcs can't be drawn yet. The upstreams' own locations are shown instead.",
         admin: false,
       };
     case 'privacy':

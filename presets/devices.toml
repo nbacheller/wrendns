@@ -1,4 +1,4 @@
-# TelltaleDNS device signatures (REQ: OBS-025, ADR-117).
+# WrenDNS device signatures (REQ: OBS-025, ADR-117).
 #
 # Clean room: written from vendors' public documentation (firewall allowlists, support pages)
 # and our own observations; no fingerprint database from another project is used. Each

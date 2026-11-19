@@ -1,8 +1,8 @@
-# TelltaleDNS blocked-services catalog (REQ: FLT-012, `spec/05` §4): social networks.
+# WrenDNS blocked-services catalog (REQ: FLT-012, `spec/05` §4): social networks.
 #
 # Data, not code: compiled into the binary. Each service is a named list of Adblock-style
 # rules (`||domain^` blocks the domain and everything under it). A group blocks a service with
-# `blocked_services = ["tiktok"]`. Written for TelltaleDNS from the services' own public
+# `blocked_services = ["tiktok"]`. Written for WrenDNS from the services' own public
 # domains; corrections welcome.
 
 [[service]]

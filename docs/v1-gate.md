@@ -1,6 +1,6 @@
 # The v1.0 release gate
 
-Where TelltaleDNS stands against the v1.0 release gate (`spec/10` M6, `spec/00` §5). 0.1.0 is
+Where WrenDNS stands against the v1.0 release gate (`spec/10` M6, `spec/00` §5). 0.1.0 is
 the first stable release; 1.0 waits until every row below passes on the reference hardware.
 This page records each target, the latest measurement, how it was taken, and the status.
 
@@ -26,7 +26,7 @@ This page records each target, the latest measurement, how it was taken, and the
 |---|---|---|---|
 | Cache-hit throughput, 4-core x86-64 | ≥ 150k qps at < 1 % loss | 170.6k qps, 0 % loss (median of 3; 2 physical cores) | ✅ pass (dev host) |
 | Cache-hit throughput, Raspberry Pi 4 | ≥ 25k qps | not measured | ⏳ needs a Pi 4 that isn't serving the home network |
-| Added latency, cache hit (p99 at 50 % load) | ≤ 250 µs | T10.5 (2026-10-18): load from the build VM against a temporary pod on the homelab node (4 CPUs, 1M names; `bench/remote.py`), 56.8k qps (half of the 113.7k it sustained), 0 lost: **99.999 % of queries answered within 250 µs by the server** (`telltale_query_duration_seconds`; p99 in the ≤ 50 µs bucket). End to end, through the network between the machines (0.7 ms RTT), dnsperf's p50 was 199 µs and p99 4.9 ms | ✅ pass |
+| Added latency, cache hit (p99 at 50 % load) | ≤ 250 µs | T10.5 (2026-10-18): load from the build VM against a temporary pod on the homelab node (4 CPUs, 1M names; `bench/remote.py`), 56.8k qps (half of the 113.7k it sustained), 0 lost: **99.999 % of queries answered within 250 µs by the server** (`wrendns_query_duration_seconds`; p99 in the ≤ 50 µs bucket). End to end, through the network between the machines (0.7 ms RTT), dnsperf's p50 was 199 µs and p99 4.9 ms | ✅ pass |
 | Added latency, blocked answer (p99 at 50 % load) | ≤ 250 µs | same setup, 52.4k qps (half of 104.8k), 0 lost: **99.999 % within 250 µs** (p99 ≤ 50 µs); end to end p50 187 µs, p99 455 µs | ✅ pass |
 | Idle RSS, no lists | ≤ 32 MiB (≤ 20 MiB before ADR-1031) | 13.7 MiB 40 s after start, 16.1 MiB after 3 min (the shipped musl build, T10.2, `bench/memprobe.py`; 22.7 MiB before) | ✅ pass |
 | RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 128 MiB (≤ 64 MiB before ADR-1031) | 60.0 MiB 40 s after the fill, 60.9 MiB after 3 min; peak 97.5 MiB during the compile (the shipped musl build; 71.4 MiB and a 170 MiB peak before T10.2's last step, 130.4 MiB at its start) | ✅ pass |
@@ -49,7 +49,7 @@ figure is now about 50 MB.
 | Item | Status |
 |---|---|
 | All P0 requirements pass | ✅ checked (T10.6, `docs/v1-requirements.md`, kept current by CI): all 73 have tests or evidence, 66 with named tests; NFR-005's supply-chain items done in T10.10 (ADR-146) |
-| Comparative benchmark report published | ✅ decided (owner, 2026-10-17): TelltaleDNS publishes its own numbers and the exact method (hardware, load, corpus) so anyone can reproduce or compare them; no side-by-side with other resolvers |
+| Comparative benchmark report published | ✅ decided (owner, 2026-10-17): WrenDNS publishes its own numbers and the exact method (hardware, load, corpus) so anyone can reproduce or compare them; no side-by-side with other resolvers |
 | Security review of sign-in, the cluster, and the parsers | ✅ done (T10.7, `docs/security-review.md`): 17 findings fixed with regression tests (2 high, in the cluster channel); accepted items and missing fuzz targets listed there |
 
 ## Next

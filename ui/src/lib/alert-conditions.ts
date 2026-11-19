@@ -1,5 +1,5 @@
 // REQ: OBS-010 (T27.1), API-901 — every `when` an alert rule accepts (the server's `AlertWhen`,
-// telltale-config). The Alerts form offers this list; the Rust test `obs_010_alert_conditions_match_ui`
+// wrendns-config). The Alerts form offers this list; the Rust test `obs_010_alert_conditions_match_ui`
 // fails when the enum gains or loses a value this list doesn't have. Keep the order: the
 // conditions the form offered first, then the ones added by T27.1.
 export const alertConditions: string[] = [

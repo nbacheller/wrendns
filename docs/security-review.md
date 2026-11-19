@@ -20,7 +20,7 @@ Reviewed 2026-10-17: sign-in (local users, sessions, tokens, OIDC, TOTP, display
 | P1 | Medium | Parsers | A query name with a label containing `.` (escaped `\.`) didn't match any list rule, so it got past blocking. | It's matched as a subdomain of the labels to its right. `flt_002_a_dotted_label_does_not_bypass_the_lists` |
 | P2 | Medium | Parsers | A query-log segment (one a peer shipped, say) could make a search hold far more memory than the file's size. | Name sections keep only the names they count; a segment's dictionary is capped at 64 MiB. `nfr_007_a_crafted_dictionary_is_bounded` |
 | P3 | Low/medium | Parsers | A damaged `anomaly.json` could crash the anomaly thread, or make it close every hour since a stale time. | State is repaired on load; at most 48 hours are caught up. `obs_014_damaged_state_is_repaired_on_load` |
-| P4 | Low | Parsers | `telltale backup restore` used the directories recorded in the archive without checking them, and read path and manifest entries of any size. | Recorded directories must be plain absolute paths (otherwise name one with `--data-dir` / `--config-dir`); path entries up to 4 KiB, the manifest up to 16 MiB. `api_007_restore_trusts_only_plain_recorded_directories` |
+| P4 | Low | Parsers | `wrendns backup restore` used the directories recorded in the archive without checking them, and read path and manifest entries of any size. | Recorded directories must be plain absolute paths (otherwise name one with `--data-dir` / `--config-dir`); path entries up to 4 KiB, the manifest up to 16 MiB. `api_007_restore_trusts_only_plain_recorded_directories` |
 | P5 | Low | Parsers | An imported zip's wanted entries could each unpack to the 512 MiB limit. | 512 MiB for all of them together. |
 | P6 | Info | Parsers | A cache dump entry with an impossibly short question could underflow when served. | Skipped at load. |
 
@@ -33,4 +33,4 @@ Reviewed 2026-10-17: sign-in (local users, sessions, tokens, OIDC, TOTP, display
 
 ## Before rolling this out to a cluster
 
-C1 stops trusting members the registry doesn't list. Check first (read-only) that each node's registry lists every node: `telltale cluster status` on the primary, or the Cluster page. A node missing from it would come back as an ephemeral member.
+C1 stops trusting members the registry doesn't list. Check first (read-only) that each node's registry lists every node: `wrendns cluster status` on the primary, or the Cluster page. A node missing from it would come back as an ephemeral member.

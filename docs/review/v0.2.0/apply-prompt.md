@@ -1,13 +1,13 @@
 # Prompt: apply the v0.2.0 review findings
 
-You are working in `~/wrendns` (TelltaleDNS, `main`, currently version 0.3.0). Read
+You are working in `~/wrendns` (WrenDNS, `main`, currently version 0.3.0). Read
 `AGENTS.md` first and follow its ground rules throughout: requirement IDs at the
 implementation site and in test names and commit messages, no `unwrap()`/`expect()` on
-runtime paths, `unsafe` only in `telltale-net`, no new runtime dependency without a one-line
+runtime paths, `unsafe` only in `wrendns-net`, no new runtime dependency without a one-line
 justification, docs updated for user-visible behaviour, OpenAPI regenerated if the API
-changes, and `make bench-smoke` before finishing any task that touches `telltale-proto`,
-`telltale-net`, `telltale-cache`, `telltale-filter`, `telltale-policy`, or
-`telltale-telemetry`.
+changes, and `make bench-smoke` before finishing any task that touches `wrendns-proto`,
+`wrendns-net`, `wrendns-cache`, `wrendns-filter`, `wrendns-policy`, or
+`wrendns-telemetry`.
 
 ## What you are applying
 
@@ -44,7 +44,7 @@ Work by severity, then by whether a patch exists:
    longer applies or a test it adds fails on `main` for a reason the report didn't foresee,
    stop on that finding, write down what you saw, and move on; do not force it.
 3. Do the follow-up work the report names in the Patch or Recommendation fields, e.g.:
-   - 01-01: add the `telltale_tcp_stalled_closed_total` line to `/metrics` (split the
+   - 01-01: add the `wrendns_tcp_stalled_closed_total` line to `/metrics` (split the
      render function so clippy's `too_many_lines` passes) and document it in `docs/running.md`.
    - 02-04: the three remaining explain gaps (list `$dnsrewrite`, group rewrites, safe
      search) by sharing one function between the pipeline and explain, as the quick rules do.

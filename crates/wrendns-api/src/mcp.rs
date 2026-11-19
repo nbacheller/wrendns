@@ -1,0 +1,3739 @@
+//! The MCP server (REQ: AGT-006, AGT-009; T6.6, ADR-010, ADR-065): `POST /mcp` speaks the
+//! Model Context Protocol (JSON-RPC 2.0 over Streamable HTTP) so AI agents can read the
+//! resolver with the same rights as the REST API.
+//!
+//! Every tool is a thin wrapper over REST routes, called in-process with the caller's own
+//! credentials: scopes, group restrictions, rate limits, privacy levels, and the agent kill
+//! switch apply exactly as they do to REST calls. Read-only tools (`spec/13` §3.1) are GETs.
+//! Write tools (§3.2, AGT-007) make a plan with the REST dry run; `apply_plan` replays the
+//! write with `If-Match` on the plan's config version (see `crate::plans`). A few low-risk
+//! operations (flush the cache, pause or resume blocking) act at once, still audited.
+
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde_json::{Value, json};
+use tower::ServiceExt as _;
+
+use crate::problem::{Code, Problem};
+
+/// The protocol revision this server speaks.
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
+/// Older revisions clients may ask for; the answer is then in their terms.
+const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+/// Most rows a tool returns, and most bytes of text (AGT-009).
+pub const MAX_ROWS: u64 = 200;
+pub const MAX_BYTES: usize = 32 * 1024;
+/// Most messages in one JSON-RPC batch: each runs in turn, with its REST calls (AGT-009).
+pub const MAX_BATCH: usize = 16;
+
+/// A tool's REST calls for its arguments: `(result key, GET path with query)`, or why the
+/// arguments are wrong.
+pub type Calls = fn(&Value) -> Result<Vec<(String, String)>, String>;
+
+/// One read-only tool and the REST call(s) behind it.
+#[derive(Debug)]
+pub struct Tool {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: fn() -> Value,
+    /// The REST GET paths (with query) for the arguments; an error is the caller's mistake.
+    pub calls: Calls,
+}
+
+fn s(args: &Value, k: &str) -> Option<String> {
+    match args.get(k)? {
+        Value::String(v) if !v.trim().is_empty() => Some(v.trim().to_owned()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+pub(crate) fn enc(v: &str) -> String {
+    let mut out = String::new();
+    for b in v.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~:".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+/// `path?k=v&...` from the arguments present.
+fn query(path: &str, args: &Value, keys: &[(&str, &str)]) -> String {
+    let mut q: Vec<String> = Vec::new();
+    for (arg, param) in keys {
+        if let Some(v) = s(args, arg) {
+            q.push(format!("{param}={}", enc(&v)));
+        }
+    }
+    if q.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{}", q.join("&"))
+    }
+}
+
+fn limit(args: &Value, default: u64) -> String {
+    args.get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(default)
+        .clamp(1, MAX_ROWS)
+        .to_string()
+}
+
+/// REQ: AGT-011 (T7.3) — which nodes an analytics tool reads.
+fn scope_schema() -> Value {
+    json!({"type": "string", "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes."})
+}
+
+/// `&scope=...` when the arguments name one.
+fn scope_q(args: &Value) -> String {
+    s(args, "scope").map_or_else(String::new, |v| format!("&scope={}", enc(&v)))
+}
+
+fn window_schema() -> Value {
+    json!({"type": "string", "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h."})
+}
+
+/// The catalog (`spec/13` §3.1). Names, descriptions, and schemas are part of the contract:
+/// `docs/api/mcp-tools.json` is the committed snapshot.
+#[allow(clippy::too_many_lines)] // one entry per tool: the catalog
+pub fn tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            name: "get_overview",
+            description: "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms), plus `changes`: how many change markers fell in the window (configuration applied, restarts, list refreshes, rollouts, pauses, notes, ...) and the latest three, so 'what changed?' needs no second call (list_annotations has them all). Start here to see whether anything is off.",
+            input_schema: || json!({"type": "object", "properties": {"window": window_schema(), "scope": scope_schema()}, "additionalProperties": false}),
+            calls: |a| {
+                let from = s(a, "window").unwrap_or_else(|| "-24h".into());
+                Ok(vec![
+                    (
+                        "overview".into(),
+                        format!("/api/v1/stats/summary?from={}{}", enc(&from), scope_q(a)),
+                    ),
+                    // REQ: OBS-033 — what changed in the window (digested in `call_tool`).
+                    (
+                        "changes".into(),
+                        format!(
+                            "/api/v1/annotations?from={}&limit=500{}",
+                            enc(&from),
+                            scope_q(a)
+                        ),
+                    ),
+                ])
+            },
+        },
+        Tool {
+            name: "top_items",
+            description: "Read-only. The heaviest items in the current or previous hour, or over a window of hours (`from`, such as -24h or -7d): most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). For clients, also the last hour whatever the clock hour (hour=rolling: 60-65 minutes, exact counts). Optionally for one client (domains only) or one client group (current, previous, or rolling hour only).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["domains", "blocked", "nxdomain", "clients", "internal"], "description": "Which list."},
+                "hour": {"type": "string", "enum": ["current", "previous", "rolling"], "description": "Which hour (default current). `rolling` is the last hour (60-65 minutes) whatever the clock hour, for kind=clients only."},
+                "client": {"type": "string", "description": "A client IP: its top domains (kind=domains only)."},
+                "group": {"type": "string", "description": "A client group's top items."},
+                "from": {"type": "string", "description": "A window instead of one hour: relative (-24h, -7d) or RFC 3339. Every hour it overlaps counts whole. Not with hour, client, or group."},
+                "to": {"type": "string", "description": "The window's end (default now). Only with from."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Items (default 10)."},
+                "scope": scope_schema()
+            }, "required": ["kind"], "additionalProperties": false})
+            },
+            calls: |a| {
+                if s(a, "kind").is_none() {
+                    return Err(
+                        "`kind` is required: domains, blocked, nxdomain, clients, or internal"
+                            .into(),
+                    );
+                }
+                Ok(vec![(
+                    "items".into(),
+                    query(
+                        "/api/v1/stats/top",
+                        a,
+                        &[
+                            ("kind", "kind"),
+                            ("hour", "hour"),
+                            ("client", "client"),
+                            ("group", "group"),
+                            ("from", "from"),
+                            ("to", "to"),
+                            ("limit", "limit"),
+                            ("scope", "scope"),
+                        ],
+                    ),
+                )])
+            },
+        },
+        Tool {
+            name: "search_queries",
+            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Each of name, client, status, qtype, and rcode can be turned around with its Not flag (name with nameNot: every query whose name does not contain the text; on a long log give a time range too). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "Part of the queried name."},
+                "client": {"type": "string", "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these."},
+                "group": {"type": "string", "description": "Client group."},
+                "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
+                "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
+                "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
+                "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except those in `client`. Needs `client`."},
+                "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
+                "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
+                "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},
+                "minLatencyMs": {"type": "integer", "description": "Only queries slower than this."},
+                "from": {"type": "string", "description": "Start (relative like -1h, or RFC 3339). Default: all retained."},
+                "to": {"type": "string", "description": "End (default now)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows (default 50)."},
+                "cursor": {"type": "string", "description": "From the previous page's nextCursor."},
+                "trace": {"type": "string", "description": "A trace ID (32 hex digits) from an exemplar on /metrics or an exported trace: the query it names (replaces from/to)."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let mut q = query(
+                    "/api/v1/queries",
+                    a,
+                    &[
+                        ("name", "name"),
+                        ("client", "client"),
+                        ("group", "group"),
+                        ("status", "status"),
+                        ("qtype", "qtype"),
+                        ("rcode", "rcode"),
+                        ("nameNot", "nameNot"),
+                        ("clientNot", "clientNot"),
+                        ("statusNot", "statusNot"),
+                        ("qtypeNot", "qtypeNot"),
+                        ("rcodeNot", "rcodeNot"),
+                        ("minLatencyMs", "minLatencyMs"),
+                        ("from", "from"),
+                        ("to", "to"),
+                        ("cursor", "cursor"),
+                        ("trace", "trace"),
+                        ("scope", "scope"),
+                    ],
+                );
+                q.push(if q.contains('?') { '&' } else { '?' });
+                let _ = write!(q, "limit={}", limit(a, 50));
+                Ok(vec![("queries".into(), q)])
+            },
+        },
+        Tool {
+            name: "explain_decision",
+            description: "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity, the key it matched on and where its group came from, the groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'. For everything that applies to a device, use get_client_policy.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The domain name."},
+                "client": {"type": "string", "description": "Client IP (default: as if from the API caller)."},
+                "qtype": {"type": "string", "description": "Query type (default A)."}
+            }, "required": ["name"], "additionalProperties": false})
+            },
+            calls: |a| {
+                if s(a, "name").is_none() {
+                    return Err("`name` is required".into());
+                }
+                Ok(vec![(
+                    "explanation".into(),
+                    query(
+                        "/api/v1/explain",
+                        a,
+                        &[("name", "name"), ("client", "client"), ("qtype", "qtype")],
+                    ),
+                )])
+            },
+        },
+        Tool {
+            name: "get_client_profile",
+            description: "Read-only. A device's profile: its identity, groups, the policy that applies to it (policy: the group and the key that matched, lists, services, schedules, rules; needs config:read), top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "Device name (as in the device list) or IP."},
+                "window": window_schema(),
+                "scope": scope_schema()
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                s(a, "client").ok_or("`client` is required")?;
+                // The device's queries follow in `call_tool`, by its IP.
+                Ok(vec![("devices".into(), "/api/v1/clients".into())])
+            },
+        },
+        // REQ: API-013 (T22.2)
+        Tool {
+            name: "list_networks",
+            description: "Read-only. The network inventory: the LANs and VLANs the routers report (subnet, VLAN, gateway, DHCP pool, domain), and client groups' networks no router reported, each with the group that covers it, its host addresses, the known devices in it, how full it is, and how many devices sit outside the DHCP pool; then every device found by the routers, Home Assistant, and mDNS (MAC, IP, the name the router or Home Assistant gave it, which [[router]] named it, its name in WrenDNS, and with [local] device_domain the name it answers as in DNS). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("networks".into(), "/api/v1/networks".into()),
+                    ("devices".into(), "/api/v1/dhcp/leases".into()),
+                ])
+            },
+        },
+        // REQ: UPS-004, AGT-001 (T24.36)
+        Tool {
+            name: "list_upstream_presets",
+            description: "Read-only. The public DNS resolvers WrenDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("presets".into(), "/api/v1/upstream-presets".into())]),
+        },
+        // REQ: API-015, AGT-001 (ADR-903 §5) — metadata only; setting a value is for people.
+        Tool {
+            name: "secrets_status",
+            description: "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or wrendns ctl secrets). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("secrets".into(), "/api/v1/secrets".into())]),
+        },
+        // REQ: API-005, AGT-001 (T24.10, ADR-961 §7) — the status only; the token is a credential,
+        // so no tool issues, rotates or reads one, and none turns the API on.
+        Tool {
+            name: "pihole_api_status",
+            description: "Read-only. Whether the Pi-hole compatible API is on (the part of Pi-hole's v6 and v5 interfaces that dashboards, phone apps and the Home Assistant Pi-hole integration use: statistics, and turning blocking off for a while and on again), whether a token has been issued and when, when it was last used, and the longest pause it may start (`maxPauseMinutes`). Never the token. There is no tool to turn it on or to issue or rotate its token: an admin does that in Settings → Pi-hole. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("piholeApi".into(), "/api/v1/pihole-api".into())]),
+        },
+        // REQ: API-016 (T23.7, ADR-903 §5) — router settings and status, secrets by name only; no
+        // tool sets a router (admin-only, no agent scope).
+        Tool {
+            name: "list_routers",
+            description: "Read-only. The router integrations in the configuration (UniFi, OPNsense, Home Assistant): each one's name, kind and address (no password), its settings with stored secrets named (never their values), whether the configuration files define it, each credential's source and whether this node can read it, and the last read: its state (ok, failing, waiting, or skipped and why), when, the error, and the devices and networks it reported. There is no tool to add, change or check a router: an admin does that in Settings or the Routers page. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("routers".into(), "/api/v1/routers".into())]),
+        },
+        // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export, tokens by name only; no
+        // tool sets one (admin-only, no agent scope).
+        Tool {
+            name: "list_event_sinks",
+            description: "Read-only. Where this node sends query events and metrics: each event sink (file, syslog or webhook) with its settings (a webhook token named, never valued), whether the configuration files define it, whether this node runs it and why not, and how many events it dropped since start; and the OTLP export (collector address, interval, header names, whether it runs). Use it to answer why events are not reaching a collector.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("sinks".into(), "/api/v1/sinks".into()),
+                    ("otlp".into(), "/api/v1/otlp".into()),
+                ])
+            },
+        },
+        // REQ: FLT-017 (T15.1)
+        Tool {
+            name: "list_workloads",
+            description: "Read-only. The Kubernetes workloads WrenDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "namespace": {"type": "string", "description": "Only this namespace."},
+                "group": {"type": "string", "description": "Only workloads in this group (none: without one)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows (default 200)."},
+                "cursor": {"type": "string", "description": "From the previous page's nextCursor."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "workloads".into(),
+                    query(
+                        "/api/v1/kubernetes/workloads",
+                        a,
+                        &[
+                            ("namespace", "namespace"),
+                            ("group", "group"),
+                            ("limit", "limit"),
+                            ("cursor", "cursor"),
+                            ("scope", "scope"),
+                        ],
+                    ),
+                )])
+            },
+        },
+        Tool {
+            name: "get_workload",
+            description: "Read-only. One Kubernetes workload's profile, by its name (namespace/kind/name, e.g. media/deploy/jellyfin): the workload (group and where it came from, pods, 24-hour counts), its identity (class workload, its pods and labels), its rhythm per domain, and its recent and slow queries across every pod address it held. Recent queries need the querylog:read scope. To change its group, use plan_assign_client with the workload's name as `client`.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "namespace/kind/name, or its analytics key (100::…)."},
+                "window": window_schema(),
+                "scope": scope_schema()
+            }, "required": ["name"], "additionalProperties": false})
+            },
+            calls: |a| {
+                s(a, "name").ok_or("`name` is required")?;
+                Ok(vec![
+                    ("devices".into(), "/api/v1/clients".into()),
+                    ("workloads".into(), "/api/v1/kubernetes/workloads".into()),
+                ])
+            },
+        },
+        // REQ: CLU-014 (T15.2)
+        Tool {
+            name: "drill_report",
+            description: "Read-only. Failover drills and their reports. Without an id: the newest drills from every node (when, which node, targets, status, coverage = followed / (followed + stuck), and counts). With an id: the full report: per device the verdict (followed: another node answered it after its first unanswered query; stuck: 3 or more unanswered and nothing elsewhere, so it has no working second DNS server; quiet: too little traffic to tell; elsewhere: not targeted), the unanswered queries, the time to failover, and whether it came back afterwards (returned) or stayed (sticky); plus queries per node and the median and p90 time to failover. Start a drill with plan_failover_drill. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "id": {"type": "string", "description": "A drill's ID (default: list the newest)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Drills listed without an id (default 5)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(match s(a, "id") {
+                    Some(id) => vec![("report".into(), format!("/api/v1/drills/{}", enc(&id)))],
+                    None => vec![(
+                        "drills".into(),
+                        format!(
+                            "/api/v1/drills?limit={}",
+                            a.get("limit")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(5)
+                                .clamp(1, 50)
+                        ),
+                    )],
+                })
+            },
+        },
+        // REQ: OBS-025 (T13.3)
+        Tool {
+            name: "identify_device",
+            description: "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against WrenDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's IP, or its name."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                Ok(vec![(
+                    "identity".into(),
+                    format!("/api/v1/clients/{}/identity", enc(&c)),
+                )])
+            },
+        },
+        // REQ: FLT-006, API-010, AGT-001 (T24.30, ADR-996)
+        Tool {
+            name: "get_client_policy",
+            description: "Read-only. Every filter and rule that applies to one device, and why: the group it lands in and the key that matched (client ID, MAC, workload, address, network or router name, with the precedence ladder), then sections for the block response, the group's lists and blocked services, SafeSearch and YouTube, answer filtering, rewrites, schedules (and whether each is in effect now), the quick rules that apply (with expiry) and the upstream group. It is resolved the way a query and explain_decision resolve the device, so the two agree. Give a device name, an IP, or a Kubernetes workload. Needs config:read; a group-restricted token sees its group's devices only.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "A device's name, its IP, or a workload (namespace/kind/name)."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                Ok(vec![(
+                    "policy".into(),
+                    format!("/api/v1/clients/{}/policy", enc(&c)),
+                )])
+            },
+        },
+        // REQ: FLT-901, FLT-902, AGT-001 (T24.29): the category catalog and a group's content.
+        Tool {
+            name: "categories_list",
+            description: "Read-only. The content categories this node offers (adult content, gambling, malware, ad block, ...), grouped as the picker shows them, each with its description, tiers, entries and whether it is heavy; every source with its maintainer, licence (SPDX), format, size and what this node has downloaded; the presets (basic); the categories not offered and why; what each group selects now; and what all of them cost together against the node's memory limit. Use it before plan_set_group_content. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "categories".into(),
+                    "/api/v1/categories?view=compact".into(),
+                )])
+            },
+        },
+        Tool {
+            name: "get_group_content",
+            description: "Read-only. One group's content filtering: the level (off, basic, enhanced), its categories and tiers, whether ad block is on, the sources they make the node download, and what that costs. With the optional proposal fields (level, categories, ads) it also says what the cost would be if the group were set that way, without changing anything. Needs config:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "The group's name."},
+                "level": {"type": "string", "enum": ["off", "basic", "enhanced"], "description": "A proposal: price this level."},
+                "categories": {"type": "array", "items": {"type": "string"}, "description": "A proposal: price these category IDs."},
+                "ads": {"type": "boolean", "description": "A proposal: price ad block on or off."}
+            }, "required": ["group"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let g = s(a, "group").ok_or("`group` is required")?;
+                let mut calls = vec![(
+                    "content".into(),
+                    format!("/api/v1/groups/{}/content", enc(&g)),
+                )];
+                if a.get("level").is_some()
+                    || a.get("categories").is_some()
+                    || a.get("ads").is_some()
+                {
+                    let mut q = format!("/api/v1/categories/budget?group={}", enc(&g));
+                    if let Some(l) = s(a, "level") {
+                        let _ = write!(q, "&level={}", enc(&l));
+                    }
+                    if a.get("categories").is_some() {
+                        let cats = strings(a, "categories");
+                        let _ = write!(q, "&categories={}", enc(&cats.join(",")));
+                    }
+                    if let Some(on) = a.get("ads").and_then(Value::as_bool) {
+                        let _ = write!(q, "&ads={on}");
+                    }
+                    calls.push(("proposal".into(), q));
+                }
+                Ok(calls)
+            },
+        },
+        Tool {
+            name: "latency_breakdown",
+            description: "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes. With histogram: true, also the last hour's answers per latency bucket per minute (boundsUs, per path or per upstream when by is upstream), to see a tail's shape.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "by": {"type": "string", "enum": ["stage", "upstream", "client", "qtype"], "description": "Break down by."},
+                "hour": {"type": "string", "enum": ["current", "previous"], "description": "Which hour (default current)."},
+                "histogram": {"type": "boolean", "description": "Also the last hour's bucket counts per minute (OBS-030)."},
+                "scope": scope_schema()
+            }, "required": ["by"], "additionalProperties": false})
+            },
+            calls: |a| {
+                if s(a, "by").is_none() {
+                    return Err("`by` is required: stage, upstream, client, or qtype".into());
+                }
+                let mut calls = vec![(
+                    "latency".into(),
+                    query(
+                        "/api/v1/stats/latency",
+                        a,
+                        &[("by", "by"), ("hour", "hour"), ("scope", "scope")],
+                    ),
+                )];
+                // REQ: OBS-030 — the histogram over the last hour.
+                if a.get("histogram").and_then(Value::as_bool) == Some(true) {
+                    let by = if s(a, "by").as_deref() == Some("upstream") {
+                        "upstream"
+                    } else {
+                        "path"
+                    };
+                    calls.push((
+                        "histogram".into(),
+                        format!(
+                            "/api/v1/stats/latency/heatmap?from=-1h&step=minute&by={by}{}",
+                            scope_q(a)
+                        ),
+                    ));
+                }
+                Ok(calls)
+            },
+        },
+        Tool {
+            name: "upstream_health",
+            description: "Read-only. Every upstream resolver: health, circuit-breaker state, error counts, and latency percentiles. Answers 'is the upstream the problem?'.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("upstreams".into(), "/api/v1/upstreams".into())]),
+        },
+        Tool {
+            name: "list_effectiveness",
+            description: "Read-only. Filter lists: size, last check, last confirmed current, last change, errors, whether a refresh is downloading it now (`refreshing`), hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("lists".into(), "/api/v1/lists".into())]),
+        },
+        // REQ: FLT-004, AGT-001 (T24.28, ADR-992) - which lists add little. Read-only: turning
+        // lists off is a person's (`POST /api/v1/lists/prune` refuses agent tokens).
+        Tool {
+            name: "list_overlap",
+            description: "Read-only. Which filter lists add little: each enabled list's entries, the names no other list of its kind has (unique), its regexes and modifier rules (counted as unique), the share it adds, the lists covering the rest of it, and the groups that name it; plus the prune plan: the block lists that add at most thresholdPercent of their own entries (default 1), with the most names turning them all off could stop blocking, and why every other list stays. Allow lists, shadow lists, lists a group names, and lists not compiled yet are never proposed. Changes nothing: a person turns the lists off in the UI after previewing; propose it to them with the numbers.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "thresholdPercent": {"type": "number", "minimum": 0, "maximum": 50, "description": "Propose lists adding at most this percent of their own entries. Default 1."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let plan = match a.get("thresholdPercent") {
+                    None | Some(Value::Null) => "/api/v1/lists/prune-plan".to_owned(),
+                    Some(v) => match v.as_f64() {
+                        Some(t) if t.is_finite() => {
+                            format!("/api/v1/lists/prune-plan?thresholdPercent={t}")
+                        }
+                        _ => return Err("`thresholdPercent` must be a number from 0 to 50".into()),
+                    },
+                };
+                Ok(vec![
+                    ("overlap".into(), "/api/v1/lists/overlap".into()),
+                    ("plan".into(), plan),
+                ])
+            },
+        },
+        Tool {
+            name: "find_anomalies",
+            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. Alert-only; nothing is blocked automatically.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "since": {"type": "string", "description": "Findings since (relative like -7d, or RFC 3339). Default -7d."},
+                "acknowledged": {"type": "boolean", "description": "false: only findings nobody acknowledged yet; true: only acknowledged ones. Default: both."},
+                "muted": {"type": "boolean", "description": "true: include findings an anomaly mute matched (each has mutedBy, the mute's name). Default: left out, as they are from the badge and alerts."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let mut path = query("/api/v1/analytics/anomalies", a, &[("since", "since")]);
+                for key in ["acknowledged", "muted"] {
+                    if let Some(v) = a.get(key).and_then(Value::as_bool) {
+                        let sep = if path.contains('?') { '&' } else { '?' };
+                        path = format!("{path}{sep}{key}={v}");
+                    }
+                }
+                Ok(vec![("anomalies".into(), path)])
+            },
+        },
+        // REQ: OBS-038 (ADR-161)
+        Tool {
+            name: "list_anomaly_mutes",
+            description: "Read-only. The anomaly mutes: for which devices or groups which kinds of finding stop counting (still recorded and listed, with mutedBy), until when, and why. A mute is set with plan_set_anomaly_mute. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "anomalyMutes".into(),
+                    "/api/v1/config/entries?kind=anomaly_mute".into(),
+                )])
+            },
+        },
+        // REQ: OBS-015 (ADR-104)
+        Tool {
+            name: "health",
+            description: "Read-only. Is WrenDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
+        },
+        // REQ: OBS-901 (T26.2, ADR-958)
+        Tool {
+            name: "network_health",
+            description: "Read-only. How is the network doing, as the live map sees it? Counts of nodes by health (green, yellow, red, idle), the red and yellow nodes with their reasons (at most 50: a device failing lookups, a slow or benched upstream, a resolver node that is down, a router integration that is failing), and the five busiest flows. The map is built from a sample of recent lookups (sampleRate says how thin; 'idle' means too few answers to say). Device names and addresses appear at query-log privacy levels 0 and 1; at level 2 and above devices are hidden and only networks, nodes and upstreams are listed. No domain name is ever in it. Optional filters narrow it to one network, group, device or node. Needs analytics:read. Answers map_disabled when [map] is off.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "network": {"type": "string", "description": "Only this network (a name from list_networks / GET /api/v1/networks)."},
+                "group": {"type": "string", "description": "Only devices of this client group."},
+                "device": {"type": "string", "description": "Only devices whose name or address contains this text."},
+                "node": {"type": "string", "description": "Only this WrenDNS node (pod, site or ID)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "networkHealth".into(),
+                    query(
+                        "/api/v1/map/health",
+                        a,
+                        &[
+                            ("network", "network"),
+                            ("group", "group"),
+                            ("device", "device"),
+                            ("node", "node"),
+                        ],
+                    ),
+                )])
+            },
+        },
+        // REQ: OBS-018 (ADR-109)
+        Tool {
+            name: "shadow_lists",
+            description: "Read-only. What would a list block if it were turned on? For each list in shadow mode (compiled and checked, never blocking): the queries it would have blocked since start, the devices, the names most often, and the last one. Use it to judge a new list before enforcing it (then plan_add_list or a config change to set mode = enforce).",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "shadowLists".into(),
+                    "/api/v1/analytics/shadow-lists".into(),
+                )])
+            },
+        },
+        Tool {
+            name: "overblocking_suspects",
+            description: "Read-only. Blocked names that look like over-blocking, best first: allowedAfterBlock counts devices that got the name answered within 10 minutes of a block (someone paused blocking or allowed it, the strongest sign); retryBursts counts devices asking 10+ times a minute while blocked (broken apps, but also ad libraries). With the lists that blocked them. Use it to find allowlist candidates or a list that's too aggressive.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many (default 50)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let n = a.get("limit").and_then(Value::as_u64).unwrap_or(50);
+                Ok(vec![(
+                    "suspects".into(),
+                    format!("/api/v1/analytics/overblocking?limit={n}"),
+                )])
+            },
+        },
+        // REQ: OBS-019 (ADR-108)
+        Tool {
+            name: "upstream_checks",
+            description: "Read-only. Are the upstreams telling the truth? Per node and upstream: DNSSEC verdicts on its answers, the Extended DNS Error codes it returned (15 Blocked, 16 Censored, 17 Filtered mean it filters), and, when second opinions are on ([upstream_check] sample_every), how sampled answers compared with another upstream's: same, different addresses (CDNs do this; usually harmless), different response code, filtered (one side had addresses, the other none or 0.0.0.0), unanswered; plus the latest disagreements with both answers.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "upstreamChecks".into(),
+                    "/api/v1/analytics/upstream-checks".into(),
+                )])
+            },
+        },
+        // REQ: OBS-020 (ADR-107)
+        Tool {
+            name: "probe_status",
+            description: "Read-only. Can clients actually reach DNS? Every node asks each of its own listeners a question through the listener's protocol (UDP, TCP, DoT, DoH, DoH3, DoQ), plus any extra targets such as a load balancer's address: per probe, whether the last one answered, how long it took, the error, failures in a row, and for TLS listeners the certificate's expiry (days left). Use it when devices say DNS is down but the server looks fine.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("probes".into(), "/api/v1/system/probes".into())]),
+        },
+        // REQ: OBS-033 (ADR-133)
+        Tool {
+            name: "list_annotations",
+            description: "Read-only. What changed, and when: change markers from every node, newest first. Configuration versions applied (seq, source: ui, api, agent, gitops, file, or cluster on a replica; actor when known), new builds, restarts (uncleanShutdown), list refreshes that changed the rules, rollout stages, maintenance, blocking paused or resumed, cache flushes, upstream circuit breakers, and the notes people and agents left (annotate). One change applied on four nodes is four markers with the same seq. Use it to line up a change with a graph ('did SERVFAILs start after the rollout?').",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "window": window_schema(),
+                "kinds": {"type": "array", "items": {"type": "string", "enum": crate::annotations_api::KINDS}, "description": "Only these kinds (default all)."},
+                "before": {"type": "string", "description": "Only markers before this time: nextBefore from the previous result, to page back."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "At most this many (default 50)."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let from = s(a, "window").unwrap_or_else(|| "-24h".into());
+                let mut path = format!(
+                    "/api/v1/annotations?from={}&limit={}",
+                    enc(&from),
+                    limit(a, 50)
+                );
+                if let Some(kinds) = a.get("kinds").and_then(Value::as_array) {
+                    let k: Vec<&str> = kinds.iter().filter_map(Value::as_str).collect();
+                    if !k.is_empty() {
+                        let _ = write!(path, "&kinds={}", enc(&k.join(",")));
+                    }
+                }
+                if let Some(b) = s(a, "before") {
+                    let _ = write!(path, "&before={}", enc(&b));
+                }
+                path.push_str(&scope_q(a));
+                Ok(vec![("annotations".into(), path)])
+            },
+        },
+        // REQ: OBS-021 (ADR-106)
+        Tool {
+            name: "cache_advice",
+            description: "Read-only. Is each node's cache the right size? Per node: hit rate, memory used and its budget, the estimated extra hits a cache 25%, 50%, and 100% larger would have served (from a sample of evicted names), the peak memory used, and the advice: grow (with the max_bytes to try), shrink (it never filled), ok, or learning (too few lookups yet).",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("caches".into(), "/api/v1/cache/stats".into())]),
+        },
+        // REQ: DNS-006, DNS-011, FLT-004, CLU-014, OPS-011, OPS-012 (ADR-1006) — read-only; the
+        // writes behind these settings refuse agents.
+        Tool {
+            name: "node_settings",
+            description: "Read-only. The settings that operators change from the UI, per node (this node when none is named): the cache sizing and TTLs, the list refresh and stale settings, DNSSEC mode and negative trust anchors, the drill schedule, and the support and update switches. Each section lists its fields, the fields the configuration files set (setByFile), and whether a restart is pending. Agents can read these but not change them.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node's name (default: this node)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let path = match s(a, "node") {
+                    Some(n) => format!("/api/v1/node-settings/{}", enc(&n)),
+                    None => "/api/v1/node-settings".into(),
+                };
+                Ok(vec![("node_settings".into(), path)])
+            },
+        },
+        // REQ: OBS-016 (ADR-105)
+        Tool {
+            name: "slo_status",
+            description: "Read-only. Is DNS meeting its service-level objectives? For availability (answers that aren't SERVFAIL) and latency (answers within the configured threshold): the target, the share of good answers and the error budget left over the window (30 days by default), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly the budget), and whether it burns fast enough to alert (fast, slow) or to look at soon (ticket). Covers every node.",
+            input_schema: || json!({"type": "object", "properties": {"scope": scope_schema()}, "additionalProperties": false}),
+            calls: |a| {
+                Ok(vec![(
+                    "slo".into(),
+                    query("/api/v1/stats/slo", a, &[("scope", "scope")]),
+                )])
+            },
+        },
+        // REQ: OBS-027 (ADR-127)
+        Tool {
+            name: "slo_attribution",
+            description: "Read-only. Shows who and what consumed the error budget of an objective (availability: SERVFAIL answers; latency: slow answers) over its window: the budget (allowed and spent), a timeline per node and hour or day, and the bad answers by client and by name (approximate top lists: each row's errorMax bounds the overcount), and by status, upstream (none: no upstream on the answer, such as one served from the cache), response code, and node (exact). coverage.partialNodes names nodes without client and name lists for part of the window. Use it after slo_status shows a budget burning.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "objective": {"type": "string", "enum": ["availability", "latency"], "description": "Which objective (default availability)."},
+                "window": {"type": "string", "description": "Start of the window: relative like -7d or RFC 3339 (default: the objective's whole window, 30 days)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Rows per list (default 10)."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "attribution".into(),
+                    query(
+                        "/api/v1/stats/slo/attribution",
+                        a,
+                        &[
+                            ("objective", "objective"),
+                            ("window", "from"),
+                            ("limit", "limit"),
+                            ("scope", "scope"),
+                        ],
+                    ),
+                )])
+            },
+        },
+        // REQ: OBS-029 (ADR-129)
+        Tool {
+            name: "activity_heatmap",
+            description: "Read-only. When things happen: queries per slot over a window, as parallel arrays (starts in Unix seconds UTC, values). kind network (the whole network, exact; grain hour back 400 days, or 15m or minute back 7 days), client (one device by IP address) or name (one domain name): hour grain, from each hour's top-100 list, so covered is false for hours where the key wasn't listed (unknown, not zero). measure blocked counts blocked queries (network and names). Use it to find bursts, polling devices, and daily rhythms. At most 10,080 values.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["network", "client", "name"], "description": "What to count (default network)."},
+                "key": {"type": "string", "description": "The device's IP address (client) or the name (name)."},
+                "window": {"type": "string", "description": "Start: relative like -7d or RFC 3339 (default -7d)."},
+                "grain": {"type": "string", "enum": ["hour", "15m", "minute"], "description": "Slot size (default hour; client and name: hour only)."},
+                "measure": {"type": "string", "enum": ["queries", "blocked"], "description": "Default queries."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "heatmap".into(),
+                    query(
+                        "/api/v1/stats/heatmap",
+                        a,
+                        &[
+                            ("kind", "kind"),
+                            ("key", "key"),
+                            ("window", "from"),
+                            ("grain", "grain"),
+                            ("measure", "measure"),
+                            ("scope", "scope"),
+                        ],
+                    ),
+                )])
+            },
+        },
+        // REQ: OBS-032 (ADR-132)
+        Tool {
+            name: "query_flow",
+            description: "Read-only. Where queries went: groups -> decision (status: cached, forwarded, blocked, ...) -> upstream -> response code, as nodes and links. Every link is an exact counter for that pair (no proportional split); a status whose count exceeds what leaves it has deadEnd answers (dropped queries get no response code). Network-wide from the time buckets (partial when some buckets predate the counts), or one device (client, its IP address) from the query log over at most the last 24 hours (truncated when the read stopped early; refused at privacy level 2+). Use it to see what share of a group's traffic is blocked, which upstream gives the SERVFAILs, or how one device's queries are answered.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "window": {"type": "string", "description": "Start: relative like -6h or RFC 3339 (default -1h; a device -24h)."},
+                "client": {"type": "string", "description": "One device's IP address."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "flow".into(),
+                    query(
+                        "/api/v1/stats/flow",
+                        a,
+                        &[("window", "from"), ("client", "client"), ("scope", "scope")],
+                    ),
+                )])
+            },
+        },
+        // REQ: OBS-034 (ADR-134)
+        Tool {
+            name: "device_timeline",
+            description: "Read-only. One device's day (or any window up to 7 days) from the query log: a lane per registrable domain (the top lanes by queries, the rest in 'other') with queries, blocked, and slow answers per bin (24 bins by default here: hours over a day), every query and the p99 answer time (ms) per bin, and events: domains first contacted, anomaly findings, and blocked bursts (10+ blocked in a bin), plus the change markers. Use it to answer 'when did this start, and what else did the device do?'. Needs querylog:read; refused at privacy level 2, no domain names at level 1.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's IP address."},
+                "window": {"type": "string", "description": "Start: relative like -24h or RFC 3339 (default -24h, at most 7 days)."},
+                "lanes": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Domain lanes before 'other' (default 10 here)."},
+                "bins": {"type": "integer", "minimum": 1, "maximum": 2016, "description": "Bins over the window (default 24)."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                let mut path = format!(
+                    "/api/v1/clients/{}/timeline?bins={}&lanes={}",
+                    enc(&c),
+                    a.get("bins").and_then(Value::as_u64).unwrap_or(24),
+                    a.get("lanes").and_then(Value::as_u64).unwrap_or(10)
+                );
+                if let Some(w) = s(a, "window") {
+                    path = format!("{path}&from={}", enc(&w));
+                }
+                Ok(vec![("timeline".into(), path)])
+            },
+        },
+        // REQ: OBS-028 (ADR-128)
+        Tool {
+            name: "compare_nodes",
+            description: "Read-only. Every cluster node side by side over one window: answered count, q/s, SERVFAIL, slow, from-cache, and upstream-failure shares (percent, each with a Wilson 95 % interval), and p50/p99 from the latency histograms. findings names a node that deviates from the others (level odd: robust z >= 3 against the others' median and MAD with three or more nodes, non-overlapping intervals with two), with oddSince when it started, and notes a node that only looks worse because it has the same bad count on a much smaller base (level note). Use it to answer 'is something odd with that node?' before blaming one. Nodes that didn't answer are in missingNodes; one node alone has nothing to compare.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "window": {"type": "string", "description": "Start: relative like -24h or RFC 3339 (default -24h; minute buckets up to 48 hours, hours beyond)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "compare".into(),
+                    query("/api/v1/cluster/compare", a, &[("window", "from")]),
+                )])
+            },
+        },
+        Tool {
+            name: "new_domains",
+            description: "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "since": {"type": "string", "description": "First seen since (relative like -24h, or RFC 3339). Default -24h."},
+                "client": {"type": "string", "description": "Only this device's address."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "At most this many (default 200)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let mut path = query(
+                    "/api/v1/analytics/new-domains",
+                    a,
+                    &[("since", "since"), ("client", "client")],
+                );
+                if let Some(n) = a.get("limit").and_then(Value::as_u64) {
+                    let sep = if path.contains('?') { '&' } else { '?' };
+                    path = format!("{path}{sep}limit={n}");
+                }
+                Ok(vec![("newDomains".into(), path)])
+            },
+        },
+        Tool {
+            name: "vqlog",
+            description: "Read-only. Analytics over the query log in one query (a small, safe pipe language; never SQL). Examples: `from -24h | where status = blocked and group = kids | top 10 name`; `from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)`; `where name under roku.com | by client | stats count, distinct(name)`. Stages: from TIME [to TIME] (-24h, -7d, RFC 3339; default -24h); where FIELD OP VALUE [and ...] (fields name, client, group, status, qtype, rcode, upstream, proto, latency, upstream_latency; ops =, !=, in (a, b), not in (a, b); names also ~ glob, has, under; latencies >, >=, <, <= in ms); bucket 5m|1h|1d; by KEY, ... (name, domain, client, group, status, qtype, rcode, upstream, proto; at most 3); stats count, distinct(KEY), avg|min|max|p50|p90|p95|p99(latency|upstream_latency|answers|bytes); top N KEY; sort COLUMN [asc|desc]; limit N (<= 200). Returns a table, the query as understood, and its cost. Set estimateOnly to check the cost first. Needs the querylog:read scope; subject to the privacy level.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "query": {"type": "string", "description": "The vqlog query."},
+                "estimateOnly": {"type": "boolean", "description": "Only parse and estimate how much it would read."}
+            }, "required": ["query"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let q = s(a, "query").ok_or("`query` is required")?;
+                let dry = a
+                    .get("estimateOnly")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                Ok(vec![(
+                    "result".into(),
+                    format!("/api/v1/analytics/vqlog?q={}&dryRun={dry}", enc(&q)),
+                )])
+            },
+        },
+        Tool {
+            name: "cluster_status",
+            description: "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), each node's maintenance window (until, reason, who), and recent events. On a standalone node it says so and still shows its machine.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("cluster".into(), "/api/v1/cluster".into())]),
+        },
+        // REQ: CLU-013 (T13.2)
+        Tool {
+            name: "rollout_status",
+            description: "Read-only. Staged rollouts and pins: the stage (none, canary: a new version bakes on the canary nodes and the primary before everyone else gets it, waiting: no canary online, or pinned), the version baking and the time left, the canaries and what version each node runs, the guard's readings (SERVFAIL share before and during the bake, answers), whether the cluster is pinned (to which version, since when, by whom, why, and what the pin holds back), and the kept versions with what made each and its outcome. Pin or unpin with plan_pin_version and plan_unpin.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("rollout".into(), "/api/v1/cluster/rollout".into()),
+                    ("versions".into(), "/api/v1/cluster/versions".into()),
+                ])
+            },
+        },
+        Tool {
+            name: "get_config",
+            description: "Read-only. One section of the running configuration, as the API shows it (no secrets): groups, lists, devices (clients), upstreams, local names (records), authoritative zones (zones), or forwarded domains (forwards). Also returns system information.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "section": {"type": "string", "enum": ["groups", "lists", "clients", "upstreams", "records", "zones", "forwards"], "description": "Which section."}
+            }, "required": ["section"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let section = s(a, "section").ok_or("`section` is required")?;
+                if ![
+                    "groups",
+                    "lists",
+                    "clients",
+                    "upstreams",
+                    "records",
+                    "zones",
+                    "forwards",
+                ]
+                .contains(&section.as_str())
+                {
+                    return Err(format!("unknown section `{section}`"));
+                }
+                Ok(vec![
+                    (section.clone(), format!("/api/v1/{section}")),
+                    ("system".into(), "/api/v1/system/info".into()),
+                ])
+            },
+        },
+    ]
+}
+
+/// REQ: AGT-007 (T7.1) — what a write tool does: one REST write.
+#[derive(Debug, Clone)]
+pub struct Write {
+    /// `PUT`, `DELETE`, or `POST`.
+    pub method: &'static str,
+    pub path: String,
+    pub body: Option<Value>,
+    /// One sentence for the plan and the approver.
+    pub summary: String,
+    /// Fill in the fields the agent left out from what's there now: a `config/entries` kind
+    /// (`group`, `upstream`, `upstream_group`, `list`) or `client`, with the name.
+    pub merge: Option<(&'static str, String)>,
+}
+
+/// How a write tool takes effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    /// Stores a plan (dry run); `apply_plan` makes the change.
+    Plan,
+    /// Changes at once (low-risk operations, still audited).
+    Immediate,
+}
+
+/// One write tool and the REST write behind it.
+#[derive(Debug)]
+pub struct WriteTool {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: fn() -> Value,
+    pub effect: Effect,
+    /// Whether applying it can take something away (MCP `destructiveHint`).
+    pub destructive: bool,
+    pub write: fn(&Value) -> Result<Write, String>,
+}
+
+fn reason_schema() -> Value {
+    json!({"type": "string", "description": "Why (required): goes into the audit log and is shown to whoever approves the plan."})
+}
+
+fn need(args: &Value, k: &str) -> Result<String, String> {
+    s(args, k).ok_or_else(|| format!("`{k}` is required"))
+}
+
+fn strings(args: &Value, k: &str) -> Vec<String> {
+    args.get(k)
+        .and_then(Value::as_array)
+        .map(|v| {
+            v.iter()
+                .filter_map(Value::as_str)
+                .map(|x| x.trim().to_owned())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The fields of `args` named in `keys`, as a JSON object (absent ones left out).
+fn pick(args: &Value, keys: &[(&str, &str)]) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    for (arg, field) in keys {
+        if let Some(v) = args.get(*arg).filter(|v| !v.is_null()) {
+            m.insert((*field).to_owned(), v.clone());
+        }
+    }
+    m
+}
+
+/// A quick rule's ID for an agent's block or allow: one per action and domain.
+fn rule_id(action: &str, domain: &str) -> String {
+    let d: String = domain
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut id = format!("agent-{action}-{d}");
+    id.truncate(64);
+    id
+}
+
+fn rule(action: &'static str, a: &Value) -> Result<Write, String> {
+    let domain = need(a, "domain")?;
+    let mut body = pick(
+        a,
+        &[
+            ("devices", "devices"),
+            ("groups", "groups"),
+            ("forMinutes", "forMinutes"),
+        ],
+    );
+    body.insert("action".into(), action.into());
+    body.insert("domain".into(), domain.clone().into());
+    if let Some(r) = s(a, "reason") {
+        body.insert("note".into(), r.into());
+    }
+    let who = match (strings(a, "devices"), strings(a, "groups")) {
+        (d, g) if d.is_empty() && g.is_empty() => "everyone".to_owned(),
+        (d, g) => [d, g].concat().join(", "),
+    };
+    let until = a
+        .get("forMinutes")
+        .and_then(Value::as_u64)
+        .map_or_else(String::new, |m| format!(" for {m} minutes"));
+    Ok(Write {
+        method: "PUT",
+        path: format!("/api/v1/rules/{}", enc(&rule_id(action, &domain))),
+        body: Some(Value::Object(body)),
+        summary: format!(
+            "{} {domain} (and its subdomains) for {who}{until}",
+            if action == "block" { "Block" } else { "Allow" }
+        ),
+        merge: None,
+    })
+}
+
+fn rule_schema(what: &str) -> Value {
+    json!({"type": "object", "properties": {
+        "domain": {"type": "string", "description": format!("The domain to {what}; its subdomains are included.")},
+        "devices": {"type": "array", "items": {"type": "string"}, "description": "Only for these devices (names, IPs, or CIDRs)."},
+        "groups": {"type": "array", "items": {"type": "string"}, "description": "Only for these groups. With neither devices nor groups: everyone."},
+        "forMinutes": {"type": "integer", "minimum": 1, "description": "Stop after this many minutes (default: until removed)."},
+        "reason": reason_schema()
+    }, "required": ["domain", "reason"], "additionalProperties": false})
+}
+
+/// The write catalog (`spec/13` §3.2). Plans first, then the immediate operations.
+#[allow(clippy::too_many_lines)] // one entry per tool: the catalog
+pub fn write_tools() -> Vec<WriteTool> {
+    vec![
+        WriteTool {
+            name: "plan_block_domain",
+            description: "Plans a change (nothing changes until apply_plan). A quick rule that blocks a domain and its subdomains, for everyone or for some devices or groups, optionally for a while. Returns a planId and a preview (what changes, how many recent queries it affects). Needs the config:write:rules scope.",
+            input_schema: || rule_schema("block"),
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| rule("block", a),
+        },
+        WriteTool {
+            name: "plan_allow_domain",
+            description: "Plans a change (nothing changes until apply_plan). A quick rule that allows a domain and its subdomains (it wins over every list), for everyone or for some devices or groups, optionally for a while. Returns a planId and a preview. Needs the config:write:rules scope.",
+            input_schema: || rule_schema("allow"),
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| rule("allow", a),
+        },
+        WriteTool {
+            name: "plan_rename_client",
+            description: "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. Needs the config:write:clients scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's current name."},
+                "newName": {"type": "string", "description": "The new name."},
+                "reason": reason_schema()
+            }, "required": ["client", "newName", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let client = need(a, "client")?;
+                let new = need(a, "newName")?;
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/clients/{}", enc(&client)),
+                    body: Some(json!({"name": new})),
+                    summary: format!("Rename the device {client} to {new}"),
+                    merge: Some(("client", client)),
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_assign_client",
+            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's name (new or existing), an IP, or a Kubernetes workload (namespace/kind/name)."},
+                "groups": {"type": "array", "items": {"type": "string"}, "description": "Its groups, highest priority first."},
+                "match": {"type": "array", "items": {"type": "string"}, "description": "How to recognize it (default: what it has now, or the IP given as client)."},
+                "kind": {"type": "string", "description": "What kind of device it is (camera, tv, streaming, plug, ... or unknown to stop guessing): wins over identify_device's guess."},
+                "reason": reason_schema()
+            }, "required": ["client", "groups", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let client = need(a, "client")?;
+                let groups = strings(a, "groups");
+                if groups.is_empty() {
+                    return Err("`groups` is required (at least one)".into());
+                }
+                // REQ: FLT-017 — a workload's group is a map rule for exactly it.
+                let parts: Vec<&str> = client.split('/').collect();
+                if parts.len() == 3
+                    && parts.iter().all(|p| {
+                        !p.is_empty()
+                            && p.bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'))
+                    })
+                {
+                    return Ok(Write {
+                        method: "PUT",
+                        path: format!("/api/v1/kubernetes/map/{client}"),
+                        body: Some(json!({"group": groups[0]})),
+                        summary: format!("Put the Kubernetes workload {client} in {}", groups[0]),
+                        merge: None,
+                    });
+                }
+                let body = pick(
+                    a,
+                    &[("groups", "groups"), ("match", "match"), ("kind", "kind")],
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/clients/{}", enc(&client)),
+                    body: Some(Value::Object(body)),
+                    summary: format!("Put the device {client} in {}", groups.join(", ")),
+                    merge: Some(("client", client)),
+                })
+            },
+        },
+        // REQ: CLU-014 (T15.2)
+        WriteTool {
+            name: "plan_failover_drill",
+            description: "Plans a change (nothing changes until apply_plan). A failover drill: for 15 to 300 seconds (default 60) one node stops answering the targets (everyone, a group, or some devices) while the other nodes keep serving, so devices with a working second DNS server switch to it. About a minute after it ends, drill_report says who followed, how fast, and who was stuck. The preview lists every precondition (another node ready and answering, no drill in the last 10 minutes, no rollout baking or pin, health not severe), the baseline (devices that used the node in the last hour), and the devices it would stop answering. Devices without a working second server lose DNS for the drill's length: start with one device for 30 seconds. Needs the ops:drill scope, which no token has by default.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node to drill: local (default), or a node's ID, site, or pod name (cluster_status lists them)."},
+                "forSecs": {"type": "integer", "minimum": 15, "maximum": 300, "description": "How long (default 60)."},
+                "group": {"type": "string", "description": "Drill one group's devices."},
+                "clients": {"type": "array", "items": {"type": "string"}, "description": "Drill these devices (addresses, names, or Kubernetes workloads). With neither group nor clients: everyone."},
+                "mode": {"type": "string", "enum": ["drop", "refused"], "description": "drop (default): no answer at all, like a dead server. refused: REFUSED at once, faster, but some devices don't try their next server on it."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let node = s(a, "node").unwrap_or_else(|| "local".to_owned());
+                let reason = need(a, "reason")?;
+                let clients = strings(a, "clients");
+                let (targets, who) = match (s(a, "group"), clients.is_empty()) {
+                    (Some(_), false) => return Err("give `group` or `clients`, not both".into()),
+                    (Some(g), true) => (json!({"group": g}), format!("group {g}")),
+                    (None, false) => (json!({"clients": clients}), clients.join(", ")),
+                    (None, true) => (json!("all"), "everyone".to_owned()),
+                };
+                let secs = a.get("forSecs").and_then(Value::as_u64).unwrap_or(60);
+                let mut body = json!({"forSecs": secs, "targets": targets, "reason": reason});
+                if let Some(m) = s(a, "mode") {
+                    if m != "drop" && m != "refused" {
+                        return Err("`mode`: drop or refused".into());
+                    }
+                    body["mode"] = m.into();
+                }
+                Ok(Write {
+                    method: "POST",
+                    path: format!("/api/v1/nodes/{}/drill", enc(&node)),
+                    body: Some(body),
+                    summary: format!("Failover drill on {node} for {secs} s: stop answering {who}"),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_set_local_name",
+            description: "Plans a change (nothing changes until apply_plan). Answers a name on the local network with your own records (A, AAAA, CNAME, TXT, ...), e.g. nas.home.arpa → 192.168.1.10. Replaces that name's records. Needs the config:write:records scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The full name, e.g. nas.home.arpa."},
+                "records": {"type": "array", "items": {"type": "object", "properties": {
+                    "type": {"type": "string", "description": "A, AAAA, CNAME, TXT, MX, SRV, PTR."},
+                    "value": {"type": "string", "description": "The answer, e.g. 192.168.1.10."},
+                    "ttl": {"type": "integer", "description": "Seconds (optional)."}
+                }, "required": ["type", "value"]}, "description": "The records."},
+                "reason": reason_schema()
+            }, "required": ["name", "records", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let records = a
+                    .get("records")
+                    .cloned()
+                    .filter(Value::is_array)
+                    .ok_or("`records` is required")?;
+                let n = records.as_array().map_or(0, Vec::len);
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/records/{}", enc(&name)),
+                    body: Some(json!({"records": records})),
+                    summary: format!("Answer {name} with {n} record(s) of your own"),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_remove_local_name",
+            description: "Plans a change (nothing changes until apply_plan). Removes a local name made through the API or UI; the name is then resolved normally. Needs the config:write:records scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The full name."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let name = need(a, "name")?;
+                Ok(Write {
+                    method: "DELETE",
+                    path: format!("/api/v1/records/{}", enc(&name)),
+                    body: None,
+                    summary: format!("Stop answering {name} locally"),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_forward_domain",
+            description: "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). Needs the config:write:forwards scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "domain": {"type": "string", "description": "The domain, e.g. corp.example."},
+                "servers": {"type": "array", "items": {"type": "string"}, "description": "The servers, tried in order."},
+                "stub": {"type": "boolean", "description": "A stub zone: the servers are authoritative only (IPs), asked iteratively, delegations followed. Default false."},
+                "reason": reason_schema()
+            }, "required": ["domain", "servers", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let domain = need(a, "domain")?;
+                let servers = strings(a, "servers");
+                if servers.is_empty() {
+                    return Err("`servers` is required (at least one)".into());
+                }
+                // REQ: DNS-022
+                let stub = a.get("stub").and_then(Value::as_bool).unwrap_or(false);
+                let how = if stub { " (stub zone)" } else { "" };
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/forwards/{}", enc(&domain)),
+                    body: Some(json!({"servers": servers, "stub": stub})),
+                    summary: format!(
+                        "Send questions under {domain} to {}{how}",
+                        servers.join(", ")
+                    ),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_add_list",
+            description: "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "An ID: lowercase letters, digits, - and _."},
+                "url": {"type": "string", "description": "Where to download it (https)."},
+                "rules": {"type": "array", "items": {"type": "string"}, "description": "Or inline rules, one per item."},
+                "kind": {"type": "string", "enum": ["block", "allow"], "description": "Default block."},
+                "enabled": {"type": "boolean", "description": "Default true."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("url", "url"),
+                        ("rules", "rules"),
+                        ("kind", "kind"),
+                        ("enabled", "enabled"),
+                    ],
+                );
+                if !body.contains_key("url") && !body.contains_key("rules") {
+                    return Err("give `url` or `rules`".into());
+                }
+                let from = s(a, "url").unwrap_or_else(|| "inline rules".into());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/lists/{}", enc(&name)),
+                    body: Some(Value::Object(body)),
+                    summary: format!(
+                        "Add the {} list {name} ({from})",
+                        s(a, "kind").unwrap_or_else(|| "block".into())
+                    ),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: FLT-010, AGT-007 (T9.7) — schedules, as plans.
+        WriteTool {
+            name: "plan_set_schedule",
+            description: "Plans a change (nothing changes until apply_plan). Makes or changes a weekly schedule: during its windows it blocks everything (block_all, a bedtime), applies extra lists (enable_lists), or blocks services (block_services). Groups follow a schedule once it's in their schedules (plan_update_group). Needs config:write:groups.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The schedule."},
+                "action": {"type": "string", "enum": ["block_all", "enable_lists", "block_services"], "description": "What happens during the windows."},
+                "windows": {"type": "array", "items": {"type": "object", "properties": {
+                    "days": {"type": "array", "items": {"type": "string"}, "description": "mon..sun, or weekdays, weekends, daily."},
+                    "start": {"type": "string", "description": "HH:MM, 24-hour, local time."},
+                    "end": {"type": "string", "description": "HH:MM; at or before start runs past midnight."}
+                }, "required": ["days", "start", "end"], "additionalProperties": false}, "description": "When it's on."},
+                "lists": {"type": "array", "items": {"type": "string"}, "description": "enable_lists: the lists."},
+                "services": {"type": "array", "items": {"type": "string"}, "description": "block_services: service IDs (GET /services)."},
+                "tz": {"type": "string", "description": "IANA time zone, e.g. America/New_York (default: the node's)."},
+                "reason": reason_schema()
+            }, "required": ["name", "action", "windows", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let mut body = pick(
+                    a,
+                    &[
+                        ("action", "action"),
+                        ("lists", "lists"),
+                        ("services", "services"),
+                        ("tz", "tz"),
+                        ("windows", "window"),
+                    ],
+                );
+                let action = body
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if body
+                    .get("window")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+                {
+                    return Err("`windows`: at least one".into());
+                }
+                body.retain(|_, v| !v.is_null());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/schedules/{}", enc(&name)),
+                    summary: format!("Set the schedule {name} ({action})"),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("schedule", name)),
+                })
+            },
+        },
+        // REQ: OBS-038, AGT-007 (ADR-161) — anomaly mutes, as plans.
+        WriteTool {
+            name: "plan_set_anomaly_mute",
+            description: "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or wrendns_anomalies_total (wrendns_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The mute's name (1 to 64 characters)."},
+                "devices": {"type": "array", "items": {"type": "string"}, "description": "Device names (from list_devices), IPs or CIDRs."},
+                "groups": {"type": "array", "items": {"type": "string"}, "description": "Groups: their networks and the devices that name them."},
+                "kinds": {"type": "array", "items": {"type": "string", "enum": ["rate_spike", "domain_volume", "drift", "beacon", "nxdomain_storm", "dga", "chatty_loop"]}, "description": "The kinds of finding to mute (at least one)."},
+                "expires": {"type": "string", "description": "When it stops applying (RFC 3339, e.g. 2026-12-31T00:00:00Z). Default: never."},
+                "note": {"type": "string", "description": "Why (up to 200 characters), shown with each muted finding."},
+                "reason": reason_schema()
+            }, "required": ["name", "kinds", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let mut body = pick(
+                    a,
+                    &[
+                        ("devices", "devices"),
+                        ("groups", "groups"),
+                        ("kinds", "kinds"),
+                        ("expires", "expires"),
+                        ("note", "note"),
+                    ],
+                );
+                let has = |k: &str| {
+                    body.get(k)
+                        .and_then(Value::as_array)
+                        .is_some_and(|v| !v.is_empty())
+                };
+                if !has("devices") && !has("groups") {
+                    return Err("give at least one of `devices` and `groups`".into());
+                }
+                if !has("kinds") {
+                    return Err("`kinds`: at least one".into());
+                }
+                body.retain(|_, v| !v.is_null());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/anomaly-mutes/{}", enc(&name)),
+                    summary: format!("Mute anomaly findings: {name}"),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_remove_anomaly_mute",
+            description: "Plans a change (nothing changes until apply_plan). Removes an anomaly mute: findings created from now on count again; ones already muted stay muted. Needs config:write:anomalies.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The mute's name (list_anomaly_mutes)."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let name = need(a, "name")?;
+                Ok(Write {
+                    method: "DELETE",
+                    path: format!("/api/v1/anomaly-mutes/{}", enc(&name)),
+                    body: None,
+                    summary: format!("Stop muting anomaly findings: {name}"),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: DNS-014, AGT-007 (review 01 q1) — the per-client rate limit, as a plan.
+        WriteTool {
+            name: "plan_set_ratelimit",
+            description: "Plans a change (nothing changes until apply_plan). Changes the per-client rate limit: how many queries one client may send per window before it is refused (or dropped), the clients that are never limited, and how clients are grouped (IPv4 per address, IPv6 per /64 by default). A router or proxy that forwards for a whole network looks like one client: exempt it or raise `queries`. Fields left out keep their current values. Applies at once; every client's count starts over. Needs config:write:ratelimit (and config:read to read the current limit).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn rate limiting on or off."},
+                "queries": {"type": "integer", "minimum": 1, "description": "Queries allowed per client per window (bursts up to this)."},
+                "windowSecs": {"type": "integer", "minimum": 1, "description": "The window, in seconds (default 60)."},
+                "action": {"type": "string", "enum": ["refused", "drop"], "description": "What a limited query gets: REFUSED, or nothing."},
+                "exempt": {"type": "array", "items": {"type": "string"}, "description": "CIDRs never limited (replaces the current list; include 127.0.0.0/8 and ::1/128 to keep loopback exempt)."},
+                "ipv4Prefix": {"type": "integer", "minimum": 1, "maximum": 32, "description": "Count IPv4 clients per /N (32 = per address)."},
+                "ipv6Prefix": {"type": "integer", "minimum": 1, "maximum": 128, "description": "Count IPv6 clients per /N (64 groups a device's rotating addresses)."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("queries", "queries"),
+                        ("windowSecs", "window_secs"),
+                        ("action", "action"),
+                        ("exempt", "exempt"),
+                        ("ipv4Prefix", "ipv4_prefix"),
+                        ("ipv6Prefix", "ipv6_prefix"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let mut what: Vec<String> = Vec::new();
+                for (k, label) in [
+                    ("enabled", "enabled"),
+                    ("queries", "queries"),
+                    ("window_secs", "window"),
+                ] {
+                    if let Some(v) = body.get(k) {
+                        what.push(format!("{label} {v}"));
+                    }
+                }
+                let summary = if what.is_empty() {
+                    "Change the rate limit".to_owned()
+                } else {
+                    format!("Set the rate limit ({})", what.join(", "))
+                };
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/ratelimit/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("ratelimit", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: DNS-019 (T24.12, ADR-904, ADR-914), AGT-007 — the special-name switches, as a plan.
+        WriteTool {
+            name: "plan_set_special_names",
+            description: "Plans a change (nothing changes until apply_plan). Changes the special-name handling: iCloud Private Relay names answered NXDOMAIN (blockIcloudPrivateRelay), single-label names kept off upstreams (singleLabelNxdomain, domain-needed), the Firefox canary, private reverse lookups, CHAOS queries, localhost, and ddrName (the name the encrypted listeners' certificates carry, for DDR). Fields left out keep their current values. A field the config files set can't be changed here. ddrName is admin-only: an agent can't plan it (refused). Applies on the next query, with no restart. Needs config:write:special (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "blockIcloudPrivateRelay": {"type": "boolean", "description": "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN, so Apple devices turn Private Relay off here."},
+                "singleLabelNxdomain": {"type": "boolean", "description": "One-label names asked for A, AAAA or HTTPS that nothing local answers get NXDOMAIN without upstreams."},
+                "blockFirefoxCanary": {"type": "boolean", "description": "use-application-dns.net answers NXDOMAIN, so Firefox keeps the network's DNS."},
+                "privatePtrNxdomain": {"type": "boolean", "description": "Reverse lookups for private addresses answer NXDOMAIN unless local data or a route covers them."},
+                "refuseChaos": {"type": "boolean", "description": "CHAOS-class queries (version.bind, id.server) are REFUSED."},
+                "localhost": {"type": "boolean", "description": "localhost names answer loopback addresses."},
+                "ddrName": {"type": "string", "description": "The host name on the encrypted listeners' certificates (DDR). Admin-only: an agent can't set it."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("blockIcloudPrivateRelay", "block_icloud_private_relay"),
+                        ("singleLabelNxdomain", "single_label_nxdomain"),
+                        ("blockFirefoxCanary", "block_firefox_canary"),
+                        ("privatePtrNxdomain", "private_ptr_nxdomain"),
+                        ("refuseChaos", "refuse_chaos"),
+                        ("localhost", "localhost"),
+                        ("ddrName", "ddr_name"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let summary = format!(
+                    "Set the special names ({})",
+                    body.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/special-names/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("special", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: DNS-023 (T24.13, ADR-901, AGT-007) — the device-name settings, as a plan.
+        WriteTool {
+            name: "plan_set_device_names",
+            description: "Plans a change (nothing changes until apply_plan). Changes the device-name settings: the domain devices get names under (deviceDomain, e.g. home.arpa; local is refused), the TTL of those answers (deviceTtl), whether names devices announce over mDNS count (deviceMdns; needs the mDNS switch on, which an admin sets), automatic reverse names (autoPtr), and the TTL of other local names (defaultTtl). Fields left out keep their current values; a field the config files set can't be changed here. Names change within about 10 seconds, with no restart. Needs config:write:local (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "deviceDomain": {"type": "string", "description": "The domain, such as home.arpa (not local). Empty turns device names off."},
+                "deviceTtl": {"type": "integer", "minimum": 0, "description": "Seconds for device names (they follow DHCP, so keep it short; 60 by default)."},
+                "deviceMdns": {"type": "boolean", "description": "Also name devices by the names they announce over mDNS."},
+                "autoPtr": {"type": "boolean", "description": "Make reverse names for every local address record."},
+                "defaultTtl": {"type": "integer", "minimum": 0, "description": "Seconds for local names without their own TTL."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("deviceDomain", "device_domain"),
+                        ("deviceTtl", "device_ttl"),
+                        ("deviceMdns", "device_mdns"),
+                        ("autoPtr", "auto_ptr"),
+                        ("defaultTtl", "default_ttl"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let summary = format!(
+                    "Set the device-name settings ({})",
+                    body.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/local-settings/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("local", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
+        WriteTool {
+            name: "plan_set_exclusions",
+            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn the exclusions on or off (the lists are kept)."},
+                "log": {"type": "object", "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.", "properties": {"clients": {"type": "array", "items": {"type": "string"}}, "domains": {"type": "array", "items": {"type": "string"}}, "own_lookups": {"type": "boolean"}}, "additionalProperties": false},
+                "names": {"type": "array", "items": {"type": "string"}, "description": "Names kept out, each with its subdomains (replaces the current list)."},
+                "clients": {"type": "array", "items": {"type": "string"}, "description": "Addresses or networks kept out (replaces the current list)."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("names", "names"),
+                        ("clients", "clients"),
+                        ("log", "log"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let count = |k: &str| body.get(k).and_then(Value::as_array).map(Vec::len);
+                let mut what: Vec<String> = Vec::new();
+                if let Some(on) = body.get("enabled").and_then(Value::as_bool) {
+                    what.push(if on { "on".into() } else { "off".into() });
+                }
+                if let Some(n) = count("names") {
+                    what.push(format!("{n} names"));
+                }
+                if let Some(n) = count("clients") {
+                    what.push(format!("{n} clients"));
+                }
+                if body.contains_key("log") {
+                    what.push("log-only exclusions".into());
+                }
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/exclusions/default".to_owned(),
+                    summary: format!("Set the query-log exclusions ({})", what.join(", ")),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("exclusions", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: OBS-901, AGT-007 (T26.2, ADR-958) — the live map's sampling and thresholds, as a plan.
+        WriteTool {
+            name: "plan_set_map",
+            description: "Plans a change (nothing changes until apply_plan). Changes the live network map's settings: whether it runs, how many lookups per second each node samples (`eventRate`, 10 to 2,000), how many sampled answers a device or edge needs before it is coloured (`minSample`), what counts as slow (`warnLatencyMs`; null follows the latency objective), and the percent thresholds that turn it yellow or red (`warnSlowPct`, `warnErrorPct`, `errorPct`, `warnBlockedPct`, 1 to 100; `errorPct` at least `warnErrorPct`). Fields left out keep their current values. It changes only what the map shows, never an answer. Applies to every node within a few seconds. Needs config:write:map (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn the map on or off (off: no sampling, and the map routes answer map_disabled)."},
+                "eventRate": {"type": "integer", "minimum": 10, "maximum": 2000, "description": "Lookups per second each node samples."},
+                "minSample": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Sampled answers needed before something is coloured (fewer is idle)."},
+                "warnLatencyMs": {"type": ["integer", "null"], "minimum": 1, "maximum": 60000, "description": "An answer slower than this is slow; null follows [slo] latency_ms."},
+                "warnSlowPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Yellow at this percent of slow answers."},
+                "warnErrorPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Yellow at this percent of SERVFAIL or timeouts."},
+                "errorPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Red at this percent of SERVFAIL or timeouts (at least warnErrorPct)."},
+                "warnBlockedPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "A device turns yellow at this percent of blocked answers."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let mut body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("eventRate", "event_rate"),
+                        ("minSample", "min_sample"),
+                        ("warnLatencyMs", "warn_latency_ms"),
+                        ("warnSlowPct", "warn_slow_pct"),
+                        ("warnErrorPct", "warn_error_pct"),
+                        ("errorPct", "error_pct"),
+                        ("warnBlockedPct", "warn_blocked_pct"),
+                    ],
+                );
+                // An explicit null goes back to following the latency objective.
+                if a.get("warnLatencyMs").is_some_and(Value::is_null) {
+                    body.insert("warn_latency_ms".to_owned(), Value::Null);
+                }
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/map-settings/default".to_owned(),
+                    summary: format!("Set the live map's settings ({})", what.join(", ")),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("map", "default".to_owned())),
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_update_group",
+            description: "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority, its schedules, whether it gets IPv6 addresses. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The group."},
+                "networks": {"type": "array", "items": {"type": "string"}, "description": "CIDRs whose devices belong to it."},
+                "lists": {"type": "array", "items": {"type": "string"}, "description": "List names that apply (default: every enabled list)."},
+                "blockMode": {"type": "string", "enum": ["null_ip", "nxdomain", "nodata", "refused", "custom_ip"], "description": "How blocked names are answered."},
+                "priority": {"type": "integer", "description": "Higher wins when a device matches several groups."},
+                "schedules": {"type": "array", "items": {"type": "string"}, "description": "Schedules (by name) the group follows (plan_set_schedule makes them)."},
+                "filterAaaa": {"type": "boolean", "description": "No IPv6 addresses: AAAA questions get no data, so the group's devices use IPv4 (a network with broken IPv6). Not with DNS64."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("networks", "networks"),
+                        ("lists", "lists"),
+                        ("blockMode", "block_mode"),
+                        ("priority", "priority"),
+                        ("schedules", "schedules"),
+                        ("filterAaaa", "filter_aaaa"),
+                    ],
+                );
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/groups/{}", enc(&name)),
+                    summary: format!(
+                        "Change the group {name} ({})",
+                        if what.is_empty() {
+                            "no fields".into()
+                        } else {
+                            what.join(", ")
+                        }
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("group", name)),
+                })
+            },
+        },
+        // REQ: FLT-901, AGT-007 (T24.29, ADR-994 item 8): a content change makes the server download
+        // lists, so it is a plan an operator approves, whatever `require_approval` says.
+        WriteTool {
+            name: "plan_set_group_content",
+            description: "Plans a change (nothing changes until apply_plan). **An operator must approve it first, whatever [agents] require_approval says**: choosing categories makes the node download lists (tens of megabytes a day), which an agent never starts on its own, so this tool only plans and apply_plan works after an operator approves the plan (Agent changes in the web UI); applying an unapproved plan answers 403 agent_not_allowed. Sets a group's content filtering: `level` (off, basic: adult content, malware, phishing and scam; enhanced: the `categories` you list), `categories` (IDs from categories_list), `tiers` (category to tier, such as gambling extended) and `ads` (ad block). Fields left out keep their current values. A heavy selection (newly registered domains, the full threat feed) or one over the entry budget is refused to an agent at planning time: the owner confirms that cost. Needs config:write:groups (and config:read).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "The group (profile) to change."},
+                "level": {"type": "string", "enum": ["off", "basic", "enhanced"], "description": "Filtering level."},
+                "categories": {"type": "array", "items": {"type": "string"}, "description": "With enhanced: category IDs (replaces the current list)."},
+                "tiers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Tier per category, for example gambling: extended."},
+                "ads": {"type": "boolean", "description": "Ad block."},
+                "reason": reason_schema()
+            }, "required": ["group", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let group = need(a, "group")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("level", "level"),
+                        ("categories", "categories"),
+                        ("tiers", "tiers"),
+                        ("ads", "ads"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one of level, categories, tiers or ads".into());
+                }
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/groups/{}/content", enc(&group)),
+                    summary: format!(
+                        "Set the content filtering of group {group} ({})",
+                        what.join(", ")
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_update_upstreams",
+            description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry). Moving an upstream that holds a credential (headers, a client key, a password in its URL) and exec:// or unix:// upstreams are an admin's in the UI: such a plan is refused (403).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["upstream", "upstream_group"], "description": "A server or a group."},
+                "name": {"type": "string", "description": "Its name."},
+                "url": {"type": "string", "description": "upstream: udp://, tcp://, tls://, https://, or quic:// address."},
+                "members": {"type": "array", "items": {"type": "string"}, "description": "upstream_group: upstream names."},
+                "strategy": {"type": "string", "enum": ["failover", "round_robin", "weighted", "fastest", "parallel"], "description": "upstream_group: how members are used."},
+                "reason": reason_schema()
+            }, "required": ["kind", "name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let (kind, path, body) = match s(a, "kind").as_deref() {
+                    Some("upstream") => ("upstream", "upstreams", pick(a, &[("url", "url")])),
+                    Some("upstream_group") => (
+                        "upstream_group",
+                        "upstream-groups",
+                        pick(a, &[("members", "members"), ("strategy", "strategy")]),
+                    ),
+                    _ => return Err("`kind` is upstream or upstream_group".into()),
+                };
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/{path}/{}", enc(&name)),
+                    summary: format!(
+                        "Change the {} {name} ({})",
+                        kind.replace('_', " "),
+                        what.join(", ")
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: Some((kind, name)),
+                })
+            },
+        },
+        // REQ: CLU-013 (T13.2) — pins change what every node serves: plans that need a person's
+        // approval (like cluster promotion, spec/13).
+        WriteTool {
+            name: "plan_pin_version",
+            description: "Plans a change (nothing changes until apply_plan). An operator must approve it first. Pins the cluster to a kept version (\"roll back\"): every node serves that version's configuration and filter snapshot, published as a new version, until someone unpins; configuration changes are refused meanwhile. The preview lists what changes. The files, the UI's entries, and Git aren't rewritten. Only with [agents] require_approval on; needs the cluster:admin scope. Versions come from rollout_status.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "epoch": {"type": "integer", "minimum": 0, "description": "The version's epoch (the part before the dot in rollout_status)."},
+                "seq": {"type": "integer", "minimum": 0, "description": "The version's number (after the dot)."},
+                "reason": reason_schema()
+            }, "required": ["epoch", "seq", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let epoch = a
+                    .get("epoch")
+                    .and_then(Value::as_u64)
+                    .ok_or("`epoch` is required")?;
+                let seq = a
+                    .get("seq")
+                    .and_then(Value::as_u64)
+                    .ok_or("`seq` is required")?;
+                let why = need(a, "reason")?;
+                Ok(Write {
+                    method: "POST",
+                    path: format!("/api/v1/cluster/versions/{epoch}.{seq}/pin"),
+                    summary: format!("Pin the cluster to version {epoch}.{seq}"),
+                    body: Some(json!({ "reason": why })),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_unpin",
+            description: "Plans a change (nothing changes until apply_plan). An operator must approve it first. Unpins the cluster: the primary publishes its current configuration again (through a staged rollout when canaries are set). The preview lists what changes. Only with [agents] require_approval on; needs the cluster:admin scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |_| {
+                Ok(Write {
+                    method: "DELETE",
+                    path: "/api/v1/cluster/pin".into(),
+                    summary: "Unpin the cluster".into(),
+                    body: None,
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "flush_cache",
+            description: "Changes at once (audited, no plan). Removes cached answers: one name (optionally everything under it), or the whole cache; on every node unless `node` names one. The next query is asked upstream again. Blocked answers are never cached. Needs the ops:cache scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "One name (default: everything)."},
+                "subtree": {"type": "boolean", "description": "Also every name under it."},
+                "node": {"type": "string", "description": "Only this node."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: true,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[("name", "name"), ("subtree", "subtree"), ("node", "node")],
+                );
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/cache/flush".into(),
+                    summary: s(a, "name").map_or_else(
+                        || "Empty the cache".into(),
+                        |n| format!("Flush {n} from the cache"),
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: FLT-004 — "update lists now" (like `pihole -g`).
+        WriteTool {
+            name: "refresh_lists",
+            description: "Changes at once (audited, no plan; no configuration changes). Downloads the filter lists again now instead of waiting for their schedule: every enabled list, or only `names`. Returns the lists queued, the named ones left out (disabled), and the node that downloads them (the primary, in a cluster). The downloads run in the background: `refreshing` in list_effectiveness clears when each list is done. Unchanged lists cost one conditional request; the filter is recompiled only if something changed. With dryRun, says what would be queued and queues nothing. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "names": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Only these lists, by name (default: every enabled list)."},
+                "dryRun": {"type": "boolean", "description": "Say what would be downloaded; download nothing."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let names = strings(a, "names");
+                let dry = a.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
+                let what = if names.is_empty() {
+                    "every enabled filter list".to_owned()
+                } else {
+                    format!("the lists {}", names.join(", "))
+                };
+                let mut body = serde_json::Map::new();
+                if !names.is_empty() {
+                    body.insert("names".into(), json!(names));
+                }
+                Ok(Write {
+                    method: "POST",
+                    path: if dry {
+                        "/api/v1/lists/refresh?dryRun=true".into()
+                    } else {
+                        "/api/v1/lists/refresh".into()
+                    },
+                    summary: if dry {
+                        format!("Check what refreshing {what} would download")
+                    } else {
+                        format!("Download {what} again now")
+                    },
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "pause_blocking",
+            description: "Changes at once (audited, no plan). Turns blocking off for everyone (or one group) for 1 to 60 minutes, on every node; it comes back on by itself. Needs the ops:pause scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "minutes": {"type": "integer", "minimum": 1, "maximum": 60, "description": "How long."},
+                "group": {"type": "string", "description": "Only this group."},
+                "reason": reason_schema()
+            }, "required": ["minutes", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: true,
+            write: |a| {
+                let minutes = a
+                    .get("minutes")
+                    .and_then(Value::as_u64)
+                    .ok_or("`minutes` is required (1 to 60)")?;
+                let body = pick(a, &[("minutes", "minutes"), ("group", "group")]);
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/blocking/pause".into(),
+                    summary: format!(
+                        "Pause blocking{} for {minutes} minutes",
+                        s(a, "group")
+                            .map(|g| format!(" for {g}"))
+                            .unwrap_or_default()
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: API-002 (T9.12) — pre-save checks: nothing changes, but they reach out from the
+        // node, so they need the scope that saves the entry and are audited.
+        WriteTool {
+            name: "check_upstream",
+            description: "Changes nothing (audited). Checks an upstream before you save it: this node builds it from the fields you'd save (url, tls_server_name, bootstrap, proxy, ...) and asks it for the root's NS records. Returns ok, the answer or the error (bad URL, TLS name mismatch, timeout), and the time. Use it before plan_update_upstreams. Needs the config:write:upstreams scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "upstream": {"type": "object", "description": "The upstream's fields, as when saving it (url required, e.g. {\"url\": \"tls://9.9.9.9\", \"tls_server_name\": \"dns.quad9.net\"})."},
+                "reason": reason_schema()
+            }, "required": ["upstream", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let u = a
+                    .get("upstream")
+                    .filter(|v| v.is_object())
+                    .cloned()
+                    .ok_or("`upstream` (an object with at least `url`) is required")?;
+                let url = u
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_owned();
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/checks/upstream".into(),
+                    summary: format!("Check the upstream {url}"),
+                    body: Some(u),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "check_list",
+            description: "Changes nothing (audited). Checks a filter list before you add it: this node downloads the URL (with the configured size limit and timeout), or takes inline rules, and parses it as the compiler would. Returns ok, how many rules it found, up to 10 lines it couldn't use and why, and the time. Use it before plan_add_list. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "list": {"type": "object", "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match."},
+                "reason": reason_schema()
+            }, "required": ["list", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let l = a
+                    .get("list")
+                    .filter(|v| v.is_object())
+                    .cloned()
+                    .ok_or("`list` (an object with `url` or `rules`) is required")?;
+                let what = l
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| "inline rules".to_owned(), ToOwned::to_owned);
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/checks/list".into(),
+                    summary: format!("Check the list {what}"),
+                    body: Some(l),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: OBS-014 (ADR-103)
+        WriteTool {
+            name: "acknowledge_anomalies",
+            description: "Changes at once (audited, no plan). Marks device anomalies as seen, by their id from find_anomalies, so they stop counting as new; on every cluster node. With undo, takes the acknowledgement back. Nothing is blocked or unblocked either way. Needs the ops:anomalies scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 1000, "description": "Finding ids from find_anomalies."},
+                "note": {"type": "string", "maxLength": 200, "description": "Why they're fine (shown with each finding; not with undo)."},
+                "undo": {"type": "boolean", "description": "Take the acknowledgements back instead."},
+                "reason": reason_schema()
+            }, "required": ["ids", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let n = a.get("ids").and_then(Value::as_array).map_or(0, Vec::len);
+                if n == 0 {
+                    return Err("`ids` is required: finding ids from find_anomalies".into());
+                }
+                let undo = a.get("undo").and_then(Value::as_bool).unwrap_or(false);
+                let body = pick(a, &[("ids", "ids"), ("note", "note")]);
+                Ok(Write {
+                    method: "POST",
+                    path: if undo {
+                        "/api/v1/analytics/anomalies/unacknowledge".into()
+                    } else {
+                        "/api/v1/analytics/anomalies/acknowledge".into()
+                    },
+                    summary: format!(
+                        "{} {n} anomal{}",
+                        if undo { "Unacknowledge" } else { "Acknowledge" },
+                        if n == 1 { "y" } else { "ies" }
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "resume_blocking",
+            description: "Changes at once (audited, no plan). Ends a pause of blocking: one group's, or every pause. Needs the ops:pause scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "Only this group's pause."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/blocking/resume".into(),
+                    summary: "Resume blocking".into(),
+                    body: Some(Value::Object(pick(a, &[("group", "group")]))),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: OPS-010 (ADR-118)
+        WriteTool {
+            name: "start_maintenance",
+            description: "Changes at once (audited, no plan). Puts a node in maintenance for up to 2 hours: it reports not ready, so load balancers and Kubernetes stop sending it new queries, but it keeps answering every query that still arrives; its alerts and health conditions are left out, and it isn't elected primary, until the window ends (or end_maintenance). The primary under automatic failover first hands its role to another eligible node; otherwise the result's note says to promote another node first. Your reason is shown with the window. Needs the ops:maintenance scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node: its ID, site, or pod name from cluster_status, or local (the node you're connected to)."},
+                "forSecs": {"type": "integer", "minimum": 60, "maximum": 7200, "description": "How long, in seconds (default 3600)."},
+                "reason": reason_schema()
+            }, "required": ["node", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: true,
+            write: |a| {
+                let node = need(a, "node")?;
+                let why = need(a, "reason")?;
+                let mut body = pick(a, &[("forSecs", "forSecs")]);
+                body.insert("reason".into(), Value::String(why));
+                Ok(Write {
+                    method: "POST",
+                    path: format!("/api/v1/nodes/{}/maintenance", enc(&node)),
+                    summary: format!(
+                        "Put {node} in maintenance{}",
+                        a.get("forSecs")
+                            .and_then(Value::as_u64)
+                            .map(|s| format!(" for {} minutes", s.div_ceil(60)))
+                            .unwrap_or_default()
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "end_maintenance",
+            description: "Changes at once (audited, no plan). Ends a node's maintenance: it's ready for traffic again, and alerts and the health level cover it again. Needs the ops:maintenance scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node: its ID, site, or pod name, or local."},
+                "reason": reason_schema()
+            }, "required": ["node", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let node = need(a, "node")?;
+                Ok(Write {
+                    method: "DELETE",
+                    path: format!("/api/v1/nodes/{}/maintenance", enc(&node)),
+                    summary: format!("End maintenance on {node}"),
+                    body: None,
+                    merge: None,
+                })
+            },
+        },
+        // REQ: OBS-033 (ADR-133)
+        WriteTool {
+            name: "annotate",
+            description: "Changes at once (audited, no plan; nothing about DNS changes). Leaves a visible note on every time chart; use it to record why you changed something or what happened on the network (\"moved the AP\", \"ISP outage\"). text: 1 to 200 characters, one line; time: when it happened (default now, up to 7 days back). Notes can't be edited or deleted: add a correcting one. Needs the ops:annotate scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "text": {"type": "string", "minLength": 1, "maxLength": 200, "description": "What happened, on one line."},
+                "time": {"type": "string", "description": "When (RFC 3339 or relative like -2h); default now; at most 7 days back."},
+                "reason": reason_schema()
+            }, "required": ["text", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let text = need(a, "text")?;
+                let mut body = serde_json::Map::new();
+                body.insert("text".into(), Value::String(text.clone()));
+                if let Some(t) = s(a, "time") {
+                    body.insert("time".into(), Value::String(t));
+                }
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/annotations".into(),
+                    summary: format!("Note on the time charts: {text}"),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+    ]
+}
+
+/// REQ: OBS-033 — a page of change markers as `get_overview` shows it: the count and the
+/// latest three (time, node, kind, summary).
+fn changes_digest(page: &Value) -> Value {
+    if page.get("error").is_some() {
+        return page.clone();
+    }
+    let items = page
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let latest: Vec<Value> = items
+        .iter()
+        .take(3)
+        .map(|a| {
+            let mut o = serde_json::Map::new();
+            for k in ["t", "node", "kind", "summary"] {
+                if let Some(v) = a.get(k) {
+                    o.insert(k.into(), v.clone());
+                }
+            }
+            Value::Object(o)
+        })
+        .collect();
+    let mut out = json!({"count": items.len(), "latest": latest});
+    if page.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out["countIsAtLeast"] = json!(true);
+    }
+    if let Some(m) = page.get("missingNodes") {
+        out["missingNodes"] = m.clone();
+    }
+    out
+}
+
+/// Plan management tools: `(name, description, schema, readOnly, destructive, idempotent)`.
+fn plan_tools() -> Vec<(&'static str, &'static str, Value, bool, bool, bool)> {
+    let id = || {
+        json!({"type": "object", "properties": {
+        "planId": {"type": "string", "description": "From a plan_* tool."}
+    }, "required": ["planId"], "additionalProperties": false})
+    };
+    vec![
+        (
+            "apply_plan",
+            "Changes the configuration: applies a plan made by a plan_* tool, on every node. Fails if the configuration changed since the plan was made (stale: plan again), if it expired (10 minutes), or if an operator must approve it first. Audited with your token, its owner, and the plan's reason.",
+            id(),
+            false,
+            true,
+            false,
+        ),
+        (
+            "discard_plan",
+            "Drops a plan you made; nothing in the configuration changes.",
+            id(),
+            false,
+            false,
+            true,
+        ),
+        (
+            "list_plans",
+            "Read-only. Your plans, newest first: what each does, its state (pending approval, ready, applied, stale, expired, ...), and when it expires.",
+            json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            true,
+            false,
+            true,
+        ),
+    ]
+}
+
+/// REQ: AGT-010 (T7.2) — one MCP resource and the REST reads behind it.
+#[derive(Debug)]
+pub struct Resource {
+    pub uri: &'static str,
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    /// `(key, GET path)`: each read becomes one key of the JSON document.
+    pub reads: &'static [(&'static str, &'static str)],
+}
+
+/// The resources (`spec/13` AGT-010): read-only JSON documents built from REST reads, with the
+/// caller's credentials (scopes apply; a read the token can't make shows as an error).
+pub fn resources() -> Vec<Resource> {
+    vec![
+        Resource {
+            uri: "wrendns://cluster/status",
+            name: "cluster-status",
+            title: "Cluster status",
+            description: "The cluster as this node sees it: members, roles, sync, versions, health checks, each node's machine, and recent events (or this node alone).",
+            reads: &[
+                ("cluster", "/api/v1/cluster"),
+                ("system", "/api/v1/system/info"),
+            ],
+        },
+        Resource {
+            uri: "wrendns://config",
+            name: "config",
+            title: "Configuration (redacted)",
+            description: "The running configuration as the API shows it, without secrets: upstreams, upstream groups, lists, and groups (with where each comes from), devices, local names, forwarded domains, and quick rules.",
+            reads: &[
+                ("entries", "/api/v1/config/entries"),
+                ("devices", "/api/v1/clients"),
+                ("localNames", "/api/v1/records"),
+                ("forwards", "/api/v1/forwards"),
+                ("rules", "/api/v1/rules"),
+                ("system", "/api/v1/system/info"),
+            ],
+        },
+        Resource {
+            uri: "wrendns://reports/daily",
+            name: "daily-summary",
+            title: "Daily summary",
+            description: "The last 24 hours: queries, blocked %, cache hits, latency, the top domains, blocked names, and clients, upstream health, and device anomalies.",
+            reads: &[
+                ("summary", "/api/v1/stats/summary?from=-24h"),
+                ("topDomains", "/api/v1/stats/top?kind=domains&limit=10"),
+                ("topBlocked", "/api/v1/stats/top?kind=blocked&limit=10"),
+                ("topClients", "/api/v1/stats/top?kind=clients&limit=10"),
+                ("upstreams", "/api/v1/upstreams"),
+                ("anomalies", "/api/v1/analytics/anomalies?since=-1d"),
+            ],
+        },
+    ]
+}
+
+/// REQ: AGT-010 (T7.2) — one MCP prompt: a playbook for a common question.
+#[derive(Debug)]
+pub struct Prompt {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    /// `(name, description, required)`.
+    pub arguments: &'static [(&'static str, &'static str, bool)],
+    /// The message, with `{argument}` placeholders.
+    pub text: &'static str,
+}
+
+pub fn prompts() -> Vec<Prompt> {
+    vec![
+        Prompt {
+            name: "investigate_device",
+            title: "Investigate a device",
+            description: "What a device has been doing, whether anything is off, and why.",
+            arguments: &[
+                ("client", "The device's name or IP address.", true),
+                (
+                    "window",
+                    "How far back, like -6h or -7d (default -24h).",
+                    false,
+                ),
+            ],
+            text: "Investigate the device \"{client}\" on my network over {window}.\n\n1. get_client_profile (client \"{client}\", window \"{window}\"): who it is, its groups, top domains, recent and slow queries.\n2. find_anomalies: any findings for this device (rate spikes, beaconing, drift).\n3. For anything blocked or odd, explain_decision with the name and this client.\n4. If it's slow, latency_breakdown by upstream and upstream_health.\n\nReport in plain language: what the device is, what it talks to, anything unusual (with the evidence), and what you'd suggest. Don't change anything; if a change would help, say which plan_* tool would make it.",
+        },
+        Prompt {
+            name: "weekly_network_report",
+            title: "Weekly network report",
+            description: "A short report on the last 7 days: traffic, blocking, devices, speed, and anything to look at.",
+            arguments: &[],
+            text: "Write a weekly report for my home network.\n\n1. get_overview with window -7d, and with -24h to compare with today.\n2. top_items: domains, blocked, nxdomain, and clients (current and previous hour), to see who and what dominates.\n3. find_anomalies since -7d.\n4. upstream_health and latency_breakdown by upstream.\n5. cluster_status: are all nodes healthy and in sync?\n\nKeep it short: the key numbers, the three things most worth attention (with evidence), and anything that needs no action said briefly. No changes.",
+        },
+        Prompt {
+            name: "tune_blocklists",
+            title: "Tune blocklists",
+            description: "Which lists earn their place, which are dead weight, and what's blocked by mistake.",
+            arguments: &[],
+            text: "Help me tune my blocklists.\n\n1. list_effectiveness: each list's size, update state, errors, and how many names it adds.\n2. top_items kind blocked (current and previous hour): what's blocked most.\n3. For blocked names that look like they break something (CDNs, login, payment, app APIs), explain_decision to see which list and rule blocks them.\n4. get_config section lists and groups: which groups use which lists.\n\nSuggest: lists to drop (dead, failing, or adding nothing), possible false positives to allow (and for whom), and gaps. Propose changes as plan_allow_domain, plan_block_domain, or plan_add_list plans with a reason; don't apply them.",
+        },
+        Prompt {
+            name: "upstream_health_review",
+            title: "Upstream health review",
+            description: "Whether the upstream DNS servers are healthy and fast, and what to change if not.",
+            arguments: &[(
+                "window",
+                "How far back, like -1h or -24h (default -24h).",
+                false,
+            )],
+            text: "Review my upstream DNS servers over {window}.\n\n1. upstream_health: each upstream's health, circuit breaker, failures, and latency.\n2. latency_breakdown by upstream and by stage, for the current and the previous hour.\n3. get_overview (window \"{window}\"): SERVFAIL and latency overall.\n4. get_config section upstreams: the groups and their strategies.\n\nSay which upstreams are healthy, which are slow or failing (with numbers), and whether the strategy fits. If a change would help, propose it with plan_update_upstreams (with a reason) and don't apply it.",
+        },
+    ]
+}
+
+/// A prompt's message with its arguments filled in (defaults for the optional ones).
+fn render_prompt(p: &Prompt, args: &Value) -> Result<String, String> {
+    let mut text = p.text.to_owned();
+    for (name, _, required) in p.arguments {
+        let v = args
+            .get(*name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let v = match (v, required) {
+            (Some(v), _) => v.chars().filter(|c| !c.is_control()).take(200).collect(),
+            (None, true) => return Err(format!("`{name}` is required")),
+            (None, false) => "-24h".to_owned(),
+        };
+        text = text.replace(&format!("{{{name}}}"), &v);
+    }
+    Ok(text)
+}
+
+/// REQ: OBS-024 (T13.1) — the plan tools' `simulate` parameter.
+const SIMULATE_PARAM: &str = "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.";
+
+/// REQ: OBS-024 — the changes `simulate_change` can preview (each a `plan_<kind>` tool).
+const SIMULATE_KINDS: &[&str] = &[
+    "block_domain",
+    "allow_domain",
+    "add_list",
+    "assign_client",
+    "update_group",
+];
+
+/// REQ: CLU-013 — plans that need a person's approval: they change what every node serves.
+const APPROVAL_ONLY: &[&str] = &["plan_pin_version", "plan_unpin"];
+
+/// REQ: FLT-901: the plan tool whose plans are always pending and whose replay carries the
+/// approval.
+const CONTENT_PLAN: &str = "plan_set_group_content";
+
+/// A plan tool's schema with the `simulate` parameter.
+fn with_simulate(mut schema: Value) -> Value {
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        props.insert(
+            "simulate".into(),
+            json!({"type": "string", "description": SIMULATE_PARAM}),
+        );
+    }
+    schema
+}
+
+/// REQ: OBS-024 — `simulate_change`'s catalog entry: read-only, nothing is planned.
+fn simulate_change_entry() -> Value {
+    json!({
+        "name": "simulate_change",
+        "description": "Read-only. Nothing is planned or changed. What would a change have done to the queries already in the query log? Give kind (block_domain, allow_domain, add_list, assign_client, update_group), change (the same arguments as the matching plan_* tool, without reason), and window (\"24h\" default, at most \"7d\"). Every logged query in the window is decided again with and without the change; returns the differences: newly blocked, newly allowed, changed route, changed answer, with the top names (and the deciding list), devices, and groups. Busy (one simulation per node at a time): retry in a few seconds. Needs querylog:read and the write scope of that kind of change.",
+        "inputSchema": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": SIMULATE_KINDS},
+            "change": {"type": "object", "description": "The plan tool's arguments, e.g. {\"domain\": \"tiktok.com\", \"groups\": [\"kids\"]} for block_domain."},
+            "window": {"type": "string", "description": "How far back: 30m, 24h, 7d (default: the configured window, usually 24h)."}
+        }, "required": ["kind", "change"], "additionalProperties": false},
+        "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+    })
+}
+
+/// The catalog as `tools/list` returns it. Annotations state each tool's side effects
+/// (AGT-009): reads are read-only; plans change nothing until applied; `apply_plan` and the
+/// immediate operations do.
+pub fn catalog() -> Value {
+    let ann = |read_only: bool, destructive: bool, idempotent: bool| json!({"readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": false});
+    let mut out: Vec<Value> = tools()
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": (t.input_schema)(),
+                "annotations": ann(true, false, true),
+            })
+        })
+        .collect();
+    out.push(simulate_change_entry());
+    out.extend(write_tools().iter().map(|t| {
+        let schema = (t.input_schema)();
+        json!({
+            "name": t.name,
+            "description": t.description,
+            "inputSchema": if t.effect == Effect::Plan && !APPROVAL_ONLY.contains(&t.name) { with_simulate(schema) } else { schema },
+            // A plan stores a plan, nothing else; the change is apply_plan's.
+            "annotations": match t.effect {
+                Effect::Plan => ann(false, false, false),
+                Effect::Immediate => ann(false, t.destructive, false),
+            },
+        })
+    }));
+    out.extend(plan_tools().into_iter().map(|(name, description, schema, ro, de, idem)| {
+        json!({"name": name, "description": description, "inputSchema": schema, "annotations": ann(ro, de, idem)})
+    }));
+    Value::Array(out)
+}
+
+/// MCP sessions: the client software named at `initialize` (AGT-005 attribution).
+#[derive(Debug, Default)]
+pub struct Sessions(Mutex<HashMap<String, String>>);
+
+impl Sessions {
+    fn start(&self, client: String) -> String {
+        let id = crate::auth::crypto::random_id();
+        let mut m = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if m.len() > 1000 {
+            m.clear();
+        }
+        m.insert(id.clone(), client);
+        id
+    }
+    fn client(&self, id: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Mcp {
+    /// The REST routes, called in-process with the caller's credentials.
+    pub api: Router,
+    pub sessions: Arc<Sessions>,
+    /// Plans and the approval policy (AGT-007).
+    pub auth: Arc<crate::auth::Auth>,
+    /// REQ: AGT-005 — the client address of the request being served (`post` sets it), put
+    /// on every in-process REST call so lockouts and the audit log see the agent's address.
+    pub on_behalf_of: Option<std::net::IpAddr>,
+    /// REQ: API-003 (review 06-05) — the request being served came over HTTPS by the rules of
+    /// `is_https`; its in-process REST calls say so (and only then).
+    pub forwarded_https: bool,
+}
+
+/// Who called: their plans key and how the audit log names them.
+#[derive(Debug, Clone)]
+pub struct Caller {
+    pub owner: String,
+    pub name: String,
+}
+
+fn tool_error(text: impl Into<String>) -> Value {
+    json!({"isError": true, "content": [{"type": "text", "text": text.into()}]})
+}
+
+/// A tool result: the value as text and as structured content (when it fits).
+fn tool_result(v: Value, is_error: bool) -> Value {
+    let (text, truncated) = capped(&v);
+    let mut result = json!({"content": [{"type": "text", "text": text}], "isError": is_error});
+    if !truncated {
+        result["structuredContent"] = v;
+    }
+    result
+}
+
+fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+fn rpc_ok(id: &Value, result: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+/// REQ: AGT-009 (review 06-07) — takes `n − 1` more requests from an agent token's bucket
+/// for a batch of `n` messages (the request took one), so a batch can't multiply its rate.
+fn charge_batch(
+    auth: &crate::auth::Auth,
+    ext: &axum::http::Extensions,
+    n: usize,
+) -> Result<(), crate::problem::Problem> {
+    let Ok(p) = crate::auth::routes::principal(ext) else {
+        return Ok(());
+    };
+    let (Some(grant), crate::auth::Via::Token { id }) = (&p.agent, &p.via) else {
+        return Ok(());
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    for _ in 1..n {
+        if let Err(wait) = auth.agents().take(id, grant.rate_per_minute, now_ms) {
+            return Err(crate::problem::Problem::new(
+                crate::problem::Code::RateLimited,
+                format!("this agent token is over its request rate; try again in {wait} s"),
+            )
+            .retry_after(wait));
+        }
+    }
+    Ok(())
+}
+
+/// Caps a value at [`MAX_BYTES`] of JSON text (AGT-009).
+fn capped(v: &Value) -> (String, bool) {
+    let text = serde_json::to_string(v).unwrap_or_default();
+    if text.len() <= MAX_BYTES {
+        return (text, false);
+    }
+    let mut cut = MAX_BYTES;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (text[..cut].to_owned(), true)
+}
+
+/// REQ: AGT-011 (T7.3) — `missingNodes` for a tool result: the nodes that didn't answer any of
+/// its reads (empty when every node in scope did).
+fn add_missing_nodes(out: &mut serde_json::Map<String, Value>) {
+    let mut missing: Vec<String> = out
+        .values()
+        .filter_map(|v| v.get("missingNodes").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    missing.sort();
+    missing.dedup();
+    out.insert("missingNodes".into(), json!(missing));
+}
+
+/// `resources/list`.
+fn resource_list() -> Value {
+    json!({"resources": resources().iter().map(|r| json!({
+        "uri": r.uri, "name": r.name, "title": r.title, "description": r.description, "mimeType": "application/json",
+    })).collect::<Vec<_>>()})
+}
+
+/// `prompts/list`.
+fn prompt_list() -> Value {
+    json!({"prompts": prompts().iter().map(|p| json!({
+        "name": p.name, "title": p.title, "description": p.description,
+        "arguments": p.arguments.iter().map(|(n, d, r)| json!({"name": n, "description": d, "required": r})).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>()})
+}
+
+/// `prompts/get`: the prompt's message with its arguments filled in.
+fn get_prompt(id: &Value, msg: &Value) -> Value {
+    let p = msg.get("params").cloned().unwrap_or(Value::Null);
+    let name = p.get("name").and_then(Value::as_str).unwrap_or_default();
+    let args = p.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let Some(pr) = prompts().into_iter().find(|x| x.name == name) else {
+        return rpc_error(
+            id,
+            -32602,
+            &format!("prompt `{name}` not found; see prompts/list"),
+        );
+    };
+    match render_prompt(&pr, &args) {
+        Err(e) => rpc_error(id, -32602, &format!("{name}: {e}")),
+        Ok(text) => rpc_ok(
+            id,
+            &json!({
+                "description": pr.description,
+                "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+            }),
+        ),
+    }
+}
+
+impl Mcp {
+    /// One REST GET as the caller; the body (JSON or problem+json) and whether it succeeded.
+    async fn get(&self, path: &str, auth: &HeaderMap, client: Option<&str>) -> (bool, Value) {
+        let (status, body) = self.send("GET", path, None, auth, client, &[]).await;
+        (status.is_success(), body)
+    }
+
+    /// One REST request as the caller, with `extra` headers; the status and the body.
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        extra: &[(&str, String)],
+    ) -> (StatusCode, Value) {
+        self.send_as(method, path, body, auth, client, extra, false)
+            .await
+    }
+
+    /// [`Self::send`], for the replay of a content plan an operator approved when
+    /// `approved_content` is set: the request then carries the marker that lets an agent token's
+    /// content write through (REQ: FLT-901; a request extension, so no client can send it).
+    #[allow(clippy::too_many_arguments)] // `send` plus one flag
+    async fn send_as(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        extra: &[(&str, String)],
+        approved_content: bool,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder().method(method).uri(path);
+        if approved_content {
+            req = req.extension(crate::categories_api::ApprovedContentPlan);
+        }
+        for h in ["authorization", "cookie", "x-csrf-token", "x-forwarded-for"] {
+            if let Some(v) = auth.get(h) {
+                req = req.header(h, v);
+            }
+        }
+        if let Some(c) = client.and_then(|c| HeaderValue::from_str(c).ok()) {
+            req = req.header("x-wrendns-client", c);
+        }
+        for (k, v) in extra {
+            if let Ok(v) = HeaderValue::from_str(v) {
+                req = req.header(*k, v);
+            }
+        }
+        // REQ: AGT-005 — the in-process request has no peer; it acts for the agent's.
+        if self.forwarded_https {
+            req = req.header("x-forwarded-proto", "https");
+        }
+        if let Some(ip) = self.on_behalf_of {
+            req = req.extension(crate::auth::routes::OnBehalfOf(ip));
+        }
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b.to_string())),
+            None => req.body(Body::empty()),
+        };
+        let Ok(req) = req else {
+            return (
+                StatusCode::BAD_REQUEST,
+                json!({"detail": "bad request path"}),
+            );
+        };
+        let resp = match self.api.clone().oneshot(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"detail": e.to_string()}),
+                );
+            }
+        };
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
+            .await
+            .unwrap_or_default();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// Fills in what a write left out from the entry as it is now (`Write::merge`).
+    async fn merge(
+        &self,
+        w: &mut Write,
+        auth: &HeaderMap,
+        client: Option<&str>,
+    ) -> Result<(), String> {
+        let Some((kind, name)) = w.merge.clone() else {
+            return Ok(());
+        };
+        let Some(Value::Object(body)) = w.body.as_mut() else {
+            return Ok(());
+        };
+        if kind == "client" {
+            let (ok, list) = self.get("/api/v1/clients", auth, client).await;
+            if !ok {
+                return Err(format!("reading the devices failed: {list}"));
+            }
+            let found = list
+                .get("items")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items.iter().find(|d| {
+                        d.get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                            && d.get("source").and_then(Value::as_str) != Some("seen")
+                    })
+                });
+            match found {
+                Some(d) => {
+                    for k in ["match", "groups"] {
+                        if !body.contains_key(k)
+                            && let Some(v) = d.get(k)
+                        {
+                            body.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+                None if body.contains_key("name") => {
+                    return Err(format!(
+                        "no named device `{name}` (plan_assign_client names a new one)"
+                    ));
+                }
+                None if !body.contains_key("match") => {
+                    if name.parse::<std::net::IpAddr>().is_ok() {
+                        body.insert("match".into(), json!([name]));
+                    } else {
+                        return Err(format!(
+                            "`{name}` is a new device: give `match` (its IPs, MACs, or id:<client-id>)"
+                        ));
+                    }
+                }
+                None => {}
+            }
+            return Ok(());
+        }
+        let (ok, list) = self
+            .get(&format!("/api/v1/config/entries?kind={kind}"), auth, client)
+            .await;
+        if !ok {
+            return Err(format!(
+                "reading the current {kind} failed (needs config:read): {list}"
+            ));
+        }
+        let current = list
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|e| e.get("name").and_then(Value::as_str) == Some(name.as_str()))
+            });
+        if let Some(Value::Object(def)) = current.and_then(|e| e.get("definition")) {
+            for (k, v) in def {
+                if k != "name" && !body.contains_key(k) {
+                    body.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ: AGT-007 — a write tool: a plan (dry run, stored), or an immediate operation.
+    async fn call_write(
+        &self,
+        tool: &WriteTool,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        let Some(caller) = caller else {
+            return tool_error("sign in to use write tools");
+        };
+        let Some(reason) = s(args, "reason") else {
+            return tool_error(format!(
+                "{}: `reason` is required: say why (it goes into the audit log)",
+                tool.name
+            ));
+        };
+        let mut w = match (tool.write)(args) {
+            Ok(w) => w,
+            Err(e) => return tool_error(format!("{}: {e}", tool.name)),
+        };
+        // REQ: API-902 (ADR-956 §7) — no tool plans or makes a guarded change: the plan store
+        // refuses guarded paths, so `apply_plan` can't replay one.
+        if crate::guarded::is_guarded_path(&w.path) {
+            return tool_error(format!(
+                "{}: guarded settings are for people; no plan can change them",
+                tool.name
+            ));
+        }
+        if let Err(e) = self.merge(&mut w, auth, client).await {
+            return tool_error(format!("{}: {e}", tool.name));
+        }
+        let why = [("x-wrendns-reason", reason.clone())];
+        // REQ: CLU-013 — like cluster promotion, pins are for agents only where a person
+        // approves each plan (spec/13).
+        if APPROVAL_ONLY.contains(&tool.name) && !self.auth.agents().require_approval() {
+            return tool_error(format!(
+                "{}: pins change what every node serves, so agents may plan them only when an operator approves each plan ([agents] require_approval = true); ask an operator to pin or unpin on the Cluster page",
+                tool.name
+            ));
+        }
+        if tool.effect == Effect::Immediate {
+            let (status, body) = self
+                .send(w.method, &w.path, w.body.as_ref(), auth, client, &why)
+                .await;
+            return tool_result(
+                json!({"done": w.summary, "result": body}),
+                !status.is_success(),
+            );
+        }
+        let (status, preview, note) = self.plan_dry_run(&w, args, auth, client, &why).await;
+        if !status.is_success() {
+            return tool_result(json!({"error": preview, "planned": false}), true);
+        }
+        let Some(version) = preview.get("configVersion").and_then(Value::as_u64) else {
+            return tool_error(format!(
+                "{}: the dry run didn't report a config version",
+                tool.name
+            ));
+        };
+        // REQ: FLT-901 (ADR-994 item 8): a content plan is always `pending`: an operator approves
+        // it, whatever `[agents] require_approval` is (an exception to ADR-070).
+        let needs_approval = self.auth.agents().require_approval() || tool.name == CONTENT_PLAN;
+        let now = crate::plans::now();
+        let plan = self.auth.plans().add(crate::plans::Plan {
+            id: format!("plan_{}", crate::auth::crypto::random_id()),
+            tool: tool.name.to_owned(),
+            summary: w.summary,
+            method: w.method.to_owned(),
+            path: w.path,
+            body: w.body,
+            write_body: None,
+            preview,
+            config_version: version,
+            reason,
+            requested_by: caller.name.clone(),
+            owner: caller.owner.clone(),
+            created_unix_seconds: now,
+            expires_unix_seconds: now + crate::plans::TTL_SECS,
+            state: if needs_approval { "pending" } else { "ready" }.into(),
+            needs_approval,
+            decided_by: None,
+            result: None,
+        });
+        let next = if needs_approval {
+            "An operator has to approve this plan (Agent changes in the web UI) before apply_plan works. It expires in 10 minutes."
+        } else {
+            "Nothing has changed yet. Call apply_plan with the planId to make the change (within 10 minutes), or discard_plan."
+        };
+        let mut out = json!({"planId": plan.id, "state": plan.state, "summary": plan.summary, "preview": plan.preview, "expiresInSeconds": crate::plans::TTL_SECS, "next": next});
+        if let (Some(n), Some(o)) = (note, out.as_object_mut()) {
+            o.insert("note".into(), n.into());
+        }
+        tool_result(out, false)
+    }
+
+    /// A plan's dry run. REQ: OBS-024 — with `simulate` when asked, otherwise `auto` (only if
+    /// an operator turned on `plans_by_default`); a busy node gives the plan without the
+    /// estimate, and a note saying so.
+    async fn plan_dry_run(
+        &self,
+        w: &Write,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        why: &[(&str, String)],
+    ) -> (StatusCode, Value, Option<&'static str>) {
+        let sep = if w.path.contains('?') { '&' } else { '?' };
+        let simulate = s(args, "simulate").unwrap_or_else(|| "auto".to_owned());
+        let dry = format!("{}{sep}dryRun=true&simulate={}", w.path, enc(&simulate));
+        let (status, preview) = self
+            .send(w.method, &dry, w.body.as_ref(), auth, client, why)
+            .await;
+        if status == StatusCode::CONFLICT
+            && preview.get("code").and_then(Value::as_str) == Some("simulation_busy")
+        {
+            let plain = format!("{}{sep}dryRun=true", w.path);
+            let (status, preview) = self
+                .send(w.method, &plain, w.body.as_ref(), auth, client, why)
+                .await;
+            return (
+                status,
+                preview,
+                Some(
+                    "impact not estimated: the node was busy with another simulation (retry the plan with simulate to get it)",
+                ),
+            );
+        }
+        (status, preview, None)
+    }
+
+    /// REQ: OBS-024 (T13.1) — `simulate_change`: the matching plan tool's dry run with
+    /// `simulate`, and only its simulation. Nothing is stored or audited.
+    async fn call_simulate_change(
+        &self,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        if caller.is_none() {
+            return tool_error("sign in to simulate changes");
+        }
+        let kind = s(args, "kind").unwrap_or_default();
+        if !SIMULATE_KINDS.contains(&kind.as_str()) {
+            return tool_error(format!(
+                "simulate_change: `kind` must be one of {}",
+                SIMULATE_KINDS.join(", ")
+            ));
+        }
+        let name = format!("plan_{kind}");
+        let Some(tool) = write_tools().into_iter().find(|t| t.name == name) else {
+            return tool_error(format!("simulate_change: no tool {name}"));
+        };
+        let change = args.get("change").cloned().unwrap_or_else(|| json!({}));
+        let mut w = match (tool.write)(&change) {
+            Ok(w) => w,
+            Err(e) => return tool_error(format!("simulate_change ({kind}): {e}")),
+        };
+        if let Err(e) = self.merge(&mut w, auth, client).await {
+            return tool_error(format!("simulate_change ({kind}): {e}"));
+        }
+        let window = s(args, "window").unwrap_or_else(|| "true".to_owned());
+        let sep = if w.path.contains('?') { '&' } else { '?' };
+        let path = format!("{}{sep}dryRun=true&simulate={}", w.path, enc(&window));
+        // A dry run changes nothing; agents still say why on every PUT.
+        let why = [("x-wrendns-reason", "simulate_change (dry run)".to_owned())];
+        let (status, preview) = self
+            .send(w.method, &path, w.body.as_ref(), auth, client, &why)
+            .await;
+        if !status.is_success() {
+            return tool_result(json!({"error": preview}), true);
+        }
+        tool_result(
+            json!({"change": w.summary, "simulation": preview.get("simulation").cloned().unwrap_or(Value::Null)}),
+            false,
+        )
+    }
+
+    /// REQ: AGT-007 — `apply_plan`, `discard_plan`, `list_plans`.
+    async fn call_plan_tool(
+        &self,
+        name: &str,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        let Some(caller) = caller else {
+            return tool_error("sign in to use plans");
+        };
+        if name == "list_plans" {
+            let (ok, body) = self.get("/api/v1/plans", auth, client).await;
+            return tool_result(body, !ok);
+        }
+        let Some(id) = s(args, "planId") else {
+            return tool_error(format!("{name}: `planId` is required"));
+        };
+        let plans = self.auth.plans();
+        if name == "discard_plan" {
+            return match plans.transition(
+                &id,
+                &["pending", "ready", "approved"],
+                "discarded",
+                Some(&caller.owner),
+                None,
+            ) {
+                Ok(p) => tool_result(json!({"planId": p.id, "state": p.state}), false),
+                Err(e) => tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
+            };
+        }
+        // REQ: FLT-901 (ADR-994 item 8): a content plan no operator has approved is refused with
+        // 403 `agent_not_allowed`, whatever `require_approval` is.
+        if let Some(p) = plans.get(&id)
+            && p.tool == CONTENT_PLAN
+            && p.owner == caller.owner
+            && p.state == "pending"
+        {
+            let e = Problem::new(
+                Code::AgentNotAllowed,
+                "this content plan needs an operator's approval before it can be applied",
+            )
+            .hint("An operator approves it in the web UI (Agent changes); then apply_plan works until it expires.");
+            return tool_result(serde_json::to_value(&e).unwrap_or_default(), true);
+        }
+        let plan = match plans.transition(
+            &id,
+            &["ready", "approved"],
+            "applying",
+            Some(&caller.owner),
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => return tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
+        };
+        let approved_content = plan.tool == CONTENT_PLAN && plan.decided_by.is_some();
+        // REQ: API-902 — a plan for a guarded path is never replayed (none is ever stored).
+        if crate::guarded::is_guarded_path(&plan.path) {
+            plans.finish(
+                &id,
+                "failed",
+                json!({"error": "guarded settings are for people; a plan can't change them"}),
+            );
+            return tool_error("guarded settings are for people; a plan can't change them");
+        }
+        // The write as planned: refused (412) if the configuration changed since; the plan ID
+        // makes a retry return the first answer.
+        let extra = [
+            ("x-wrendns-reason", plan.reason.clone()),
+            ("if-match", format!("\"{}\"", plan.config_version)),
+            ("idempotency-key", plan.id.clone()),
+        ];
+        let (status, body) = self
+            .send_as(
+                &plan.method,
+                &plan.path,
+                // REQ: API-014 — the body as the agent gave it (`body` is shown redacted).
+                plan.write_body.as_ref(),
+                auth,
+                client,
+                &extra,
+                approved_content,
+            )
+            .await;
+        let state = if status.is_success() {
+            "applied"
+        } else if status == StatusCode::PRECONDITION_FAILED {
+            "stale"
+        } else {
+            "failed"
+        };
+        plans.finish(&id, state, body.clone());
+        let hint = match state {
+            "stale" => {
+                Some("The configuration changed since this plan was made: make the plan again.")
+            }
+            _ => None,
+        };
+        tool_result(
+            json!({"planId": id, "state": state, "summary": plan.summary, "result": body, "hint": hint}),
+            state != "applied",
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // the dispatch, then the read tools' shared path
+    async fn call_tool(
+        &self,
+        params: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if name == "simulate_change" {
+            return self.call_simulate_change(&args, auth, client, caller).await;
+        }
+        if let Some(w) = write_tools().into_iter().find(|t| t.name == name) {
+            return self.call_write(&w, &args, auth, client, caller).await;
+        }
+        if plan_tools().iter().any(|t| t.0 == name) {
+            return self.call_plan_tool(name, &args, auth, client, caller).await;
+        }
+        let Some(tool) = tools().into_iter().find(|t| t.name == name) else {
+            return json!({"isError": true, "content": [{"type": "text", "text": format!("unknown tool `{name}`; see tools/list")}]});
+        };
+        let calls = match (tool.calls)(&args) {
+            Ok(c) => c,
+            Err(e) => {
+                return json!({"isError": true, "content": [{"type": "text", "text": format!("{name}: {e}")}]});
+            }
+        };
+        let mut out = serde_json::Map::new();
+        let mut all_failed = true;
+        for (key, path) in calls {
+            let (ok, body) = self.get(&path, auth, client).await;
+            if ok {
+                all_failed = false;
+                out.insert(key, body);
+            } else {
+                out.insert(key, json!({"error": body}));
+            }
+        }
+        // REQ: FLT-017 — a workload's profile: the workload out of the list.
+        if name == "get_workload"
+            && let Some(c) = s(&args, "name")
+        {
+            let found = out
+                .get("workloads")
+                .and_then(|w| w.get("items"))
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|w| {
+                            w.get("name").and_then(Value::as_str) == Some(c.as_str())
+                                || w.get("key").and_then(Value::as_str) == Some(c.as_str())
+                        })
+                        .cloned()
+                });
+            out.remove("workloads");
+            out.insert("workload".into(), found.unwrap_or(Value::Null));
+        }
+        // The device profile picks the device out of the list.
+        if (name == "get_client_profile" || name == "get_workload")
+            && let Some(c) = s(&args, "client").or_else(|| s(&args, "name"))
+            && let Some(Value::Array(items)) =
+                out.get("devices").and_then(|d| d.get("items")).cloned()
+        {
+            let found = items.into_iter().find(|d| {
+                d.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|n| n.eq_ignore_ascii_case(&c))
+                    || d.get("match")
+                        .and_then(Value::as_array)
+                        .is_some_and(|m| m.iter().any(|x| x.as_str() == Some(c.as_str())))
+            });
+            out.remove("devices");
+            // The query log filters by address: the IP given, or the device's first one; a
+            // Kubernetes workload (`ns/kind/name`) by its name (FLT-017).
+            let ip = if c.parse::<std::net::IpAddr>().is_ok() || c.split('/').count() == 3 {
+                Some(c.clone())
+            } else {
+                found
+                    .as_ref()
+                    .and_then(|d| d.get("match"))
+                    .and_then(Value::as_array)
+                    .and_then(|m| {
+                        m.iter()
+                            .filter_map(Value::as_str)
+                            // An address, or a single-host network (`/32`, `/128`).
+                            .map(|x| x.trim_end_matches("/32").trim_end_matches("/128"))
+                            .find(|x| x.parse::<std::net::IpAddr>().is_ok())
+                            .map(str::to_owned)
+                    })
+            };
+            out.insert("device".into(), found.unwrap_or(Value::Null));
+            // REQ: OBS-025 — what it looks like.
+            let (ok, body) = self
+                .get(
+                    &format!("/api/v1/clients/{}/identity", enc(&c)),
+                    auth,
+                    client,
+                )
+                .await;
+            out.insert(
+                "identity".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
+            // REQ: OBS-031 — the dominant period and share per domain, without the bins.
+            let (ok, body) = self
+                .get(
+                    &format!("/api/v1/clients/{}/rhythm?bins=false", enc(&c)),
+                    auth,
+                    client,
+                )
+                .await;
+            out.insert(
+                "rhythm".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
+            // REQ: FLT-006, API-010 (T24.30) — the group and key it matched, and what applies.
+            let (ok, body) = self
+                .get(&format!("/api/v1/clients/{}/policy", enc(&c)), auth, client)
+                .await;
+            out.insert(
+                "policy".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
+            if let Some(ip) = ip {
+                let from = s(&args, "window").unwrap_or_else(|| "-24h".into());
+                for (key, extra) in [
+                    ("recentQueries", "&limit=50"),
+                    ("slowQueries", "&minLatencyMs=200&limit=20"),
+                ] {
+                    let path = format!(
+                        "/api/v1/queries?client={}&from={}{extra}{}",
+                        enc(&ip),
+                        enc(&from),
+                        scope_q(&args)
+                    );
+                    let (ok, body) = self.get(&path, auth, client).await;
+                    out.insert(key.into(), if ok { body } else { json!({"error": body}) });
+                }
+            } else {
+                out.insert(
+                    "recentQueries".into(),
+                    json!({"error": "no IP address known for this device"}),
+                );
+            }
+        }
+        // REQ: OBS-033 — the overview's changes: how many, and the latest three.
+        if name == "get_overview"
+            && let Some(page) = out.get("changes").cloned()
+        {
+            out.insert("changes".into(), changes_digest(&page));
+        }
+        add_missing_nodes(&mut out);
+        let structured = Value::Object(out);
+        let (text, truncated) = capped(&structured);
+        let mut content = vec![json!({"type": "text", "text": text})];
+        if truncated {
+            content.push(json!({"type": "text", "text": format!("(truncated at {} KiB: narrow the filters or page with `cursor`/`limit`)", MAX_BYTES / 1024)}));
+        }
+        let mut result = json!({"content": content, "isError": all_failed});
+        if !truncated {
+            result["structuredContent"] = structured;
+        }
+        result
+    }
+
+    /// `resources/read`: the resource's REST reads, as the caller, in one JSON document.
+    async fn read_resource(
+        &self,
+        id: &Value,
+        msg: &Value,
+        headers: &HeaderMap,
+        client: Option<&str>,
+    ) -> Value {
+        let uri = msg
+            .get("params")
+            .and_then(|p| p.get("uri"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(r) = resources().into_iter().find(|r| r.uri == uri) else {
+            return rpc_error(
+                id,
+                -32002,
+                &format!("resource `{uri}` not found; see resources/list"),
+            );
+        };
+        let mut doc = serde_json::Map::new();
+        for (key, path) in r.reads {
+            let (ok, body) = self.get(path, headers, client).await;
+            doc.insert(
+                (*key).to_owned(),
+                if ok { body } else { json!({"error": body}) },
+            );
+        }
+        let (text, truncated) = capped(&Value::Object(doc));
+        let mut contents =
+            vec![json!({"uri": r.uri, "mimeType": "application/json", "text": text})];
+        // REQ: AGT-009 (review 06-07) — a cut document says so, as tool results do.
+        if truncated {
+            contents.push(json!({"uri": r.uri, "mimeType": "text/plain", "text": format!("(truncated at {} KiB: the JSON above is incomplete; use the tools for narrower reads)", MAX_BYTES / 1024)}));
+        }
+        rpc_ok(id, &json!({"contents": contents}))
+    }
+
+    /// One JSON-RPC message; `None` for notifications.
+    pub async fn handle(
+        &self,
+        msg: &Value,
+        headers: &HeaderMap,
+        session: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> (Option<Value>, Option<String>) {
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        let method = msg
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let is_notification = msg.get("id").is_none();
+        let client = session.and_then(|s| self.sessions.client(s));
+        let reply = match method {
+            "initialize" => {
+                let p = msg.get("params").cloned().unwrap_or(Value::Null);
+                let asked = p
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(PROTOCOL_VERSION);
+                let version = if SUPPORTED.contains(&asked) {
+                    asked
+                } else {
+                    PROTOCOL_VERSION
+                };
+                let info = p.get("clientInfo").cloned().unwrap_or(Value::Null);
+                let who = format!(
+                    "{}/{}",
+                    info.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("mcp-client"),
+                    info.get("version").and_then(Value::as_str).unwrap_or("?")
+                )
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(100)
+                .collect::<String>();
+                let sid = self.sessions.start(who);
+                let result = json!({
+                    "protocolVersion": version,
+                    "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}, "prompts": {"listChanged": false}},
+                    "serverInfo": {"name": "wrendns", "title": "WrenDNS", "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": "WrenDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, refresh_lists, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
+                });
+                return (Some(rpc_ok(&id, &result)), Some(sid));
+            }
+            "ping" => Some(rpc_ok(&id, &json!({}))),
+            "tools/list" => Some(rpc_ok(&id, &json!({"tools": catalog()}))),
+            // REQ: AGT-010 (T7.2) — resources and prompts.
+            "resources/list" => Some(rpc_ok(&id, &resource_list())),
+            "resources/templates/list" => Some(rpc_ok(&id, &json!({"resourceTemplates": []}))),
+            "resources/read" => Some(
+                self.read_resource(&id, msg, headers, client.as_deref())
+                    .await,
+            ),
+            "prompts/list" => Some(rpc_ok(&id, &prompt_list())),
+            "prompts/get" => Some(get_prompt(&id, msg)),
+            "tools/call" => {
+                let params = msg.get("params").cloned().unwrap_or(Value::Null);
+                Some(rpc_ok(
+                    &id,
+                    &self
+                        .call_tool(&params, headers, client.as_deref(), caller)
+                        .await,
+                ))
+            }
+            m if m.starts_with("notifications/") => None,
+            _ if is_notification => None,
+            other => Some(rpc_error(
+                &id,
+                -32601,
+                &format!("method `{other}` not found"),
+            )),
+        };
+        (reply, None)
+    }
+}
+
+/// `POST /mcp`: one JSON-RPC message (or a batch) in, JSON out (Streamable HTTP, no SSE).
+pub async fn post(
+    State(mcp): State<Mcp>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    body: axum::body::Bytes,
+) -> Response {
+    // REQ: AGT-005 — every REST call made for this request carries its client address.
+    let ip = crate::auth::routes::remote(&mcp.auth, &ext, &headers);
+    let mcp = Mcp {
+        on_behalf_of: Some(ip),
+        forwarded_https: crate::auth::routes::is_https(&mcp.auth, &ext, &headers),
+        ..mcp
+    };
+    // The caller, for plans (AGT-007): the session or token, and its audit name.
+    let caller = crate::auth::routes::principal(&ext).ok().map(|p| Caller {
+        owner: crate::plans::owner_key(&p),
+        name: mcp.auth.actor(&p, ip, None).name,
+    });
+    let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
+        let e = rpc_error(&Value::Null, -32700, "parse error: the body isn't JSON");
+        return (StatusCode::BAD_REQUEST, axum::Json(e)).into_response();
+    };
+    let session = headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let mut new_session = None;
+    let reply = if let Value::Array(batch) = &msg {
+        // REQ: AGT-009 — one request can't queue up an unbounded amount of work.
+        if batch.len() > MAX_BATCH {
+            let e = rpc_error(
+                &Value::Null,
+                -32600,
+                &format!("at most {MAX_BATCH} messages in a batch"),
+            );
+            return (StatusCode::BAD_REQUEST, axum::Json(e)).into_response();
+        }
+        // REQ: AGT-009 — each message counts against an agent's rate, as its own request
+        // would (the request itself took one).
+        if let Err(p) = charge_batch(&mcp.auth, &ext, batch.len()) {
+            return p.into_response();
+        }
+        let mut out = Vec::new();
+        for m in batch {
+            let (r, sid) = mcp
+                .handle(m, &headers, session.as_deref(), caller.as_ref())
+                .await;
+            new_session = new_session.or(sid);
+            out.extend(r);
+        }
+        (!out.is_empty()).then_some(Value::Array(out))
+    } else {
+        let (r, sid) = mcp
+            .handle(&msg, &headers, session.as_deref(), caller.as_ref())
+            .await;
+        new_session = sid;
+        r
+    };
+    let mut resp = match reply {
+        Some(v) => axum::Json(v).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    };
+    if let Some(sid) = new_session.and_then(|s| HeaderValue::from_str(&s).ok()) {
+        resp.headers_mut().insert("mcp-session-id", sid);
+    }
+    resp
+}
+
+/// `GET /mcp`: no server-initiated stream (every answer comes with its request).
+pub async fn get() -> Response {
+    (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // REQ: AGT-006 — the committed catalog is what the server lists (names, descriptions, and
+    // schemas are a contract with agents).
+    #[test]
+    fn agt_006_committed_tool_catalog_matches() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/mcp-tools.json");
+        let now = serde_json::to_string_pretty(&catalog()).unwrap() + "\n";
+        if std::env::var_os("UPDATE_MCP").is_some() {
+            std::fs::write(&path, &now).unwrap();
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == now,
+            "docs/api/mcp-tools.json is out of date: run UPDATE_MCP=1 cargo test -p wrendns-api agt_006_committed"
+        );
+    }
+
+    // AGT-009 — every tool states its side effects (description and annotations agree);
+    // results are capped.
+    #[test]
+    fn agt_009_tools_state_side_effects_and_results_are_capped() {
+        for t in catalog().as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let d = t["description"].as_str().unwrap();
+            let ro = t["annotations"]["readOnlyHint"].as_bool().unwrap();
+            assert_eq!(d.starts_with("Read-only."), ro, "{name}");
+            if name.starts_with("plan_") {
+                assert!(
+                    d.starts_with("Plans a change (nothing changes until apply_plan)."),
+                    "{name}"
+                );
+                assert!(
+                    t["inputSchema"]["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("reason")),
+                    "{name}"
+                );
+            }
+            assert_eq!(t["inputSchema"]["type"], "object", "{name}");
+        }
+        let big = json!({"items": vec!["x".repeat(100); 1000]});
+        let (text, cut) = capped(&big);
+        assert!(cut && text.len() <= MAX_BYTES);
+        assert!(!capped(&json!({"a": 1})).1);
+    }
+
+    #[test]
+    fn agt_006_tool_arguments_become_rest_queries() {
+        let t = tools();
+        let find = |n: &str| t.iter().find(|x| x.name == n).unwrap();
+        let q =
+            (find("search_queries").calls)(&json!({"client": "tv room", "limit": 999})).unwrap();
+        assert_eq!(q[0].1, "/api/v1/queries?client=tv%20room&limit=200");
+        assert!((find("top_items").calls)(&json!({})).is_err());
+        assert!((find("get_config").calls)(&json!({"section": "users"})).is_err());
+        // AGT-011 — scope passes through to every analytics read.
+        for (tool, args) in [
+            ("get_overview", json!({"scope": "site:home pi"})),
+            (
+                "top_items",
+                json!({"kind": "domains", "scope": "site:home pi"}),
+            ),
+            ("search_queries", json!({"scope": "site:home pi"})),
+            (
+                "latency_breakdown",
+                json!({"by": "stage", "scope": "site:home pi"}),
+            ),
+        ] {
+            let q = (find(tool).calls)(&args).unwrap();
+            assert!(
+                q[0].1.contains("scope=site:home%20pi"),
+                "{tool}: {}",
+                q[0].1
+            );
+            assert!(
+                (find(tool).input_schema)()["properties"]["scope"].is_object(),
+                "{tool}"
+            );
+        }
+    }
+
+    // AGT-010 — prompts name real tools, and fill in their arguments.
+    #[test]
+    fn agt_010_prompts_and_resources() {
+        let names: Vec<String> = catalog()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
+        for p in prompts() {
+            // Every word that looks like a tool name is one.
+            for w in p
+                .text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            {
+                if w.contains('_')
+                    && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                    && !w.starts_with('_')
+                {
+                    assert!(
+                        names.contains(&w.to_owned()) || w == "plan_",
+                        "{}: unknown tool {w}",
+                        p.name
+                    );
+                }
+            }
+        }
+        let inv = prompts()
+            .into_iter()
+            .find(|p| p.name == "investigate_device")
+            .unwrap();
+        let t = render_prompt(&inv, &json!({"client": "tv"})).unwrap();
+        assert!(
+            t.contains("\"tv\"") && t.contains("-24h") && !t.contains('{'),
+            "{t}"
+        );
+        assert!(render_prompt(&inv, &json!({})).is_err());
+        for r in resources() {
+            assert!(r.uri.starts_with("wrendns://"));
+            for (_, path) in r.reads {
+                assert!(path.starts_with("/api/v1/"), "{path}");
+            }
+        }
+    }
+
+    // AGT-007 — write tools become REST writes.
+    #[test]
+    fn agt_007_write_tools_become_rest_writes() {
+        let t = write_tools();
+        let find = |n: &str| t.iter().find(|x| x.name == n).unwrap();
+        let w = (find("plan_block_domain").write)(
+            &json!({"domain": "Ads.Example.", "groups": ["kids"], "forMinutes": 60, "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (w.method, w.path.as_str()),
+            ("PUT", "/api/v1/rules/agent-block-ads-example")
+        );
+        assert_eq!(w.body.as_ref().unwrap()["action"], "block");
+        assert_eq!(w.body.as_ref().unwrap()["groups"], json!(["kids"]));
+        assert!(
+            w.summary.contains("for kids for 60 minutes"),
+            "{}",
+            w.summary
+        );
+        assert!((find("plan_add_list").write)(&json!({"name": "x"})).is_err());
+        let g =
+            (find("plan_update_group").write)(&json!({"name": "kids", "blockMode": "nxdomain"}))
+                .unwrap();
+        assert_eq!(g.body.unwrap()["block_mode"], "nxdomain");
+        assert_eq!(g.merge, Some(("group", "kids".to_owned())));
+        assert!((find("pause_blocking").write)(&json!({})).is_err());
+        // REQ: FLT-004 — refresh_lists: every list by default, some by name, or a dry run.
+        let r = (find("refresh_lists").write)(&json!({"reason": "r"})).unwrap();
+        assert_eq!(
+            (r.method, r.path.as_str()),
+            ("POST", "/api/v1/lists/refresh")
+        );
+        assert_eq!(r.body, Some(json!({})));
+        let r = (find("refresh_lists").write)(
+            &json!({"names": ["hagezi"], "dryRun": true, "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(r.path, "/api/v1/lists/refresh?dryRun=true");
+        assert_eq!(r.body, Some(json!({"names": ["hagezi"]})));
+        assert!(r.summary.contains("hagezi"), "{}", r.summary);
+        assert_eq!(find("refresh_lists").effect, Effect::Immediate);
+    }
+}
+
+#[cfg(test)]
+mod flt_017_tests {
+    use super::*;
+
+    // REQ: FLT-017 — assigning a workload plans a map rule for exactly it; a device stays a
+    // device.
+    #[test]
+    fn flt_017_assigning_a_workload_plans_a_map_rule() {
+        let t = write_tools()
+            .into_iter()
+            .find(|t| t.name == "plan_assign_client")
+            .unwrap();
+        let w = (t.write)(
+            &json!({"client": "media/deploy/jellyfin", "groups": ["iot", "x"], "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(w.path, "/api/v1/kubernetes/map/media/deploy/jellyfin");
+        assert_eq!(w.body, Some(json!({"group": "iot"})));
+        let w = (t.write)(&json!({"client": "tv", "groups": ["iot"], "reason": "r"})).unwrap();
+        assert_eq!(w.path, "/api/v1/clients/tv");
+        assert!(tools().iter().any(|t| t.name == "list_workloads"));
+        assert!(tools().iter().any(|t| t.name == "get_workload"));
+    }
+}
+
+#[cfg(test)]
+mod clu_014_tests {
+    use super::*;
+
+    // REQ: CLU-014 (T15.2) — a drill is a plan (destructive: devices without a second server
+    // lose DNS for its length) that POSTs the drill; everyone by default, a group, or devices;
+    // drill_report lists the newest or reads one.
+    #[test]
+    fn clu_014_drill_tools() {
+        let t = write_tools()
+            .into_iter()
+            .find(|t| t.name == "plan_failover_drill")
+            .unwrap();
+        assert!(matches!(t.effect, Effect::Plan) && t.destructive);
+        let w = (t.write)(&json!({"reason": "second server?"})).unwrap();
+        assert_eq!(
+            (w.method, w.path.as_str()),
+            ("POST", "/api/v1/nodes/local/drill")
+        );
+        assert_eq!(
+            w.body,
+            Some(json!({"forSecs": 60, "targets": "all", "reason": "second server?"}))
+        );
+        let w = (t.write)(&json!({"node": "pi", "group": "iot", "forSecs": 30, "reason": "r"}))
+            .unwrap();
+        assert_eq!(w.path, "/api/v1/nodes/pi/drill");
+        assert_eq!(w.body.unwrap()["targets"], json!({"group": "iot"}));
+        assert!((t.write)(&json!({"group": "iot", "clients": ["tv"], "reason": "r"})).is_err());
+        assert!((t.write)(&json!({})).is_err(), "a reason is required");
+        let r = tools()
+            .into_iter()
+            .find(|t| t.name == "drill_report")
+            .unwrap();
+        assert_eq!(
+            (r.calls)(&json!({})).unwrap()[0].1,
+            "/api/v1/drills?limit=5"
+        );
+        assert_eq!(
+            (r.calls)(&json!({"id": "d1-ab"})).unwrap()[0].1,
+            "/api/v1/drills/d1-ab"
+        );
+    }
+}

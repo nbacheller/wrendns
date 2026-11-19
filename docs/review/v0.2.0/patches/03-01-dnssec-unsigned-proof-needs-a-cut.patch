@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-upstream/src/dnssec.rs b/crates/telltale-upstream/src/dnssec.rs
+diff --git a/crates/wrendns-upstream/src/dnssec.rs b/crates/wrendns-upstream/src/dnssec.rs
 index 7253705..8c2a94c 100644
---- a/crates/telltale-upstream/src/dnssec.rs
-+++ b/crates/telltale-upstream/src/dnssec.rs
+--- a/crates/wrendns-upstream/src/dnssec.rs
++++ b/crates/wrendns-upstream/src/dnssec.rs
 @@ -28,11 +28,12 @@ use std::time::Duration;
  use futures_util::StreamExt as _;
  use futures_util::stream::{self, Stream};
@@ -162,10 +162,10 @@ index 7253705..8c2a94c 100644
      /// REQ: DNS-011 (ADR-098) — the depth limit is indeterminate; other errors stay bogus.
      #[test]
      fn dns_011_depth_limit_is_indeterminate() {
-diff --git a/crates/telltale-upstream/tests/dnssec_offline.rs b/crates/telltale-upstream/tests/dnssec_offline.rs
+diff --git a/crates/wrendns-upstream/tests/dnssec_offline.rs b/crates/wrendns-upstream/tests/dnssec_offline.rs
 index 164056d..068bb99 100644
---- a/crates/telltale-upstream/tests/dnssec_offline.rs
-+++ b/crates/telltale-upstream/tests/dnssec_offline.rs
+--- a/crates/wrendns-upstream/tests/dnssec_offline.rs
++++ b/crates/wrendns-upstream/tests/dnssec_offline.rs
 @@ -9,7 +9,7 @@
  
  use std::collections::BTreeMap;

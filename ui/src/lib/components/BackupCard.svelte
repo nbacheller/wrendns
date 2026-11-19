@@ -117,7 +117,7 @@
   <h2>Backup<HelpButton id="backup" /></h2>
   <p>
     One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
-    statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
+    statistics history. Restore it on a new machine with <code>wrendns backup restore FILE</code>.
   </p>
 
   <label class="check">
@@ -142,7 +142,7 @@
   {/if}
   <label class="check">
     <input type="checkbox" bind:checked={includeQlog} data-testid="backup-qlog" />
-    Include the query history (can be large; over 256 MiB, run <code>telltale backup create --include-qlog</code> on the server) <HelpButton id="backup-query-history" />
+    Include the query history (can be large; over 256 MiB, run <code>wrendns backup create --include-qlog</code> on the server) <HelpButton id="backup-query-history" />
   </label>
 
   {#if reauth}
@@ -166,7 +166,7 @@
       </div>
       <div class="muted small">
         Signed in with a single sign-on provider? Sign out, sign in again, and retry. API tokens can't do this:
-        run <code>telltale backup create --secrets-passphrase-file FILE</code> on the node.
+        run <code>wrendns backup create --secrets-passphrase-file FILE</code> on the node.
       </div>
     </div>
   {:else}

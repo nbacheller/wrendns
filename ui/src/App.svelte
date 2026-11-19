@@ -107,26 +107,32 @@
   let menuOpen = $state(false);
   let info = $state<S['SystemInfo'] | null>(null);
 
-  // Theme: follows the system unless chosen; the choice is kept in this browser.
-  function stored(): string | null {
+  // Theme (brand: Day and Night): follows the system unless chosen; the choice is kept per viewer,
+  // in this browser (`wrendns.theme`; `theme` is what earlier builds stored).
+  const THEMES = ['auto', 'light', 'dark'] as const;
+  type Theme = (typeof THEMES)[number];
+  const THEME_NAME: Record<Theme, string> = { auto: 'System', light: 'Day', dark: 'Night' };
+  function stored(): Theme | null {
     try {
-      return localStorage.getItem('theme');
+      const v = localStorage.getItem('wrendns.theme') ?? localStorage.getItem('theme');
+      return THEMES.find((t) => t === v && t !== 'auto') ?? null;
     } catch {
       return null;
     }
   }
-  let theme = $state(stored() ?? 'auto');
+  let theme = $state<Theme>(stored() ?? 'auto');
   $effect(() => {
     if (theme === 'auto') delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = theme;
     try {
-      if (theme === 'auto') localStorage.removeItem('theme');
-      else localStorage.setItem('theme', theme);
+      localStorage.removeItem('theme');
+      if (theme === 'auto') localStorage.removeItem('wrendns.theme');
+      else localStorage.setItem('wrendns.theme', theme);
     } catch {
       // Private mode: the choice lasts for this page only.
     }
   });
-  const nextTheme = $derived(theme === 'auto' ? 'dark' : theme === 'dark' ? 'light' : 'auto');
+  const nextTheme = $derived<Theme>(theme === 'auto' ? 'dark' : theme === 'dark' ? 'light' : 'auto');
 
   void refreshSession();
 
@@ -143,10 +149,10 @@
       // once when maintenance starts or ends (OPS-010).
       const stop = poll(() => api.info().then((i) => (info = i)), 60_000);
       const changed = () => void api.info().then((i) => (info = i)).catch(() => {});
-      window.addEventListener('telltale:maintenance-changed', changed);
+      window.addEventListener('wrendns:maintenance-changed', changed);
       return () => {
         stop();
-        window.removeEventListener('telltale:maintenance-changed', changed);
+        window.removeEventListener('wrendns:maintenance-changed', changed);
       };
     }
   });
@@ -168,10 +174,10 @@
       const stop = poll(loadBadges, 60_000);
       // The Anomalies page says when someone acknowledged a finding.
       const changed = () => void loadBadges();
-      window.addEventListener('telltale:anomalies-changed', changed);
+      window.addEventListener('wrendns:anomalies-changed', changed);
       return () => {
         stop();
-        window.removeEventListener('telltale:anomalies-changed', changed);
+        window.removeEventListener('wrendns:anomalies-changed', changed);
       };
     }
   });
@@ -201,7 +207,7 @@
   <p class="empty">Loading…</p>
 {:else if session.error && !session.user}
   <main class="center">
-    <div class="notice bad">Can't reach TelltaleDNS: {session.error}</div>
+    <div class="notice bad">Can't reach WrenDNS: {session.error}</div>
     <button onclick={refreshSession}>Retry</button>
   </main>
 {:else if route.path === '/display'}
@@ -224,7 +230,7 @@
       <button type="button" class="scrim" aria-label="Close the menu" data-testid="menu-scrim" onclick={closeMenu}></button>
     {/if}
     <nav class="side" aria-label="Main">
-      <a class="brand" href="#/" onclick={closeMenu}><Logo /> <span>TelltaleDNS</span></a>
+      <a class="brand" href="#/" onclick={closeMenu} aria-label="WrenDNS, home"><span class="full"><Logo /></span><span class="mini"><Logo variant="mark" /></span></a>
       {#each sections as sec (sec)}
         <div class="section">{sec}</div>
         {#each pages.filter((p) => p.section === sec) as p (p.path)}
@@ -247,10 +253,10 @@
         <!-- REQ: OBS-015 — health first: status, set apart from the links out. -->
         <HealthIcon />
         <span class="links-gap" aria-hidden="true"></span>
-        <a href="https://github.com/paimonsoror/telltaledns" target="_blank" rel="noreferrer" aria-label="TelltaleDNS on GitHub" title="TelltaleDNS on GitHub">
+        <a href="https://github.com/nbacheller/telltaledns" target="_blank" rel="noreferrer" aria-label="WrenDNS on GitHub" title="WrenDNS on GitHub">
           <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
         </a>
-        <a href="https://paimonsoror.github.io/telltaledns/" target="_blank" rel="noreferrer" aria-label="Project site and guides" title="Project site and guides">
+        <a href="https://wrendns.com/" target="_blank" rel="noreferrer" aria-label="Project site and guides" title="Project site and guides">
           <Icon name="book" size={18} />
         </a>
       </div>
@@ -295,7 +301,14 @@
           ><Icon name="wall" /></button
         >
       {/if}
-      <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
+      <button
+        class="icon-btn"
+        data-testid="theme-toggle"
+        data-theme-choice={theme}
+        onclick={() => (theme = nextTheme)}
+        title={`Theme: ${THEME_NAME[theme]} (click for ${THEME_NAME[nextTheme]})`}
+        aria-label={`Theme: ${THEME_NAME[theme]}`}
+      >
         <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />
       </button>
       <span class="who">
@@ -315,7 +328,7 @@
           {m.sharePercent}% of the last {m.queries} queries came from {m.sources.join(', ')}, which look like
           infrastructure (a Kubernetes node, a Docker bridge, or a router forwarding DNS) rather than devices.
           Per-device statistics and rules see those addresses instead of your devices.
-          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a><HelpButton id="masked-clients" />
+          <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a><HelpButton id="masked-clients" />
         </div>
       {/if}
       {#if info?.maintenance && current.path !== '/cluster'}
@@ -340,7 +353,7 @@
     grid-template-areas: 'side top' 'side content';
     min-height: 100vh;
   }
-  /* Sidebar: dark, sectioned, filled pill for the current page. */
+  /* Sidebar: light (surface-raised), sectioned; the current page is sky-soft with sky-strong text. */
   .side {
     grid-area: side;
     display: flex;
@@ -349,6 +362,7 @@
     padding: 16px 12px;
     background: var(--side-bg);
     color: var(--side-text);
+    border-right: 1px solid var(--border);
     position: sticky;
     top: 0;
     height: 100vh;
@@ -359,9 +373,10 @@
     align-items: center;
     gap: 10px;
     padding: 4px 10px 14px;
-    color: #f2f6fa;
-    font-weight: 700;
-    font-size: 15px;
+    color: var(--text);
+  }
+  .brand .mini {
+    display: none;
   }
   .brand:hover {
     text-decoration: none;
@@ -387,8 +402,8 @@
     text-decoration: none;
   }
   .nav[aria-current='page'] {
-    background: var(--accent-strong);
-    color: var(--accent-text);
+    background: var(--nav-current-bg);
+    color: var(--nav-current-text);
     font-weight: 600;
   }
   .nav {
@@ -399,15 +414,17 @@
     min-width: 20px;
     padding: 0 6px;
     border-radius: 999px;
-    background: var(--warn);
-    color: #1b1300;
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px solid var(--warn);
     font-size: 11px;
     line-height: 18px;
     text-align: center;
   }
   .count.alert {
-    background: var(--bad);
-    color: var(--on-bad);
+    background: var(--bad-soft);
+    color: var(--bad);
+    border-color: var(--bad);
   }
   .project-links {
     display: flex;
@@ -486,8 +503,9 @@
     justify-self: start;
     padding: 0 8px;
     border-radius: 999px;
-    background: var(--warn);
-    color: #1b1300;
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px solid var(--warn);
     font-weight: 600;
   }
   /* Top bar: light, borderless. */
@@ -594,7 +612,12 @@
     .layout {
       grid-template-columns: 72px minmax(0, 1fr);
     }
-    .brand span,
+    .brand .full {
+      display: none;
+    }
+    .brand .mini {
+      display: inline-flex;
+    }
     .nav span,
     .count,
     .section,

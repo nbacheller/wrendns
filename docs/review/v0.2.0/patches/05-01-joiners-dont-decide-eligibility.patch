@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-cluster/src/net.rs b/crates/telltale-cluster/src/net.rs
+diff --git a/crates/wrendns-cluster/src/net.rs b/crates/wrendns-cluster/src/net.rs
 index 32a0f9a..6146e2a 100644
---- a/crates/telltale-cluster/src/net.rs
-+++ b/crates/telltale-cluster/src/net.rs
+--- a/crates/wrendns-cluster/src/net.rs
++++ b/crates/wrendns-cluster/src/net.rs
 @@ -604,7 +604,10 @@ impl Cluster {
          let rec = crate::node::NodeRecord {
              node_id: m.node_id.clone(),
@@ -14,10 +14,10 @@ index 32a0f9a..6146e2a 100644
              advertise: m.advertise.clone(),
              joined: known.map_or_else(|| now_ms() / 1000, |n| n.joined),
              // Set at join (ADR-056, CLU-009); Hello doesn't carry them.
-diff --git a/crates/telltale-cluster/src/net_tests.rs b/crates/telltale-cluster/src/net_tests.rs
+diff --git a/crates/wrendns-cluster/src/net_tests.rs b/crates/wrendns-cluster/src/net_tests.rs
 index 007e1bd..5053ed2 100644
---- a/crates/telltale-cluster/src/net_tests.rs
-+++ b/crates/telltale-cluster/src/net_tests.rs
+--- a/crates/wrendns-cluster/src/net_tests.rs
++++ b/crates/wrendns-cluster/src/net_tests.rs
 @@ -690,3 +690,79 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
      let _ = pod_stop_tx.send(true);
      let _ = stop_tx.send(true);
@@ -98,10 +98,10 @@ index 007e1bd..5053ed2 100644
 +    assert!(record(&resp2.node_id).eligible && !record(&resp2.node_id).ephemeral);
 +    assert!(primary.key_share_for(&resp2.node_id).is_some());
 +}
-diff --git a/crates/telltale-cluster/src/node.rs b/crates/telltale-cluster/src/node.rs
+diff --git a/crates/wrendns-cluster/src/node.rs b/crates/wrendns-cluster/src/node.rs
 index 47819fe..ccb063c 100644
---- a/crates/telltale-cluster/src/node.rs
-+++ b/crates/telltale-cluster/src/node.rs
+--- a/crates/wrendns-cluster/src/node.rs
++++ b/crates/wrendns-cluster/src/node.rs
 @@ -592,15 +592,21 @@ impl Identity {
              .unwrap_or_default();
          let h = Token::secret_hash(&req.secret);
@@ -162,5 +162,5 @@ index ca9a240..01c9439 100644
 +  Give eligible nodes `--advertise` URLs, so a returning old primary can be reached and told
 +  to step down.
  - **How:** use **Promote this node…** on the Cluster page (admin, live), or stop the node, run
-   `telltale cluster promote`, and start it. It's refused while the primary is up.
+   `wrendns cluster promote`, and start it. It's refused while the primary is up.
  - **What happens:**

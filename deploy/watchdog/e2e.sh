@@ -12,9 +12,9 @@
 #      function the wedge sits in, with `addr2line`;
 #   5. the next run (not wedged) says in its log that the previous one was restarted by the
 #      watchdog, answers DNS, and reports the watchdog's metrics.
-# Usage: deploy/watchdog/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/watchdog/e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 SUP_PID= N_PID=
@@ -99,8 +99,8 @@ F=$(ls "$D"/hang-*.txt)
 grep -q "runtime: the runtime did not run a task for" "$F" || fail "the dump doesn't say the runtime stalled"
 grep -q "exits with status 70" "$F" || fail "the dump doesn't say it restarts"
 grep -qE "^== threads \([0-9]+\)" "$F" || fail "no thread table"
-grep -q " telltale-rt " "$F" || fail "no runtime worker in the thread table"
-grep -qE "^telltale-rt \([0-9]+\): 0x[0-9a-f]+" "$F" || fail "no stack for a runtime worker"
+grep -q " wrendns-rt " "$F" || fail "no runtime worker in the thread table"
+grep -qE "^wrendns-rt \([0-9]+\): 0x[0-9a-f]+" "$F" || fail "no stack for a runtime worker"
 grep -q "== executable mappings" "$F" && grep -qE "r-xp" "$F" || fail "no executable mapping"
 grep -q "== log, last" "$F" || fail "no log"
 [ "$(wc -l < "$D/restarts")" = 1 ] || fail "the restart wasn't recorded once"
@@ -112,11 +112,11 @@ if grep -q wedge_here "$E/nm.txt" && command -v addr2line >/dev/null; then
   type=$(readelf -h "$B" | awk '/Type:/ {print $2}')
   base=0
   if [ "$type" = DYN ]; then
-    m=$(awk '/r-xp|r--p/ && /\/telltale/ {print; exit}' "$F")
+    m=$(awk '/r-xp|r--p/ && /\/wrendns/ {print; exit}' "$F")
     start=$(echo "$m" | awk '{print $1}' | cut -d- -f1); off=$(echo "$m" | awk '{print $3}')
     base=$(( 16#$start - 16#$off ))
   fi
-  addrs=$(grep -E "^telltale-rt \(" "$F" | grep -oE "0x[0-9a-f]+" | while read -r a; do printf '0x%x\n' $(( a - 1 - base )); done)
+  addrs=$(grep -E "^wrendns-rt \(" "$F" | grep -oE "0x[0-9a-f]+" | while read -r a; do printf '0x%x\n' $(( a - 1 - base )); done)
   # shellcheck disable=SC2086
   names=$(addr2line -f -C -e "$B" $addrs | tr '\n' ' ')
   echo "$names" | grep -q wedge_here || fail "no worker stack resolves to wedge_here: $names"
@@ -132,12 +132,12 @@ for _ in $(seq 60); do [ "$(q 25901 a.wd.test)" = 10.0.0.1 ] && break; sleep 0.2
 grep -q "the previous run was restarted by the watchdog" "$E/node2.log" || { cp "$E/node2.log" "$E/node.log"; fail "the log doesn't say the previous run was restarted by the watchdog"; }
 for _ in $(seq 40); do
   M=$(curl -sf http://127.0.0.1:29901/metrics) || M=
-  echo "$M" | grep -q '^telltale_watchdog_check_age_seconds{check="runtime"}' && break
+  echo "$M" | grep -q '^wrendns_watchdog_check_age_seconds{check="runtime"}' && break
   sleep 0.5
 done
 [ -n "$M" ] || fail "no metrics"
-echo "$M" | grep -q '^telltale_watchdog_enabled 1' || fail "telltale_watchdog_enabled isn't 1"
-echo "$M" | grep -q '^telltale_watchdog_check_age_seconds{check="runtime"}' || fail "no runtime check age"
-echo "$M" | grep -qE '^telltale_watchdog_last_action_timestamp_seconds [1-9]' || fail "no last action time"
+echo "$M" | grep -q '^wrendns_watchdog_enabled 1' || fail "wrendns_watchdog_enabled isn't 1"
+echo "$M" | grep -q '^wrendns_watchdog_check_age_seconds{check="runtime"}' || fail "no runtime check age"
+echo "$M" | grep -qE '^wrendns_watchdog_last_action_timestamp_seconds [1-9]' || fail "no last action time"
 echo "ok: the next run says why, answers, and reports"
 echo "PASS"

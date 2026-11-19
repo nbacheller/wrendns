@@ -1,4 +1,4 @@
-# TelltaleDNS blocked-services catalog (REQ: FLT-012): messaging and AI chat.
+# WrenDNS blocked-services catalog (REQ: FLT-012): messaging and AI chat.
 # See social.toml for the format.
 
 [[service]]

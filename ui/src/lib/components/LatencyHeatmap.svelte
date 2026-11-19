@@ -1,6 +1,6 @@
 <script lang="ts">
   // REQ: OBS-030 (ADR-130) — answer time as a shape over time: columns are minutes (or hours),
-  // rows the `telltale_query_duration_seconds` buckets (fast at the bottom), colour how many
+  // rows the `wrendns_query_duration_seconds` buckets (fast at the bottom), colour how many
   // answers landed there; the latency objective's threshold dashed; exemplars as dots that open
   // their query (a trace ID the query log finds); the change markers as ticks.
   import { onDestroy } from 'svelte';

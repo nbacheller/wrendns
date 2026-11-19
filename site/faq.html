@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FAQ — TelltaleDNS</title>
-<meta name="description" content="Answers to what people ask most about TelltaleDNS: replacing Pi-hole or Unbound, resolving from the root servers, blocking categories, per-device encrypted DNS, high availability, and running on Kubernetes.">
+<title>FAQ — WrenDNS</title>
+<meta name="description" content="Answers to what people ask most about WrenDNS: replacing Pi-hole or Unbound, resolving from the root servers, blocking categories, per-device encrypted DNS, high availability, and running on Kubernetes.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Questions people ask</p>
   <h1>FAQ</h1>
-  <p class="lede">Short answers, each with a link to the details. Missing yours? <a href="https://github.com/paimonsoror/telltaledns/issues">Open an issue</a> and it may end up here.</p>
+  <p class="lede">Short answers, each with a link to the details. Missing yours? <a href="https://github.com/nbacheller/telltaledns/issues">Open an issue</a> and it may end up here.</p>
   <ul class="toc">
     <li><a href="#fit">Is it right for me?</a></li>
     <li><a href="#resolving">Resolving names</a></li>
@@ -33,12 +33,12 @@
     <dt id="q-replace">Is it a replacement for Pi-hole or AdGuard Home with Unbound?</dt>
     <dd>
       <p>Yes, it can replace that combination. It filters with blocklists and per-device groups, and it can also resolve names itself from the root servers, so there is no second program to run.</p>
-      <p>Two things to know. There is no DHCP server (<a href="#q-dhcp">below</a>), and the importers cover Pi-hole (<code>telltale import pihole</code>) and Technitium but not AdGuard Home, so you would add those lists again. Lists written in AdGuard syntax work as they are. <a href="guide-upgrades.html">Upgrades, backups, and moving in</a> walks through it.</p>
+      <p>Two things to know. There is no DHCP server (<a href="#q-dhcp">below</a>), and the importers cover Pi-hole (<code>wrendns import pihole</code>) and Technitium but not AdGuard Home, so you would add those lists again. Lists written in AdGuard syntax work as they are. <a href="guide-upgrades.html">Upgrades, backups, and moving in</a> walks through it.</p>
     </dd>
 
     <dt id="q-alongside">Can I run it next to my existing DNS server instead of replacing it?</dt>
     <dd>
-      <p>Yes. Point your devices at TelltaleDNS and add your current server as an upstream, or send only some domains to it (conditional forwarding), or point your current server's forwarder at TelltaleDNS. When you want to move zones across, zone files import. See <a href="guide-encrypted.html">Encrypted DNS and upstreams</a>.</p>
+      <p>Yes. Point your devices at WrenDNS and add your current server as an upstream, or send only some domains to it (conditional forwarding), or point your current server's forwarder at WrenDNS. When you want to move zones across, zone files import. See <a href="guide-encrypted.html">Encrypted DNS and upstreams</a>.</p>
     </dd>
 
     <dt id="q-why">What is it good at?</dt>
@@ -53,7 +53,7 @@
 
     <dt id="q-dhcp">Does it include a DHCP server?</dt>
     <dd>
-      <p>No, on purpose. DHCP stays on your router or another server. TelltaleDNS reads device names from your router's lease list (UniFi and OPNsense) and from mDNS, so devices still show up by name. See <a href="#q-naming">how devices get their names</a>.</p>
+      <p>No, on purpose. DHCP stays on your router or another server. WrenDNS reads device names from your router's lease list (UniFi and OPNsense) and from mDNS, so devices still show up by name. See <a href="#q-naming">how devices get their names</a>.</p>
     </dd>
 
     <dt id="q-firewall">Is it a firewall or a network monitor?</dt>
@@ -83,18 +83,18 @@ url = "recursive://"
 name = "default"
 members = ["recursive"]</code></pre>
       <p>No public resolver then sees your lookups. Each server is asked only as much of the name as it needs (so the root servers see <code>com</code>, not the whole name), answers can be checked with DNSSEC, and delegations are remembered, so only the first lookup in a new zone takes a few round trips.</p>
-      <p>The trade-off: the authoritative servers see your address, and your ISP still sees the traffic. You can mix it with a forwarder as a fallback in a failover group. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#recursive-resolution-no-forwarder">recursive resolution</a>.</p>
+      <p>The trade-off: the authoritative servers see your address, and your ISP still sees the traffic. You can mix it with a forwarder as a fallback in a failover group. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#recursive-resolution-no-forwarder">recursive resolution</a>.</p>
     </dd>
 
     <dt id="q-stub">My domain's servers are authoritative-only (BIND with recursion off, NSD, Knot). How do I send the domain to them?</dt>
     <dd>
-      <p>Use a stub zone. In <b>Names on my network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
+      <p>Use a stub zone. In <b>Names on my network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
     </dd>
 
     <dt id="q-zones">Can it serve my own names and zones?</dt>
     <dd>
-      <p>Yes, at two levels. <b>Local records</b> answer single names (A, AAAA, CNAME, PTR, TXT, MX, SRV, with wildcards), and PTR records for your A and AAAA records are made for you. <b>Local zones</b> make TelltaleDNS the authority for a whole domain, from an RFC 1035 zone file or written inline, and a zone can be limited to some groups for split-horizon DNS. Manage them in the web UI or the API, or import a zone export with <code>telltale import zone</code>.</p>
-      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#local-records">local records and zones</a>.</p>
+      <p>Yes, at two levels. <b>Local records</b> answer single names (A, AAAA, CNAME, PTR, TXT, MX, SRV, with wildcards), and PTR records for your A and AAAA records are made for you. <b>Local zones</b> make WrenDNS the authority for a whole domain, from an RFC 1035 zone file or written inline, and a zone can be limited to some groups for split-horizon DNS. Manage them in the web UI or the API, or import a zone export with <code>wrendns import zone</code>.</p>
+      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#local-records">local records and zones</a>.</p>
     </dd>
 
     <dt id="q-ptr">How do reverse (PTR) lookups of my LAN addresses work?</dt>
@@ -135,7 +135,7 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-categories">Can I block whole categories, such as adult content?</dt>
     <dd>
-      <p>Not with a single switch, and that is by design: TelltaleDNS never looks at page content, which keeps it fast. Categories come from the people who maintain category blocklists. You can get the same result for just the devices that need it:</p>
+      <p>Not with a single switch, and that is by design: WrenDNS never looks at page content, which keeps it fast. Categories come from the people who maintain category blocklists. You can get the same result for just the devices that need it:</p>
       <ul>
         <li>Add a category blocklist by URL and give it only to that group.</li>
         <li>Send that group to a family-filtering upstream (the presets include several).</li>
@@ -164,13 +164,13 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-masked">Every query shows the same client address. What's wrong?</dt>
     <dd>
-      <p>Something between your devices and TelltaleDNS rewrites the sender, and the web UI shows a "Client IPs appear masked" banner naming the address. The usual causes and fixes:</p>
+      <p>Something between your devices and WrenDNS rewrites the sender, and the web UI shows a "Client IPs appear masked" banner naming the address. The usual causes and fixes:</p>
       <ul>
-        <li><b>A router that forwards DNS:</b> hand out TelltaleDNS's address in DHCP instead. If it has to forward, enable the router's EDNS MAC option (dnsmasq <code>add-mac</code>) and list it in <code>[clients] trust_edns_mac_from</code>.</li>
+        <li><b>A router that forwards DNS:</b> hand out WrenDNS's address in DHCP instead. If it has to forward, enable the router's EDNS MAC option (dnsmasq <code>add-mac</code>) and list it in <code>[clients] trust_edns_mac_from</code>.</li>
         <li><b>Kubernetes with <code>externalTrafficPolicy: Cluster</code>:</b> use <code>Local</code> (the chart's default) or <code>hostNetwork: true</code>.</li>
         <li><b>Docker with a proxy or bridge:</b> use <code>network_mode: host</code>.</li>
       </ul>
-      <p>Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">seeing real client IPs</a>.</p>
+      <p>Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">seeing real client IPs</a>.</p>
     </dd>
   </dl>
 </section>
@@ -190,18 +190,18 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-primarydown">What happens if the primary, or my Kubernetes cluster, goes down?</dt>
     <dd>
-      <p>DNS keeps working. Every other node keeps answering from the last configuration it received, even after a restart. What pauses is changing the configuration. Promote another eligible node from the Cluster page or with <code>telltale cluster promote</code>, or use automatic failover with a third voter such as a small witness node.</p>
+      <p>DNS keeps working. Every other node keeps answering from the last configuration it received, even after a restart. What pauses is changing the configuration. Promote another eligible node from the Cluster page or with <code>wrendns cluster promote</code>, or use automatic failover with a third voter such as a small witness node.</p>
       <p>If the configuration comes from Git, a node that isn't Git-managed can only be promoted as an <em>emergency</em> primary, which keeps the cluster on its last version until a Git-managed node is back. Manual promotion is the predictable choice there.</p>
     </dd>
 
     <dt id="q-pigit">Can a Raspberry Pi be the primary, with the configuration coming from Git?</dt>
     <dd>
-      <p>Yes. Any eligible node that has the same <code>[cluster.git]</code> section can take over and keep following the repository, so the Pi can follow your repository directly while Argo CD or Flux keeps managing the Kubernetes side. Join the Pi with a token made for eligible nodes. Details under "Where configuration comes from" in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster documentation</a>.</p>
+      <p>Yes. Any eligible node that has the same <code>[cluster.git]</code> section can take over and keep following the repository, so the Pi can follow your repository directly while Argo CD or Flux keeps managing the Kubernetes side. Join the Pi with a token made for eligible nodes. Details under "Where configuration comes from" in the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#clusters">cluster documentation</a>.</p>
     </dd>
 
     <dt id="q-k8sdns">Isn't DNS in Kubernetes risky when Kubernetes needs DNS itself?</dt>
     <dd>
-      <p>The chart is built around that. TelltaleDNS's own pods keep asking CoreDNS for the cluster's names, so they never depend on their own Service, and you can leave CoreDNS as the second server for your pods, so lookups still work if the TelltaleDNS Service has no ready pods. You can also keep a node outside the cluster, such as a Pi, as a replica, so the rest of the network has DNS even while the cluster is down. See <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
+      <p>The chart is built around that. WrenDNS's own pods keep asking CoreDNS for the cluster's names, so they never depend on their own Service, and you can leave CoreDNS as the second server for your pods, so lookups still work if the WrenDNS Service has no ready pods. You can also keep a node outside the cluster, such as a Pi, as a replica, so the rest of the network has DNS even while the cluster is down. See <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
     </dd>
   </dl>
 </section>
@@ -217,18 +217,18 @@ upstream_group = "lan"</code></pre>
     <dt id="q-support">How do I report a problem without sharing my network?</dt>
     <dd>
       <p>Make a <b>support package</b>: one file with your build, your settings without secrets, health, upstream state, a metrics snapshot, and the node's recent log. By default every address and name in it is replaced by a pseudonym (<code>device-1</code>, <code>10.4.7.9</code>) that is the same all through the file, a subnet stays a subnet, and nothing you searched for is included. It's made on your machine and nothing is uploaded: you read it, then attach it to your issue.</p>
-      <p>In the web UI it's <b>Settings → System → Support package</b>. From a shell it's <code>telltale support-package</code>, or <code>telltale support-package --offline</code> when the node won't start. The page lists every file and what was replaced before you make it. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#support-package">Details</a>.</p>
+      <p>In the web UI it's <b>Settings → System → Support package</b>. From a shell it's <code>wrendns support-package</code>, or <code>wrendns support-package --offline</code> when the node won't start. The page lists every file and what was replaced before you make it. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#support-package">Details</a>.</p>
     </dd>
 
     <dt id="q-hang">What if the service says it's running but nothing answers?</dt>
     <dd>
       <p>A built-in <b>watchdog</b> looks for exactly that. Every 5 seconds a thread of its own checks that the node can still run a task and that its own listener answers a probe question. If neither has worked for a minute, it writes a <b>dump</b> (which check failed, every thread and what it waits on, where each one is stuck, and the last log lines) under <code>&lt;data_dir&gt;/watchdog/</code> and ends the process, so systemd, Docker, or Kubernetes starts it again. That's a restart of a few seconds instead of an outage until someone notices.</p>
-      <p>The dump holds no client data. Every release publishes the matching debug file, so the stacks in it can be turned into function names. Attach the dump, or a support package (which includes it), to an issue. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#when-a-node-stops-answering-the-watchdog">Details</a>.</p>
+      <p>The dump holds no client data. Every release publishes the matching debug file, so the stacks in it can be turned into function names. Attach the dump, or a support package (which includes it), to an issue. <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#when-a-node-stops-answering-the-watchdog">Details</a>.</p>
     </dd>
 
     <dt id="q-breaker">Why do upstream health labels say "open", "closed", and "half_open"?</dt>
     <dd>
-      <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>telltale_upstream_breaker_state</code> metric. Plainer labels for the web UI are <a href="https://github.com/paimonsoror/telltaledns/issues/9">planned</a>.</p>
+      <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>wrendns_upstream_breaker_state</code> metric. Plainer labels for the web UI are <a href="https://github.com/paimonsoror/telltaledns/issues/9">planned</a>.</p>
     </dd>
   </dl>
 </section>

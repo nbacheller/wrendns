@@ -254,7 +254,7 @@
       "reqs": [
         "API-010"
       ],
-      "summary": "Opt-in and listen-only: the <name>.local a device announces names it in the query log and the UI when you haven't named it. TelltaleDNS never sends mDNS and doesn't answer .local queries.",
+      "summary": "Opt-in and listen-only: the <name>.local a device announces names it in the query log and the UI when you haven't named it. WrenDNS never sends mDNS and doesn't answer .local queries.",
       "diagram": "rfc6762"
     },
     {

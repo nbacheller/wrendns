@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-net/src/doh3.rs b/crates/telltale-net/src/doh3.rs
+diff --git a/crates/wrendns-net/src/doh3.rs b/crates/wrendns-net/src/doh3.rs
 index ee30a33..bee2a48 100644
---- a/crates/telltale-net/src/doh3.rs
-+++ b/crates/telltale-net/src/doh3.rs
+--- a/crates/wrendns-net/src/doh3.rs
++++ b/crates/wrendns-net/src/doh3.rs
 @@ -32,6 +32,8 @@ pub struct Doh3Config {
      /// URL path (default `/dns-query`); `<path>/<client-id>` also matches.
      pub path: String,
@@ -48,10 +48,10 @@ index ee30a33..bee2a48 100644
          });
      }
  }
-diff --git a/crates/telltale-net/src/doq.rs b/crates/telltale-net/src/doq.rs
+diff --git a/crates/wrendns-net/src/doq.rs b/crates/wrendns-net/src/doq.rs
 index 83dc278..032f26a 100644
---- a/crates/telltale-net/src/doq.rs
-+++ b/crates/telltale-net/src/doq.rs
+--- a/crates/wrendns-net/src/doq.rs
++++ b/crates/wrendns-net/src/doq.rs
 @@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
  use std::time::Duration;
  
@@ -126,10 +126,10 @@ index 83dc278..032f26a 100644
          });
      }
  }
-diff --git a/crates/telltale-net/tests/doq.rs b/crates/telltale-net/tests/doq.rs
+diff --git a/crates/wrendns-net/tests/doq.rs b/crates/wrendns-net/tests/doq.rs
 index 6024838..c1f10f4 100644
---- a/crates/telltale-net/tests/doq.rs
-+++ b/crates/telltale-net/tests/doq.rs
+--- a/crates/wrendns-net/tests/doq.rs
++++ b/crates/wrendns-net/tests/doq.rs
 @@ -88,6 +88,31 @@ fn server() -> (DoqServer, Seen, SocketAddr) {
      (s, seen, addr)
  }

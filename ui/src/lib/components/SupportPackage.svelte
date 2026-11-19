@@ -96,7 +96,7 @@
     busy = true;
     error = null;
     try {
-      save(await api.supportMap(made.id), 'telltale-support-map.txt');
+      save(await api.supportMap(made.id), 'wrendns-support-map.txt');
       mapGone = true;
     } catch (e) {
       error = e;

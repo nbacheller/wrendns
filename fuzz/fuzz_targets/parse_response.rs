@@ -2,7 +2,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use telltale_proto::{NameBuf, patch_ttls, read_name, records, rtype, summarize, truncate_for_udp};
+use wrendns_proto::{NameBuf, patch_ttls, read_name, records, rtype, summarize, truncate_for_udp};
 
 fuzz_target!(|data: &[u8]| {
     let _ = summarize(data);

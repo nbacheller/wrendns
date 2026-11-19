@@ -1,6 +1,6 @@
-# Developer container (telltale-dev:1)
+# Developer container (wrendns-dev:1)
 
-A reproducible dev environment for TelltaleDNS, so the toolchain can be swapped without touching
+A reproducible dev environment for WrenDNS, so the toolchain can be swapped without touching
 the repo. It is not a release image: nothing here is shipped, and CI does not use it.
 
 ## What is in the image
@@ -32,7 +32,7 @@ the earlier container showed almost no Rust cache hits (1 hit, 1089 misses), so 
 shown. Enable it per shell only to test it:
 
 ```bash
-RUSTC_WRAPPER=sccache cargo build -p telltale
+RUSTC_WRAPPER=sccache cargo build -p wrendns
 sccache --show-stats
 ```
 
@@ -56,7 +56,7 @@ Volumes (created by `up.sh`, never removed by it):
 
 | Volume | Mounted at | Holds |
 |---|---|---|
-| `tt-src` | `/src` | the Linux clone, `/src/telltale`; worktrees go in `/src/telltale/.wt/<name>` |
+| `tt-src` | `/src` | the Linux clone, `/src/wrendns`; worktrees go in `/src/wrendns/.wt/<name>` |
 | `tt-cargo2` | `/root/.cargo/registry` | crates.io index and sources, for `wrendns-dev2` only |
 | `tt-sccache` | `/sccache` | compiled-object cache (only when sccache is enabled) |
 | `tt-target2` | `/target` | `CARGO_TARGET_DIR` |
@@ -67,7 +67,7 @@ it here.
 
 The Windows repo is mounted read-only at `/mnt/win` for sync and the first clone.
 
-Start the container with `docker exec -it wrendns-dev2 bash`. Its working directory is `/src/telltale`.
+Start the container with `docker exec -it wrendns-dev2 bash`. Its working directory is `/src/wrendns`.
 
 ## Git inside the container
 
@@ -79,7 +79,7 @@ Start the container with `docker exec -it wrendns-dev2 bash`. Its working direct
 - Set your identity inside the container (`git config --global user.name ...`); the volume keeps it.
   No `.gitconfig` is created by the image.
 - Work in a worktree: `git worktree add .wt/<name> -b <branch> feat/ipam-integrations` from
-  `/src/telltale`, then `cd .wt/<name>` and use `CARGO_TARGET_DIR=/target/<name>`.
+  `/src/wrendns`, then `cd .wt/<name>` and use `CARGO_TARGET_DIR=/target/<name>`.
 - Line endings: the clone sets `core.autocrlf input`, so files are LF. Tests then pass without the
   CRLF fixes the Windows checkout needs (the 6-8 tests that fail only from CRLF).
 
@@ -88,16 +88,16 @@ Start the container with `docker exec -it wrendns-dev2 bash`. Its working direct
 Inside the container:
 
 ```bash
-cargo build -p telltale
-cargo nextest run -p telltale-policy
+cargo build -p wrendns
+cargo nextest run -p wrendns-policy
 cd ui && npm ci            # installs playwright from ui/package-lock.json (1.65.0), once per volume
-cd ui && TELLTALE_BIN=/target/debug/telltale npx playwright test
+cd ui && WRENDNS_BIN=/target/debug/wrendns npx playwright test
 ```
 
 `npm ci` in `ui` is required before the Playwright run. Without it, `npx` may fetch a different
 Playwright whose Chromium revision is not installed in `/ms-playwright`.
 
-The `telltale` crate tests have not been run in this container yet. Run them on an LF export
+The `wrendns` crate tests have not been run in this container yet. Run them on an LF export
 (`git -c core.autocrlf=false archive HEAD`) to get a clean result.
 
 ## Reproducibility

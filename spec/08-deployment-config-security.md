@@ -13,19 +13,19 @@ Support tiers: **Tier 1:** Helm on k8s/k3s (amd64, arm64); Docker/Podman Compose
 
 ## 2. Image (OPS-001)
 - Built with `cargo zigbuild` or `cross` for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, and `armv7-unknown-linux-musleabihf`. Release profile: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`, `opt-level = 3`. A profile-guided-optimization (PGO) build from the benchmark corpus is P1.
-- `USER 65532:65532`, read-only root filesystem, `/var/lib/telltale` as the only writable volume. Needs `NET_BIND_SERVICE` only if binding < 1024 inside the container. `NET_ADMIN`/netlink is *not* needed: neighbor-table reads use unprivileged `/proc/net/arp` + netlink route dumps, which work with host networking.
+- `USER 65532:65532`, read-only root filesystem, `/var/lib/wrendns` as the only writable volume. Needs `NET_BIND_SERVICE` only if binding < 1024 inside the container. `NET_ADMIN`/netlink is *not* needed: neighbor-table reads use unprivileged `/proc/net/arp` + netlink route dumps, which work with host networking.
 - Tz database: the image ships `/usr/share/zoneinfo` without `right/` (leap-second zones), `*.tab`, `tzdata.zi` and `leap*` (ADR-915). Schedules read the TZif zones by name; a `right/...` name does not resolve.
 - Signed with cosign (keyless), SBOM attached, provenance (SLSA level 3 via GitHub Actions).
 - Tags: `X.Y.Z`, `X.Y`, `X`, `latest`, plus `edge` from main.
 
 ## 3. Kubernetes / Helm (OPS-002, OPS-003)
-Chart: `deploy/helm/telltale`.
+Chart: `deploy/helm/wrendns`.
 
 ### 3.1 Shapes
 | Value `mode` | Objects | Use |
 |---|---|---|
 | `allInOne` (default) | 1× StatefulSet (role=all, PVC) + Services | Small clusters, single replica, simplest |
-| `scaled` | StatefulSet `controller` (1 replica, PVC, role=controller, eligible) + Deployment `resolver` (N replicas, role=resolver, ship telemetry) + HPA on CPU or `telltale_queries` rate + PDB (minAvailable 1) + topologySpreadConstraints/anti-affinity | Production, HA within the cluster |
+| `scaled` | StatefulSet `controller` (1 replica, PVC, role=controller, eligible) + Deployment `resolver` (N replicas, role=resolver, ship telemetry) + HPA on CPU or `wrendns_queries` rate + PDB (minAvailable 1) + topologySpreadConstraints/anti-affinity | Production, HA within the cluster |
 | `daemonSet` | resolver as a DaemonSet with `hostNetwork: true` + controller StatefulSet | Bare-metal clusters wanting true client IPs and node-local DNS |
 
 ### 3.2 Exposure and the client-IP problem (critical for analytics)
@@ -36,10 +36,10 @@ Per-client analytics are worthless if every query appears to come from a node IP
 - **Validation:** `helm install` renders a `NOTES.txt` warning if `externalTrafficPolicy=Cluster`. At runtime, the resolver detects when > 90% of queries come from ≤ 3 IPs inside the pod/node CIDRs and raises a UI banner: "client IPs appear masked".
 
 ### 3.3 Config, secrets, probes
-- `values.yaml → config:` renders a ConfigMap (`telltale.toml`) and enables GitOps mode if `gitops: true`. Secrets (admin bootstrap password hash, cluster join token, OIDC client secret, upstream tokens) come from existing Secrets referenced by name (`existingSecret`), so Sealed Secrets/External Secrets/SOPS work.
+- `values.yaml → config:` renders a ConfigMap (`wrendns.toml`) and enables GitOps mode if `gitops: true`. Secrets (admin bootstrap password hash, cluster join token, OIDC client secret, upstream tokens) come from existing Secrets referenced by name (`existingSecret`), so Sealed Secrets/External Secrets/SOPS work.
 - Probes: `startupProbe /readyz?startup=1` (a fresh pod becomes ready only after the snapshot is applied and listeners are bound; maintenance doesn't count, OPS-010), `readinessProbe /readyz`, `livenessProbe /livez`. Resolver pods with no snapshot and no reachable controller stay unready (they never serve unfiltered DNS), unless `failOpen: true`.
 - `ServiceMonitor` + `PrometheusRule` (default alerts) + Grafana dashboard ConfigMap (sidecar label) are optional.
-- NetworkPolicy: allow 53/udp+tcp from configured CIDRs; 8443 cluster port between TelltaleDNS pods and from external cluster members (configurable CIDR, e.g., the Pi); egress to upstreams.
+- NetworkPolicy: allow 53/udp+tcp from configured CIDRs; 8443 cluster port between WrenDNS pods and from external cluster members (configurable CIDR, e.g., the Pi); egress to upstreams.
 - Resources (defaults): resolver requests 50m/48Mi, limits 1 CPU/128Mi; controller requests 100m/96Mi, limits 2 CPU/512Mi (list compile). `GOMAXPROCS`-equivalent: worker threads default to `min(cpu limit, cores)`, read from the cgroup quota.
 - cert-manager: an optional `Certificate` for DoH/DoT; the binary hot-reloads mounted certs.
 - Upgrades: `maxUnavailable: 0, maxSurge: 1` for resolvers; `preStop` sleep 5 s plus graceful drain (OPS-007) so in-flight TCP/DoH finish.
@@ -50,10 +50,10 @@ Per-client analytics are worthless if every query appears to come from a node IP
 mode: scaled
 cluster:
   name: home
-  joinTokenSecret: telltale-join          # token created on the primary (whichever node it is)
+  joinTokenSecret: wrendns-join          # token created on the primary (whichever node it is)
   site: k8s
   eligible: true                       # controller pod can be primary
-  advertise: ["https://telltale-cluster.k8s.lan:8443"]
+  advertise: ["https://wrendns-cluster.k8s.lan:8443"]
   peers: ["https://pi.lan:8443"]       # bootstrap peer list
   electionMode: manual                 # or "witness" with witnessUrl
 service:
@@ -63,35 +63,35 @@ service:
 ```yaml
 # Pi: compose.yaml
 services:
-  telltale:
-    image: ghcr.io/paimonsoror/telltale:1
+  wrendns:
+    image: ghcr.io/nbacheller/wrendns:1
     network_mode: host                 # real client IPs + MACs, no NAT
     restart: unless-stopped
     cap_add: [NET_BIND_SERVICE]
     user: "65532:65532"
     read_only: true
-    volumes: ["./data:/var/lib/telltale", "./node.toml:/etc/telltale/node.toml:ro"]
+    volumes: ["./data:/var/lib/wrendns", "./node.toml:/etc/wrendns/node.toml:ro"]
     environment:
-      TELLTALE_ROLE: all
-      TELLTALE_CLUSTER_SITE: home-pi
-      TELLTALE_CLUSTER_ELIGIBLE: "true"
-      TELLTALE_TELEMETRY_MODE: local      # set "ship" if running on an SD card
+      WRENDNS_ROLE: all
+      WRENDNS_CLUSTER_SITE: home-pi
+      WRENDNS_CLUSTER_ELIGIBLE: "true"
+      WRENDNS_TELEMETRY_MODE: local      # set "ship" if running on an SD card
 ```
 
 ### 3.5 Pods as clients (FLT-017, ADR-150)
 - `kubernetes.enabled` (default `false`) gives the controller (or the `allInOne` pod) a service-account token and a read-only ClusterRole (`get/list/watch` on `pods` and `namespaces`, nothing else); resolver pods keep `automountServiceAccountToken: false` (ADR-120). The controller watches pods, builds the workload table, and pushes it to every peer.
-- Pods are only seen as themselves when they query TelltaleDNS **directly**: through CoreDNS forwarding every query comes from CoreDNS's address. Two supported wirings: (1) cluster-wide, point the kubelet's cluster DNS at the DNS Service (fixed with `service.dns.clusterIP`) and let TelltaleDNS forward the cluster domain and the pod/service reverse zones to CoreDNS (`kubernetes.clusterDns`, required when enabled; the chart writes the `[[forward]]` entries with a DNSSEC NTA); (2) per workload, `dnsPolicy: None` with `dnsConfig.nameservers` set to the Service address.
+- Pods are only seen as themselves when they query WrenDNS **directly**: through CoreDNS forwarding every query comes from CoreDNS's address. Two supported wirings: (1) cluster-wide, point the kubelet's cluster DNS at the DNS Service (fixed with `service.dns.clusterIP`) and let WrenDNS forward the cluster domain and the pod/service reverse zones to CoreDNS (`kubernetes.clusterDns`, required when enabled; the chart writes the `[[forward]]` entries with a DNSSEC NTA); (2) per workload, `dnsPolicy: None` with `dnsConfig.nameservers` set to the Service address.
 - Pod-to-ClusterIP traffic keeps its source address (kube-proxy and Cilium don't SNAT it), so the masked-client-IP check (§3.2) is unaffected.
-- The API server being unreachable never affects answering: the last good table stays, health is degraded after 15 minutes (`kubernetes_stale`), and `TelltaleDNSKubernetesWatchStale` fires.
+- The API server being unreachable never affects answering: the last good table stays, health is degraded after 15 minutes (`kubernetes_stale`), and `WrenDNSKubernetesWatchStale` fires.
 
 ## 4. Linux / Raspberry Pi native (OPS-004, Tier 2)
-`install.sh` detects the arch, downloads + verifies (cosign/minisign) the binary, creates a `telltale` system user, and installs a hardened systemd unit with `DynamicUser`-style sandboxing (`ProtectSystem=strict`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `NoNewPrivileges`, `MemoryMax=256M`). It also detects and offers to disable systemd-resolved's stub listener. Upgrades go through `telltale self-update` (verifies the signature, atomic swap, restart; refuses if the cluster's min version is incompatible).
+`install.sh` detects the arch, downloads + verifies (cosign/minisign) the binary, creates a `wrendns` system user, and installs a hardened systemd unit with `DynamicUser`-style sandboxing (`ProtectSystem=strict`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `NoNewPrivileges`, `MemoryMax=256M`). It also detects and offers to disable systemd-resolved's stub listener. Upgrades go through `wrendns self-update` (verifies the signature, atomic swap, restart; refuses if the cluster's min version is incompatible).
 
 **Pi guidance shipped in docs:** use `ship` telemetry or USB/SSD storage on SD-card Pis; Pi Zero 2 W: `workers=2`, cache 16 MiB, qlog retention 7 d.
 
 ## 5. Configuration model (OPS-005, OPS-009)
-- **Precedence:** built-in defaults < `telltale.toml` (or cluster-replicated config) < `node.toml` (node-local allowed keys) < environment variables `TELLTALE_<SECTION>_<KEY>` < CLI flags.
-- Schema in `telltale-config`, with a JSON Schema generated for editor completion (`telltale config schema`). Startup validation reports every error with its path, and `telltale config check file.toml` validates a file offline.
+- **Precedence:** built-in defaults < `wrendns.toml` (or cluster-replicated config) < `node.toml` (node-local allowed keys) < environment variables `WRENDNS_<SECTION>_<KEY>` < CLI flags.
+- Schema in `wrendns-config`, with a JSON Schema generated for editor completion (`wrendns config schema`). Startup validation reports every error with its path, and `wrendns config check file.toml` validates a file offline.
 - Every config struct has `#[serde(deny_unknown_fields)]`. Config migrations are versioned (`config_version = 1`).
 - Hot reload never drops queries: listener changes bind new sockets before closing old ones.
 
@@ -110,7 +110,7 @@ services:
      - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks`. The default is loopback only (ADR-944): a request with forwarding headers from an untrusted peer is never break-glass, the startup log warns while the list is unset, and an explicit list (even `[]`) replaces the default.
   - LDAP is a non-goal (API-009).
 - **RBAC roles:** `viewer` (dashboards, query log subject to privacy level), `operator` (pause, flush cache, manage lists/clients/groups), `admin` (everything incl. users, cluster, upstreams). A `family` role (P1) can only pause or unpause specific groups.
-- **First run:** no default password. A one-time setup token is printed to logs / available via `telltale ctl setup-token`; the Helm chart can set a bootstrap admin from a Secret.
+- **First run:** no default password. A one-time setup token is printed to logs / available via `wrendns ctl setup-token`; the Helm chart can set a bootstrap admin from a Secret.
 - **DNS abuse resistance:** refuse recursion for clients outside `allowed_networks` (default: RFC 1918, ULA, link-local, loopback, and pod/service CIDRs if detected). Response Rate Limiting for any listener exposed beyond the LAN. ANY minimization. Never act as an open resolver by default. The startup check warns if bound on a public IP.
 - **Web:** strict CSP (no inline scripts), HSTS when TLS is on, `X-Frame-Options: DENY`. All UI rendering uses text bindings (Svelte escapes by default; no `{@html}` with user data), which directly targets the XSS/HTML-injection class Pi-hole fixed repeatedly in 2026. Config values with newlines/control chars are rejected at the schema layer (the class behind Pi-hole's 2026 newline-injection advisory).
 - **Process:** non-root, read-only rootfs, no shell in the image, seccomp `RuntimeDefault`, all capabilities dropped except `NET_BIND_SERVICE`.
@@ -119,7 +119,7 @@ services:
 - **Vulnerability process:** `SECURITY.md`, private advisories, a 90-day disclosure policy.
 
 ## 7. DHCP (OPS-008, descoped)
-**Descoped (ADR-091):** TelltaleDNS doesn't run a DHCP server; the router does. Device names come from the router's DHCP clients (`[[router]]`) and mDNS. The original text, for the record:
+**Descoped (ADR-091):** WrenDNS doesn't run a DHCP server; the router does. Device names come from the router's DHCP clients (`[[router]]`) and mDNS. The original text, for the record:
 
 DHCPv4 server (static leases, options 3/6/15/42/119, lease file), disabled by default. In clusters, DHCP runs on exactly one designated node (no DHCP failover protocol in v1; documented). Leases feed client naming cluster-wide.
 
@@ -128,12 +128,12 @@ DHCPv4 server (static leases, options 3/6/15/42/119, lease file), disabled by de
 - **On the node:** `/readyz` → 503 (the shutdown `ready` flag); heartbeats carry `maintenance_until` (optional field, N−1 ignores it); no candidacy in elections. Every listener keeps answering; replication, lists, probes, and the API continue.
 - **A primary:** with automatic failover and another eligible node or quorum reachable, `handover = true` (default) makes it stop renewing its lease and decline candidacy, so a replica is elected within the lease window and it follows for the rest of the window; otherwise it stays primary and keeps publishing, and the UI/CLI say to promote another node first if it's going offline.
 - **Elsewhere:** alert rules skip the node and its firing alerts resolve "(maintenance)"; the health level ignores its reasons and lists it under `maintenance`; Cluster-page checks skip it; alert rule `maintenance` (once on entry, resolved on exit).
-- **Surfaces:** `POST`/`DELETE /api/v1/nodes/{id}/maintenance` (operator; an RPC to the target node, not via the primary), `telltale ctl maintenance start --for 2h --reason "..." [--node]` / `end`, Cluster page per-node action and banner, MCP `start_maintenance`/`end_maintenance` (`ops:maintenance`, agents ≤ 2 h), audit `node.maintenance.start|end`, `telltale_node_maintenance`, `telltale_node_maintenance_until_seconds`.
+- **Surfaces:** `POST`/`DELETE /api/v1/nodes/{id}/maintenance` (operator; an RPC to the target node, not via the primary), `wrendns ctl maintenance start --for 2h --reason "..." [--node]` / `end`, Cluster page per-node action and banner, MCP `start_maintenance`/`end_maintenance` (`ops:maintenance`, agents ≤ 2 h), audit `node.maintenance.start|end`, `wrendns_node_maintenance`, `wrendns_node_maintenance_until_seconds`.
 - **Kubernetes:** one readiness probe per pod serves every Service, so a controller pod in maintenance also leaves the API Service; use another node's UI or a port-forward. The startup probe asks `/readyz?startup=1`, which leaves maintenance out, so a pod restarted inside its window isn't killed (ADR-118, amended). Design: `docs/design/maintenance-mode.md`.
 
 ## 8. Backup / migration (API-007)
-- `telltale backup create [--include-qlog] [--secrets-passphrase-file F | --secrets-passphrase-stdin | --secrets-passphrase-prompt]` → a `.ttbk` (tar.zst + manifest with BLAKE3 hashes; no signature, ADR-063). Restore onto a new primary with `telltale backup restore`. Also `POST /api/v1/backup` (admin; `{includeQlog?, passphrase?}`) and Settings → System → Backup.
-- **Stored secrets (T23.9, ADR-903 §8, ADR-965):** left out unless a passphrase of at least 12 characters is given; with one, `data/secrets.enc` holds them (JSON `{name, kind, value, updated, updated_by}` under ChaCha20-Poly1305, key from Argon2id v1.3 m = 19,456 KiB, t = 2, p = 1, random salt and nonce recorded in the manifest's `secrets` block, associated data `"telltale-backup-secrets v1" || backupId`). The format is version 2 only when `secrets.enc` is present, so older builds refuse it. Restore needs the passphrase (`--secrets-passphrase-file|-stdin|-prompt`) or `--skip-secrets`, refuses a recorded cost over m = 256 MiB, t = 10, p = 8, stores the secrets under the restoring node's own key (from `-c`, the environment, or the data directory; never generated when a source is configured) and re-stamps them. One key derivation runs at a time per process (429 on the API). A passphrase backup over the API needs an interactive session signed in within 10 minutes (403 `reauth_required`), never an agent token, and raises the alert event `secrets_exported`.
+- `wrendns backup create [--include-qlog] [--secrets-passphrase-file F | --secrets-passphrase-stdin | --secrets-passphrase-prompt]` → a `.ttbk` (tar.zst + manifest with BLAKE3 hashes; no signature, ADR-063). Restore onto a new primary with `wrendns backup restore`. Also `POST /api/v1/backup` (admin; `{includeQlog?, passphrase?}`) and Settings → System → Backup.
+- **Stored secrets (T23.9, ADR-903 §8, ADR-965):** left out unless a passphrase of at least 12 characters is given; with one, `data/secrets.enc` holds them (JSON `{name, kind, value, updated, updated_by}` under ChaCha20-Poly1305, key from Argon2id v1.3 m = 19,456 KiB, t = 2, p = 1, random salt and nonce recorded in the manifest's `secrets` block, associated data `"wrendns-backup-secrets v1" || backupId`). The format is version 2 only when `secrets.enc` is present, so older builds refuse it. Restore needs the passphrase (`--secrets-passphrase-file|-stdin|-prompt`) or `--skip-secrets`, refuses a recorded cost over m = 256 MiB, t = 10, p = 8, stores the secrets under the restoring node's own key (from `-c`, the environment, or the data directory; never generated when a source is configured) and re-stamps them. One key derivation runs at a time per process (429 on the API). A passphrase backup over the API needs an interactive session signed in within 10 minutes (403 `reauth_required`), never an agent token, and raises the alert event `secrets_exported`.
 - **Importers:**
   - Pi-hole v5 (`gravity.db` + `setupVars.conf`) and Pi-hole v6 Teleporter zip (`pihole.toml` + `gravity.db`): adlists, domainlists (exact/regex, allow/deny), groups, clients, local DNS/CNAME records, upstreams, conditional forwarding. The importer reads the documented SQLite schema (data, not code).
   - Technitium (P1): backup zip → blocked/allowed zones, block-list URLs, forwarders + protocols, Advanced Blocking app config → groups.

@@ -255,7 +255,7 @@
       </div>
       <p class="muted small">
         Each workload is one device, whichever pods it runs: its queries, anomalies, and timeline survive rollouts. Its
-        group comes from a <code>telltaledns.io/group</code> label on its pods or namespace, a rule, or the default group.
+        group comes from a <code>wrendns.com/group</code> label on its pods or namespace, a rule, or the default group.
         Counts cover the last 24 hours.
       </p>
       <div class="table-wrap">
@@ -298,7 +298,7 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>IPv6<HelpButton id="device-ipv6" /></th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>IPv6<HelpButton id="device-ipv6" /></th><th>From</th><th>MAC</th><th>In WrenDNS</th></tr></thead>
             <tbody>
               {#each found as l (l.ip)}
                 <tr>

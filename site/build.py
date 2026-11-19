@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds the TelltaleDNS project site into site/_site (ADR-012, DOC-001/004/005).
+"""Builds the WrenDNS project site into site/_site (ADR-012, DOC-001/004/005).
 
 No dependencies beyond the Python standard library (3.6+). It:
   1. injects the shared header/footer partials into every page,
@@ -23,13 +23,16 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
+sys.path.insert(0, SITE)
+import brand  # noqa: E402  (the brand's tokens, fonts and logos, from brand/: checked on every build)
+
+PAGES = ["index.html", "start.html", "download.html", "support.html", "thanks.html", "privacy.html", "terms.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
          # ADR-122 — the Guides menu.
          "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html", "guide-upgrades.html",
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",
          "guide-users.html",
          "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html",
-         # The Developers section (Reference menu): how to work on and extend TelltaleDNS.
+         # The Developers section (Reference menu): how to work on and extend WrenDNS.
          "developers.html", "dev-gates.html", "dev-budgets.html", "dev-api.html", "dev-cluster.html", "dev-icons.html",
          "dev-ui-tests.html", "dev-svelte.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
@@ -38,6 +41,208 @@ STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 def read(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+# REQ: DOC-006 (T33.3, ADR-1030) — the optional "Support WrenDNS" links (the Download and Support pages). The
+# Stripe Payment Links come from site/data/site.json: one for a one-time gift (the donor chooses the amount) and
+# monthly supporter tiers. A section with no link is left out. A payment link is only a public address: the
+# build refuses anything else, and any Stripe key or secret anywhere in site/.
+STRIPE_HOSTS = ("https://buy.stripe.com/", "https://donate.stripe.com/")
+STRIPE_SECRET = re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+")
+# Said wherever a gift is offered: the account belongs to a for-profit company.
+SUPPORT_TAX = (
+    "Support is a payment to MySummitKeep LLC, the company that makes WrenDNS. It is not a tax-deductible donation, "
+    "and no tax receipt is issued. WrenDNS stays free either way."
+)
+
+
+def _stripe_url_error(url):
+    if not isinstance(url, str):
+        return "must be a string"
+    if url and (
+        not url.startswith(STRIPE_HOSTS)
+        or url in STRIPE_HOSTS
+        or re.search(r"[\s\"'<>]", url)
+    ):
+        return "must be a Stripe Payment Link ({}), got {!r}".format(" or ".join(h + "..." for h in STRIPE_HOSTS), url)
+    return None
+
+
+def site_config_errors(cfg):
+    errs = []
+    sup = cfg.get("support", {})
+    if not isinstance(sup.get("note", ""), str):
+        errs.append("site.json: support.note must be a string")
+    e = _stripe_url_error(sup.get("one_time_url", ""))
+    if e:
+        errs.append("site.json: support.one_time_url " + e)
+    tiers = sup.get("monthly", [])
+    if not isinstance(tiers, list):
+        errs.append("site.json: support.monthly must be a list of {label, url}")
+        tiers = []
+    for i, t in enumerate(tiers):
+        label = t.get("label") if isinstance(t, dict) else None
+        if not isinstance(label, str) or not label.strip() or len(label) > 40:
+            errs.append("site.json: support.monthly[{}].label must be a short text".format(i))
+        e = _stripe_url_error(t.get("url", "") if isinstance(t, dict) else None)
+        if e or not (isinstance(t, dict) and t.get("url")):
+            errs.append("site.json: support.monthly[{}].url {}".format(i, e or "is empty"))
+    for dirpath, _, names in os.walk(SITE):
+        if "_site" in dirpath.split(os.sep) or "__pycache__" in dirpath:
+            continue
+        for n in names:
+            if n.endswith((".woff2", ".png", ".jpg", ".jpeg", ".pyc")):
+                continue
+            path = os.path.join(dirpath, n)
+            if STRIPE_SECRET.search(read(path)):
+                errs.append("{}: looks like a Stripe key or secret; none belongs in the repository".format(os.path.relpath(path, ROOT)))
+    return errs
+
+
+def support_cards(sup):
+    """The two cards (one-time, monthly) for the links that are set; "" when none is."""
+    cards = []
+    if sup.get("one_time_url"):
+        cards.append(
+            '    <article class="card"><h3>Give once</h3><p>Choose your own amount, as small or as large as you like.</p>'
+            '<p><a class="btn primary" href="{}" rel="noopener noreferrer">Give once</a></p></article>'.format(html.escape(sup["one_time_url"], quote=True))
+        )
+    tiers = sup.get("monthly", [])
+    if tiers:
+        buttons = " ".join(
+            '<a class="btn primary" href="{}" rel="noopener noreferrer">{}</a>'.format(html.escape(t["url"], quote=True), html.escape(t["label"]))
+            for t in tiers
+        )
+        cards.append(
+            '    <article class="card"><h3>Give monthly</h3><p>Pick a supporter tier and give every month. Stop whenever you like.</p>'
+            '<p class="cta">{}</p></article>'.format(buttons)
+        )
+    if not cards:
+        return ""
+    note = sup.get("note", "")
+    return (
+        '  <div class="grid">\n' + "\n".join(cards) + "\n  </div>\n"
+        '  <p class="muted small">Payments are made on Stripe\'s own page: this site never sees your card details, and WrenDNS keeps no record of who gave.</p>\n'
+        '  <p class="muted small">' + html.escape(SUPPORT_TAX) + "</p>\n"
+        + ('  <p class="muted small">{}</p>\n'.format(html.escape(note)) if note else "")
+    )
+
+
+def render_support(page, cfg):
+    """`<!-- @support -->` becomes a whole section (left out when no link is set); `<!-- @support-cards -->` the cards alone."""
+    cards = support_cards(cfg.get("support", {}))
+    section = ""
+    if cards:
+        section = (
+            '<section id="support">\n  <h2>Support WrenDNS</h2>\n'
+            '  <p class="lede">WrenDNS is free and stays free. If it saves you time and you would like to help keep it going, you can chip in. '
+            "It is optional, and nothing changes if you don't.</p>\n" + cards + "</section>"
+        )
+    page = page.replace("<!-- @support -->\n\n", "\n" if not section else section + "\n\n").replace("<!-- @support -->", section)
+    empty = '  <p class="muted">Supporter links are not set up yet. Everything here is free in the meantime.</p>\n'
+    page = page.replace("<!-- @support-cards -->", cards or empty)
+    return page.replace("<!-- @support-tax -->", html.escape(SUPPORT_TAX))
+
+
+# REQ: DOC-006 (T33.3) — the Content-Security-Policy in staticwebapp.config.json allows no inline script or style,
+# so a page may not carry one. The headers the site is served with are checked here too.
+SWA_HEADERS = ["Content-Security-Policy", "Strict-Transport-Security", "X-Content-Type-Options", "Referrer-Policy"]
+
+
+def swa_errors(cfg):
+    errs = []
+    hdr = cfg.get("globalHeaders", {})
+    for h in SWA_HEADERS:
+        if not hdr.get(h):
+            errs.append("staticwebapp.config.json: globalHeaders lacks {}".format(h))
+    csp = hdr.get("Content-Security-Policy", "")
+    if "unsafe-inline" in csp or "unsafe-eval" in csp:
+        errs.append("staticwebapp.config.json: the global Content-Security-Policy must not allow 'unsafe-inline' or 'unsafe-eval'")
+    if "nosniff" not in hdr.get("X-Content-Type-Options", ""):
+        errs.append("staticwebapp.config.json: X-Content-Type-Options must be nosniff")
+    if "max-age=" not in hdr.get("Strict-Transport-Security", ""):
+        errs.append("staticwebapp.config.json: Strict-Transport-Security needs a max-age")
+    return errs
+
+
+_INLINE = [
+    (re.compile(r"<script(?![^>]*\bsrc=)[^>]*>", re.I), "an inline <script>"),
+    (re.compile(r"<style\b", re.I), "a <style> element"),
+    (re.compile(r"\sstyle=\"", re.I), "a style attribute"),
+    (re.compile(r"\son[a-z]+=\"", re.I), "an inline event handler"),
+    (re.compile(r"(?:src|href)=\"https?://[^\"]*\.(?:js|css|woff2?)\"", re.I), "an external script, stylesheet or font"),
+    (re.compile(r"<img[^>]+src=\"https?://", re.I), "an external image"),
+]
+
+
+def csp_errors(out_dir, names):
+    errs = []
+    for n in names:
+        text = read(os.path.join(out_dir, n))
+        for rx, what in _INLINE:
+            if rx.search(text):
+                errs.append("{}: has {} (the Content-Security-Policy forbids it)".format(n, what))
+    return errs
+
+
+# REQ: DOC-006 (T33.3) — /terms and /privacy are the drafts in docs/legal/, rendered as they are: the owner and
+# counsel settle the `[confirm]` markers in the Markdown; the pages never show them (the build strips them and fails if
+# one reaches the HTML). The headings get anchors; the HTML comments (the drafts' own notes) are dropped.
+LEGAL = {"terms.html": "terms.md", "privacy.html": "privacy.md"}
+
+
+def render_legal(md):
+    out, para, bullets, rows = [], [], [], []
+
+    def inline(t):
+        return md_inline(t, set())
+
+    def flush():
+        nonlocal para, bullets, rows
+        if para:
+            out.append("<p>{}</p>".format(inline(" ".join(para))))
+        if bullets:
+            out.append("<ul>{}</ul>".format("".join("<li>{}</li>".format(inline(b)) for b in bullets)))
+        if rows:
+            out.append(md_table(rows, set()))
+        para, bullets, rows = [], [], []
+
+    title = ""
+    in_comment = False
+    for raw in md.splitlines():
+        line = raw.rstrip()
+        if in_comment:
+            in_comment = "-->" not in line
+            continue
+        if line.lstrip().startswith("<!--"):
+            in_comment = "-->" not in line
+            continue
+        m = re.match(r"^(#{1,3}) (.*)$", line)
+        if m:
+            flush()
+            level, text = len(m.group(1)), m.group(2).strip()
+            if level == 1:
+                title = text
+                continue
+            slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+            out.append('<h{0} id="{1}">{2}</h{0}>'.format(level, slug, html.escape(text)))
+        elif not line.strip():
+            flush()
+        elif line.lstrip().startswith("|"):
+            if para or bullets:
+                flush()
+            rows.append(line)
+        elif line.startswith("- "):
+            if para or rows:
+                flush()
+            bullets.append(line[2:].strip())
+        else:
+            if bullets or rows:
+                flush()
+            para.append(line.strip())
+    flush()
+    # The owner's to-confirm notes are for the drafts only: none reaches the public page.
+    return title, re.sub(r"\s*\[confirm[^\]]*\]", "", "\n".join(out))
 
 
 def build_stamp():
@@ -51,7 +256,7 @@ def build_stamp():
 
 
 def req_link(r):
-    return '<a class="req" href="https://github.com/paimonsoror/telltaledns/blob/main/spec/01-requirements.md">{}</a>'.format(
+    return '<a class="req" href="https://github.com/nbacheller/telltaledns/blob/main/spec/01-requirements.md">{}</a>'.format(
         html.escape(r)
     )
 
@@ -86,8 +291,8 @@ def render_standards(page, data):
 
 
 # REQ: DOC-002/003 (T4.6) — the configuration reference, rendered from the JSON Schema the
-# binary prints (`telltale config schema`), committed as docs/config-schema.json and kept
-# current by a test in telltale-config. Sections follow the order of a typical config.
+# binary prints (`wrendns config schema`), committed as docs/config-schema.json and kept
+# current by a test in wrendns-config. Sections follow the order of a typical config.
 CONFIG_ORDER = [
     "config_version", "node", "listen", "upstream", "upstream_group", "route", "list", "filter",
     "group", "client", "clients", "record", "local", "access", "ratelimit", "special", "cache",
@@ -238,8 +443,8 @@ def render_config(page, schema):
 
 # REQ: DOC-006, OPS-003 — every Helm chart value with its default and meaning, read from the
 # chart's own values.yaml (its comments are the documentation), so the page can't drift.
-HELM_VALUES = os.path.join(ROOT, "deploy", "helm", "telltale", "values.yaml")
-HELM_SCHEMA = os.path.join(ROOT, "deploy", "helm", "telltale", "values.schema.json")
+HELM_VALUES = os.path.join(ROOT, "deploy", "helm", "wrendns", "values.yaml")
+HELM_SCHEMA = os.path.join(ROOT, "deploy", "helm", "wrendns", "values.schema.json")
 _KEY = re.compile(r'^( *)([A-Za-z0-9_.-]+|"[^"]+"):(?: +(.*))?$')
 _REQ = re.compile(r"^REQ: [^—]+— ")
 
@@ -414,7 +619,7 @@ def render_bench(page):
     out = ['<div class="card bench">']
     out.append(
         "<p><b>{cpu}</b> ({cores} threads, {arch}, Linux {kernel}) · {workers} DNS workers · {date} · "
-        'commit <a href="https://github.com/paimonsoror/telltaledns/commit/{full}">{rev}</a> · '
+        'commit <a href="https://github.com/nbacheller/telltaledns/commit/{full}">{rev}</a> · '
         '<a href="{raw}">raw results (JSON)</a></p>'.format(
             cpu=html.escape(host["cpu"]), cores=host["cores"], arch=host["arch"],
             kernel=html.escape(host["kernel"].split("-")[0]), workers=srv["workers"],
@@ -692,7 +897,7 @@ def render_decisions(page, reqs):
     for n in parts:
         nums = [a["num"] for a in adrs if adr_page(a["num"]) == n]
         span = "ADR-{:03d} to ADR-{:03d}".format(min(nums), max(nums))
-        part = page.replace("<title>Decisions — TelltaleDNS</title>", "<title>Decisions {} — TelltaleDNS</title>".format(span))
+        part = page.replace("<title>Decisions — WrenDNS</title>", "<title>Decisions {} — WrenDNS</title>".format(span))
         part = part.replace("<h1>Decisions</h1>", "<h1>Decisions <span class=\"muted\">{}</span></h1>".format(span))
         pages[n] = part.replace("<!-- @decisions-summary -->", nav(n)).replace("<!-- @decisions -->", "\n".join(records[n]))
     return pages
@@ -714,7 +919,7 @@ def render_glossary(page):
     out = []
     for t in sorted(data["topics"], key=lambda t: t["title"].lower()):
         docs = (
-            ' <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
+            ' <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
             if t.get("docs") else ""
         )
         path = ' <span class="pill supported">{}</span>'.format(FLOW_TEXT[t["diagram"]]) if t.get("diagram") else ""
@@ -737,8 +942,8 @@ def render_glossary(page):
 # REQ: DOC-004, DOC-006 (T6.10) — the "For nerds" page: an interactive architecture view built
 # from site/data/architecture.json and checked against the repo, so it can't drift. Arrows,
 # "used by", line counts and dependency users come from the code, not from the JSON.
-GH = "https://github.com/paimonsoror/telltaledns/blob/main/"
-GH_TREE = "https://github.com/paimonsoror/telltaledns/tree/main/"
+GH = "https://github.com/nbacheller/telltaledns/blob/main/"
+GH_TREE = "https://github.com/nbacheller/telltaledns/tree/main/"
 
 
 def cargo_deps(path):
@@ -878,7 +1083,7 @@ def render_nerds(page, arch, adrs, reqs):
     height = y - row_h + 22 + box_h + 16
     edges = []
     for a in crates:
-        if a == "telltale":
+        if a == "wrendns":
             continue  # the binary uses nearly everything; listed in its panel instead
         for b in ws[a]:
             ax, ay, aw = pos[a]
@@ -898,7 +1103,7 @@ def render_nerds(page, arch, adrs, reqs):
     for name, (x, yy, bw) in pos.items():
         c = crates[name]
         files, lines = rust_stats(os.path.join(ROOT, "crates", name, "src"))
-        short = name.replace("telltale-", "") if name != "telltale" else "telltale (binary)"
+        short = name.replace("wrendns-", "") if name != "wrendns" else "wrendns (binary)"
         nodes.append(
             '<a class="arch-node layer-{layer}" href="#crate-{n}" data-crate="{n}">'
             '<rect x="{x:.0f}" y="{y}" width="{w:.0f}" height="{h}" rx="12"/>'
@@ -929,7 +1134,7 @@ def render_nerds(page, arch, adrs, reqs):
             rows.append("<dt>Main types</dt><dd>{}</dd>".format(" ".join("<code>{}</code>".format(html.escape(t)) for t in c["types"])))
         if c.get("budget"):
             rows.append("<dt>Budget</dt><dd>{}</dd>".format(html.escape(c["budget"])))
-        rows.append("<dt>Uses</dt><dd>{}</dd>".format(", ".join(link(d) for d in ws[name]) or "no other TelltaleDNS crate"))
+        rows.append("<dt>Uses</dt><dd>{}</dd>".format(", ".join(link(d) for d in ws[name]) or "no other WrenDNS crate"))
         rows.append("<dt>Used by</dt><dd>{}</dd>".format(", ".join(link(d) for d in users[name]) or "nothing (it's the top)"))
         rows.append("<dt>Libraries</dt><dd>{}</dd>".format(", ".join("<code>{}</code>".format(html.escape(d)) for d in ext) or "none"))
         rows.append('<dt>Code</dt><dd><a href="{}{}">{}</a>: {:,} lines of Rust in {} files</dd>'.format(GH_TREE, c["code"], html.escape(c["code"]), lines, files))
@@ -959,7 +1164,7 @@ def render_nerds(page, arch, adrs, reqs):
         return "\n".join(out)
 
     # The tech stack as one card per area: each library with why it's there, and (for Rust
-    # crates) small chips naming the TelltaleDNS crates that use it, from Cargo.toml.
+    # crates) small chips naming the WrenDNS crates that use it, from Cargo.toml.
     stack = []
     for g in arch["stack"]:
         items = []
@@ -968,7 +1173,7 @@ def render_nerds(page, arch, adrs, reqs):
             if it.get("crate"):
                 used = sorted(n for n in crates if it["crate"] in cargo_deps(os.path.join(ROOT, "crates", n, "Cargo.toml")))
                 where = '<p class="used">used in {}</p>'.format(" ".join(
-                    '<a class="chip crate" href="#crate-{}">{}</a>'.format(u, html.escape(u.replace("telltale-", "") if u != "telltale" else "binary"))
+                    '<a class="chip crate" href="#crate-{}">{}</a>'.format(u, html.escape(u.replace("wrendns-", "") if u != "wrendns" else "binary"))
                     for u in used))
             items.append("<li><b>{}</b><p>{}</p>{}</li>".format(html.escape(it["name"]), html.escape(it["why"]), where))
         stack.append('<article class="card stack-card"><h3>{}</h3><ul class="stack-list">{}</ul></article>'.format(
@@ -1079,6 +1284,8 @@ def main():
         if s["status"] not in STATUS_ORDER:
             sys.exit("standards.json: bad status {!r} for RFC {}".format(s["status"], s["rfc"]))
     arch = json.loads(read(os.path.join(SITE, "data", "architecture.json")))
+    site_cfg = json.loads(read(os.path.join(SITE, "data", "site.json")))
+    swa_cfg = json.loads(read(os.path.join(SITE, "staticwebapp.config.json")))
     adrs, reqs = repo_ids()
     values_rows = parse_values(read(HELM_VALUES))
     written = []
@@ -1103,19 +1310,28 @@ def main():
                 shutil.copy(os.path.join(BENCH_DIR, bf), os.path.join(out, "data", "bench", bf))
         if name == "standards.html":
             page = render_standards(page, data)
+        if name in ("download.html", "support.html", "thanks.html"):
+            page = render_support(page, site_cfg)
+        if name in LEGAL:
+            title, body = render_legal(read(os.path.join(ROOT, "docs", "legal", LEGAL[name])))
+            page = page.replace("<!-- @legal-title -->", html.escape(title)).replace("<!-- @legal -->", body)
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
         # The decisions index and its part pages come from one template.
         generated = render_decisions(page, reqs) if name == "decisions.html" else {name: page}
         for gname, gpage in generated.items():
+            if "[confirm" in gpage and gname in LEGAL:
+                sys.exit("{}: a [confirm] marker reached the public page".format(gname))
             if "<!-- @" in gpage:
                 sys.exit("{}: unreplaced marker".format(gname))
             with open(os.path.join(out, gname), "w", encoding="utf-8") as f:
                 f.write(gpage)
             written.append(gname)
-    with open(os.path.join(out, ".nojekyll"), "w") as f:
-        f.write("")
-    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
+    shutil.copyfile(os.path.join(SITE, "staticwebapp.config.json"), os.path.join(out, "staticwebapp.config.json"))
+    errors = (
+        coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
+        + ["brand: " + p for p in brand.problems()] + site_config_errors(site_cfg) + swa_errors(swa_cfg) + csp_errors(out, written)
+    )
     for e in errors:
         print("error: " + e, file=sys.stderr)
     if errors:

@@ -7,16 +7,16 @@ Several nodes acting as one: joining, mTLS between nodes, replicated configurati
 forwarded writes, federated reads, query-log shipping, failover and elections, CA rotation,
 version compatibility, configuration from Git.
 
-- `crates/telltale-cluster/` (`pki.rs`, `token.rs`, `net.rs`, `wire.rs`, `sync.rs`,
+- `crates/wrendns-cluster/` (`pki.rs`, `token.rs`, `net.rs`, `wire.rs`, `sync.rs`,
   `election.rs`, `failover.rs`, `renew.rs`, `rotation.rs`, `node.rs`)
-- `crates/telltale-git/` (a minimal Git client for config from a repository)
-- `crates/telltale/src/`: `cluster.rs`, `replication.rs`, `federated.rs`, `forward.rs`,
+- `crates/wrendns-git/` (a minimal Git client for config from a repository)
+- `crates/wrendns/src/`: `cluster.rs`, `replication.rs`, `federated.rs`, `forward.rs`,
   `ship.rs`, `gitsource.rs`, `managed.rs`
-- `crates/telltale-cluster/tests/sim.rs` (the election simulator), `deploy/cluster/*.sh`
+- `crates/wrendns-cluster/tests/sim.rs` (the election simulator), `deploy/cluster/*.sh`
 
 ## Read first
 1. `spec/12-clustering-and-ha.md`; ADR-044 to ADR-059, ADR-066.
-2. `token.rs` + `pki.rs` (trust) → `sync.rs` + `crates/telltale/src/replication.rs`
+2. `token.rs` + `pki.rs` (trust) → `sync.rs` + `crates/wrendns/src/replication.rs`
    (config) → `election.rs` + `failover.rs` (who is primary).
 
 ## Look for
@@ -39,7 +39,7 @@ privilege of forwarded writes.
 
 ## Useful
 ```sh
-cargo test -p telltale-cluster --release --test sim -- --nocapture
-bash deploy/cluster/e2e.sh target/debug/telltale            # needs a release-like build; see the script header
-bash deploy/cluster/failover-e2e.sh target/debug/telltale
+cargo test -p wrendns-cluster --release --test sim -- --nocapture
+bash deploy/cluster/e2e.sh target/debug/wrendns            # needs a release-like build; see the script header
+bash deploy/cluster/failover-e2e.sh target/debug/wrendns
 ```

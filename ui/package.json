@@ -1,12 +1,13 @@
 {
-  "name": "telltale-ui",
+  "name": "wrendns-ui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/postbuild.mjs",
-    "check": "node scripts/check-quantifiers.mjs && node scripts/check-no-html.mjs && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "brand": "node scripts/brand-css.mjs && node scripts/brand-assets.mjs",
+    "check": "node scripts/check-quantifiers.mjs && node scripts/check-no-html.mjs && node scripts/brand-css.mjs --check && node scripts/brand-assets.mjs --check && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
     "check:html": "node scripts/check-no-html.mjs",
     "check:help": "node scripts/check-help.mjs",
@@ -23,6 +24,8 @@
     "vite": "^8.3.8"
   },
   "dependencies": {
+    "@fontsource-variable/figtree": "5.3.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
     "uplot": "^1.6.32"
   }
 }

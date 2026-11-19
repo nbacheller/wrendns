@@ -9,9 +9,9 @@
 #      answering on every node;
 #   4. the stale record t is removed through the replica s (sent to the primary), audited with
 #      the user and the entry node.
-# Usage: deploy/cluster/remove-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/remove-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= R_PID= S_PID=

@@ -3,10 +3,10 @@
 # certificate (tls_ca), AUTH, the envelope and the message; implicit TLS (smtps://); a wrong
 # password is reported, not retried forever; a password is never sent unencrypted (refused by
 # configuration). Needs python3 and openssl.
-# Usage: deploy/email-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/email-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -131,7 +131,7 @@ done
 echo -n app-password-1 > "$E/pass"
 echo -n wrong-password > "$E/wrong"
 
-cat > "$E/telltale.toml" <<EOF
+cat > "$E/wrendns.toml" <<EOF
 [node]
 data_dir = "$E/data"
 [[listen]]
@@ -189,19 +189,19 @@ to = ["mail"]
 EOF
 
 # Configuration check: a password over an unencrypted connection is refused.
-sed 's#url = "smtp://localhost:25587"#url = "smtp+insecure://localhost:25587"#' "$E/telltale.toml" > "$E/bad.toml"
+sed 's#url = "smtp://localhost:25587"#url = "smtp+insecure://localhost:25587"#' "$E/wrendns.toml" > "$E/bad.toml"
 if "$B" config check "$E/bad.toml" > "$E/check.txt" 2>&1; then fail "a password over smtp+insecure:// passed the check"; fi
 grep -q "never sent unencrypted" "$E/check.txt" || fail "the check didn't explain ($(head -3 "$E/check.txt"))"
 echo "ok: config check refuses a password without encryption"
 
-"$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
+"$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 120); do [ "$(ls "$E/mail" 2>/dev/null | wc -l)" -ge 3 ] && break; sleep 0.5; done
 [ "$(ls "$E/mail" | wc -l)" -ge 3 ] || fail "three emails (two for the list, one for the disk) didn't arrive"
 python3 - "$E/mail" <<'EOF'
 import base64, email, json, os, sys
 d = sys.argv[1]
 msgs = [json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d))]
-disk = [m for m in msgs if "Subject: [TelltaleDNS] Disk full" in m["data"]]
+disk = [m for m in msgs if "Subject: [WrenDNS] Disk full" in m["data"]]
 assert len(disk) == 1 and "data disk is" in base64.b64decode("".join(email.message_from_string(disk[0]["data"]).get_payload().split())).decode(), disk
 msgs = [m for m in msgs if m not in disk]
 both = [m for m in msgs if len(m["to"]) == 2]
@@ -209,7 +209,7 @@ assert both, msgs
 m = both[0]
 assert m["tls"] and m["from"] == "alerts@example.com" and m["to"] == ["me@example.com", "you@example.com"], m
 msg = email.message_from_string(m["data"])
-assert msg["Subject"].startswith("[TelltaleDNS] Lists failing: unreachable"), msg["Subject"]
+assert msg["Subject"].startswith("[WrenDNS] Lists failing: unreachable"), msg["Subject"]
 assert msg["To"] == "me@example.com, you@example.com", msg["To"]
 body = msg.get_payload(decode=True).decode()
 assert "Rule: Lists failing" in body and "Status: firing" in body, body

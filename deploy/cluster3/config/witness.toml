@@ -1,4 +1,4 @@
-# The witness of the lease-lapse soak (lapse-soak.sh): it only votes (`telltale cluster witness`).
+# The witness of the lease-lapse soak (lapse-soak.sh): it only votes (`wrendns cluster witness`).
 config_version = 1
 
 [node]

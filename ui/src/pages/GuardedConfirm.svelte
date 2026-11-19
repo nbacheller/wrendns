@@ -38,7 +38,7 @@
       <div class="notice bad">This link is missing its change or its token. Use the link from the page where you made the change.</div>
     {:else if done}
       <div class="notice ok" role="status" data-testid="guarded-confirmed">
-        Confirmed. The change to <strong>{done.setting}</strong> on {done.node} is kept: this address is where TelltaleDNS answers now.
+        Confirmed. The change to <strong>{done.setting}</strong> on {done.node} is kept: this address is where WrenDNS answers now.
         {#if done.seen}<div class="small">The node sees this request as coming from {done.seen}.</div>{/if}
       </div>
       <p><a class="button primary" href="#/settings?tab=system">Open Settings</a></p>

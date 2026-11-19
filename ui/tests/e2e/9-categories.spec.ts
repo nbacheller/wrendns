@@ -46,7 +46,7 @@ test.beforeAll(async ({ browser }) => {
   });
   await page.goto('/');
   // On its own the first sign-in may have to create the admin (the whole suite has one already).
-  const welcome = page.getByRole('heading', { name: 'Welcome to TelltaleDNS' });
+  const welcome = page.getByRole('heading', { name: 'Welcome to WrenDNS' });
   const signInHeading = page.getByRole('heading', { name: 'Sign in' });
   await expect(welcome.or(signInHeading)).toBeVisible();
   if (await welcome.isVisible()) {

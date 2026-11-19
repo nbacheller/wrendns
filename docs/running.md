@@ -1,11 +1,11 @@
-# Running TelltaleDNS
+# Running WrenDNS
 
-> **Status:** stable releases are listed on the [releases page](https://github.com/paimonsoror/telltaledns/releases). This page describes `main`; each release's notes say what it contains. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change. What stands between 0.x and 1.0 is tracked in [`docs/v1-gate.md`](v1-gate.md).
+> **Status:** stable releases are listed on the [releases page](https://github.com/nbacheller/telltaledns/releases). This page describes `main`; each release's notes say what it contains. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change. What stands between 0.x and 1.0 is tracked in [`docs/v1-gate.md`](v1-gate.md).
 
 ## Start
 ```sh
-telltale run                         # uses $TELLTALE_CONFIG, else /etc/telltale/telltale.toml, else defaults
-telltale run -c telltale.toml        # explicit config file(s); later files override earlier ones
+wrendns run                         # uses $WRENDNS_CONFIG, else /etc/wrendns/wrendns.toml, else defaults
+wrendns run -c wrendns.toml        # explicit config file(s); later files override earlier ones
 ```
 A minimal working config:
 ```toml
@@ -31,51 +31,51 @@ members = ["cloudflare", "quad9"]
 strategy = "fastest"      # failover | round_robin | weighted | fastest | parallel
 ```
 ```sh
-telltale run -c dev.toml
+wrendns run -c dev.toml
 dig @127.0.0.1 -p 5300 example.com
 ```
 Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, DoQ, and DoH3 listeners are described in "[Encrypted DNS for your devices](#encrypted-dns-for-your-devices-dot-doh-and-doq)".
 
 ## Container image
-`ghcr.io/paimonsoror/telltale:latest` is the newest stable release (also `:X.Y.Z`, `:X.Y`, and `:X`; `:edge` is built from every commit on `main`), for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 13 MiB compressed, with no shell. It runs as user `65532:65532`.
+`ghcr.io/nbacheller/wrendns:latest` is the newest stable release (also `:X.Y.Z`, `:X.Y`, and `:X`; `:edge` is built from every commit on `main`), for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 13 MiB compressed, with no shell. It runs as user `65532:65532`.
 ```sh
-docker run -d --name telltale --restart unless-stopped \
+docker run -d --name wrendns --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -p 53:53/udp -p 53:53/tcp -p 8053:8053 -p 9153:9153 \
-  -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
-  -v telltale-data:/var/lib/telltale \
-  ghcr.io/paimonsoror/telltale:latest
+  -v "$PWD/wrendns.toml:/etc/wrendns/wrendns.toml:ro" \
+  -v wrendns-data:/var/lib/wrendns \
+  ghcr.io/nbacheller/wrendns:latest
 ```
-- The config is read from `/etc/telltale/telltale.toml` when it exists; otherwise the built-in defaults apply. `/var/lib/telltale` is the only path written to.
+- The config is read from `/etc/wrendns/wrendns.toml` when it exists; otherwise the built-in defaults apply. `/var/lib/wrendns` is the only path written to.
 - With `-p` (bridge networking), port 53 works with every capability dropped: Docker lets unprivileged users bind low ports inside the container's own network namespace.
 - With `--network host` (useful on a Pi, so the logs show real client addresses), that exception doesn't apply. Let unprivileged users bind port 53 on the host:
   ```sh
-  echo 'net.ipv4.ip_unprivileged_port_start=53' | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system
+  echo 'net.ipv4.ip_unprivileged_port_start=53' | sudo tee /etc/sysctl.d/50-wrendns.conf && sudo sysctl --system
   ```
   Alternatively, run the container as root with only that one capability: `--user 0:0 --cap-drop ALL --cap-add NET_BIND_SERVICE`. Adding `NET_BIND_SERVICE` while running as `65532` doesn't work, because Docker doesn't pass added capabilities to non-root users.
-- Reload with `docker kill -s HUP telltale`; stop with `docker stop` (a graceful drain, see [Stop](#stop)).
+- Reload with `docker kill -s HUP wrendns`; stop with `docker stop` (a graceful drain, see [Stop](#stop)).
 
-Build it yourself with `docker buildx build -t telltale:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
+Build it yourself with `docker buildx build -t wrendns:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
 
 ## Raspberry Pi and Linux
 Two ways, both with real client addresses (host networking) and port 53 without running as a full root process. Pi 3, 4, 5, and Zero 2 W are supported (64-bit or 32-bit OS); ARMv6 boards (Pi 1, Zero W) aren't.
 
-**Docker Compose (recommended):** `deploy/compose/` has `compose.yaml` and a starter `telltale.toml` (encrypted upstreams, one balanced blocklist, a 7-day query log).
+**Docker Compose (recommended):** `deploy/compose/` has `compose.yaml` and a starter `wrendns.toml` (encrypted upstreams, one balanced blocklist, a 7-day query log).
 ```sh
-mkdir telltale && cd telltale
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+mkdir wrendns && cd wrendns
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/compose/wrendns.toml
 docker compose up -d
-docker compose exec telltale telltale auth setup-token     # then open http://<pi>:8053/
+docker compose exec wrendns wrendns auth setup-token     # then open http://<pi>:8053/
 ```
-The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
+The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-wrendns.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
 
-**Native (systemd):** `deploy/systemd/install.sh` downloads the static binary for your CPU, checks the release signature (minisign) and its SHA-256, creates a `telltale` system user, installs a sandboxed systemd unit (`ProtectSystem=strict`, only `CAP_NET_BIND_SERVICE`, `MemoryMax=256M`) and the starter config (an existing `/etc/telltale/telltale.toml` is kept), then starts the service and waits until it's ready.
+**Native (systemd):** `deploy/systemd/install.sh` downloads the static binary for your CPU, checks the release signature (minisign) and its SHA-256, creates a `wrendns` system user, installs a sandboxed systemd unit (`ProtectSystem=strict`, only `CAP_NET_BIND_SERVICE`, `MemoryMax=256M`) and the starter config (an existing `/etc/wrendns/wrendns.toml` is kept), then starts the service and waits until it's ready.
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+curl -fsSLO https://raw.githubusercontent.com/nbacheller/telltaledns/main/deploy/systemd/install.sh
 less install.sh                     # read before running as root
 sudo sh install.sh                  # the latest release; --edge: builds from main
-sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
+sudo -u wrendns wrendns auth setup-token -c /etc/wrendns/wrendns.toml
 ```
 **Guided setup.** Run in a terminal on a new machine, the installer asks one question first: press Enter for the recommended settings (the starter config above), or choose **Walk me through the options**. Each step shows its default in `[brackets]`; Enter or `skip` keeps it:
 1. **Builds:** releases or edge.
@@ -86,21 +86,21 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
 6. **The first admin:** a setup token for the web UI (the default), or a username and password now.
 7. **The query log:** how many days to keep, and how much it records (privacy level 0 to 3).
 
-A summary comes before anything is installed. The answers become `/etc/telltale/telltale.toml`, checked with `telltale config check` before the service starts.
-- **No questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/telltale/telltale.toml` already exists (re-runs only upgrade). To see the questions again on a machine that already has TelltaleDNS, run `sh install.sh --config-only /tmp/test.toml` (it changes nothing), or uninstall first (below).
+A summary comes before anything is installed. The answers become `/etc/wrendns/wrendns.toml`, checked with `wrendns config check` before the service starts.
+- **No questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/wrendns/wrendns.toml` already exists (re-runs only upgrade). To see the questions again on a machine that already has WrenDNS, run `sh install.sh --config-only /tmp/test.toml` (it changes nothing), or uninstall first (below).
 - **Automation:** `--interactive` asks even without a terminal and reads the answers from stdin; `--config-only FILE` writes the config and stops (no root needed), to see what the answers produce.
 - **The first admin "now"** is created on the service's first start from an Argon2id hash in a root-only systemd drop-in, which the installer removes once the service is up. The password itself isn't stored.
 
-Re-running it upgrades the binary in place. `sudo telltale self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `telltale.old`. In containers it refuses (pull a new image instead).
+Re-running it upgrades the binary in place. `sudo wrendns self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `wrendns.old`. In containers it refuses (pull a new image instead).
 
-**Uninstalling:** `sudo sh install.sh --uninstall` stops and disables the service and removes its unit and the binary (`telltale.old` too).
-- **The system resolver:** if the install turned off systemd-resolved's stub listener, it asks to restore it (the default). `/etc/resolv.conf` is put back as the install found it (the install records the link it replaced, or keeps a copy of the file), and systemd-resolved is restarted, so the machine resolves names again without TelltaleDNS. Without a terminal or with `--yes` it restores without asking; `--keep-resolver` leaves it as the install set it. Installs from before this was recorded get the usual stub link (`/run/systemd/resolve/stub-resolv.conf`).
-- **Config and data** (`/etc/telltale`, `/var/lib/telltale`: users, query log, lists) are kept, so a later install picks them up. It asks whether to delete them; `--purge` deletes them and the `telltale` user without asking.
+**Uninstalling:** `sudo sh install.sh --uninstall` stops and disables the service and removes its unit and the binary (`wrendns.old` too).
+- **The system resolver:** if the install turned off systemd-resolved's stub listener, it asks to restore it (the default). `/etc/resolv.conf` is put back as the install found it (the install records the link it replaced, or keeps a copy of the file), and systemd-resolved is restarted, so the machine resolves names again without WrenDNS. Without a terminal or with `--yes` it restores without asking; `--keep-resolver` leaves it as the install set it. Installs from before this was recorded get the usual stub link (`/run/systemd/resolve/stub-resolv.conf`).
+- **Config and data** (`/etc/wrendns`, `/var/lib/wrendns`: users, query log, lists) are kept, so a later install picks them up. It asks whether to delete them; `--purge` deletes them and the `wrendns` user without asking.
 - Point your router's DNS setting back at your previous server if it handed out this machine.
 
-**Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` offers to turn it off (`--disable-resolved-stub` does it without asking: the machine then resolves through TelltaleDNS); for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
+**Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` offers to turn it off (`--disable-resolved-stub` does it without asking: the machine then resolves through WrenDNS); for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/wrendns.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
 
-**Small Pis and SD cards:** the query log writes continuously; keep `[telemetry.qlog] retention_days` short (the starter config uses 7) or put `/var/lib/telltale` on a USB SSD. On a Pi Zero 2 W (512 MB) also set `[node] workers = 2` and `[cache] max_bytes = "16MiB"`, and prefer smaller blocklists.
+**Small Pis and SD cards:** the query log writes continuously; keep `[telemetry.qlog] retention_days` short (the starter config uses 7) or put `/var/lib/wrendns` on a USB SSD. On a Pi Zero 2 W (512 MB) also set `[node] workers = 2` and `[cache] max_bytes = "16MiB"`, and prefer smaller blocklists.
 
 Then point your router's DHCP DNS server setting at the Pi's address so every device uses it.
 
@@ -109,11 +109,11 @@ Then point your router's DHCP DNS server setting at the Pi's address so every de
 Names that a router, a UniFi console or Home Assistant gives a device, and the comments in a Pi-hole export, are read with their HTML codes decoded once (`&#039;` becomes `'`, `&amp;` becomes `&`), and control characters are dropped. The console prints every name as text, never as markup (`npm run check` fails the build on `{@html}` in the UI). A device or group that an earlier import stored with the codes in its name (`Alex&#039;s PC`) is repaired once, automatically, on the primary shortly after it starts: the stored name is decoded, the groups, quick rules and routes that name it follow, and the change is one entry in the audit log (`names.repair`, by the system) that lists each rename. The repair runs once per database (the node records that it has; a node that is later made primary may run it once more): a name you type afterwards, or a name that keeps one layer of codes, is never decoded again. A device or group that is renamed carries along the entries that name it (the zone, anomaly-mute, drill, Kubernetes-map and log-exclusion lists too); a group an agent token is limited to, or a name a configuration file still uses elsewhere, is left as it is and logged. Replicas follow the primary's version like any change. A name that a configuration file defines is never rewritten: the node's health lists it as degraded (`names_in_files`, naming the file) so you can change it in the file.
 
 ## Moving from Pi-hole
-`telltale import pihole PATH -o pihole.toml` turns a Pi-hole setup into TelltaleDNS configuration. PATH is a Teleporter export (Settings → Teleporter → Export: a `.zip` from Pi-hole v6, a `.tar.gz` from v5), a `gravity.db`, or a copy of `/etc/pihole`. The output is checked to load before it's written. The same import is on the admin page, **Settings → Pi-hole** (admins only; agents can't import): upload the export, read the preview of what would be added, changed or skipped, and apply it by typing `IMPORT`. The apply is one configuration change, audited as `import.pihole`, and undone by deleting the entries it added. The preview's Points-to column shows where each entry goes: a file list reads a file on this machine, and the notes say so, so check an export from someone else before you apply it. A preview belongs to the admin who made it, expires after ten minutes, and Discard forgets it without a change. The uploaded file is read by a separate, short-lived process with no access to the node's secrets or state. The upload is kept for the preview only, in a private directory (`import-tmp`) under the data directory, so it works with the image's read-only root and no `/tmp`, and it is removed when the preview ends. The dnsmasq lines Pi-hole keeps in `dnsmasq.d` (and `misc.dnsmasq_lines` in v6) are read too: `address=/name/ip` becomes a record for that exact name (a `0.0.0.0`, `::` or empty target becomes a block of the name and its subdomains, for every group), `server=/domain/ip` becomes a conditional forward, `host-record=` and `cname=` become records. Plain `server=ip` lines are the upstreams Pi-hole already wrote to its setup, so they aren't repeated. Anything else is named in the header.
+`wrendns import pihole PATH -o pihole.toml` turns a Pi-hole setup into WrenDNS configuration. PATH is a Teleporter export (Settings → Teleporter → Export: a `.zip` from Pi-hole v6, a `.tar.gz` from v5), a `gravity.db`, or a copy of `/etc/pihole`. The output is checked to load before it's written. The same import is on the admin page, **Settings → Pi-hole** (admins only; agents can't import): upload the export, read the preview of what would be added, changed or skipped, and apply it by typing `IMPORT`. The apply is one configuration change, audited as `import.pihole`, and undone by deleting the entries it added. The preview's Points-to column shows where each entry goes: a file list reads a file on this machine, and the notes say so, so check an export from someone else before you apply it. A preview belongs to the admin who made it, expires after ten minutes, and Discard forgets it without a change. The uploaded file is read by a separate, short-lived process with no access to the node's secrets or state. The upload is kept for the preview only, in a private directory (`import-tmp`) under the data directory, so it works with the image's read-only root and no `/tmp`, and it is removed when the preview ends. The dnsmasq lines Pi-hole keeps in `dnsmasq.d` (and `misc.dnsmasq_lines` in v6) are read too: `address=/name/ip` becomes a record for that exact name (a `0.0.0.0`, `::` or empty target becomes a block of the name and its subdomains, for every group), `server=/domain/ip` becomes a conditional forward, `host-record=` and `cname=` become records. Plain `server=ip` lines are the upstreams Pi-hole already wrote to its setup, so they aren't repeated. Anything else is named in the header.
 
-`telltale import pihole PATH --compare PIHOLE` then resolves a sample of names (A and AAAA) through the Pi-hole at `PIHOLE` (`ip` or `ip:port`) and through TelltaleDNS at `--telltale ADDR` (the node's resolver, `127.0.0.1:53` by default; run it with the imported configuration first, or the report shows what it answers now). The sample is the imported local names, the CNAME names and up to 20 exact deny entries; add more with `--sample NAME`. The report counts the names that agree and lists each difference. A server that doesn't answer five queries in a row is named and not asked again, and the whole comparison stops after a minute. The admin page takes the same addresses and extra names.
+`wrendns import pihole PATH --compare PIHOLE` then resolves a sample of names (A and AAAA) through the Pi-hole at `PIHOLE` (`ip` or `ip:port`) and through WrenDNS at `--wrendns ADDR` (the node's resolver, `127.0.0.1:53` by default; run it with the imported configuration first, or the report shows what it answers now). The sample is the imported local names, the CNAME names and up to 20 exact deny entries; add more with `--sample NAME`. The report counts the names that agree and lists each difference. A server that doesn't answer five queries in a row is named and not asked again, and the whole comparison stops after a minute. The admin page takes the same addresses and extra names.
 
-| Pi-hole | TelltaleDNS |
+| Pi-hole | WrenDNS |
 |---|---|
 | Upstream DNS servers (`IP#port`) | `[[upstream]]` `pihole-N` in the `default` upstream group, strategy `fastest` (Pi-hole also prefers the fastest server) |
 | Conditional forwarding (rev servers) | an upstream, an upstream group, and a `[[route]]` for the local domain and every reverse zone of the network (a /23 is two /24 zones), with a DNSSEC negative trust anchor |
@@ -128,16 +128,16 @@ Names that a router, a UniFi console or Home Assistant gives a device, and the c
 
 The header lists what has no equivalent, by setting name (values, such as password hashes, are never copied):
 - clients matched by host name or network interface (add their IP or MAC instead);
-- the DHCP server (TelltaleDNS leaves DHCP to your router);
+- the DHCP server (WrenDNS leaves DHCP to your router);
 - privacy level, web-server, and other Pi-hole-only settings. From v6, only settings marked as changed from their defaults are listed;
 - the `IP` blocking modes, entries switched off, and domain entries our regex engine can't run (backreferences and lookaround).
 
-Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`telltale run -c telltale.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to TelltaleDNS (a built-in recursive resolver is on the post-1.0 list). CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
+Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`wrendns run -c wrendns.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to WrenDNS (a built-in recursive resolver is on the post-1.0 list). CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
 
 ## Failover with a VIP (keepalived)
-Two nodes can answer for one address, the **VIP**. keepalived (VRRP) holds it on whichever node is healthy, so devices keep one DNS server address and the other node takes over when the first stops answering. This is what a Pi-hole pair does with its keepalived VIP, and TelltaleDNS needs nothing new for it: its DNS listeners bind the **wildcard address** (the default, `0.0.0.0` and `::`), so the node that holds the VIP answers on it, and each node also answers on its own address. A listener bound to one specific address doesn't answer the VIP.
+Two nodes can answer for one address, the **VIP**. keepalived (VRRP) holds it on whichever node is healthy, so devices keep one DNS server address and the other node takes over when the first stops answering. This is what a Pi-hole pair does with its keepalived VIP, and WrenDNS needs nothing new for it: its DNS listeners bind the **wildcard address** (the default, `0.0.0.0` and `::`), so the node that holds the VIP answers on it, and each node also answers on its own address. A listener bound to one specific address doesn't answer the VIP.
 
-**What hands the VIP over.** The node's check (`check-telltale.sh` in [`deploy/keepalived`](../deploy/keepalived/README.md)) is one call to `/readyz`, which answers 200 only while the node's own listener answers a DNS probe ([`/readyz` asks the listener](#readyz-asks-the-listener)). Point your own check at `/readyz` too, not at a DNS query for `localhost`: the probe is never logged, and a query for `localhost` every two seconds fills the query log with client 127.0.0.1. A node that stops answering loses the VIP within a few seconds. So does a node in maintenance: `/readyz` answers 503 then, while the node keeps answering the queries that still arrive, which drains a node before work on it.
+**What hands the VIP over.** The node's check (`check-wrendns.sh` in [`deploy/keepalived`](../deploy/keepalived/README.md)) is one call to `/readyz`, which answers 200 only while the node's own listener answers a DNS probe ([`/readyz` asks the listener](#readyz-asks-the-listener)). Point your own check at `/readyz` too, not at a DNS query for `localhost`: the probe is never logged, and a query for `localhost` every two seconds fills the query log with client 127.0.0.1. A node that stops answering loses the VIP within a few seconds. So does a node in maintenance: `/readyz` answers 503 then, while the node keeps answering the queries that still arrive, which drains a node before work on it.
 
 **Try it in Docker first.** [`deploy/keepalived`](../deploy/keepalived/README.md) runs a two-node cluster with a witness and the VIP on an internal Docker network, and [`deploy/keepalived/e2e.sh`](../deploy/keepalived/e2e.sh) proves the failover: it kills the master, times the takeover, restarts it, and puts it into maintenance. It takes about five minutes and touches no other network.
 
@@ -146,39 +146,39 @@ Two nodes can answer for one address, the **VIP**. keepalived (VRRP) holds it on
 ### Moving a Pi-hole pair's VIP
 This moves the address your devices already use. The Pi-holes keep working until you stop their keepalived, so plan a short window, and roll back if the first checks fail.
 
-1. **Prepare two nodes.** Two Linux hosts (a Pi, a small VM) that aren't the Pi-holes, each with TelltaleDNS (for example [`deploy/systemd/install.sh`](../deploy/systemd/install.sh)) and keepalived (`apt install keepalived`) and `wget` (the check uses it; a minimal Pi image may lack it: `telltale health` does the same without it). Import the Pi-hole setup with `telltale import pihole` and check its answers with `--compare` ([Moving from Pi-hole](#moving-from-pi-hole)). Give both nodes the same `telltale.toml`, or join them into a cluster.
+1. **Prepare two nodes.** Two Linux hosts (a Pi, a small VM) that aren't the Pi-holes, each with WrenDNS (for example [`deploy/systemd/install.sh`](../deploy/systemd/install.sh)) and keepalived (`apt install keepalived`) and `wget` (the check uses it; a minimal Pi image may lack it: `wrendns health` does the same without it). Import the Pi-hole setup with `wrendns import pihole` and check its answers with `--compare` ([Moving from Pi-hole](#moving-from-pi-hole)). Give both nodes the same `wrendns.toml`, or join them into a cluster.
 2. **Check each node on its own address** before anything moves: `dig @<node address> example.com` and a name from your local records, on both nodes.
-3. **Write `/etc/keepalived/keepalived.conf` on each node**, modelled on [`deploy/keepalived/keepalived/node-a.conf`](../deploy/keepalived/keepalived/node-a.conf): the VIP the Pi-holes use, the same `virtual_router_id` the Pi-holes used, the master's priority above the backup's, and a `track_script` running a copy of [`check-telltale.sh`](../deploy/keepalived/check-telltale.sh). Change `interface eth0` to the LAN interface of each host (it differs between hosts, and the sample's value is only for the Docker example). Use `unicast_src_ip` and `unicast_peer` if the LAN doesn't carry multicast; the peer's address goes in `unicast_peer` on each side.
-   The sample sets `enable_script_security` and `script_user root`, so keepalived runs the check as root and refuses it unless the file is owned by root and not writable by anyone else. Install it that way: `sudo install -o root -g root -m 0755 check-telltale.sh /usr/local/bin/check-telltale.sh`, then point `script` at that path.
-4. **Cut over.** On each Pi-hole, `sudo systemctl stop keepalived`: it lets go of the VIP. On the TelltaleDNS nodes, `sudo systemctl enable --now keepalived`. On the master, `ip -4 addr show` lists the VIP, `dig @<VIP> example.com` answers, and the answer is your new resolver's.
-5. **Roll back** if anything is wrong: `sudo systemctl stop keepalived` on the TelltaleDNS nodes, then `sudo systemctl start keepalived` on the Pi-holes. The VIP comes back within a few seconds.
+3. **Write `/etc/keepalived/keepalived.conf` on each node**, modelled on [`deploy/keepalived/keepalived/node-a.conf`](../deploy/keepalived/keepalived/node-a.conf): the VIP the Pi-holes use, the same `virtual_router_id` the Pi-holes used, the master's priority above the backup's, and a `track_script` running a copy of [`check-wrendns.sh`](../deploy/keepalived/check-wrendns.sh). Change `interface eth0` to the LAN interface of each host (it differs between hosts, and the sample's value is only for the Docker example). Use `unicast_src_ip` and `unicast_peer` if the LAN doesn't carry multicast; the peer's address goes in `unicast_peer` on each side.
+   The sample sets `enable_script_security` and `script_user root`, so keepalived runs the check as root and refuses it unless the file is owned by root and not writable by anyone else. Install it that way: `sudo install -o root -g root -m 0755 check-wrendns.sh /usr/local/bin/check-wrendns.sh`, then point `script` at that path.
+4. **Cut over.** On each Pi-hole, `sudo systemctl stop keepalived`: it lets go of the VIP. On the WrenDNS nodes, `sudo systemctl enable --now keepalived`. On the master, `ip -4 addr show` lists the VIP, `dig @<VIP> example.com` answers, and the answer is your new resolver's.
+5. **Roll back** if anything is wrong: `sudo systemctl stop keepalived` on the WrenDNS nodes, then `sudo systemctl start keepalived` on the Pi-holes. The VIP comes back within a few seconds.
 6. **Leave the Pi-holes off the VIP** once you are happy: their keepalived stays stopped or is removed, so no two nodes claim one address.
 
 For a pair that serves several VLANs, see [Serving several networks](#serving-several-networks): the routed way (one VIP, the gateway carries the queries) and the direct way (a tagged interface and a VIP per VLAN).
 
-To drain a node for maintenance, start a maintenance window on it (`telltale ctl maintenance start --for 30m --reason "…"`, with an API token in `TELLTALE_TOKEN`): its `/readyz` turns 503, the VIP moves to the peer, and `telltale ctl maintenance end` brings it back.
+To drain a node for maintenance, start a maintenance window on it (`wrendns ctl maintenance start --for 30m --reason "…"`, with an API token in `WRENDNS_TOKEN`): its `/readyz` turns 503, the VIP moves to the peer, and `wrendns ctl maintenance end` brings it back.
 
 Caveats:
-- In a container, keepalived and the node share a network namespace (the example does this). Restart them together (`docker compose restart keepalived-a telltale-a`): a restarted keepalived leaves the node listening in a namespace that no longer carries the VIP. A host install has no such pair.
+- In a container, keepalived and the node share a network namespace (the example does this). Restart them together (`docker compose restart keepalived-a wrendns-a`): a restarted keepalived leaves the node listening in a namespace that no longer carries the VIP. A host install has no such pair.
 - VRRP here isn't authenticated (keepalived's `auth_pass` is deprecated, so the sample has none). Keep it on the LAN interface, and don't route it out of the LAN. To limit it further, put the two nodes on a dedicated VLAN, or on each node drop VRRP from anyone but the peer: `sudo iptables -A INPUT -p vrrp ! -s <peer address> -j DROP`.
 - A move takes a few seconds. In the Docker example, the peer answered for a killed master's VIP after 3 to 7 seconds across the test runs, with up to two probes lost; a client with a second DNS server fails over the same way.
 
 ## Serving several networks
-A home with VLANs (a main LAN, an IoT network, a guest network) can serve them all from one TelltaleDNS pair in two ways: **routed**, where the gateway carries each VLAN's queries to the pair's one address, or **direct**, where each node also has an address on every VLAN. Start with routed. Move to direct only for a reason in [Which one](#which-one).
+A home with VLANs (a main LAN, an IoT network, a guest network) can serve them all from one WrenDNS pair in two ways: **routed**, where the gateway carries each VLAN's queries to the pair's one address, or **direct**, where each node also has an address on every VLAN. Start with routed. Move to direct only for a reason in [Which one](#which-one).
 
 ### The routed way
 Each network's DHCP hands out the pair's VIP ([Failover with a VIP](#failover-with-a-vip-keepalived)) as its DNS server, and the gateway routes the queries to it. The pair needs nothing new; the work is on the gateway.
 
-1. **DHCP on each network hands out the VIP**, not the gateway. A network whose DHCP hands out the gateway (a UniFi network's default: `203.0.113.1` on an IoT VLAN) sends its devices' queries to the gateway's own forwarder, and TelltaleDNS then sees one client, the gateway, for the whole network: no per-device names, groups, rules or history. The "Client IPs appear masked" banner says so when it happens ([Seeing real client IPs](#seeing-real-client-ips)). In UniFi, set the network's DHCP **DNS Server** to the VIP (and a second server only if it is another TelltaleDNS node, not a public resolver, or the filtering has a hole).
+1. **DHCP on each network hands out the VIP**, not the gateway. A network whose DHCP hands out the gateway (a UniFi network's default: `203.0.113.1` on an IoT VLAN) sends its devices' queries to the gateway's own forwarder, and WrenDNS then sees one client, the gateway, for the whole network: no per-device names, groups, rules or history. The "Client IPs appear masked" banner says so when it happens ([Seeing real client IPs](#seeing-real-client-ips)). In UniFi, set the network's DHCP **DNS Server** to the VIP (and a second server only if it is another WrenDNS node, not a public resolver, or the filtering has a hole).
 2. **The gateway's firewall must allow each network to reach the VIP on port 53, UDP and TCP.** A network built to be isolated (IoT, guest) usually blocks its traffic to the main LAN, and the pair sits on the main LAN. Add an allow rule above the block, for the VIP only and for port 53 only (and 853 or 443 when you serve encrypted DNS to that network). TCP matters: answers over 512 bytes and large DNSSEC answers fall back to it.
 3. **Check from a device on each network**: `dig @<VIP> example.com` answers, and so does `dig +tcp @<VIP> example.com`. A timeout on both is the firewall; an answer to `dig` only is a rule that forgot TCP.
 4. **`[access] allowed_networks`** must contain each VLAN's subnet. The default list is every private range (192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 and the others in [Who can query](#who-can-query-and-how-often)), which covers them; a list you narrowed does not.
 
-**What TelltaleDNS still knows about a device on another network.** The gateway routes without rewriting the source address, so the query arrives from the device's own address. That keeps:
+**What WrenDNS still knows about a device on another network.** The gateway routes without rewriting the source address, so the query arrives from the device's own address. That keeps:
 
 - the address itself: the query log, the per-device history, the rate limits, device anomalies, and any group whose `networks` holds the subnet (a group per VLAN is the routed way to give each network its own filtering);
 - the name the router gives it, when a `[[router]]` (UniFi, OPNsense, Home Assistant) reports its DHCP lease: the DNS names under [Groups and devices](#groups-and-devices) (`laptop.home.arpa`), a client or group matched by `hostname:<name>`, and the names shown for the address everywhere;
-- the MAC the router's lease gives it: the device identity (what is this device, from its vendor), and a client keyed by MAC (`[[client]] match = ["aa:bb:cc:dd:ee:ff"]`). This last one needs the router's lease on the node that answers: TelltaleDNS adds the lease MACs to its address-to-MAC map for addresses the kernel's neighbor table does not hold (T24.32, ADR-1000), refreshed every few seconds and only while some client is keyed by MAC. A replica takes the leases from the primary's polls for names but does not yet use them for this map, so a MAC-keyed client behind a router matches on the node that polls the router.
+- the MAC the router's lease gives it: the device identity (what is this device, from its vendor), and a client keyed by MAC (`[[client]] match = ["aa:bb:cc:dd:ee:ff"]`). This last one needs the router's lease on the node that answers: WrenDNS adds the lease MACs to its address-to-MAC map for addresses the kernel's neighbor table does not hold (T24.32, ADR-1000), refreshed every few seconds and only while some client is keyed by MAC. A replica takes the leases from the primary's polls for names but does not yet use them for this map, so a MAC-keyed client behind a router matches on the node that polls the router.
 - a client ID from an encrypted-DNS device (DoT, DoH, DoQ), which is in the connection, not the network.
 
 What a router in the middle takes away:
@@ -190,7 +190,7 @@ What a router in the middle takes away:
 ### The direct way
 The nodes are on each VLAN themselves: a tagged interface per VLAN, an address on it, and a VIP per VLAN. Then a device queries a server on its own wire, the node reads its MAC from the neighbor table and hears its mDNS announcements, and the network's DNS does not depend on the gateway. The cost is the switch, the interfaces and one more VIP to keep for every VLAN.
 
-The listeners need nothing for this: they bind the wildcard address (`0.0.0.0` and `::`), so they answer on every interface address and every VIP. The node reads the neighbor table of every interface, joins the mDNS group on every interface (T24.32, ADR-1000), and the Networks page lists each network the node is on, marked **this node** (not inside a bridged Docker container, whose `eth0` is a container network, not a LAN; set `TELLTALE_HOST_NETWORK=1` if the container is on the host network. The list is that of the node answering the API, so through a replica it differs from the primary's). A listener you narrowed to one address answers only there.
+The listeners need nothing for this: they bind the wildcard address (`0.0.0.0` and `::`), so they answer on every interface address and every VIP. The node reads the neighbor table of every interface, joins the mDNS group on every interface (T24.32, ADR-1000), and the Networks page lists each network the node is on, marked **this node** (not inside a bridged Docker container, whose `eth0` is a container network, not a LAN; set `WRENDNS_HOST_NETWORK=1` if the container is on the host network. The list is that of the node answering the API, so through a replica it differs from the primary's). A listener you narrowed to one address answers only there.
 
 **1. The switch port carries the VLANs tagged.** On each Pi's port, set the native (untagged) VLAN to the main LAN and add the other VLANs as tagged (UniFi: the port profile's **Tagged VLAN Management** allows the networks you pick; other switches call it a trunk). Check this first: until the port carries the VLAN tagged, nothing below can work. This is the reason an extra address on the Pi's plain `eth0` (an alias such as `198.51.100.5` or `203.0.113.5` on the untagged interface) times out from the VLAN: its frames go out untagged, onto the main LAN's wire.
 
@@ -225,7 +225,7 @@ sudo nmcli con up "<the eth0 connection>"
 ip -4 addr show eth0          # only the main LAN's address is left
 ```
 
-**4. Check the node on each VLAN**: `ip -d link show eth0.100` says `vlan protocol 802.1Q id 100`; from a device on that VLAN, `dig @198.51.100.<n> example.com` and `dig +tcp @198.51.100.<n> example.com` answer; on the node, the Networks page lists `eth0.100` as a network of this node, and, with `[clients] mdns` on, `journalctl -u telltale` says `mDNS naming: listening for device announcements interfaces=3` (the main interface and two VLANs).
+**4. Check the node on each VLAN**: `ip -d link show eth0.100` says `vlan protocol 802.1Q id 100`; from a device on that VLAN, `dig @198.51.100.<n> example.com` and `dig +tcp @198.51.100.<n> example.com` answer; on the node, the Networks page lists `eth0.100` as a network of this node, and, with `[clients] mdns` on, `journalctl -u wrendns` says `mDNS naming: listening for device announcements interfaces=3` (the main interface and two VLANs).
 
 **5. A VIP per VLAN with keepalived.** One `vrrp_instance` per VLAN, on that VLAN's interface, each with its own `virtual_router_id` (and none the Pi-holes still use), its own VIP and its unicast addresses on that VLAN, and all of them tracking the same health check, so a node that fails gives up every VIP and the peer takes every one. Extending [the runbook above](#moving-a-pi-hole-pairs-vip), on each node in `/etc/keepalived/keepalived.conf`, one block per network:
 
@@ -244,14 +244,14 @@ vrrp_instance DNS_VIP_VLAN100 {
         198.51.100.249/24          # the VIP of this VLAN
     }
     track_script {
-        chk_telltale
+        chk_wrendns
     }
 }
 ```
 
 [`deploy/keepalived/keepalived/node-a.conf`](../deploy/keepalived/keepalived/node-a.conf) has two such instances (the main network and a second one). Each VLAN's DHCP then hands out **that VLAN's VIP**. Do not also point a VLAN's devices at the routed address of the main LAN (`192.0.2.249`): the node would answer on the VLAN interface (it has a connected route there) a query that arrived through the gateway, so the reply takes another path than the query and a stateful firewall drops it.
 
-**6. Close the node's other ports on the VLANs.** The wildcard listeners also answer the node's API (`[api] listen`, port 8053 by default) and its cluster port (8443) on every interface, so a device on the IoT VLAN could reach them. Bind them to the main LAN address in `telltale.toml`, or drop everything but DNS in the node's firewall on the VLAN interfaces. With nftables (a complete table; merge the rules into yours if you already have one), allowing DNS (53), mDNS (UDP 5353, which the direct way listens to) and, if you serve encrypted DNS there, 853 and 443, and keeping VRRP for the unicast adverts:
+**6. Close the node's other ports on the VLANs.** The wildcard listeners also answer the node's API (`[api] listen`, port 8053 by default) and its cluster port (8443) on every interface, so a device on the IoT VLAN could reach them. Bind them to the main LAN address in `wrendns.toml`, or drop everything but DNS in the node's firewall on the VLAN interfaces. With nftables (a complete table; merge the rules into yours if you already have one), allowing DNS (53), mDNS (UDP 5353, which the direct way listens to) and, if you serve encrypted DNS there, 853 and 443, and keeping VRRP for the unicast adverts:
 
 ```
 table inet filter {
@@ -278,14 +278,14 @@ Load it with `sudo nft -f /etc/nftables.conf` (and `systemctl enable nftables`).
 Both can run together: direct on the VLANs that need it, routed on the others.
 
 ## Pi-hole compatible API
-Tools that already talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) can talk to TelltaleDNS instead. TelltaleDNS answers the part of Pi-hole's API they use: the **statistics** (queries and blocked today, the percentage, cached and forwarded, clients, the top domains and clients, the upstreams, the version) and **blocking on or off** (off for a number of seconds, then back on by itself). Nothing else is reachable through it: lists, rules, groups and settings stay on [the API](#api).
+Tools that already talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) can talk to WrenDNS instead. WrenDNS answers the part of Pi-hole's API they use: the **statistics** (queries and blocked today, the percentage, cached and forwarded, clients, the top domains and clients, the upstreams, the version) and **blocking on or off** (off for a number of seconds, then back on by itself). Nothing else is reachable through it: lists, rules, groups and settings stay on [the API](#api).
 
 It is **off by default**. An admin turns it on in **Settings → Pi-hole → Pi-hole compatible API**, which also makes its token:
 
 - Turning it on makes the token if there is none. The token is **shown once** and only its hash is kept (a lost token is replaced with **Make a new token**; the old one stops working at once and every open session ends). **Remove the token** deletes it and turns the API off.
 - The same token is Pi-hole v6's *password* and Pi-hole v5's *API token* (`auth`). It opens nothing else: it is not an API token for `/api/v1`, and an API token or a signed-in session opens nothing here.
 - **Longest pause** (default 60 minutes, up to 1,440): Pi-hole's "disable" with no timer means "until enabled"; here it pauses for this long, and a longer timer is cut to it, so a phone or a script cannot leave filtering off for good. The answer says the real `timer`.
-- Setting it up in Home Assistant: **Settings → Devices & services → Add integration → Pi-hole**, host and port of this server's API address (for example `192.168.1.10` and `8053`), location `admin`, SSL as the API is served, and the token as the API key. The integration tries v6 first and falls back to v5; either works. Its `Status` binary sensor, the sensors, and the switch (and the `pi_hole.disable` service with a duration) read and drive TelltaleDNS.
+- Setting it up in Home Assistant: **Settings → Devices & services → Add integration → Pi-hole**, host and port of this server's API address (for example `192.168.1.10` and `8053`), location `admin`, SSL as the API is served, and the token as the API key. The integration tries v6 first and falls back to v5; either works. Its `Status` binary sensor, the sensors, and the switch (and the `pi_hole.disable` service with a duration) read and drive WrenDNS.
 - It is served on the same listener as the rest of the API, so `[access] allowed_networks` applies, and so does HTTPS when the API listener has TLS. Failed attempts count toward the same lockout as sign-in (after five misses an address waits, 30 seconds and growing, and the first lock is in the audit log as `auth.lockout`). While it is off, or has no token, every one of these paths answers the API's ordinary 404.
 - Each pause or resume made this way is the same one `POST /api/v1/blocking/pause` and `/resume` make (every node, the change marker, the audit log: `blocking.pause` and `blocking.resume`, by `token:pihole-api`, with `via: pihole-api`). Turning it on or off, making or removing the token, and changing the longest pause are audited as `pihole_api.enable`, `pihole_api.disable`, `pihole_api.token_rotate`, `pihole_api.token_revoke` and `pihole_api.settings` (never the token). A write attempt refused for a missing or wrong token or session is `pihole_api.denied` (at most one a minute per client network and ten a minute in all; nothing is audited while the API is off). A correct token is never refused because of other clients' failures from the same address. Resume ends every pause, group pauses too. A v6 session ends 24 hours after sign-in.
 
@@ -302,9 +302,9 @@ The numbers are for the last 24 hours, over every node of a cluster: `queries.to
 Prefer v6: v5 puts the token in the address (and v6 accepts `?sid=` the same way: send `X-FTL-SID` instead), which a proxy or an access log may keep. If that happened, make a new token. The setting belongs to the node it is turned on at: in a cluster, turn it on where the tool should look (a pause made there still reaches every node). Decision record: ADR-961 in `spec/11-decisions.md`. The agent catalog has a read-only tool, `pihole_api_status`; an agent can't turn it on or make a token.
 
 ## Moving from Technitium
-`telltale import technitium http://192.168.1.2:5380 -o technitium.toml` reads a running Technitium DNS Server through its API and writes TelltaleDNS configuration. In Technitium, create an API token (Administration → Sessions → Create Token). Pass it in `TECHNITIUM_TOKEN`, or in a file with `--token-file`; it's never a command-line argument, so it doesn't show up in `ps`. The output is checked to load before it's written, and the token never appears in it.
+`wrendns import technitium http://192.168.1.2:5380 -o technitium.toml` reads a running Technitium DNS Server through its API and writes WrenDNS configuration. In Technitium, create an API token (Administration → Sessions → Create Token). Pass it in `TECHNITIUM_TOKEN`, or in a file with `--token-file`; it's never a command-line argument, so it doesn't show up in `ps`. The output is checked to load before it's written, and the token never appears in it.
 
-| Technitium | TelltaleDNS |
+| Technitium | WrenDNS |
 |---|---|
 | Forwarders (UDP, TCP, TLS, HTTPS; `name (ip:port)` pins the address) | `[[upstream]]` `technitium-N` in the `default` group; concurrent forwarding becomes `parallel` with the same fan-out |
 | Primary zones | `[[record]]` A, AAAA, CNAME, PTR, TXT, MX, SRV, with their TTLs (SOA and apex NS aren't needed) |
@@ -331,8 +331,8 @@ Technitium's backup files use a private binary format, so the importer reads the
 ## Versions and updates
 Every build says exactly what it is, the same way on every architecture:
 ```
-$ telltale --version
-telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)
+$ wrendns --version
+wrendns 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)
 ```
 
 **Version formats:**
@@ -340,27 +340,27 @@ telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge
 - builds of `main` are `0.1.0-edge.<run>`;
 - a local build is the crate version with a `-dev` suffix (for example `0.8.0-dev`) and its commit. Its peers read it as that version, so a cluster of local builds passes the version gates.
 
-The same build identity, and how the node was installed (`native`, `container`, or `helm`), shows in the web UI's sidebar (with the node's name and, in a cluster, whether it's the **primary** or a **replica**: changes saved on a replica's UI go to the primary) and **Settings → System → Version and updates**, in `GET /api/v1/system/info` (`build`, `update`), in `telltale_build_info{version,commit,channel,target}`, and on the Cluster page for every node.
+The same build identity, and how the node was installed (`native`, `container`, or `helm`), shows in the web UI's sidebar (with the node's name and, in a cluster, whether it's the **primary** or a **replica**: changes saved on a replica's UI go to the primary) and **Settings → System → Version and updates**, in `GET /api/v1/system/info` (`build`, `update`), in `wrendns_build_info{version,commit,channel,target}`, and on the Cluster page for every node.
 
 **Update checks:**
 - **How:** once a day, a node reads its channel's `releases.json` (published with every release, signed with the release key) and compares versions: `up_to_date`, `available`, `newer` (a dev build), or `unknown` (not checked yet, or failing). An index whose signature doesn't verify is ignored.
 - **When:** a minute after the node starts, then every 24 hours (an hour after a failed check). To look now, an admin clicks **Check now** under **Settings → System → Version and updates** (`POST /api/v1/system/update-check`). It's handy on the edge channel, which publishes several builds a day. Clicks less than a minute apart show the last result without fetching again. Nothing is installed.
-- **Where it shows:** an **update** pill next to the version in the sidebar, the Version and updates panel (with the step for your install), the Cluster page (each node's version), and `telltale_update_available` (1 when an update exists).
+- **Where it shows:** an **update** pill next to the version in the sidebar, the Version and updates panel (with the step for your install), the Cluster page (each node's version), and `wrendns_update_available` (1 when an update exists).
 - **Air-gapped:** `[updates] check = false` means nothing leaves the node; `[updates] index_url` points at a mirror (still verified with the built-in key).
 
 **Checking what you run** (NFR-005):
-- **Binaries:** `SHA256SUMS` is signed with the release key (minisign; `install.sh` and `telltale self-update` check it for you). The public key is `deploy/release/telltale-release.pub`.
+- **Binaries:** `SHA256SUMS` is signed with the release key (minisign; `install.sh` and `wrendns self-update` check it for you). The public key is `deploy/release/wrendns-release.pub`.
 - **Images** are signed with [cosign](https://docs.sigstore.dev/) through GitHub's keyless signing: the signature names the repository's image workflow, and is in Sigstore's public log.
   ```sh
-  cosign verify ghcr.io/paimonsoror/telltale:0.5.0 \
-    --certificate-identity-regexp '^https://github\.com/paimonsoror/telltaledns/\.github/workflows/image\.yml@' \
+  cosign verify ghcr.io/nbacheller/wrendns:0.5.0 \
+    --certificate-identity-regexp '^https://github\.com/nbacheller/telltaledns/\.github/workflows/image\.yml@' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
-- **What's inside:** each binary carries its dependency list (`cargo audit bin telltale` reads it), and every release has a CycloneDX SBOM per binary (`telltale-<arch>-linux.cdx.json`, listed in the signed `SHA256SUMS`).
-- **Rebuilding:** a release builds the same bytes from the same commit. The build date in `--version` is the commit's time. To compare, build the Dockerfile's `bin` stage with the build arguments `--version` shows (`TELLTALE_BUILD_VERSION`, `TELLTALE_BUILD_COMMIT`, `TELLTALE_BUILD_DATE`, `TELLTALE_BUILD_CHANNEL`) and `SOURCE_DATE_EPOCH` set to the commit's Unix time, then compare checksums. A nightly job builds every commit twice from scratch and fails if the two differ.
+- **What's inside:** each binary carries its dependency list (`cargo audit bin wrendns` reads it), and every release has a CycloneDX SBOM per binary (`wrendns-<arch>-linux.cdx.json`, listed in the signed `SHA256SUMS`).
+- **Rebuilding:** a release builds the same bytes from the same commit. The build date in `--version` is the commit's time. To compare, build the Dockerfile's `bin` stage with the build arguments `--version` shows (`WRENDNS_BUILD_VERSION`, `WRENDNS_BUILD_COMMIT`, `WRENDNS_BUILD_DATE`, `WRENDNS_BUILD_CHANNEL`) and `SOURCE_DATE_EPOCH` set to the commit's Unix time, then compare checksums. A nightly job builds every commit twice from scratch and fails if the two differ.
 
-TelltaleDNS never updates itself from the UI. The panel shows the step for your install:
-- **Native:** `sudo telltale self-update --restart` (`--channel edge` for edge).
+WrenDNS never updates itself from the UI. The panel shows the step for your install:
+- **Native:** `sudo wrendns self-update --restart` (`--channel edge` for edge).
 - **Container:** `docker compose pull && docker compose up -d`.
 - **Helm:** `helm upgrade`, or bump the chart version in your GitOps values.
 
@@ -368,14 +368,84 @@ In a cluster, upgrade replicas first.
 
 **The check** (T27.11): Settings → System has *Check for new builds once a day* (`[updates] check`) for this node. Admins change it; it applies after a restart of the node. API: `PUT` and `DELETE /api/v1/updates-settings/{node}`, and `GET /api/v1/node-settings` for the state of this node.
 
+## Upgrading to WrenDNS
+
+<!-- rebrand:keep-start -->
+TelltaleDNS is now **WrenDNS** (T33.2, ADR-1026, ADR-1028). The command, the paths, the service, the container image, the Helm chart, the environment variables and the metrics changed with it. The old names keep working for **one release**, each with a warning that says what to use, so you can upgrade now and tidy up later. Then they are removed.
+
+| Before | Now | Until the release after the rename |
+|---|---|---|
+| `telltale` (the command) | `wrendns` | `telltale` is a link to `wrendns` and prints a deprecation warning |
+| `/etc/telltale/telltale.toml` | `/etc/wrendns/wrendns.toml` | read when the new file doesn't exist, with a warning |
+| `/var/lib/telltale` | `/var/lib/wrendns` | used when the new directory doesn't exist and the old one does |
+| `telltale.service`, user `telltale` | `wrendns.service`, user `wrendns` | the migration script moves both |
+| `TELLTALE_*` environment variables | `WRENDNS_*` | read when the new name isn't set, with a warning; the new name wins when both are set |
+| metrics `telltale_*` | `wrendns_*` | `/metrics` exports both; the bundled dashboards and alerts use `wrendns_*` |
+| header `X-Telltale-Reason`, `X-Telltale-Client`; cookie `telltale_session` | `X-Wrendns-Reason`, `X-Wrendns-Client`; `wrendns_session` | both are read, so open sessions stay signed in and agent scripts keep working; responses carry both backup headers |
+| Kubernetes label `telltaledns.io/group` | `wrendns.com/group` | read as well while `[kubernetes] label` is the default |
+| `probe.telltale.invalid` | `probe.wrendns.invalid` | both are recognised as the node's own probe |
+| release files `telltale-<arch>-linux` | `wrendns-<arch>-linux` | published under both names (an upstream TelltaleDNS binary's `self-update` finds its file; this project's old binaries don't use these releases, see the native install steps) |
+| container image `ghcr.io/paimonsoror/telltale` (upstream's) | `ghcr.io/nbacheller/wrendns` | none: pull the new name |
+
+**A cluster can be upgraded node by node.** The nodes of both versions talk to each other: the cluster certificates keep their names while any node may still be old (and each version accepts the other's), and nothing on the wire between nodes changed spelling. Upgrade replicas first and the primary last, as before. `deploy/cluster3/e2e.sh` checks this with an image from before the rename (check **l**): DNS answers on at least two nodes throughout, and no one signs in again.
+
+What stays as it was, because it is stored in files you already have: backup files and their format name, the secrets key format, the audit chain, and the API token prefixes. A backup made before the rename restores on the new version.
+
+### Native install (systemd)
+
+Run the installer again (`sudo sh install.sh`). It installs the new binary and then migrates the old install. **Don't use the old `telltale self-update` for this upgrade**: it looks at upstream's TelltaleDNS releases, not this project's, and would install that over your data. Use `install.sh` (or, once the release signing key is settled, `wrendns self-update --base-url` pointing at this project's releases). To do the migration alone, or to see what it would change first:
+
+```sh
+sudo sh deploy/systemd/migrate-from-telltale.sh --dry-run    # says what it would do, changes nothing
+sudo sh deploy/systemd/migrate-from-telltale.sh              # does it
+```
+
+Before it stops anything it checks that `/etc/wrendns` and `/var/lib/wrendns` aren't in the way, and if a later step fails it starts the old service again, so DNS isn't left stopped. It stops `telltale.service` (and any `telltale-*.service` unit of yours that runs as the `telltale` user, such as a witness; their `User=` and `Group=` are changed to `wrendns` and the units started again); renames the `telltale` user and group to `wrendns` (the same IDs, so every file keeps its owner); moves `/var/lib/telltale` to `/var/lib/wrendns` and `/etc/telltale` to `/etc/wrendns`; renames `telltale.toml` to `wrendns.toml` and rewrites the old paths inside it (the original is kept as `wrendns.toml.pre-wrendns`); installs `wrendns.service` from your old unit, so your edits and drop-ins carry over (with `TELLTALE_` variables renamed); keeps a copy of the old unit in `/etc/wrendns/pre-wrendns/`; and starts the new service if the old one was running. The old paths stay behind as links, and `/usr/local/bin/telltale` becomes a link to `wrendns`, so a keepalived check, a cron job or a script that still names them keeps working; it lists the keepalived files that do. It lists any other file that still names the old user, unit or command (under `/etc/systemd/system`, `/usr/local/sbin`, `/etc/cron.d` and `/etc/sudoers.d`: scripts, `sudo -u telltale` rules) and leaves it for you to change. `install.sh` keeps the unit the migration carried over; it writes its stock unit only on a fresh install. Running it again changes nothing. If `/etc/wrendns` or `/var/lib/wrendns` already holds files, it stops and says so instead of mixing the two.
+
+To roll back (as root), in this order:
+
+```sh
+systemctl stop wrendns && systemctl disable wrendns
+rm /var/lib/telltale /etc/telltale                  # the links the migration left; the directories move back next
+mv /var/lib/wrendns /var/lib/telltale
+mv /etc/wrendns /etc/telltale
+usermod -l telltale wrendns && groupmod -n telltale wrendns
+rm /usr/local/bin/telltale && mv /usr/local/bin/telltale.pre-wrendns /usr/local/bin/telltale
+mv /etc/telltale/pre-wrendns/telltale.service* /etc/systemd/system/
+rm /etc/systemd/system/wrendns.service && rm -rf /etc/systemd/system/wrendns.service.d
+systemctl daemon-reload && systemctl enable --now telltale
+```
+
+The config file inside is `wrendns.toml` (the original is `wrendns.toml.pre-wrendns`): move that back to `telltale.toml` too (`mv /etc/telltale/wrendns.toml.pre-wrendns /etc/telltale/telltale.toml`; remove the `telltale.toml` link first). A `telltale-*.service` unit of yours that was changed is kept as `<name>.pre-wrendns` next to it.
+
+### Docker Compose
+
+Take the new `compose.yaml` and `wrendns.toml` (the image is `ghcr.io/nbacheller/wrendns`; the project is named `wrendns`). Stop the old project first (`docker compose down` in the old directory) so two projects don't fight over port 53, and keep your `./data` directory: it is mounted at `/var/lib/wrendns` now and is read as it is. A setup that keeps its data in a named volume should copy it once: `docker run --rm -v <old volume>:/from -v wrendns-data:/to busybox cp -a /from/. /to/`.
+
+### Helm
+
+The chart is `wrendns` now. Resource names come from the release name and the chart name, so an existing release named `telltale` would get new names (and a new StatefulSet and volumes) unless you keep the old ones. Upgrade in place with the old names pinned:
+
+```sh
+helm upgrade telltale oci://ghcr.io/nbacheller/charts/wrendns --version <version> --reuse-values \
+  --set nameOverride=telltale --set fullnameOverride=telltale
+```
+
+(The selector labels of a StatefulSet can't change, so `nameOverride` keeps `app.kubernetes.io/name` as it was.) Or install a new release named `wrendns` and restore a backup into it. Namespaces and pods labelled `telltaledns.io/group` keep their groups while `[kubernetes] label` is the default.
+
+### Monitoring and automation
+
+Move your own dashboards, alert rules and recording rules from `telltale_*` to `wrendns_*` within the release: the old names stop being exported after it. The bundled Grafana dashboard (`deploy/grafana/wrendns-dashboard.json`), the Helm chart's rules and `deploy/prometheus/wrendns-slo-rules.yaml` already use the new names. Scripts that send `X-Telltale-Reason` should send `X-Wrendns-Reason`. The Home Assistant integration has its own breaking change: see its [changelog](../integrations/home-assistant/CHANGELOG.md).
+<!-- rebrand:keep-end -->
+
 ## Backups and moving to a new machine
 ```sh
-telltale backup create -o pi.ttbk               # safe while TelltaleDNS runs
-telltale backup create --include-qlog -o pi.ttbk # also the query log (can be large)
-telltale backup create --secrets-passphrase-file pass.txt -o pi.ttbk  # with the stored secrets, encrypted
-telltale backup show pi.ttbk                     # check it and list what's in it
-telltale backup restore pi.ttbk                  # on the new machine, TelltaleDNS stopped
-telltale backup restore --secrets-passphrase-file pass.txt pi.ttbk  # a backup that holds secrets
+wrendns backup create -o pi.ttbk               # safe while WrenDNS runs
+wrendns backup create --include-qlog -o pi.ttbk # also the query log (can be large)
+wrendns backup create --secrets-passphrase-file pass.txt -o pi.ttbk  # with the stored secrets, encrypted
+wrendns backup show pi.ttbk                     # check it and list what's in it
+wrendns backup restore pi.ttbk                  # on the new machine, WrenDNS stopped
+wrendns backup restore --secrets-passphrase-file pass.txt pi.ttbk  # a backup that holds secrets
 ```
 Admins can also make one in the web UI (**Settings → System → Backup**) or with `GET` / `POST /api/v1/backup`. Each one is recorded in the audit log as `backup.create`. `GET` leaves out the query log and the stored secrets; `POST` takes `{"includeQlog": true, "passphrase": "..."}` (see [Stored secrets in a backup](#stored-secrets-in-a-backup)). The query log is included from the web UI only when it is under 256 MiB; the command has no limit.
 
@@ -390,7 +460,7 @@ Admins can also make one in the web UI (**Settings → System → Backup**) or w
 - sign-in sessions (everyone signs in again);
 - [stored secrets](#stored-secrets) unless you give a passphrase ([below](#stored-secrets-in-a-backup)), and always the node's secrets key: they're encrypted with a key no backup holds, so a restored node without the passphrase has none (set them again);
 - downloaded lists, compiled snapshots, and the cache, which are rebuilt;
-- the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again.
+- the cluster identity and its CA key. A restored cluster member starts on its own: run `wrendns cluster init` or join it again.
 
 The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only (`0600`); keep it private.
 
@@ -398,15 +468,15 @@ The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written own
 - Every file is checked before anything is written, so a damaged or truncated backup changes nothing.
 - Existing files are only replaced with `--force`.
 - Data goes back to the directory it came from, or `--data-dir`. Config files go back where they were, or `--config-dir`.
-- It refuses while TelltaleDNS is running on that data directory (it can't take the directory's lock): stop the service first.
-- Files are given the data directory's owner, so a restore run as root works for the `telltale` service user.
+- It refuses while WrenDNS is running on that data directory (it can't take the directory's lock): stop the service first.
+- Files are given the data directory's owner, so a restore run as root works for the `wrendns` service user.
 - If you restore into a different data directory, the restored config still names the old one: restore says so, and you set `data_dir` (or add a small file that does).
 
 ### Stored secrets in a backup
-A backup carries the [stored secrets](#stored-secrets) only when you give a passphrase of at least 12 characters (the command takes it from `--secrets-passphrase-file FILE` or `--secrets-passphrase-stdin` (the first line), or asks for it on the terminal with `--secrets-passphrase-prompt`, twice and not shown; never as an argument or a variable). The secrets are encrypted into `data/secrets.enc` with ChaCha20-Poly1305, under a key made from the passphrase with Argon2id (19 MiB, 2 passes, 1 lane; the salt, nonce and these costs are in the manifest). Without a passphrase the command, the API (header `X-Telltale-Backup-Secrets: omitted; count=N`) and the web UI all say "N stored secrets were left out". The backup also warns when the configuration files, or entries made in the UI or API, hold a credential inline: a backup copies those as they are (a stored secret or a credential file keeps one out).
+A backup carries the [stored secrets](#stored-secrets) only when you give a passphrase of at least 12 characters (the command takes it from `--secrets-passphrase-file FILE` or `--secrets-passphrase-stdin` (the first line), or asks for it on the terminal with `--secrets-passphrase-prompt`, twice and not shown; never as an argument or a variable). The secrets are encrypted into `data/secrets.enc` with ChaCha20-Poly1305, under a key made from the passphrase with Argon2id (19 MiB, 2 passes, 1 lane; the salt, nonce and these costs are in the manifest). Without a passphrase the command, the API (header `X-Wrendns-Backup-Secrets: omitted; count=N`) and the web UI all say "N stored secrets were left out". The backup also warns when the configuration files, or entries made in the UI or API, hold a credential inline: a backup copies those as they are (a stored secret or a credential file keeps one out).
 
-- **Format.** A backup with secrets is format version 2, which builds before this one refuse; one without stays version 1, so older builds still restore it. `telltale backup show` says which and how many.
-- **Restore** needs the passphrase (`--secrets-passphrase-file`, `--secrets-passphrase-stdin`, `--secrets-passphrase-prompt`) or `--skip-secrets` (everything else is restored, and you enter the secrets again). A version 2 backup with neither is refused before anything is written, and so is a wrong passphrase ("wrong passphrase or damaged archive"). The secrets are stored under the restored node's own key, taken from the same place the server takes it: `TELLTALE_SECRETS_KEY`, `[node] secrets_key_file` in the files you give with `-c` (without `-c`, in the configuration files that are in the backup, which are the ones the restored node starts with; a `sudo` that drops `TELLTALE_SECRETS_KEY` is the reason to give `-c`), or `secrets.key` in the data directory (made if there is none, and given the data directory's owner, so a restore run as root works for the `telltale` service user). A configured key that can't be read stops the restore rather than making another; it prints which key (its source and `key_id`) it used. The restored rows are stamped again from the start, as this node's own. A restore refuses a backup that asks for more than 256 MiB, 10 passes or 8 lanes of key derivation.
+- **Format.** A backup with secrets is format version 2, which builds before this one refuse; one without stays version 1, so older builds still restore it. `wrendns backup show` says which and how many.
+- **Restore** needs the passphrase (`--secrets-passphrase-file`, `--secrets-passphrase-stdin`, `--secrets-passphrase-prompt`) or `--skip-secrets` (everything else is restored, and you enter the secrets again). A version 2 backup with neither is refused before anything is written, and so is a wrong passphrase ("wrong passphrase or damaged archive"). The secrets are stored under the restored node's own key, taken from the same place the server takes it: `WRENDNS_SECRETS_KEY`, `[node] secrets_key_file` in the files you give with `-c` (without `-c`, in the configuration files that are in the backup, which are the ones the restored node starts with; a `sudo` that drops `WRENDNS_SECRETS_KEY` is the reason to give `-c`), or `secrets.key` in the data directory (made if there is none, and given the data directory's owner, so a restore run as root works for the `wrendns` service user). A configured key that can't be read stops the restore rather than making another; it prints which key (its source and `key_id`) it used. The restored rows are stamped again from the start, as this node's own. A restore refuses a backup that asks for more than 256 MiB, 10 passes or 8 lanes of key derivation.
 - **Nothing in the file can be changed without the passphrase.** The configuration files, the databases, the list of entries and the node's name are part of what the encryption authenticates, so a backup edited by someone who doesn't know the passphrase (to point a router's URL at their own host, say) is refused as "wrong passphrase or damaged archive". An edited backup restores only with `--skip-secrets`.
 - **At the terminal,** `--secrets-passphrase-prompt` turns the echo off with `stty` and turns it on again when it finishes or fails; if the process is killed while asking, run `stty echo`.
 - **Through the API,** `POST /api/v1/backup` with a passphrase is for an admin's signed-in session that signed in within the last 10 minutes (403 `reauth_required` otherwise; the web UI then asks for the password again), over HTTPS or from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts that), never an agent token. One key derivation runs at a time on a node: a second backup with a passphrase gets 429 until it finishes (before any work is done). On a cluster replica a backup with a passphrase is refused (409): make it on the primary, which holds the same secrets and is the node that raises the alert. An API token, even an admin's, can't make one: run the command on the node.
@@ -422,30 +492,30 @@ Some settings can lock every admin out, put passwords on the wire, re-encrypt yo
 - **Two requests.** First a **review** (`POST /api/v1/guarded/{id}/preview`): what the change does, which node it reaches, the checks that failed, warnings, a red "weakens security" mark when it does, and the **phrase** to type (the node's name and the setting, for example `pi-a listen`; in a cluster the name is the node's ID, since a site label is shared by every node in the site). The review changes nothing, is bound to you, the node, the value and the configuration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Then the change (`POST /api/v1/guarded/{id}`) with the preview ID, the phrase (the server compares it) and a reason. Five failed phrases or tokens in ten minutes block the session (429).
 - **A change that weakens security** (adding a secret-file directory or a trusted proxy, turning on `allow_secrets_over_http` or `allow_insecure_basic`, turning off the watchdog, removing or downgrading TLS, moving the API from loopback to a wider address) also needs a sign-in within the last 10 minutes (403 `reauth_required`; the UI asks for your password again).
 - **How it takes effect.** *Immediate*: written and applied by the same reload the API uses; a failed reload keeps the previous configuration. *Window* (the listeners, the API address, TLS, trusted proxies): applied as pending next to the old sockets and kept only if you confirm it **through the new address** within `[api] confirm_window_secs` (default 120, 30 to 600, file-only): the answer carries a single-use token that the UI puts in the new address's `#fragment` (never sent to a server or a log); if you cannot reach the new address you do nothing, and the change rolls back, audited with the reason (`expired`, `cancelled`, `commit_failed`, `bind_failed`). One pending change per node. *Staged*: written at once, applied at the next start, listed as "pending restart". *Action* (cluster init, join, leave, Git, restart): one operation with its own preview, phrase and audit.
-- **Restart now.** Offered only where a supervisor will start the node again, **declared** by `TELLTALE_SUPERVISOR=systemd|docker|kubernetes|none` (set by the shipped unit, Compose bundles and Helm chart; nothing is guessed from other variables). It has its own phrase (`pi-a restart`), needs a sign-in from the last 10 minutes, is audited before the node exits, and drains for at most 5 seconds and exits with status 75. The node cannot check that your supervisor restarts it; the page says so.
+- **Restart now.** Offered only where a supervisor will start the node again, **declared** by `WRENDNS_SUPERVISOR=systemd|docker|kubernetes|none` (set by the shipped unit, Compose bundles and Helm chart; nothing is guessed from other variables). It has its own phrase (`pi-a restart`), needs a sign-in from the last 10 minutes, is audited before the node exits, and drains for at most 5 seconds and exits with status 75. The node cannot check that your supervisor restarts it; the page says so.
 - **Probation.** A node that starts with a staged or restored change marks it on probation and drops it after two starts that did not become healthy (the API bound, its own DNS answering, the secret store unlocked), so a bad value never crash-loops the node.
 - **A file wins.** A value a configuration file sets cannot be changed here (409 `set_by_file`); the control says "set by file". `[auth.oidc] disable_local_login` and `allowed_admin_networks` stay in the file.
 - **Clusters.** Every guarded setting belongs to one node, named by its node ID; Settings → System → Guarded settings has a node picker for a change on another node, and shows the other nodes' pending, restart and outcome items; there is no "all nodes" change. Only the primary forwards a request for another node, with an assertion signed by the cluster key that the target checks again itself; the pending change and its confirmation stay on the target, and the entry is recorded through the primary (409 `primary_unreachable` when it cannot be reached).
 - **Audit and alert.** `settings.guarded`, `settings.guarded_rolled_back`, `settings.guarded_refused` (no values) and `settings.guarded_restart`; the alert condition `guarded_setting_changed` goes out on a change and on its outcome.
 
 ### Recovering from a guarded change
-If a change leaves a node unreachable, the way back never needs the UI: set the value in the configuration file and restart (the file wins), run `telltale guarded list` and `telltale guarded clear <id>|--all` on the stopped node (audited as `cli:<os user>`), or start the node once with `TELLTALE_IGNORE_GUARDED=1` (it ignores every stored guarded entry without deleting any, and shows the health reason `guarded_ignored`). The symptom-by-symptom table, for systemd, Compose and Kubernetes, is in [docs/recovery.md](recovery.md).
+If a change leaves a node unreachable, the way back never needs the UI: set the value in the configuration file and restart (the file wins), run `wrendns guarded list` and `wrendns guarded clear <id>|--all` on the stopped node (audited as `cli:<os user>`), or start the node once with `WRENDNS_IGNORE_GUARDED=1` (it ignores every stored guarded entry without deleting any, and shows the health reason `guarded_ignored`). The symptom-by-symptom table, for systemd, Compose and Kubernetes, is in [docs/recovery.md](recovery.md).
 
 ## Support package
 When something goes wrong, the most useful thing to attach to an issue is a **support package**: one `.tar.gz` with what a maintainer needs to see, and nothing that identifies you. It holds build and platform facts; your settings without secrets; the cluster view and its timeline; health checks and listener checks; upstream state; list names and counts (no domains); a snapshot of the metrics; aggregate statistics; this node's recent log; and the newest [watchdog dump](#when-a-node-stops-answering-the-watchdog), if the node wrote one (without its log lines at the `strict` level). Nothing is uploaded: you make it, look it over, and attach it yourself.
 
 **Making one**
 - In the web UI: **Settings → System → Support package** (admins). **Preview what it holds** lists every file with its size and what would be replaced; **Make the package** downloads it.
-- From a shell: `telltale support-package` (it asks the running node, with an admin's API token in `TELLTALE_TOKEN` or `--token-file`). Add `--list` to see what it would hold and write nothing.
+- From a shell: `wrendns support-package` (it asks the running node, with an admin's API token in `WRENDNS_TOKEN` or `--token-file`). Add `--list` to see what it would hold and write nothing.
 - With no token, or with `--offline`, it is made from the configuration files and the log files instead, without asking a running node: use that when the node won't start. It has no live state (no cluster, health, upstreams, or metrics), and says so.
 - Over the API: `POST /api/v1/system/support-package` with `{"level": "strict"}` (admin; `?dryRun=true` answers with the manifest only; `"cluster": true` for every node's part). It isn't an MCP tool and no agent scope covers it.
 
 ```sh
-telltale support-package                               # strict (the default): ./telltale-support-<node>-<time>.tar.gz
-telltale support-package --level standard --query-sample 200 --reveal pi
-telltale support-package --keep-map map.txt            # also write what each pseudonym stands for (keep it private)
-telltale support-package --offline -c /etc/telltale/telltale.toml
-telltale support-package --cluster                     # every node's part, in one package
+wrendns support-package                               # strict (the default): ./wrendns-support-<node>-<time>.tar.gz
+wrendns support-package --level standard --query-sample 200 --reveal pi
+wrendns support-package --keep-map map.txt            # also write what each pseudonym stands for (keep it private)
+wrendns support-package --offline -c /etc/wrendns/wrendns.toml
+wrendns support-package --cluster                     # every node's part, in one package
 ```
 
 **A package for the whole cluster** (`--cluster`, or "Every node in the cluster" on the page)
@@ -471,14 +541,14 @@ In every level **secrets are removed**: passwords and hashes, API and session to
 - A part that is slow or fails (each has five seconds; the whole run, 30) is marked `missing` and the rest is complete. The package is at most 20 MiB: over that, the largest files are cut first (the newest log lines are kept). It runs on a worker thread and never touches the query path.
 - Free text (log lines, error messages) is redacted by pattern: the names and secrets your settings hold are replaced wherever they appear, then addresses, MACs, e-mail addresses, URLs, host names, home paths, PEM blocks and long token-looking strings are caught by shape. That is best effort, not a guarantee: look it over.
 
-**The log.** No platform lets a process read its own stderr back (a systemd unit has no journal access, a container's log is outside it, the Helm chart's root file system is read-only), so TelltaleDNS keeps its own small log: the last 2,000 lines at INFO and above in memory from the first line it logs, whatever `TELLTALE_LOG` says, and two rotating files of about 1 MiB under `<data_dir>/logs/` (directory `0750`, files `0640`), so lines from before a restart reach the package. About 21 KB a day on a quiet node. The files are **not** redacted (they hold client addresses): the package redacts when it is made. `[support] persist_logs = false` keeps only the in-memory lines (read at start); a read-only data directory does the same on its own and the manifest says so. Writing the log never blocks DNS: a full queue drops the line and counts it.
+**The log.** No platform lets a process read its own stderr back (a systemd unit has no journal access, a container's log is outside it, the Helm chart's root file system is read-only), so WrenDNS keeps its own small log: the last 2,000 lines at INFO and above in memory from the first line it logs, whatever `WRENDNS_LOG` says, and two rotating files of about 1 MiB under `<data_dir>/logs/` (directory `0750`, files `0640`), so lines from before a restart reach the package. About 21 KB a day on a quiet node. The files are **not** redacted (they hold client addresses): the package redacts when it is made. `[support] persist_logs = false` keeps only the in-memory lines (read at start); a read-only data directory does the same on its own and the manifest says so. Writing the log never blocks DNS: a full queue drops the line and counts it.
 
 **Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
 
 **Keeping logs** (T27.11): Settings → System has *Keep support logs on disk* (`[support] persist_logs`) for this node. Admins change it; it applies after a restart. API: `PUT` and `DELETE /api/v1/support-settings/{node}`.
 
 ## When a node stops answering (the watchdog)
-Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
+Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.wrendns.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
 
 ```toml
 [watchdog]                  # restart-only; each node has its own
@@ -490,45 +560,45 @@ max_restarts_per_hour = 6   # past it, only the dump is written; 0 never restart
 
 It watches only whether the node answers. A node that is slow, or busy for a few seconds, still passes; one that is stuck never does. A restart is limited to `max_restarts_per_hour` (counted from `<data_dir>/watchdog/restarts`), so a false alarm can't become an endless loop.
 
-**The dump** is `<data_dir>/watchdog/hang-<UTC time>.txt` (directory `0750`, files `0640`, the newest five kept). It says which check failed and for how long, the build, the uptime, memory and load, every thread (its name, state, what the kernel has it waiting on, its CPU time), **each thread's stack as raw addresses**, the executable's mappings, and the last 200 lines of the log (see Support package). It holds no client data and no settings. A support package includes the newest dump. The log says at start when the previous run ended by the watchdog, and `telltale_watchdog_last_action_timestamp_seconds` holds the time.
+**The dump** is `<data_dir>/watchdog/hang-<UTC time>.txt` (directory `0750`, files `0640`, the newest five kept). It says which check failed and for how long, the build, the uptime, memory and load, every thread (its name, state, what the kernel has it waiting on, its CPU time), **each thread's stack as raw addresses**, the executable's mappings, and the last 200 lines of the log (see Support package). It holds no client data and no settings. A support package includes the newest dump. The log says at start when the previous run ended by the watchdog, and `wrendns_watchdog_last_action_timestamp_seconds` holds the time.
 
-**Reading the stacks.** The release binary is stripped, so the dump has addresses, not names. Every release and edge build publishes the matching debug file next to the binary, `telltale-<arch>-linux.debug.zst` (`x86_64`, `aarch64`, or `armv7`), covered by the signed `SHA256SUMS`. Take the one from the same release or edge build as `telltale --version` shows, then:
+**Reading the stacks.** The release binary is stripped, so the dump has addresses, not names. Every release and edge build publishes the matching debug file next to the binary, `wrendns-<arch>-linux.debug.zst` (`x86_64`, `aarch64`, or `armv7`), covered by the signed `SHA256SUMS`. Take the one from the same release or edge build as `wrendns --version` shows, then:
 
 ```sh
-zstd -d telltale-x86_64-linux.debug.zst -o telltale.debug
-addr2line -e telltale.debug -f -C -i 0x4a1b2c3 0x4a1b2d4      # function and file:line for each address
+zstd -d wrendns-x86_64-linux.debug.zst -o wrendns.debug
+addr2line -e wrendns.debug -f -C -i 0x4a1b2c3 0x4a1b2d4      # function and file:line for each address
 ```
 The addresses are the ones in the dump, as they are in a static (non-relocated) binary; if the mappings show the binary loaded at a base other than `00400000`, subtract that base first. The first frame of each thread is the call it is stuck in, and the next ones are who called it. A thread that shows "no answer" couldn't run the handler at all, which means it is stuck inside the kernel. Attach the dump (or the support package) to an issue.
 
-**Metrics:** `telltale_watchdog_enabled`, `telltale_watchdog_check_age_seconds{check="runtime"|"listener"}` (seconds since each check last passed: near `stall_secs` means the node is about to be called stuck), and `telltale_watchdog_last_action_timestamp_seconds`.
+**Metrics:** `wrendns_watchdog_enabled`, `wrendns_watchdog_check_age_seconds{check="runtime"|"listener"}` (seconds since each check last passed: near `stall_secs` means the node is about to be called stuck), and `wrendns_watchdog_last_action_timestamp_seconds`.
 
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
 Use a release version, or `0.1.0-edge.<n>` builds that follow `main`. Its source is in
-`deploy/helm/telltale`, and `helm install telltale deploy/helm/telltale` from a checkout works too:
+`deploy/helm/wrendns`, and `helm install wrendns deploy/helm/wrendns` from a checkout works too:
 ```sh
-helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --version <version> \
-  -n telltale --create-namespace \
+helm install wrendns oci://ghcr.io/nbacheller/charts/wrendns --version <version> \
+  -n wrendns --create-namespace \
   --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
-kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (DHCP) here
+kubectl -n wrendns get svc wrendns-dns          # EXTERNAL-IP: point clients (DHCP) here
 ```
 **Every option** is in the chart's commented values file:
-`helm show values oci://ghcr.io/paimonsoror/charts/telltale --version <version> > values.yaml`
-(or [`deploy/helm/telltale/values.yaml`](../deploy/helm/telltale/values.yaml); the site's
-[Helm values](https://paimonsoror.github.io/telltaledns/helm-values.html) page lists each key
+`helm show values oci://ghcr.io/nbacheller/charts/wrendns --version <version> > values.yaml`
+(or [`deploy/helm/wrendns/values.yaml`](../deploy/helm/wrendns/values.yaml); the site's
+[Helm values](https://wrendns.com/helm-values.html) page lists each key
 with its default). Keep only what you change in your own file and install with `-f my-values.yaml`;
 the chart's schema rejects a mistyped value with its path.
 - **One LoadBalancer Service, UDP and TCP 53**, with `externalTrafficPolicy: Local` so the query log and per-device rules see real client addresses (verified in CI: a query through the LoadBalancer is logged with the sender's address). `Cluster` hides clients behind node addresses, and the install notes warn about it. Use your LB's annotation for a fixed IP: MetalLB `metallb.universe.tf/loadBalancerIPs`, Cilium `io.cilium/lb-ipam-ips`, kube-vip `kube-vip.io/loadbalancerIPs`.
 - **`hostNetwork: true`** answers on port 53 of the node itself (no LoadBalancer, MAC addresses visible). Binding 53 there needs root with only `NET_BIND_SERVICE` kept; on Ubuntu nodes turn off systemd-resolved's stub listener first. k3s's CoreDNS doesn't conflict.
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
-- **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`). The key of the [stored secrets](#stored-secrets) is, by default, `secrets.key` on the controller's volume; better, give your own Secret with `secretsKey.existingSecret` (entry `secretsKey.key`, default `secrets.key`, holding `ttsk1:` and 43 base64url characters): it is mounted read-only on the controller only, with `[node] secrets_key_file` set, and never on resolver pods, which hold no stored secrets. `secretsKey.generate: true` makes that Secret with the chart and keeps it (Helm `lookup`), which doesn't work under `helm template` or Argo CD: each render would make a new key and lock the store. With `persistence.enabled: false` stored secrets are lost at every restart, and health says `secrets_ephemeral`.
+- **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/wrendns-secrets/<name>` (for example an OIDC `client_secret_file`). The key of the [stored secrets](#stored-secrets) is, by default, `secrets.key` on the controller's volume; better, give your own Secret with `secretsKey.existingSecret` (entry `secretsKey.key`, default `secrets.key`, holding `ttsk1:` and 43 base64url characters): it is mounted read-only on the controller only, with `[node] secrets_key_file` set, and never on resolver pods, which hold no stored secrets. `secretsKey.generate: true` makes that Secret with the chart and keeps it (Helm `lookup`), which doesn't work under `helm template` or Argo CD: each render would make a new key and lock the store. With `persistence.enabled: false` stored secrets are lost at every restart, and health says `secrets_ephemeral`.
 - **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853), `encrypted.doh.enabled` (443, plus `encrypted.doh.http3`), and `encrypted.doq.enabled` add DoT, DoH, and DoQ to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
 - **One replica or many.** `mode: allInOne` (the default) is one StatefulSet with a volume for lists, the query log, and users. **`mode: scaled`** adds resolver pods:
   ```sh
-  helm install telltale deploy/helm/telltale -n telltale --set mode=scaled --set resolvers.replicas=3
+  helm install wrendns deploy/helm/wrendns -n wrendns --set mode=scaled --set resolvers.replicas=3
   ```
   - The StatefulSet becomes the cluster's **controller**: it creates the cluster on first start, keeps the volume, and serves the UI and API.
   - Each **resolver pod** joins it automatically with a Secret the chart generates (48 random characters; with `cluster.bootstrapSecret.existingSecret`, use at least 32, or the log warns). It takes the controller's configuration and compiled lists, and ships its query log to the controller's volume.
@@ -538,8 +608,8 @@ the chart's schema rejects a mistyped value with its path.
   - **A node outside Kubernetes** (a Pi) can join the same cluster:
     - expose the cluster port with `cluster.service.type: LoadBalancer`;
     - list that address in `cluster.advertise` (e.g. `["https://10.50.5.100:9443"]`);
-    - create a token on the controller (`kubectl exec sts/telltale -- telltale cluster token create --url https://10.50.5.100:9443 -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml -c /etc/telltale/20-controller.toml`);
-    - then run `telltale cluster join <token>` on the Pi.
+    - create a token on the controller (`kubectl exec sts/wrendns -- wrendns cluster token create --url https://10.50.5.100:9443 -c /etc/wrendns/00-chart.toml -c /etc/wrendns/10-values.toml -c /etc/wrendns/20-controller.toml`);
+    - then run `wrendns cluster join <token>` on the Pi.
   - **Staged rollouts** (off by default): `cluster.rollout.canaries: [ephemeral]` gives each change
     to the resolver pods (with the controller) first and to a node outside Kubernetes after a
     5-minute bake, pinning the cluster back if the pods start failing. See
@@ -547,8 +617,8 @@ the chart's schema rejects a mistyped value with its path.
   - With Argo CD (which can't keep a generated Secret stable), create the join Secret yourself and set `cluster.bootstrapSecret.existingSecret`. A changed secret applies without restarting the controller.
   - `daemonSet` (host-network resolvers on every node) comes later.
   - **Don't raise the replica count of a workload that shares one volume.** Every copy would
-    share one node identity, `state.db`, and query log. Each TelltaleDNS process locks its data
-    directory (`<data_dir>/telltale.lock`) for as long as it runs. A second process pointed at
+    share one node identity, `state.db`, and query log. Each WrenDNS process locks its data
+    directory (`<data_dir>/wrendns.lock`) for as long as it runs. A second process pointed at
     the same directory waits up to 10 s for it, then exits with an error naming the holder (pid,
     host or pod, and since when). The lock is released when the process exits, even after a
     crash. Use `mode: scaled` for more pods. With your own manifests, give a single-volume
@@ -610,7 +680,7 @@ the chart's schema rejects a mistyped value with its path.
   `resolvers.ephemeralTtlSeconds`, as before. Only resolver pods leave this way; the
   controller and nodes outside Kubernetes stay members across restarts.
 - **Rollouts without lost lookups.** On shutdown a pod reports not ready, then keeps answering
-  for `drainDelaySeconds` (default 5; passed as `TELLTALE_DRAIN_DELAY_SECS`, which is
+  for `drainDelaySeconds` (default 5; passed as `WRENDNS_DRAIN_DELAY_SECS`, which is
   `[node] drain_delay_secs`) while the Service stops
   sending it queries, and only then stops. Outside Kubernetes the default is 0.
 - **Metrics.** With `serviceMonitor.enabled`, Prometheus scrapes the controller and every
@@ -620,13 +690,13 @@ the chart's schema rejects a mistyped value with its path.
   before 0.5.0 they watched only the controller). With the kube-prometheus-stack
   chart, give the rules its `release` label so Prometheus loads them
   (`prometheusRule.labels: {release: <its release name>}`). On the controller, per member:
-  `telltale_cluster_peer_info{kube_node, pod}`,
-  `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
-  `telltale_cluster_peer_restarts`, per member.
+  `wrendns_cluster_peer_info{kube_node, pod}`,
+  `wrendns_cluster_peer_queries_per_second`, `wrendns_cluster_peer_cache_hit_ratio`, and
+  `wrendns_cluster_peer_restarts`, per member.
 
 ### Kubernetes workloads as devices
 Your cluster's pods can be devices like any laptop or TV: named by the workload that runs
-them, grouped, filtered, and watched. TelltaleDNS reads each pod's owner and calls the pod's
+them, grouped, filtered, and watched. WrenDNS reads each pod's owner and calls the pod's
 address by its **workload**: `media/deploy/jellyfin` for the Deployment `jellyfin` in the
 namespace `media`, and likewise `sts`, `ds`, `job`, `cronjob` (every run of a CronJob is one
 device), and `pod` for a bare pod. A Deployment's three replicas are one device, before and
@@ -637,7 +707,7 @@ A new pod often asks DNS before Kubernetes reports its address. The query log st
 first queries by the workload. The dashboard and the anomaly engine wait up to 2 seconds for an
 address they don't know yet, so a CronJob's short runs count under the CronJob. While this is on,
 those numbers run up to 2 seconds behind for devices outside the cluster. A restart of
-TelltaleDNS keeps all of it: each node saves its workload counts hourly and at shutdown
+WrenDNS keeps all of it: each node saves its workload counts hourly and at shutdown
 (`workload-counts.json` in the data directory), and the restored top lists name workloads, not
 the pods' addresses.
 
@@ -647,7 +717,7 @@ kubernetes:
   enabled: true
   clusterDns: 10.43.0.10     # kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'
   podCidr: 10.42.0.0/16      # optional: PTR lookups for pod and Service addresses go to CoreDNS too
-  serviceCidr: 10.43.0.0/16  #   (leave both out if the nodes' own DNS includes TelltaleDNS, below)
+  serviceCidr: 10.43.0.0/16  #   (leave both out if the nodes' own DNS includes WrenDNS, below)
 service:
   dns:
     clusterIP: 10.43.0.53    # a fixed address inside the Service network, for the kubelet setting
@@ -662,9 +732,9 @@ doesn't get it, since it can't reach CoreDNS, and answers `cluster.local` like a
 Set Kubernetes options through these values, not as a `[kubernetes]` table in `config`: the
 chart writes that table.
 
-**Pods must ask TelltaleDNS directly.** If they ask CoreDNS and CoreDNS forwards to
-TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
-1. **The whole cluster (recommended).** Point the kubelet's cluster DNS at TelltaleDNS's DNS
+**Pods must ask WrenDNS directly.** If they ask CoreDNS and CoreDNS forwards to
+WrenDNS, every query comes from CoreDNS's address. Two ways to do it:
+1. **The whole cluster (recommended).** Point the kubelet's cluster DNS at WrenDNS's DNS
    Service first and CoreDNS second. On k3s, in `/etc/rancher/k3s/config.yaml` on every
    node, then restart k3s:
    ```yaml
@@ -675,13 +745,13 @@ TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
    Service (k3s keeps its own value in the kubelet's configuration file, and the flag wins).
    Restarting k3s leaves running pods running; new pods use the setting, so restart workloads
    (`kubectl -n media rollout restart deploy`) to move the ones that are running. On kubeadm
-   clusters, set `clusterDNS` in the kubelet's configuration. TelltaleDNS keeps answering
+   clusters, set `clusterDNS` in the kubelet's configuration. WrenDNS keeps answering
    the cluster's names through CoreDNS, so Services resolve as before. CoreDNS second keeps
    lookups working if the DNS Service has no ready pods; images based on Alpine (musl) ask
    both servers at once, so some of their lookups arrive through CoreDNS and count under it.
    To start new clusters this way, have the install script write the file before installing
    k3s (`sudo install -D -m 0600 k3s-config.yaml /etc/rancher/k3s/config.yaml`).
-   TelltaleDNS's own pods keep asking CoreDNS (`kubernetes.ownPodsUseClusterDns`, on by
+   WrenDNS's own pods keep asking CoreDNS (`kubernetes.ownPodsUseClusterDns`, on by
    default), so they never depend on their own Service.
 2. **One workload at a time** (a good first step before the whole cluster). Give its pods
    their own DNS settings:
@@ -695,13 +765,13 @@ TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
    ```
 **The nodes' own DNS.** CoreDNS sends everything outside the cluster to the node's DNS
 servers (its `forward . /etc/resolv.conf`), so give each node two, for example a Pi and
-TelltaleDNS's LoadBalancer address. On Ubuntu with NetworkManager, add the second to the
+WrenDNS's LoadBalancer address. On Ubuntu with NetworkManager, add the second to the
 netplan file's `nameservers.addresses`, apply it without taking the link down (`sudo netplan
 generate && sudo nmcli connection reload && sudo nmcli device reapply <interface>`), then
 `kubectl -n kube-system rollout restart deploy/coredns`. Once the nodes' DNS includes
-TelltaleDNS, leave `kubernetes.podCidr` and `serviceCidr` out: CoreDNS passes reverse names it
+WrenDNS, leave `kubernetes.podCidr` and `serviceCidr` out: CoreDNS passes reverse names it
 doesn't know (`fallthrough in-addr.arpa`) to the node's servers, so an unknown pod address's
-PTR would loop between TelltaleDNS and CoreDNS.
+PTR would loop between WrenDNS and CoreDNS.
 
 Traffic from a pod to a Service address keeps the pod's own address (kube-proxy and Cilium don't
 rewrite it), so "Client IPs appear masked" isn't affected. With `ndots: 5` you'll see
@@ -709,8 +779,8 @@ questions like `grafana.com.media.svc.cluster.local`. They go to CoreDNS and com
 NXDOMAIN: that's how Kubernetes searches, and the traffic map shows it as it is.
 
 **Groups.** A workload's group is the first of:
-1. the label `telltaledns.io/group=<group>` on its pods;
-2. the same label on its namespace (`kubectl label namespace media telltaledns.io/group=media`);
+1. the label `wrendns.com/group=<group>` on its pods;
+2. the same label on its namespace (`kubectl label namespace media wrendns.com/group=media`);
 3. the first matching rule of `kubernetes.map` (`[{namespace: "media*", group: "iot"}]`, with
    optional `kind` and `name`), or one made in the UI;
 4. `kubernetes.defaultGroup`;
@@ -741,21 +811,21 @@ works as `client` in the query log, the timeline, rhythm, identity, and explain.
 
 **When the API server can't be reached**, DNS answers as always. Pods keep the names they had,
 and new pods are plain addresses until the watch is back. After 15 minutes the health level
-turns **degraded** (`kubernetes_stale`), and the `TelltaleDNSKubernetesWatchStale` alert
-fires. Metrics: `telltale_kubernetes_pods`, `telltale_kubernetes_workloads`,
-`telltale_kubernetes_table_age_seconds`, `telltale_kubernetes_watch_errors_total`,
-`telltale_kubernetes_sync_total{result}`, and `telltale_kubernetes_watching`.
+turns **degraded** (`kubernetes_stale`), and the `WrenDNSKubernetesWatchStale` alert
+fires. Metrics: `wrendns_kubernetes_pods`, `wrendns_kubernetes_workloads`,
+`wrendns_kubernetes_table_age_seconds`, `wrendns_kubernetes_watch_errors_total`,
+`wrendns_kubernetes_sync_total{result}`, and `wrendns_kubernetes_watching`.
 
 Limits: one Kubernetes API per cluster; pods on the host network are the node's address and
 stay that; a deleted pod's address stays its own for 30 seconds (queries still in flight), then
 the history keeps who held it for 30 days; at most 20,000 pod addresses (the metric
-`telltale_kubernetes_addresses_dropped` says when more are left out). TelltaleDNS doesn't answer
+`wrendns_kubernetes_addresses_dropped` says when more are left out). WrenDNS doesn't answer
 `cluster.local` itself: CoreDNS does.
 
 ## Seeing real client IPs
-Per-device statistics, groups, and rules need each query's real sender. TelltaleDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `telltale_client_ips_masked` is 1, and the log says so once.
+Per-device statistics, groups, and rules need each query's real sender. WrenDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `wrendns_client_ips_masked` is 1, and the log says so once.
 
-Infrastructure addresses are loopback, this host's default gateways (a Docker bridge or a Kubernetes pod's gateway; on the LAN, a router), the node addresses the Helm chart passes in `TELLTALE_NODE_IPS`, and any networks in `[clients] infrastructure`:
+Infrastructure addresses are loopback, this host's default gateways (a Docker bridge or a Kubernetes pod's gateway; on the LAN, a router), the node addresses the Helm chart passes in `WRENDNS_NODE_IPS`, and any networks in `[clients] infrastructure`:
 ```toml
 [clients]
 infrastructure = ["10.42.0.0/16"]   # e.g. your cluster's pod network
@@ -763,14 +833,14 @@ infrastructure = ["10.42.0.0/16"]   # e.g. your cluster's pod network
 Common causes and fixes:
 - **Kubernetes, `externalTrafficPolicy: Cluster`**: the node rewrites the sender. Use `Local` (the chart's default) or `hostNetwork: true`.
 - **Docker with a userland proxy** (IPv6 or `127.0.0.1` port publishing): run with `network_mode: host`, or publish on the LAN address.
-- **A router that forwards DNS** (its own resolver points at TelltaleDNS and clients use the router): hand out TelltaleDNS's address in DHCP instead. If you can't, enable the router's EDNS MAC option (dnsmasq `add-mac`) and list the router in `[clients] trust_edns_mac_from` so devices are recognized by MAC.
+- **A router that forwards DNS** (its own resolver points at WrenDNS and clients use the router): hand out WrenDNS's address in DHCP instead. If you can't, enable the router's EDNS MAC option (dnsmasq `add-mac`) and list the router in `[clients] trust_edns_mac_from` so devices are recognized by MAC.
 
 ## Upstream presets
 Instead of looking up addresses, start from a preset:
 ```sh
-telltale presets list                                   # Cloudflare, Google, Quad9, AdGuard, Mullvad, Control D, NextDNS, ...
-telltale presets show quad9 --proto tls,https --group default >> telltale.toml
-telltale presets show nextdns --param profile=abc123    # templated presets need your account ID
+wrendns presets list                                   # Cloudflare, Google, Quad9, AdGuard, Mullvad, Control D, NextDNS, ...
+wrendns presets show quad9 --proto tls,https --group default >> wrendns.toml
+wrendns presets show nextdns --param profile=abc123    # templated presets need your account ID
 ```
 `show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. That includes the DoQ (`quic://`) endpoints.
 
@@ -780,48 +850,48 @@ The **Upstreams** page opens on a simple view, like Pi-hole's: tick the public r
 Saving writes one upstream per address, named `pub-<provider>-<protocol>-<n>` (for example `pub-cloudflare-tls-1`), and sets the `default` upstream group to the `fastest` strategy over them. Entries the simple view didn't make (from your config files, a Pi-hole import, or the Advanced view) are listed under "Also set up" and left alone; they stay in the `default` group. **Advanced** is the technical list and forms, unchanged: the simple view's entries show there too, and switching views loses nothing. Each upstream on the page says where it is defined: the config file, the API or UI, or both. The catalog is `presets/upstreams.toml`; `GET /api/v1/upstream-presets` (and the MCP tool `list_upstream_presets`) read it with whether this node has an IPv6 route.
 
 ## Encrypted DNS for your devices (DoT, DoH, and DoQ)
-Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:
+Phones, laptops, and browsers can reach WrenDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:
 ```toml
 [[listen]]
 proto = "dot"
 addr = "0.0.0.0:853"
-tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }
 
 [[listen]]
 proto = "doh"
 addr = "0.0.0.0:443"
 path = "/dns-query"                     # default; /dns-query/<client-id> also works
-tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }
 
 [[listen]]
 proto = "doq"
 addr = "0.0.0.0:853"                    # UDP 853 (DoT uses TCP 853: both fit)
-tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }
 
 [[listen]]
 proto = "doh3"                          # DoH over HTTP/3: UDP 443 next to the TCP one
 addr = "0.0.0.0:443"
-tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }
 ```
 - **Certificate:** a PEM chain (leaf first) and key, valid for the name devices use, e.g. `dns.example.com` from Let's Encrypt (DNS-01 works for internal names). Both files are re-read within 10 seconds of changing, so renewals (certbot, cert-manager) need no restart; a broken renewal keeps the old certificate and logs a warning.
 - **DoH** speaks HTTP/2 and HTTP/1.1, `GET ?dns=` and `POST application/dns-message`, and answers with `Cache-Control: max-age` set to the answer's smallest TTL. DoT uses ALPN `dot` with RFC 7766 pipelining, like plain TCP. With a `doh3` listener, DoH also speaks HTTP/3 (ALPN `h3`, the same paths and client IDs), and HTTP/2 answers carry `Alt-Svc: h3=":443"` so browsers and apps that support it switch. DoQ uses ALPN `doq`: each query has its own QUIC stream, so a slow answer never holds up the others, and an idle connection closes after 30 s. 0-RTT is off (an early query could be replayed).
 - **Devices identify themselves:** with a wildcard certificate (`dns.example.com` and `*.dns.example.com`), a device configured with `kids-tablet.dns.example.com` (Android Private DNS, DoT, DoH, or DoQ) or the URL `https://dns.example.com/dns-query/kids-tablet` gets the client ID `kids-tablet`, which `[[client]] match = ["id:kids-tablet"]` recognizes wherever the device is, even on mobile data. The path wins over the name.
 - **Behind a load balancer:** `proxy_protocol = true` on a `tcp`, `dot`, or `doh` listener makes it read the client's address from a PROXY protocol v2 header (HAProxy, Traefik, AWS NLB, ...). Every connection must then start with one, so only enable it when the balancer sends it, and don't let clients reach the listener directly. `LOCAL` connections (the balancer's health checks) keep the socket address.
-- **Slow and silent clients:** on `tcp` and `dot` listeners a connection that sends nothing for the idle timeout (10 s) is closed, and so is one whose client stops reading answers, so a stalled client can't hold one of the 1,024 connection slots. A query longer than 4,096 bytes (the UDP receive buffer's size; real queries are a few dozen bytes) closes the connection. Closures are counted in `telltale_tcp_idle_closed_total` and `telltale_tcp_stalled_closed_total`.
-- **Connection limits, per listener** (`tcp`, `dot`, `doh`, `doh3`, `doq`): `max_connections` (default 1,024) is how many connections it holds open at once, and `max_connections_per_address` (default 32, `0` = no limit) is how many one client address may hold, so a single host can't take every slot. An IPv6 client counts per /64, and with `proxy_protocol = true` the client's address is the one in the PROXY header. Connections over a limit are refused (counted in `telltale_tcp_rejected_per_address_total`, `telltale_doh_rejected_per_address_total`, `telltale_doq_rejected_per_address_total`, next to the `*_rejected_total` counters for the overall limit). **Behind a load balancer that hides client addresses** (no PROXY protocol, source NAT, or Kubernetes `externalTrafficPolicy: Cluster`), every client looks like the balancer, so raise `max_connections_per_address` or set it to `0`. Changing a limit restarts that listener (open connections finish first).
+- **Slow and silent clients:** on `tcp` and `dot` listeners a connection that sends nothing for the idle timeout (10 s) is closed, and so is one whose client stops reading answers, so a stalled client can't hold one of the 1,024 connection slots. A query longer than 4,096 bytes (the UDP receive buffer's size; real queries are a few dozen bytes) closes the connection. Closures are counted in `wrendns_tcp_idle_closed_total` and `wrendns_tcp_stalled_closed_total`.
+- **Connection limits, per listener** (`tcp`, `dot`, `doh`, `doh3`, `doq`): `max_connections` (default 1,024) is how many connections it holds open at once, and `max_connections_per_address` (default 32, `0` = no limit) is how many one client address may hold, so a single host can't take every slot. An IPv6 client counts per /64, and with `proxy_protocol = true` the client's address is the one in the PROXY header. Connections over a limit are refused (counted in `wrendns_tcp_rejected_per_address_total`, `wrendns_doh_rejected_per_address_total`, `wrendns_doq_rejected_per_address_total`, next to the `*_rejected_total` counters for the overall limit). **Behind a load balancer that hides client addresses** (no PROXY protocol, source NAT, or Kubernetes `externalTrafficPolicy: Cluster`), every client looks like the balancer, so raise `max_connections_per_address` or set it to `0`. Changing a limit restarts that listener (open connections finish first).
   ```toml
   [[listen]]
   proto = "dot"
   addr = "0.0.0.0:853"
-  tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+  tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }
   max_connections = 2048
   max_connections_per_address = 64
   ```
-- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_rejected_total` and `telltale_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` enforce like `tcp`, `dot`, and `doh`), `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
+- Metrics: queries are counted per transport (`wrendns_queries_total{proto="dot"|"doh"|"doq"}`), plus `wrendns_doq_connections_total`, `wrendns_doq_rejected_total` and `wrendns_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` enforce like `tcp`, `dot`, and `doh`), `wrendns_doq_protocol_errors_total`, `wrendns_doh_requests_total`, `wrendns_doh_bad_requests_total`, `wrendns_tls_handshake_failures_total`, and `wrendns_proxy_protocol_rejected_total`.
 - In Kubernetes, enable `encrypted.dot` / `encrypted.doh` (plus `encrypted.doh.http3`) / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
 
 ## Recursive resolution (no forwarder)
-TelltaleDNS can resolve names itself, from the root servers down, like `unbound` next to a Pi-hole, so no public resolver sees your lookups:
+WrenDNS can resolve names itself, from the root servers down, like `unbound` next to a Pi-hole, so no public resolver sees your lookups:
 ```toml
 [[upstream]]
 name = "recursive"
@@ -842,7 +912,7 @@ members = ["recursive"]
 - **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization` (off by default), each query asks for a random mix of upper and lower case, and only an answer that echoes it exactly is accepted: it adds about one bit of entropy per letter to the 32 bits of ID and port an off-path spoofer must guess, so it is worth turning on for a recursive resolver. An answer with the case changed is ignored like any other stray packet while the real one is awaited; only a server that never echoes the case is remembered (after one timeout) and asked without it.
 - **Fast after the first time:** zone cuts and server addresses are remembered (bounded, by their TTLs), answers go to the normal cache, and servers are picked by measured response time. A first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.
 - **Hedged:** when a server is slower than usual (1.5 times its usual response time, at least 150 ms), the next server is asked too, and the first good answer wins, so one sluggish server doesn't hold up a lookup.
-- **Root priming** (RFC 8109): on first use, the built-in root server addresses are only used to ask for the root's current list, which is then remembered for a day. A root server that changes address doesn't need a new TelltaleDNS.
+- **Root priming** (RFC 8109): on first use, the built-in root server addresses are only used to ask for the root's current list, which is then remembered for a day. A root server that changes address doesn't need a new WrenDNS.
 - **DNSSEC:** with `[dnssec] mode = "validate"` the signatures come along and are checked from the root's trust anchor, as for forwarded answers.
 - It's an upstream like any other: mix it into a group with forwarders (for example `strategy = "failover"` with a public resolver as the fallback), or route only some domains through it.
 - Limits that stop loops and broken zones: 16 CNAME hops, 32 referrals, 96 queries per question; servers get at most 1.2 s each.
@@ -872,8 +942,8 @@ url = "quic://94.140.14.14"                 # DNS over QUIC, port 853
 tls_server_name = "dns.adguard-dns.com"
 ```
 - Certificates are verified against the built-in Mozilla root set, so no CA files are needed, even in a minimal container. `tls_insecure_skip_verify = true` turns verification off (a warning is logged; don't use it on untrusted networks).
-- **Hostname upstreams** are looked up through `bootstrap` servers, or the system resolvers from `/etc/resolv.conf` when `bootstrap` is empty (never through TelltaleDNS itself), and the result is cached for its TTL. To skip the lookup, put the IP in the URL and set `tls_server_name`.
-- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection. A new connection finishes its handshake even when the query that started it runs out of time, so the next query finds it ready. A connection that stops answering altogether (queries waiting 3 s with nothing coming back, as when something along the way drops it silently) is closed, and its queries retry at once on a new one. The `telltale_upstream_connections_*` metrics show how often connections open, why they close, and whether TLS sessions resume. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT; DoH over HTTP/3 does the same with a request per query.
+- **Hostname upstreams** are looked up through `bootstrap` servers, or the system resolvers from `/etc/resolv.conf` when `bootstrap` is empty (never through WrenDNS itself), and the result is cached for its TTL. To skip the lookup, put the IP in the URL and set `tls_server_name`.
+- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection. A new connection finishes its handshake even when the query that started it runs out of time, so the next query finds it ready. A connection that stops answering altogether (queries waiting 3 s with nothing coming back, as when something along the way drops it silently) is closed, and its queries retry at once on a new one. The `wrendns_upstream_connections_*` metrics show how often connections open, why they close, and whether TLS sessions resume. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT; DoH over HTTP/3 does the same with a request per query.
 - `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
 - `doh_method = "get"` sends DoH queries as `GET /dns-query?dns=…` (RFC 8484 §4.1) instead of POST, for providers or HTTP caches that prefer it. The query ID is 0 either way, so identical questions make identical URLs.
 
@@ -900,7 +970,7 @@ relay = "sdns://gQ8yMDMuMC4xMTMuNzo0NDM"     # a relay stamp (this one is 203.0.
 - `relay` is only valid on a DNSCrypt (`sdns://`) upstream.
 
 ### Client subnet (ECS)
-Some CDNs pick a server near the client by the subnet a resolver sends along (EDNS Client Subnet, RFC 7871). TelltaleDNS never sends your devices' subnets. When a far-away public resolver gets you slow CDN answers, you can send a subnet of your choice instead, for example your ISP's public block:
+Some CDNs pick a server near the client by the subnet a resolver sends along (EDNS Client Subnet, RFC 7871). WrenDNS never sends your devices' subnets. When a far-away public resolver gets you slow CDN answers, you can send a subnet of your choice instead, for example your ISP's public block:
 ```toml
 [[upstream]]
 name = "quad9-ecs"
@@ -911,7 +981,7 @@ ecs = "203.0.113.0/24"            # sent with every query (default: "strip", not
 - The same subnet goes with every query, so cached answers stay valid for everyone and no device's address leaves your network.
 - ECS options from your devices are never forwarded, and an upstream's ECS reply never reaches them.
 
-When TelltaleDNS serves clients on public addresses (a hosted resolver, or a VPS for a family spread over several ISPs), `ecs = "client"` sends each client's own subnet instead:
+When WrenDNS serves clients on public addresses (a hosted resolver, or a VPS for a family spread over several ISPs), `ecs = "client"` sends each client's own subnet instead:
 ```toml
 [[upstream]]
 name = "quad9-ecs"
@@ -943,9 +1013,9 @@ proxy = "socks5://127.0.0.1:9050"           # or "http://127.0.0.1:3128", with o
 name = "office-dot"
 url = "tls://10.0.0.53"
 tls_server_name = "dns.office.example"
-tls_ca = "/etc/telltale/office-ca.pem"      # trust this CA for this upstream only
-tls_client_cert = "/etc/telltale/client.pem" # servers that require a client certificate (mTLS)
-tls_client_key = "/etc/telltale/client.key"
+tls_ca = "/etc/wrendns/office-ca.pem"      # trust this CA for this upstream only
+tls_client_cert = "/etc/wrendns/client.pem" # servers that require a client certificate (mTLS)
+tls_client_key = "/etc/wrendns/client.key"
 spki_pins = ["kXbB2F3...base64...="]        # the server's key must be one of these
 ```
 - **Pins** are the base64 SHA-256 of the server certificate's public key (SPKI), checked after the usual verification. With `tls_insecure_skip_verify = true` only the pin is checked, which suits a self-signed server you pin. List two pins (current and next key) to rotate keys without an outage. To get a server's pin:
@@ -957,7 +1027,7 @@ spki_pins = ["kXbB2F3...base64...="]        # the server's key must be one of th
 - The files are read when the configuration loads (and on every reload); a missing or unreadable file is a configuration error.
 
 ### Plugin upstreams
-Anything that can answer DNS can be an upstream, in any language, without linking into TelltaleDNS: a plugin speaks plain DNS messages over a stream (a 2-byte length, then the message, as DNS over TCP does) on a Unix socket.
+Anything that can answer DNS can be an upstream, in any language, without linking into WrenDNS: a plugin speaks plain DNS messages over a stream (a 2-byte length, then the message, as DNS over TCP does) on a Unix socket.
 ```toml
 [[upstream]]
 name = "magicdns-bridge"
@@ -968,21 +1038,21 @@ name = "consul"
 url = "exec:///usr/local/bin/consul-dns-plugin"
 args = ["--datacenter", "home"]
 ```
-- With `exec://`, TelltaleDNS starts the program and tells it where to listen in `TELLTALE_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `TELLTALE_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to TelltaleDNS's log. It's stopped when the configuration changes or TelltaleDNS stops.
-- The plugin gets TelltaleDNS's environment except every `TELLTALE_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `TELLTALE_SECRETS_KEY`, `TELLTALE_SECRETS_PREVIOUS_KEY`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `TELLTALE_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `telltale config check --print` show them as `<redacted>`.
+- With `exec://`, WrenDNS starts the program and tells it where to listen in `WRENDNS_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `WRENDNS_UPSTREAM` has the upstream's name; for this release the pre-rename names `TELLTALE_PLUGIN_SOCKET` and `TELLTALE_UPSTREAM` are set too, so an older plugin keeps working). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to WrenDNS's log. It's stopped when the configuration changes or WrenDNS stops. <!-- rebrand:keep -->
+- The plugin gets WrenDNS's environment except every `WRENDNS_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `WRENDNS_SECRETS_KEY`, `WRENDNS_SECRETS_PREVIOUS_KEY`, `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD`, `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `WRENDNS_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `wrendns config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 
-## Commercial filters behind TelltaleDNS
-*(REQ: UPS-013; ADR-997)* Devices ask TelltaleDNS (DHCP hands out its address), and TelltaleDNS asks a commercial filter for the names it doesn't answer itself. You keep TelltaleDNS's per-device policy and visibility, and the commercial categories apply on top.
+## Commercial filters behind WrenDNS
+*(REQ: UPS-013; ADR-997)* Devices ask WrenDNS (DHCP hands out its address), and WrenDNS asks a commercial filter for the names it doesn't answer itself. You keep WrenDNS's per-device policy and visibility, and the commercial categories apply on top.
 
 ### With a gateway that filters traffic (UniFi content filtering, CyberSecure)
-A gateway's content filtering may work on DNS, not on traffic. That was measured on a UniFi Cloud Gateway Fiber (2026-11-18): its content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (TelltaleDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and TelltaleDNS for a name the filter should block, then try the site's address directly. On such a gateway:
-- **A device that uses TelltaleDNS is filtered only by TelltaleDNS** (its lists and categories), unless TelltaleDNS forwards that device's group to the gateway's DNS from the device's own network (the `source` setting below, with the node on that VLAN, see "Serving several networks"), so the gateway applies that network's profile.
-- **TelltaleDNS** decides what a name resolves to, per device and group, and records who asked what.
+A gateway's content filtering may work on DNS, not on traffic. That was measured on a UniFi Cloud Gateway Fiber (2026-11-18): its content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (WrenDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and WrenDNS for a name the filter should block, then try the site's address directly. On such a gateway:
+- **A device that uses WrenDNS is filtered only by WrenDNS** (its lists and categories), unless WrenDNS forwards that device's group to the gateway's DNS from the device's own network (the `source` setting below, with the node on that VLAN, see "Serving several networks"), so the gateway applies that network's profile.
+- **WrenDNS** decides what a name resolves to, per device and group, and records who asked what.
 - **The gateway** catches a device that bypasses the LAN resolver with plain DNS to the internet; DoH or DoT in an app bypasses both unless the gateway blocks encrypted DNS.
-- Group devices in both places. TelltaleDNS groups are in **Groups**; UniFi's profiles are in its own console. They are not synchronised by this feature.
+- Group devices in both places. WrenDNS groups are in **Groups**; UniFi's profiles are in its own console. They are not synchronised by this feature.
 
-- **What the gateway sees of TelltaleDNS's lookups:** only the encrypted DoT or DoH connections from the TelltaleDNS node to the commercial resolver, never which device asked for which name (that is visible only to TelltaleDNS, and to the resolver). If the gateway's encrypted-DNS or DoH blocking applies to the network the TelltaleDNS node is on, it can block those upstream connections and every query to that upstream then fails. Exempt the TelltaleDNS node (by its address or its device) from that blocking in the UniFi console.
+- **What the gateway sees of WrenDNS's lookups:** only the encrypted DoT or DoH connections from the WrenDNS node to the commercial resolver, never which device asked for which name (that is visible only to WrenDNS, and to the resolver). If the gateway's encrypted-DNS or DoH blocking applies to the network the WrenDNS node is on, it can block those upstream connections and every query to that upstream then fails. Exempt the WrenDNS node (by its address or its device) from that blocking in the UniFi console.
 
 ### Commercial DoH and DoT filters, one per group
 Send a group's questions to a commercial resolver with [per-group upstreams](#upstream-servers-per-group): an `[[upstream]]` for the service, an `[[upstream_group]]` holding it, and `upstreams = "..."` on the group. Their privacy terms are theirs, and every one sees the names that group looks up. Forms below were checked on 2026-11-18 against each provider's own documentation, except where a cell says it comes from a community forum.
@@ -990,13 +1060,13 @@ Send a group's questions to a commercial resolver with [per-group upstreams](#up
 | Service | DoH form | Device name in the URL | Privacy, in one line |
 |---|---|---|---|
 | NextDNS | `https://dns.nextdns.io/<profile>` | Yes: `https://dns.nextdns.io/<profile>/<device-name>` (URL-encoded). The DoT form (`<device-name>-<profile>.dns.nextdns.io`, spaces as `--`), the `device_name` query parameter and the `X-Device-Name` header come from NextDNS's help forum, not its documentation: try them before relying on them | Logs nothing unless you turn on a feature that needs it; you choose what, how long and where (nextdns.io/privacy). |
-| Control D | `https://dns.controld.com/<resolver-id>` | Yes: a client name after the resolver ID, `https://dns.controld.com/<resolver-id>/<name>` (DoT: `<resolver-id>-<name>.dns.controld.com`; docs.controld.com/docs/device-clients). The resolver ID itself stands for one device in your account, so one Control D device per TelltaleDNS group still works | Its policy names website data it collects; it states no DNS log retention, so ask Control D (controld.com/privacy). |
+| Control D | `https://dns.controld.com/<resolver-id>` | Yes: a client name after the resolver ID, `https://dns.controld.com/<resolver-id>/<name>` (DoT: `<resolver-id>-<name>.dns.controld.com`; docs.controld.com/docs/device-clients). The resolver ID itself stands for one device in your account, so one Control D device per WrenDNS group still works | Its policy names website data it collects; it states no DNS log retention, so ask Control D (controld.com/privacy). |
 | CleanBrowsing | `https://doh.cleanbrowsing.org/doh/family-filter/` (also `adult-filter`, `security-filter`) | No (the free filters are fixed; paid plans have their own endpoints) | Its filters page states no query logging terms: read its privacy policy before relying on it. |
 | Cloudflare for Families | `https://family.cloudflare-dns.com/dns-query` (malware only: `https://security.cloudflare-dns.com/dns-query`) | No profiles at all | The public resolver's logs and truncated IPs are deleted within 25 hours (developers.cloudflare.com/1.1.1.1/privacy). |
 
-The catalog has all of them as templates (`telltale presets list`; nothing is active until you add it): `nextdns`, `controld`, `controld-free`, `cleanbrowsing-family`, `cleanbrowsing-adult`, `cleanbrowsing-security`, `cloudflare-family`, `cloudflare-security`.
+The catalog has all of them as templates (`wrendns presets list`; nothing is active until you add it): `nextdns`, `controld`, `controld-free`, `cleanbrowsing-family`, `cleanbrowsing-adult`, `cleanbrowsing-security`, `cloudflare-family`, `cloudflare-security`.
 ```sh
-telltale presets show nextdns --param profile=abc123 --proto https --group kids >> telltale.toml
+wrendns presets show nextdns --param profile=abc123 --proto https --group kids >> wrendns.toml
 ```
 A device name in the NextDNS path: after `show`, append `/Kids-iPad` to that upstream's `url` (one upstream per name).
 
@@ -1009,7 +1079,7 @@ url = "tls://family-filter-dns.cleanbrowsing.org"
 source = "198.51.100.0/24"      # or one address: "198.51.100.252" or "198.51.100.252:0"
 ```
 - A network means *the address this node holds in it*, so one shared upstream works on every node even though their addresses differ (.11 on one, .12 on another). An address is for one node.
-- The address must be on an interface of the node (for another network to see it, a real interface such as a VLAN interface, not an alias). **Saving** an upstream (UI, API, MCP) whose `source` names no address the node holds is refused (422) before anything is stored. A configuration that already holds one (a VLAN interface that isn't up yet at boot, an address lost later, a replica or a pod without that network) never stops the node: that upstream's queries fail fast and it shows the problem on **Upstreams** and in the health icon (`upstream_source_lost`), every other upstream keeps answering, and it recovers on its own (the address is looked up again every few seconds). `telltale config check` and **Test it** report it too. An existing pooled DoT or DoH connection stays open until it closes, so a removed address shows up when the next connection is made.
+- The address must be on an interface of the node (for another network to see it, a real interface such as a VLAN interface, not an alias). **Saving** an upstream (UI, API, MCP) whose `source` names no address the node holds is refused (422) before anything is stored. A configuration that already holds one (a VLAN interface that isn't up yet at boot, an address lost later, a replica or a pod without that network) never stops the node: that upstream's queries fail fast and it shows the problem on **Upstreams** and in the health icon (`upstream_source_lost`), every other upstream keeps answering, and it recovers on its own (the address is looked up again every few seconds). `wrendns config check` and **Test it** report it too. An existing pooled DoT or DoH connection stays open until it closes, so a removed address shows up when the next connection is made.
 - **In a cluster, name a network, not an address.** An address is one node's; every other node would run that upstream degraded. A network (`198.51.100.0/24`) resolves to the address each node holds in it, and a node with none shows the problem on its own row.
 - **Containers and Kubernetes:** under the Docker bridge or in a pod, the node's own addresses are the container's, so there is no VLAN address to bind. Use host networking (`network_mode: host`, `hostNetwork: true`) on a node that needs a `source`, or leave `source` off.
 - **Binding an address does not choose the interface.** Linux routes by the *destination*: with the default route on `eth0`, a query bound to `198.51.100.252` still leaves through `eth0`, untagged, carrying a VLAN-100 source address. The gateway may drop it as spoofed, or the reply comes back by the other path. Add a routing rule so traffic from that address uses the VLAN's own route table (the runbook below).
@@ -1060,12 +1130,12 @@ flowchart LR
   stale_max_age = 3600
   ```
   These answers have the status `refreshed`, so `stale` keeps meaning "upstreams failed or were slow" (or the resolver was too busy to start the refresh). They cost about as much as a fresh cache hit. The trade-off is that a name whose address changed within the hour is answered once with the old address (for 30 s) while the new one is fetched. `[cache]` is per node: set it on every node of a cluster.
-- **What the dashboard counts:** the **Cache hits** tile is every answer given from the cache: fresh, `refreshed`, or `stale`, out of the answers that weren't blocked or local. In the Advanced view its second line splits it ("41% fresh · 22% refreshed") and the status chart shows `refreshed` on its own. The Cache page's "Answered from the cache" is the same number per node, with the fresh share beside it. Prometheus counts a refreshed or stale answer as a cache miss plus one `telltale_cache_stale_served_total`; the Grafana dashboard's **Answered from cache** panel shows both lines.
+- **What the dashboard counts:** the **Cache hits** tile is every answer given from the cache: fresh, `refreshed`, or `stale`, out of the answers that weren't blocked or local. In the Advanced view its second line splits it ("41% fresh · 22% refreshed") and the status chart shows `refreshed` on its own. The Cache page's "Answered from the cache" is the same number per node, with the fresh share beside it. Prometheus counts a refreshed or stale answer as a cache miss plus one `wrendns_cache_stale_served_total`; the Grafana dashboard's **Answered from cache** panel shows both lines.
 - **Privacy:** queries to upstreams carry a fresh random ID and source port, and none of the client's EDNS options (no client subnet, cookies, or MAC addresses are forwarded).
-- **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever.
+- **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to WrenDNS), it's dropped and an error is logged instead of looping forever.
 
 ## Local records
-Names on your network, answered by TelltaleDNS itself (authoritatively, before cache and upstreams):
+Names on your network, answered by WrenDNS itself (authoritatively, before cache and upstreams):
 ```toml
 [[record]]
 name = "nas.home.arpa"
@@ -1083,26 +1153,26 @@ type = "SRV"
 value = "0 5 5060 pbx.home.arpa" # priority weight port target (MX: "preference exchange")
 
 [local]
-hosts_files = ["/etc/telltale/hosts"]   # "IP name [alias...]" lines
+hosts_files = ["/etc/wrendns/hosts"]   # "IP name [alias...]" lines
 auto_ptr = true                          # reverse lookups for every A/AAAA (default)
 default_ttl = 300
 ```
 - A name with no record of the requested type gets an empty authoritative answer (NODATA). Names that aren't local go to the upstreams as usual.
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
-- `telltale config check` validates record values and reads the hosts files.
+- `wrendns config check` validates record values and reads the hosts files.
 - **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up my home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
-- **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
+- **Moving from another DNS server:** `wrendns import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: WrenDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ### Device names in DNS
-Your router hands out the addresses; TelltaleDNS can answer for the names, so `ping kitchen-tablet.home.arpa` works and reverse lookups name your devices, without running DHCP:
+Your router hands out the addresses; WrenDNS can answer for the names, so `ping kitchen-tablet.home.arpa` works and reverse lookups name your devices, without running DHCP:
 ```toml
 [local]
 device_domain = "home.arpa"   # off when unset (RFC 8375's domain for homes; `lan` works too)
 device_ttl = 60               # seconds; names follow DHCP, so keep it short
 device_mdns = false           # also the names devices announce over mDNS ([clients] mdns)
 ```
-- Every device TelltaleDNS knows by name gets an A record and a PTR: devices you named (by one address, or by MAC at whatever address the router gives it), your routers' DHCP clients and reservations, and Home Assistant's devices. In a cluster, every node answers the names any node's routers know.
+- Every device WrenDNS knows by name gets an A record and a PTR: devices you named (by one address, or by MAC at whatever address the router gives it), your routers' DHCP clients and reservations, and Home Assistant's devices. In a cluster, every node answers the names any node's routers know.
 - Names become one label: `Kitchen Tablet` → `kitchen-tablet.home.arpa`, `Alex's iPhone` → `alexs-iphone.home.arpa`. When two devices end up with the same label (two phones called *android*), one keeps it: a device you named, then a router's or Home Assistant's name, then an mDNS name, then the lower address. The log counts these collisions; name one of the devices to settle it.
 - Your own records win: a `[[record]]`, a hosts-file entry, or a zone's own record for the same name answers instead. Inside a [zone](#local-zones), a device name answers before the zone's NXDOMAIN.
 - **IPv6 (T24.8):** a device a router reports with IPv6 addresses also answers AAAA for each of them, and each address has an `ip6.arpa` PTR for the same name, under the same label rules and the same offline rule as its IPv4 address. UniFi gives the addresses (`ipv6_addresses` of a connected client); a Home Assistant name takes the addresses UniFi has for the same MAC. Only usable ones are kept: link-local (`fe80::/10`), loopback, multicast, unspecified and IPv4-mapped addresses never name a device, up to four per device, and one address names one device (the better-ranked keeps it). A device the routers know only by an IPv6 address (no IPv4) isn't named yet, and SNMP's `ipNetToPhysicalTable` joins when M25's poller exists. `GET /api/v1/dhcp/leases` lists the addresses as `ipv6`; the **Clients → Discovered** table and a network's device list show them. Router names for client matching (`hostname:`) stay IPv4-only.
@@ -1112,11 +1182,11 @@ device_mdns = false           # also the names devices announce over mDNS ([clie
 - The file's fields win over the UI's, field by field: a field `[local]` or `[clients]` sets in the file shows "set by file" and can't be changed in the UI, and a change that would set it there is refused (409 `set_by_file`).
 
 ### Local zones
-A zone makes TelltaleDNS the authority for a whole domain: names in it are answered from it, and names it doesn't have get NXDOMAIN (instead of going to the upstreams, as names not in `[[record]]` do).
+A zone makes WrenDNS the authority for a whole domain: names in it are answered from it, and names it doesn't have get NXDOMAIN (instead of going to the upstreams, as names not in `[[record]]` do).
 ```toml
 [[zone]]
 name = "lab.example.com"
-file = "/etc/telltale/lab.example.com.zone"   # an RFC 1035 zone file (BIND, Technitium, PowerDNS)
+file = "/etc/wrendns/lab.example.com.zone"   # an RFC 1035 zone file (BIND, Technitium, PowerDNS)
 
 [[zone]]
 name = "corp.example.com"
@@ -1146,7 +1216,7 @@ url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.
 name = "family-allow"
 kind = "allow"                          # block (default) or allow
 match = "exact"                         # subtree (default: the name and everything below it) or exact
-path = "/etc/telltale/allow.txt"        # a local file, re-read on every refresh
+path = "/etc/wrendns/allow.txt"        # a local file, re-read on every refresh
 
 [[list]]
 name = "manual"
@@ -1173,15 +1243,15 @@ allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/1
 - **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
 - **A list that suddenly shrinks waits for a second look.** When a URL list's new download has lost more than `[filter] max_shrink_percent` of the stored copy's lines (default 50: a list of 2 million names arriving with fewer than 1 million), it isn't used yet: a truncated mirror or a source caught mid-rewrite would otherwise drop half your blocking. The previous copy keeps answering, the Lists page says why, and the next scheduled refresh accepts the smaller list if the source serves the same content again. **Update now** (or `POST /api/v1/lists/refresh`) accepts it at once. Lists under 1,000 lines, local files, and inline rules are never held; `100` turns the check off.
 - Lists are stored compressed in `<data_dir>/lists/` (`<name>.src.zst` plus `<name>.meta.json`). Removing a list from the config deletes its files; `enabled = false` keeps them.
-- List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
+- List hostnames are looked up through the system resolvers (minus WrenDNS's own listeners). If the system resolver *is* WrenDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
 - Adding, removing, or editing lists applies on reload (`SIGHUP`). `[filter]` changes need a restart.
-- **Update lists now** instead of waiting for `refresh_secs` (like Pi-hole's Update Gravity, `pihole -g`): the **Update now** button on the Lists page (operators; every enabled list), or a list's own **Update now** in its row (one list, operators; an off list can't be updated until it's on), `telltale ctl lists refresh` (add list names to refresh only those, `--dry-run` to see what would be downloaded, `--wait` to wait for the downloads: it exits non-zero if they haven't ended after 5 minutes or a replica can't read the primary, `--reason` for the audit log), `POST /api/v1/lists/refresh` (body `{}` or `{"names": ["hagezi-pro"]}`; answers `202` with the lists queued), or `SIGUSR1` (`kill -USR1 <pid>`, or `docker kill -s USR1 telltale`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed. Disabled lists are left out. While a list downloads, its row says **updating** (`refreshing` in `GET /api/v1/lists`), and `lastSuccessUnixSeconds` moves on when it's confirmed current, which the page's **Confirmed current** column shows for each list (inline rules have no download, so they show "inline"). The page says which lists failed to download (they keep their last good copy). On a replica the page and `GET /api/v1/lists` show the primary's download state; if the primary doesn't answer, `missingNodes` names it and the state shown is the replica's own. The API refresh is audit-logged as `lists.refresh`; agents need the `config:write:lists` scope and a reason.
+- **Update lists now** instead of waiting for `refresh_secs` (like Pi-hole's Update Gravity, `pihole -g`): the **Update now** button on the Lists page (operators; every enabled list), or a list's own **Update now** in its row (one list, operators; an off list can't be updated until it's on), `wrendns ctl lists refresh` (add list names to refresh only those, `--dry-run` to see what would be downloaded, `--wait` to wait for the downloads: it exits non-zero if they haven't ended after 5 minutes or a replica can't read the primary, `--reason` for the audit log), `POST /api/v1/lists/refresh` (body `{}` or `{"names": ["hagezi-pro"]}`; answers `202` with the lists queued), or `SIGUSR1` (`kill -USR1 <pid>`, or `docker kill -s USR1 wrendns`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed. Disabled lists are left out. While a list downloads, its row says **updating** (`refreshing` in `GET /api/v1/lists`), and `lastSuccessUnixSeconds` moves on when it's confirmed current, which the page's **Confirmed current** column shows for each list (inline rules have no download, so they show "inline"). The page says which lists failed to download (they keep their last good copy). On a replica the page and `GET /api/v1/lists` show the primary's download state; if the primary doesn't answer, `missingNodes` names it and the state shown is the replica's own. The API refresh is audit-logged as `lists.refresh`; agents need the `config:write:lists` scope and a reason.
 - **In a cluster** the primary downloads and compiles the lists every node serves, so a refresh asked on a replica is forwarded to the primary, and a replica's Lists page shows the primary's download state, and its hits are every node's added up (OBS-009). With the primary unreachable, a replica answers 503 and keeps serving the last lists. `SIGUSR1` refreshes only on the node that gets it (on a replica that follows the primary, it does nothing).
 
 Fetch now, outside the server (same config and data directory):
 ```sh
-telltale lists fetch -c telltale.toml
+wrendns lists fetch -c wrendns.toml
 # list                     result            bytes      lines  note
 # hagezi-pro               updated         5049934     227434
 # manual                   unchanged            39          2
@@ -1212,32 +1282,32 @@ Every common format works, and formats can be mixed in one list:
 
 Names are lowercased, internationalized names are converted to punycode, and a trailing dot is ignored. Regexes match the lowercase query name and can't use backreferences or lookaround: the regex engine runs in linear time, so a pattern can't stall a query.
 
-Rules that only make sense in a browser are counted as *unsupported* and skipped, not treated as errors: cosmetic rules (`##`), URL paths (`||example.com/ads.js`), wildcards inside names (`ads*.example.com`), IP rules (`||192.0.2.1^`, which filter answers rather than names), and modifiers such as `$third-party` or `$ctag`. A rule with a modifier TelltaleDNS doesn't support is skipped entirely. Applying it without the modifier would block more than the list author intended.
+Rules that only make sense in a browser are counted as *unsupported* and skipped, not treated as errors: cosmetic rules (`##`), URL paths (`||example.com/ads.js`), wildcards inside names (`ads*.example.com`), IP rules (`||192.0.2.1^`, which filter answers rather than names), and modifiers such as `$third-party` or `$ctag`. A rule with a modifier WrenDNS doesn't support is skipped entirely. Applying it without the modifier would block more than the list author intended.
 
 See what a list contains and which lines were skipped:
 ```sh
-telltale lists check -c telltale.toml
+wrendns lists check -c wrendns.toml
 # adguard-dns: 179561 lines, 177414 rules, 1658 comments, 0 ignored, 489 unsupported, 0 invalid
 #   L79 unsupported: IP address rule (response IP filtering): ||194.63.143.96^
-telltale lists check -c telltale.toml --list manual --rules   # every rule in canonical form
+wrendns lists check -c wrendns.toml --list manual --rules   # every rule in canonical form
 ```
 It exits non-zero if any list has invalid lines.
 
 ### Compiling
-Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match` changes, TelltaleDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
+Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match` changes, WrenDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
 
 - Compiling runs in the background at the lowest CPU priority (`SCHED_IDLE` on Linux), and never pauses or locks query handling. The new snapshot replaces the old one atomically: queries in flight finish with the old one, and the old one is freed on a background thread.
 - **A list change answers before the snapshot is written.** Once the lists are parsed and merged, the new rules start answering ("filter active (new rules from the merge; writing the snapshot)" in the log), and the snapshot's files are written after that; the finished snapshot then takes over with the same lookup index. If writing it fails (a full disk), the previous rules answer again, so a node never serves rules it has no snapshot of. Cluster replicas get the finished snapshot, as before.
 - Thread count, `[filter] compile_threads`: the default, `0`, uses half the cores (between 1 and 4, so 2 on a Pi 4) when nothing is filtering yet, so blocking starts quickly on a first start. Once a filter is serving, a recompile (list refresh, reload) uses **one** thread: it takes longer, but nobody waits for it, and more threads compete with queries for cores and memory bandwidth even at the lowest priority. Set a number to use it for every compile.
-- **Regex rules are capped.** `[filter] max_regexes` (default 1,000) is the most regex rules a snapshot keeps; the ones past it, in list order, are left out, counted per list on the Lists page ("N regex rules left out"), and named in the log (the first 20) and by `telltale lists compile`. Every query that no exact or suffix rule settles is tried against all the regexes, about a microsecond per thousand (200 cost 0.4 µs at the median, 1,000 cost 1.1 µs). The matcher's automaton does not scale past a few thousand patterns that share a prefix: in a synthetic test, 1,500 cost 1.6 µs per query and 41 MiB, but 2,000 grew past 5 GiB of memory within two minutes. Raise the limit only after measuring your own lists (`matcher_bench`), and prefer plain domain rules where a list offers both.
+- **Regex rules are capped.** `[filter] max_regexes` (default 1,000) is the most regex rules a snapshot keeps; the ones past it, in list order, are left out, counted per list on the Lists page ("N regex rules left out"), and named in the log (the first 20) and by `wrendns lists compile`. Every query that no exact or suffix rule settles is tried against all the regexes, about a microsecond per thousand (200 cost 0.4 µs at the median, 1,000 cost 1.1 µs). The matcher's automaton does not scale past a few thousand patterns that share a prefix: in a synthetic test, 1,500 cost 1.6 µs per query and 41 MiB, but 2,000 grew past 5 GiB of memory within two minutes. Raise the limit only after measuring your own lists (`matcher_bench`), and prefer plain domain rules where a list offers both.
 - **Power cuts.** A snapshot's files and its directory are synced to disk (`fsync`) before it counts as published, so a power cut can't leave a snapshot whose files are short; on an SD card that adds a few hundred milliseconds to a large compile, off the query path. `[filter] fsync = false` skips it. If the newest snapshot can't be opened at a start anyway (a snapshot made with `fsync = false` before a crash, say), it is renamed `<version>.broken`, the next newest is used, and the `.broken` directory is deleted after the next successful compile. Without an older snapshot, the resolver starts unfiltered until lists compile.
 - Memory stays bounded. List entries are sorted within `[filter] compile_memory` (default `"128MiB"`), and anything beyond that spills to temporary files in the snapshot directory. Each list's text is read only while it's being parsed.
 - **Sizing memory limits.** Steady state, the filter costs about 20 bytes per blocked name on top of a ~17 MiB base: 30–35 MiB with HaGeZi Pro + OISD big + StevenBlack (430k names), about 70 MiB with 2.7M names. Compiling needs much more for a few seconds: about 110 MiB peak for those three lists, and about 300 MiB for 2.7M names. If you set a container memory limit, leave room for that peak (at least 256 MiB for list sets over ~1M names), or the process can be killed mid-compile. Limiting compile memory automatically is planned (ADR-025).
 - Size and speed: about 9 bytes per blocked name. On a Raspberry Pi 4, a recompile of 2 million names on one thread (the default) answers with the new rules after about 4.7 s and finishes writing the snapshot at about 12.8 s. A laptop-class machine makes 2.7M names answer in about 2 s on one thread.
 
 ```sh
-telltale lists compile -c telltale.toml     # compile now and show per-list numbers
-# snapshot 1 in /var/lib/telltale/snapshots/1
+wrendns lists compile -c wrendns.toml     # compile now and show per-list numbers
+# snapshot 1 in /var/lib/wrendns/snapshots/1
 #   names 2597518 (subtree 2597518, exact 0, subdomains 0), regexes 0, modifier rules 0, list sets 7, $badfilter removed 0
 #   8.98 bytes/name; 4.56s total (parse 2.03s, merge 2.49s, tables 9.10ms) on 1 thread(s); 0 sort runs spilled
 #   hagezi-tif               entries   2376001  unique   2213895  unsupported      0  invalid      0
@@ -1287,7 +1357,7 @@ In the web UI these are the group's **Blocked answer**, **Block addresses**, **B
 
 **CNAME inspection:** if an answer leads through a CNAME to a blocked name (`www.microsoft.com` → `…edgekey.net` → `….akamaiedge.net`), the answer is replaced with the client's block answer, with EDE text `CNAME target blocked by list …`. This also applies to answers served from the cache, which is shared by every group, so one group's policy never leaks into another's.
 
-**Pause:** blocking can be paused for everyone or for one group, for a set time, and resumes on its own. Pause and resume through the API or `telltale ctl pause --minutes 10` (`ctl resume`); the metric `telltale_filter_paused_until_seconds{group}` shows active pauses.
+**Pause:** blocking can be paused for everyone or for one group, for a set time, and resumes on its own. Pause and resume through the API or `wrendns ctl pause --minutes 10` (`ctl resume`); the metric `wrendns_filter_paused_until_seconds{group}` shows active pauses.
 When rules disagree, the most important one wins:
 
 | Wins | Rule | Example |
@@ -1301,9 +1371,9 @@ Among rules of the same kind, the one reported is an exact-name rule first, then
 
 Lookups take well under a microsecond: about 0.3 µs typically and under 1 µs at p99 on an x86 server with 2.6M blocked names. They use an in-memory index built from the snapshot (about 10 bytes per name, on top of the snapshot's 9). A new snapshot is served the moment it's loaded, and the index is swapped in about a second later, without pausing queries. Memory with HaGeZi Pro + TIF + OISD big + StevenBlack + AdGuard (2.7M names): about 85 MiB in total; HaGeZi Pro alone (227k names): about 10 MiB.
 
-Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `telltale_filter_paused_until_seconds{group}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. Inline lists (`rules = [...]`) are never fetched, so they have no `telltale_list_last_success_timestamp_seconds`. To alert on a list that has failed for two days:
+Metrics: `wrendns_queries_total{status="blocked"}` (including CNAME blocks), `wrendns_filter_paused_until_seconds{group}`, `wrendns_filter_lookup_index_bytes` (0 while the index is being built), `wrendns_filter_snapshot_version`, `wrendns_filter_rules`, `wrendns_filter_compile_seconds`, `wrendns_list_entries{list}`, `wrendns_list_source_bytes`, `wrendns_list_last_success_timestamp_seconds`, `wrendns_list_last_change_timestamp_seconds`, and `wrendns_list_fetch_consecutive_failures`, each labeled `{list}`. Inline lists (`rules = [...]`) are never fetched, so they have no `wrendns_list_last_success_timestamp_seconds`. To alert on a list that has failed for two days:
 ```
-time() - telltale_list_last_success_timestamp_seconds > 172800
+time() - wrendns_list_last_success_timestamp_seconds > 172800
 ```
 
 ### Lists that stopped changing
@@ -1321,7 +1391,7 @@ name = "my-small-list"
 url = "https://example.com/rarely-changes.txt"
 stale_after_days = 0
 ```
-Files and inline rules change when you change them, so they're never stale. The days count from the last time the content changed (identical downloads don't count), which is also `telltale_list_last_change_timestamp_seconds`.
+Files and inline rules change when you change them, so they're never stale. The days count from the last time the content changed (identical downloads don't count), which is also `wrendns_list_last_change_timestamp_seconds`.
 
 ### Trying a list first (shadow mode)
 Not sure a list is safe for your network? Add it in **shadow mode**: it's downloaded and checked like any other, but never blocks.
@@ -1331,11 +1401,11 @@ name = "hagezi-ultimate"
 url = "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/ultimate.txt"
 mode = "shadow"          # enforce (the default) or shadow
 ```
-- **What you see:** the **Lists** page marks it *shadow*, and **Would have blocked** shows, per shadow list, how many queries it would have blocked, from how many devices, the names most often, and the last one. When those are names you want gone, change `mode` to `enforce` (or edit the list on the Lists page). `GET /api/v1/analytics/shadow-lists`, the MCP tool `shadow_lists`, and `telltale_list_shadow_hits_total{list}` have the same.
+- **What you see:** the **Lists** page marks it *shadow*, and **Would have blocked** shows, per shadow list, how many queries it would have blocked, from how many devices, the names most often, and the last one. When those are names you want gone, change `mode` to `enforce` (or edit the list on the Lists page). `GET /api/v1/analytics/shadow-lists`, the MCP tool `shadow_lists`, and `wrendns_list_shadow_hits_total{list}` have the same.
 - **How:** shadow lists sit in the compiled snapshot but in no group's enforcing set. For each query answered normally, the telemetry thread asks the filter again with the device's group's lists plus its shadow lists; a block by a shadow list is counted. It respects groups (a shadow list only counts for groups that would use it), allow lists, and `$client`-style rules. It never runs on the query path; with no list in shadow mode it does nothing. A very busy server may skip some (dropped events are counted), never slow down. Counts start at each restart. In **explain**, a shadow list's rules say *shadow*.
 - **Likely over-blocking** (on the same page, `GET /api/v1/analytics/overblocking`, the MCP tool `overblocking_suspects`): blocked names that someone seems to want. *Allowed soon after* counts devices that got the name answered within 10 minutes of a block (you paused blocking, or allowed it); *retry bursts* count devices asking for it 10 or more times within a minute while it was blocked (apps that break retry; ad libraries do too, so it's the weaker sign). With the lists that blocked them: candidates for an allowlist, or a sign a list is too aggressive.
 - Names follow the query log's privacy level (hashed at 1 and above); devices aren't counted at 2 and above.
-- Like every list, a shadow list is checked once the snapshot is compiled (a few seconds after start or a change): queries answered before that aren't counted. `telltale explain` marks its rules with `~`.
+- Like every list, a shadow list is checked once the snapshot is compiled (a few seconds after start or a change): queries answered before that aren't counted. `wrendns explain` marks its rules with `~`.
 
 **Limits** (T27.11): each list takes a largest download (`max_bytes`, for example `64MiB`) and a stale age (`stale_after_days`, 0 for never) in its own form. The Lists page holds the refresh interval and the default stale age (`[filter] refresh_secs` and `stale_after_days`), which apply after a restart. API: `PUT` and `DELETE /api/v1/filter-settings/default`.
 
@@ -1362,7 +1432,7 @@ match = ["10.0.5.0/24"]                  # no groups: its network's group, else 
 ```
 - A device in several groups gets every list of all of them. Other settings, such as block mode, come from its highest-priority group.
 - **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR (a `[[client]]` network or a group's `networks`) → the name the router gave the device (`hostname:…`, or a group's `router_names`) → `default`.
-- **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. While any `[[client]]` matches by MAC, TelltaleDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`); without one it isn't read, and `telltale_neighbors` stays 0. The table only holds devices on the node's own subnets, and only with host networking (as on a Pi): in a container's bridge network or a Kubernetes pod, every query appears to come from the gateway. Device recognition also gets MAC addresses from router integrations and mDNS, with or without the table.
+- **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. While any `[[client]]` matches by MAC, WrenDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`); without one it isn't read, and `wrendns_neighbors` stays 0. The table only holds devices on the node's own subnets, and only with host networking (as on a Pi): in a container's bridge network or a Kubernetes pod, every query appears to come from the gateway. Device recognition also gets MAC addresses from router integrations and mDNS, with or without the table.
 - If your router forwards queries with dnsmasq's `add-mac`, trust it explicitly. Any device could send that option and impersonate another, so it's ignored by default:
   ```toml
   [clients]
@@ -1383,7 +1453,7 @@ match = ["10.0.5.0/24"]                  # no groups: its network's group, else 
   ```
 - `$client=` rules match the device's name (`$client='Kids tablet'`), its client ID, or its IP or CIDR.
 - A group can also send its questions to its own upstream servers (for example, a family-filtering resolver): see [Upstream servers per group](#upstream-servers-per-group).
-- Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
+- Changes apply on reload (`SIGHUP`). Metric: `wrendns_neighbors` (entries in the neighbor table).
 
 ### Groups for your networks (VLANs)
 A group can own networks: every device on them belongs to it, with no per-device setup. That
@@ -1417,7 +1487,7 @@ networks = ["192.0.2.0/24"]
   - a group chip on every query-log row, and a **Group** filter;
   - `group=` on `/api/v1/stats/top` and `/api/v1/queries`, and `byGroup` / `blockedByGroup` in
     timeseries buckets;
-  - the metric `telltale_group_queries_total{group,status}`.
+  - the metric `wrendns_group_queries_total{group,status}`.
 - **In a cluster**, groups and networks are shared configuration, so every node attributes devices
   the same way.
 
@@ -1427,8 +1497,8 @@ family-filtering resolver for the kids, a privacy resolver for the trusted netwo
 ISP's resolver for streaming boxes that care where they're answered from. Make the upstream
 groups first, from [presets](#upstream-presets) or by hand:
 ```sh
-telltale presets show cloudflare-family --proto tls --group family >> telltale.toml
-telltale presets show quad9 --proto tls,https --group privacy >> telltale.toml
+wrendns presets show cloudflare-family --proto tls --group family >> wrendns.toml
+wrendns presets show quad9 --proto tls,https --group privacy >> wrendns.toml
 ```
 Then point groups at them:
 ```toml
@@ -1496,7 +1566,7 @@ block_mode = "nxdomain"
 - To see the effect, filter the query log by group, or ask
   `from -24h | where group = Kids | top 10 upstream` (see
   [Analytics in one query](#analytics-in-one-query-vqlog)).
-- Devices must reach TelltaleDNS **with their own addresses** for their network to count: route
+- Devices must reach WrenDNS **with their own addresses** for their network to count: route
   the VLANs to it rather than through a forwarder that rewrites them (see
   [Seeing real client IPs](#seeing-real-client-ips)).
 
@@ -1508,7 +1578,7 @@ name = "kids"
 networks = ["192.168.20.0/24"]
 blocked_services = ["tiktok", "roblox", "fortnite"]
 ```
-- `telltale services list` (or `GET /api/v1/services`, or the Groups page) shows every service with the domains it blocks: social networks (TikTok, Instagram, Snapchat, ...), video and music (YouTube, Netflix, Twitch, Spotify, ...), games (Roblox, Fortnite, Minecraft, Steam, Xbox, PlayStation, Discord), messaging and AI chat.
+- `wrendns services list` (or `GET /api/v1/services`, or the Groups page) shows every service with the domains it blocks: social networks (TikTok, Instagram, Snapchat, ...), video and music (YouTube, Netflix, Twitch, Spotify, ...), games (Roblox, Fortnite, Minecraft, Steam, Xbox, PlayStation, Discord), messaging and AI chat.
 - A service blocks its domains and everything under them, for that group only. A group that uses every list still doesn't get other groups' services.
 - Blocks say which service did it: the query log shows the service, and the EDE text reads `blocked service TikTok`.
 - In the UI: **Groups → Manage groups → Edit → Blocked services**.
@@ -1563,7 +1633,7 @@ name = "guest"
 networks = ["192.168.50.0/24"]
 filter_aaaa = true
 ```
-- AAAA questions get NOERROR with no records, from TelltaleDNS itself (no upstream asked); A and every other type are unchanged. The query log shows them as `special`.
+- AAAA questions get NOERROR with no records, from WrenDNS itself (no upstream asked); A and every other type are unchanged. The query log shows them as `special`.
 - Your [local records](#local-records) and zones still answer AAAA (you configured those addresses), and blocked names stay blocked.
 - HTTPS records (type 65) can still carry IPv6 hints, which some browsers use; this setting leaves them alone.
 - Not with `dns64` (which makes AAAA answers on purpose). In the UI: **Groups**, edit the group, *No IPv6 addresses* (Advanced view).
@@ -1593,7 +1663,7 @@ youtube_restrict = "strict"                 # or "moderate", or "off" to leave Y
 - Google (every country domain), Bing, DuckDuckGo, Yandex, and Pixabay answer as a CNAME to their own safe-search service (`forcesafesearch.google.com`, `strict.bing.com`, ...), with that service's addresses, so the engine enforces it. YouTube gets Restricted Mode (`restrict.youtube.com`, or `restrictmoderate.youtube.com`).
 - HTTPS records for those names get no data, so browsers use the safe-search addresses rather than hints for the normal ones.
 - It applies to the group's devices only; the table is part of the binary (`presets/safesearch.toml`).
-- Browsers using their own encrypted DNS bypass it (as they bypass all filtering): TelltaleDNS answers `use-application-dns.net` with NXDOMAIN so Firefox turns its own DoH off, and iCloud Private Relay's names with NXDOMAIN so Apple devices turn Private Relay off on this network ([Special names](#special-names)).
+- Browsers using their own encrypted DNS bypass it (as they bypass all filtering): WrenDNS answers `use-application-dns.net` with NXDOMAIN so Firefox turns its own DoH off, and iCloud Private Relay's names with NXDOMAIN so Apple devices turn Private Relay off on this network ([Special names](#special-names)).
 - In the UI: **Groups → Manage groups → Edit → Safe search**.
 
 ### Schedules
@@ -1629,7 +1699,7 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 
 <a id="routers"></a>
 ### Names from your router (UniFi, OPNsense)
-TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name.
+WrenDNS doesn't hand out addresses: your router's DHCP does that, and WrenDNS can read its client list, so devices show up by name.
 
 **In the UI:** an admin sets routers up on the **Routers** page (Devices → Routers): pick the kind, the address, and the credentials, then **Fetch the console's certificate** and **Trust this certificate** for a self-signed console. Trusting saves the certificate chain the console presents (its certificate and any CA certificates it sends, so a console signed by a private CA is trusted too); nothing else is trusted for that router. **Check it** reads the router once and saves nothing. Each router's card shows its last read on this node, what it reported, and where each credential comes from. Changes made there take effect at the next read, with no restart. Its credentials are entered once, stored encrypted on the node (`api_key_ref`), and never shown again. Operators and viewers see the cards read-only. The API is `PUT`/`DELETE /api/v1/routers/{name}` (admins only; a router the files define is read-only there), and `GET /api/v1/routers` lists them with their status.
 
@@ -1639,12 +1709,12 @@ Or in the configuration file:
 name = "udm"
 type = "unifi"                         # UniFi OS consoles (UDM, UCG, Cloud Key) and the Network application
 url = "https://192.168.1.1"            # the classic Network application: https://controller:8443
-api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
-# username = "telltale"                # or a local read-only user...
-# password_file = "/etc/telltale/unifi-pass"
+api_key_file = "/etc/wrendns/unifi-key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
+# username = "wrendns"                # or a local read-only user...
+# password_file = "/etc/wrendns/unifi-pass"
 # site = "default"
 # offline_days = 30                    # also name clients that are offline now, if UniFi saw them this recently (0: only connected ones)
-tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
+tls_ca = "/etc/wrendns/udm.pem"       # the console's own certificate (self-signed)
 tls_server_name = "unifi.local"        # the name in it (UniFi consoles name themselves unifi.local)
 # tls_ca_pem = "-----BEGIN CERTIFICATE-----…"   # the same certificate as text (the Routers page stores it this way); exclusive with tls_ca
 
@@ -1652,31 +1722,31 @@ tls_server_name = "unifi.local"        # the name in it (UniFi consoles name the
 name = "firewall"
 type = "opnsense"
 url = "https://opnsense.lan"
-api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
-api_secret_file = "/etc/telltale/opn-secret"
+api_key_file = "/etc/wrendns/opn-key"     # System → Access → Users → API keys
+api_secret_file = "/etc/wrendns/opn-secret"
 ```
 - UniFi: the connected clients, plus the offline clients UniFi still knows (its client history, within `offline_days`: 30 by default, 0 for only the connected clients, at most 365), named by the alias you gave them in UniFi, else their host name. A device with a fixed IP (a DHCP reservation) keeps its name while it's offline, whatever `offline_days` says; and the networks (see [Networks your routers report](#networks-your-routers-report)). An offline client is listed only with a name, at its last address, and never over a connected client's address; at most the 1,024 most recently seen are kept. It names the device in the query log, but it doesn't count as seen for device identification, it gives no address to the device inventory, it isn't published as a DNS name, and it isn't counted in the networks' device totals (it is listed in `/dhcp/leases` with `"offline": true`). OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
 - A UniFi key or user that can read the client list but not the reservations, the history or the networks still names connected devices; the log says once which reads it skipped.
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
-- Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`). An offline client is listed too, with `"offline": true` and no `dnsName`: it names nothing in DNS, gives no discovery binding and isn't counted in a network's devices. Connected and reserved rows have `"offline": false`.
+- Names you give devices in WrenDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`). An offline client is listed too, with `"offline": true` and no `dnsName`: it names nothing in DNS, gives no discovery binding and isn't counted in a network's devices. Connected and reserved rows have `"offline": false`.
 - Credentials can stay in files (`api_key_file`), or be stored (`api_key_ref = "udm"`, the name the Routers page gives them). A change made on the Routers page takes effect at the next read; a change to the file takes effect on a reload (`SIGHUP`) or a restart.
 - In a cluster, only one node needs to read the router (or hear mDNS). Every node asks the others for the device names they know, once a minute, so a resolver pod without the router's key names devices the same way the primary does.
 - **Through a replica** (T24.41): a router whose credential is stored is read by the primary only, so a replica asks the primary for what it found. The replica's Networks page lists the router's networks (VLAN, gateway, DHCP pool, domain) with the networks the replica is directly on added for any subnet no router reported, its network drawer lists the router's clients, and its Routers page shows the primary's state of each such router (reading or failing, last read, devices, networks), marked "Read by the primary". The credential never leaves the primary and nothing is polled from a replica. If the primary does not answer (down, or an older version) the replica shows its own data and a note naming the primary (`missingNodes` in the API); DNS is not affected.
 
 ### Names from Home Assistant
-Home Assistant knows your IoT devices by the names you gave them ("Porch light", "Living room TV"). TelltaleDNS can read those names, read-only, and use them for the same devices on the network:
+Home Assistant knows your IoT devices by the names you gave them ("Porch light", "Living room TV"). WrenDNS can read those names, read-only, and use them for the same devices on the network:
 ```toml
 [[router]]
 name = "home-assistant"
 type = "home_assistant"
 url = "http://192.0.2.20:8123"
-api_key_file = "/etc/telltale/ha-token"   # Profile → Security → Long-lived access tokens
+api_key_file = "/etc/wrendns/ha-token"   # Profile → Security → Long-lived access tokens
 ```
 On the Routers page, choose **Home Assistant** and enter the address and the token (stored, never shown again). The token belongs to an administrator's account; Home Assistant renders the template only with one.
 - Home Assistant knows devices by **MAC address** (Shelly, ESPHome, Sonos, Chromecast, TVs; Zigbee, Z-Wave, and Thread devices never use DNS, so they don't matter here). The address comes from your other `[[router]]` entries, else from Home Assistant's own `device_tracker` entities (its UniFi, Fritz!Box, or nmap integrations). A device whose MAC has no address anywhere is skipped.
-- **Which name wins** for one address: a name you gave the device in Home Assistant, then the routers' names (in the order of your `[[router]]` entries), then the name a Home Assistant integration gave it (often the model, like *Shelly Plus 1PM*). Names you give devices in TelltaleDNS win over all of them.
-- TelltaleDNS reads the registry with one request to `/api/template` (Home Assistant renders a fixed, read-only template), so the token must belong to an **administrator**. Use a dedicated Home Assistant user for it, and keep the token in a file.
+- **Which name wins** for one address: a name you gave the device in Home Assistant, then the routers' names (in the order of your `[[router]]` entries), then the name a Home Assistant integration gave it (often the model, like *Shelly Plus 1PM*). Names you give devices in WrenDNS win over all of them.
+- WrenDNS reads the registry with one request to `/api/template` (Home Assistant renders a fixed, read-only template), so the token must belong to an **administrator**. Use a dedicated Home Assistant user for it, and keep the token in a file.
 - `GET /api/v1/dhcp/leases` shows which `[[router]]` named each device (`router`). Read every `interval_secs` like the routers.
 
 ### Networks your routers report
@@ -1685,14 +1755,14 @@ The **Networks** page in the web UI (Devices, beside Clients) shows this list: e
 `GET /api/v1/networks` (and the MCP tool `list_networks`) lists the LANs and VLANs your UniFi console reports (name, subnet, VLAN, gateway, DHCP pool, domain), then any group's `networks` no router reported. For each: the group that covers it, its host addresses, the known devices in it (from the routers, Home Assistant, and mDNS), the share used, and how many devices sit outside the DHCP pool (reservations and fixed addresses). Agent tokens need `config:read`.
 
 ### Network inventory (devices that never ask DNS)
-Some devices never ask TelltaleDNS for anything: a printer with a fixed address, a switch, a camera. The network inventory (off by default) lists them from what your network already knows, and only reads: it never scans the network itself (ADR-907).
+Some devices never ask WrenDNS for anything: a printer with a fixed address, a switch, a camera. The network inventory (off by default) lists them from what your network already knows, and only reads: it never scans the network itself (ADR-907).
 
 - Turn it on in **Network inventory** (under Devices; administrators only). Name the **designated node** (leave it blank for the primary, or for a standalone node), and list the **subnets** it may read, one per line, in private IPv4 space (`192.168.1.0/24`). IPv6 and networks outside `10/8`, `172.16/12` and `192.168/16` are refused.
 - Turning it on needs `telemetry.qlog.privacy_level` 0 or 1: the inventory needs the client addresses that levels 2 and 3 hide.
-- The inventory runs in its own threads and in separate worker processes, so a worker that crashes, hangs or runs out of memory never slows DNS. The page shows each worker's state; a worker that keeps stopping raises a degraded health reason (`discovery_worker_failing`), and one built from another version is refused (`discovery_worker_version_mismatch`). A worker holds no capability, even under the systemd unit's `CAP_NET_BIND_SERVICE`, and can't gain one. It can't open a listening socket, trace a process or read its parent's memory: a seccomp filter refuses those calls, including the x32 and io_uring routes (ADR-934). It has a cleared environment (one variable stays, `MIMALLOC_ARENA_RESERVE=0`, so the memory limit counts what the worker really holds: ADR-988), and the kernel kills it before DNS when memory runs short. While discovery runs, TelltaleDNS itself is not dumpable, so it refuses core dumps and debugger attach. The cost for an operator: a non-root administrator can't read this process's `/proc/<pid>/io`, `environ` or `mem`, or attach `strace` or `gdb` to it, until it restarts. Root still can. The host's write-rate metric (`telltale_write_bytes_per_second`) is unaffected; it reads `/proc/self/io` through a file opened before the change (ADR-934). It runs as the same user as TelltaleDNS, so the systemd unit, the image and the Helm chart run it unchanged; on 32-bit ARM the filter uses the ARM system-call table (ADR-933).
+- The inventory runs in its own threads and in separate worker processes, so a worker that crashes, hangs or runs out of memory never slows DNS. The page shows each worker's state; a worker that keeps stopping raises a degraded health reason (`discovery_worker_failing`), and one built from another version is refused (`discovery_worker_version_mismatch`). A worker holds no capability, even under the systemd unit's `CAP_NET_BIND_SERVICE`, and can't gain one. It can't open a listening socket, trace a process or read its parent's memory: a seccomp filter refuses those calls, including the x32 and io_uring routes (ADR-934). It has a cleared environment (one variable stays, `MIMALLOC_ARENA_RESERVE=0`, so the memory limit counts what the worker really holds: ADR-988), and the kernel kills it before DNS when memory runs short. While discovery runs, WrenDNS itself is not dumpable, so it refuses core dumps and debugger attach. The cost for an operator: a non-root administrator can't read this process's `/proc/<pid>/io`, `environ` or `mem`, or attach `strace` or `gdb` to it, until it restarts. Root still can. The host's write-rate metric (`wrendns_write_bytes_per_second`) is unaffected; it reads `/proc/self/io` through a file opened before the change (ADR-934). It runs as the same user as WrenDNS, so the systemd unit, the image and the Helm chart run it unchanged; on 32-bit ARM the filter uses the ARM system-call table (ADR-933).
 - In the file, the section is `[discovery]`, with `[[discovery.subnet]]` entries (see [Sections](configuration.md#sections)). Fields the file sets show "set by file" in the UI.
 
-- **SNMP agents.** The inventory can read your gateway's ARP table, a switch's forwarding table (which port and VLAN each device is on) and its LLDP neighbours over SNMP: add each device under **SNMP agents** with an **SNMP credential** (administrators; everyone can read the list, with each agent's last poll, its tables and its capability record). It only reads: the client has no write request, polls one agent at a time, at most 20 requests a second and at least 50 ms apart, and stops a poll after three timeouts in a row. A credential names files under `[node] secret_file_dirs` that hold the community or the SNMPv3 passwords; it never holds a password itself, and the page has no field for one. Press **Test** on a saved agent to probe it: a table the device doesn't answer is skipped until the next test, never assumed. A poll that fails never affects DNS: three in a row raise the degraded health reason `discovery_agent_failing`, and `telltale_discovery_agent_*` metrics show each agent. ARP entries count only inside the listed subnets. See [SNMP setup](snmp-setup.md).
+- **SNMP agents.** The inventory can read your gateway's ARP table, a switch's forwarding table (which port and VLAN each device is on) and its LLDP neighbours over SNMP: add each device under **SNMP agents** with an **SNMP credential** (administrators; everyone can read the list, with each agent's last poll, its tables and its capability record). It only reads: the client has no write request, polls one agent at a time, at most 20 requests a second and at least 50 ms apart, and stops a poll after three timeouts in a row. A credential names files under `[node] secret_file_dirs` that hold the community or the SNMPv3 passwords; it never holds a password itself, and the page has no field for one. Press **Test** on a saved agent to probe it: a table the device doesn't answer is skipped until the next test, never assumed. A poll that fails never affects DNS: three in a row raise the degraded health reason `discovery_agent_failing`, and `wrendns_discovery_agent_*` metrics show each agent. ARP entries count only inside the listed subnets. See [SNMP setup](snmp-setup.md).
 
 ### SNMP setup (the gateway and the switches)
 Turn on SNMPv3 in the gateway and the managed switches (SHA with AES), allow only the DNS host's address, put each password in a file under the node's secret directories, then add a credential and an agent on the **Network inventory** page and press **Test**. The step-by-step page, with a UniFi gateway, managed switches, the file form and the rules for placing a device on a switch port, is [SNMP setup](snmp-setup.md). A gateway that still answers SNMP v1/v2c with the community `public` once v3 works is a finding to turn off on the device. On Kubernetes outside the host network, devices see the node's address after source translation: allow that address.
@@ -1708,17 +1778,17 @@ The CMDB (off by default) keeps one **configuration item** (CI) for each real th
 - **How records are matched** (in this order, device and interface level resolved separately): a manual link or unlink (R1); the MAC (R2, the same normalisation as the inventory's merge; a randomised MAC matches like any other); the serial (R3); a source's own stable device key that survives a MAC change (R4: a Home Assistant device id, an SNMP agent, a UniFi infrastructure device id, never a UniFi client `_id`, because UniFi keys a client by MAC); and a host name on a network (R5), which only **proposes** a merge and is never applied alone. A record that carries no key attaches through an address that a current binding (router, neighbour table, SNMP ARP) holds, or becomes an **unconfirmed** CI of its own; two devices holding the address leave it unlinked with a proposal. When a record's MAC belongs to one device and its serial or key to another, nothing is linked at the device level and a **merge proposal** is raised. The result is the same whatever order the batches arrive in.
 - **Ports.** A switch or access point port is a CI keyed by its device and a normalised port id (`Gi1/0/5` is `gi1/0/5`, `Port 5` is `port5`), so an SNMP `ifName` and a UniFi `port_idx` are one port once an alias joins them. An alias is learned only from evidence on the same device (a trailing number that equals the UniFi port, on a device matched by a serial or a manual decision). A port seen by one source that no alias joins to another's is its own CI marked `unmapped_port`: it is shown, never a conflict.
 - **Fixing a wrong link.** Open a CI. Each column is one source's record; a row where they differ is marked. **Move to…** puts a record (a record with a MAC takes its whole interface, with every record of that MAC) under another device; **Unlink** takes a record away and writes a never-match pin, so the next batch does not link it back (a record with a MAC leaves with a device of its own); **Merge into another device** folds a device into another and leaves the old id as an alias that redirects for 90 days; **Split** moves the ticked records to a new device. Each shows a preview of the records that would move before anything is written; the reason you give is kept with the pin and the audit entry. These are authored data: they replicate to the standby nodes and survive a restart and a failover, unlike source records, which are rebuilt. A pinned interface is not moved by a serial or a key.
-- **Caps** (`GET /api/v1/cmdb/status`): 16,384 CIs, 65,536 source records, 8 per CI at its own level, 24 attributes of at most 255 bytes per record, and 2 KiB of attributes in all (the largest attribute that is not an identity goes first). At the record cap the oldest absent records go first; at the CI cap the oldest CIs that nothing present backs and nothing authored holds are evicted, and a new CI is refused when every one left is authored (counted in `telltale_cmdb_dropped_total{kind="ci"}`, and a degraded health reason `cmdb_ci_cap`). Measured at the caps with representative records (about a dozen attributes, 500 bytes of JSON, as a UniFi or SNMP client sends them): +7.1 MiB resident after a bulk load, +4.0 MiB after a restart, 58 MiB on disk (ADR-1023). A stable network writes next to nothing: a record is written only when its content changes, and `last_seen` is flushed in one batch every 15 minutes for rows older than 6 hours.
+- **Caps** (`GET /api/v1/cmdb/status`): 16,384 CIs, 65,536 source records, 8 per CI at its own level, 24 attributes of at most 255 bytes per record, and 2 KiB of attributes in all (the largest attribute that is not an identity goes first). At the record cap the oldest absent records go first; at the CI cap the oldest CIs that nothing present backs and nothing authored holds are evicted, and a new CI is refused when every one left is authored (counted in `wrendns_cmdb_dropped_total{kind="ci"}`, and a degraded health reason `cmdb_ci_cap`). Measured at the caps with representative records (about a dozen attributes, 500 bytes of JSON, as a UniFi or SNMP client sends them): +7.1 MiB resident after a bulk load, +4.0 MiB after a restart, 58 MiB on disk (ADR-1023). A stable network writes next to nothing: a record is written only when its content changes, and `last_seen` is flushed in one batch every 15 minutes for rows older than 6 hours.
 - **Retention.** A source record absent for two complete batches is marked absent, and removed after 7 days (imports 30). An unconfirmed CI with nothing left is removed after 30 days; one with a manual decision on it never is. The registry's `last_seen` and `days_seen` outlive the records.
-- **API.** `GET /api/v1/cmdb/status`, `/cmdb/cis` (cursor pages, `type`, `q`), `/cmdb/cis/{id}`, `/cmdb/proposals`; `POST /cmdb/cis/{id}/link`, `/unlink`, `/merge` and `/split` (each with `?dryRun=true`, an `Idempotency-Key` and `X-Telltale-Reason`; operators). The settings are `PUT /api/v1/cmdb-settings/default` (administrators; no agent scope). No agent scope reaches any of these yet. Metrics: `telltale_cmdb_cis{type}`, `telltale_cmdb_records{source}`, `telltale_cmdb_proposals_open`, `telltale_cmdb_dropped_total{kind}`, `telltale_cmdb_queue_depth`, `telltale_cmdb_batch_seconds`.
+- **API.** `GET /api/v1/cmdb/status`, `/cmdb/cis` (cursor pages, `type`, `q`), `/cmdb/cis/{id}`, `/cmdb/proposals`; `POST /cmdb/cis/{id}/link`, `/unlink`, `/merge` and `/split` (each with `?dryRun=true`, an `Idempotency-Key` and `X-Wrendns-Reason`; operators). The settings are `PUT /api/v1/cmdb-settings/default` (administrators; no agent scope). No agent scope reaches any of these yet. Metrics: `wrendns_cmdb_cis{type}`, `wrendns_cmdb_records{source}`, `wrendns_cmdb_proposals_open`, `wrendns_cmdb_dropped_total{kind}`, `wrendns_cmdb_queue_depth`, `wrendns_cmdb_batch_seconds`.
 
 ### Names devices announce (mDNS)
-Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). TelltaleDNS can listen and use those names for devices you haven't named:
+Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). WrenDNS can listen and use those names for devices you haven't named:
 ```toml
 [clients]
 mdns = true
 ```
-- Listen only: TelltaleDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
+- Listen only: WrenDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
 - It has to hear the LAN: a native install, the Pi bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
 - Names you give devices win, then the routers' DHCP leases, then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
 - `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered** shows every device found by a router or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
@@ -1729,7 +1799,7 @@ The Clients page's **Last hour** tab lists every address that asked in the last 
 
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 
-Devices named this way are stored in `state.db` (next to users and the audit log) and merged with `[[client]]` entries from the config files. The files win: a device defined in a file is read-only in the UI, and the UI can't reuse its name. If a stored device stops being valid (say its group was removed from the file), TelltaleDNS logs why and runs with the file config alone until it's fixed. Operators and admins can name devices; viewers see the names.
+Devices named this way are stored in `state.db` (next to users and the audit log) and merged with `[[client]]` entries from the config files. The files win: a device defined in a file is read-only in the UI, and the UI can't reuse its name. If a stored device stops being valid (say its group was removed from the file), WrenDNS logs why and runs with the file config alone until it's fixed. Operators and admins can name devices; viewers see the names.
 
 The same through the API, for scripts and agents:
 ```sh
@@ -1740,12 +1810,12 @@ curl -X PUT 'https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=tr
 Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
 
 ### What is this device?
-TelltaleDNS guesses what each address is, so a new one isn't just a number. It uses what it already sees:
+WrenDNS guesses what each address is, so a new one isn't just a number. It uses what it already sees:
 - the maker of the device's network card: its MAC address's vendor in the IEEE registry (from the neighbor table or your router);
 - the name the device announces (to your router's DHCP, or over mDNS);
 - the domains it talks to (a Roku asks `roku.com`, a Sonos speaker `sonos.com`).
 
-These are scored against a catalog of common home devices that ships with TelltaleDNS (phones, TVs and streamers, speakers, cameras, plugs, consoles, printers, NAS boxes, network gear, and more). The Clients page then says, under the device: "Looks like a **Roku player** (likely) · Roku". **Likely** and **possibly** say how sure it is; when nothing fits, only the maker is shown. **Why?** lists the evidence: the domains that matched, the vendor and MAC prefix, the name, and a close second guess if there is one.
+These are scored against a catalog of common home devices that ships with WrenDNS (phones, TVs and streamers, speakers, cameras, plugs, consoles, printers, NAS boxes, network gear, and more). The Clients page then says, under the device: "Looks like a **Roku player** (likely) · Roku". **Likely** and **possibly** say how sure it is; when nothing fits, only the maker is shown. **Why?** lists the evidence: the domains that matched, the vendor and MAC prefix, the name, and a close second guess if there is one.
 
 - **Naming:** "Name this device…" fills in the guess ("Roku player") when the device hasn't told your router a name, so you only add "living room". A guess never becomes a name by itself.
 - **Groups:** give a group the kinds of device that belong in it, and devices of that kind that aren't in it yet get it suggested ("iot suggested"); "Add to group…" pre-selects it. Nothing moves on its own.
@@ -1756,7 +1826,7 @@ These are scored against a catalog of common home devices that ships with Tellta
   ```
   A kind belongs to one group at most.
 - **Wrong guess?** Name the device and set **What it is** (`[[client]] kind = "camera"`, or `"unknown"` to stop guessing). That always wins and shows as set rather than guessed.
-- **More devices:** `[identify] signatures_file = "/etc/telltale/devices.toml"` adds signatures in the catalog's own shape (`presets/devices.toml` in the source): an `id` the catalog uses replaces that signature, and `enabled = false` on it removes it.
+- **More devices:** `[identify] signatures_file = "/etc/wrendns/devices.toml"` adds signatures in the catalog's own shape (`presets/devices.toml` in the source): an `id` the catalog uses replaces that signature, and `enabled = false` on it removes it.
   ```toml
   [[device]]
   id = "our-bike"
@@ -1771,7 +1841,7 @@ How it works: every 10 minutes, on a thread of its own at background priority, e
 
 Limits: phones use private Wi-Fi addresses, so their maker is unknown and the domains and name decide. Behind a router or proxy that hides client addresses, many devices look like one. It's off at query-log privacy level 1 and above, where names are hashed, and with `[identify] enabled = false`.
 
-Through the API: `identity` on each device of `GET /api/v1/clients`, `GET /api/v1/clients/identities` for every device seen, and `GET /api/v1/clients/{address or name}/identity` with the evidence. Agents: `identify_device`, and `identity` in `get_client_profile`. New-device alerts and anomaly findings say what the device looks like. Metrics: `telltale_devices_by_class{class}`.
+Through the API: `identity` on each device of `GET /api/v1/clients`, `GET /api/v1/clients/identities` for every device seen, and `GET /api/v1/clients/{address or name}/identity` with the evidence. Agents: `identify_device`, and `identity` in `get_client_profile`. New-device alerts and anomaly findings say what the device looks like. Metrics: `wrendns_devices_by_class{class}`.
 
 The MAC vendor table is built from the IEEE Registration Authority's public registry by `presets/build-oui.py`.
 
@@ -1830,9 +1900,9 @@ A quick rule allows or blocks a site, and everything under it, for one device, a
 **Limits** (DNS can only do so much):
 - DNS sees **sites, not pages**: blocking a page means blocking its whole site.
 - An app often uses many sites, some shared with other apps. Unblocking one game server is precise; blocking a whole app is best done with a list.
-- A rule follows a device only as well as TelltaleDNS **recognizes** it. Give the device a fixed address (a DHCP reservation), or turn off its private Wi-Fi address for your network.
+- A rule follows a device only as well as WrenDNS **recognizes** it. Give the device a fixed address (a DHCP reservation), or turn off its private Wi-Fi address for your network.
 - Devices keep answers they already have for a few minutes, so a change can take that long to show on the device. Unblocking needs no cache flush, because blocked answers are never cached here.
-- **Mobile data, a VPN, or a hard-coded DNS server** go around TelltaleDNS. To close that, have your router block outgoing DNS (ports 53 and 853) to anything but TelltaleDNS.
+- **Mobile data, a VPN, or a hard-coded DNS server** go around WrenDNS. To close that, have your router block outgoing DNS (ports 53 and 853) to anything but WrenDNS.
 
 Quick rules aren't parental controls: there's no screen time and no content categories.
 
@@ -1864,7 +1934,7 @@ curl https://dns.example.com/api/v1/rules -H "authorization: Bearer $TOKEN"   # 
 - **API and agents.** `GET /api/v1/clients/{device name, address or workload}/policy` (scope `config:read`; a token limited to a group sees that group's devices only), the MCP tool `get_client_policy`, and `policy` in `get_client_profile`. The network map's device panel shows a compact version with a link to this one: the group, the key, and for each section its one-sentence summary with up to three items as links and "+N more" for the rest. Every summary stands alone (it names the group and the count and never says "below"), so the API and the MCP tool read well without the panel. A route's destination is named in words (see the map's labels), not by an internal ID. The Flow page (with a device chosen) names the group and key beside the diagram.
 
 ## Why was it blocked? (explain)
-`telltale explain` shows what happens to a name for a given device, and why. It lists:
+`wrendns explain` shows what happens to a name for a given device, and why. It lists:
 - who the device is recognized as, the key it matched on, and its groups (and where the first one came from), with a link to the device's [policy](#a-devices-policy);
 - every rule in every list that matches, with its file line, in precedence order;
 - which rule decides;
@@ -1873,7 +1943,7 @@ curl https://dns.example.com/api/v1/rules -H "authorization: Bearer $TOKEN"   # 
 It follows the same steps as the server, in the same order: access checks, local records and authoritative zones, quick rules, a schedule that blocks everything for the group, list `$dnsrewrite` rules (which win over blocking), the lists, then the group's `[[group.rewrite]]` entries and safe search. When one of the later steps answers the query instead of a list, the outcome and summary say which.
 
 ```sh
-telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
+wrendns explain ad.doubleclick.net --client 192.168.1.50 -c wrendns.toml
 # ad.doubleclick.net A from 192.168.1.50
 # client   tablet (identified by ip); groups: kids
 # outcome  ALLOWED: allowed by list family-allow; resolved normally
@@ -1903,9 +1973,9 @@ Explain answers for one name. A simulation answers for a whole change: before yo
   #   "topNames": [{"name": "www.tiktok.com", "queries": 300, "devices": 2, "list": "quick rule: tiktok.com"}]}, ...}
   ```
   `simulateUntil` moves the end of the window back (`-24h`, or an RFC 3339 time). A change that can't affect an answer, such as an alert rule or the exclusions, answers `"applicable": false` instead of replaying anything.
-- **A whole configuration:** `POST /api/v1/simulate` takes the shared sections as JSON, the way a Git commit's TOML becomes. `telltale config simulate` reads the TOML for you, so you can test a commit before pushing it:
+- **A whole configuration:** `POST /api/v1/simulate` takes the shared sections as JSON, the way a Git commit's TOML becomes. `wrendns config simulate` reads the TOML for you, so you can test a commit before pushing it:
   ```sh
-  TELLTALE_TOKEN=... telltale config simulate shared.toml --window 24h --url https://dns.example.com:8053
+  WRENDNS_TOKEN=... wrendns config simulate shared.toml --window 24h --url https://dns.example.com:8053
   # 183204 logged queries from 2026-10-08T12:00:00.000Z to 2026-10-09T12:00:00.000Z
   #                  QUERIES  DEVICES
   # newly blocked    412      2
@@ -1922,7 +1992,7 @@ How it works, and its limits:
 - **Privacy:** at query-log privacy level 1 names are stored hashed, so a change that depends on names can't be replayed (`"available": false, "reason": "privacy_level"`). Moving a device between groups still can: its queries count as unchanged when the new groups decide alike, else as undetermined. At level 2 and above nothing can be replayed.
 - DNS answering never waits for a simulation, and a simulation never asks an upstream or touches the cache. It's about decisions: it can't count names nobody asked, and it doesn't predict latency or what an upstream would answer.
 
-Settings: `[simulate]` (Settings → Query handling → Change simulation in the UI): `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask, see [Plans and approval](#plans-and-approval)), `max_secs` (1 to 300, default 20), `max_rows` (at least 1,000, default 2,000,000), and `default_window` (default `24h`, at most `7d`). Metrics: `telltale_simulations_total{outcome}`, `telltale_simulation_duration_seconds`, `telltale_simulation_rows_total`.
+Settings: `[simulate]` (Settings → Query handling → Change simulation in the UI): `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask, see [Plans and approval](#plans-and-approval)), `max_secs` (1 to 300, default 20), `max_rows` (at least 1,000, default 2,000,000), and `default_window` (default `24h`, at most `7d`). Metrics: `wrendns_simulations_total{outcome}`, `wrendns_simulation_duration_seconds`, `wrendns_simulation_rows_total`.
 
 ## Who can query, and how often
 ```toml
@@ -1937,9 +2007,9 @@ action = "refused"      # or "drop"
 exempt = ["127.0.0.0/8", "::1/128"]
 ipv6_prefix = 64        # a device's rotating IPv6 privacy addresses share one budget
 ```
-TelltaleDNS is never an open resolver by default. If you widen `allowed_networks` to everything, a warning is logged at startup.
+WrenDNS is never an open resolver by default. If you widen `allowed_networks` to everything, a warning is logged at startup.
 
-Zone transfer requests (AXFR, IXFR) are answered `REFUSED` (with the extended error "Not Supported") and never forwarded: TelltaleDNS serves no zones to transfer. An old DNS server still trying to sync a zone through TelltaleDNS shows in the query log as `TYPE252` or `TYPE251`, status special.
+Zone transfer requests (AXFR, IXFR) are answered `REFUSED` (with the extended error "Not Supported") and never forwarded: WrenDNS serves no zones to transfer. An old DNS server still trying to sync a zone through WrenDNS shows in the query log as `TYPE252` or `TYPE251`, status special.
 
 `[ratelimit]` applies on reload, with no restart. The default of 1,000 queries a minute per address suits homes where each device has its own address. A router or proxy that forwards for a whole network shows up as one address, and would be refused above about 17 queries a second: add it to `exempt`, or raise `queries`.
 
@@ -1961,7 +2031,7 @@ nsid = true
 Answers carry this node's name in the NSID option (RFC 5001) when a query asks for it, so you can tell which node or pod answered when several share one address (a load balancer, resolver pods):
 ```
 $ dig +nsid example.com @10.50.5.112
-; NSID: 74 65 6c 6c 74 61 6c 65 64 6e 73 2d 72 65 73 6f 6c 76 65 72 ... ("telltaledns-resolver-786d9bf5df-c6pr8")
+; NSID: 74 65 6c 6c 74 61 6c 65 64 6e 73 2d 72 65 73 6f 6c 76 65 72 ... ("wrendns-resolver-786d9bf5df-c6pr8")
 ```
 - The name is `[node] name`, or the host name (a pod's name in Kubernetes). It's added only to answers whose query asked for NSID; others are unchanged.
 - Off by default: any client allowed to query sees the name. In a cluster, `[dns]` is shared, so one setting turns it on everywhere, and each node answers with its own name.
@@ -1979,7 +2049,7 @@ Handled before anything else. Each can be turned off under `[special]`, except `
 | CHAOS class (`version.bind`, …) | REFUSED | no fingerprinting (`refuse_chaos`) |
 | reverse lookups for private IPs | NXDOMAIN | never leaks your LAN layout to public resolvers, unless a local record or a `[[route]]` covers it (`private_ptr_nxdomain`) |
 | `mask.icloud.com`, `mask-h2.icloud.com` | NXDOMAIN | Apple devices then turn iCloud Private Relay off on this network, so their lookups keep coming here and are filtered (`block_icloud_private_relay`) |
-| `resolver.arpa` and its subdomains | no data, or the DDR records below | never forwarded (RFC 9462): an upstream's own DDR answer would point your devices past TelltaleDNS |
+| `resolver.arpa` and its subdomains | no data, or the DDR records below | never forwarded (RFC 9462): an upstream's own DDR answer would point your devices past WrenDNS |
 | single-label names (`nas`, `printer`) asked for A, AAAA, or HTTPS | NXDOMAIN | **off by default** (`single_label_nxdomain = true`, Pi-hole's "never forward non-FQDN"): bare names never leave your network. Local records, zones, device names, and a `[[route]]` that matches the name still answer it |
 
 `.local` names are passed through unchanged (many Active Directory domains use them; route them with `[[route]]`).
@@ -1991,9 +2061,9 @@ single_label_nxdomain = false       # default; true = domain-needed
 ddr_name = "dns.example.com"        # optional: advertise encrypted DNS (below)
 ```
 
-**iCloud Private Relay.** Apple's documented way for a network to opt out: when these two names don't resolve, devices tell their user that Private Relay is off for this network and use the network's DNS. Set `block_icloud_private_relay = false` to let Private Relay work; Apple devices with it on then bypass TelltaleDNS, as any relay or VPN does. Explain and the query log show these answers as `special`.
+**iCloud Private Relay.** Apple's documented way for a network to opt out: when these two names don't resolve, devices tell their user that Private Relay is off for this network and use the network's DNS. Set `block_icloud_private_relay = false` to let Private Relay work; Apple devices with it on then bypass WrenDNS, as any relay or VPN does. Explain and the query log show these answers as `special`.
 
-**Discovery of Designated Resolvers (DDR, RFC 9462).** With `ddr_name` set to the host name in your encrypted listeners' certificate, a device that asks `_dns.resolver.arpa` for SVCB (Windows 11, iOS 16 and macOS 13 and later, among others) learns this node's DoT, DoH, DoH3, and DoQ listeners: one record per listener, with its port, its DoH path (`/dns-query{?dns}` unless the listener sets `path`), and its address when the listener binds a specific one (not `0.0.0.0` or `::`). Listeners bound to loopback and listeners with `proxy_protocol = true` are left out: other devices can't use them directly, and a device told about a resolver it can't reach may lose DNS altogether. Devices upgrade to encrypted DNS only when the certificate also lists the IP address they reach TelltaleDNS on (an IP SAN), so include it when you issue the certificate. Behind Docker or Kubernetes port mappings, the advertised ports are the listeners' own. Without `ddr_name`, or on a node with no encrypted listener, `_dns.resolver.arpa` gets no data. `[special]` is shared in a cluster; each node advertises its own listeners.
+**Discovery of Designated Resolvers (DDR, RFC 9462).** With `ddr_name` set to the host name in your encrypted listeners' certificate, a device that asks `_dns.resolver.arpa` for SVCB (Windows 11, iOS 16 and macOS 13 and later, among others) learns this node's DoT, DoH, DoH3, and DoQ listeners: one record per listener, with its port, its DoH path (`/dns-query{?dns}` unless the listener sets `path`), and its address when the listener binds a specific one (not `0.0.0.0` or `::`). Listeners bound to loopback and listeners with `proxy_protocol = true` are left out: other devices can't use them directly, and a device told about a resolver it can't reach may lose DNS altogether. Devices upgrade to encrypted DNS only when the certificate also lists the IP address they reach WrenDNS on (an IP SAN), so include it when you issue the certificate. Behind Docker or Kubernetes port mappings, the advertised ports are the listeners' own. Without `ddr_name`, or on a node with no encrypted listener, `_dns.resolver.arpa` gets no data. `[special]` is shared in a cluster; each node advertises its own listeners.
 
 ## Routing (conditional forwarding)
 ```toml
@@ -2016,7 +2086,7 @@ Forwarding asks a server to look the name up for you (recursion desired). A zone
 **authoritative** servers won't: they answer only for their zones, refuse everything else,
 and hand delegated sub-domains to other servers with a referral that a forwarder can't
 follow. For those, make the domain a **stub zone** (BIND's `static-stub`, Unbound's
-`stub-zone`): TelltaleDNS resolves names under it itself, starting at the zone's servers
+`stub-zone`): WrenDNS resolves names under it itself, starting at the zone's servers
 instead of the root, and follows their delegations.
 ```toml
 [[upstream]]
@@ -2057,7 +2127,7 @@ dnssec_nta = true             # internal zones are usually unsigned
   as listed (`static-stub`). List every server you want asked.
 
 ## A warm cache after restarts
-With `[cache] persist = true`, TelltaleDNS writes its cache to `<data_dir>/cache.bin` when it
+With `[cache] persist = true`, WrenDNS writes its cache to `<data_dir>/cache.bin` when it
 stops, and reloads it when it starts. Upgrades and restarts then start with a warm cache
 instead of a cold one.
 - Only answers that can still be served come back (fresh, or within the serve-stale
@@ -2136,11 +2206,11 @@ noticeably more lookups from memory, or a smaller one would do.
   *learning* before 10,000 lookups.
 - Since start: a restart starts the estimate over. In a cluster each node judges its own cache.
 - `GET /api/v1/cache/stats` has it as `sizing`, the MCP tool `cache_advice` reads it, and
-  `/metrics` has `telltale_cache_ghost_hits_total{size="1.25x"|"1.5x"|"2x"}` (estimated, cumulative)
-  and `telltale_cache_peak_bytes`.
+  `/metrics` has `wrendns_cache_ghost_hits_total{size="1.25x"|"1.5x"|"2x"}` (estimated, cumulative)
+  and `wrendns_cache_peak_bytes`.
 
 ## DNSSEC validation
-TelltaleDNS can check DNSSEC signatures on forwarded answers itself, instead of trusting the
+WrenDNS can check DNSSEC signatures on forwarded answers itself, instead of trusting the
 upstream:
 ```toml
 [dnssec]
@@ -2162,13 +2232,13 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
 - **Speed:** it works on cache misses only, and a validated answer is cached with its AD bit.
   The first lookup in a new zone fetches its keys, and a cold start fetches the root's and
   the TLD's; after that they're cached.
-- **Counted** in `telltale_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
+- **Counted** in `wrendns_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
   In `permissive` mode each bogus answer is also logged at INFO with its name, type, and
   EDE code (`DNSSEC: bogus answer served (permissive mode)`), so a trial shows which names
   `validate` would refuse.
 - **Indeterminate** (validation couldn't finish, such as the validator's depth limit): the
   answer is fetched again without validation and served without AD, in both modes.
-- **Unsigned zones:** before refusing an answer, TelltaleDNS proves whether its zone is
+- **Unsigned zones:** before refusing an answer, WrenDNS proves whether its zone is
   simply unsigned (the parent's signed denial of the zone's DS, which must also show that
   the name is a delegation: NS present, SOA and DS absent), and if so serves it as
   insecure. This corrects the validation library's verdict on CNAME chains in unsigned zones
@@ -2179,13 +2249,13 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   or SERVFAIL as for any upstream failure).
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only
   names that are really broken (like `dnssec-failed.org`) should show up.
-- **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
+- **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `wrendns_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
 - **Why it failed:** a bogus answer's SERVFAIL says why when its signatures show it: EDE 7 (signature expired), 8 (signature not yet valid), 10 (signatures missing), else 6. A clock that's far off shows up as 7 or 8 everywhere, which is worth checking first.
-- **Trust anchors:** the root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you. To use other anchors (a future key before TelltaleDNS is updated, or a test root), give a file of DNSKEY records in zone-file form, as `dig DNSKEY . +noall +answer` prints them or Unbound's `root.key` holds:
+- **Trust anchors:** the root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you. To use other anchors (a future key before WrenDNS is updated, or a test root), give a file of DNSKEY records in zone-file form, as `dig DNSKEY . +noall +answer` prints them or Unbound's `root.key` holds:
   ```toml
   [dnssec]
   mode = "validate"
-  trust_anchors_file = "/etc/telltale/root.key"
+  trust_anchors_file = "/etc/wrendns/root.key"
   ```
   It replaces the built-in anchors; a file that can't be read or holds no key is logged and the built-in anchors stay. Automatic tracking of key changes (RFC 5011) isn't done (ADR-086).
 
@@ -2255,9 +2325,9 @@ mode = "ship"
   target. So cluster-wide searches never count a row twice, and recent rows are searchable
   from the sender through the cluster until they're delivered.
 - If the target is down, files wait in the buffer and go out when it's back; beyond
-  `buffer_bytes` the oldest are dropped. Metrics: `telltale_qlog_ship_pending_segments`,
-  `telltale_qlog_ship_errors_total`, and on the target
-  `telltale_qlog_received_segments_total`.
+  `buffer_bytes` the oldest are dropped. Metrics: `wrendns_qlog_ship_pending_segments`,
+  `wrendns_qlog_ship_errors_total`, and on the target
+  `wrendns_qlog_received_segments_total`.
 - Dashboard counts go too: every `interval_secs` (at most a minute) the node sends its last
   30 minutes of per-minute counts to the target, which keeps them for 7 days. While the node
   answers, the dashboard uses its own numbers; once it's gone (a Kubernetes resolver pod
@@ -2325,7 +2395,7 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
 
 **When the primary is gone: promote another node (manual failover).**
 - **Who can be promoted:** a node joined with `--eligible` using a token made with
-  `telltale cluster token create --eligible` (a plain token brings a plain member). The primary
+  `wrendns cluster token create --eligible` (a plain token brings a plain member). The primary
   shares the cluster's signing key with eligible nodes once they connect, so one of them can
   take over. A node that joined with the Helm chart's bootstrap secret (a resolver pod) is
   always an ephemeral member: it can't be eligible or a witness, whatever its settings say.
@@ -2333,7 +2403,7 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   to step down.
 - **How:** use **Promote this node…** on the Cluster page (admin, live; it asks for your
   password again, and your authenticator code if you use two-factor sign-in), or stop the node,
-  run `telltale cluster promote`, and start it. Through the API, a signed-in session sends
+  run `wrendns cluster promote`, and start it. Through the API, a signed-in session sends
   `password` (and `totp`); an API token with admin scope doesn't need them. It's refused while the primary is up, except
   over an emergency primary: a node that can publish (a Git-managed node, under the `gitops`
   authority) may take over from it while it runs.
@@ -2346,11 +2416,11 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   again on the current primary.
 
 **Removing a node.** A node that is gone for good stays in the member list as a down node: it
-counts as a voter in automatic failover and keeps `TelltaleDNSClusterPeerDown` firing. This
+counts as a voter in automatic failover and keeps `WrenDNSClusterPeerDown` firing. This
 happens when you rebuild a machine and join it again, because it comes back under a new node
 ID. The Cluster page lists such a record as a down node (a record that hasn't connected since
 the node you're looking at started appears after about a minute and a half). Remove it:
-- **How:** **Remove** on the node's row of the Cluster page (admin), `telltale ctl remove-node
+- **How:** **Remove** on the node's row of the Cluster page (admin), `wrendns ctl remove-node
   <node-id>`, or `DELETE /api/v1/cluster/nodes/<node-id>`. Use the node ID the Cluster page
   shows, not the site name. Add `--dry-run` (`?dryRun=true`) to see what would happen first. It
   works from any node (a replica sends it to the primary) and under a Git config authority,
@@ -2364,7 +2434,7 @@ the node you're looking at started appears after about a minute and a half). Rem
   one of three turns it into manual until another eligible node or a witness joins; the answer
   says so.
 - **The cluster key:** an eligible node holds a copy of it. Removing the node stops the cluster
-  accepting it, but if the machine is lost or can't be trusted, also run `telltale cluster
+  accepting it, but if the machine is lost or can't be trusted, also run `wrendns cluster
   rotate-ca`. For a record whose machine is gone, there is nothing more to do.
 
 **Upgrading a cluster.** Upgrade one node at a time, **replicas first, then the primary**.
@@ -2388,14 +2458,14 @@ renews it when fewer than 30 days remain (checked every 6 hours). It keeps its k
 ID. Nodes holding the cluster key issue their own; others ask the primary over the cluster
 link, which signs only for the node asking. A renewal that fails (for example, with the primary
 down) is retried every 10 minutes, and shows in the Cluster page's events and in
-`telltale_cluster_cert_expiry_timestamp_seconds`. The certificate check on the Cluster page and the
+`wrendns_cluster_cert_expiry_timestamp_seconds`. The certificate check on the Cluster page and the
 Helm chart's alert warn below 14 days.
 
 **Rotating the cluster CA.** The cluster CA lasts 10 years. To replace it (a suspected leak of
 a node holding the cluster key, or policy), run on the primary while it runs:
 ```sh
-telltale cluster rotate-ca            # start
-telltale cluster rotate-ca --status   # phase, and which members it waits for
+wrendns cluster rotate-ca            # start
+wrendns cluster rotate-ca --status   # phase, and which members it waits for
 ```
 The primary drives three steps, each only when every member is ready, so no link breaks and
 DNS keeps answering:
@@ -2413,7 +2483,7 @@ made before a rotation pin the old CA, so make new ones afterwards.
 Rotation helps when the cluster key may have leaked but hasn't been used. Whoever holds the
 current key can sign configuration and rotate trust to a CA of their own, exactly as the
 primary does. If that may already have happened (configuration or a rotation you didn't make),
-re-create the cluster: `telltale cluster init` on one node, and join the others with new tokens.
+re-create the cluster: `wrendns cluster init` on one node, and join the others with new tokens.
 
 **Automatic failover (with a witness or three eligible nodes).** Two nodes can't tell "the
 other node is down" from "the link between us is down", so automatic failover needs a third
@@ -2421,11 +2491,11 @@ vote: another eligible node, or a **witness**, a tiny vote-only process that can
 router, or small VM.
 ```sh
 # On the witness host (a config with [node] data_dir and [cluster] listen is enough):
-# The token from `telltale cluster token create --witness` on the primary.
-telltale cluster join <token> --witness --advertise https://witness.lan:8443 -c witness.toml
-telltale cluster witness -c witness.toml      # run it as a service
+# The token from `wrendns cluster token create --witness` on the primary.
+wrendns cluster join <token> --witness --advertise https://witness.lan:8443 -c witness.toml
+wrendns cluster witness -c witness.toml      # run it as a service
 # On the primary (a running one adopts it with no restart):
-telltale cluster set-failover auto
+wrendns cluster set-failover auto
 ```
 - **Turning it on needs no restart, and the order doesn't matter.** Run `set-failover auto` on
   the primary of a running cluster at any time: the primary takes the mode up within a second,
@@ -2473,9 +2543,9 @@ telltale cluster set-failover auto
 - **DNS never waits for any of this.** Every node keeps answering from its last configuration;
   only configuration changes pause (503) until a primary with a lease exists.
 - **Seeing it:** the Cluster page's **Failover** line (voters reachable, the lease, the latest
-  vote) and the `failover` check. Metrics: `telltale_cluster_primary`, `telltale_cluster_epoch`,
-  `telltale_cluster_failover_auto`, `telltale_cluster_lease_held`.
-- **Manual promotion is refused while automatic failover runs**; `telltale cluster
+  vote) and the `failover` check. Metrics: `wrendns_cluster_primary`, `wrendns_cluster_epoch`,
+  `wrendns_cluster_failover_auto`, `wrendns_cluster_lease_held`.
+- **Manual promotion is refused while automatic failover runs**; `wrendns cluster
   set-failover manual` on the primary switches back. With fewer than three voters, `auto` acts
   as `manual`, and the Cluster page says so.
 - **Under a Git config authority,** an elected node that isn't Git-managed becomes an emergency
@@ -2493,18 +2563,18 @@ fetches it, checks it, and hands it to every node, so all nodes serve the same c
 [cluster.git]
 repo = "https://github.com/me/homelab"
 ref = "main"                              # branch, tag, or commit
-path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS's format
-# credentials_file = "/etc/telltale/git-token"   # private repositories: a token, or user:password
+path = "wrendns/shared.toml"             # the shared settings, in WrenDNS's format
+# credentials_file = "/etc/wrendns/git-token"   # private repositories: a token, or user:password
 # poll_secs = 60
-# webhook_secret_file = "/etc/telltale/git-hook" # then add a push webhook to /api/v1/hooks/git
+# webhook_secret_file = "/etc/wrendns/git-hook" # then add a push webhook to /api/v1/hooks/git
 # require_signed = true                          # only SSH-signed commits by...
-# allowed_signers_file = "/etc/telltale/allowed_signers"   # ...these keys (git's format)
+# allowed_signers_file = "/etc/wrendns/allowed_signers"   # ...these keys (git's format)
 # allow_rewind = false                           # refuse force-pushes and rewinds
 ```
 - **Safe by default:** a commit is used only if its file loads and validates (merged with
   each node's own settings), and it descends from the commit in use. Anything else is
   refused: the cluster stays on the last good commit, and the Cluster page, the event log,
-  and the `TelltaleDNSGitCommitRefused` alert say why.
+  and the `WrenDNSGitCommitRefused` alert say why.
 - **Signed commits:** with `require_signed`, only commits SSH-signed by a key in
   `allowed_signers_file` are accepted (`git config gpg.format ssh`; Ed25519 keys).
 - **Webhook:** point the repository's push webhook at `https://<node>/api/v1/hooks/git` with
@@ -2512,20 +2582,20 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
   poll. A refused webhook gets a plain 401 (the log says why: a wrong signature, an unreadable
   file), and an empty secret file refuses every webhook.
 - **Outages don't matter to DNS:** with the repository unreachable, every node keeps serving
-  the last commit (`telltale_cluster_git_failing` and an alert after 15 minutes).
+  the last commit (`wrendns_cluster_git_failing` and an alert after 15 minutes).
 - **What you see:** the Cluster page shows the repository, the commit in use (author,
-  message, signer), and each node's commit. `telltale_cluster_config_commit{commit=…}` on
+  message, signer), and each node's commit. `wrendns_cluster_config_commit{commit=…}` on
   every node should be the same.
 - **Changes go through Git:** with a Git source the cluster is GitOps-managed, so the UI and
   API don't change shared settings (409 `gitops_managed`).
 - **Failover:** any eligible node with the same `[cluster.git]` can take over and keep
   following the repository. A node configured with a different repository, ref, or path
   refuses to fetch, since the cluster is pinned to its source.
-- No `git` program is needed: TelltaleDNS speaks Git's protocol over HTTPS and fetches only
+- No `git` program is needed: WrenDNS speaks Git's protocol over HTTPS and fetches only
   that one file.
 
 **Where configuration comes from (config authority).**
-- **Choosing it:** `telltale cluster init --config-authority gitops` (or `telltale cluster
+- **Choosing it:** `wrendns cluster init --config-authority gitops` (or `wrendns cluster
   set-authority gitops` on the primary, then restart) says the cluster's configuration comes from
   Git.
 - **What it changes:**
@@ -2538,7 +2608,7 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
     When one is back, it takes over by itself after a minute (an eligible, Git-managed node
     that sees the emergency primary up), and the emergency primary steps down. With
     `failover = manual` you can also promote it right away from its Cluster page or with
-    `telltale cluster promote`.
+    `wrendns cluster promote`.
 
   The default is `api`: the primary's own file and UI.
 
@@ -2558,30 +2628,30 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
   coordinated for a long outage (certificate renewal waits for a primary). `auto` does that
   without anyone present, and the Git-managed node takes the role back by itself.
 
-Run these as the user telltale runs as (`sudo -u telltale` for native installs,
-`docker compose exec telltale` for Compose), then restart telltale.
+Run these as the user wrendns runs as (`sudo -u wrendns` for native installs,
+`docker compose exec wrendns` for Compose), then restart wrendns.
 
 ```sh
 # On the first node: create the cluster. List every URL other nodes might use to reach it.
-telltale cluster init --name home --advertise https://10.30.3.2:8443 --site home-pi
+wrendns cluster init --name home --advertise https://10.30.3.2:8443 --site home-pi
 
 # Still on the first node: a join token (reusable until it expires; treat it like a password).
-telltale cluster token create --ttl 1h              # brings a plain member (follows, can't be promoted)
-telltale cluster token create --ttl 1h --eligible   # may bring a node that can be promoted
-telltale cluster token list              # the tokens still valid: their IDs and expiry
-telltale cluster token revoke 3f9c2a1b7d0e   # stop one early (nodes that joined stay members)
+wrendns cluster token create --ttl 1h              # brings a plain member (follows, can't be promoted)
+wrendns cluster token create --ttl 1h --eligible   # may bring a node that can be promoted
+wrendns cluster token list              # the tokens still valid: their IDs and expiry
+wrendns cluster token revoke 3f9c2a1b7d0e   # stop one early (nodes that joined stay members)
 
 # On the joining node: join, then restart it.
-telltale cluster join tt_join_... --site k8s
+wrendns cluster join tt_join_... --site k8s
 
 # On any node: this node's identity.
-telltale cluster status
+wrendns cluster status
 ```
 
 - **The cluster port** is `[cluster] listen` (default `0.0.0.0:8443`). It opens only once the node
   is in a cluster. Only the first node's port must be reachable: joining nodes connect out
   to it, so they can sit behind NAT. If you also serve DoH on 8443, change one of them
-  (`telltale config check` warns about the clash).
+  (`wrendns config check` warns about the clash).
 - **Trust:** the token carries the fingerprint of the cluster's CA, so a joining node can't be
   tricked into joining another server; the token's secret proves the node may join. Each node
   gets a certificate valid for 90 days.
@@ -2604,11 +2674,11 @@ telltale cluster status
   on every tab. The tab is in the address (`#/cluster?tab=health`), so it can be linked. The
   page refreshes every 5 seconds.
 - **Metrics:**
-  - `telltale_cluster_peers{state}`;
-  - per peer: `telltale_cluster_peer_up`, `telltale_cluster_peer_rtt_seconds` and
-    `telltale_cluster_peer_config_lag`;
-  - this node: `telltale_cluster_config_seq`, `telltale_cluster_behind_seconds`,
-    `telltale_cluster_sync_error` and `telltale_cluster_cert_expiry_timestamp_seconds`.
+  - `wrendns_cluster_peers{state}`;
+  - per peer: `wrendns_cluster_peer_up`, `wrendns_cluster_peer_rtt_seconds` and
+    `wrendns_cluster_peer_config_lag`;
+  - this node: `wrendns_cluster_config_seq`, `wrendns_cluster_behind_seconds`,
+    `wrendns_cluster_sync_error` and `wrendns_cluster_cert_expiry_timestamp_seconds`.
 
   The Helm chart's PrometheusRule alerts on a peer down for over a minute, configuration behind
   for over 30 s, failing syncs, and a certificate within 14 days of expiry.
@@ -2689,10 +2759,10 @@ measuring), the API and UI. The Cluster page, `cluster_status`, and the health p
 its window, and its real figures the whole time.
 
 ```sh
-telltale ctl maintenance start --for 30m --reason "SD card swap"           # this node
-telltale ctl maintenance start --for 2h --reason "kernel upgrade" --node pi   # another node
-telltale ctl maintenance status
-telltale ctl maintenance end --node pi
+wrendns ctl maintenance start --for 30m --reason "SD card swap"           # this node
+wrendns ctl maintenance start --for 2h --reason "kernel upgrade" --node pi   # another node
+wrendns ctl maintenance status
+wrendns ctl maintenance end --node pi
 ```
 
 Or on the Cluster page: a node's **Maintenance…** (how long, why) and **End maintenance**.
@@ -2725,8 +2795,8 @@ maintenance (Compose doesn't restart it for that).
 
 **Alerts and metrics.** An alert rule with `when = "maintenance"` tells a destination when a node
 enters maintenance and when it leaves (not in the defaults). `/metrics` has
-`telltale_node_maintenance` (0/1), `telltale_node_maintenance_until_seconds`, and
-`telltale_node_maintenance_total`, plus `telltale_cluster_peer_maintenance_until_seconds{node,site}`
+`wrendns_node_maintenance` (0/1), `wrendns_node_maintenance_until_seconds`, and
+`wrendns_node_maintenance_total`, plus `wrendns_cluster_peer_maintenance_until_seconds{node,site}`
 for peers. The Helm chart's node alerts leave out a node whose last reported window is still open
 (also when it stopped reporting), and the Grafana dashboard has a **Maintenance** timeline.
 
@@ -2761,7 +2831,7 @@ For 15 seconds to 5 minutes (60 by default), one node stops answering the device
   the node looks dead. DoH and DoQ queries get no answer (their connections stay open, since
   other queries share them). Each such query is logged with the status **drilled**.
 - **Never left unanswered:** the node itself (`127.0.0.1`, `::1`: its probes and local programs),
-  its infrastructure (the default gateways, `TELLTALE_NODE_IPS`, `[clients] infrastructure`), the
+  its infrastructure (the default gateways, `WRENDNS_NODE_IPS`, `[clients] infrastructure`), the
   cluster's nodes, and [excluded](#keeping-names-and-devices-out-of-the-log) devices.
 - **It's a maintenance window too:** the node reports not ready, its alerts pause, and a primary
   hands its role over first (as for [maintenance](#taking-a-node-down-for-maintenance)). Unlike
@@ -2836,9 +2906,9 @@ queries, and the report's `balancerSwitchMs` says how long that took: about 4 se
 chart's readiness probe (every 2 seconds, 2 failures). For two real servers (the Pi and the
 cluster's address), drill the Pi.
 
-**Metrics.** `telltale_drill_active`, `telltale_drill_dropped_total`,
-`telltale_drill_last_coverage_percent`, `telltale_drill_last_stuck`,
-`telltale_drill_last_failover_ms{quantile}`, and `telltale_drills_total{result}`. A drill never
+**Metrics.** `wrendns_drill_active`, `wrendns_drill_dropped_total`,
+`wrendns_drill_last_coverage_percent`, `wrendns_drill_last_stuck`,
+`wrendns_drill_last_failover_ms{quantile}`, and `wrendns_drills_total{result}`. A drill never
 changes the health level. An alert rule with `when = "maintenance"` hears about drills too (the
 reason starts with "failover drill").
 
@@ -2923,19 +2993,19 @@ the canaries ran the change, so they go back too). Both need an admin.
   try again.
 
 ```sh
-telltale ctl rollout status     # the version baking, the canaries and what each runs, the time left, the guard
-telltale ctl rollout promote
-telltale ctl rollout abort
+wrendns ctl rollout status     # the version baking, the canaries and what each runs, the time left, the guard
+wrendns ctl rollout promote
+wrendns ctl rollout abort
 ```
 
 Over the API: `GET /api/v1/cluster/rollout`, `POST /api/v1/cluster/rollout/promote` and
 `/abort` (admin; audited as `rollout.promote` and `rollout.abort`); the settings are
 `PUT`/`DELETE /api/v1/cluster/rollout-settings/default`. AI agents read `rollout_status`.
 
-**Metrics** (the primary reports them): `telltale_cluster_rollout_stage` (1 while a version
-bakes), `telltale_cluster_rollout_info{version,started}`, and
-`telltale_cluster_rollouts_total{outcome}` (`started`, `promoted`, `failed`, `aborted`,
-`skipped`, `pinned`, `unpinned`). The Helm chart's PrometheusRule has `TelltaleDNSRolloutFailed`.
+**Metrics** (the primary reports them): `wrendns_cluster_rollout_stage` (1 while a version
+bakes), `wrendns_cluster_rollout_info{version,started}`, and
+`wrendns_cluster_rollouts_total{outcome}` (`started`, `promoted`, `failed`, `aborted`,
+`skipped`, `pinned`, `unpinned`). The Helm chart's PrometheusRule has `WrenDNSRolloutFailed`.
 
 ## Pinning the cluster to a version
 A pin makes every node serve an older version again: its shared configuration and its filter
@@ -2949,7 +3019,7 @@ snapshot. The guard pins by itself when a rollout fails; an admin can pin any ke
   publishes nothing; list updates still download, but no new filter snapshot goes out.
 - **It's loud.** A banner on the Cluster page (pinned to what, since when, by whom, why, and what
   it holds back), the health condition `cluster_pinned`, and the alert `cluster_pinned` (a rule
-  with `when = "cluster_pinned"`; the Helm chart's `TelltaleDNSClusterPinned` fires after an hour).
+  with `when = "cluster_pinned"`; the Helm chart's `WrenDNSClusterPinned` fires after an hour).
 - **It survives failover.** A replica promoted to primary keeps the pin, and keeps serving the
   pinned version until someone unpins it there.
 - **Unpin** publishes the current configuration again, through a staged rollout when canaries are
@@ -2962,10 +3032,10 @@ outcome and the guard's readings), with **Pin…** on each (a reason, then a pre
 changes on every node). The pin banner has **Unpin**.
 
 ```sh
-telltale ctl versions                                           # newest first; * = what every node runs
-telltale ctl pin 3.124 --reason "the new list blocks the bank" --dry-run
-telltale ctl pin 3.124 --reason "the new list blocks the bank"
-telltale ctl unpin
+wrendns ctl versions                                           # newest first; * = what every node runs
+wrendns ctl pin 3.124 --reason "the new list blocks the bank" --dry-run
+wrendns ctl pin 3.124 --reason "the new list blocks the bank"
+wrendns ctl unpin
 ```
 
 Over the API: `GET /api/v1/cluster/versions`, `POST /api/v1/cluster/versions/{epoch}.{seq}/pin`
@@ -2981,7 +3051,7 @@ kilobytes, and filter files that didn't change between versions are stored once.
 to primary starts its own history (plus the version it was running), so versions only the old
 primary kept can't be pinned there.
 
-**Metrics:** `telltale_cluster_pinned` (0/1) and `telltale_cluster_pinned_to{version}`.
+**Metrics:** `wrendns_cluster_pinned` (0/1) and `wrendns_cluster_pinned_to{version}`.
 
 ## Monitoring
 **Tuning in the UI (T27.5, ADR-1007).** The objectives (`[slo]`) are on the SLO card, and the listener checks (`[probe]`) on Settings → System, both for operators. Second opinions (`[upstream_check]`) are on the Upstreams page and device anomaly settings (`[telemetry.anomaly]`) on the Anomalies page, and the query log's store, retention and privacy level (`[telemetry.qlog]`) on the Query log page. The per-client metric series (`[telemetry.metrics]`) are on Settings → System. The last four are admin-only, since privacy and retention are at stake, and apply on every node: the privacy level and the anomaly and metric settings within a few seconds, the query log's store after a restart. The API: `PUT`/`DELETE /api/v1/slo-settings/default`, `/probe-settings/default`, `/upstream-check-settings/default`, `/anomaly-settings/default`, `/qlog-settings/default` and `/metrics-settings/default`, with the fields of the file's section as JSON.
@@ -3028,28 +3098,28 @@ Main metrics:
 
 | Metric | What it tells you |
 |---|---|
-| `telltale_queries_total{proto,status}` | queries by outcome: `cached`, `refreshed` (an expired answer given at once while it's refreshed), `forwarded`, `stale`, `local`, `special`, `blocked`, `refused`, `rate_limited`, `malformed`, `servfail`, `dropped` |
-| `telltale_query_duration_seconds{path}` | latency histogram per path (`cache`, `upstream`, `local`, `synthesized`) |
-| `telltale_stage_duration_seconds{stage}` | time spent waiting for upstreams, per query that waited (`stage="upstream"`) |
-| `telltale_responses_total{rcode}`, `telltale_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
-| `telltale_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
-| `telltale_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
-| `telltale_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
-| `telltale_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
-| `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed = healthy, 1 half-open = probing, 2 open = benched; the web UI says Healthy, Probing, Benched); smoothed latency |
-| `telltale_upstream_connections_opened_total{upstream,outcome}`, `telltale_upstream_connect_seconds_total{upstream}` | connections opened to TCP, DoT, and DoH upstreams (`ok` or `failed`), and the time spent opening them: their ratio is the mean connect time, TCP and TLS together. Many opens per minute mean the pool keeps closing them (see below) |
-| `telltale_upstream_tls_handshakes_total{upstream,kind}` | TLS handshakes, `full` or `resumed` (from a stored session, a round trip shorter) |
-| `telltale_upstream_connections_closed_total{upstream,reason}`, `telltale_upstream_connections{upstream}` | pooled TCP and DoT connections ended: `idle` (unused for `idle_timeout_ms`), `server` (closed or reset by the upstream), `write_failed`, `unanswered` (queries waited 3 s with nothing at all coming back: a connection dropped silently along the way; its queries retry at once on a new one), `unused`; and how many are open |
-| `telltale_upstream_connection_retries_total{upstream}` | queries sent again on a new connection because the pooled one closed just before answering |
-| `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list (`list` is `quick`, `schedule`, or `answer_ip` when a quick rule, a schedule, or rebinding protection decided instead) |
-| `telltale_client_queries_total{client}` | queries per client: off by default; turn on with `[telemetry.metrics] per_client = true` (at most `per_client_cap` clients, default 100; the rest are `client="other"`) |
-| `telltale_list_entries{list}`, `telltale_list_regex_skipped{list}`, `telltale_filter_*` | list sizes, regex rules a list ships that the snapshot leaves out (over `max_regexes`), snapshot version, rule count, compile time, and `telltale_filter_lookup_mode{mode="indexed"|"walk"}` (1 for the lookup in use; `walk` is the slower fallback when a snapshot has more distinct list combinations than the index holds, 65,536, which is also logged as a warning) |
-| `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
-| `telltale_udp_*`, `telltale_tcp_*` | listener counters |
-| `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
-| `telltale_config_seq`, `telltale_annotations_total{kind}`, `telltale_annotation_write_failures_total` | the configuration sequence this node applied; [change markers](#change-markers) written, and those that couldn't be |
-| `telltale_process_starts_total`, `telltale_process_unclean_starts_total` | starts on this data directory, and those after a run that didn't stop cleanly (a crash, an OOM kill, a power cut); kept in `<data_dir>/runs.json`, so they count across restarts (a new pod with an empty volume starts from 1). Settings → System shows them too. |
-| `telltale_host_*`, `telltale_cgroup_*`, `telltale_data_*`, `telltale_open_fds` | the machine it runs on: see [Host resources](#host-resources) |
+| `wrendns_queries_total{proto,status}` | queries by outcome: `cached`, `refreshed` (an expired answer given at once while it's refreshed), `forwarded`, `stale`, `local`, `special`, `blocked`, `refused`, `rate_limited`, `malformed`, `servfail`, `dropped` |
+| `wrendns_query_duration_seconds{path}` | latency histogram per path (`cache`, `upstream`, `local`, `synthesized`) |
+| `wrendns_stage_duration_seconds{stage}` | time spent waiting for upstreams, per query that waited (`stage="upstream"`) |
+| `wrendns_responses_total{rcode}`, `wrendns_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
+| `wrendns_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
+| `wrendns_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
+| `wrendns_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
+| `wrendns_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
+| `wrendns_upstream_breaker_state`, `wrendns_upstream_latency_ewma_seconds` | circuit breaker (0 closed = healthy, 1 half-open = probing, 2 open = benched; the web UI says Healthy, Probing, Benched); smoothed latency |
+| `wrendns_upstream_connections_opened_total{upstream,outcome}`, `wrendns_upstream_connect_seconds_total{upstream}` | connections opened to TCP, DoT, and DoH upstreams (`ok` or `failed`), and the time spent opening them: their ratio is the mean connect time, TCP and TLS together. Many opens per minute mean the pool keeps closing them (see below) |
+| `wrendns_upstream_tls_handshakes_total{upstream,kind}` | TLS handshakes, `full` or `resumed` (from a stored session, a round trip shorter) |
+| `wrendns_upstream_connections_closed_total{upstream,reason}`, `wrendns_upstream_connections{upstream}` | pooled TCP and DoT connections ended: `idle` (unused for `idle_timeout_ms`), `server` (closed or reset by the upstream), `write_failed`, `unanswered` (queries waited 3 s with nothing at all coming back: a connection dropped silently along the way; its queries retry at once on a new one), `unused`; and how many are open |
+| `wrendns_upstream_connection_retries_total{upstream}` | queries sent again on a new connection because the pooled one closed just before answering |
+| `wrendns_blocked_total{group,list}` | blocks by the client's group and the deciding list (`list` is `quick`, `schedule`, or `answer_ip` when a quick rule, a schedule, or rebinding protection decided instead) |
+| `wrendns_client_queries_total{client}` | queries per client: off by default; turn on with `[telemetry.metrics] per_client = true` (at most `per_client_cap` clients, default 100; the rest are `client="other"`) |
+| `wrendns_list_entries{list}`, `wrendns_list_regex_skipped{list}`, `wrendns_filter_*` | list sizes, regex rules a list ships that the snapshot leaves out (over `max_regexes`), snapshot version, rule count, compile time, and `wrendns_filter_lookup_mode{mode="indexed"|"walk"}` (1 for the lookup in use; `walk` is the slower fallback when a snapshot has more distinct list combinations than the index holds, 65,536, which is also logged as a warning) |
+| `wrendns_telemetry_dropped_total`, `wrendns_qlog_*`, `wrendns_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
+| `wrendns_udp_*`, `wrendns_tcp_*` | listener counters |
+| `wrendns_resident_memory_bytes`, `wrendns_uptime_seconds`, `wrendns_build_info` | process |
+| `wrendns_config_seq`, `wrendns_annotations_total{kind}`, `wrendns_annotation_write_failures_total` | the configuration sequence this node applied; [change markers](#change-markers) written, and those that couldn't be |
+| `wrendns_process_starts_total`, `wrendns_process_unclean_starts_total` | starts on this data directory, and those after a run that didn't stop cleanly (a crash, an OOM kill, a power cut); kept in `<data_dir>/runs.json`, so they count across restarts (a new pod with an empty volume starts from 1). Settings → System shows them too. |
+| `wrendns_host_*`, `wrendns_cgroup_*`, `wrendns_data_*`, `wrendns_open_fds` | the machine it runs on: see [Host resources](#host-resources) |
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory. The per-upstream, per-list, and per-client series are built by the analytics thread from query events, off the query path.
 
@@ -3063,11 +3133,11 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
 
 ### Network map
-**Monitor → Network map** draws the gateway, your networks and VLANs, devices, TelltaleDNS nodes (with their answer kinds: cache, local, blocked) and upstreams, joined by flows. It is built from a sample of lookups on the aggregator thread (never the query path), over the last 60 seconds, and refreshes every 2 seconds. The data API is `GET /api/v1/map`, `/api/v1/map/stream` and `/api/v1/map/health` (scope `analytics:read`). Upstreams carry words, not internal IDs: a forwarded domain reads "home.example names", its reverse zone "Reverse lookups, 192.168.x.x", a stub zone adds "(stub zone)", and the server's address is the node's address. The server writes these labels, so the map, the policy panel's route detail, the world view and the MCP tool `network_health` (whose flows also carry `fromLabel` and `toLabel`) agree.
+**Monitor → Network map** draws the gateway, your networks and VLANs, devices, WrenDNS nodes (with their answer kinds: cache, local, blocked) and upstreams, joined by flows. It is built from a sample of lookups on the aggregator thread (never the query path), over the last 60 seconds, and refreshes every 2 seconds. The data API is `GET /api/v1/map`, `/api/v1/map/stream` and `/api/v1/map/health` (scope `analytics:read`). Upstreams carry words, not internal IDs: a forwarded domain reads "home.example names", its reverse zone "Reverse lookups, 192.168.x.x", a stub zone adds "(stub zone)", and the server's address is the node's address. The server writes these labels, so the map, the policy panel's route detail, the world view and the MCP tool `network_health` (whose flows also carry `fromLabel` and `toLabel`) agree.
 - **Pulses.** Each flow with a rate has dashes moving along it: one per half query a second (at most six), wider as the rate grows. At most the 150 busiest flows move (60 on a host with 4 cores or fewer); the rest are drawn still. Motion stops when the tab is hidden, stops for good under your system's **reduce motion** setting (the rate is then written on each flow, and there is no switch to turn motion back on), and **Pause motion** stops it for the session.
 - **States.** Every node has a shape and a word as well as a colour: a circle with a check is **OK**, a triangle **Warning**, an octagon with a cross **Failing**, a dashed circle **Idle** (too few answers in the window to say). Select a node, or Tab to it and press Enter, for its numbers, the reasons for its colour and links: a device shows its [policy](#a-devices-policy) (group, where it came from, the key that matched, and what applies) with a link to the full panel, and opens its queries, Explain, anomalies and device page; an upstream opens Upstreams, a resolver Cluster, a network Networks.
 - **A dead spare doesn't make a node fail.** A resolver is **Failing** only when a whole upstream group fails (every member down) or its own health is severe. When one member of a group is down and another still answers, the resolver is at most **Warning**, and its reasons name the dead member and the one that answers. The dead upstream's own node stays red.
-- **No route.** An upstream given by IP address that this node has no route to (an IPv6 address on a host with no IPv6 default route, or IPv4 likewise) says **this node has no IPv6 route** (or IPv4) on its node and on the Upstreams page. TelltaleDNS checks at start and every 30 seconds with a `connect()` on a UDP socket, which sends nothing and never runs on the query path. A spare nobody has asked yet shows **Warning** instead of **Idle** for that reason. The Pi-hole import notes every IPv6 upstream, so you can drop it when the hosts have no IPv6.
+- **No route.** An upstream given by IP address that this node has no route to (an IPv6 address on a host with no IPv6 default route, or IPv4 likewise) says **this node has no IPv6 route** (or IPv4) on its node and on the Upstreams page. WrenDNS checks at start and every 30 seconds with a `connect()` on a UDP socket, which sends nothing and never runs on the query path. A spare nobody has asked yet shows **Warning** instead of **Idle** for that reason. The Pi-hole import notes every IPv6 upstream, so you can drop it when the hosts have no IPv6.
 - **Filters** (network, group, node, state, and a device's name or address) are in the page's address, so a view can be linked. Network, group, node and device narrow the read on the server (the map then updates by polling, as the stream carries everything); state narrows what is drawn.
 - **Table** shows the same flows and nodes as text, for a screen reader or a quick scan.
 - **Banners.** "Sampled, 1 in N" says the rates are estimates; "Partial" lists a cluster node that didn't answer; at privacy level (`telemetry.qlog.privacy_level`) 2 devices are hidden (one node stands for them) and at 3 only totals show. No domain name ever appears on the map.
@@ -3077,14 +3147,14 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 ### World view
 **Monitor → World view** draws a dot-grid world map with an arc from your network (or from the `home_country` you set) to each country answers point at. A wider, denser pulse is more lookups a second; the colour **and** the shape and word at the country's end (OK, Warning, Failing, Idle) say how large a share of the answers was slow (a region is Warning from `[map] warn_slow_pct`, default 10%). Diamonds mark where your upstreams are (the **Upstream locations** switch hides them). The map is drawn from data baked into the console (a land mask and a point per country, about 5 KiB compressed): no tiles, fonts or scripts from outside. Motion stops when the tab is hidden and for good under your system's **reduce motion** setting (the rate is then written on each arc); **Pause motion** stops it for the session; **Table** lists the countries as text.
 - **It needs the GeoIP database.** Without it the page says so, with a link for an admin to the setting (and "ask an admin" for everyone else): [GeoIP database](#geoip-database). Each node places answers with its own database, so the node that answers the page needs it.
-- **Answer addresses are not recorded yet.** TelltaleDNS does not keep the address each answer points at: the field would make every query-log record 20% bigger on the DNS path. Until it does, the page shows only where your **upstreams** are, labelled "Upstream locations, not where answers point", and says `address_not_recorded`. The arcs, countries and the "no location" counts are built and tested and start working when the field is kept (ADR-970).
+- **Answer addresses are not recorded yet.** WrenDNS does not keep the address each answer points at: the field would make every query-log record 20% bigger on the DNS path. Until it does, the page shows only where your **upstreams** are, labelled "Upstream locations, not where answers point", and says `address_not_recorded`. The arcs, countries and the "no location" counts are built and tested and start working when the field is kept (ADR-970).
 - **No location.** Failed, blocked and local answers have no address, and an address can have no country; they are counted apart ("N of M lookups have no location"), not drawn. At query-log privacy level 3 nothing per lookup is kept, so everything is counted there.
-- **Filters.** `Node` narrows the read to one TelltaleDNS node (`?node=`); **State** narrows what is drawn. The network, group and device filters of the network map don't apply: answers are counted per node, not per device. The filters are in the page's address.
+- **Filters.** `Node` narrows the read to one WrenDNS node (`?node=`); **State** narrows what is drawn. The network, group and device filters of the network map don't apply: answers are counted per node, not per device. The filters are in the page's address.
 - `GET /api/v1/map/world` (scope `analytics:read`; `?node=`) returns `available`, `reason` (`geoip_off`, `geoip_missing`, `address_not_recorded`, `privacy`), the countries (`cc`, `qps`, `count`, `slowPct`, `health`), the upstream `markers`, `unplacedUpstreams`, `unlocated` and `homeCountry`. A footer carries the database's attribution (IP geolocation by DB-IP.com, CC BY 4.0).
 
 ### GeoIP database
-The world view places answers with a country database. It is **never bundled** with TelltaleDNS and **nothing is downloaded until an admin turns it on**: **Settings → Query handling → GeoIP database** (or `[map.geoip] enabled = true`). Everyone who can see the map sees the status (state, source month, when it was built here, size, the next check and the last error); only an admin changes the settings, fetches now or deletes it, and no agent can (the actions are audited as `map.geoip.update` and `map.geoip.delete`, a settings change as a `[map]` change).
-- **Source and licence.** DB-IP's "IP to Country Lite", a monthly CSV (`start,end,CC`, gzip, about 5 MB) published under CC BY 4.0. It is downloaded by each node from `https://download.db-ip.com/free/dbip-country-lite-YYYY-MM.csv.gz` (this month's file, and last month's if this month's isn't published yet), never redistributed by TelltaleDNS. Attribution ("IP geolocation by DB-IP.com", the licence link) is on the card, in the world view's footer and in [Third-party notices](third-party-notices.md). DB-IP's terms are re-checked at each release. For a site with no internet access, set `source_url` to your own HTTPS mirror.
+The world view places answers with a country database. It is **never bundled** with WrenDNS and **nothing is downloaded until an admin turns it on**: **Settings → Query handling → GeoIP database** (or `[map.geoip] enabled = true`). Everyone who can see the map sees the status (state, source month, when it was built here, size, the next check and the last error); only an admin changes the settings, fetches now or deletes it, and no agent can (the actions are audited as `map.geoip.update` and `map.geoip.delete`, a settings change as a `[map]` change).
+- **Source and licence.** DB-IP's "IP to Country Lite", a monthly CSV (`start,end,CC`, gzip, about 5 MB) published under CC BY 4.0. It is downloaded by each node from `https://download.db-ip.com/free/dbip-country-lite-YYYY-MM.csv.gz` (this month's file, and last month's if this month's isn't published yet), never redistributed by WrenDNS. Attribution ("IP geolocation by DB-IP.com", the licence link) is on the card, in the world view's footer and in [Third-party notices](third-party-notices.md). DB-IP's terms are re-checked at each release. For a site with no internet access, set `source_url` to your own HTTPS mirror.
 - **Settings** (`[map.geoip]`, shared by the cluster; an admin's): `enabled` (default off), `source_url` (HTTPS only, no credentials, no query string or fragment, because the URL is shown to everyone who can see the map; unset: the publisher's), `sha256` (pin the download to a digest: useful only with a fixed mirror URL whose content you control, as the publisher's file changes every month), `home_country` (two letters; arcs start there, else at "Your network"). A write to `[map]` that leaves out `geoip` keeps the current one; an operator's change to thresholds therefore never touches it, but going back to the configuration file's `[map]` (`DELETE /map-settings/default`) also takes `geoip` back to the file's, so it is refused (403) for an operator while it would change it.
 - **When it is fetched.** In the background, never on the query path and never by a worker, on each node that serves the console (a resolver pod never fetches): at once when you turn it on or press **Update now**, then at most once a day, and only when the stored month is older than the current one; a node starts its scheduled checks up to 6 hours late (a stable amount from its name) so a cluster doesn't hit the publisher together. A failure backs off one hour, doubling to a day, and shows its code. A changed source is fetched once.
 - **Limits and checks.** HTTPS only; at most 5 redirects, never to HTTP; 30 s to connect and 120 s in all; at most 32 MiB compressed and 96 MiB uncompressed, and at most 1,200,000 rows (700,000 of them IPv6; the real file has about 600,000), so the build's memory is bounded (about 50 MiB above idle at its peak for a real-sized file, freed afterwards). The file must parse as `start,end,CC` rows, have no overlapping ranges, at least 100,000 rows and 150 countries, both IPv4 and IPv6, a row count within 30% of the database it replaces, a good gzip checksum, and the pinned digest if you set one. These guard against a truncated or tampered-with file; they don't prove who made it (the publisher gives no signature). A failed file keeps the old database and shows the reason as a code: `corrupt_download`, `malformed_row`, `overlapping_ranges`, `too_few_rows`, `too_few_countries`, `missing_family`, `size_changed`, `digest_mismatch`, `too_large`, `not_found`, `redirect_refused`, `tls_failed`, `timeout` and so on (never a response body).
@@ -3120,7 +3190,7 @@ Other things colour the map as well, and no threshold changes them: an upstream 
 ### Where does time go?
 The dashboard's **Where time goes** section (Advanced view) has two views:
 - **Percentiles:** this hour's p50, p90, p99, and max per answer path and transport, and the time spent waiting for upstreams.
-- **Heatmap:** answers over time (minutes for 1 to 24 hours, hours for 7 days) in the bands of `telltale_query_duration_seconds` (50 µs to 5 s, and slower), darker where more answers landed; one path or several (**cache**, **upstream**, **local names**, **blocked & special**). The dashed line is the [latency objective](#service-level-objectives)'s threshold. Dots are real queries (exemplars): select one to open it in the query log. The ticks along the top are [change markers](#change-markers). **Table** lists the counts.
+- **Heatmap:** answers over time (minutes for 1 to 24 hours, hours for 7 days) in the bands of `wrendns_query_duration_seconds` (50 µs to 5 s, and slower), darker where more answers landed; one path or several (**cache**, **upstream**, **local names**, **blocked & special**). The dashed line is the [latency objective](#service-level-objectives)'s threshold. Dots are real queries (exemplars): select one to open it in the query log. The ticks along the top are [change markers](#change-markers). **Table** lists the counts.
 - On the **Upstreams** page, **Answer time over time** shows the same for one upstream.
 - `GET /api/v1/stats/latency/heatmap?from=-6h&by=path|upstream&step=minute|hour` (minutes back 48 hours, hours back 400 days) and `GET /api/v1/stats/latency/exemplars` (the last 512 per node, newest first; agents need `querylog:read`) return the data; the MCP tool `latency_breakdown` with `histogram: true` adds the last hour's bands. Each node counts its answers into the bands as it already does for `/metrics`, once per minute bucket; older builds' minutes have no bands and the answer says `partial`.
 
@@ -3172,22 +3242,22 @@ Every time chart (the dashboard's, the Cache page's) draws a thin line for each 
 - **Changes** in the dashboard header turns them off and on (remembered in this browser). In the Advanced view, chips pick the kinds. The node picker shows one node's markers only.
 - **Settings → System → Changes** lists the last 200 from every node, filterable: the table view of every chart's markers. `GET /api/v1/annotations?from=-24h&kinds=config.applied,note` returns them (newest first, at most 2,000 a page, `nextBefore` for the next page), and the MCP tool `list_annotations`; `get_overview` includes how many fell in its window and the latest three.
 - **Notes:** the **Note…** button (operators) puts your own marker on every chart of every node: a new access point, an ISP outage, a migration. 1 to 200 characters on one line, now or up to 7 days back. `POST /api/v1/annotations` with `{"text": "moved the AP", "time": "2026-10-16T14:05:00Z"}` does the same, and so does the MCP tool `annotate` (agents need the `ops:annotate` scope, which isn't in the default set). Notes are audit-logged (`annotation.note`) and can't be edited or deleted: add a correcting note. They aren't configuration, so a GitOps-managed cluster takes them too.
-- Each node keeps its own in `<data_dir>/annotations.jsonl`: at most 20,000 lines and 90 days, trimmed at start and once a day. They're written beside the work they describe, never on the query path. If the file can't be written (a full or read-only disk), the node logs it once an hour, counts it in `telltale_annotation_write_failures_total`, and carries on.
-- **Prometheus and Grafana:** `telltale_config_seq` is the configuration sequence the node applied (the cluster's, or a standalone node's configuration version), and `telltale_annotations_total{kind}` counts the markers written. The Grafana dashboard draws `changes(telltale_config_seq[5m]) > 0` (configuration), `changes(telltale_filter_snapshot_version[5m]) > 0` (lists), and `changes(telltale_process_starts_total[5m]) > 0` (restarts) as annotations on every panel, with no Grafana credentials.
+- Each node keeps its own in `<data_dir>/annotations.jsonl`: at most 20,000 lines and 90 days, trimmed at start and once a day. They're written beside the work they describe, never on the query path. If the file can't be written (a full or read-only disk), the node logs it once an hour, counts it in `wrendns_annotation_write_failures_total`, and carries on.
+- **Prometheus and Grafana:** `wrendns_config_seq` is the configuration sequence the node applied (the cluster's, or a standalone node's configuration version), and `wrendns_annotations_total{kind}` counts the markers written. The Grafana dashboard draws `changes(wrendns_config_seq[5m]) > 0` (configuration), `changes(wrendns_filter_snapshot_version[5m]) > 0` (lists), and `changes(wrendns_process_starts_total[5m]) > 0` (restarts) as annotations on every panel, with no Grafana credentials.
 
 ### Host resources
 Every node samples its machine every 15 seconds (off the DNS path, from `/proc`, `/sys`, and the cgroup files) and shows it on the **Cluster** page, one card per node, with the last hour as a line under each bar. A standalone node shows its own card there too. In a cluster, the samples travel in the nodes' heartbeats, so any node's page shows every machine.
 
 | What | Where it comes from | Metric |
 |---|---|---|
-| Memory: total, available, swap | `/proc/meminfo` | `telltale_host_memory_bytes{kind}` |
-| The container's memory limit and use, OOM kills | cgroup v2 (`memory.max`, `memory.current`, `memory.events`) or v1 | `telltale_cgroup_memory_bytes{kind}`, `telltale_cgroup_oom_kills_total` |
-| CPU busy, load average, cores | `/proc/stat`, `/proc/loadavg` | `telltale_host_cpu_busy_ratio`, `telltale_host_load{window}`, `telltale_host_cpus` |
-| The container's CPU quota, and how often it throttles | `cpu.max`, `cpu.stat` (v1: `cpu.cfs_*`) | `telltale_cgroup_cpu_quota_cores`, `telltale_cgroup_throttled_ratio` |
-| Free space where the data lives; query log and list sizes; write rate | `statvfs` of `data_dir`; `/proc/self/io` | `telltale_data_filesystem_bytes{kind}`, `telltale_data_bytes{kind}`, `telltale_write_bytes_per_second` |
-| Temperature (the hottest sensor; a Pi's SoC) | `/sys/class/thermal` | `telltale_host_temperature_celsius` |
-| Open files against the limit, threads | `/proc/self` | `telltale_open_fds`, `telltale_max_fds`, `telltale_threads` |
-| OS, kernel, architecture, machine uptime | `/etc/os-release`, `/proc` | `telltale_host_info{os,kernel,arch}`, `telltale_host_uptime_seconds` |
+| Memory: total, available, swap | `/proc/meminfo` | `wrendns_host_memory_bytes{kind}` |
+| The container's memory limit and use, OOM kills | cgroup v2 (`memory.max`, `memory.current`, `memory.events`) or v1 | `wrendns_cgroup_memory_bytes{kind}`, `wrendns_cgroup_oom_kills_total` |
+| CPU busy, load average, cores | `/proc/stat`, `/proc/loadavg` | `wrendns_host_cpu_busy_ratio`, `wrendns_host_load{window}`, `wrendns_host_cpus` |
+| The container's CPU quota, and how often it throttles | `cpu.max`, `cpu.stat` (v1: `cpu.cfs_*`) | `wrendns_cgroup_cpu_quota_cores`, `wrendns_cgroup_throttled_ratio` |
+| Free space where the data lives; query log and list sizes; write rate | `statvfs` of `data_dir`; `/proc/self/io` | `wrendns_data_filesystem_bytes{kind}`, `wrendns_data_bytes{kind}`, `wrendns_write_bytes_per_second` |
+| Temperature (the hottest sensor; a Pi's SoC) | `/sys/class/thermal` | `wrendns_host_temperature_celsius` |
+| Open files against the limit, threads | `/proc/self` | `wrendns_open_fds`, `wrendns_max_fds`, `wrendns_threads` |
+| OS, kernel, architecture, machine uptime | `/etc/os-release`, `/proc` | `wrendns_host_info{os,kernel,arch}`, `wrendns_host_uptime_seconds` |
 | Clock offset between nodes | heartbeat timestamps and round-trip time | (Cluster page) |
 
 The card says what looks wrong, and the Cluster page's `host_resources` check turns red with it:
@@ -3198,11 +3268,11 @@ The card says what looks wrong, and the Cluster page's `host_resources` check tu
 - a clock 2 s or more away from this node's.
 
 With `prometheusRule.enabled`, the chart adds matching alerts:
-- `TelltaleDNSDataDiskLow` (under 10% free for 10 minutes);
-- `TelltaleDNSMemoryPressure` (over 90% of the limit);
-- `TelltaleDNSOutOfMemoryKill`;
-- `TelltaleDNSCpuThrottled` (over 25% of periods);
-- `TelltaleDNSRunningHot`.
+- `WrenDNSDataDiskLow` (under 10% free for 10 minutes);
+- `WrenDNSMemoryPressure` (over 90% of the limit);
+- `WrenDNSOutOfMemoryKill`;
+- `WrenDNSCpuThrottled` (over 25% of periods);
+- `WrenDNSRunningHot`.
 
 `deploy/helm/alerts-test.sh` checks them with `promtool`.
 
@@ -3213,7 +3283,7 @@ With `prometheusRule.enabled`, the chart adds matching alerts:
 
 The card lists what's unavailable. Older nodes in a mixed-version cluster simply show no card.
 
-**Grafana:** import `deploy/grafana/telltale-dashboard.json` (service level, traffic by status, answer-time percentiles, where time goes, upstream latency/share/failures/breakers, blocks by list and group, cache, top clients, and the health of TelltaleDNS itself). Pick the Prometheus data source, job, and instance at the top.
+**Grafana:** import `deploy/grafana/wrendns-dashboard.json` (service level, traffic by status, answer-time percentiles, where time goes, upstream latency/share/failures/breakers, blocks by list and group, cache, top clients, and the health of WrenDNS itself). Pick the Prometheus data source, job, and instance at the top.
 
 **History:** once a minute, completed minutes are saved to `<data_dir>/rollups.db` (SQLite): per-minute counts for 7 days, per-hour for 400 days, per-day forever, and each hour's top domains, blocked names, NXDOMAIN names, clients, and latency percentiles. The dashboard's 7- and 30-day views, `GET /api/v1/stats/timeseries?step=hour|day`, and long `stats/summary` ranges read them, and they survive restarts. If the file can't be opened, history is limited to the 48 hours kept in memory; DNS is unaffected.
 
@@ -3231,7 +3301,7 @@ window_days = 30             # 1 to 90
 - **Burn rate:** how fast a budget is being spent. 1 spends exactly the budget over the window; 14.4 spends 2% of a 30-day budget in an hour. Each objective shows it over 5 minutes, 30 minutes, 1 hour, 6 hours, and 3 days.
 - **When it warns:** a long and a short window both burn too fast (the Google SRE workbook's pairs): **fast**, 14.4× over 1 hour and 5 minutes; **slow**, 6× over 6 hours and 30 minutes; **ticket**, 1× over 3 days and 6 hours (shown only). Fast and slow turn the [health](#health) icon amber (`slo_burn`) and fire `slo_burn` [alert rules](#alerts). A pair needs at least 50 answers in its short window and 10 bad answers in its long one, so a single SERVFAIL on a quiet network doesn't warn.
 - **Where:** the dashboard's **Service level** card (in the Advanced view: the Simple | Advanced switch at the top; in the menu on a phone), `GET /api/v1/stats/slo`, and the MCP tool `slo_status`. In a cluster the objectives cover every node's answers. They're worked out from the per-minute and per-hour counts the dashboard already keeps, so they cost nothing on the query path; slow answers are counted in the rollups from this release on (older hours count none).
-- **Prometheus:** `telltale_slo_objective_ratio{slo}` and `telltale_slo_latency_threshold_seconds` publish the settings. With `prometheusRule.enabled`, the Helm chart adds recording rules (`telltale:slo_availability_errors:ratio_rate5m` … `_3d`, and `telltale:slo_latency_errors:…`) and alerts (`TelltaleDNSSLOAvailabilityBurnFast`, `…BurnSlow`, `…BurnTicket`, and the same for latency) with the same windows and minimums; set `prometheusRule.slo` to the same targets as `[slo]`. Without Kubernetes, load `deploy/prometheus/telltale-slo-rules.yaml` (the same rules, for a scrape job named `telltale-metrics`). The Grafana dashboard's **Service level** row shows the SLIs, the budget left over the dashboard's time range, and the burn rate.
+- **Prometheus:** `wrendns_slo_objective_ratio{slo}` and `wrendns_slo_latency_threshold_seconds` publish the settings. With `prometheusRule.enabled`, the Helm chart adds recording rules (`wrendns:slo_availability_errors:ratio_rate5m` … `_3d`, and `wrendns:slo_latency_errors:…`) and alerts (`WrenDNSSLOAvailabilityBurnFast`, `…BurnSlow`, `…BurnTicket`, and the same for latency) with the same windows and minimums; set `prometheusRule.slo` to the same targets as `[slo]`. Without Kubernetes, load `deploy/prometheus/wrendns-slo-rules.yaml` (the same rules, for a scrape job named `wrendns-metrics`). The Grafana dashboard's **Service level** row shows the SLIs, the budget left over the dashboard's time range, and the burn rate.
 
 #### Who spent it?
 **Who spent it?** under each objective on the Service level card (or **Analyze → Error budget**) breaks the window's bad answers down:
@@ -3251,13 +3321,13 @@ timeout_ms = 2000
 cert_warn_days = 14                      # a certificate expiring sooner degrades the health level
 targets = ["udp://10.50.5.112:53"]     # extra: by IP, e.g. a load balancer's address
 ```
-- **What's asked:** `probe.telltale.invalid`, type A, which TelltaleDNS answers NXDOMAIN itself (no upstream). Any well-formed answer counts. A listener bound to `0.0.0.0` or `[::]` is asked on loopback; DoH on its `path`. Targets take `udp://`, `tcp://`, `tls://`, `https://…/dns-query`, `h3://`, and `quic://` with an IP address. Certificates aren't checked by name (probes connect by IP); a listener with `proxy_protocol = true` is skipped, since probes don't send the PROXY header.
+- **What's asked:** `probe.wrendns.invalid`, type A, which WrenDNS answers NXDOMAIN itself (no upstream). Any well-formed answer counts. A listener bound to `0.0.0.0` or `[::]` is asked on loopback; DoH on its `path`. Targets take `udp://`, `tcp://`, `tls://`, `https://…/dns-query`, `h3://`, and `quic://` with an IP address. Certificates aren't checked by name (probes connect by IP); a listener with `proxy_protocol = true` is skipped, since probes don't send the PROXY header.
 - **Certificates:** each DoT/DoH/DoH3/DoQ listener's certificate file is read for its expiry, its SHA-256 fingerprint, and the names it covers.
 - **The web UI:** with `[api] tls`, the web UI and API are checked too (`proto="api"`): a `GET /livez` over HTTPS, and their certificate like a listener's. A self-signed one shows as such (it doesn't expire); compare its fingerprint on this page with the one your browser shows before trusting it. Your own certificate's expiry warns and alerts like a DNS listener's.
 - **Health:** a probe that fails twice in a row degrades the level (`probe_failing`); when every DNS listener of a node fails, the node isn't serving DNS (`not_serving`, severe unless other nodes serve; the web UI's check doesn't count toward it). A certificate within `cert_warn_days` degrades (`cert_expiring`); an expired one is severe (`cert_expired`), since encrypted clients can't connect.
-- **Alerts:** `probe_failing` and `cert_expiring` rules (below); with `prometheusRule.enabled`, the Helm chart adds `TelltaleDNSListenerNotAnswering` (2 minutes) and `TelltaleDNSListenerCertExpiring` (under 14 days).
-- **Where:** **Settings → System → Listener checks**, `GET /api/v1/system/probes` (every node), the MCP tool `probe_status`, and `/metrics`: `telltale_probe_success{target,proto}`, `telltale_probe_duration_seconds`, `telltale_probe_failures_total`, and `telltale_listener_cert_expiry_timestamp_seconds{target}`.
-- **Cost:** a handful of queries a minute, from a background task. They count in `telltale_queries_total` like any query, but stay out of the query log, the dashboard's top lists, device analytics, and event sinks. dnstap still sees them as client queries from loopback.
+- **Alerts:** `probe_failing` and `cert_expiring` rules (below); with `prometheusRule.enabled`, the Helm chart adds `WrenDNSListenerNotAnswering` (2 minutes) and `WrenDNSListenerCertExpiring` (under 14 days).
+- **Where:** **Settings → System → Listener checks**, `GET /api/v1/system/probes` (every node), the MCP tool `probe_status`, and `/metrics`: `wrendns_probe_success{target,proto}`, `wrendns_probe_duration_seconds`, `wrendns_probe_failures_total`, and `wrendns_listener_cert_expiry_timestamp_seconds{target}`.
+- **Cost:** a handful of queries a minute, from a background task. They count in `wrendns_queries_total` like any query, but stay out of the query log, the dashboard's top lists, device analytics, and event sinks. dnstap still sees them as client queries from loopback.
 
 ### Upstream truth checks
 Are your upstreams telling the truth? The **Upstreams** page's **Answer quality** card (and `GET /api/v1/analytics/upstream-checks`, the MCP tool `upstream_checks`) shows, per node and upstream since start:
@@ -3272,20 +3342,20 @@ Are your upstreams telling the truth? The **Upstreams** page's **Answer quality*
   ```
   After the device has its answer, a background task asks another upstream the same question and compares: **same**; **other addresses** (both had addresses, none in common: CDNs and geo-DNS answer differently per resolver, usually harmless); **other response** (a different response code); **filtered** (one side had addresses, the other none, or only `0.0.0.0`, `::`, or loopback: one of them filters that name); **no second answer**. The latest disagreements are listed with both answers; names follow the query log's privacy level. A group with a single upstream gets no second opinions unless `reference` names another group. At most 8 run at once; more are skipped.
 - **Privacy:** the second upstream sees the sampled names, which is why it's off by default. One in 1,000 adds 0.1% to upstream traffic.
-- `/metrics`: `telltale_upstream_dnssec_total{upstream,result}`, `telltale_upstream_ede_total{upstream,code}`, `telltale_upstream_check_total{upstream,result}`.
+- `/metrics`: `wrendns_upstream_dnssec_total{upstream,result}`, `wrendns_upstream_ede_total{upstream,code}`, `wrendns_upstream_check_total{upstream,result}`.
 - Cost: on the path to an upstream only (never for cached or blocked answers): one look for an EDE in each upstream answer and a counter per DNSSEC verdict.
 
 ### Query events
 Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics, which the web UI and the API (`GET /api/v1/queries`, `/api/v1/stats/...`) read.
 - Each thread writes events into its own buffer without waiting or locking, and a background thread collects them every 25 ms. If a buffer ever fills, events are dropped and counted, and DNS answers are never held back. Counters and the metrics above never drop.
-- `[telemetry] ring_slots` sets the buffer size per thread, in events of about 128 bytes (default `4096`, 512 KiB). That's about 170 ms of a fully loaded worker. Raise it if `telltale_telemetry_dropped_total` ever grows.
+- `[telemetry] ring_slots` sets the buffer size per thread, in events of about 128 bytes (default `4096`, 512 KiB). That's about 170 ms of a fully loaded worker. Raise it if `wrendns_telemetry_dropped_total` ever grows.
 - Collected so far, in memory: per-second counts for the last 15 minutes and per-minute counts for the last 48 hours; for the current and previous hour, the top domains, blocked domains, NXDOMAIN names, clients, and each recent client's top domains; and latency percentiles by path, query type, client, and upstream.
 
 | Metric | What it tells you |
 |---|---|
-| `telltale_telemetry_events_total{ring}` | events written, per thread name (`udp-<port>-<n>` for the UDP workers; Tokio's workers share `telltale-rt` and are summed) |
-| `telltale_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
-| `telltale_clock_steps_total`, `telltale_clock_last_step_seconds` | times the event clock followed a step of the system clock (a Pi setting its clock from NTP after TelltaleDNS started, a resume from suspend), and the latest step. Events, the query log, and the rollups stay on the wall clock across a step. |
+| `wrendns_telemetry_events_total{ring}` | events written, per thread name (`udp-<port>-<n>` for the UDP workers; Tokio's workers share `wrendns-rt` and are summed) |
+| `wrendns_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
+| `wrendns_clock_steps_total`, `wrendns_clock_last_step_seconds` | times the event clock followed a step of the system clock (a Pi setting its clock from NTP after WrenDNS started, a resume from suspend), and the latest step. Events, the query log, and the rollups stay on the wall clock across a step. |
 
 ### Query log
 Every query event is also written to the **query log** on disk, in `<data_dir>/qlog/YYYY/MM/DD/HH-<node>-<part>.seg`: one file per hour, compressed by column, about 14 bytes per query (50 million queries take about 690 MB).
@@ -3298,23 +3368,23 @@ privacy_level = 0            # 0 full; 1 hide domains; 2 hide domains and client
 flush_interval_secs = 10     # write at least this often (a crash loses at most this much detail)
 fsync = false                # true: sync every write (slower on SD cards)
 ```
-- Writes are sequential and batched, about one every 10 seconds on a quiet network, so it's gentle on SD cards. A slow or full disk never slows DNS: if the writer falls behind, rows are dropped and counted (`telltale_qlog_rows_dropped_total`). The store reports on itself too: `telltale_qlog_block_write_seconds` (the time block writes take; `rate(..._sum) / rate(..._count)` is the average), `telltale_qlog_segments` (segment files on disk), and `telltale_qlog_write_errors_total`.
+- Writes are sequential and batched, about one every 10 seconds on a quiet network, so it's gentle on SD cards. A slow or full disk never slows DNS: if the writer falls behind, rows are dropped and counted (`wrendns_qlog_rows_dropped_total`). The store reports on itself too: `wrendns_qlog_block_write_seconds` (the time block writes take; `rate(..._sum) / rate(..._count)` is the average), `wrendns_qlog_segments` (segment files on disk), and `wrendns_qlog_write_errors_total`.
 - `privacy_level = 1` stores each name as a hash, so identical names still group together but can't be read back; `2` also drops client addresses; `3` keeps no per-query log at all (counters, top lists, and graphs still work).
-- What the levels cover: everything TelltaleDNS keeps or shows, as on Pi-hole. The query log, the live tail, [event sinks](#event-sinks), the dashboard's top lists, a device's page, and the hourly top lists kept in `rollups.db` all show hashed names at 1 and above, and no client addresses at 2 and above (every query then counts as one client). Anomaly detection and new-device alerts are off at 1 and above: their findings name domains and devices. The masked-client warning is off at 2 and above. Counts, graphs, and latency keep working at every level.
+- What the levels cover: everything WrenDNS keeps or shows, as on Pi-hole. The query log, the live tail, [event sinks](#event-sinks), the dashboard's top lists, a device's page, and the hourly top lists kept in `rollups.db` all show hashed names at 1 and above, and no client addresses at 2 and above (every query then counts as one client). Anomaly detection and new-device alerts are off at 1 and above: their findings name domains and devices. The masked-client warning is off at 2 and above. Counts, graphs, and latency keep working at every level.
 - What level 1 protects against: the hash is keyed with a random key kept in `<data_dir>/privacy.key` (in a cluster, the primary's, which every node adopts so logs group the same everywhere). Someone holding the log but not the key can't check whether a name they suspect was queried. Anyone with the key and the log can; keep the data directory private, or use level 3.
 - Search it in the web UI's **Query log**, through the API (`GET /api/v1/queries`), or from the command line:
   ```sh
-  telltale qlog search doubleclick -c telltale.toml                  # names containing "doubleclick"
-  telltale qlog search --client 192.168.1.50 --status blocked --since 3600
-  telltale qlog search '*.example.org' --match glob -t AAAA --json    # JSON lines
-  telltale qlog search --min-ms 500 --limit 20                      # slow queries
-  telltale qlog search doubleclick --not-name --since 3600          # the last hour, except names containing "doubleclick"
-  telltale qlog search --status blocked --not-status --since 600    # everything that was not blocked
+  wrendns qlog search doubleclick -c wrendns.toml                  # names containing "doubleclick"
+  wrendns qlog search --client 192.168.1.50 --status blocked --since 3600
+  wrendns qlog search '*.example.org' --match glob -t AAAA --json    # JSON lines
+  wrendns qlog search --min-ms 500 --limit 20                      # slow queries
+  wrendns qlog search doubleclick --not-name --since 3600          # the last hour, except names containing "doubleclick"
+  wrendns qlog search --status blocked --not-status --since 600    # everything that was not blocked
   ```
   Results come newest first; the last line prints a `--cursor` for the next page. `--match` is `substring` (default), `exact`, `suffix` (the name or anything below it), `glob`, or `regex`.
 - **"Everything except":** each filter can be turned around to keep the queries that do *not* match it: `--not-name`, `--not-client`, `--not-status`, `--not-qtype` on the command line; `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, `rcodeNot` (`=true`) on `GET /api/v1/queries` (the Live stream takes all but `rcodeNot`); and on the Query log page the **Match** menu's "does not contain", "is not", "is not, or under", "does not match wildcard", "does not match regex", the **not** boxes beside Client, Type, and Rcode, and the **not** chip before the statuses. A flag needs its filter (`nameNot` needs `name`). A negated `rcode` also keeps the queries that got no response code. A negated search can't use the per-block name index (that only says "maybe here", never "not here"), so it reads every block the time range and the other filters leave, like a "contains" search does: on a long log, add a time range or another filter. In a cluster, nodes older than this version don't answer a negated search or Live view and are listed as not reached, rather than answering rows that weren't negated.
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
-- Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
+- Metrics: `wrendns_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
 ### Keeping names and devices out of the log
 Noise drowns out what matters: phones checking their connection, time servers, a monitoring probe asking every few seconds. Keep them out of the log and the statistics:
@@ -3324,7 +3394,7 @@ enabled = true                                           # off keeps the lists, 
 names = ["connectivitycheck.gstatic.com", "ntp.org"]     # each with its subdomains
 clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
 ```
-- Their queries are still answered as usual and still counted in Prometheus (`telltale_queries_total`), but left out of the query log, the live view, the dashboard and top lists, device pages, anomalies, the event sinks, OTLP traces, and exemplars. `telltale_queries_excluded_total` counts them.
+- Their queries are still answered as usual and still counted in Prometheus (`wrendns_queries_total`), but left out of the query log, the live view, the dashboard and top lists, device pages, anomalies, the event sinks, OTLP traces, and exemplars. `wrendns_queries_excluded_total` counts them.
 - The dashboard's totals leave them out, so they'll be lower than Prometheus's.
 - From the next query on, on every node of a cluster (`[exclusions]` is shared). Queries logged before stay (and the top lists rebuilt after a restart skip them too).
 - In the UI: **Settings → Query handling → Kept out of the log**, with a toggle, checked before it's applied, and *Revert to the file*. Under a Git-managed configuration, change `[exclusions]` in Git; the UI shows the TOML to commit. API: `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions`.
@@ -3337,20 +3407,20 @@ own_lookups = true                          # loopback and this node's own addre
 clients = ["kitchen-tablet", "10.20.0.0/24"]  # device names, addresses or networks
 domains = ["localhost", "*.lan"]            # localhost is that name only; *.lan is every name under lan
 ```
-- **What stays out:** the query log, the live view and the event sinks. **What still counts:** the dashboard, top lists, device pages, anomalies, the live map and Prometheus (`telltale_queries_total`). `telltale_queries_log_excluded_total` counts what the log skipped. To remove a query from the statistics too, use `[exclusions]` above (ADR-1014).
-- **`own_lookups`** (off by default) covers `127.0.0.0/8`, `::1`, the addresses this node's listeners are bound to, `TELLTALE_NODE_IPS` (the Helm chart sets it), and the address the kernel would use to reach the outside. It does not cover the addresses of other nodes or of the gateway.
+- **What stays out:** the query log, the live view and the event sinks. **What still counts:** the dashboard, top lists, device pages, anomalies, the live map and Prometheus (`wrendns_queries_total`). `wrendns_queries_log_excluded_total` counts what the log skipped. To remove a query from the statistics too, use `[exclusions]` above (ADR-1014).
+- **`own_lookups`** (off by default) covers `127.0.0.0/8`, `::1`, the addresses this node's listeners are bound to, `WRENDNS_NODE_IPS` (the Helm chart sets it), and the address the kernel would use to reach the outside. It does not cover the addresses of other nodes or of the gateway.
 - **Device names** are the names under Clients (`[[client]] name`, any case); a name no client has matches nothing. Domains are exact (`localhost`) or `*.` for everything below a name, never the name itself.
 - It applies when the event is written, on the node's background thread: nothing is added to answering a query beyond what was there. It takes effect on the next query on every node (`[exclusions]` is shared); queries logged before stay.
 - In the UI: **Settings → Query handling → Kept out of the log**, the three "Log only" fields. API: the `log` object of `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions` (`log`). The Pi-hole importer maps Pi-hole's excluded domains and clients here (`webserver.api.excludeDomains` and `excludeClients`, or `API_EXCLUDE_DOMAINS` and `API_EXCLUDE_CLIENTS`) and lists them in its preview; patterns that aren't plain are named as not imported.
-- **A health check that is never logged:** point keepalived, a load balancer or a monitor at `GET /readyz` (or run `telltale health`) instead of querying the node's DNS yourself: see [`/readyz` asks the listener](#readyz-asks-the-listener).
+- **A health check that is never logged:** point keepalived, a load balancer or a monitor at `GET /readyz` (or run `wrendns health`) instead of querying the node's DNS yourself: see [`/readyz` asks the listener](#readyz-asks-the-listener).
 
 ### `/readyz` asks the listener
 `GET /readyz` (on the API port and the metrics port) answers 200 only while the node's own UDP listener answers a DNS question: the node sends one to its first UDP listener on loopback (a wildcard bind is asked on `127.0.0.1`) and waits up to 1.5 seconds. It answers 503 otherwise, with `{"ready":false,"reason":"dns_unanswered"}`, and for the other reasons as before (starting, shutting down, maintenance). The body says nothing else about the node or its configuration, and the route needs no sign-in (it answers only clients in `[access] allowed_networks`).
-- The question is the probe name `probe.telltale.invalid`, answered locally and never forwarded. Like the watchdog's and the synthetic probes' queries, it is kept out of the query log, the live view and the statistics (OBS-020), however often a balancer asks. It is the one thing about it that is still counted: `telltale_queries_total` on `/metrics` counts it, because that counter sits on the answer path, which is left alone.
+- The question is the probe name `probe.wrendns.invalid`, answered locally and never forwarded. Like the watchdog's and the synthetic probes' queries, it is kept out of the query log, the live view and the statistics (OBS-020), however often a balancer asks. It is the one thing about it that is still counted: `wrendns_queries_total` on `/metrics` counts it, because that counter sits on the answer path, which is left alone.
 - What it proves, and what it does not: that the node's first UDP listener receives a query and replies (any reply counts, REFUSED included). It does not exercise the cache, the filter or the upstreams, and it does not check the TCP, DoT or DoH listeners. Pair it with an upstream check (`/api/v1/health`) if you need those.
 - The answer is reused for one second, so many callers add no more than one question a second.
 - With no UDP listener (DNS over TLS only, say) there is nothing to ask and the listeners being bound is the answer. Before the listeners are bound it is 503 `starting` as before.
-- `telltale health` (default `--url http://127.0.0.1:8053/readyz`) exits 0 on a 200: use it where `wget` is missing. [`deploy/keepalived/check-telltale.sh`](../deploy/keepalived/check-telltale.sh) is this one call.
+- `wrendns health` (default `--url http://127.0.0.1:8053/readyz`) exits 0 on a 200: use it where `wget` is missing. [`deploy/keepalived/check-wrendns.sh`](../deploy/keepalived/check-wrendns.sh) is this one call.
 
 ### Internal names
 Some names are your own network talking to itself: reverse lookups of private addresses (`20.1.168.192.in-addr.arpa`) and, in Kubernetes, the cluster's names (`postgres.db.svc.cluster.local`). A pod's search list alone turns one lookup of `api.github.com` into three failed ones under `cluster.local` first. These **internal names** get their own top list, so the dashboard's **Top domains** shows what your network reaches outside:
@@ -3372,9 +3442,9 @@ endpoint = "http://otel-collector:4318"    # OTLP/HTTP; metrics go to <endpoint>
 interval_secs = 60
 # headers = { "x-api-key" = "..." }        # for hosted collectors
 ```
-- The metric set is exactly what `/metrics` serves: counters become cumulative monotonic sums, gauges stay gauges, and histograms keep their buckets. Resource attributes: `service.name = telltaledns`, `service.version`, `host.name` (the node name).
+- The metric set is exactly what `/metrics` serves: counters become cumulative monotonic sums, gauges stay gauges, and histograms keep their buckets. Resource attributes: `service.name = wrendns`, `service.version`, `host.name` (the node name).
 - Encoding is OTLP/HTTP with JSON, which every OTLP receiver accepts.
-- For **query events as OpenTelemetry logs**, add an event sink with `format = "otlp_logs"` (below), pointed at `<collector>/v1/logs`. Each record has a one-line body (`A example.com from 192.168.1.5: blocked`) and attributes (`dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `client.name`, `telltale.status`, `telltale.list`, ...); blocks are `WARN`, the rest `INFO`.
+- For **query events as OpenTelemetry logs**, add an event sink with `format = "otlp_logs"` (below), pointed at `<collector>/v1/logs`. Each record has a one-line body (`A example.com from 192.168.1.5: blocked`) and attributes (`dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `client.name`, `wrendns.status`, `wrendns.list`, ...); blocks are `WARN`, the rest `INFO`.
 - A collector that's down costs only that interval's points; DNS never waits for it.
 - **Without a restart, from the UI.** Settings -> Telemetry (an admin changes it; operators see it read-only) sets the collector's address, the interval and the headers. A header's value is a [stored secret](#stored-secrets) named in `header_refs`, entered through the write-only secret field and read again for every export, so a rotated key goes out from the next one. The change applies on every node within seconds. `PUT` and `DELETE /api/v1/otlp/default` do the same (`GET /api/v1/otlp` reads it; the MCP tool `list_event_sinks` reads it too); the body is `endpoint`, `interval_secs` and `header_refs`. The API takes no inline `headers`, no password in the address and no trace settings: those stay in the file, which also wins whenever it sets an `endpoint`, `headers` or `header_refs` (409 `set_by_file`; an inline header reads `<redacted>`). A resolver pod holds no stored secrets, so it doesn't export when a header names one.
 - A change to the file (or a SIGHUP) now applies the collector, interval and headers as well; the trace settings are still read at start.
@@ -3382,8 +3452,8 @@ interval_secs = 60
 ### Exemplars and traces
 From a latency graph to the query behind it.
 
-- **Exemplars:** each bucket of `telltale_query_duration_seconds` carries an *exemplar*, a recent query that landed in it (its trace ID, its latency, and when it happened). They're in the OpenMetrics format, which Prometheus asks for by default. Prometheus keeps them when started with `--enable-feature=exemplar-storage`, and Grafana then shows them as dots on the latency panels (the bundled dashboard turns them on). Each bucket's exemplar is replaced at most once a second, so it's a recent example from that bucket, not the slowest query. `[telemetry.metrics] exemplars = false` turns OpenMetrics off; `/metrics` then always answers the plain Prometheus text format.
-- **From the dot to the query:** in Grafana's Prometheus data source, under *Exemplars*, add a link with label name `trace_id` and URL `https://<your TelltaleDNS>/#/queries?trace=${__value.raw}` (or point it at your Tempo data source when traces go there).
+- **Exemplars:** each bucket of `wrendns_query_duration_seconds` carries an *exemplar*, a recent query that landed in it (its trace ID, its latency, and when it happened). They're in the OpenMetrics format, which Prometheus asks for by default. Prometheus keeps them when started with `--enable-feature=exemplar-storage`, and Grafana then shows them as dots on the latency panels (the bundled dashboard turns them on). Each bucket's exemplar is replaced at most once a second, so it's a recent example from that bucket, not the slowest query. `[telemetry.metrics] exemplars = false` turns OpenMetrics off; `/metrics` then always answers the plain Prometheus text format.
+- **From the dot to the query:** in Grafana's Prometheus data source, under *Exemplars*, add a link with label name `trace_id` and URL `https://<your WrenDNS>/#/queries?trace=${__value.raw}` (or point it at your Tempo data source when traces go there).
 - **The query behind a trace ID:** open the query log with `#/queries?trace=<ID>` (or `GET /api/v1/queries?trace=<ID>`, the MCP tool `search_queries` with `trace`). The ID holds the query's start time and a hash of its query-log fields, keyed with the cluster's privacy key, so it finds the row on whichever node logged it and can't be used to confirm a guessed name.
 - **Traces:** send some queries to your OpenTelemetry collector as traces (Grafana Tempo, Jaeger, and the like):
   ```toml
@@ -3392,8 +3462,8 @@ From a latency graph to the query behind it.
   traces_sample_every = 1000                # 1 query in 1,000 (0: none, the default)
   traces_slow_ms = 250                      # and every query that took at least 250 ms (0: none)
   ```
-  Each query is a server span (`DNS A`, with `dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `network.transport`, `telltale.status`, `telltale.group`, `telltale.node`) and, when upstreams were asked, a client span for the wait (`upstream quad9`, with `telltale.upstream` and `telltale.attempts`; it's placed at the end of the query, since the event records how long the wait was, not when it began). A SERVFAIL marks the span as an error. Its trace ID is the same as the exemplar's and the query log's.
-- Spans are built from the query event on the analytics thread and sent every 5 seconds, at most 512 queries per request. At most 4,096 wait; more are dropped, never slowing DNS. `telltale_traces_total{result="sent"|"dropped"|"failed"}` counts them.
+  Each query is a server span (`DNS A`, with `dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `network.transport`, `wrendns.status`, `wrendns.group`, `wrendns.node`) and, when upstreams were asked, a client span for the wait (`upstream quad9`, with `wrendns.upstream` and `wrendns.attempts`; it's placed at the end of the query, since the event records how long the wait was, not when it began). A SERVFAIL marks the span as an error. Its trace ID is the same as the exemplar's and the query log's.
+- Spans are built from the query event on the analytics thread and sent every 5 seconds, at most 512 queries per request. At most 4,096 wait; more are dropped, never slowing DNS. `wrendns_traces_total{result="sent"|"dropped"|"failed"}` counts them.
 - Names and clients follow the query log's privacy level: names hashed at 1 and above, no client address at 2 and above.
 
 ### dnstap
@@ -3406,8 +3476,8 @@ sample_every = 1                # 1 = every query; 10 = one in ten
 buffer = 10000                  # copies held while the reader is slow
 ```
 - Each sampled query becomes a `CLIENT_QUERY` and a `CLIENT_RESPONSE` message with the client's address, the transport (UDP, TCP, DoT, DoH, DoQ), the times, and the full query and response messages.
-- Frame Streams with the usual handshake; if the reader isn't there, TelltaleDNS keeps retrying (every few seconds) and drops copies meanwhile. A reader that accepts the connection but stops reading is given up on after 5 seconds and reconnected, with a warning in the log. DNS never waits for it: copies go through a bounded queue (`buffer`), and with dnstap off the query path does nothing extra. Dropped copies are counted in `telltale_dnstap_dropped_total`.
-- **Upstream traffic too** (`forwarder = true` under `[telemetry.dnstap]`): each query TelltaleDNS sends to an upstream and its answer become `FORWARDER_QUERY` and `FORWARDER_RESPONSE` messages with the upstream's address, port, and protocol (UDP, TCP, DoT, DoH, DoQ, DNSCrypt), sampled like client messages. The built-in recursive resolver's own queries aren't included.
+- Frame Streams with the usual handshake; if the reader isn't there, WrenDNS keeps retrying (every few seconds) and drops copies meanwhile. A reader that accepts the connection but stops reading is given up on after 5 seconds and reconnected, with a warning in the log. DNS never waits for it: copies go through a bounded queue (`buffer`), and with dnstap off the query path does nothing extra. Dropped copies are counted in `wrendns_dnstap_dropped_total`.
+- **Upstream traffic too** (`forwarder = true` under `[telemetry.dnstap]`): each query WrenDNS sends to an upstream and its answer become `FORWARDER_QUERY` and `FORWARDER_RESPONSE` messages with the upstream's address, port, and protocol (UDP, TCP, DoT, DoH, DoQ, DNSCrypt), sampled like client messages. The built-in recursive resolver's own queries aren't included.
 - Read at startup: restart after changing it.
 
 ### Event sinks
@@ -3416,7 +3486,7 @@ Copy every query event to your own log pipeline (Loki, Elastic, Splunk, Graylog,
 [[telemetry.sink]]
 name = "archive"
 type = "file"                            # JSON lines, rotated
-path = "/var/log/telltale/queries.jsonl"
+path = "/var/log/wrendns/queries.jsonl"
 max_bytes = "100MiB"                     # then queries.jsonl.1, .2, ...
 keep = 3
 
@@ -3424,7 +3494,7 @@ keep = 3
 name = "siem"
 type = "syslog"                          # RFC 5424
 address = "udp://192.168.1.20:514"       # or tcp:// (octet-counted frames), or tls://host:6514
-# tls_ca = "/etc/telltale/siem-ca.pem"   # tls://: a private collector's CA (public roots always work)
+# tls_ca = "/etc/wrendns/siem-ca.pem"   # tls://: a private collector's CA (public roots always work)
 facility = 16                            # local0
 statuses = ["blocked"]                   # only blocks; empty means every event
 
@@ -3440,15 +3510,15 @@ flush_secs = 5                           # or whatever arrived in 5 s
 # spill_max_bytes = "64MiB"              # keep refused batches on disk until the collector is back
 ```
 - Each event is the same JSON object as a row of `GET /api/v1/queries` (`time`, `client`, `clientName`, `group`, `name`, `qtype`, `status`, `rcode`, `proto`, `list`, `rule`, `totalMs`, `upstreamMs`, `answers`, `node`), with the query log's `privacy_level` applied (names hashed at 1, clients removed at 2).
-- Syslog messages are `<PRI>1 <time> <host> telltale - query - <JSON>`, with severity *notice* for blocks and *informational* for the rest.
+- Syslog messages are `<PRI>1 <time> <host> wrendns - query - <JSON>`, with severity *notice* for blocks and *informational* for the rest.
 - **Syslog over TLS** (`tls://`, RFC 5425) sends the same octet-counted frames as `tcp://`, encrypted. The collector's certificate must name the host in `address` and come from a public CA or the one in `tls_ca`.
-- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped, logged once a minute (`event sink fell behind`), and counted in `telltale_sink_dropped_total{sink}`. A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped.
+- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped, logged once a minute (`event sink fell behind`), and counted in `wrendns_sink_dropped_total{sink}`. A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped.
 - **Spill to disk** (webhook sinks, `spill_max_bytes`): instead of being dropped, a refused batch is appended to `<data_dir>/sinks/<name>.spill`. Once the collector accepts a batch again (or on the next quiet moment), the kept events go first, oldest first, up to 20 batches at a time; the file is removed when it's empty. Past `spill_max_bytes`, batches are dropped as before. The file survives restarts. Off by default, and best kept modest on an SD card.
 - **Changed without a restart.** Add, change or remove a sink in Settings -> Telemetry (an admin; operators see the list read-only), with `PUT` and `DELETE /api/v1/sinks/{name}` (`GET /api/v1/sinks` lists them with whether this node runs each and its dropped count; the MCP tool `list_event_sinks` reads the same), or in the configuration file followed by a reload. It applies on every node within seconds. A webhook's token is a [stored secret](#stored-secrets) (`token_ref`), entered through the write-only secret field and read for every batch. A sink made in the UI is stored on the primary and replicated to every full member with the rest of the cluster's configuration, as one more part of the signed version (references only: a secret travels by the secrets' own replication). A file sink made in the UI is a file name, written under each node's `<data_dir>/sinks/`. The API never takes `token_file`, `tls_ca`, a password in a URL or a directory: those stay in the file, and a sink the file defines (by name) wins and is read-only in the UI. Resolver pods hold no stored secrets, so a sink that names one isn't started there (the list says so).
-- **What a change does to a running sink.** A new sink starts at once and gets events from the next batch. A sink whose settings change is stopped and started again with them. A sink that is removed sends what it holds (one try, no retries) and ends within 2 seconds; the batches it kept on disk are deleted. Kept batches belong to a name **and its URL** (`<data_dir>/sinks/<name>-<hash of the URL>.spill`): a name re-used for another collector never replays the old one's events to it, and a change that keeps the URL keeps them. The dropped-event counter of a name keeps counting across reloads, changes and removal, so `telltale_sink_dropped_total{sink}` only ever grows. A sink that can't be built (a bad CA file, say) is left out with the reason; the others carry on. None of this runs on the query path.
+- **What a change does to a running sink.** A new sink starts at once and gets events from the next batch. A sink whose settings change is stopped and started again with them. A sink that is removed sends what it holds (one try, no retries) and ends within 2 seconds; the batches it kept on disk are deleted. Kept batches belong to a name **and its URL** (`<data_dir>/sinks/<name>-<hash of the URL>.spill`): a name re-used for another collector never replays the old one's events to it, and a change that keeps the URL keeps them. The dropped-event counter of a name keeps counting across reloads, changes and removal, so `wrendns_sink_dropped_total{sink}` only ever grows. A sink that can't be built (a bad CA file, say) is left out with the reason; the others carry on. None of this runs on the query path.
 
 ## Device anomalies
-TelltaleDNS learns how each device usually behaves and points out when that changes (the **Anomalies** page, `GET /api/v1/analytics/anomalies`, and the metric `telltale_anomalies_total{kind}`, with `telltale_anomalies_muted_total{kind}` for findings a [mute](#muting-a-kind-of-finding-for-a-device) matched):
+WrenDNS learns how each device usually behaves and points out when that changes (the **Anomalies** page, `GET /api/v1/analytics/anomalies`, and the metric `wrendns_anomalies_total{kind}`, with `wrendns_anomalies_muted_total{kind}` for findings a [mute](#muting-a-kind-of-finding-for-a-device) matched):
 - **Many more queries than usual** (`rate_spike`): this hour's queries against the device's usual count for this hour of the day.
 - **Unusual traffic to one domain** (`domain_volume`): queries to one registrable domain in an hour against that device's usual volume for it. A spike one domain explains is reported once, as this.
 - **Many new domains** (`drift`): registrable domains the device has never contacted, per day, against its usual number of new ones.
@@ -3504,14 +3574,14 @@ kinds   = ["nxdomain_storm"]                  # rate_spike, domain_volume, drift
 expires = "2026-12-31T00:00:00Z"              # optional: it stops applying (a finding created later counts again)
 note    = "hourly reverse-DNS sweep"
 ```
-- **Recorded, not counted.** The finding is made as before and listed (turn on **Show muted** on the page, or `GET /api/v1/analytics/anomalies?muted=true`), marked with the mute that matched (`mutedBy`). It isn't counted in the sidebar badge, the `anomaly` alert rule, the health level, or `telltale_anomalies_total`; `telltale_anomalies_muted_total{kind}` counts it, so a mute never hides that something happened. The same kind of finding for any other device counts as usual.
+- **Recorded, not counted.** The finding is made as before and listed (turn on **Show muted** on the page, or `GET /api/v1/analytics/anomalies?muted=true`), marked with the mute that matched (`mutedBy`). It isn't counted in the sidebar badge, the `anomaly` alert rule, the health level, or `wrendns_anomalies_total`; `wrendns_anomalies_muted_total{kind}` counts it, so a mute never hides that something happened. The same kind of finding for any other device counts as usual.
 - **Decided when the finding is created.** Removing a mute or letting it expire doesn't change findings already recorded; ones made afterwards count. Muting is not blocking: nothing about the device's queries changes.
 - **Narrow on purpose.** A mute names at least one device or group and at least one kind: there is no mute for everyone or for every kind (to switch the detector off, `[telemetry.anomaly] enabled = false`). A MAC address isn't accepted: a device's address changes with its lease, and findings are made from addresses. Name the device (a `[[client]]` with an IP or network in its `match`) or give its IP. A group means its networks and the devices that name it.
 - **In a cluster** a mute is shared like groups and schedules: set on the primary, it reaches every node, including ones that were down. In a cluster whose configuration comes from Git the page and the API refuse the change (409 `gitops_managed`): add the `[[anomaly_mute]]` block to the repository (or the Helm values' `config:`) instead. On a single node that loads its configuration from Git, a mute made here is saved and the response includes the TOML to keep.
 - **Through the API:** `PUT /api/v1/anomaly-mutes/<name>` with the same fields (add `?dryRun=true` to preview), `DELETE` to remove, `GET /api/v1/config/entries?kind=anomaly_mute` to list. The operator role; agents need `config:write:anomalies` (a mute can hide a compromised device, so it isn't part of any other scope, though `config:write:*` includes it) and use `plan_set_anomaly_mute` / `plan_remove_anomaly_mute`. Every change is audited as `config.anomaly_mute`.
 
 ## Alerts
-TelltaleDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
+WrenDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
 ```toml
 [alerts]
 interval_secs = 30                       # how often rules are checked
@@ -3544,10 +3614,10 @@ Rules watch:
 | `list_stale` | a URL list's content hasn't changed in `stale_after_days` (default 30; see [Lists that stopped changing](#lists-that-stopped-changing)) | list |
 | `servfail_rate` | SERVFAIL above `threshold` % (default 5) over 5 minutes, at least 50 queries | node |
 | `anomaly` | a [device anomaly](#device-anomalies) is found, unless it is acknowledged or [muted](#muting-a-kind-of-finding-for-a-device) | finding |
-| `update_available` | a newer TelltaleDNS build is out | version |
+| `update_available` | a newer WrenDNS build is out | version |
 | `sync_lag` | a replica is behind the primary's configuration (set `for_secs`, say 300, so a normal sync stays quiet) | node |
 | `primary_unreachable` | a replica hasn't reached its primary for `threshold` seconds (default 60, from 15 to 86400), so a silent split shows; witnesses and resolver pods are left out. It also shows as a degraded health reason and on the Cluster page | node |
-| `new_device` | a device TelltaleDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
+| `new_device` | a device WrenDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
 | `disk_full` | a node's data disk is more than `threshold` % full (default 90) | node |
 | `plan_pending` | an AI agent's change waits for approval (`[agents] require_approval`) | plan |
 | `slo_burn` | a [service-level objective](#service-level-objectives) spends its error budget fast (14.4× over 1 hour and 5 minutes, or 6× over 6 hours and 30 minutes) | objective |
@@ -3585,7 +3655,7 @@ password_file = "/run/secrets/smtp-password"
 - **Gmail:** turn on 2-Step Verification, then make an app password (Google Account → Security → App passwords) and put it in `password_file`. Outlook.com, Fastmail, iCloud, and most providers work the same way with their SMTP host and an app password.
 - **Encryption is required** whenever a password is sent: `smtp://` must offer STARTTLS (there's no fallback to plain), and `smtps://` is TLS from the first byte. Certificates are checked against the built-in public roots; for a private mail server, give its CA in `tls_ca`.
 - `smtp+insecure://host:port` sends without encryption and without a password: only for a local mail catcher such as [Mailpit](https://mailpit.axllent.org) while testing (`docker run -p 8025:8025 -p 1025:1025 axllent/mailpit`, then `url = "smtp+insecure://127.0.0.1:1025"` and open http://127.0.0.1:8025).
-- The message is plain text: the summary, then the rule, status, subject, node, and time (UTC). The subject starts with `[TelltaleDNS]`, which makes a mail filter easy.
+- The message is plain text: the summary, then the rule, status, subject, node, and time (UTC). The subject starts with `[WrenDNS]`, which makes a mail filter easy.
 - In Kubernetes, keep the password in a Secret mounted as a file, never in the values or Git.
 
 ## Web UI
@@ -3605,12 +3675,12 @@ The menu ends with the health icon ([Health](#health)), links to the project on 
 
 ### Domain icons
 A small mark sits left of each name in the dashboard's **Top domains** and **Top blocked** lists and in the query log. The page draws it from data it already has, so nothing is fetched and nothing about your queries is sent to anyone: no favicon service is involved, and the page's content security policy still allows images only from itself.
-- A **brand** TelltaleDNS knows gets its colour and logo mark: `netflix.com`, `www.youtube.com`, and a CDN name such as `nflxso.net` (Netflix). About a hundred and twenty brands are known, from two packs: [Simple Icons](https://simpleicons.org) (CC0) first, and [Bootstrap Icons](https://icons.getbootstrap.com) (MIT) for the marks Simple Icons has dropped (Microsoft and Teams, Amazon, LinkedIn, Slack, OpenAI, Xbox, Bing, Skype, Windows, Nintendo); see the [third-party notices](third-party-notices.md). A few large companies' marks are in neither (Disney+, Hulu, Minecraft, Adobe, the BBC, Walmart, AWS): their names get a monogram.
+- A **brand** WrenDNS knows gets its colour and logo mark: `netflix.com`, `www.youtube.com`, and a CDN name such as `nflxso.net` (Netflix). About a hundred and twenty brands are known, from two packs: [Simple Icons](https://simpleicons.org) (CC0) first, and [Bootstrap Icons](https://icons.getbootstrap.com) (MIT) for the marks Simple Icons has dropped (Microsoft and Teams, Amazon, LinkedIn, Slack, OpenAI, Xbox, Bing, Skype, Windows, Nintendo); see the [third-party notices](third-party-notices.md). A few large companies' marks are in neither (Disney+, Hulu, Minecraft, Adobe, the BBC, Walmart, AWS): their names get a monogram.
 - Every other name gets a **monogram**: its owner's first letter, in a colour that is always the same for that owner. A name of your own network (`.arpa`, `.lan`, `.local`, Kubernetes) gets a small house. A blocked name's mark is drained of most of its colour. When a privacy level hides names, there are no icons.
 - **Settings → Account → Domain icons** picks the style (**Brand and monogram**, **Monogram only**, or **Off**) and the size (**Default**, 20 px, or **Small**, 16 px). The choice is kept for you in this browser. With **Monogram only** or **Off**, the brand marks aren't even downloaded.
 
 ### Health
-The icon at the bottom of the menu says how TelltaleDNS is doing, for every node of a cluster, and changes shape as well as color:
+The icon at the bottom of the menu says how WrenDNS is doing, for every node of a cluster, and changes shape as well as color:
 
 | Icon | Level | When |
 |---|---|---|
@@ -3627,14 +3697,14 @@ The Upstreams page (servers and upstream groups), the Lists page, and the Groups
 
 | Badge | Meaning |
 |---|---|
-| config file | defined in `telltale.toml`; **Edit** makes an override, **Remove** hides it |
+| config file | defined in `wrendns.toml`; **Edit** makes an override, **Remove** hides it |
 | added here | made in the UI or API; **Remove** deletes it |
 | overrides the file | the UI's version replaces the file's entry of that name; **Revert to the file** brings the file's version back |
 | hidden | the file's entry is left out; **Revert to the file** brings it back |
 
 Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. For upstreams and lists, **Test it** also tries the draft from this node: an upstream is asked for the root's NS records (it shows the answer and the time, or the error: a bad URL, a TLS name that doesn't match, a timeout), and a list is downloaded and parsed (how many rules, and the first lines it can't use). The API calls are `POST /api/v1/checks/upstream` and `POST /api/v1/checks/list`, with the same body as saving; agents use the MCP tools `check_upstream` and `check_list`. An agent's list check says how many lines couldn't be used and why, but not their text, since that is whatever the URL served; people see the lines in the UI. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
 
-Changes are stored in `state.db`, next to named devices and local names. **The config files are never rewritten**: what's in the files stays as written, and `telltale config check` on the files alone still shows the file configuration. Simple view shows the common fields; switch to Advanced for timeouts, TLS names, refresh intervals, blocked-answer modes, priorities, and colors.
+Changes are stored in `state.db`, next to named devices and local names. **The config files are never rewritten**: what's in the files stays as written, and `wrendns config check` on the files alone still shows the file configuration. Simple view shows the common fields; switch to Advanced for timeouts, TLS names, refresh intervals, blocked-answer modes, priorities, and colors.
 
 **Keep it in Git.** On a node whose configuration comes from Git (`[cluster] config_source = "gitops"`, as with the Helm chart and Argo CD or Flux), the change works at once, but a rebuild from Git won't have it. After **Apply** the UI shows the TOML to add to the repository (with the Helm chart: under `config:` in the values) with a **Copy** button, or which block to remove. Once Git has it, **Revert to the file** removes the UI's copy. The API returns the same text as `keepInGit`.
 
@@ -3642,15 +3712,15 @@ The same through the API: `PUT` or `DELETE` on `/api/v1/upstreams/{name}`, `/api
 
 #### Credentials are never shown
 
-Some fields hold credentials: an upstream's `headers` (a DoH API token) and `args` (an `exec://` plugin's command line), a password in any URL (`https://me:password@doh.example/dns-query`: an upstream's `url`, `proxy` and `relay`, an alert destination's or a list's `url`, `[cluster.git] repo`, a router's or a sink's `url`, `[telemetry.otlp] endpoint`, and the other URL settings), an OIDC provider's `client_secret`, and `[telemetry.otlp] headers`. TelltaleDNS never sends one back once it has it:
+Some fields hold credentials: an upstream's `headers` (a DoH API token) and `args` (an `exec://` plugin's command line), a password in any URL (`https://me:password@doh.example/dns-query`: an upstream's `url`, `proxy` and `relay`, an alert destination's or a list's `url`, `[cluster.git] repo`, a router's or a sink's `url`, `[telemetry.otlp] endpoint`, and the other URL settings), an OIDC provider's `client_secret`, and `[telemetry.otlp] headers`. WrenDNS never sends one back once it has it:
 - `GET /api/v1/config/entries` shows each as `<redacted>` (a URL keeps its user and host: `https://me:<redacted>@doh.example/dns-query`), and the entry's `redacted` lists which fields (`headers.Authorization`, `args[1]`, `url`). A replica shows the primary's entries the same way, even from an older primary.
-- So do write responses, the audit log (both records of a change made on a replica), the TOML to keep a change in Git, agents' plans (`GET /api/v1/plans` and `list_plans`: the write a plan replays is kept for `apply_plan` but shown redacted), the Cluster page's Git repository, pin and version diffs (a change to a credential alone shows as a `replace` whose value is `<redacted>`), every MCP read tool and resource, and `telltale config check --print` (add `--show-secrets` to print them on the node itself).
+- So do write responses, the audit log (both records of a change made on a replica), the TOML to keep a change in Git, agents' plans (`GET /api/v1/plans` and `list_plans`: the write a plan replays is kept for `apply_plan` but shown redacted), the Cluster page's Git repository, pin and version diffs (a change to a credential alone shows as a `replace` whose value is `<redacted>`), every MCP read tool and resource, and `wrendns config check --print` (add `--show-secrets` to print them on the node itself).
 - **Sending `<redacted>` back keeps the value.** The UI and agents edit an entry by sending the definition they read back, markers included: each `<redacted>` keeps the stored value, as long as the entry still points where it did (`url`, `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`, `spki_pins`, and an alert destination's `type` unchanged; the scheme is part of the URL). Change any of those and the credential has to be typed again: the write is refused with 422 `credential_reentry_required`, naming the field. That's the same for an agent's `plan_update_upstreams` that moves an upstream. A `<redacted>` with nothing stored behind it is 422 too. `POST /api/v1/checks/upstream` and `/checks/list` never use stored values: a draft with `<redacted>` is refused (422), so **Test it** on an existing upstream with headers, or a list whose URL has a password, needs the credential typed into the draft.
 - **On a replica**, a change that sends `<redacted>` back is forwarded only to a primary that runs this version or later. An older primary would store `<redacted>` itself as the value, so the change is refused with 409 `upgrade_required` until the primary is upgraded (or the credential is typed).
 - **Retries keep no request.** An `Idempotency-Key` record keeps a keyed hash of the request (keyed with the node's secrets key, below) and the redacted response, so a request that differs only in a header value is a different request (409). If the key can't be read, a write with an `Idempotency-Key` that sets a credential is refused (503 `secrets_locked`); send it without the header.
 - **Older records.** Upgrading deletes the retry records kept before (they held request bodies), with `secure_delete` on and the WAL truncated. Audit entries written before this version may hold an upstream's headers: the audit log's hash chain forbids rewriting them, so treat an older `state.db` (and its backups) as sensitive.
 
-**The node's secrets key.** Each full member has one key, which encrypts the [stored secrets](#stored-secrets) and keys those hashes. It comes from the first of `TELLTALE_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates while no secret is stored (mode 0600, written whole through `secrets.key.tmp`; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the store locked: DNS is unaffected, the log says why, and the node tries again at most every 30 seconds (a key mounted after the start is picked up without a restart). Resolver pods need none. Custody, rotation and recovery: [docs/secrets.md](secrets.md).
+**The node's secrets key.** Each full member has one key, which encrypts the [stored secrets](#stored-secrets) and keys those hashes. It comes from the first of `WRENDNS_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`WRENDNS_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates while no secret is stored (mode 0600, written whole through `secrets.key.tmp`; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the store locked: DNS is unaffected, the log says why, and the node tries again at most every 30 seconds (a key mounted after the start is picked up without a restart). Resolver pods need none. Custody, rotation and recovery: [docs/secrets.md](secrets.md).
 
 #### Stored secrets
 
@@ -3677,26 +3747,26 @@ api_key_ref = "unifi"     # the secret named `unifi`
 - **The files win.** A credential the configuration files set (inline or by file) can't be set, replaced or removed through the UI or API: a change that tries is refused with 409 `set_by_file`, and so is hiding a destination the files define with a credential. An override that changes other fields keeps the files' credential. Should an override hold a reference the files have since set a file for, the file is used.
 - **A reference to a secret that isn't stored** is a warning when the configuration loads (DNS never depends on the store) and 422 `secret_missing` on an API write. An integration whose secret can't be read on this node (missing, encrypted with another key, damaged, or the store locked) reports itself "not configured: secret `<name>` can't be read on this node (why)", logged once until that changes. Setting a reference is an admin's change, like a file; pointing one at a secret an entry of another kind uses is audited as `credential.redirect`.
 - **Resolver pods** hold no stored secrets: an integration there that names one isn't configured (use a file).
-- **`telltale secrets status`** (on the node, with its `-c` files) shows the store (`ready`, `locked` with why, or `ephemeral` on a resolver pod), the key's source and `key_id` (never the key), each stored secret without its value (readable, `unreadable`: another key made it, or `corrupt`), and every credential field with its source and whether this node can read it (a file is opened without being read). It exits 1 while the store is locked, and changes nothing (no key or database made, no leftover `secrets.key.new` finished or dropped, nothing re-encrypted), so it's safe beside a running node.
-- **`telltale secrets rotate-key`** replaces the data-directory key with TelltaleDNS stopped (it refuses while the node runs): every stored secret is re-encrypted under a new key in one transaction, then the new key replaces `secrets.key`. An interrupted rotation is finished, or undone, at the next start. A key from `TELLTALE_SECRETS_KEY` or `[node] secrets_key_file` is rotated by setting the new key there and the old one as `TELLTALE_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`): the next start re-encrypts and logs that the previous key can go.
+- **`wrendns secrets status`** (on the node, with its `-c` files) shows the store (`ready`, `locked` with why, or `ephemeral` on a resolver pod), the key's source and `key_id` (never the key), each stored secret without its value (readable, `unreadable`: another key made it, or `corrupt`), and every credential field with its source and whether this node can read it (a file is opened without being read). It exits 1 while the store is locked, and changes nothing (no key or database made, no leftover `secrets.key.new` finished or dropped, nothing re-encrypted), so it's safe beside a running node.
+- **`wrendns secrets rotate-key`** replaces the data-directory key with WrenDNS stopped (it refuses while the node runs): every stored secret is re-encrypted under a new key in one transaction, then the new key replaces `secrets.key`. An interrupted rotation is finished, or undone, at the next start. A key from `WRENDNS_SECRETS_KEY` or `[node] secrets_key_file` is rotated by setting the new key there and the old one as `WRENDNS_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`): the next start re-encrypts and logs that the previous key can go.
 - **Locked.** With the configured key unreadable, `secrets.key` missing while secrets are stored (a new key is never made then), or no stored secret readable with the key, the store is locked: secret writes get 503 `secrets_locked`, health is degraded (`secrets_locked`), status reads work, and DNS and `/readyz` are unaffected. A replica whose stored secrets all came from the cluster drops them, makes a new key, and gets them again from the primary.
 - **Backups hold them only under a passphrase** (T23.9, [Stored secrets in a backup](#stored-secrets-in-a-backup)): the rows, their deletion records, the head and the node key are never copied as they are; with `--secrets-passphrase-file` (or the web UI's passphrase) the secrets travel encrypted with a key made from that passphrase, and a restore stores them under the new node's own key. Without a passphrase a restored node has no stored secrets; set them again.
-- **Metrics:** `telltale_secrets{state="readable|unreadable|corrupt"}`.
+- **Metrics:** `wrendns_secrets{state="readable|unreadable|corrupt"}`.
 
 ##### Setting a stored secret
 
-Values go in through the UI, the API or `telltale ctl secrets`, and come back out nowhere: every answer, read, log line and audit entry holds only the secret's name, kind, stamp, who set it when, and which fields use it.
+Values go in through the UI, the API or `wrendns ctl secrets`, and come back out nowhere: every answer, read, log line and audit entry holds only the secret's name, kind, stamp, who set it when, and which fields use it.
 
 **Settings → Integrations & secrets** (operators and admins) lists this node's secrets store (its state, the key's source and ID, and why it's locked or ephemeral), every stored secret with the fields that use it and the nodes that hold it, and every credential field of this node with its source (a stored secret, or a file or inline value the configuration sets, and whether this node can read the file). Admins also add a secret (its name and value), replace one, or delete one. A delete that a field still uses is refused and names the fields; when only a cluster member that can't be asked is in the way, the page offers "Delete anyway". The health reasons `secrets_locked` and `secrets_ephemeral` link there.
 
-**Who may change a credential in a form.** Only an admin changes where a credential is read from or sent to. An operator sees those fields read-only with "Only an admin can change this.": an alert destination's address and type when it holds a token or password, an upstream's address and TLS server name when it keeps a header or a password, and any address that runs a program (`exec://`, `unix://`), for an upstream or a forwarded domain. A value the node keeps is never shown again; its entry says **kept: re-enter to change**. If a change would send a kept credential somewhere new, the server refuses it and the message names the field: enter the value again (on the form, as an admin), or, where the form has no field for it (an upstream's headers), use `telltale ctl` or the configuration file. See the help topic "Who may change a credential".
+**Who may change a credential in a form.** Only an admin changes where a credential is read from or sent to. An operator sees those fields read-only with "Only an admin can change this.": an alert destination's address and type when it holds a token or password, an upstream's address and TLS server name when it keeps a header or a password, and any address that runs a program (`exec://`, `unix://`), for an upstream or a forwarded domain. A value the node keeps is never shown again; its entry says **kept: re-enter to change**. If a change would send a kept credential somewhere new, the server refuses it and the message names the field: enter the value again (on the form, as an admin), or, where the form has no field for it (an upstream's headers), use `wrendns ctl` or the configuration file. See the help topic "Who may change a credential".
 
 Every password or token field in the UI (an alert destination's token or password, and the other forms that take a credential) is a **secret field**: it shows whether a secret is set, never its value. An admin can save a value (it becomes a stored secret named for the entry, such as `alert.phone.token`, which you can rename), replace it, or clear it: clearing stops the entry using the secret when you apply the change, and the value stays on the page until it's deleted there. A file the configuration sets shows as read-only. Over plain HTTP from another machine the server refuses the value, and the field says how to turn on HTTPS.
 
 ```sh
-telltale ctl secrets set unifi --from-file /root/unifi-key   # or pipe it in: `... set unifi < key`
-telltale ctl secrets list                                     # names, users, readable per node; never a value
-telltale ctl secrets clear unifi                              # refused while a field names it
+wrendns ctl secrets set unifi --from-file /root/unifi-key   # or pipe it in: `... set unifi < key`
+wrendns ctl secrets list                                     # names, users, readable per node; never a value
+wrendns ctl secrets clear unifi                              # refused while a field names it
 ```
 
 | Endpoint | What it does |
@@ -3707,8 +3777,8 @@ telltale ctl secrets clear unifi                              # refused while a 
 | `DELETE /api/v1/secrets/<name>` | delete it (admins); `?force=true` when a cluster member's references can't be read |
 
 - **Admins only, never agents.** An operator gets 403; an agent token gets 403 `agent_not_allowed` whatever its scopes (a value would sit in its plan and transcript), and has no MCP tool to set one.
-- **HTTPS or the node itself.** A `PUT` or `DELETE` over plain HTTP from another host is refused with 403 `insecure_transport`: turn on `[api] tls = { self_signed = true }` (or your own certificate), put a TLS proxy in front (listed in `[api] trusted_proxies`, sending `X-Forwarded-Proto: https`), or run the command on the node (`http://127.0.0.1` counts; a request a proxy forwarded doesn't). For this check a proxy on the same host counts only when it is listed too (`127.0.0.1/32`): a plain-HTTP proxy or relay there would otherwise pass a remote client's `X-Forwarded-Proto: https` through. `telltale ctl secrets set` reads the value from `--from-file` or a pipe, never from a terminal (it would echo). `[api] allow_secrets_over_http = true` in the node's own files lifts the check; the value then crosses the network in clear.
-- **Checks.** `?dryRun=true` checks the name, kind and value and answers `wouldCreate` or `wouldReplace` with the fields that would use it, storing nothing. `Idempotency-Key` replays the first answer for the same value (the record keeps the request line and a hash keyed with the node's secrets key, never the value; another value with the same key is 409). `If-Match` takes the ETag of `GET /api/v1/secrets` (412 when another change came first). `X-Telltale-Reason` goes into the audit log, which records `secret.put` and `secret.delete` with the name, kind, stamp and users, never the value or its length. Answers carry `Cache-Control: no-store`.
+- **HTTPS or the node itself.** A `PUT` or `DELETE` over plain HTTP from another host is refused with 403 `insecure_transport`: turn on `[api] tls = { self_signed = true }` (or your own certificate), put a TLS proxy in front (listed in `[api] trusted_proxies`, sending `X-Forwarded-Proto: https`), or run the command on the node (`http://127.0.0.1` counts; a request a proxy forwarded doesn't). For this check a proxy on the same host counts only when it is listed too (`127.0.0.1/32`): a plain-HTTP proxy or relay there would otherwise pass a remote client's `X-Forwarded-Proto: https` through. `wrendns ctl secrets set` reads the value from `--from-file` or a pipe, never from a terminal (it would echo). `[api] allow_secrets_over_http = true` in the node's own files lifts the check; the value then crosses the network in clear.
+- **Checks.** `?dryRun=true` checks the name, kind and value and answers `wouldCreate` or `wouldReplace` with the fields that would use it, storing nothing. `Idempotency-Key` replays the first answer for the same value (the record keeps the request line and a hash keyed with the node's secrets key, never the value; another value with the same key is 409). `If-Match` takes the ETag of `GET /api/v1/secrets` (412 when another change came first). `X-Wrendns-Reason` goes into the audit log, which records `secret.put` and `secret.delete` with the name, kind, stamp and users, never the value or its length. Answers carry `Cache-Control: no-store`.
 - **Values.** One line of text, at most 8 KiB, trimmed; empty, control characters, `<redacted>` and the reserved kind `pem` are refused (400), and so is a 129th secret. A secret a `webhook_secret_ref` names needs at least 16 characters. The name the UI gives a credential (`<kind>.<entry>.<field>`, such as `router.unifi.api_key`) is refused with 409 `set_by_file` when the configuration files already set that credential.
 - **Deleting** a secret a field still names, on any node, is refused with 409 `secret_in_use`, listing the fields (a node-local one, such as an OIDC provider in a replica's own files, with its node). When a full member can't be asked (it's offline, or too old to say), the delete needs `?force=true`; fields that are known to use it refuse even then.
 - **In a cluster** the primary keeps the set: a replica sends the change there over the cluster channel (`secret.put`, `secret.delete`) and logs only the operation and the name. With no primary reachable the answer is 409; a primary too old to know the call gives 409 `upgrade_required`. Secret writes go through while the configuration is managed in Git (secrets are state, never in Git) and while the cluster is pinned or a rollout is baking (they aren't configuration versions); an emergency primary and a primary without its lease refuse them (409). For now a secret set in a cluster is stored on the primary only (replication to the other full members isn't in yet): integrations that read it on another member report it as not set there. `GET /api/v1/secrets` on a replica shows the primary's list (with `stale: true` when the primary can't be asked).
@@ -3727,7 +3797,7 @@ An operator gets 403 (`forbidden`), dry runs included, naming the field.
 ```toml
 [node]
 # The default: where Docker, Kubernetes and the packages put secrets.
-secret_file_dirs = ["/run/secrets", "/var/run/secrets", "/etc/telltale/secrets"]
+secret_file_dirs = ["/run/secrets", "/var/run/secrets", "/etc/wrendns/secrets"]
 ```
 A refused path is 422 `path_not_allowed`. `secret_file_dirs` comes from the node's own files (never from the cluster), and paths in the configuration files aren't limited by it. A path an override keeps from the files' entry of the same name counts as the files'.
 
@@ -3761,7 +3831,7 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/queries?name=ads&status=blocked&from=-1h` | the query log, newest first (filters: `name` + `match`, `client`, `status`, `qtype`, `rcode`, `upstream`, `minLatencyMs`, `from`, `to`; `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, `rcodeNot` keep what a filter does not match) |
 | `GET /api/v1/audit?action=user.`, `GET /api/v1/audit/verify` | the audit log, newest first, and a check of its hash chain (admins) |
 | `GET /api/v1/queries/stream?status=blocked` | live queries as Server-Sent Events (`event: query` with a query-log row, `event: dropped` with how many matching queries were skipped). Filters: `name` + `match` (not regex), `client`, `group`, `status`, `qtype`, `upstream`, `minLatencyMs`, and `nameNot`, `clientNot`, `statusNot`, `qtypeNot` to keep what a filter does not match; `rate` caps events per second (default 500, at most 2000). At most 16 streams per node; follows the query-log privacy level (level 3: off) |
-| `GET /api/v1/map` (filters `network`, `group`, `device`, `node`), `GET /api/v1/map/stream`, `GET /api/v1/map/health`, `GET /api/v1/map/world` | the live network map as data: the gateway, networks, devices, TelltaleDNS nodes and upstreams as nodes, and the flows between them as edges with their rate over the last 60 seconds, the shares of slow, failing and blocked answers, and a health (`green`, `yellow`, `red`, or `idle` when too few answers to say). Built from a sample of recent lookups on the aggregator thread, never on the query path (`sampleRate` says how thin); no domain name is in it; devices are hidden at privacy level 2 and totals only at 3; in a cluster a node that doesn't answer is a red resolver and `partial` is set. The stream sends one `snapshot` every 2 seconds (at most 8 streams per node). `health` is the short version, also the MCP tool `network_health`. The world view (`/map/world`, `?node=`) says `address_not_recorded` until answer addresses are kept, and `geoip_off` or `geoip_missing` without the GeoIP database (`GET /api/v1/map/geoip`, `POST /api/v1/map/geoip/update` and `DELETE /api/v1/map/geoip`, the last two admin-only). Settings: `GET`, `PUT` and `DELETE /api/v1/map-settings/default` (`[map]`, see the configuration reference). The map page comes with the Monitor menu in a later release |
+| `GET /api/v1/map` (filters `network`, `group`, `device`, `node`), `GET /api/v1/map/stream`, `GET /api/v1/map/health`, `GET /api/v1/map/world` | the live network map as data: the gateway, networks, devices, WrenDNS nodes and upstreams as nodes, and the flows between them as edges with their rate over the last 60 seconds, the shares of slow, failing and blocked answers, and a health (`green`, `yellow`, `red`, or `idle` when too few answers to say). Built from a sample of recent lookups on the aggregator thread, never on the query path (`sampleRate` says how thin); no domain name is in it; devices are hidden at privacy level 2 and totals only at 3; in a cluster a node that doesn't answer is a red resolver and `partial` is set. The stream sends one `snapshot` every 2 seconds (at most 8 streams per node). `health` is the short version, also the MCP tool `network_health`. The world view (`/map/world`, `?node=`) says `address_not_recorded` until answer addresses are kept, and `geoip_off` or `geoip_missing` without the GeoIP database (`GET /api/v1/map/geoip`, `POST /api/v1/map/geoip/update` and `DELETE /api/v1/map/geoip`, the last two admin-only). Settings: `GET`, `PUT` and `DELETE /api/v1/map-settings/default` (`[map]`, see the configuration reference). The map page comes with the Monitor menu in a later release |
 | `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20` | why a name is or isn't blocked for a device ([explain](#why-was-it-blocked-explain)) |
 | `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health (each upstream's `failuresByKind` says whether its failures were timeouts, connection errors, bad replies, unresolved names, SERVFAIL, REFUSED, or other errors) |
 
@@ -3774,25 +3844,25 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/stats/top?
 curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries?client=192.168.1.20&limit=20'
 ```
 
-### From the shell: `telltale ctl`
+### From the shell: `wrendns ctl`
 The same API from a terminal, with an API token (Settings → API tokens, or `POST /api/v1/tokens` from a signed-in session):
 ```sh
-export TELLTALE_TOKEN=tt_...                 # or --token-file /path/to/token
-telltale ctl status                          # version, uptime, the last day's numbers
-telltale ctl queries --status blocked --from -1h
-telltale ctl top blocked --limit 20
-telltale ctl block tiktok.com --group kids --for 120 --note "homework time"
-telltale ctl allow cdn.example.com --device living-room-tv
-telltale ctl rules                           # quick rules; `ctl unrule <id>` removes one
-telltale ctl pause --minutes 10              # `ctl resume` to undo
-telltale ctl maintenance start --for 30m --reason "SD card swap"   # `ctl maintenance end` to undo
-telltale ctl flush --name example.com --subtree
-telltale ctl lists                           # with unique names and hits
-telltale ctl lists refresh --wait            # download every list again now (or name some)
-telltale ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`
-telltale ctl secrets list                    # stored secrets, never a value; `secrets set NAME --from-file F`, `secrets clear NAME`
-telltale ctl get stats/latency by=upstream   # any endpoint (raw JSON)
-telltale ctl put groups/kids --data '{"lists": ["oisd-small"]}'
+export WRENDNS_TOKEN=tt_...                 # or --token-file /path/to/token
+wrendns ctl status                          # version, uptime, the last day's numbers
+wrendns ctl queries --status blocked --from -1h
+wrendns ctl top blocked --limit 20
+wrendns ctl block tiktok.com --group kids --for 120 --note "homework time"
+wrendns ctl allow cdn.example.com --device living-room-tv
+wrendns ctl rules                           # quick rules; `ctl unrule <id>` removes one
+wrendns ctl pause --minutes 10              # `ctl resume` to undo
+wrendns ctl maintenance start --for 30m --reason "SD card swap"   # `ctl maintenance end` to undo
+wrendns ctl flush --name example.com --subtree
+wrendns ctl lists                           # with unique names and hits
+wrendns ctl lists refresh --wait            # download every list again now (or name some)
+wrendns ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`
+wrendns ctl secrets list                    # stored secrets, never a value; `secrets set NAME --from-file F`, `secrets clear NAME`
+wrendns ctl get stats/latency by=upstream   # any endpoint (raw JSON)
+wrendns ctl put groups/kids --data '{"lists": ["oisd-small"]}'
 ```
 - It talks to the node in `[api] listen` from your config (or `--url http://dns.lan:8053`), prints tables, and `--json` prints the API's own JSON for scripts. Errors show the API's explanation and hint; the exit status is non-zero.
 - `block` and `allow` take `--dry-run` to see what would change. Rule IDs come from the domain (`block-tiktok-com`).
@@ -3821,8 +3891,8 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 - With `group`, it sees and changes only that group's devices and queries, and other views are refused.
 
 **Every change from an agent:**
-- needs an `X-Telltale-Reason` header (refused with 400 without one);
-- is recorded in the audit log as `agent:<token> (owner: <you>)`, with the agent software from `X-Telltale-Client`;
+- needs an `X-Wrendns-Reason` header (refused with 400 without one);
+- is recorded in the audit log as `agent:<token> (owner: <you>)`, with the agent software from `X-Wrendns-Client`;
 - can be tried first with `?dryRun=true`. That works for every change (devices, names, forwarded domains, quick rules, lists, groups, upstreams, promotion); the answer says what would change, with the numbers behind it (`impact`, `recentQueries`), and nothing changes.
 
 **Limits:** agents get 120 requests a minute each (`[agents] rate_per_minute`, or the token's `ratePerMinute`). Over the limit, they get 429 with `Retry-After`.
@@ -3830,12 +3900,12 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 **Kill switch:** `[agents] enabled = false` refuses every agent token at once, on every node of a cluster, while people and their own tokens keep working.
 
 ### MCP (Model Context Protocol)
-Every node serves MCP at `http://<node>:8053/mcp` (Streamable HTTP), so agents like Claude can use TelltaleDNS directly. Authenticate with an agent token (`Authorization: Bearer tt_…`).
+Every node serves MCP at `http://<node>:8053/mcp` (Streamable HTTP), so agents like Claude can use WrenDNS directly. Authenticate with an agent token (`Authorization: Bearer tt_…`).
 
-For agents that start their tools as a subprocess, use the stdio transport. It relays to a node (`TELLTALE_TOKEN` or `--token-file`; the address comes from `--url` or the config files):
+For agents that start their tools as a subprocess, use the stdio transport. It relays to a node (`WRENDNS_TOKEN` or `--token-file`; the address comes from `--url` or the config files):
 ```json
-{"mcpServers": {"telltale": {"command": "telltale", "args": ["mcp", "--stdio", "--url", "http://192.168.1.2:8053"],
-                             "env": {"TELLTALE_TOKEN": "tt_…"}}}}
+{"mcpServers": {"wrendns": {"command": "wrendns", "args": ["mcp", "--stdio", "--url", "http://192.168.1.2:8053"],
+                             "env": {"WRENDNS_TOKEN": "tt_…"}}}}
 ```
 
 | Tool | What it answers |
@@ -3900,8 +3970,8 @@ public_url = "https://dns.example.com"
 mcp_provider = "keycloak"            # one of your [[auth.oidc.provider]] ids
 # mcp_audience = "https://dns.example.com/mcp"   # the default
 ```
-- TelltaleDNS publishes `/.well-known/oauth-protected-resource` (RFC 9728) naming the provider as the authorization server, and answers an unauthenticated `/mcp` with a `WWW-Authenticate` header pointing there, so MCP clients find the sign-in on their own.
-- At the provider, give the MCP client an audience of `https://dns.example.com/mcp` (Keycloak: an audience mapper; Authentik and others: the resource or audience setting) and offer the TelltaleDNS scopes (`analytics:read`, `config:write:rules`, ...) as optional client scopes. You consent to the ones the agent gets; with none, it gets the read-only default.
+- WrenDNS publishes `/.well-known/oauth-protected-resource` (RFC 9728) naming the provider as the authorization server, and answers an unauthenticated `/mcp` with a `WWW-Authenticate` header pointing there, so MCP clients find the sign-in on their own.
+- At the provider, give the MCP client an audience of `https://dns.example.com/mcp` (Keycloak: an audience mapper; Authentik and others: the resource or audience setting) and offer the WrenDNS scopes (`analytics:read`, `config:write:rules`, ...) as optional client scopes. You consent to the ones the agent gets; with none, it gets the read-only default.
 - The access token must be a JWT signed by the provider. It's checked for signature, issuer, audience, and expiry on every request; opaque tokens aren't supported.
 - It acts as an agent for **your account**: never above your role, audited as `agent:oauth:<client> (owner: <you>)`. You must have signed in to the web UI with that provider once, so your account exists.
 
@@ -3909,9 +3979,9 @@ mcp_provider = "keycloak"            # one of your [[auth.oidc.provider]] ids
 
 | Resource | What it holds |
 |---|---|
-| `telltale://cluster/status` | members, roles, sync, versions, checks, each node's machine |
-| `telltale://config` | the running configuration without secrets: upstreams, lists, groups (with their sources), devices, local names, forwarded domains, quick rules |
-| `telltale://reports/daily` | the last 24 hours: totals, top domains, blocked names and clients, upstream health, anomalies |
+| `wrendns://cluster/status` | members, roles, sync, versions, checks, each node's machine |
+| `wrendns://config` | the running configuration without secrets: upstreams, lists, groups (with their sources), devices, local names, forwarded domains, quick rules |
+| `wrendns://reports/daily` | the last 24 hours: totals, top domains, blocked names and clients, upstream health, anomalies |
 
 | Prompt | Arguments | What it does |
 |---|---|---|
@@ -3960,7 +4030,7 @@ A `plan_*` tool asks the node what the change would do (the same dry run as `?dr
 ## Users and sign-in
 There is no default password. On first start the server creates a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only). The log says where it is, never the token itself, because logs often end up in shared collectors. Cluster members other than the primary have no setup token: their users come from the primary.
 ```sh
-telltale auth setup-token          # prints it
+wrendns auth setup-token          # prints it
 curl -s -c jar -H 'content-type: application/json' \
   -d '{"setupToken":"<token>","username":"admin","password":"a long passphrase"}' \
   http://dns.lan:8053/api/v1/auth/setup
@@ -3969,14 +4039,14 @@ That creates the first admin and signs them in; the token file is then deleted. 
 
 For a deployment that must come up configured (Kubernetes, Ansible), create the first admin from a secret instead. These are read only while no user exists:
 ```sh
-TELLTALE_BOOTSTRAP_ADMIN_USER=admin
-TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a long passphrase' | telltale auth hash-password
-# or TELLTALE_BOOTSTRAP_ADMIN_PASSWORD=...
+WRENDNS_BOOTSTRAP_ADMIN_USER=admin
+WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a long passphrase' | wrendns auth hash-password
+# or WRENDNS_BOOTSTRAP_ADMIN_PASSWORD=...
 ```
 
-**Forgot the password.** With no admin able to sign in, stop TelltaleDNS and reset the password on the machine that runs it. `telltale auth reset-password <user>` takes the new password on stdin (one line, from a pipe or a file) or asks for it twice in a terminal, with echo off. It refuses while `telltale run` holds the data directory, so stop the service first (a container: stop the container, then run the command in a one-off container that mounts the same data volume), and it refuses on a cluster replica, whose users come from the primary. The user's web sessions end, their other sessions and tokens are kept as they are, and the reset is in the audit log as `user.password` by `auth reset-password`. It doesn't print the password.
+**Forgot the password.** With no admin able to sign in, stop WrenDNS and reset the password on the machine that runs it. `wrendns auth reset-password <user>` takes the new password on stdin (one line, from a pipe or a file) or asks for it twice in a terminal, with echo off. It refuses while `wrendns run` holds the data directory, so stop the service first (a container: stop the container, then run the command in a one-off container that mounts the same data volume), and it refuses on a cluster replica, whose users come from the primary. The user's web sessions end, their other sessions and tokens are kept as they are, and the reset is in the audit log as `user.password` by `auth reset-password`. It doesn't print the password.
 ```sh
-printf '%s\n' "$NEW_PASSWORD" | telltale auth reset-password alice -c /etc/telltale/telltale.toml
+printf '%s\n' "$NEW_PASSWORD" | wrendns auth reset-password alice -c /etc/wrendns/wrendns.toml
 ```
 
 **Roles.** `viewer` sees dashboards and the query log; `operator` can also pause, flush the cache, and manage lists, clients, and groups; `admin` can do everything, including users. Admins manage users at `/api/v1/users`. The last admin can't be removed or demoted. To stop a leaked token without disabling its owner, an admin opens **Settings → Users → Tokens** for that user and revokes it (`GET /api/v1/users/{id}/tokens`, `DELETE /api/v1/users/{id}/tokens/{tokenId}`, audited as `token.revoke`).
@@ -4003,7 +4073,7 @@ allow_insecure_basic = false
 
 Users, sessions, and tokens are kept in `<data_dir>/state.db` (SQLite). If it can't be opened, the API stays off and DNS keeps answering.
 
-**Sign in with Keycloak, Authentik, or another OpenID Connect provider.** Each provider gets a "Sign in with ..." button. People are created in TelltaleDNS the first time they sign in, and their role comes from their groups at every sign-in:
+**Sign in with Keycloak, Authentik, or another OpenID Connect provider.** Each provider gets a "Sign in with ..." button. People are created in WrenDNS the first time they sign in, and their role comes from their groups at every sign-in:
 ```toml
 [auth.oidc]
 public_url = "https://dns.example.com"     # where people open the UI
@@ -4011,8 +4081,8 @@ public_url = "https://dns.example.com"     # where people open the UI
 [[auth.oidc.provider]]
 id = "authentik"                           # used in URLs
 name = "Authentik"                         # the button label
-issuer = "https://auth.example.com/application/o/telltale/"
-client_id = "telltale"
+issuer = "https://auth.example.com/application/o/wrendns/"
+client_id = "wrendns"
 client_secret_file = "/run/secrets/oidc"   # or client_secret = "..."
 groups_claim = "groups"                    # Keycloak realm roles: "realm_access.roles"
 
@@ -4027,17 +4097,17 @@ role = "viewer"
 At the provider, create a confidential client with the redirect URI `<public_url>/api/v1/auth/oidc/<id>/callback` (here `https://dns.example.com/api/v1/auth/oidc/authentik/callback`) and allow `<public_url>/` after sign-out. Make sure the ID token carries the groups: Authentik's `profile` scope includes `groups`; in Keycloak add a "Group Membership" mapper (full group path off) to the client.
 
 - Someone in several mapped groups gets the highest role; someone in none can't sign in unless you set `default_role`. `require_verified_email = true` refuses addresses the provider hasn't verified.
-- The username comes from `preferred_username` (or `username_claim`). TelltaleDNS never attaches a provider account to an existing local user: if the name is taken, the new account is called `name@provider`.
+- The username comes from `preferred_username` (or `username_claim`). WrenDNS never attaches a provider account to an existing local user: if the name is taken, the new account is called `name@provider`.
 - Signing out also signs out at the provider (Keycloak asks "Do you want to log out?"; Authentik shows its own "logged out" page).
-- Provider accounts have no TelltaleDNS password; they can still create API tokens.
+- Provider accounts have no WrenDNS password; they can still create API tokens.
 - **What a sign-in accepts.** The ID token must be signed with an RSA key of at least 2048 bits (RS256, RS384, RS512, PS256, PS384 or PS512), an EC key on P-256 (ES256) or P-384 (ES384), or an Ed25519 key (EdDSA). Shorter RSA keys and other curves are refused, so a provider that offers only those can't sign people in; the sign-in page then says why. The token must be for this client alone: `aud` is the client ID, and `azp`, when present, is the client ID too. `exp` has no grace period, and `iat` may be at most a minute ahead of this server's clock. If the provider lists the algorithms it signs ID tokens with, only those are used.
 - **Discovery.** When the issuer is `https://`, the provider's authorization, token and key-set endpoints must also be `https://`, or sign-in is refused. A plain `http://` issuer is accepted for local testing and gets the usual configuration warning.
 - **Token dates.** `exp`, `iat` and `nbf` must be whole numbers of seconds; a fractional value (`1700000000.5`, or `1.7e9`) is refused, though RFC 7519 allows one. Keycloak, Authentik and the other providers tested send whole numbers. A base64url part with `=` padding, and a JWK whose `key_ops` lacks `verify`, are refused. If the provider is down after the one-hour discovery cache expires, the cached copy is used and a reload is tried at most once a minute.
 - **Client authentication.** With a `client_secret`, the token request authenticates with HTTP Basic (or with the secret in the form body, when the provider lists only `client_secret_post`). Without a secret, the client is public: it sends its client ID alone, so a PKCE-only client works.
-- **Key rotation.** When a token's key isn't in the cached key set, or its signature fails against the cached keys, TelltaleDNS fetches the key set again, at most once a minute per provider. A failed fetch keeps the keys it has.
+- **Key rotation.** When a token's key isn't in the cached key set, or its signature fails against the cached keys, WrenDNS fetches the key set again, at most once a minute per provider. A failed fetch keeps the keys it has.
 - `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks`: a break-glass way in when the provider is down. **If you leave `allowed_admin_networks` out, break-glass is loopback only** (`127.0.0.1` and `::1`, ADR-944). Set it to your LAN (for example `["192.168.1.0/24"]`) if you want a password from other devices. An explicit list replaces the default, and `[]` allows nothing.
-  - **Reverse proxy on this host:** a proxy on the same machine connects as loopback, so its clients would look like loopback too. TelltaleDNS refuses break-glass for any request that carries `X-Forwarded-*`, `X-Real-IP` or `Forwarded` headers from an untrusted peer, so such clients can't use it. To have the real client address checked, list the proxy in `[api] trusted_proxies`.
-  - **Docker port publishing:** the peer is the Docker bridge gateway, not loopback, so break-glass is refused from the host. To use it from the host, add the bridge gateway to `allowed_admin_networks` and restart: find it with `docker network inspect <network> --format '{{(index .IPAM.Config 0).Gateway}}'` (often `172.17.0.1`, or the compose network's gateway), then set for example `allowed_admin_networks = ["127.0.0.0/8", "::1/128", "172.17.0.1/32"]`. `docker exec` doesn't help here: the image has no browser or curl, and `telltale ctl` signs in with a token, not a password.
+  - **Reverse proxy on this host:** a proxy on the same machine connects as loopback, so its clients would look like loopback too. WrenDNS refuses break-glass for any request that carries `X-Forwarded-*`, `X-Real-IP` or `Forwarded` headers from an untrusted peer, so such clients can't use it. To have the real client address checked, list the proxy in `[api] trusted_proxies`.
+  - **Docker port publishing:** the peer is the Docker bridge gateway, not loopback, so break-glass is refused from the host. To use it from the host, add the bridge gateway to `allowed_admin_networks` and restart: find it with `docker network inspect <network> --format '{{(index .IPAM.Config 0).Gateway}}'` (often `172.17.0.1`, or the compose network's gateway), then set for example `allowed_admin_networks = ["127.0.0.0/8", "::1/128", "172.17.0.1/32"]`. `docker exec` doesn't help here: the image has no browser or curl, and `wrendns ctl` signs in with a token, not a password.
   - **Upgrading:** before ADR-944 the default also included private networks. If you use `disable_local_login` from your LAN, set `allowed_admin_networks` explicitly; the server logs a warning at startup while it is unset and `disable_local_login` is on. Your file is not rewritten.
 - The provider is only contacted while signing in; sessions are local afterwards. A provider added, changed or removed, in the file (reload with `SIGHUP`) or in the UI (below), applies without a restart: it is read again, the sign-ins already started carry on, and a provider that can't be read keeps the settings it had (or is left out, with the reason on **Settings → Sign-in**). `public_url`, `disable_local_login` and `allowed_admin_networks` are read at start. If a provider can't be set up (for example its secret file is missing), it's logged, the other providers keep working, and so does password sign-in.
 
@@ -4049,41 +4119,41 @@ At the provider, create a confidential client with the redirect URI `<public_url
 - Removing a provider ends the sessions it opened, on every node. The users it created stay. Password sign-in, the break-glass admin and every other provider's sessions are not touched.
 - A resolver pod (Kubernetes) holds no stored secrets and serves no sign-in, so it skips providers that need one.
 
-**HTTPS without a proxy.** Out of the box the UI and API on port 8053 are plain HTTP, so on a home network the sign-in form's password crosses the LAN in the clear. TelltaleDNS can serve them over HTTPS itself:
+**HTTPS without a proxy.** Out of the box the UI and API on port 8053 are plain HTTP, so on a home network the sign-in form's password crosses the LAN in the clear. WrenDNS can serve them over HTTPS itself:
 ```toml
 [api]
 tls = { self_signed = true }                 # a certificate made on first start
-# tls = { cert = "/etc/telltale/api.crt", key = "/etc/telltale/api.key" }   # or your own
+# tls = { cert = "/etc/wrendns/api.crt", key = "/etc/wrendns/api.key" }   # or your own
 ```
 - **Self-signed:** made once and kept in `<data_dir>/api-tls/` (`cert.pem`, `key.pem`), for `localhost`, the host's name (and `<name>.local`), and its addresses. Browsers warn until you trust it: accept the warning once, or import `cert.pem` into your computer's or browser's trusted certificates to make it go away. Delete the directory to make a new one (for a new address).
 - **Your own certificate** (from your CA, or Let's Encrypt with a DNS challenge): PEM files, the server's certificate first; a renewal is picked up within 10 s, and a broken one keeps the previous certificate. With your own certificate the UI also sends HSTS (`Strict-Transport-Security`), so browsers stick to HTTPS for that name. A self-signed one doesn't: with HSTS a browser stops offering to proceed past the warning.
-- The same port answers both: `http://` requests are redirected to `https://` (307, so turning TLS off later leaves no cached redirect), except `/livez`, `/readyz`, and `/healthz`, which keep answering health checks (`telltale health`, the Compose healthcheck) over plain HTTP.
+- The same port answers both: `http://` requests are redirected to `https://` (307, so turning TLS off later leaves no cached redirect), except `/livez`, `/readyz`, and `/healthz`, which keep answering health checks (`wrendns health`, the Compose healthcheck) over plain HTTP.
 - Over HTTPS the session cookie is `Secure` and HTTP Basic works, as behind a TLS proxy.
-- `telltale ctl` and `telltale mcp --stdio` on the node use `https://` and trust its self-signed certificate by themselves. From another machine, copy `cert.pem` and pass `--ca-file cert.pem` (with `--url https://<node>:8053`).
+- `wrendns ctl` and `wrendns mcp --stdio` on the node use `https://` and trust its self-signed certificate by themselves. From another machine, copy `cert.pem` and pass `--ca-file cert.pem` (with `--url https://<node>:8053`).
 - Changing `[api] tls` needs a restart. If the certificate can't be made or loaded, the API stays off (it's logged), rather than falling back to plain HTTP; DNS keeps answering.
 - **Settings → System → Listener checks** shows the web UI's certificate: self-signed or yours, the names it covers, its SHA-256 fingerprint (compare it with your browser's before trusting it), and for your own, the days left, with the same health level and alerts as the DNS listeners' certificates ([Listener checks](#listener-checks)).
 
-**Behind a reverse proxy or ingress,** tell TelltaleDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
+**Behind a reverse proxy or ingress,** tell WrenDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
 ```toml
 [api]
 trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingress runs in
 ```
 The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts, except for setting a stored secret, where it must be listed as well ([Setting a stored secret](#setting-a-stored-secret)).
 
-**Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
+**Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Wrendns-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 
 If the audit log can't be written (a full disk, a broken database), the change that failed to be recorded is logged as an error, and the next change first writes an `audit.gap` entry saying how many went unrecorded and why. Until that works, changes through the API and UI are refused with 503; DNS keeps answering.
 
 Entries are kept for `[auth] audit_retention_days` (365 by default; 0 keeps them forever). Older ones are removed hourly, and each removal is itself recorded as `audit.trim` with a checkpoint hash. Otherwise entries can't be edited or deleted, and each is chained to the previous one with a BLAKE3 hash, so tampering with the database is detectable (after a trim, the chain is checked from the checkpoint):
 ```sh
-telltale audit list -n 20                  # newest first; --action user. or config.reload
-telltale audit verify                      # "ok: 42 entries, head 9f3c…" or "BROKEN at entry 17" (exit 1)
+wrendns audit list -n 20                  # newest first; --action user. or config.reload
+wrendns audit verify                      # "ok: 42 entries, head 9f3c…" or "BROKEN at entry 17" (exit 1)
 curl -s -H "Authorization: Bearer $TOKEN" http://dns.lan:8053/api/v1/audit/verify
 ```
 Keep the `head` hash somewhere else from time to time: a later `verify` with a different head and fewer entries means entries were removed from the end.
 
 ## Reload without restarting
-Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):
+Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP wrendns`):
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.
 - Applied immediately, with no dropped queries: upstreams, groups, routes, local records and hosts files, `[access]`, `[ratelimit]`, `[special]`, and `[[listen]]` (new listeners are bound before removed ones are closed).
 - Applied at the next restart (a warning names them): `[cache]`, `[telemetry]`, `[node]`. The cache is kept across reloads, so warm answers aren't lost.
@@ -4101,7 +4171,7 @@ For planned downtime longer than a restart, [put the node in maintenance](#takin
 In Kubernetes, pair this with a short `preStop` sleep so endpoints are removed before the drain begins (the Helm chart will set this).
 
 ## Logging
-Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`), or per module, for example `TELLTALE_LOG=info,telltale_cluster::failover=debug`. To trace a primary's lease lapse without debug logging for the whole server, use that example: each renewal round and each vote answer (with `took_ms`) is logged at debug. The Cluster page's event list shows `Lease lapsed` and `Lease renewed` (with how long publishing paused); a node that is no longer the primary logs that the lapse ended instead. A slow ballot store (500 ms or more) logs a warning at most once a minute.
+Logs go to stderr. Set the level with `WRENDNS_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`), or per module, for example `WRENDNS_LOG=info,wrendns_cluster::failover=debug`. To trace a primary's lease lapse without debug logging for the whole server, use that example: each renewal round and each vote answer (with `took_ms`) is logged at debug. The Cluster page's event list shows `Lease lapsed` and `Lease renewed` (with how long publishing paused); a node that is no longer the primary logs that the lapse ended instead. A slow ballot store (500 ms or more) logs a warning at most once a minute.
 
 ## Error responses
 | Query | Response |

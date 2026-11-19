@@ -87,7 +87,7 @@ function exampleCluster() {
     configSource: 'gitops', ...o,
   });
   const pod = (name: string, kube: string, o: Record<string, unknown> = {}) =>
-    node({ nodeId: `id-${name}`, site: 'k8s', ephemeral: true, pod: `telltale-resolver-${name}`, kubeNode: kube,
+    node({ nodeId: `id-${name}`, site: 'k8s', ephemeral: true, pod: `wrendns-resolver-${name}`, kubeNode: kube,
       eligible: false, configSource: undefined, uptimeSeconds: 7_200, ...o });
   const at = (minAgo: number) => new Date(Date.now() - minAgo * 60_000).toISOString();
   return {
@@ -101,7 +101,7 @@ function exampleCluster() {
     ],
     nodes: [
       node({ nodeId: '3f9a1c07d2e84b16', site: 'k8s', role: 'primary', thisNode: true, link: 'self', rttMs: null,
-        pod: 'telltale-0', kubeNode: 'node-a', qps: 14, querySharePercent: 22 }),
+        pod: 'wrendns-0', kubeNode: 'node-a', qps: 14, querySharePercent: 22 }),
       pod('6c9f-2xk4p', 'node-a', { qps: 13, querySharePercent: 21 }),
       pod('6c9f-8hq7d', 'node-b', { qps: 12, querySharePercent: 19 }),
       pod('6c9f-k2m9w', 'node-b', { qps: 12, querySharePercent: 19, ready: false, configLag: 1 }),

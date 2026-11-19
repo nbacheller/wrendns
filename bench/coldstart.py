@@ -1,6 +1,6 @@
 """REQ: NFR-001 (T10.4) — cold start with the compiled snapshot on disk, the gate in `spec/00` §5.
 
-  python3 bench/coldstart.py --bin target/release/telltale     # 1M names, 5 restarts
+  python3 bench/coldstart.py --bin target/release/wrendns     # 1M names, 5 restarts
 
 Starts the stub upstream and a server with `--names` blocked names the way `gate.py` does,
 waits for the first compile, then restarts the server `--runs` times and prints, for each:
@@ -21,7 +21,7 @@ import gate
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--server-cpus", default="0-3")
     ap.add_argument("--client-cpus", default="4-7")
     ap.add_argument("--workers", type=int, default=4)
@@ -33,7 +33,7 @@ def main():
     ap.add_argument("--runs", type=int, default=5)
     args = ap.parse_args()
 
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-cold-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-cold-")
     d = pathlib.Path(tmp.name)
     names = gate.blocked_names(args.names)
     lst = gate.write_lines(d / "names.txt", names)

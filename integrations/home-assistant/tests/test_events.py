@@ -9,9 +9,9 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.telltale.const import CONF_TOKEN, DOMAIN, EVENT_ANOMALY
+from custom_components.wrendns.const import CONF_TOKEN, DOMAIN, EVENT_ANOMALY
 
-URL = "http://telltale.test:8053"
+URL = "http://wrendns.test:8053"
 
 
 def _mock(aioclient_mock: AiohttpClientMocker, findings: list[dict[str, Any]], *, inventory: bool = True) -> None:
@@ -38,7 +38,7 @@ def _mock(aioclient_mock: AiohttpClientMocker, findings: list[dict[str, Any]], *
         aioclient_mock.get(f"{URL}/api/v1/dhcp/leases", json={"items": []})
         aioclient_mock.get(f"{URL}/api/v1/networks", json={"items": []})
     else:
-        # An upstream TelltaleDNS build: agents can't read the leases, and there's no /networks.
+        # An upstream WrenDNS build: agents can't read the leases, and there's no /networks.
         aioclient_mock.get(f"{URL}/api/v1/dhcp/leases", status=403, json={"code": "forbidden", "detail": "scope"})
         aioclient_mock.get(f"{URL}/api/v1/networks", status=404, json={"code": "not_found", "detail": "no"})
 

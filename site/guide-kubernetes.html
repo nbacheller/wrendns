@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Run on Kubernetes — TelltaleDNS</title>
-<meta name="description" content="Run TelltaleDNS on Kubernetes with the Helm chart: one pod or many, real client addresses, one IP for DNS and the web UI, configuration and secrets with Argo CD or Flux, monitoring, and a Raspberry Pi in the same cluster.">
+<title>Run on Kubernetes — WrenDNS</title>
+<meta name="description" content="Run WrenDNS on Kubernetes with the Helm chart: one pod or many, real client addresses, one IP for DNS and the web UI, configuration and secrets with Argo CD or Flux, monitoring, and a Raspberry Pi in the same cluster.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Guide</p>
   <h1>Run on Kubernetes</h1>
-  <p class="lede">The Helm chart runs TelltaleDNS on any Kubernetes from 1.26, on amd64 and arm64. This guide takes you from one pod to a scaled setup with a Raspberry Pi in the same cluster.</p>
+  <p class="lede">The Helm chart runs WrenDNS on any Kubernetes from 1.26, on amd64 and arm64. This guide takes you from one pod to a scaled setup with a Raspberry Pi in the same cluster.</p>
   <ul class="onpage">
     <li><a href="#size">One pod or many</a></li>
     <li><a href="#install">Install</a></li>
@@ -26,7 +26,7 @@
     <li><a href="#scaled">More pods</a></li>
     <li><a href="#pi">A Pi in the same cluster</a></li>
     <li><a href="#workloads">Your pods as devices</a></li>
-    <li><a href="#cluster-dns">Your cluster's DNS through TelltaleDNS</a></li>
+    <li><a href="#cluster-dns">Your cluster's DNS through WrenDNS</a></li>
     <li><a href="#extras">Monitoring and encrypted DNS</a></li>
   </ul>
 </section>
@@ -48,11 +48,11 @@
   <h2>Install</h2>
   <ol class="steps">
     <li class="step"><b>Get the chart's values</b>, every option commented. Keep only what you change in your own file. The chart's schema rejects a mistyped value with its path.
-<pre><code>helm show values oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; &gt; values.yaml</code></pre></li>
+<pre><code>helm show values oci://ghcr.io/nbacheller/charts/wrendns --version &lt;version&gt; &gt; values.yaml</code></pre></li>
     <li class="step"><b>Install it</b> with your file (give the DNS Service a fixed address in it: <a href="#clients">below</a>):
-<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; \
-  -n telltale --create-namespace -f my-values.yaml
-kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: hand this out in DHCP</code></pre></li>
+<pre><code>helm install wrendns oci://ghcr.io/nbacheller/charts/wrendns --version &lt;version&gt; \
+  -n wrendns --create-namespace -f my-values.yaml
+kubectl -n wrendns get svc wrendns-dns     # EXTERNAL-IP: hand this out in DHCP</code></pre></li>
     <li class="step"><b>Create your admin</b>: open the web UI and use the setup token from the install notes, or create the first admin from a Secret with <code>auth.bootstrapAdmin.existingSecret</code> (keys <code>username</code>, and <code>password</code> or <code>password-hash</code>).</li>
   </ol>
   <p class="muted">Every value, with its default, is on the <a href="helm-values.html">Helm values</a> page. Use a release version, or an <code>edge</code> build that follows main.</p>
@@ -105,15 +105,15 @@ kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: hand this out in DHC
   <ul>
     <li><b>Your settings go under <code>config:</code></b>, written after the chart's own (listeners, data directory, ports): upstreams, lists, groups, sign-in, everything in the <a href="config.html">configuration reference</a>.</li>
     <li><b>With Argo CD or Flux,</b> add <code>[cluster] config_source = "gitops"</code>. Changes in the web UI then show the TOML to commit: see <a href="guide-settings.html#style-git-node">Git, per node</a>.</li>
-    <li><b>Secrets as files:</b> <code>secretMounts</code> mounts Secrets at <code>/etc/telltale-secrets/&lt;name&gt;</code>, for settings that take a file, such as an OIDC <code>client_secret_file</code> or a router's <code>api_key_file</code>.</li>
+    <li><b>Secrets as files:</b> <code>secretMounts</code> mounts Secrets at <code>/etc/wrendns-secrets/&lt;name&gt;</code>, for settings that take a file, such as an OIDC <code>client_secret_file</code> or a router's <code>api_key_file</code>.</li>
     <li><b>Routers:</b> a resolver pod reads no router (it has no router credentials). The controller, or the primary for a router whose credential is stored on the node (Devices → Routers), reads them and shares the names with every node.</li>
     <li><b>With Argo CD,</b> which can't keep a generated Secret stable, create the resolver pods' join Secret yourself and set <code>cluster.bootstrapSecret.existingSecret</code> (at least 32 random characters).</li>
     <li><b>Stored secrets</b> entered in the web UI are copied to the controller and to every full member (a Pi, say), each encrypted under its own key. Resolver pods get none: an integration that needs a secret on a pod uses a file (<code>secretMounts</code>) or runs on a full member. The Cluster page's Secrets column shows whether each member has them.</li>
-    <li><b>The key of stored secrets</b> (those entered in the web UI) is, by default, <code>secrets.key</code> on the controller's volume. Better, keep your own: <code>secretsKey.existingSecret</code> names a Secret whose entry <code>secretsKey.key</code> (default <code>secrets.key</code>) holds <code>ttsk1:</code> and 43 base64url characters; it is mounted read-only on the controller only, never on resolver pods. <code>secretsKey.generate: true</code> makes that Secret with the chart, which doesn't work under <code>helm template</code> or Argo CD (each render would make a new key and lock the store). With <code>persistence.enabled: false</code> stored secrets are lost at every restart, and health says <code>secrets_ephemeral</code>. See <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/secrets.md">docs/secrets.md</a>.</li>
+    <li><b>The key of stored secrets</b> (those entered in the web UI) is, by default, <code>secrets.key</code> on the controller's volume. Better, keep your own: <code>secretsKey.existingSecret</code> names a Secret whose entry <code>secretsKey.key</code> (default <code>secrets.key</code>) holds <code>ttsk1:</code> and 43 base64url characters; it is mounted read-only on the controller only, never on resolver pods. <code>secretsKey.generate: true</code> makes that Secret with the chart, which doesn't work under <code>helm template</code> or Argo CD (each render would make a new key and lock the store). With <code>persistence.enabled: false</code> stored secrets are lost at every restart, and health says <code>secrets_ephemeral</code>. See <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/secrets.md">docs/secrets.md</a>.</li>
   </ul>
 <pre><code>secretMounts:
   - name: oidc
-    secretName: telltale-oidc
+    secretName: wrendns-oidc
 config: |
   [cluster]
   config_source = "gitops"
@@ -126,9 +126,9 @@ config: |
 
   [[auth.oidc.provider]]
   id = "authentik"
-  issuer = "https://auth.example.com/application/o/telltale/"
+  issuer = "https://auth.example.com/application/o/wrendns/"
   client_id = "..."
-  client_secret_file = "/etc/telltale-secrets/oidc/client_secret"</code></pre>
+  client_secret_file = "/etc/wrendns-secrets/oidc/client_secret"</code></pre>
 </section>
 
 <section id="scaled">
@@ -151,9 +151,9 @@ resolvers:
   <ol class="steps">
     <li class="step"><b>Expose the cluster port</b> (9443 in the chart): <code>service.dns.alsoServe.cluster: true</code>, or <code>cluster.service.type: LoadBalancer</code>. List that address in <code>cluster.advertise</code>, e.g. <code>["https://192.168.1.53:9443"]</code>.</li>
     <li class="step"><b>Make a join token inside the controller pod</b>, naming that URL:
-<pre><code>kubectl -n telltale exec sts/telltale -- telltale cluster token create --url https://192.168.1.53:9443 \
-  -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml -c /etc/telltale/20-controller.toml</code></pre></li>
-    <li class="step"><b>Join from the Pi</b>, then restart it: <code>telltale cluster join tt_join_... --site home-pi</code>.</li>
+<pre><code>kubectl -n wrendns exec sts/wrendns -- wrendns cluster token create --url https://192.168.1.53:9443 \
+  -c /etc/wrendns/00-chart.toml -c /etc/wrendns/10-values.toml -c /etc/wrendns/20-controller.toml</code></pre></li>
+    <li class="step"><b>Join from the Pi</b>, then restart it: <code>wrendns cluster join tt_join_... --site home-pi</code>.</li>
     <li class="step"><b>Optional: staged rollouts.</b> <code>cluster.rollout.canaries: [ephemeral]</code> gives each change to the resolver pods (and the controller) first, and to the Pi after a five-minute bake, pinning the cluster back if the pods start failing.</li>
   </ol>
   <div class="callout"><p>The Pi keeps its own <code>[cache]</code>, listeners, and sign-in settings in its own file: see <a href="guide-settings.html#shared">Shared or per node</a>.</p></div>
@@ -161,10 +161,10 @@ resolvers:
 
 <section id="workloads">
   <h2>Your pods as devices</h2>
-  <p>TelltaleDNS can name your cluster's pods by the workload that runs them, like any laptop or TV on the network: <code>media/deploy/jellyfin</code> for the Deployment <code>jellyfin</code> in <code>media</code>. A Deployment's replicas are one device across every rollout, so its top domains, anomaly baseline, rhythm, and day on the timeline carry on when its pods are replaced. Namespaces get groups, so lists, quick rules, schedules, and blocked services apply per namespace. See <a href="kubernetes-workloads.html">what it looks like</a>.</p>
+  <p>WrenDNS can name your cluster's pods by the workload that runs them, like any laptop or TV on the network: <code>media/deploy/jellyfin</code> for the Deployment <code>jellyfin</code> in <code>media</code>. A Deployment's replicas are one device across every rollout, so its top domains, anomaly baseline, rhythm, and day on the timeline carry on when its pods are replaced. Namespaces get groups, so lists, quick rules, schedules, and blocked services apply per namespace. See <a href="kubernetes-workloads.html">what it looks like</a>.</p>
   <figure class="figure">
     <svg viewBox="0 0 900 250" role="img" aria-labelledby="k8s-wl-title">
-      <title id="k8s-wl-title">Pods ask TelltaleDNS directly; it names each one by its workload, answers or forwards, and sends the cluster's own names on to CoreDNS. The controller watches pods (read-only) to know who is who.</title>
+      <title id="k8s-wl-title">Pods ask WrenDNS directly; it names each one by its workload, answers or forwards, and sends the cluster's own names on to CoreDNS. The controller watches pods (read-only) to know who is who.</title>
       <defs><marker id="w-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
       <text x="10" y="18" class="svg-sub">Pods (their own addresses)</text>
       <rect x="10" y="30" width="230" height="44" rx="10" class="svg-box"/><text x="22" y="49" class="svg-mono">jellyfin-7d9f4c8b6-x2k1q</text><text x="22" y="65" class="svg-sub">10.42.0.15</text>
@@ -176,7 +176,7 @@ resolvers:
       </g>
       <path d="M450 222 V170" class="svg-stroke-brand" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#w-arrow)"/>
       <rect x="330" y="50" width="240" height="120" rx="14" class="svg-brand"/>
-      <text x="450" y="80" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="15">TelltaleDNS</text>
+      <text x="450" y="80" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="15">WrenDNS</text>
       <text x="450" y="104" text-anchor="middle" fill="#e8eef6" font-size="12">media/deploy/jellyfin: one device</text>
       <text x="450" y="122" text-anchor="middle" fill="#e8eef6" font-size="12">db/sts/postgres: one device</text>
       <text x="450" y="146" text-anchor="middle" fill="#e8eef6" font-size="12">each in its namespace's group</text>
@@ -184,7 +184,7 @@ resolvers:
       <rect x="660" y="114" width="230" height="52" rx="10" class="svg-box"/><text x="674" y="136" class="svg-text">CoreDNS</text><text x="674" y="154" class="svg-sub">cluster.local and reverse zones</text>
       <text x="460" y="242" class="svg-sub">Kubernetes API: watch pods and namespaces (read-only)</text>
     </svg>
-    <figcaption>Pods ask TelltaleDNS directly, so their own addresses arrive; Service names still come from CoreDNS.</figcaption>
+    <figcaption>Pods ask WrenDNS directly, so their own addresses arrive; Service names still come from CoreDNS.</figcaption>
   </figure>
   <ol class="steps">
     <li class="step"><b>Turn it on</b> with CoreDNS's address (<code>kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'</code>) and a fixed address for the DNS Service inside the Service network:
@@ -192,20 +192,20 @@ resolvers:
   enabled: true
   clusterDns: 10.43.0.10
   podCidr: 10.42.0.0/16       # optional: PTR lookups for pods and Services go to CoreDNS too
-  serviceCidr: 10.43.0.0/16   #   (leave both out if your nodes use TelltaleDNS: see below)
+  serviceCidr: 10.43.0.0/16   #   (leave both out if your nodes use WrenDNS: see below)
 service:
   dns:
     clusterIP: 10.43.0.53</code></pre>
     The controller gets a token that can only read pods and namespaces; resolver pods get none.</li>
-    <li class="step"><b>Send the pods' DNS to TelltaleDNS</b>: one workload first, then the whole cluster through the kubelet. The <a href="#cluster-dns">next section</a> walks through it.</li>
-    <li class="step"><b>Group them.</b> Label a namespace (<code>kubectl label namespace media telltaledns.io/group=media</code>) or a pod the same way, list rules in <code>kubernetes.map</code> (<code>[{namespace: "media*", group: "iot"}]</code>), or use <b>Add to group…</b> on a workload in the web UI. Labels win, then rules, then <code>kubernetes.defaultGroup</code>, then the pod's network group.</li>
+    <li class="step"><b>Send the pods' DNS to WrenDNS</b>: one workload first, then the whole cluster through the kubelet. The <a href="#cluster-dns">next section</a> walks through it.</li>
+    <li class="step"><b>Group them.</b> Label a namespace (<code>kubectl label namespace media wrendns.com/group=media</code>) or a pod the same way, list rules in <code>kubernetes.map</code> (<code>[{namespace: "media*", group: "iot"}]</code>), or use <b>Add to group…</b> on a workload in the web UI. Labels win, then rules, then <code>kubernetes.defaultGroup</code>, then the pod's network group.</li>
   </ol>
-  <div class="callout"><p><b>Through CoreDNS, every pod looks like CoreDNS.</b> If CoreDNS forwards to TelltaleDNS instead, all you see is CoreDNS's address. The API server being unreachable never affects answering: pods keep their last names, and the health level turns degraded after 15 minutes.</p></div>
+  <div class="callout"><p><b>Through CoreDNS, every pod looks like CoreDNS.</b> If CoreDNS forwards to WrenDNS instead, all you see is CoreDNS's address. The API server being unreachable never affects answering: pods keep their last names, and the health level turns degraded after 15 minutes.</p></div>
 </section>
 
 <section id="cluster-dns">
-  <h2>Your cluster's DNS through TelltaleDNS</h2>
-  <p>Pods only show up as themselves when they ask TelltaleDNS directly. The safe order is one workload, then the cluster's default, then the nodes. The examples use k3s, with TelltaleDNS's DNS Service at <code>10.43.0.53</code> and CoreDNS at <code>10.43.0.10</code>.</p>
+  <h2>Your cluster's DNS through WrenDNS</h2>
+  <p>Pods only show up as themselves when they ask WrenDNS directly. The safe order is one workload, then the cluster's default, then the nodes. The examples use k3s, with WrenDNS's DNS Service at <code>10.43.0.53</code> and CoreDNS at <code>10.43.0.10</code>.</p>
   <ol class="steps">
     <li class="step"><b>Try one workload.</b> Give a low-stakes Deployment or CronJob its own DNS settings:
 <pre><code>spec:
@@ -216,26 +216,26 @@ service:
         nameservers: ["10.43.0.53"]
         searches: [media.svc.cluster.local, svc.cluster.local, cluster.local]
         options: [{name: ndots, value: "5"}]</code></pre>
-    Use the workload's own namespace first in <code>searches</code>. When its pods restart, the workload appears on the <b>Workloads</b> tab, and its Service names still resolve (TelltaleDNS sends <code>cluster.local</code> on to CoreDNS).</li>
-    <li class="step"><b>Make it the cluster's default.</b> Point the kubelet at TelltaleDNS first and CoreDNS second, in <code>/etc/rancher/k3s/config.yaml</code> on every node, then restart k3s:
+    Use the workload's own namespace first in <code>searches</code>. When its pods restart, the workload appears on the <b>Workloads</b> tab, and its Service names still resolve (WrenDNS sends <code>cluster.local</code> on to CoreDNS).</li>
+    <li class="step"><b>Make it the cluster's default.</b> Point the kubelet at WrenDNS first and CoreDNS second, in <code>/etc/rancher/k3s/config.yaml</code> on every node, then restart k3s:
 <pre><code>kubelet-arg:
   - "cluster-dns=10.43.0.53,10.43.0.10"</code></pre>
     <ul>
       <li>Use <code>kubelet-arg</code>, not k3s's own <code>cluster-dns</code> option, which moves CoreDNS's Service too.</li>
       <li>Restarting k3s leaves running pods running: each pod gets the new setting when it's next created. Move a namespace over when it suits you with <code>kubectl -n media rollout restart deploy</code>.</li>
-      <li>CoreDNS second keeps lookups working if TelltaleDNS's Service has no ready pods. Images based on Alpine (musl) ask both servers at once and take the first answer, so some of their lookups arrive through CoreDNS and are counted under CoreDNS.</li>
+      <li>CoreDNS second keeps lookups working if WrenDNS's Service has no ready pods. Images based on Alpine (musl) ask both servers at once and take the first answer, so some of their lookups arrive through CoreDNS and are counted under CoreDNS.</li>
       <li>For new clusters, have your install script write the file before it installs k3s:
 <pre><code>sudo install -D -m 0600 k3s-config.yaml /etc/rancher/k3s/config.yaml
 curl -sfL https://get.k3s.io | sh -</code></pre></li>
       <li>On other distributions, set <code>clusterDNS</code> in the kubelet's configuration file the same way.</li>
-      <li>TelltaleDNS's own pods keep asking CoreDNS (<code>kubernetes.ownPodsUseClusterDns</code>, on by default), so they never depend on their own Service.</li>
+      <li>WrenDNS's own pods keep asking CoreDNS (<code>kubernetes.ownPodsUseClusterDns</code>, on by default), so they never depend on their own Service.</li>
     </ul></li>
-    <li class="step"><b>Give the nodes a second DNS server.</b> CoreDNS sends everything outside the cluster to the node's own DNS servers, and so does the node itself. With only one, that server is a single point of failure for every pod. List two, such as the Pi and TelltaleDNS's LoadBalancer address. On Ubuntu with netplan:
+    <li class="step"><b>Give the nodes a second DNS server.</b> CoreDNS sends everything outside the cluster to the node's own DNS servers, and so does the node itself. With only one, that server is a single point of failure for every pod. List two, such as the Pi and WrenDNS's LoadBalancer address. On Ubuntu with netplan:
 <pre><code>      nameservers:
         addresses: [192.168.1.2, 192.168.1.53]</code></pre>
     Then <code>sudo netplan generate &amp;&amp; sudo nmcli connection reload &amp;&amp; sudo nmcli device reapply &lt;interface&gt;</code> applies it without taking the link down (NetworkManager), and <code>kubectl -n kube-system rollout restart deploy/coredns</code> makes CoreDNS read it.</li>
   </ol>
-  <div class="callout warn"><p><b>Once the nodes use TelltaleDNS, leave <code>kubernetes.podCidr</code> and <code>serviceCidr</code> out.</b> With them, TelltaleDNS sends reverse lookups for those ranges to CoreDNS, and CoreDNS passes the ones it doesn't know to the node's DNS servers, which now include TelltaleDNS: an unknown address's PTR would go round in a loop.</p></div>
+  <div class="callout warn"><p><b>Once the nodes use WrenDNS, leave <code>kubernetes.podCidr</code> and <code>serviceCidr</code> out.</b> With them, WrenDNS sends reverse lookups for those ranges to CoreDNS, and CoreDNS passes the ones it doesn't know to the node's DNS servers, which now include WrenDNS: an unknown address's PTR would go round in a loop.</p></div>
   <div class="callout"><p><b>A Pi in the same cluster needs nothing.</b> The chart's route to CoreDNS is marked <code>node_only</code>, so it stays on the pods in Kubernetes, and the Pi answers <code>cluster.local</code> as it would any other name. To undo the default, delete the <code>kubelet-arg</code> line and restart k3s.</p></div>
 </section>
 

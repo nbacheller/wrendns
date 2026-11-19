@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # REQ: CLU-005 (T24.26, ADR-990) — soaks a primary, an eligible replica and a witness under
 # automatic failover and counts how often the primary's lease lapses. Throwaway: its own compose
-# project (telltale-lapse) and volumes, nothing published on the host.
+# project (wrendns-lapse) and volumes, nothing published on the host.
 #
 #   SOAK_S=1800 deploy/cluster3/lapse-soak.sh              # seconds to soak (default 600)
 #   DISK_DEV=/dev/sdb WRITE_BPS=65536 deploy/cluster3/lapse-soak.sh   # throttle every node's disk writes
@@ -15,10 +15,10 @@ export MSYS_NO_PATHCONV=1
 HERE=$(cd "$(dirname "$0")" && pwd)
 HERE_W=$HERE
 if command -v cygpath >/dev/null 2>&1; then HERE_W=$(cygpath -m "$HERE"); fi
-C=(docker compose -p telltale-lapse -f "$HERE_W/compose-lapse.yaml")
+C=(docker compose -p wrendns-lapse -f "$HERE_W/compose-lapse.yaml")
 SOAK_S=${SOAK_S:-600}
-CFG=/etc/telltale/telltale.toml
-TT=/usr/local/bin/telltale
+CFG=/etc/wrendns/wrendns.toml
+TT=/usr/local/bin/wrendns
 
 if [ -n "${DISK_DEV:-}" ]; then
   # An override file that adds the throttle to every node.
@@ -38,7 +38,7 @@ cleanup() {
   local rc=$?; trap - EXIT; set +e
   "${C[@]}" unpause >/dev/null 2>&1
   "${C[@]}" down -v --remove-orphans >/dev/null 2>&1
-  [ "${KEEP:-}" = 1 ] || docker image rm telltale:lapse-test >/dev/null 2>&1
+  [ "${KEEP:-}" = 1 ] || docker image rm wrendns:lapse-test >/dev/null 2>&1
   [ -n "${OV:-}" ] && rm -f "$OV"
   exit "$rc"
 }

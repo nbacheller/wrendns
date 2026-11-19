@@ -159,7 +159,7 @@
     <h2>GeoIP database<HelpButton id="geoip" /></h2>
   </div>
   <p class="small">
-    The world view places answers with a country database. It is never bundled with TelltaleDNS: it is downloaded (about 5 MB) only after an
+    The world view places answers with a country database. It is never bundled with WrenDNS: it is downloaded (about 5 MB) only after an
     admin turns this on, by each node that serves the console, in the background and at most once a day.
   </p>
   <ErrorNote {error} />

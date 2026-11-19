@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-filter/src/compile/mod.rs b/crates/telltale-filter/src/compile/mod.rs
+diff --git a/crates/wrendns-filter/src/compile/mod.rs b/crates/wrendns-filter/src/compile/mod.rs
 index 9a9f9b8..8350c65 100644
---- a/crates/telltale-filter/src/compile/mod.rs
-+++ b/crates/telltale-filter/src/compile/mod.rs
+--- a/crates/wrendns-filter/src/compile/mod.rs
++++ b/crates/wrendns-filter/src/compile/mod.rs
 @@ -811,7 +811,10 @@ pub fn regex_builder() -> regex_automata::meta::Builder {
      b
  }
@@ -55,10 +55,10 @@ index 9a9f9b8..8350c65 100644
      (kept, errors)
  }
  
-diff --git a/crates/telltale-filter/src/compile/tests.rs b/crates/telltale-filter/src/compile/tests.rs
+diff --git a/crates/wrendns-filter/src/compile/tests.rs b/crates/wrendns-filter/src/compile/tests.rs
 index 38c83f5..b06b3d1 100644
---- a/crates/telltale-filter/src/compile/tests.rs
-+++ b/crates/telltale-filter/src/compile/tests.rs
+--- a/crates/wrendns-filter/src/compile/tests.rs
++++ b/crates/wrendns-filter/src/compile/tests.rs
 @@ -261,3 +261,30 @@ fn reversed_keys() {
      assert_eq!(reversed_key("ads.example.com"), b"com.example.ads.");
      assert_eq!(reversed_key("com"), b"com.");

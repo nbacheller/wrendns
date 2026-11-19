@@ -1,6 +1,6 @@
 <script lang="ts">
   // REQ: OBS-901, API-005 (T26.3, ADR-958, ADR-970) — the network map: the gateway, networks,
-  // devices, TelltaleDNS nodes, answer kinds and upstreams, coloured by health, with pulses along
+  // devices, WrenDNS nodes, answer kinds and upstreams, coloured by health, with pulses along
   // each flow (density from the rate, width from its log). Inline SVG, laid out by `lib/map.ts`
   // (no graph library). It runs from the 2 s stream, or polls `GET /api/v1/map` when a filter that
   // the server narrows is set (the stream is unfiltered) or the stream can't be had. The tab being

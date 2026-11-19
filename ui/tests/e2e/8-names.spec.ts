@@ -206,7 +206,7 @@ test('api_007 t35_1 the health panel names a file that holds a name with HTML co
           {
             level: 'degraded',
             code: 'names_in_files',
-            summary: '1 name(s) in a configuration file hold HTML codes: device `Alex&#039;s PC` in telltale.toml. TelltaleDNS never rewrites a file; change the name there. DNS is unaffected',
+            summary: '1 name(s) in a configuration file hold HTML codes: device `Alex&#039;s PC` in wrendns.toml. WrenDNS never rewrites a file; change the name there. DNS is unaffected',
             link: '#/clients',
           },
         ],
@@ -220,7 +220,7 @@ test('api_007 t35_1 the health panel names a file that holds a name with HTML co
     await page.getByTestId('health-icon').click();
     const panel = page.getByTestId('health-panel');
     await expect(panel).toContainText('hold HTML codes');
-    await expect(panel).toContainText('telltale.toml');
+    await expect(panel).toContainText('wrendns.toml');
     await expect(panel).toContainText('DNS is unaffected');
     await expect(panel.getByRole('link', { name: 'Look' })).toHaveAttribute('href', '#/clients');
   } finally {

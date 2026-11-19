@@ -1,0 +1,246 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "wrendns.fullname" . }}
+  labels:
+    {{- include "wrendns.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "wrendns.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/part: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+---
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+# REQ: OBS-005, spec/06 §8 — default alerts on the exported metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "wrendns.fullname" . }}
+  labels:
+    {{- include "wrendns.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: wrendns
+      rules:
+        {{- /* REQ: OPS-010 (ADR-118) — a node in maintenance (its last reported window still
+        open, so a node stopped during it stays quiet) is left out of the node rules. */}}
+        {{- /* REQ: OBS-005, CLU-009 — every node's metrics: the controller's job and, in scaled mode,
+        the resolver pods' (`<release>-resolver-metrics`), which answer most of the queries. */}}
+        {{- $maint := printf "unless on(instance) (last_over_time(wrendns_node_maintenance_until_seconds{job=~\"%s(-resolver)?-metrics\"}[1d]) > time())" (include "wrendns.fullname" .) }}
+        - alert: WrenDNSDown
+          expr: up{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 0 {{ $maint }}
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: WrenDNS {{ "{{" }} $labels.instance {{ "}}" }} is not being scraped (down or unreachable).
+        - alert: WrenDNSAllUpstreamsDown
+          expr: min by (instance) (wrendns_upstream_breaker_state{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"}) == 2
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: Every upstream's circuit breaker is open on {{ "{{" }} $labels.instance {{ "}}" }}; only cached and local answers work.
+        - alert: WrenDNSHighServfail
+          expr: |
+            sum by (instance) (rate(wrendns_responses_total{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics", rcode="SERVFAIL"}[5m]))
+              / sum by (instance) (rate(wrendns_responses_total{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"}[5m])) > 0.05
+              {{ $maint }}
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: More than 5% of answers are SERVFAIL on {{ "{{" }} $labels.instance {{ "}}" }}.
+        - alert: WrenDNSListStale
+          expr: time() - wrendns_list_last_success_timestamp_seconds{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} > 172800
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} hasn't refreshed in over 48 hours.
+        - alert: WrenDNSTelemetryDropping
+          expr: sum by (instance) (rate(wrendns_telemetry_dropped_total{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"}[10m])) > 0
+          for: 30m
+          labels: { severity: info }
+          annotations:
+            summary: Analytics are dropping events on {{ "{{" }} $labels.instance {{ "}}" }} (answers are unaffected); raise [telemetry] ring_slots.
+        - alert: WrenDNSClientIPsMasked
+          expr: wrendns_client_ips_masked{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 1
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "Most queries on {{ "{{" }} $labels.instance {{ "}}" }} come from infrastructure addresses, so per-device analytics and rules can't tell devices apart (see docs: Seeing real client IPs)."
+        - alert: WrenDNSDeviceAnomaly
+          expr: sum by (instance, kind) (increase(wrendns_anomalies_total{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"}[1h])) > 0
+          labels: { severity: info }
+          annotations:
+            summary: A device on {{ "{{" }} $labels.instance {{ "}}" }} behaves unusually ({{ "{{" }} $labels.kind {{ "}}" }}); see Anomalies in the web UI for the evidence.
+        # REQ: FLT-017 (ADR-150) — the node that watches Kubernetes hasn't heard from the API
+        # server for 15 minutes: new pods are named by address until it's back (DNS answers).
+        - alert: WrenDNSKubernetesWatchStale
+          expr: wrendns_kubernetes_table_age_seconds{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} > 900 and on(instance) wrendns_kubernetes_watching{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 1
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} hasn't heard from the Kubernetes API server for {{ "{{" }} $value | humanizeDuration {{ "}}" }}: new pods are named by address until it's reachable (its RBAC, or the API server). DNS answers regardless."
+        # REQ: CLU-008 — cluster health (only emitted by clustered nodes).
+        - alert: WrenDNSClusterPeerDown
+          expr: wrendns_cluster_peer_up{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 0 unless on(node) (max by (node) (last_over_time(wrendns_cluster_peer_maintenance_until_seconds{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"}[1d])) > time())
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: Cluster node {{ "{{" }} $labels.node {{ "}}" }} ({{ "{{" }} $labels.site {{ "}}" }}) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
+        - alert: WrenDNSClusterConfigBehind
+          expr: wrendns_cluster_behind_seconds{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} > 30 {{ $maint }}
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} is serving an older configuration than the primary (behind {{ "{{" }} $value {{ "}}" }} s); see Cluster → events."
+        - alert: WrenDNSClusterSyncFailing
+          expr: wrendns_cluster_sync_error{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 1 {{ $maint }}
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: Replication keeps failing on {{ "{{" }} $labels.instance {{ "}}" }} (it serves its last version meanwhile); the Cluster page shows the error.
+        # REQ: CLU-013 (T13.2) — staged rollouts and pins (the primary reports them).
+        - alert: WrenDNSRolloutFailed
+          expr: increase(wrendns_cluster_rollouts_total{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics",outcome="failed"}[15m]) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "A staged rollout failed its guard ({{ "{{" }} $labels.instance {{ "}}" }}): the cluster is pinned to the version before it. The Cluster page shows the reason; unpin once the change is fixed."
+        - alert: WrenDNSClusterPinned
+          expr: wrendns_cluster_pinned{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 1
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "The cluster has been pinned to an older version for over an hour, so configuration changes wait. The Cluster page says why and what the pin holds back."
+        - alert: WrenDNSClusterCertExpiring
+          expr: wrendns_cluster_cert_expiry_timestamp_seconds{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} - time() < 14 * 86400
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: The cluster certificate on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days.
+        # REQ: OBS-020 (ADR-107) — the nodes' probes of their own listeners.
+        - alert: WrenDNSListenerNotAnswering
+          expr: wrendns_probe_success{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 0 {{ $maint }}
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} can't get an answer from {{ "{{" }} $labels.target {{ "}}" }} ({{ "{{" }} $labels.proto {{ "}}" }}) through its own probe; see Settings → System → Listener checks."
+        - alert: WrenDNSListenerCertExpiring
+          expr: wrendns_listener_cert_expiry_timestamp_seconds{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} - time() < 14 * 86400 {{ $maint }}
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "The certificate of {{ "{{" }} $labels.target {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days; DoT/DoH/DoQ clients stop connecting when it does."
+        # REQ: CLU-003 (ADR-049) — the Git configuration source.
+        - alert: WrenDNSGitCommitRefused
+          expr: wrendns_cluster_git_refused{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 1
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: "The newest Git commit was refused (invalid, unsigned, or rewound); the cluster stays on the last good commit. The Cluster page shows why."
+        - alert: WrenDNSGitSourceFailing
+          expr: wrendns_cluster_git_failing{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} == 1
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "The Git configuration source has been unreachable for 15 minutes; every node keeps serving the last commit."
+        # REQ: CLU-008 (T6.11) — the machine a node runs on. Same thresholds as the Cluster page.
+        - alert: WrenDNSDataDiskLow
+          expr: wrendns_data_filesystem_bytes{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics",kind="free"} / ignoring(kind) wrendns_data_filesystem_bytes{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics",kind="total"} < 0.10 {{ $maint }}
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Under 10% free on {{ "{{" }} $labels.instance {{ "}}" }}'s data disk; when it fills, the query log stops recording (DNS keeps answering). Shorten [telemetry.qlog] retention or add space."
+        - alert: WrenDNSMemoryPressure
+          expr: wrendns_cgroup_memory_bytes{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics",kind="current"} / ignoring(kind) wrendns_cgroup_memory_bytes{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics",kind="limit"} > 0.90
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} uses over 90% of its memory limit; a list compile could get it killed. Raise resources.limits.memory or use fewer lists."
+        - alert: WrenDNSOutOfMemoryKill
+          expr: increase(wrendns_cgroup_oom_kills_total{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"}[1h]) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "The kernel killed a process in {{ "{{" }} $labels.instance {{ "}}" }}'s container for lack of memory in the last hour."
+        - alert: WrenDNSCpuThrottled
+          expr: wrendns_cgroup_throttled_ratio{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} > 0.25
+          for: 15m
+          labels: { severity: info }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} is throttled by its CPU limit in over 25% of periods; answers may slow down. Raise resources.limits.cpu."
+        - alert: WrenDNSRunningHot
+          expr: wrendns_host_temperature_celsius{job=~"{{ include "wrendns.fullname" . }}(-resolver)?-metrics"} >= 80
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} has been at 80 °C or more for 10 minutes; check its cooling."
+    {{- with .Values.prometheusRule.slo }}
+    {{- if .enabled }}
+    # REQ: OBS-016 (ADR-105) — the objectives over every node (a cluster is one service): error
+    # ratios per window, then alerts when a long and a short window both burn the error budget
+    # too fast (14.4x: 2% of a 30-day budget in an hour; 6x: 5% in 6 hours; 1x: on course to
+    # spend it all). Dropped queries got no answer and count for neither objective.
+    - name: wrendns-slo
+      rules:
+        {{- $sel := printf "job=~\"%s(-resolver)?-metrics\"" (include "wrendns.fullname" $) }}
+        {{- $le := divf .latencyMs 1000 }}
+        {{- range $w := list "5m" "30m" "1h" "6h" "3d" }}
+        - record: wrendns:slo_availability_errors:ratio_rate{{ $w }}
+          expr: sum(rate(wrendns_responses_total{ {{- $sel }},rcode="SERVFAIL"}[{{ $w }}])) / sum(rate(wrendns_responses_total{ {{- $sel }}}[{{ $w }}]))
+        - record: wrendns:slo_latency_errors:ratio_rate{{ $w }}
+          expr: 1 - sum(rate(wrendns_query_duration_seconds_bucket{ {{- $sel }},le="{{ $le }}"}[{{ $w }}])) / sum(rate(wrendns_query_duration_seconds_count{ {{- $sel }}}[{{ $w }}]))
+        {{- end }}
+        {{- /* name, title, target ratio, bad answers in words, answers and bad answers over a window (%s) */}}
+        {{- $answers := printf "sum(increase(wrendns_responses_total{%s}[%%s]))" $sel }}
+        {{- $servfail := printf "sum(increase(wrendns_responses_total{%s,rcode=\"SERVFAIL\"}[%%s]))" $sel }}
+        {{- $timed := printf "sum(increase(wrendns_query_duration_seconds_count{%s}[%%s]))" $sel }}
+        {{- $slow := printf "(sum(increase(wrendns_query_duration_seconds_count{%s}[%%s])) - sum(increase(wrendns_query_duration_seconds_bucket{%s,le=\"%v\"}[%%s])))" $sel $sel $le }}
+        {{- range $o := list (list "availability" "Availability" (divf $.Values.prometheusRule.slo.availabilityTarget 100) "SERVFAIL answers" $answers $servfail) (list "latency" "Latency" (divf $.Values.prometheusRule.slo.latencyTarget 100) (printf "answers slower than %v ms" $.Values.prometheusRule.slo.latencyMs) $timed $slow) }}
+        {{- $name := index $o 0 }}{{- $title := index $o 1 }}{{- $target := index $o 2 }}{{- $bad := index $o 3 }}
+        {{- range $a := list (list "Fast" "1h" "5m" "14.4" "critical") (list "Slow" "6h" "30m" "6" "critical") (list "Ticket" "3d" "6h" "1" "warning") }}
+        - alert: WrenDNSSLO{{ $title }}Burn{{ index $a 0 }}
+          # Like the web UI: at least 50 answers in the short window and 10 bad ones in the
+          # long window, so one SERVFAIL on a quiet network doesn't page.
+          expr: |
+            wrendns:slo_{{ $name }}_errors:ratio_rate{{ index $a 1 }} > ({{ index $a 3 }} * (1 - {{ $target }}))
+            and wrendns:slo_{{ $name }}_errors:ratio_rate{{ index $a 2 }} > ({{ index $a 3 }} * (1 - {{ $target }}))
+            and on() {{ printf (index $o 4) (index $a 2) }} >= 50
+            and on() {{ $s := index $o 5 }}{{ if eq $name "latency" }}{{ printf $s (index $a 1) (index $a 1) }}{{ else }}{{ printf $s (index $a 1) }}{{ end }} >= 10
+          labels: { severity: {{ index $a 4 }}, slo: {{ $name }} }
+          annotations:
+            summary: "The {{ $name }} objective ({{ mulf $target 100 }}%) is spending its error budget over {{ index $a 3 }}x too fast ({{ $bad }} over the last {{ index $a 1 }} and {{ index $a 2 }}); see the dashboard's Service level card."
+        {{- end }}
+        {{- end }}
+    {{- end }}
+    {{- end }}
+---
+{{- end }}
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wrendns.fullname" . }}-dashboard
+  labels:
+    {{- include "wrendns.labels" . | nindent 4 }}
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  wrendns-dashboard.json: |-
+{{ .Files.Get "files/wrendns-dashboard.json" | indent 4 }}
+{{- end }}

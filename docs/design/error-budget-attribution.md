@@ -13,7 +13,7 @@ today's question in one click: "10 of 15 bad answers are one PTR name from one l
 deficit is from before 10-13".
 
 ## 2. Non-goals
-- Changing what counts as bad (`telltale_api::slo::tally` stays the one definition).
+- Changing what counts as bad (`wrendns_api::slo::tally` stays the one definition).
 - Root-causing upstream failures (that is the upstream truth checks, OBS-019).
 - A per-query SLO log. Attribution is counts over bounded top-K, not a second query log.
 
@@ -24,7 +24,7 @@ Two layers, because the window (30 d) outlives the query log (7 d on the Pi):
    over `window_days` (hour buckets, `Step::Hour`, federated per node). This gives "budget spent per
    day/hour, per node" for the whole window with nothing new stored.
 2. **Attribution from new hourly top lists.** The aggregator keeps, per hour, Space-Saving top-K
-   sketches (`telltale_telemetry::topk`, reuse) of **bad answers only**, keyed four ways, and flushes
+   sketches (`wrendns_telemetry::topk`, reuse) of **bad answers only**, keyed four ways, and flushes
    them into `hour_top` with new `kind` strings:
    - `servfail_name`, `servfail_client`, `slow_name`, `slow_client` — 32 entries each (20 reported).
    - Keys for names follow the privacy level the way `domains` does (hash at ≥ 1; no `*_client` rows
@@ -39,7 +39,7 @@ Two layers, because the window (30 d) outlives the query log (7 d on the Pi):
    **Upstream** (decision, owner 2026-10-16): exact, not a top list — upstream cardinality is bounded
    by configuration, so two more maps on `TimeBucket` in the same section:
    `servfail_by_upstream: BTreeMap<String,u32>` and `slow_by_upstream: BTreeMap<String,u32>`, keyed by
-   the upstream name the event already carries (the one `telltale_upstream_requests_total{upstream}`
+   the upstream name the event already carries (the one `wrendns_upstream_requests_total{upstream}`
    uses). A bad answer with no upstream on the event (a cache-served SERVFAIL whose background refresh
    isn't attributed, a local or special answer that was slow) counts under `none`. One map increment
    per *bad* event only; exact over the whole 400-day window; no error bound. For the availability
@@ -78,7 +78,7 @@ row rather than hiding it. `byStatus`, `byRcode`, `byUpstream`, `byNode`, and `t
 MCP tool `slo_attribution(objective, window, scope)` — thin wrapper, same caps; tool description says
 "shows who and what consumed the error budget; counts are approximate top lists".
 
-Metrics: none new (Prometheus already has `telltale_responses_total{rcode}` and the latency
+Metrics: none new (Prometheus already has `wrendns_responses_total{rcode}` and the latency
 histogram; per-name/per-client series are deliberately not exported — cardinality).
 
 ## 5. UI (decision)

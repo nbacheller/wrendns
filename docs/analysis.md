@@ -2,7 +2,7 @@
 
 *Prepared 2026-10-02, revised 2026-10-05. Versions considered: Pi-hole Core v6.4.x / FTL v6.6–6.7 / Web v6.5–6.6 (2026), Technitium DNS Server v14 (Nov 2025) and v15 (Apr 2026).*
 
-TelltaleDNS stands on the shoulders of these two projects. Both did the hard work of making self-hosted DNS something people actually run at home, and each made design choices that fit its goals well. These notes record what we learned from them while designing TelltaleDNS. Each section ends in what we took away; the spec in `/spec` turns those into requirements. We studied their public documentation and data formats, never their code (TelltaleDNS is a clean-room project under Apache-2.0 OR MIT). The MAC vendor table that ships with TelltaleDNS (`presets/oui.bin`, for device identification) is built by `presets/build-oui.py` from the IEEE Registration Authority's public MA-L and MA-M registry exports; no other project's vendor file is used.
+WrenDNS stands on the shoulders of these two projects. Both did the hard work of making self-hosted DNS something people actually run at home, and each made design choices that fit its goals well. These notes record what we learned from them while designing WrenDNS. Each section ends in what we took away; the spec in `/spec` turns those into requirements. We studied their public documentation and data formats, never their code (WrenDNS is a clean-room project under Apache-2.0 OR MIT). The MAC vendor table that ships with WrenDNS (`presets/oui.bin`, for device identification) is built by `presets/build-oui.py` from the IEEE Registration Authority's public MA-L and MA-M registry exports; no other project's vendor file is used.
 
 ---
 
@@ -42,12 +42,12 @@ A clear real-time dashboard (queries over time, per-client graph, top permitted 
 Runs on a Pi Zero and other 512 MB devices; FTL's memory scales with list size and the in-memory query window. dnsmasq's single event loop is ample for a home, where traffic is typically 1–50 queries per second.
 
 ### 2.4 What we took away
-1. A tiny footprint is a feature people love: TelltaleDNS gates on it (`spec/00 §5`).
+1. A tiny footprint is a feature people love: WrenDNS gates on it (`spec/00 §5`).
 2. The group ↔ client ↔ list model, nearly as is (FLT-005).
 3. An approachable dashboard and query log come first; depth goes behind "Advanced".
 4. TOML configuration with environment overrides, and a one-file backup.
 5. CNAME deep inspection, per-client rate limiting, regex with query-type and reply extensions.
-6. Its list formats and Teleporter export are a shared language: TelltaleDNS reads them as they are and imports a Teleporter file (ADR-061).
+6. Its list formats and Teleporter export are a shared language: WrenDNS reads them as they are and imports a Teleporter file (ADR-061).
 
 ---
 
@@ -71,7 +71,7 @@ A multi-threaded async engine that uses every core; the project cites about 100k
 1. The full transport set, inbound and outbound (DoT, DoH, and later DoQ and DoH3).
 2. Serve-stale, prefetch, a persistent cache, EDE, and DNSSEC validation.
 3. Fastest and parallel upstream strategies; proxy upstreams (planned).
-4. Clustering with one management console, which TelltaleDNS extends across a Pi and Kubernetes.
+4. Clustering with one management console, which WrenDNS extends across a Pi and Kubernetes.
 5. Strong sign-in: 2FA, OIDC, non-root by default.
 6. Its HTTP API made a faithful importer possible (ADR-062).
 
@@ -85,12 +85,12 @@ A multi-threaded async engine that uses every core; the project cites about 100k
 ---
 
 ## 5. A note on performance numbers
-Published numbers from different projects are measured on different hardware, traffic, and list sets, so they aren't comparable. **Takeaway:** the spec requires a reproducible benchmark harness (`dnsperf`/`resperf` plus fixed query corpora, `spec/09-testing-and-benchmarks.md`), and TelltaleDNS publishes only numbers it measured itself, with the hardware and versions.
+Published numbers from different projects are measured on different hardware, traffic, and list sets, so they aren't comparable. **Takeaway:** the spec requires a reproducible benchmark harness (`dnsperf`/`resperf` plus fixed query corpora, `spec/09-testing-and-benchmarks.md`), and WrenDNS publishes only numbers it measured itself, with the hardware and versions.
 
 ---
 
-## 6. Where TelltaleDNS goes its own way
-TelltaleDNS's goals (one cluster across a Pi and Kubernetes, per-query observability, and agent automation) led to its own design choices:
+## 6. Where WrenDNS goes its own way
+WrenDNS's goals (one cluster across a Pi and Kubernetes, per-query observability, and agent automation) led to its own design choices:
 
 | Learned and kept | Our own choices for our goals |
 |---|---|

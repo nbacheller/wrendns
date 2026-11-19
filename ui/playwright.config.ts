@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 import { BASE_URL } from './tests/e2e/ports';
 
 // REQ: API-005 — T3.9 acceptance: the Playwright suite runs the real binary (`server.mjs`).
-// Build first: `cargo build -p telltale` and `npm run build` (or set TELLTALE_BIN).
+// Build first: `cargo build -p wrendns` and `npm run build` (or set WRENDNS_BIN).
 export default defineConfig({
   testDir: 'tests/e2e',
   fullyParallel: false,

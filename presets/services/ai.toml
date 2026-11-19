@@ -1,8 +1,8 @@
-# TelltaleDNS blocked-services catalog (REQ: FLT-012, FLT-901): AI services and chatbots.
+# WrenDNS blocked-services catalog (REQ: FLT-012, FLT-901): AI services and chatbots.
 #
 # Data, not code: compiled into the binary, and offered as the "AI services and chatbots" entry
 # of the content categories (ADR-994 owner decision 6: an authored bundle, no crypto bundle).
-# Written for TelltaleDNS from each service's own public domains (ChatGPT is in messaging.toml);
+# Written for WrenDNS from each service's own public domains (ChatGPT is in messaging.toml);
 # a service's apps may use other names, so this is a good start, not a promise. Corrections welcome.
 
 [[service]]

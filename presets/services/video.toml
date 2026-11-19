@@ -1,4 +1,4 @@
-# TelltaleDNS blocked-services catalog (REQ: FLT-012): video, music, and streaming.
+# WrenDNS blocked-services catalog (REQ: FLT-012): video, music, and streaming.
 # See social.toml for the format.
 
 [[service]]

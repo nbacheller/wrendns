@@ -8,9 +8,9 @@ import json, os, sys
 
 dist, channel, version, commit, date, notes = sys.argv[1:7]
 targets = {
-    "telltale-x86_64-linux": "x86_64-unknown-linux-musl",
-    "telltale-aarch64-linux": "aarch64-unknown-linux-musl",
-    "telltale-armv7-linux": "armv7-unknown-linux-musleabihf",
+    "wrendns-x86_64-linux": "x86_64-unknown-linux-musl",
+    "wrendns-aarch64-linux": "aarch64-unknown-linux-musl",
+    "wrendns-armv7-linux": "armv7-unknown-linux-musleabihf",
 }
 assets = {}
 for line in open(os.path.join(dist, "SHA256SUMS")):

@@ -1,8 +1,8 @@
 {
-  "name": "telltale-mcp-e2e",
+  "name": "wrendns-mcp-e2e",
   "private": true,
   "type": "module",
-  "description": "REQ: AGT-006 — TelltaleDNS's MCP server against the official MCP TypeScript SDK client.",
+  "description": "REQ: AGT-006 — WrenDNS's MCP server against the official MCP TypeScript SDK client.",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2"
   }

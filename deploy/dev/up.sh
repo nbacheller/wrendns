@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the developer container wrendns-dev2 from telltale-dev:1 (Git Bash on Windows).
+# Start the developer container wrendns-dev2 from wrendns-dev:1 (Git Bash on Windows).
 #
 #   deploy/dev/up.sh            create volumes, build the image if missing, clone the repo once,
 #                               start wrendns-dev2 (or start it again if it is stopped)
@@ -12,7 +12,7 @@
 #   TT_BRANCH   branch checked out on first clone (default: feat/ipam-integrations).
 #
 # Volumes (never removed by this script):
-#   tt-src      /src          Linux clone of the repo at /src/telltale; worktrees in /src/telltale/.wt/
+#   tt-src      /src          Linux clone of the repo at /src/wrendns; worktrees in /src/wrendns/.wt/
 #   tt-cargo2   /root/.cargo/registry  crates.io index and sources (dedicated to wrendns-dev2)
 #   tt-sccache  /sccache      sccache objects (used only when RUSTC_WRAPPER=sccache is set)
 #   tt-target2  /target       CARGO_TARGET_DIR
@@ -27,7 +27,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # The main checkout (C:/src/wrendns on Git Bash), even when this runs from a worktree.
 COMMON="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)"
 REPO_WIN="$(cd "$COMMON/.." && pwd -W)"
-IMAGE=telltale-dev:1
+IMAGE=wrendns-dev:1
 NAME=wrendns-dev2
 BRANCH="${TT_BRANCH:-feat/ipam-integrations}"
 MODE="${1:-up}"
@@ -50,7 +50,7 @@ if [[ "$MODE" == "--sync" ]]; then
   # The clone's remote "winrepo" is the Windows checkout (/mnt/win). The origin fetch is optional:
   # the container has no credentials for it, so a failure there must not fail the sync.
   dk exec "$NAME" bash -lc '
-    cd /src/telltale
+    cd /src/wrendns
     git fetch winrepo --prune
     git fetch origin --prune || echo "note: origin fetch skipped (no access from the container)"
     git status -sb | head -1
@@ -59,12 +59,12 @@ if [[ "$MODE" == "--sync" ]]; then
 fi
 
 # First run: clone into the volume. Worktrees are created later inside the clone.
-if ! dk run --rm -v tt-src:/src "${WIN_MOUNT[@]}" "$IMAGE" bash -c 'test -d /src/telltale/.git' 2>/dev/null; then
+if ! dk run --rm -v tt-src:/src "${WIN_MOUNT[@]}" "$IMAGE" bash -c 'test -d /src/wrendns/.git' 2>/dev/null; then
   ORIGIN="${TT_ORIGIN:-$(git -C "$REPO_WIN" remote get-url origin 2>/dev/null || true)}"
   dk run --rm -v tt-src:/src "${WIN_MOUNT[@]}" -e "TT_BRANCH=$BRANCH" -e "TT_ORIGIN=$ORIGIN" "$IMAGE" bash -c '
     set -e
-    git clone --no-hardlinks /mnt/win /src/telltale
-    cd /src/telltale
+    git clone --no-hardlinks /mnt/win /src/wrendns
+    cd /src/wrendns
     git remote rename origin winrepo
     if [ -n "$TT_ORIGIN" ]; then git remote add origin "$TT_ORIGIN"; fi
     git config core.autocrlf input
@@ -82,7 +82,7 @@ else
     -v tt-sccache:/sccache \
     -v tt-target2:/target \
     "${WIN_MOUNT[@]}" \
-    -w /src/telltale \
+    -w /src/wrendns \
     "$IMAGE" >/dev/null
 fi
 dk ps --filter "name=^${NAME}$" --format '{{.Names}} {{.Status}}'

@@ -120,7 +120,7 @@
 <div data-testid="inventory-agents">
   <h3>SNMP agents<HelpButton id="snmp-agents" /></h3>
   <p class="muted small">
-    Devices TelltaleDNS may read over SNMP: a gateway's ARP table, a switch's forwarding table and its LLDP neighbours. Read-only.
+    Devices WrenDNS may read over SNMP: a gateway's ARP table, a switch's forwarding table and its LLDP neighbours. Read-only.
     <HelpButton id="snmp-setup" />
   </p>
   {#if fileSet}<p class="muted small" data-testid="set-by-file">(the agents are set by file)</p>{/if}

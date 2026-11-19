@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# REQ: API-008 — T7.25 acceptance: `telltale ctl` against a running node with an API token:
+# REQ: API-008 — T7.25 acceptance: `wrendns ctl` against a running node with an API token:
 # status, block (and the name is blocked in DNS), rules, unrule, pause/resume, flush, lists,
 # queries, raw get, --json, and a clear error for a bad token. Needs python3, dig, curl.
-# Usage: deploy/ctl-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/ctl-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -26,7 +26,7 @@ trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
 API=http://127.0.0.1:26991
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
-cat > "$E/telltale.toml" <<EOF
+cat > "$E/wrendns.toml" <<EOF
 [node]
 data_dir = "$E/data"
 [[listen]]
@@ -46,18 +46,18 @@ value = "10.0.0.8"
 name = "ads"
 rules = ["ads.ctl.test"]
 EOF
-"$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
+"$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
 ST=$(cat "$E/data/setup-token")
 CSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
   -d "{\"setupToken\":\"$ST\",\"username\":\"admin\",\"password\":\"ctl-e2e-pass-1\"}" \
   "$API/api/v1/auth/setup" | field 'd["csrfToken"]')
-export TELLTALE_TOKEN
-TELLTALE_TOKEN=$(curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
+export WRENDNS_TOKEN
+WRENDNS_TOKEN=$(curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
   -d '{"name":"ctl-e2e","scope":"write"}' "$API/api/v1/tokens" | field 'd["token"]')
 ctl() { "$B" ctl --url "$API" "$@"; }
 
-ctl status | grep -q "^TelltaleDNS" || fail "status"
+ctl status | grep -q "^WrenDNS" || fail "status"
 echo "status: ok"
 
 # Block a name now: DNS blocks it, the rule is listed, and it can be removed.
@@ -83,6 +83,6 @@ ctl queries --name nas.ctl.test | grep -q "nas.ctl.test" || fail "queries"
 ctl get stats/summary from=-1h | python3 -c 'import sys, json; assert json.load(sys.stdin)["queries"] >= 1' || fail "raw get"
 echo "queries/get: ok"
 
-if TELLTALE_TOKEN=nope ctl status 2> "$E/err"; then fail "a bad token was accepted"; fi
+if WRENDNS_TOKEN=nope ctl status 2> "$E/err"; then fail "a bad token was accepted"; fi
 grep -q "HTTP 401" "$E/err" || fail "bad token: $(cat "$E/err")"
 echo "ctl-e2e: ok"

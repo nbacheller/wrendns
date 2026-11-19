@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Upgrades, backups, and moving in — TelltaleDNS</title>
-<meta name="description" content="Check which TelltaleDNS build you run, upgrade a Pi, Docker, or Kubernetes install and a cluster, back up and restore on a new machine, and bring your Pi-hole or Technitium setup with you.">
+<title>Upgrades, backups, and moving in — WrenDNS</title>
+<meta name="description" content="Check which WrenDNS build you run, upgrade a Pi, Docker, or Kubernetes install and a cluster, back up and restore on a new machine, and bring your Pi-hole or Technitium setup with you.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -16,7 +16,7 @@
 <section>
   <p class="eyebrow">Guide</p>
   <h1>Upgrades, backups, and moving in</h1>
-  <p class="lede">Keep TelltaleDNS current, keep a copy of everything you set up, move it to a new machine, and bring your settings over from Pi-hole or Technitium.</p>
+  <p class="lede">Keep WrenDNS current, keep a copy of everything you set up, move it to a new machine, and bring your settings over from Pi-hole or Technitium.</p>
   <ul class="onpage">
     <li><a href="#version">Your version and channel</a></li>
     <li><a href="#checks">Update checks</a></li>
@@ -27,17 +27,17 @@
     <li><a href="#movein">Move in from Pi-hole or Technitium</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
   </ul>
-  <div class="callout"><p><b>Read the release notes first.</b> Releases before 1.0 can still change configuration keys and APIs, and each release's notes call out every such change. They're on the <a href="https://github.com/paimonsoror/telltaledns/releases">releases page</a>.</p></div>
+  <div class="callout"><p><b>Read the release notes first.</b> Releases before 1.0 can still change configuration keys and APIs, and each release's notes call out every such change. They're on the <a href="https://github.com/nbacheller/telltaledns/releases">releases page</a>.</p></div>
 </section>
 
 <section id="version">
   <h2>Your version and channel</h2>
   <p>Every build says exactly what it is, the same way on every architecture:</p>
-<pre><code>$ telltale --version
-telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)</code></pre>
+<pre><code>$ wrendns --version
+wrendns 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)</code></pre>
   <ul>
     <li><b>Releases</b> are <code>0.1.0</code>. Builds of <code>main</code> (the <b>edge</b> channel) are <code>0.1.0-edge.&lt;run&gt;</code>. A local build is the crate version with a <code>-dev</code> suffix (for example <code>0.8.0-dev</code>) and its commit; its peers read it as that version.</li>
-    <li><b>Where else it shows:</b> the web UI's sidebar, <b>Settings → System → Version and updates</b> (with how the node was installed: <code>native</code>, <code>container</code>, or <code>helm</code>), <code>GET /api/v1/system/info</code> (<code>build</code> and <code>update</code>), the metric <code>telltale_build_info{version,commit,channel,target}</code>, and the <b>Cluster</b> page for every node.</li>
+    <li><b>Where else it shows:</b> the web UI's sidebar, <b>Settings → System → Version and updates</b> (with how the node was installed: <code>native</code>, <code>container</code>, or <code>helm</code>), <code>GET /api/v1/system/info</code> (<code>build</code> and <code>update</code>), the metric <code>wrendns_build_info{version,commit,channel,target}</code>, and the <b>Cluster</b> page for every node.</li>
   </ul>
   <p>Each install type picks its channel its own way:</p>
   <div class="table-wrap"><table class="std wrap">
@@ -53,12 +53,12 @@ telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge
 
 <section id="checks">
   <h2>Update checks</h2>
-  <p>Each node checks for a newer build of its channel by itself. <b>Nothing is installed:</b> TelltaleDNS never updates itself from the UI.</p>
+  <p>Each node checks for a newer build of its channel by itself. <b>Nothing is installed:</b> WrenDNS never updates itself from the UI.</p>
   <ul>
     <li><b>When:</b> a minute after the node starts, then every 24 hours (an hour after a failed check).</li>
     <li><b>How:</b> the node reads its channel's <code>releases.json</code>, which is published with every release and signed with the release key. An index whose signature doesn't verify is ignored.</li>
     <li><b>The result</b> is <code>up_to_date</code>, <code>available</code>, <code>newer</code> (a dev build), or <code>unknown</code> (not checked yet, or failing).</li>
-    <li><b>Where it shows:</b> an <b>update</b> pill next to the version in the sidebar, the <b>Version and updates</b> panel (with the step for your install), each node's version on the <b>Cluster</b> page, and <code>telltale_update_available</code> (1 when an update exists).</li>
+    <li><b>Where it shows:</b> an <b>update</b> pill next to the version in the sidebar, the <b>Version and updates</b> panel (with the step for your install), each node's version on the <b>Cluster</b> page, and <code>wrendns_update_available</code> (1 when an update exists).</li>
   </ul>
   <p><b>To look now</b>, an admin clicks <b>Check now</b> under <b>Settings → System → Version and updates</b> (or <code>POST /api/v1/system/update-check</code>). Clicks less than a minute apart show the last result without fetching again.</p>
   <div class="callout"><p><b>Air-gapped?</b> <code>[updates] check = false</code> means nothing leaves the node. <code>[updates] index_url</code> points at a mirror, which is still verified with the built-in key. See the <a href="config.html">configuration reference</a>.</p></div>
@@ -76,25 +76,25 @@ telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge
 
     <div class="panel" id="up-native"><h3>Raspberry Pi / Linux (native)</h3>
       <p>For an install made with <code>install.sh</code>:</p>
-<pre><code>sudo telltale self-update --check                 # only look
-sudo telltale self-update --restart               # upgrade and restart
-sudo telltale self-update --channel edge --restart  # builds from main</code></pre>
+<pre><code>sudo wrendns self-update --check                 # only look
+sudo wrendns self-update --restart               # upgrade and restart
+sudo wrendns self-update --channel edge --restart  # builds from main</code></pre>
       <ul>
-        <li>It verifies the signature with the release key built into the binary and checks the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as <code>telltale.old</code>.</li>
-        <li><b>Or re-run the installer:</b> <code>sudo sh install.sh</code> upgrades the binary in place. When <code>/etc/telltale/telltale.toml</code> already exists it asks no questions and only upgrades; your config is kept.</li>
+        <li>It verifies the signature with the release key built into the binary and checks the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as <code>wrendns.old</code>.</li>
+        <li><b>Or re-run the installer:</b> <code>sudo sh install.sh</code> upgrades the binary in place. When <code>/etc/wrendns/wrendns.toml</code> already exists it asks no questions and only upgrades; your config is kept.</li>
       </ul>
     </div>
 
     <div class="panel" id="up-docker"><h3>Docker</h3>
       <p>With Docker Compose (the recommended way on a Pi), in the folder with <code>compose.yaml</code>:</p>
 <pre><code>docker compose pull &amp;&amp; docker compose up -d</code></pre>
-      <p><code>telltale self-update</code> refuses to run in a container: pull a new image instead. Your data lives in the <code>/var/lib/telltale</code> volume, the only path the container writes to.</p>
+      <p><code>wrendns self-update</code> refuses to run in a container: pull a new image instead. Your data lives in the <code>/var/lib/wrendns</code> volume, the only path the container writes to.</p>
     </div>
 
     <div class="panel" id="up-k8s"><h3>Kubernetes</h3>
       <p>Run <code>helm upgrade</code> with the new chart version and the same values file you installed with, or bump the chart version in your GitOps values (Argo CD, Flux):</p>
-<pre><code>helm upgrade telltale oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; \
-  -n telltale -f my-values.yaml</code></pre>
+<pre><code>helm upgrade wrendns oci://ghcr.io/nbacheller/charts/wrendns --version &lt;version&gt; \
+  -n wrendns -f my-values.yaml</code></pre>
       <p class="muted">The chart is published with every release, plus <code>0.1.0-edge.&lt;n&gt;</code> builds that follow <code>main</code>. The chart's join secret for resolver pods is kept across upgrades. Every value is on <a href="helm-values.html">Helm values</a>; the rest of the chart is in <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
     </div>
   </div>
@@ -111,7 +111,7 @@ sudo telltale self-update --channel edge --restart  # builds from main</code></p
     <li><b>A half-upgraded cluster is fine.</b> Versions one cluster protocol apart work together (N and N−1, either way round).</li>
     <li><b>A replica older than its primary keeps working</b>, unless the primary starts using settings the older version doesn't know. Then the replica keeps serving its last version, and its sync status says to upgrade it.</li>
   </ul>
-  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
 </section>
 
 <section id="backup">
@@ -120,12 +120,12 @@ sudo telltale self-update --channel edge --restart  # builds from main</code></p
   <ul>
     <li><b>In the web UI:</b> an admin opens <b>Settings → System → Backup</b> and clicks <b>Download a backup</b>.</li>
     <li><b>Through the API:</b> <code>GET /api/v1/backup</code>, or <code>POST /api/v1/backup</code> with <code>{"includeQlog": true, "passphrase": "..."}</code>.</li>
-    <li><b>On the server</b>, safe while TelltaleDNS runs:</li>
+    <li><b>On the server</b>, safe while WrenDNS runs:</li>
   </ul>
-<pre><code>telltale backup create -o pi.ttbk                 # settings, users, history
-telltale backup create --include-qlog -o pi.ttbk  # also the query log (can be large)
-telltale backup create --secrets-passphrase-file pass.txt -o pi.ttbk  # with your stored secrets, encrypted
-telltale backup show pi.ttbk                      # check it and list what's in it</code></pre>
+<pre><code>wrendns backup create -o pi.ttbk                 # settings, users, history
+wrendns backup create --include-qlog -o pi.ttbk  # also the query log (can be large)
+wrendns backup create --secrets-passphrase-file pass.txt -o pi.ttbk  # with your stored secrets, encrypted
+wrendns backup show pi.ttbk                      # check it and list what's in it</code></pre>
   <p class="muted">The UI includes the query log only if you tick it (and it is under 256 MiB); the command has no limit. Each backup is recorded in the audit log as <code>backup.create</code>.</p>
   <div class="two">
     <div class="card">
@@ -144,27 +144,27 @@ telltale backup show pi.ttbk                      # check it and list what's in 
 <section id="restore">
   <h2>Restore on a new machine</h2>
   <ol class="steps">
-    <li class="step"><b>Install TelltaleDNS on the new machine</b> (see <a href="start.html#install">Get started</a>), and copy the backup file to it.</li>
-    <li class="step"><b>Stop TelltaleDNS there.</b> Restore refuses while TelltaleDNS runs on that data directory, because it can't take the directory's lock.</li>
+    <li class="step"><b>Install WrenDNS on the new machine</b> (see <a href="start.html#install">Get started</a>), and copy the backup file to it.</li>
+    <li class="step"><b>Stop WrenDNS there.</b> Restore refuses while WrenDNS runs on that data directory, because it can't take the directory's lock.</li>
     <li class="step"><b>Restore:</b>
-<pre><code>telltale backup restore pi.ttbk
-telltale backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup that holds secrets</code></pre>
+<pre><code>wrendns backup restore pi.ttbk
+wrendns backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup that holds secrets</code></pre>
       A backup with secrets needs its passphrase, or <code>--skip-secrets</code> to restore everything else and enter them again. They are stored under the new machine's own key. Every file is checked before anything is written, so a damaged or truncated backup changes nothing. Existing files are only replaced with <code>--force</code> (the installer writes a starter config, so a fresh install already has one).</li>
-    <li class="step"><b>Start TelltaleDNS</b> and sign in again. Lists are downloaded and compiled again.</li>
+    <li class="step"><b>Start WrenDNS</b> and sign in again. Lists are downloaded and compiled again.</li>
     <li class="step"><b>Point your router's DHCP DNS setting</b> at the new machine.</li>
   </ol>
   <ul>
     <li><b>Where files go:</b> data goes back to the directory it came from, or <code>--data-dir</code>; config files go back where they were, or <code>--config-dir</code>.</li>
     <li><b>A different data directory?</b> The restored config still names the old one. Restore says so; set <code>data_dir</code> (or add a small file that does).</li>
-    <li><b>Running it as root is fine:</b> files are given the data directory's owner, so the <code>telltale</code> service user can read them.</li>
-    <li><b>A cluster member</b> starts on its own after a restore: run <code>telltale cluster init</code>, or join it again (<a href="guide-cluster.html#create">Build a cluster</a>).</li>
+    <li><b>Running it as root is fine:</b> files are given the data directory's owner, so the <code>wrendns</code> service user can read them.</li>
+    <li><b>A cluster member</b> starts on its own after a restore: run <code>wrendns cluster init</code>, or join it again (<a href="guide-cluster.html#create">Build a cluster</a>).</li>
   </ul>
-  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#backups-and-moving-to-a-new-machine">Backups and moving to a new machine</a>.</p>
+  <p class="muted">Details: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#backups-and-moving-to-a-new-machine">Backups and moving to a new machine</a>.</p>
 </section>
 
 <section id="movein">
   <h2>Move in from Pi-hole or Technitium</h2>
-  <p>Pi-hole and Technitium DNS Server are the projects that inspired TelltaleDNS, and the importers bring the setup you built there along with you. Each one writes a TelltaleDNS config file and checks that it loads before writing it. The short version is on <a href="start.html#pihole">Get started</a>.</p>
+  <p>Pi-hole and Technitium DNS Server are the projects that inspired WrenDNS, and the importers bring the setup you built there along with you. Each one writes a WrenDNS config file and checks that it loads before writing it. The short version is on <a href="start.html#pihole">Get started</a>.</p>
   <div class="tabs">
     <div role="tablist" aria-label="Move in from">
       <button role="tab" type="button">From Pi-hole</button>
@@ -172,32 +172,32 @@ telltale backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup 
     </div>
 
     <div class="panel" id="from-pihole"><h3>From Pi-hole</h3>
-<pre><code>telltale import pihole PATH -o pihole.toml</code></pre>
+<pre><code>wrendns import pihole PATH -o pihole.toml</code></pre>
       <p><code>PATH</code> is a Teleporter export (<b>Settings → Teleporter → Export</b>: a <code>.zip</code> from Pi-hole v6, a <code>.tar.gz</code> from v5), a <code>gravity.db</code>, or a copy of <code>/etc/pihole</code>.</p>
       <p><b>What comes over:</b> upstream DNS servers, conditional forwarding, local DNS and CNAME records, adlists (switched-off ones stay with <code>enabled = false</code>), allowed and denied domains (exact and regex), groups, clients (IP, CIDR, MAC), DHCP reservations as named devices, and the DNSSEC, rate-limit, and blocking-mode settings.</p>
       <p><b>What doesn't:</b> query history, the admin password, and API tokens. The header of <code>pihole.toml</code> lists, by setting name, everything else with no equivalent, such as clients matched by host name or network interface (add their IP or MAC instead), the DHCP server, and Pi-hole-only settings.</p>
       <ol class="guide">
-        <li><b>On a fresh install</b>, use the file as is next to your node settings: <code>telltale run -c telltale.toml -c pihole.toml</code>.</li>
+        <li><b>On a fresh install</b>, use the file as is next to your node settings: <code>wrendns run -c wrendns.toml -c pihole.toml</code>.</li>
         <li><b>Into an existing setup</b>, merge it by hand: both files define the <code>default</code> upstream group and group.</li>
-        <li><b>An upstream on the Pi-hole machine itself</b> (<code>127.0.0.1#5335</code>, usually unbound) is flagged: keep that resolver running next to TelltaleDNS.</li>
+        <li><b>An upstream on the Pi-hole machine itself</b> (<code>127.0.0.1#5335</code>, usually unbound) is flagged: keep that resolver running next to WrenDNS.</li>
       </ol>
       <p><b>Or from the admin page:</b> <b>Settings → Pi-hole</b> (admins only) takes the same export. It shows what would be added, changed or skipped, and nothing changes until you type <code>IMPORT</code> and apply the preview. The apply is one configuration change, recorded in the audit log as <code>import.pihole</code>. Names your config files define are skipped, and the DNSSEC mode stays in the file.</p>
-      <p><b>Check the answers match:</b> <code>telltale import pihole PATH --compare 192.168.1.251</code> (or the same address in the page's "Compare" box) resolves a sample of your names through the Pi-hole and through the node's resolver, and lists each name whose answers differ. Run the imported configuration first, or the comparison shows what the node answers now.</p>
-      <p class="muted">Every row of the mapping: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#moving-from-pi-hole">Moving from Pi-hole</a>.</p>
+      <p><b>Check the answers match:</b> <code>wrendns import pihole PATH --compare 192.168.1.251</code> (or the same address in the page's "Compare" box) resolves a sample of your names through the Pi-hole and through the node's resolver, and lists each name whose answers differ. Run the imported configuration first, or the comparison shows what the node answers now.</p>
+      <p class="muted">Every row of the mapping: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#moving-from-pi-hole">Moving from Pi-hole</a>.</p>
     </div>
 
     <div class="panel" id="from-technitium"><h3>From Technitium</h3>
       <p>The importer reads a running Technitium DNS Server through its API. First create an API token in Technitium (<b>Administration → Sessions → Create Token</b>).</p>
-<pre><code>TECHNITIUM_TOKEN=… telltale import technitium http://192.168.1.2:5380 -o technitium.toml</code></pre>
+<pre><code>TECHNITIUM_TOKEN=… wrendns import technitium http://192.168.1.2:5380 -o technitium.toml</code></pre>
       <p>Pass the token in <code>TECHNITIUM_TOKEN</code> or in a file with <code>--token-file</code>. It's never a command-line argument, so it doesn't show up in <code>ps</code>, and it never appears in the output.</p>
       <p><b>What comes over:</b> forwarders, primary zones as local records, forwarder zones (conditional forwarding), block list URLs and blocked and allowed zones, the blocking type, Advanced Blocking app groups, the blocking bypass list, DHCP reservations as named devices, and the DNSSEC, rate-limit, and cache-saving settings.</p>
       <p><b>What doesn't:</b> the header lists it, including secondary and stub zones, forwarders given only by name, the DHCP server, and encrypted listeners (set those up in <a href="guide-encrypted.html">Encrypted DNS</a>).</p>
-      <p class="muted">Technitium's backup files use a private binary format, so the importer reads the documented API instead. Every row of the mapping: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#moving-from-technitium">Moving from Technitium</a>.</p>
+      <p class="muted">Technitium's backup files use a private binary format, so the importer reads the documented API instead. Every row of the mapping: <a href="https://github.com/nbacheller/telltaledns/blob/main/docs/running.md#moving-from-technitium">Moving from Technitium</a>.</p>
     </div>
   </div>
   <p><b>Zone files from any DNS server</b> (Technitium's <b>Zones → Export Zone</b>, BIND, PowerDNS) become <code>[[record]]</code> entries for your config:</p>
-<pre><code>telltale import zone exported.zone &gt; records.toml</code></pre>
-  <p class="muted">The header lists anything with no local equivalent; SOA and NS aren't needed. Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working. Keep your old server running until TelltaleDNS answers the way you expect, then point your router at TelltaleDNS.</p>
+<pre><code>wrendns import zone exported.zone &gt; records.toml</code></pre>
+  <p class="muted">The header lists anything with no local equivalent; SOA and NS aren't needed. Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working. Keep your old server running until WrenDNS answers the way you expect, then point your router at WrenDNS.</p>
 </section>
 
 <section id="trouble">
@@ -206,12 +206,12 @@ telltale backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup 
     <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
     <tbody>
       <tr><td>The update status is <code>unknown</code></td><td>The node hasn't checked yet, or the check is failing; a failed check is retried after an hour. On a network with no internet access, set <code>[updates] index_url</code> to a mirror, or <code>[updates] check = false</code>.</td></tr>
-      <tr><td><code>telltale self-update</code> refuses to run</td><td>It doesn't run in containers. Pull a new image instead: <code>docker compose pull &amp;&amp; docker compose up -d</code>.</td></tr>
+      <tr><td><code>wrendns self-update</code> refuses to run</td><td>It doesn't run in containers. Pull a new image instead: <code>docker compose pull &amp;&amp; docker compose up -d</code>.</td></tr>
       <tr><td>A replica's sync status says to upgrade it</td><td>The primary uses settings the replica's version doesn't know. The replica keeps serving its last version; upgrade it.</td></tr>
-      <tr><td><code>backup restore</code> refuses to start</td><td>TelltaleDNS is running on that data directory. Stop the service first.</td></tr>
+      <tr><td><code>backup restore</code> refuses to start</td><td>WrenDNS is running on that data directory. Stop the service first.</td></tr>
       <tr><td><code>backup restore</code> won't replace existing files</td><td>Add <code>--force</code> if you mean to overwrite them.</td></tr>
       <tr><td>The restored node uses the wrong data directory</td><td>You restored into a different one: set <code>data_dir</code> in the config (or add a small file that does).</td></tr>
-      <tr><td>A restored cluster member runs on its own</td><td>The cluster identity isn't in a backup. Run <code>telltale cluster init</code>, or join it again.</td></tr>
+      <tr><td>A restored cluster member runs on its own</td><td>The cluster identity isn't in a backup. Run <code>wrendns cluster init</code>, or join it again.</td></tr>
       <tr><td>"Address already in use" on port 53 after moving from Pi-hole</td><td>Pi-hole or another resolver on the same machine must be stopped first. See <a href="start.html#trouble">Get started</a>.</td></tr>
     </tbody>
   </table></div>

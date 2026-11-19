@@ -1,0 +1,4043 @@
+//! Federated reads (REQ: CLU-002, OBS-012; T5.6): any node's dashboard and query log show the
+//! whole cluster. Stats and query-log reads go to every reachable peer over the cluster
+//! channel at once, with a deadline, and merge (`wrendns_api::federation`); a node that
+//! doesn't answer is listed in `missingNodes` instead of holding the read up. Everything else
+//! — configuration, explain, the live tail — is this node's own (the tail stays node-local).
+//!
+//! Nothing here touches DNS answering: reads run on API worker threads only (CLU-004).
+
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use wrendns_api::federation::{self, Bounds, NodePage};
+use wrendns_api::model::{
+    AnomalyFinding, ClientChange, ClientInfo, ClusterView, ConfigChange, ExplainParams,
+    Explanation, ForwardInfo, GroupInfo, Hour, LatencyBy, LatencyRow, ListInfo, LocalName,
+    PromoteRequest, QueryPage, QueryParams, Step, SystemInfo, TailItem, TailParams, TimeBucket,
+    TopItem, TopKind, UpstreamInfo,
+};
+use wrendns_api::problem::Problem;
+use wrendns_api::{Backend, BoxFuture, ClientWrite, ManagedKind, ManagedWrite, Shared};
+use wrendns_cluster::net::{Cluster, RpcHandler};
+
+/// One answer of a round: the read's index in the round, the peer, and its body.
+type RoundAnswer = (usize, String, Vec<u8>);
+
+/// The RPC every federated read uses; its body is a JSON [`Read`].
+const KIND: &str = "api.read";
+/// How long a read waits for peers (CLU-002: a dead node costs at most this).
+const DEADLINE: Duration = Duration::from_secs(2);
+#[path = "federated_routers.rs"]
+mod routers_view;
+#[path = "federated_support.rs"]
+mod support_cluster;
+
+/// How long a replica waits for the primary's configuration version before using its own.
+const VERSION_DEADLINE: Duration = Duration::from_secs(1);
+
+/// One read, as sent to peers (already-parsed arguments).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "read", rename_all = "snake_case")]
+enum Read {
+    Timeseries {
+        step: Step,
+        from_s: u64,
+        to_s: u64,
+    },
+    Top {
+        kind: TopKind,
+        hour: Hour,
+        limit: usize,
+        client: Option<IpAddr>,
+    },
+    TopInGroup {
+        kind: TopKind,
+        hour: Hour,
+        limit: usize,
+        group: String,
+    },
+    /// REQ: API-005 (ADR-158) — the clients of the last hour (older peers don't know it).
+    TopClientsRolling {
+        limit: usize,
+        group: Option<String>,
+    },
+    /// REQ: OBS-004 (ADR-160) — a top list over a window.
+    TopRange {
+        kind: TopKind,
+        from_s: u64,
+        to_s: u64,
+        limit: usize,
+    },
+    Latency {
+        by: LatencyBy,
+        hour: Hour,
+    },
+    /// REQ: OBS-010 (T9.5) — devices first seen.
+    NewDevices {
+        since_s: u64,
+    },
+    /// REQ: OBS-025 — what each device looks like (older peers don't know it).
+    Identities,
+    /// REQ: OBS-025 — one device, with the evidence.
+    Identity {
+        client: String,
+    },
+    /// REQ: OBS-031 — one device's rhythm (older peers don't know it).
+    ClientRhythm {
+        client: String,
+    },
+    /// REQ: FLT-006, API-010 (T24.30, ADR-971, ADR-996) — a device's effective policy, read from
+    /// the primary's configuration (an older peer doesn't know it: it is a missing node).
+    ClientPolicy {
+        client: String,
+        /// The asking replica's observations of the device (its neighbor table's MAC and so on);
+        /// absent from an older caller, which asks about the name alone.
+        #[serde(default)]
+        observed: Option<wrendns_api::policy_api::PolicyObservation>,
+    },
+    /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
+    LatencyHist {
+        by: LatencyBy,
+        hour: Hour,
+    },
+    /// REQ: OBS-008, CLU-002 (T9.2) — a live tail session on the peer for a cluster-wide
+    /// tail: open it, poll it (what matched since), close it.
+    TailOpen {
+        params: Box<TailParams>,
+    },
+    /// REQ: OBS-003, OBS-008 (ADR-171) — `TailOpen` with a negated filter. A separate read, so an
+    /// older peer (which would ignore the flags and tail what was not negated) doesn't know it.
+    TailOpenNegated {
+        params: Box<TailParams>,
+    },
+    TailPoll {
+        id: u64,
+    },
+    TailClose {
+        id: u64,
+    },
+    Queries {
+        params: Box<QueryParams>,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    },
+    /// REQ: OBS-003 (ADR-171) — `Queries` with a negated filter (older peers don't know it, so
+    /// they are listed as missing instead of answering rows that were not negated).
+    QueriesNegated {
+        params: Box<QueryParams>,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    },
+    /// The configuration version (a replica's `If-Match` and `ETag` use the primary's; T5.7).
+    ConfigVersion,
+    /// REQ: API-002, CLU-002 — the primary's configuration entries (what the settings
+    /// editors list), for a replica's UI.
+    ConfigEntries {
+        kind: Option<String>,
+    },
+    /// REQ: DNS-006 (T6.13) — the peer's own cache: counters, a lookup, a flush.
+    CacheStats,
+    /// T7.1 — pauses.
+    BlockingState,
+    BlockingPause {
+        group: Option<String>,
+        minutes: u32,
+    },
+    BlockingResume {
+        group: Option<String>,
+    },
+    /// T6.15 — the top entries and makeup.
+    CacheEntries {
+        sort: String,
+        limit: usize,
+    },
+    CacheLookup {
+        name: String,
+    },
+    CacheFlush {
+        name: Option<String>,
+        subtree: bool,
+    },
+    /// REQ: OBS-014, CLU-002 — the peer's own anomaly findings (older peers don't know it).
+    Anomalies {
+        since_s: u64,
+    },
+    /// REQ: OBS-015 — the peer's own health conditions.
+    Health,
+    /// REQ: OBS-020 — the peer's own probes (older peers don't know it).
+    Probes,
+    /// REQ: OBS-030 — the peer's own exemplars (older peers don't know it).
+    Exemplars {
+        from_us: u64,
+        to_us: u64,
+        path: Option<String>,
+    },
+    /// REQ: OBS-029 — the peer's own hours for a device or a name (older peers don't know it).
+    HeatmapKey {
+        q: wrendns_api::heatmap::KeyQuery,
+    },
+    /// REQ: OBS-029 — the peer's own network slots (older peers don't know it).
+    HeatmapNetwork {
+        q: wrendns_api::heatmap::NetworkQuery,
+    },
+    /// REQ: OBS-027 — the peer's own error-budget attribution part (older peers don't know it).
+    SloParts {
+        q: wrendns_api::attribution::PartQuery,
+    },
+    /// REQ: OBS-033 — the peer's own change markers (older peers don't know it).
+    Annotations {
+        filter: wrendns_api::model::AnnotationFilter,
+    },
+    /// REQ: OBS-019 — the peer's own upstream answer quality (older peers don't know it).
+    UpstreamChecks,
+    /// REQ: OBS-018 — the peer's own shadow-list counts and over-blocking suspects.
+    ShadowLists,
+    Overblocking {
+        limit: usize,
+    },
+    /// REQ: FLT-017 — the peer's per-workload counts (older peers don't know it).
+    WorkloadCounts,
+    /// REQ: FLT-004, CLU-003 — the primary's lists and their download state, for a replica's
+    /// API (older peers don't know it).
+    Lists,
+    /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
+    ListHits,
+    /// REQ: FLT-901 (T24.29, ADR-994 item 10) — the primary's limits for a category selection: it
+    /// fetches and compiles, so its memory decides (older peers don't know it: the replica's own
+    /// numbers are used).
+    CategoryEnv,
+    /// REQ: API-015 (ADR-903 §4) — the primary's stored secrets (metadata only), for a replica's
+    /// `GET /api/v1/secrets` (older peers don't know it).
+    SecretsStatus,
+    /// REQ: API-015 — the peer's own references to stored secrets, for a delete on the primary.
+    SecretRefs,
+    /// REQ: API-013, API-016, API-010 (T24.41) - the networks, leases and router states the node
+    /// that reads the routers holds, for a replica's Networks and Routers pages (older peers
+    /// don't know it: the replica shows its own and names the primary as missing).
+    RouterView,
+    /// REQ: OBS-901 (ADR-958) — the peer's own part of the live map (older peers do not know it:
+    /// they are missing from the map, and the map says so).
+    MapPart,
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the key the asking node made for it. The answer is gzip-compressed JSON, not a
+    /// plain JSON value. Older peers don't know the read and are listed as missing.
+    SupportCollect {
+        req: Box<wrendns_api::model::SupportCollectRequest>,
+    },
+}
+
+/// REQ: CLU-004 (upstream #7) — runs a federated read's future to completion on `rt` from
+/// synchronous code, without holding a runtime worker, and gives `None` if it panics. On a
+/// multi-thread runtime the calling worker hands its queued tasks to another thread first
+/// (`block_in_place`), so the peer's stream can still be written and read. `block_in_place`
+/// does nothing off a runtime, so a blocking-pool caller takes the same path. A current-thread
+/// runtime has no other thread to take over, so its future runs on a scoped thread instead.
+fn run_off_the_worker<F>(rt: &tokio::runtime::Handle, fut: F) -> Option<F::Output>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    match rt.runtime_flavor() {
+        tokio::runtime::RuntimeFlavor::MultiThread => {
+            let run =
+                std::panic::AssertUnwindSafe(|| tokio::task::block_in_place(|| rt.block_on(fut)));
+            std::panic::catch_unwind(run).ok()
+        }
+        _ => std::thread::scope(|s| s.spawn(|| rt.block_on(fut)).join().ok()),
+    }
+}
+
+/// The reads that change the answering node: operational actions a user asked for on the
+/// entry node (T7.1 pauses, T6.13 flushes).
+fn changes_state(r: &Read) -> bool {
+    matches!(
+        r,
+        Read::BlockingPause { .. } | Read::BlockingResume { .. } | Read::CacheFlush { .. }
+    )
+}
+
+/// REQ: FLT-004, CLU-003 — a replica's list view: the primary's lists and download state
+/// (`theirs`, in its order), with this node's own hits (`mine`; 0 for a list it hasn't
+/// compiled yet). The API then replaces the hits with every node's added up (OBS-009).
+fn merge_lists(mine: &[ListInfo], mut theirs: Vec<ListInfo>) -> Vec<ListInfo> {
+    for l in &mut theirs {
+        l.hits = mine.iter().find(|m| m.name == l.name).map_or(0, |m| m.hits);
+    }
+    theirs
+}
+
+/// REQ: FLT-006 (ADR-996) — the primary's answer to `Read::ClientPolicy`: the policy, or the
+/// reason there is none (a name no device has is a 404, not a down primary).
+#[derive(Debug, Serialize, Deserialize)]
+enum PolicyReply {
+    Found(Box<wrendns_api::policy_api::ClientPolicy>),
+    NotFound(String),
+    Failed,
+}
+
+fn policy_reply(
+    b: &dyn Backend,
+    client: &str,
+    observed: Option<&wrendns_api::policy_api::PolicyObservation>,
+) -> PolicyReply {
+    match observed.map_or_else(
+        || b.client_policy(client),
+        |o| b.client_policy_observed(client, o),
+    ) {
+        Ok(p) => PolicyReply::Found(Box::new(p)),
+        Err(p) if p.status == 404 => PolicyReply::NotFound(p.detail),
+        Err(_) => PolicyReply::Failed,
+    }
+}
+
+/// REQ: FLT-006, API-010 (ADR-971, ADR-996) — what a replica returns given the primary's reply
+/// (`None`: it didn't answer, or doesn't know the read) and whether the primary is a missing node.
+fn settle_policy(
+    reply: Option<PolicyReply>,
+    primary_label: &str,
+    own_label: &str,
+    mine: impl FnOnce() -> Result<wrendns_api::policy_api::ClientPolicy, Problem>,
+) -> (Result<wrendns_api::policy_api::ClientPolicy, Problem>, bool) {
+    match reply {
+        Some(PolicyReply::Found(p)) => {
+            let mut p = *p;
+            p.node = Some(primary_label.to_owned());
+            (Ok(p), false)
+        }
+        // The primary answered: it just has no such device. Not a down node.
+        Some(PolicyReply::NotFound(detail)) => (Err(Problem::not_found(detail)), false),
+        Some(PolicyReply::Failed) | None => {
+            let out = mine().map(|mut p| {
+                p.node = Some(own_label.to_owned());
+                p.notes.push(
+                    "The primary didn't answer, so this is this node's own copy of the configuration."
+                        .to_owned(),
+                );
+                p
+            });
+            (out, true)
+        }
+    }
+}
+
+/// Answers a peer's read from this node's own data.
+#[allow(clippy::too_many_lines)] // one arm per read
+fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
+    let text = |p: Problem| p.detail;
+    match r {
+        Read::Timeseries { step, from_s, to_s } => {
+            serde_json::to_vec(&b.timeseries(step, from_s, to_s))
+        }
+        Read::Top {
+            kind,
+            hour,
+            limit,
+            client,
+        } => serde_json::to_vec(&b.top(kind, hour, limit, client)),
+        Read::TopInGroup {
+            kind,
+            hour,
+            limit,
+            group,
+        } => serde_json::to_vec(&b.top_in_group(kind, hour, limit, &group).map_err(text)?),
+        Read::TopClientsRolling { limit, group } => serde_json::to_vec(
+            &b.top_clients_rolling(limit, group.as_deref())
+                .map_err(text)?,
+        ),
+        Read::TopRange {
+            kind,
+            from_s,
+            to_s,
+            limit,
+        } => serde_json::to_vec(&b.top_range(kind, from_s, to_s, limit)),
+        Read::Latency { by, hour } => serde_json::to_vec(&b.latency(by, hour)),
+        Read::LatencyHist { by, hour } => serde_json::to_vec(&b.latency_hists(by, hour)),
+        Read::NewDevices { since_s } => serde_json::to_vec(&b.new_devices(since_s)),
+        Read::Identities => serde_json::to_vec(&b.identities()),
+        Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
+        Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
+        Read::ClientPolicy { client, observed } => {
+            serde_json::to_vec(&policy_reply(b, &client, observed.as_ref()))
+        }
+        Read::TailOpen { params } | Read::TailOpenNegated { params } => {
+            serde_json::to_vec(&tail_open(b, &params).map_err(text)?)
+        }
+        Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
+        Read::TailClose { id } => {
+            tail_sessions().remove(&id);
+            serde_json::to_vec(&true)
+        }
+        Read::Queries {
+            params,
+            from_us,
+            to_us,
+            limit,
+        }
+        | Read::QueriesNegated {
+            params,
+            from_us,
+            to_us,
+            limit,
+        } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
+        Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
+        Read::ConfigEntries { kind } => serde_json::to_vec(&b.config_entries(kind.as_deref())),
+        Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
+        Read::BlockingState => serde_json::to_vec(&b.blocking_state()),
+        Read::BlockingPause { group, minutes } => serde_json::to_vec(
+            &b.blocking_pause(group.as_deref(), minutes, None)
+                .map_err(text)?,
+        ),
+        Read::BlockingResume { group } => {
+            serde_json::to_vec(&b.blocking_resume(group.as_deref(), None).map_err(text)?)
+        }
+        Read::CacheEntries { sort, limit } => {
+            serde_json::to_vec(&b.cache_entries(&sort, limit, None).map_err(text)?)
+        }
+        Read::CacheLookup { name } => serde_json::to_vec(&b.cache_lookup(&name).map_err(text)?),
+        Read::CacheFlush { name, subtree } => serde_json::to_vec(
+            &b.cache_flush(name.as_deref(), subtree, None)
+                .map_err(text)?,
+        ),
+        Read::Anomalies { since_s } => serde_json::to_vec(&b.anomalies(since_s)),
+        Read::Health => serde_json::to_vec(&b.health()),
+        Read::Probes => serde_json::to_vec(&b.probes()),
+        Read::SloParts { q } => serde_json::to_vec(&b.slo_parts(&q)),
+        Read::HeatmapKey { q } => serde_json::to_vec(&b.heatmap_key(&q).map_err(text)?),
+        Read::HeatmapNetwork { q } => serde_json::to_vec(&b.heatmap_network(&q)),
+        Read::Exemplars {
+            from_us,
+            to_us,
+            path,
+        } => serde_json::to_vec(&b.exemplars(from_us, to_us, path.as_deref())),
+        Read::Annotations { filter } => serde_json::to_vec(&b.annotations(&filter)),
+        Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
+        Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
+        Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
+        Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
+        Read::Lists => serde_json::to_vec(&b.lists()),
+        Read::ListHits => serde_json::to_vec(&b.list_hits()),
+        Read::CategoryEnv => serde_json::to_vec(&b.category_env()),
+        Read::SecretsStatus => serde_json::to_vec(&b.secrets_status().map_err(text)?),
+        Read::SecretRefs => serde_json::to_vec(&b.secret_refs()),
+        Read::MapPart => serde_json::to_vec(&b.map_part()),
+        Read::RouterView => serde_json::to_vec(&routers_view::own_view(b)),
+        // REQ: OPS-011 (ADR-172) — already compressed bytes, not a JSON value.
+        Read::SupportCollect { req } => return b.support_part(&req).map_err(text),
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// What answers peers: reads from this node's local backend (on a blocking thread), and
+/// forwarded writes when this node is the primary (T5.7).
+#[allow(clippy::too_many_lines)] // one branch per call
+pub(crate) fn rpc_handler(
+    src: Arc<crate::http::Sources>,
+    local: Shared,
+    cluster: Arc<Cluster>,
+) -> RpcHandler {
+    Arc::new(move |peer, kind, body| {
+        let (src, local, cluster) = (Arc::clone(&src), Arc::clone(&local), Arc::clone(&cluster));
+        Box::pin(async move {
+            // REQ: CLU-002, CLU-009 (ADR-054, ADR-058) — an ephemeral member serves no UI, so
+            // nothing a user did arrives through it: it never forwards a write, and never
+            // pauses blocking or flushes caches on other nodes. REQ: CLU-005 (T10.7, ADR-143) —
+            // a peer the registry doesn't list is treated the same.
+            let ephemeral = !cluster
+                .identity
+                .registry()
+                .iter()
+                .any(|n| n.node_id == peer && !n.ephemeral);
+            if ephemeral && kind == crate::forward::KIND {
+                return Err("an ephemeral member can't forward configuration writes".into());
+            }
+            if kind == wrendns_cluster::failover::KIND {
+                // REQ: CLU-005 — a vote request (ADR-056); the ballot is written to disk first.
+                return tokio::task::spawn_blocking(move || {
+                    wrendns_cluster::failover::answer(&cluster, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("vote worker failed: {e}"))?;
+            }
+            if kind == wrendns_cluster::failover::HANDOVER_KIND {
+                // REQ: CLU-005 (ADR-154) — a Git-managed node asks this emergency primary to hand
+                // over; refused unless the asker is an eligible, Git-managed node that is up.
+                return tokio::task::spawn_blocking(move || {
+                    wrendns_cluster::failover::answer_handover(&cluster, &peer)
+                })
+                .await
+                .map_err(|e| format!("handover worker failed: {e}"))?;
+            }
+            if kind == wrendns_cluster::renew::KIND {
+                // REQ: CLU-001 — a peer renewing its node certificate (T5.4c).
+                return tokio::task::spawn_blocking(move || {
+                    wrendns_cluster::renew::answer(&cluster, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("renewal worker failed: {e}"))?;
+            }
+            if kind == crate::forward::KIND {
+                return crate::forward::handle(src, local, cluster, peer, body).await;
+            }
+            if kind == crate::guarded::prod::KIND_FORWARD
+                || kind == crate::guarded::prod::KIND_ENTRY
+            {
+                // REQ: API-902 (ADR-956 §5) — the primary forwards a guarded request for this node
+                // (checked again here), or a replica writes its own guarded entry through this
+                // node. An ephemeral member serves no UI and holds no authority.
+                if ephemeral {
+                    return Err("an ephemeral member can't take guarded requests".into());
+                }
+                return if kind == crate::guarded::prod::KIND_FORWARD {
+                    crate::guarded::prod::handle_forward(src, cluster, peer, body).await
+                } else {
+                    crate::guarded::prod::handle_entry(&src, &cluster, &peer, &body)
+                };
+            }
+            if kind == crate::secrets::sync::KIND_FETCH {
+                // REQ: CLU-015 (ADR-903 §6) — a full member reads this node's stored secrets (the
+                // primary's rows, or a replica's for the primary's reverse heal). Over mTLS only.
+                return crate::secrets::sync::answer_fetch(src, cluster, peer, body).await;
+            }
+            if kind == crate::cmdb::replication::KIND_FETCH {
+                // REQ: DSC-906 (ADR-1021) — a full member copies this node's authored CMDB rows (the
+                // designated node answers; any other says so at once). Over mTLS only.
+                if ephemeral {
+                    return Err("an ephemeral member can't read the CMDB".into());
+                }
+                return crate::cmdb::replication::answer_fetch(src, cluster, peer, body).await;
+            }
+            if kind == crate::secrets::sync::KIND_ADOPT {
+                // REQ: CLU-015 — a joining full member hands its own secrets to the primary.
+                return crate::secrets::sync::answer_adopt(src, cluster, peer, body).await;
+            }
+            if kind == crate::secrets_api::KIND_PUT || kind == crate::secrets_api::KIND_DELETE {
+                // REQ: API-015 (ADR-903 §4) — a replica's secret write (a user acted there);
+                // only from a full member (checked again inside).
+                if ephemeral {
+                    return Err("an ephemeral member can't forward secret writes".into());
+                }
+                return crate::secrets_api::handle(src, local, cluster, peer, kind, body).await;
+            }
+            if kind == crate::maintenance::KIND_SET || kind == crate::maintenance::KIND_CLEAR {
+                // REQ: OPS-010 — another node asks this node to start or end maintenance (a
+                // user acted there). An ephemeral member serves no UI: nothing comes through it.
+                if ephemeral {
+                    return Err("an ephemeral member can't change this node's state".into());
+                }
+                return tokio::task::spawn_blocking(move || {
+                    crate::maintenance::handle(&src, &cluster, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("maintenance worker failed: {e}"))?;
+            }
+            if kind == crate::drill::KIND {
+                // REQ: CLU-014 — a drill started or ended here (a user acted elsewhere; never
+                // through an ephemeral member), a drill's window to record, or a read.
+                return crate::drill::handle(src, cluster, peer, body, ephemeral).await;
+            }
+            if kind == crate::rollout::surface::KIND {
+                // REQ: CLU-013 — a replica's rollout request (a user acted there). An ephemeral
+                // member serves no UI: nothing comes through it.
+                if ephemeral {
+                    return Err("an ephemeral member can't run rollout commands".into());
+                }
+                return crate::rollout::surface::handle(src, local, cluster, peer, body).await;
+            }
+            if kind == crate::node_removal::KIND {
+                // REQ: CLU-001 (ADR-155) — a replica's request to remove a member (a user acted
+                // there). An ephemeral member serves no UI: nothing comes through it.
+                if ephemeral {
+                    return Err("an ephemeral member can't remove cluster members".into());
+                }
+                return crate::node_removal::handle(src, cluster, peer, body).await;
+            }
+            if kind == crate::devices::KIND {
+                // REQ: CLU-002 (ADR-125) — the device names this node's routers and mDNS know.
+                return crate::devices::own(&src.pipeline);
+            }
+            if kind == crate::kubernetes::KIND {
+                // REQ: FLT-017 — asked for this node's workload table, or given the watcher's.
+                // Resolver pods (ephemeral) never watch, so they never send one.
+                return tokio::task::spawn_blocking(move || {
+                    crate::kubernetes::handle(&src, &body, !ephemeral)
+                })
+                .await
+                .map_err(|e| format!("workload table worker failed: {e}"))?;
+            }
+            if kind == crate::simulate::KIND {
+                // REQ: OBS-024 — another node simulating a change over the cluster's logs (a
+                // user acted there). An ephemeral member serves no UI (T10.7).
+                if ephemeral {
+                    return Err("an ephemeral member can't run simulations".into());
+                }
+                return crate::simulate::handle(src, body).await;
+            }
+            if kind == crate::ship::KIND || kind == crate::ship::ROLLUP_KIND {
+                // REQ: CLU-007 (T10.7) — only from a member the registry lists: a pod that
+                // expired and came back with its certificate rejoins first.
+                let known = cluster
+                    .identity
+                    .registry()
+                    .iter()
+                    .any(|n| n.node_id == peer);
+                if !known {
+                    return Err("this node isn't in the cluster's registry".into());
+                }
+            }
+            if kind == crate::ship::KIND {
+                // REQ: CLU-007 — a node in ship mode delivering its query log.
+                return tokio::task::spawn_blocking(move || {
+                    let cfg = src.config.load();
+                    let q = &cfg.telemetry.qlog;
+                    crate::ship::receive(
+                        cfg.node.data_dir.as_str(),
+                        &peer,
+                        &body,
+                        q.retention_days,
+                        q.retention_bytes.bytes(),
+                        &src.ship,
+                    )
+                })
+                .await
+                .map_err(|e| format!("receive worker failed: {e}"))?;
+            }
+            if kind == crate::ship::ROLLUP_KIND {
+                // REQ: CLU-007 (T9.3) — a node in ship mode delivering its minutes.
+                return tokio::task::spawn_blocking(move || {
+                    let db = src.rollups.as_ref().ok_or("this node keeps no rollups")?;
+                    crate::ship::receive_rollups(db, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("receive worker failed: {e}"))?;
+            }
+            if kind != KIND {
+                return Err(format!("unknown call `{kind}`"));
+            }
+            let read: Read = serde_json::from_slice(&body).map_err(|e| format!("bad read: {e}"))?;
+            if ephemeral && changes_state(&read) {
+                return Err("an ephemeral member can't change this node's state".into());
+            }
+            if ephemeral && matches!(read, Read::SupportCollect { .. }) {
+                // REQ: OPS-011 (ADR-172) — a part is redacted under the asker's key, which lets the
+                // asker undo the address permutation: only a member we trust to ask may have one.
+                return Err("an ephemeral member can't ask for a support package".into());
+            }
+            // The caller's log dispatcher goes along, so the blocking thread logs where the
+            // request does.
+            let log = tracing::dispatcher::get_default(Clone::clone);
+            tokio::task::spawn_blocking(move || {
+                tracing::dispatcher::with_default(&log, || answer(local.as_ref(), read))
+            })
+            .await
+            .map_err(|e| format!("read worker failed: {e}"))?
+        })
+    })
+}
+
+/// REQ: CLU-002 (ADR-125) — rows a peer sent without a client name (an older build, or a
+/// node that doesn't know the device yet) get this node's name for it, so one page never
+/// names the same device two ways. A name the row came with stays.
+fn name_rows(rows: &mut [wrendns_api::model::QueryRow], name: impl Fn(IpAddr) -> Option<String>) {
+    let mut known: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for r in rows.iter_mut().filter(|r| r.client_name.is_none()) {
+        r.client_name = known
+            .entry(r.client.clone())
+            .or_insert_with(|| r.client.parse().ok().and_then(&name))
+            .clone();
+    }
+}
+
+/// REQ: OBS-014 — every node's findings as one list, newest first: one entry per ID (nodes
+/// behind one load balancer can each find the same device's spike), listing who found it.
+fn merge_findings(parts: Vec<(String, Vec<AnomalyFinding>)>) -> Vec<AnomalyFinding> {
+    let mut by_id: std::collections::HashMap<String, AnomalyFinding> =
+        std::collections::HashMap::new();
+    for (label, items) in parts {
+        for mut f in items {
+            if let Some(seen) = by_id.get_mut(&f.id) {
+                if !seen.nodes.contains(&label) {
+                    seen.nodes.push(label.clone());
+                }
+                // REQ: OBS-038 — muted if any node's mute matched (the mutes are shared, so
+                // nodes agree unless one hasn't applied a change yet).
+                let muted_by = seen.muted_by.clone().or_else(|| f.muted_by.clone());
+                // The node that saw the most of it tells the story.
+                if f.observed > seen.observed {
+                    let nodes = std::mem::take(&mut seen.nodes);
+                    *seen = f;
+                    seen.nodes = nodes;
+                }
+                seen.muted_by = muted_by;
+            } else {
+                f.nodes = vec![label.clone()];
+                by_id.insert(f.id.clone(), f);
+            }
+        }
+    }
+    let mut out: Vec<AnomalyFinding> = by_id.into_values().collect();
+    for f in &mut out {
+        f.nodes.sort();
+    }
+    out.sort_by(|a, b| {
+        b.window_start
+            .cmp(&a.window_start)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out
+}
+
+/// REQ: API-007 (T24.18) — a Pi-hole import asked of a replica.
+fn import_elsewhere() -> Problem {
+    Problem::new(
+        wrendns_api::problem::Code::Conflict,
+        "the Pi-hole import runs on the primary node: open this page there",
+    )
+}
+
+fn no_lease() -> Problem {
+    Problem::unavailable("this primary can't reach a majority of voters, so it isn't taking changes")
+        .hint("DNS keeps answering. Changes resume when a majority of voters is reachable again; see the Cluster page.")
+}
+
+/// REQ: CLU-002 (T9.2) — one row per key from every node's histogram.
+fn merge_hists(parts: Vec<Vec<wrendns_api::model::LatencyHist>>) -> Vec<LatencyRow> {
+    let mut by_key: std::collections::BTreeMap<String, Vec<Vec<(u64, u64)>>> =
+        std::collections::BTreeMap::new();
+    for h in parts.into_iter().flatten() {
+        by_key.entry(h.key).or_default().push(h.buckets);
+    }
+    by_key
+        .into_iter()
+        .filter_map(|(key, hs)| {
+            let refs: Vec<&[(u64, u64)]> = hs.iter().map(Vec::as_slice).collect();
+            wrendns_telemetry::agg::merged_percentiles(&refs)
+                .map(|p| crate::api_backend::latency_row(key, p))
+        })
+        .collect()
+}
+
+/// A peer's live tail opened for another node (T9.2): what matched, waiting to be polled.
+struct TailSession {
+    rx: tokio::sync::mpsc::Receiver<TailItem>,
+    polled: std::time::Instant,
+}
+
+/// Unpolled this long, a session is closed (its subscriber stops).
+const TAIL_IDLE: Duration = Duration::from_secs(15);
+/// Remote tail sessions a node holds at most (as many as its own live tails).
+const TAIL_SESSIONS: usize = 16;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TailBatch {
+    /// The session is gone (expired, or the peer restarted): open a new one.
+    gone: bool,
+    items: Vec<TailItem>,
+}
+
+fn tail_sessions() -> std::sync::MutexGuard<'static, std::collections::HashMap<u64, TailSession>> {
+    static S: std::sync::OnceLock<Mutex<std::collections::HashMap<u64, TailSession>>> =
+        std::sync::OnceLock::new();
+    let mut m = S
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    m.retain(|_, s| s.polled.elapsed() < TAIL_IDLE);
+    m
+}
+
+fn tail_open(b: &dyn Backend, params: &TailParams) -> Result<u64, Problem> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    if tail_sessions().len() >= TAIL_SESSIONS {
+        return Err(Problem::unavailable(
+            "too many remote live tails on this node",
+        ));
+    }
+    let rx = b.tail(params)?;
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tail_sessions().insert(
+        id,
+        TailSession {
+            rx,
+            polled: std::time::Instant::now(),
+        },
+    );
+    Ok(id)
+}
+
+fn tail_poll(id: u64) -> TailBatch {
+    let mut m = tail_sessions();
+    let Some(s) = m.get_mut(&id) else {
+        return TailBatch {
+            gone: true,
+            items: Vec::new(),
+        };
+    };
+    s.polled = std::time::Instant::now();
+    let mut items = Vec::new();
+    let mut gone = false;
+    while items.len() < 2000 {
+        match s.rx.try_recv() {
+            Ok(it) => items.push(it),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                gone = true;
+                break;
+            }
+        }
+    }
+    if gone {
+        m.remove(&id);
+    }
+    TailBatch { gone, items }
+}
+
+/// Names the node a row came from (a peer's rows arrive unlabelled).
+fn label_item(it: &mut TailItem, label: &str) {
+    if let TailItem::Query(row) = it
+        && row.node.is_none()
+    {
+        row.node = Some(label.to_owned());
+    }
+}
+
+/// Polls one peer's tail session into `tx` until the subscriber goes away; reopens it when
+/// the peer restarts, and backs off while it's unreachable (or too old to tail).
+async fn remote_tail(
+    cluster: Arc<Cluster>,
+    label: String,
+    peer: String,
+    params: TailParams,
+    tx: tokio::sync::mpsc::Sender<TailItem>,
+) {
+    const POLL: Duration = Duration::from_millis(500);
+    let mut id: Option<u64> = None;
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let read = match id {
+            None if params.negates() => Read::TailOpenNegated {
+                params: Box::new(params.clone()),
+            },
+            None => Read::TailOpen {
+                params: Box::new(params.clone()),
+            },
+            Some(id) => Read::TailPoll { id },
+        };
+        let Ok(body) = serde_json::to_vec(&read) else {
+            return;
+        };
+        let wait = match cluster
+            .call(&peer, KIND, body, Duration::from_secs(3))
+            .await
+        {
+            Ok(b) if id.is_none() => {
+                id = serde_json::from_slice::<u64>(&b).ok();
+                backoff = Duration::from_secs(1);
+                POLL
+            }
+            Ok(b) => {
+                if let Ok(batch) = serde_json::from_slice::<TailBatch>(&b) {
+                    if batch.gone {
+                        id = None;
+                    }
+                    for mut it in batch.items {
+                        label_item(&mut it, &label);
+                        if tx.send(it).await.is_err() {
+                            return close_remote_tail(&cluster, &peer, id).await;
+                        }
+                    }
+                } else {
+                    id = None;
+                }
+                POLL
+            }
+            Err(_) => {
+                id = None;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff
+            }
+        };
+        tokio::select! {
+            () = tx.closed() => return close_remote_tail(&cluster, &peer, id).await,
+            () = tokio::time::sleep(wait) => {}
+        }
+    }
+}
+
+async fn close_remote_tail(cluster: &Cluster, peer: &str, id: Option<u64>) {
+    if let Some(id) = id
+        && let Ok(body) = serde_json::to_vec(&Read::TailClose { id })
+    {
+        let _ = cluster.call(peer, KIND, body, Duration::from_secs(2)).await;
+    }
+}
+
+/// Where configuration writes go (T5.7).
+enum WriteRoute {
+    /// Applied on this node: it's the primary, or the cluster is configured from Git (which
+    /// refuses API writes on every node).
+    Here,
+    /// Forwarded to the primary (`None`: it isn't reachable now).
+    Primary(Option<String>),
+    /// Refused: this primary's lease lapsed (ADR-056).
+    NoLease,
+}
+
+/// The API backend of a clustered node: federated stats and query log over `local`.
+pub(crate) struct Federated {
+    local: Shared,
+    cluster: Arc<Cluster>,
+    /// Nodes the latest federated read couldn't reach (site labels).
+    missing: Mutex<Vec<String>>,
+    /// REQ: AGT-011, CLU-002 (T7.3) — a read's `scope` narrowed to some nodes; `None` is the
+    /// whole cluster.
+    only: Option<Only>,
+    /// REQ: OBS-901 (ADR-958 section 6) — the live map's per-peer last-good parts and the gather
+    /// task that fills them, shared by every handle (each request has its own).
+    map: Arc<MapPeers>,
+    /// REQ: API-013 (T24.41, T24.42) - the primary's last router read, or its failure, kept a few
+    /// seconds so one page load or map snapshot makes one call (and waits once while the primary
+    /// is away); shared by every handle.
+    router_view: Arc<Mutex<RouterViewCache>>,
+    secrets_since: Arc<Mutex<crate::health::SecretsSince>>,
+}
+
+/// When the primary was last asked for its router view, whom, and what it answered (`None`: it
+/// did not).
+type RouterViewCache = Option<(std::time::Instant, String, Option<routers_view::RouterView>)>;
+
+/// How long a replica reuses the primary's router read.
+const ROUTER_VIEW_TTL: Duration = Duration::from_secs(5);
+
+/// REQ: OBS-901 — what the cluster read of the map keeps between requests: the cache the gather
+/// task writes and the snapshot reads, and whether somebody asked lately.
+struct MapPeers {
+    cache: Arc<wrendns_api::map_api::PeerCache>,
+    demand: Arc<wrendns_api::map_api::Demand>,
+}
+
+impl MapPeers {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            cache: Arc::new(wrendns_api::map_api::PeerCache::new(now)),
+            demand: Arc::new(wrendns_api::map_api::Demand::new(now)),
+        }
+    }
+}
+
+/// Two roster members never share a label (pods on one site): the node ID tells them apart.
+fn unique_labels(roster: &mut [(String, crate::secrets_api::RosterNode)]) {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for (_, r) in roster.iter() {
+        *counts.entry(r.label.clone()).or_default() += 1;
+    }
+    for (id, r) in roster.iter_mut() {
+        if counts.get(&r.label).copied().unwrap_or(0) > 1 {
+            r.label.clone_from(id);
+        }
+    }
+}
+
+/// How a member is named on the map: its pod, else its site, else its ID (as `label_of`).
+fn member_label(m: &wrendns_cluster::net::Member) -> String {
+    let l = if m.pod.is_empty() { &m.site } else { &m.pod };
+    if l.is_empty() {
+        m.node_id.clone()
+    } else {
+        l.clone()
+    }
+}
+
+/// The nodes a scoped read covers.
+#[derive(Debug, Clone)]
+struct Only {
+    /// This node is in scope.
+    me: bool,
+    /// Peer node IDs in scope.
+    peers: Vec<String>,
+}
+
+impl std::fmt::Debug for Federated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Federated").finish_non_exhaustive()
+    }
+}
+
+impl Federated {
+    pub(crate) fn new(local: Shared, cluster: Arc<Cluster>) -> Self {
+        Self {
+            local,
+            cluster,
+            missing: Mutex::new(Vec::new()),
+            only: None,
+            map: Arc::new(MapPeers::new()),
+            router_view: Arc::new(Mutex::new(None)),
+            secrets_since: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// REQ: OPS-010 — the same reads without the nodes `ids` names (the alert task leaves
+    /// nodes in maintenance out of cluster-wide shares like SERVFAIL).
+    pub(crate) fn excluding(&self, ids: &std::collections::HashSet<String>) -> Self {
+        let me = !ids.contains(&self.cluster.identity.meta.node_id);
+        let peers = self
+            .cluster
+            .members()
+            .into_iter()
+            .map(|m| m.node_id)
+            .filter(|p| !ids.contains(p))
+            .collect();
+        Self {
+            local: Arc::clone(&self.local),
+            cluster: Arc::clone(&self.cluster),
+            missing: Mutex::new(Vec::new()),
+            only: Some(Only { me, peers }),
+            map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
+        }
+    }
+
+    /// Whether this node's own data is in the read's scope.
+    fn with_me(&self) -> bool {
+        self.only.as_ref().is_none_or(|o| o.me)
+    }
+
+    /// Whether a peer is in the read's scope.
+    fn in_scope(&self, node_id: &str) -> bool {
+        self.only
+            .as_ref()
+            .is_none_or(|o| o.peers.iter().any(|p| p == node_id))
+    }
+
+    /// The reachable peers in the read's scope.
+    fn peers(&self) -> Vec<String> {
+        self.cluster
+            .reachable_peers()
+            .into_iter()
+            .filter(|p| self.in_scope(p))
+            .collect()
+    }
+
+    /// REQ: AGT-011, CLU-002 (T7.3) — the nodes `site:<name>` or `node:<id, site, or pod>`
+    /// names; an unknown one is the caller's mistake.
+    fn narrow(&self, scope: &str) -> Result<Only, Problem> {
+        let me = &self.cluster.identity.meta;
+        if let Some(site) = scope.strip_prefix("site:") {
+            let peers: Vec<String> = self
+                .cluster
+                .members()
+                .into_iter()
+                .filter(|m| m.site == site)
+                .map(|m| m.node_id)
+                .collect();
+            let mine = me.site == site;
+            if peers.is_empty() && !mine {
+                return Err(
+                    Problem::invalid(format!("`scope`: no site `{site}` in this cluster"))
+                        .hint("The Cluster page (or cluster_status) lists each node's site."),
+                );
+            }
+            return Ok(Only { me: mine, peers });
+        }
+        let node = scope.strip_prefix("node:").unwrap_or(scope);
+        Ok(match self.resolve_node(node)? {
+            None => Only {
+                me: true,
+                peers: Vec::new(),
+            },
+            Some(peer) => Only {
+                me: false,
+                peers: vec![peer],
+            },
+        })
+    }
+
+    fn label_of(&self, node: &str) -> String {
+        self.cluster
+            .members()
+            .into_iter()
+            .find(|m| m.node_id == node)
+            .map(|m| if m.pod.is_empty() { m.site } else { m.pod })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| node.to_owned())
+    }
+
+    /// Where this node's configuration writes go.
+    fn write_route(&self) -> WriteRoute {
+        if self.cluster.is_primary() && !self.cluster.may_publish() {
+            return WriteRoute::NoLease;
+        }
+        if self.cluster.is_primary()
+            || self.cluster.identity.reload().meta.config_authority == "gitops"
+        {
+            return WriteRoute::Here;
+        }
+        WriteRoute::Primary(self.cluster.reachable_primary())
+    }
+
+    /// One RPC to one peer from synchronous code; `None` without a runtime.
+    fn call_one(
+        &self,
+        peer: &str,
+        read: &Read,
+        timeout: Duration,
+    ) -> Option<Result<Vec<u8>, String>> {
+        let body = serde_json::to_vec(read).ok()?;
+        let rt = tokio::runtime::Handle::try_current().ok()?;
+        let cluster = Arc::clone(&self.cluster);
+        // REQ: CLU-004 — the call runs off the runtime worker (see `run_off_the_worker`).
+        run_off_the_worker(
+            &rt,
+            async move { cluster.call(peer, KIND, body, timeout).await },
+        )
+    }
+
+    /// REQ: API-013, API-016, API-010 (T24.41) - on a replica, what the primary's routers
+    /// found, with the primary's label. `None` on the primary itself (its tables are the
+    /// answer) and when the primary can't answer (away, or too old to know the read): the
+    /// replica's own answer stands and the primary is recorded as missing, so the page says so.
+    /// Never an error: DNS and every other read are untouched.
+    fn primary_router_view(&self) -> Option<(String, routers_view::RouterView)> {
+        if self.cluster.is_primary() {
+            return None;
+        }
+        // Only a router the primary reads needs the call (a cluster without routers asks nothing
+        // and never reports the primary as missing).
+        if !self
+            .local
+            .router_entries()
+            .iter()
+            .any(|e| e.status.polled_by == "the primary")
+        {
+            return None;
+        }
+        let known = self.cluster.members().into_iter().find(|m| m.primary);
+        let primary = self.cluster.reachable_primary();
+        // REQ: API-013 (T24.42) - the answer, or the failure to get one, is remembered for
+        // `ROUTER_VIEW_TTL`, so a page that makes several reads waits at most once while the
+        // primary is away (the key is the primary asked, empty during an election).
+        let key = primary.clone().unwrap_or_default();
+        let cached = self
+            .router_view
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(at, id, _)| *id == key && at.elapsed() < ROUTER_VIEW_TTL)
+            .map(|(_, _, v)| v.clone());
+        let view = if let Some(v) = cached {
+            v
+        } else {
+            let v = primary.as_ref().and_then(|p| {
+                let body = self.call_one(p, &Read::RouterView, DEADLINE)?.ok()?;
+                serde_json::from_slice::<routers_view::RouterView>(&body).ok()
+            });
+            *self
+                .router_view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((std::time::Instant::now(), key, v.clone()));
+            v
+        };
+        if let (Some(p), Some(v)) = (primary, view) {
+            Some((self.label_of(&p), v))
+        } else {
+            // No member is primary during an election: the note still names who is missing.
+            let who = known.map_or_else(|| "the primary".to_owned(), |m| self.label_of(&m.node_id));
+            self.record_missing(vec![who]);
+            None
+        }
+    }
+
+    fn own_label(&self) -> String {
+        // T6.14 — Kubernetes pods share a site: their pod name tells them apart.
+        let pod = self.cluster.local_state().pod;
+        if !pod.is_empty() {
+            return pod;
+        }
+        let m = &self.cluster.identity.meta;
+        if m.site.is_empty() {
+            m.node_id.clone()
+        } else {
+            m.site.clone()
+        }
+    }
+
+    /// REQ: OBS-901 — starts the map's gather task on the runtime this read runs on. Without a
+    /// runtime (a synchronous test) nothing starts and the peers stay silent.
+    fn start_map_gather(&self) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            self.map.demand.stop();
+            return;
+        };
+        let (cluster, list_cluster) = (Arc::clone(&self.cluster), Arc::clone(&self.cluster));
+        let peers = move || {
+            list_cluster
+                .members()
+                .into_iter()
+                .map(|m| wrendns_api::map_api::PeerRef {
+                    label: member_label(&m),
+                    connected: m.connected,
+                    relayed_up: false,
+                    id: m.node_id,
+                })
+                .collect()
+        };
+        let fetch = move |peer: String| {
+            let cluster = Arc::clone(&cluster);
+            async move {
+                let body = serde_json::to_vec(&Read::MapPart).ok()?;
+                let answer = cluster.call(&peer, KIND, body, DEADLINE).await.ok()?;
+                serde_json::from_slice::<Option<wrendns_api::map::MapPart>>(&answer)
+                    .ok()
+                    .flatten()
+            }
+        };
+        rt.spawn(wrendns_api::map_api::gather(
+            Arc::clone(&self.map.cache),
+            Arc::clone(&self.map.demand),
+            peers,
+            fetch,
+            wrendns_api::map_api::TICK,
+            DEADLINE,
+            Duration::from_secs(10),
+        ));
+    }
+
+    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Each answer
+    /// comes with its index in `reads`, and the labels of the nodes that didn't answer come
+    /// back with them: the known nodes in scope that are disconnected, and the peers whose read
+    /// failed. Nothing is recorded on `self` (T24.11): the caller returns the set with its
+    /// result.
+    fn round(&self, reads: Vec<(String, Read)>) -> (Vec<RoundAnswer>, Vec<String>) {
+        let mut missing: Vec<String> = self
+            .cluster
+            .members()
+            .into_iter()
+            .filter(|m| !m.connected && self.in_scope(&m.node_id))
+            // The same label `label_of` gives a peer whose call fails, so one node is named once
+            // (REQ: FLT-004; a Kubernetes pod is named by its pod, not its shared site).
+            .map(|m| self.label_of(&m.node_id))
+            .collect();
+        let calls: Vec<RoundAnswer> = reads
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, (peer, r))| serde_json::to_vec(&r).ok().map(|b| (i, peer, b)))
+            .collect();
+        let answers: Vec<(usize, String, Result<Vec<u8>, String>)> =
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) if !calls.is_empty() => {
+                    let cluster = Arc::clone(&self.cluster);
+                    // REQ: CLU-004 — the calls run to completion off the runtime worker.
+                    run_off_the_worker(&rt, async move {
+                        let tasks: Vec<_> = calls
+                            .into_iter()
+                            .map(|(i, peer, body)| {
+                                let c = Arc::clone(&cluster);
+                                tokio::spawn(async move {
+                                    let r = c.call(&peer, KIND, body, DEADLINE).await;
+                                    (i, peer, r)
+                                })
+                            })
+                            .collect();
+                        let mut out = Vec::new();
+                        for t in tasks {
+                            if let Ok(r) = t.await {
+                                out.push(r);
+                            }
+                        }
+                        out
+                    })
+                    .unwrap_or_default()
+                }
+                _ => Vec::new(),
+            };
+        let mut ok = Vec::new();
+        for (i, peer, r) in answers {
+            match r {
+                Ok(body) => ok.push((i, peer, body)),
+                Err(e) => {
+                    tracing::debug!(peer, error = %e, "federated read failed");
+                    missing.push(self.label_of(&peer));
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        (ok, missing)
+    }
+
+    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Records
+    /// which known nodes didn't answer, on this request's handle.
+    fn gather(&self, reads: Vec<(String, Read)>) -> Vec<(String, Vec<u8>)> {
+        let (answers, missing) = self.round(reads);
+        self.record_missing(missing);
+        answers
+            .into_iter()
+            .map(|(_, peer, body)| (peer, body))
+            .collect()
+    }
+
+    /// The nodes this request's reads couldn't reach (what [`Backend::missing_nodes`] returns).
+    fn record_missing(&self, missing: Vec<String>) {
+        *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing;
+    }
+
+    /// Asks every reachable peer the same read; decoded answers with each peer's label.
+    fn everyone_labelled<T: serde::de::DeserializeOwned>(
+        &self,
+        read: impl Fn() -> Read,
+    ) -> Vec<(String, T)> {
+        let reads = self.peers().into_iter().map(|p| (p, read())).collect();
+        self.gather(reads)
+            .into_iter()
+            .filter_map(|(peer, body)| {
+                serde_json::from_slice(&body)
+                    .ok()
+                    .map(|v| (self.label_of(&peer), v))
+            })
+            .collect()
+    }
+
+    /// A node named by site or ID: `None` for this node, `Some(peer ID)` for a peer.
+    fn resolve_node(&self, node: &str) -> Result<Option<String>, Problem> {
+        let me = &self.cluster.identity.meta;
+        if node == me.node_id || node == self.own_label() {
+            return Ok(None);
+        }
+        self.cluster
+            .members()
+            .into_iter()
+            .find(|m| {
+                m.node_id == node
+                    || (!m.pod.is_empty() && m.pod == node)
+                    || (!m.site.is_empty() && m.site == node)
+            })
+            .map(|m| Some(m.node_id))
+            .ok_or_else(|| Problem::invalid(format!("`node`: no cluster node `{node}`")))
+    }
+
+    /// REQ: CLU-014 — where a drill request for `node` goes: here (`None`), a peer, or a
+    /// problem (`node_unknown`, or `node_unreachable` for a registered node not heard from).
+    fn drill_node(&self, node: &str) -> Result<Option<String>, Problem> {
+        use wrendns_api::problem::Code;
+        if node == "local" {
+            return Ok(None);
+        }
+        self.resolve_node(node).map_err(|_| {
+            if self
+                .cluster
+                .identity
+                .registry()
+                .iter()
+                .any(|n| n.node_id == node)
+            {
+                Problem::new(
+                    Code::NodeUnreachable,
+                    format!("{node} isn't reachable over the cluster channel"),
+                )
+                .hint("A drill is the node's own state, so the node must be up to take it.")
+            } else {
+                Problem::new(Code::NodeUnknown, format!("no cluster node `{node}`"))
+                    .hint("Use `local`, or a node's ID, site, or pod name from the Cluster page.")
+            }
+        })
+    }
+
+    /// T7.1 — runs `local` here and `read` on every reachable peer (or only on `node`), each
+    /// row labelled with its node; connected peers that don't answer are listed with an error.
+    fn blocking_fan(
+        &self,
+        node: Option<&str>,
+        local: impl FnOnce(&dyn Backend) -> Result<Vec<wrendns_api::model::BlockingNode>, Problem>,
+        read: impl Fn() -> Read,
+    ) -> Result<Vec<wrendns_api::model::BlockingNode>, Problem> {
+        use wrendns_api::model::BlockingNode;
+        let label = |mut v: Vec<BlockingNode>, l: &str| {
+            for r in &mut v {
+                r.node = Some(l.to_owned());
+            }
+            v
+        };
+        let failed = |l: String, e: String| BlockingNode {
+            node: Some(l),
+            error: Some(e),
+            ..BlockingNode::default()
+        };
+        match node.map(|n| self.resolve_node(n)).transpose()? {
+            Some(None) => Ok(label(local(self.local.as_ref())?, &self.own_label())),
+            Some(Some(peer)) => {
+                let l = self.label_of(&peer);
+                Ok(match self.call_one(&peer, &read(), DEADLINE) {
+                    Some(Ok(body)) => label(serde_json::from_slice(&body).unwrap_or_default(), &l),
+                    Some(Err(e)) => vec![failed(l, e)],
+                    None => vec![failed(l, "no runtime".into())],
+                })
+            }
+            None => {
+                let mut out = label(local(self.local.as_ref())?, &self.own_label());
+                let answered = self.everyone_labelled::<Vec<BlockingNode>>(read);
+                let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
+                for (l, v) in answered {
+                    out.extend(label(v, &l));
+                }
+                for m in self
+                    .cluster
+                    .members()
+                    .into_iter()
+                    .filter(|m| m.connected && !self.cluster.is_witness(&m.node_id))
+                {
+                    let l = self.label_of(&m.node_id);
+                    if !names.contains(&l) {
+                        out.push(failed(
+                            l,
+                            "didn't answer (an older version can't pause)".into(),
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// REQ: CLU-002 — `peers`' time buckets over `[from_s, to_s)`, asked in windows of at most
+    /// [`federation::TIMESERIES_CHUNK`] buckets, all at once: one answer for a busy node's day
+    /// of minutes is over the cluster channel's 1 MiB frame, and was dropped whole. Returns
+    /// each answered window's buckets, and each peer that answered any window (`true` when it
+    /// answered every one). Windows that fail list the peer in `missingNodes`.
+    fn peer_timeseries(
+        &self,
+        peers: Vec<String>,
+        step: Step,
+        from_s: u64,
+        to_s: u64,
+    ) -> (Vec<Vec<TimeBucket>>, Vec<(String, bool)>) {
+        let windows = federation::timeseries_chunks(step, from_s, to_s);
+        let reads = peers
+            .iter()
+            .flat_map(|p| {
+                windows.iter().map(move |&(from_s, to_s)| {
+                    (p.clone(), Read::Timeseries { step, from_s, to_s })
+                })
+            })
+            .collect();
+        let mut parts = Vec::new();
+        let mut got: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (peer, body) in self.gather(reads) {
+            if let Ok(v) = serde_json::from_slice::<Vec<TimeBucket>>(&body) {
+                parts.push(v);
+                *got.entry(peer).or_default() += 1;
+            }
+        }
+        let answered = peers
+            .into_iter()
+            .filter_map(|p| got.get(&p).map(|n| (p, *n == windows.len())))
+            .collect();
+        (parts, answered)
+    }
+
+    /// Asks every reachable peer the same read; decoded answers.
+    fn everyone<T: serde::de::DeserializeOwned>(&self, read: impl Fn() -> Read) -> Vec<T> {
+        let reads = self.peers().into_iter().map(|p| (p, read())).collect();
+        self.gather(reads)
+            .into_iter()
+            .filter_map(|(peer, body)| match serde_json::from_slice(&body) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::debug!(peer, error = %e, "undecodable federated answer");
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+impl Backend for Federated {
+    fn now_unix_seconds(&self) -> u64 {
+        self.local.now_unix_seconds()
+    }
+    fn system_info(&self) -> SystemInfo {
+        self.local.system_info()
+    }
+    // REQ: AGT-011, CLU-002 (T7.3) — the same reads over some of the nodes.
+    fn scoped(&self, scope: &str) -> Result<Shared, Problem> {
+        let only = self.narrow(scope)?;
+        if only.me && only.peers.is_empty() {
+            return Ok(Arc::clone(&self.local));
+        }
+        Ok(Arc::new(Self {
+            local: Arc::clone(&self.local),
+            cluster: Arc::clone(&self.cluster),
+            missing: Mutex::new(Vec::new()),
+            only: Some(only),
+            map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
+        }))
+    }
+    fn local(&self) -> Option<Shared> {
+        Some(Arc::clone(&self.local))
+    }
+    fn missing_nodes(&self) -> Vec<String> {
+        self.missing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+    // REQ: CLU-003, T24.11 — each request reads through its own handle, with its own set of
+    // the nodes that didn't answer (a shared one let concurrent requests overwrite each other).
+    fn for_request(&self) -> Option<Shared> {
+        Some(Arc::new(Self {
+            local: Arc::clone(&self.local),
+            cluster: Arc::clone(&self.cluster),
+            missing: Mutex::new(Vec::new()),
+            only: self.only.clone(),
+            map: Arc::clone(&self.map),
+            router_view: Arc::clone(&self.router_view),
+            secrets_since: Arc::clone(&self.secrets_since),
+        }))
+    }
+    fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
+        self.local.promote(req, by)
+    }
+    // The services catalog is compiled in: the same everywhere.
+    fn services(&self) -> Vec<wrendns_api::model::ServiceInfo> {
+        self.local.services()
+    }
+    // Updates are per node: the one serving the UI checks.
+    fn check_updates(
+        &self,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::UpdateStatus, Problem>> {
+        self.local.check_updates()
+    }
+    fn promote_plan(
+        &self,
+        req: &PromoteRequest,
+    ) -> Result<wrendns_api::model::PromotePlan, Problem> {
+        self.local.promote_plan(req)
+    }
+    fn cluster(&self) -> ClusterView {
+        self.local.cluster()
+    }
+    fn git_hook(&self, signature: Option<String>, body: Vec<u8>) -> Result<(), Problem> {
+        self.local.git_hook(signature, body)
+    }
+    // A backup is of this node (ADR-063).
+    fn backup_create(
+        &self,
+        include_qlog: bool,
+        passphrase: Option<zeroize::Zeroizing<String>>,
+    ) -> Result<wrendns_api::BackupOutput, Problem> {
+        self.local.backup_create(include_qlog, passphrase)
+    }
+    // REQ: OPS-011 (ADR-156) — a support package is of this node: its own log and state, redacted on
+    // it. With `cluster` (ADR-172) every reachable node makes and redacts its own part under one key
+    // made here, and this node puts them together.
+    fn support_package(
+        &self,
+        req: &wrendns_api::model::SupportPackageRequest,
+        dry_run: bool,
+    ) -> Result<wrendns_api::SupportPackageOutput, Problem> {
+        if req.cluster {
+            return self.cluster_support(req, dry_run);
+        }
+        self.local.support_package(req, dry_run)
+    }
+    // REQ: OPS-011 (ADR-172) — this node's part, for the node that is putting a package together.
+    fn support_part(
+        &self,
+        req: &wrendns_api::model::SupportCollectRequest,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.support_part(req)
+    }
+    fn support_map(&self, id: &str) -> Option<String> {
+        self.local.support_map(id)
+    }
+    // REQ: OBS-016 — the objectives are configuration, the same on every node; the status is
+    // worked out from the federated time buckets.
+    fn slo_settings(&self) -> wrendns_api::slo::Settings {
+        self.local.slo_settings()
+    }
+
+    // REQ: OBS-030 (ADR-130) — every node's exemplars, labelled.
+    fn exemplars(
+        &self,
+        from_us: u64,
+        to_us: u64,
+        path: Option<&str>,
+    ) -> Vec<wrendns_api::latency_heatmap::LatencyExemplar> {
+        let own = self.own_label();
+        let mut out: Vec<_> = if self.with_me() {
+            self.local
+                .exemplars(from_us, to_us, path)
+                .into_iter()
+                .map(|mut x| {
+                    x.node = Some(own.clone());
+                    x
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (label, rows) in self
+            .everyone_labelled::<Vec<wrendns_api::latency_heatmap::LatencyExemplar>>(|| {
+                Read::Exemplars {
+                    from_us,
+                    to_us,
+                    path: path.map(str::to_owned),
+                }
+            })
+        {
+            out.extend(rows.into_iter().map(|mut x| {
+                x.node = Some(label.clone());
+                x
+            }));
+        }
+        out
+    }
+    // REQ: OBS-032 — the setting is the cluster's (replicated configuration): this node's.
+    fn qlog_retention_days(&self) -> u32 {
+        self.local.qlog_retention_days()
+    }
+    fn qlog_privacy_level(&self) -> u8 {
+        self.local.qlog_privacy_level()
+    }
+
+    // REQ: OBS-029 (ADR-129) — every node's hours for a device or a name, summed; an hour is
+    // covered when every node that answered had the key in its list.
+    fn heatmap_key(
+        &self,
+        q: &wrendns_api::heatmap::KeyQuery,
+    ) -> Result<wrendns_api::heatmap::KeyPart, Problem> {
+        let n = usize::try_from((q.to_s - q.from_s).div_ceil(3600)).unwrap_or(0);
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.heatmap_key(q)?);
+        }
+        for (_, p) in self.everyone_labelled::<wrendns_api::heatmap::KeyPart>(|| Read::HeatmapKey {
+            q: q.clone(),
+        }) {
+            parts.push(p);
+        }
+        Ok(wrendns_api::heatmap::KeyPart::merge(parts, n))
+    }
+    // REQ: OBS-029, CLU-002 — every node's network slots, summed. Each peer sums its own
+    // minutes into slots: a week of its minute buckets is several megabytes, over the cluster
+    // channel's 1 MiB frame, so asking for those dropped every busy peer from the 15-minute
+    // grid ("didn't answer"). A peer on an older build that doesn't know the read gives its
+    // time buckets instead, a few hours at a time (`peer_timeseries`).
+    fn heatmap_network(&self, q: &wrendns_api::heatmap::NetworkQuery) -> Vec<u64> {
+        use wrendns_api::heatmap::add_slots;
+        let mut out = vec![0; q.slot_count()];
+        let peers = self.peers();
+        let answers = self.gather(
+            peers
+                .iter()
+                .map(|p| (p.clone(), Read::HeatmapNetwork { q: q.clone() }))
+                .collect(),
+        );
+        let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
+        let mut answered = std::collections::HashSet::new();
+        for (peer, body) in answers {
+            if let Ok(v) = serde_json::from_slice::<Vec<u64>>(&body) {
+                add_slots(&mut out, &v);
+                answered.insert(peer.clone());
+                live.push(peer);
+            }
+        }
+        let missing_first = self.missing_nodes();
+        let older: Vec<String> = peers
+            .into_iter()
+            .filter(|p| !answered.contains(p) && missing_first.contains(&self.label_of(p)))
+            .collect();
+        if !older.is_empty() {
+            let (parts, answered) = self.peer_timeseries(older, q.step(), q.from_s, q.to_s);
+            for buckets in parts {
+                add_slots(&mut out, &q.slots_of(&buckets));
+            }
+            let recovered: Vec<String> = answered
+                .iter()
+                .filter(|(_, whole)| *whole)
+                .map(|(p, _)| self.label_of(p))
+                .collect();
+            live.extend(answered.into_iter().map(|(p, _)| p));
+            *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing_first
+                .into_iter()
+                .filter(|m| !recovered.contains(m))
+                .collect();
+        }
+        if self.with_me() {
+            add_slots(&mut out, &self.local.heatmap_network(q));
+        }
+        // REQ: CLU-007 (T9.3) — minutes shipped here by nodes that aren't answering, for the
+        // whole cluster's view only (as `timeseries`).
+        if self.only.is_none() {
+            let shipped = self
+                .local
+                .shipped_timeseries(q.step(), q.from_s, q.to_s, &live);
+            add_slots(&mut out, &q.slots_of(&shipped));
+        }
+        out
+    }
+    // REQ: OBS-027 (ADR-127) — every node's part, labelled. A peer on an older build that can't
+    // answer gives its hour buckets instead (a timeline, no lists: partial, not missing). Pods
+    // that shipped minutes here and aren't answering count from those, for the whole cluster.
+    fn slo_parts(
+        &self,
+        q: &wrendns_api::attribution::PartQuery,
+    ) -> Vec<wrendns_api::attribution::Part> {
+        let mine = wrendns_api::attribution::PartQuery {
+            live: Vec::new(),
+            ..q.clone()
+        };
+        let peers = self.peers();
+        let answers = self.gather(
+            peers
+                .iter()
+                .map(|p| (p.clone(), Read::SloParts { q: mine.clone() }))
+                .collect(),
+        );
+        let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
+        let mut out = Vec::new();
+        let mut answered = std::collections::HashSet::new();
+        for (peer, body) in answers {
+            if let Ok(parts) = serde_json::from_slice::<Vec<wrendns_api::attribution::Part>>(&body)
+            {
+                for mut p in parts {
+                    p.node = Some(
+                        p.node
+                            .map_or_else(|| self.label_of(&peer), |id| self.label_of(&id)),
+                    );
+                    out.push(p);
+                }
+                answered.insert(peer.clone());
+                live.push(peer);
+            }
+        }
+        let missing_first = self.missing_nodes();
+        // Older peers: their hour buckets.
+        let older: Vec<String> = peers
+            .into_iter()
+            .filter(|p| !answered.contains(p) && missing_first.contains(&self.label_of(p)))
+            .collect();
+        let mut recovered = Vec::new();
+        if !older.is_empty() {
+            let reads = older
+                .iter()
+                .map(|p| {
+                    (
+                        p.clone(),
+                        Read::Timeseries {
+                            step: Step::Hour,
+                            from_s: q.from_s,
+                            to_s: q.to_s,
+                        },
+                    )
+                })
+                .collect();
+            for (peer, body) in self.gather(reads) {
+                if let Ok(hours) = serde_json::from_slice::<Vec<TimeBucket>>(&body) {
+                    recovered.push(self.label_of(&peer));
+                    out.push(wrendns_api::attribution::Part {
+                        node: Some(self.label_of(&peer)),
+                        hours,
+                        partial: true,
+                        ..wrendns_api::attribution::Part::default()
+                    });
+                    live.push(peer);
+                }
+            }
+        }
+        *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing_first
+            .into_iter()
+            .filter(|m| !recovered.contains(m))
+            .collect();
+        if self.with_me() {
+            let local_q = wrendns_api::attribution::PartQuery {
+                live: if self.only.is_none() {
+                    live
+                } else {
+                    Vec::new()
+                },
+                ..q.clone()
+            };
+            for mut p in self.local.slo_parts(&local_q) {
+                p.node = Some(
+                    p.node
+                        .map_or_else(|| self.own_label(), |id| self.label_of(&id)),
+                );
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    // REQ: CLU-002 — counters sum across nodes.
+    fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
+        let (mut parts, answered) = self.peer_timeseries(self.peers(), step, from_s, to_s);
+        let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
+        live.extend(answered.into_iter().map(|(p, _)| p));
+        if self.with_me() {
+            parts.push(self.local.timeseries(step, from_s, to_s));
+        }
+        // REQ: CLU-007 (T9.3) — minutes shipped here by nodes that aren't answering (an
+        // ephemeral pod that restarted), for the whole cluster's view only.
+        if self.only.is_none() {
+            parts.push(self.local.shipped_timeseries(step, from_s, to_s, &live));
+        }
+        federation::merge_timeseries(parts)
+    }
+    // REQ: OBS-008, CLU-002 (T9.2) — the live tail covers the cluster: a session on each
+    // peer (same filter, a share of the rate cap), polled twice a second.
+    fn tail(&self, p: &TailParams) -> Result<tokio::sync::mpsc::Receiver<TailItem>, Problem> {
+        let reachable = self.cluster.reachable_peers();
+        let (me, peers): (bool, Vec<String>) = match p.scope.as_deref() {
+            Some("node:local") => return self.local.tail(p),
+            None | Some("" | "cluster") => (true, reachable),
+            Some(s) => {
+                let o = self.narrow(s)?;
+                (
+                    o.me,
+                    o.peers
+                        .into_iter()
+                        .filter(|x| reachable.contains(x))
+                        .collect(),
+                )
+            }
+        };
+        if peers.is_empty() {
+            return self.local.tail(p);
+        }
+        let n = u32::try_from(peers.len() + usize::from(me)).unwrap_or(u32::MAX);
+        let mut share = p.clone();
+        share.rate = Some((p.rate.unwrap_or(500) / n).max(1));
+        share.scope = Some("node:local".to_owned());
+        let (tx, rx) = tokio::sync::mpsc::channel(4096);
+        if me {
+            let mut local = self.local.tail(&share)?;
+            let (tx, label) = (tx.clone(), self.own_label());
+            tokio::spawn(async move {
+                while let Some(mut it) = local.recv().await {
+                    label_item(&mut it, &label);
+                    if tx.send(it).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        for peer in peers {
+            tokio::spawn(remote_tail(
+                Arc::clone(&self.cluster),
+                self.label_of(&peer),
+                peer,
+                share.clone(),
+                tx.clone(),
+            ));
+        }
+        Ok(rx)
+    }
+    // REQ: OBS-012 — Space-Saving lists merge by key.
+    fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
+        let mut parts: Vec<Vec<TopItem>> = self.everyone(|| Read::Top {
+            kind,
+            hour,
+            limit,
+            client,
+        });
+        if self.with_me() {
+            parts.push(self.local.top(kind, hour, limit, client));
+        }
+        federation::merge_top(parts, limit)
+    }
+    // REQ: OBS-004 (ADR-160) — each node sums its own hours; the lists merge by key. A peer
+    // one version behind doesn't know the read and is listed in `missingNodes`.
+    fn top_range(&self, kind: TopKind, from_s: u64, to_s: u64, limit: usize) -> Vec<TopItem> {
+        let mut parts: Vec<Vec<TopItem>> = self.everyone(|| Read::TopRange {
+            kind,
+            from_s,
+            to_s,
+            limit,
+        });
+        if self.with_me() {
+            parts.push(self.local.top_range(kind, from_s, to_s, limit));
+        }
+        federation::merge_top(parts, limit)
+    }
+    fn top_in_group(
+        &self,
+        kind: TopKind,
+        hour: Hour,
+        limit: usize,
+        group: &str,
+    ) -> Result<Vec<TopItem>, Problem> {
+        let own = if self.with_me() {
+            self.local.top_in_group(kind, hour, limit, group)?
+        } else {
+            Vec::new()
+        };
+        let mut parts: Vec<Vec<TopItem>> = self.everyone(|| Read::TopInGroup {
+            kind,
+            hour,
+            limit,
+            group: group.to_owned(),
+        });
+        parts.push(own);
+        Ok(federation::merge_top(parts, limit))
+    }
+    // REQ: API-005 (ADR-158) — exact counts that add up per client. Each node sends every
+    // client it has (not just its top `limit`), so a client low on one node's list isn't
+    // undercounted; the merged list is cut to `limit` afterwards.
+    fn top_clients_rolling(
+        &self,
+        limit: usize,
+        group: Option<&str>,
+    ) -> Result<Vec<TopItem>, Problem> {
+        let all = wrendns_telemetry::last_hour::MAX_CLIENTS;
+        let own = if self.with_me() {
+            self.local.top_clients_rolling(all, group)?
+        } else {
+            Vec::new()
+        };
+        let mut parts: Vec<Vec<TopItem>> = self.everyone(|| Read::TopClientsRolling {
+            limit: all,
+            group: group.map(str::to_owned),
+        });
+        parts.push(own);
+        Ok(federation::merge_top(parts, limit))
+    }
+    // REQ: CLU-002 (T9.2) — exact: the nodes' histograms merged; a peer on an older build
+    // answers percentiles, blended approximately as before.
+    fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
+        let peers = self.peers();
+        let answers = self.gather(
+            peers
+                .iter()
+                .map(|p| (p.clone(), Read::LatencyHist { by, hour }))
+                .collect(),
+        );
+        let mut hists: Vec<Vec<wrendns_api::model::LatencyHist>> = Vec::new();
+        let mut answered = std::collections::HashSet::new();
+        for (peer, body) in answers {
+            if let Ok(v) = serde_json::from_slice(&body) {
+                hists.push(v);
+                answered.insert(peer);
+            }
+        }
+        if self.with_me() {
+            hists.push(self.local.latency_hists(by, hour));
+        }
+        let mut rows = merge_hists(hists);
+        let older: Vec<(String, Read)> = peers
+            .into_iter()
+            .filter(|p| !answered.contains(p))
+            .map(|p| (p, Read::Latency { by, hour }))
+            .collect();
+        if !older.is_empty() {
+            let mut parts: Vec<Vec<LatencyRow>> = self
+                .gather(older)
+                .into_iter()
+                .filter_map(|(_, b)| serde_json::from_slice(&b).ok())
+                .collect();
+            if !parts.is_empty() {
+                parts.push(rows);
+                rows = federation::merge_latency(parts);
+            }
+        }
+        rows
+    }
+
+    // REQ: CLU-002 — one query log across nodes, newest first, paged with a cursor that
+    // remembers where each node stopped.
+    fn queries(
+        &self,
+        q: &QueryParams,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    ) -> Result<QueryPage, Problem> {
+        let prev: Bounds = match q.cursor.as_deref() {
+            None => Bounds::new(),
+            Some(c) => federation::decode_cursor(Some(c)).ok_or_else(|| {
+                Problem::invalid("`cursor`: not a cursor from this API")
+                    .hint("Pass the nextCursor value from the previous page unchanged.")
+            })?,
+        };
+        let until = |node: &str| federation::until(&prev, node, to_us);
+        let mut params = q.clone();
+        params.cursor = None;
+        let me = self.cluster.identity.meta.node_id.clone();
+        let reads: Vec<(String, Read)> = self
+            .peers()
+            .into_iter()
+            .filter_map(|p| {
+                let to = until(&p)?;
+                let (params, from_us, to_us) = (Box::new(params.clone()), from_us, to);
+                let read = if params.negates() {
+                    Read::QueriesNegated {
+                        params,
+                        from_us,
+                        to_us,
+                        limit,
+                    }
+                } else {
+                    Read::Queries {
+                        params,
+                        from_us,
+                        to_us,
+                        limit,
+                    }
+                };
+                Some((p, read))
+            })
+            .collect();
+        let mut pages = Vec::new();
+        for (peer, body) in self.gather(reads) {
+            if let Ok(page) = serde_json::from_slice::<QueryPage>(&body) {
+                pages.push(NodePage {
+                    label: self.label_of(&peer),
+                    node: peer,
+                    page,
+                    asked: limit,
+                });
+            }
+        }
+        let mut local_error = None;
+        if let Some(to) = until(&me).filter(|_| self.with_me()) {
+            match self.local.queries(&params, from_us, to, limit) {
+                Ok(page) => pages.push(NodePage {
+                    node: me,
+                    label: self.own_label(),
+                    page,
+                    asked: limit,
+                }),
+                Err(e) => local_error = Some(e),
+            }
+        }
+        let mut page = match local_error {
+            // Only this node can say why its own log is unavailable; peers' rows still help.
+            Some(e) if pages.is_empty() => return Err(e),
+            Some(_) => {
+                self.missing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(self.own_label());
+                federation::merge_queries(pages, limit, &prev)
+            }
+            None => federation::merge_queries(pages, limit, &prev),
+        };
+        name_rows(&mut page.items, |ip| self.local.client_name(ip));
+        Ok(page)
+    }
+
+    fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
+        self.local.explain(p)
+    }
+    // REQ: FLT-004, CLU-003 — the primary downloads and compiles the lists every node serves, so
+    // a replica shows the primary's download state (and `refreshing`, after a refresh it
+    // forwarded); hits stay this node's own. Without a reachable primary, or with one too old
+    // to answer, this node's own view.
+    // When the primary doesn't answer, it is named in `missingNodes` (so the UI and
+    // `ctl lists refresh --wait` know the download state shown is this node's own).
+    // `GET /lists` swaps in the cluster's hits too (OBS-009).
+    // REQ: FLT-004, CLU-003, OBS-009 (T24.11) — only the primary's download state is asked here;
+    // the peers' hits go out in `lists_and_hits` (the `/lists` handler), not on every call.
+    fn lists(&self) -> Vec<ListInfo> {
+        let mine = self.local.lists();
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id);
+        let primary = match primary {
+            Some(p) if !self.cluster.is_primary() => p,
+            // The primary itself, or no primary known yet: this node's view is the answer.
+            _ => {
+                self.record_missing(Vec::new());
+                return mine;
+            }
+        };
+        let theirs = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| self.call_one(&p, &Read::Lists, DEADLINE))
+            .and_then(|r| {
+                r.map_err(|e| tracing::debug!(error = %e, "the primary's lists unread"))
+                    .ok()
+            })
+            .and_then(|body| lists_from_primary(&body));
+        let missing = if theirs.is_some() {
+            Vec::new()
+        } else {
+            vec![self.label_of(&primary)]
+        };
+        self.record_missing(missing);
+        match theirs {
+            Some(theirs) => merge_lists(&mine, theirs),
+            None => mine,
+        }
+    }
+    // REQ: FLT-004, CLU-003, OBS-009 (T24.11) — the primary's lists and every node's hits go out in
+    // one round (a replica used to ask the primary, then the peers, a deadline each). The missing
+    // set is this request's: the primary when it didn't answer, and the nodes the round couldn't
+    // reach.
+    fn lists_and_hits(&self) -> wrendns_api::ListsAndHits {
+        let mine = self.local.lists();
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id);
+        // A replica asks the reachable primary for the download state; the primary itself, or
+        // no primary known yet, answers with this node's own lists.
+        let replica_of = match primary {
+            Some(p) if !self.cluster.is_primary() => Some(p),
+            _ => None,
+        };
+        let lists_at = replica_of
+            .as_ref()
+            .and_then(|_| self.cluster.reachable_primary());
+        let mut reads = Vec::new();
+        // Index 0 is the primary's lists, when asked.
+        if let Some(p) = &lists_at {
+            reads.push((p.clone(), Read::Lists));
+        }
+        reads.extend(self.peers().into_iter().map(|p| (p, Read::ListHits)));
+        let (answers, mut missing) = self.round(reads);
+        let mut theirs = None;
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.list_hits());
+        }
+        for (i, _peer, body) in answers {
+            if lists_at.is_some() && i == 0 {
+                theirs = lists_from_primary(&body);
+            } else if let Ok(v) =
+                serde_json::from_slice::<std::collections::BTreeMap<String, u64>>(&body)
+            {
+                parts.push(v);
+            } else {
+                tracing::debug!("undecodable federated list hits");
+            }
+        }
+        if let Some(primary) = replica_of.filter(|_| theirs.is_none()) {
+            missing.push(self.label_of(&primary));
+        }
+        missing.sort();
+        missing.dedup();
+        self.record_missing(missing.clone());
+        let hits = wrendns_api::federation::merge_list_hits(parts);
+        let lists = match theirs {
+            Some(theirs) => merge_lists(&mine, theirs),
+            None => mine,
+        };
+        wrendns_api::ListsAndHits {
+            lists,
+            hits,
+            missing,
+        }
+    }
+    // REQ: OBS-009 (T7.14) — every node's hits, added up by list name: the node serving the
+    // API may answer few queries itself (replicas at other sites do).
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.list_hits());
+        }
+        parts.extend(self.everyone::<std::collections::BTreeMap<String, u64>>(|| Read::ListHits));
+        wrendns_api::federation::merge_list_hits(parts)
+    }
+    // REQ: API-013 (T24.41) - a caller's own rows are used as given.
+    fn groups_with(&self, networks: &[wrendns_api::model::NetworkInfo]) -> Vec<GroupInfo> {
+        self.local.groups_with(networks)
+    }
+    fn profile_devices_with(
+        &self,
+        networks: &[wrendns_api::model::NetworkInfo],
+        leases: &[wrendns_api::model::DhcpLease],
+    ) -> wrendns_api::categories_api::ProfileDevices {
+        self.local.profile_devices_with(networks, leases)
+    }
+    // REQ: API-013 (T24.41) - the Source column's network names include the primary's routers'.
+    fn groups(&self) -> Vec<GroupInfo> {
+        self.local.groups_with(&self.networks())
+    }
+    // REQ: API-013, CLU-004 (T24.42) - the internal callers' groups never wait on the primary.
+    fn groups_local(&self) -> Vec<GroupInfo> {
+        self.local.groups()
+    }
+    // REQ: OBS-025 — each named device with the cluster's most confident identity.
+    fn clients(&self) -> Vec<ClientInfo> {
+        let mut rows = self.local.clients();
+        let merged: std::collections::HashMap<String, wrendns_api::model::DeviceIdentity> = self
+            .identities()
+            .into_iter()
+            .map(|i| (i.client.clone(), i))
+            .collect();
+        for r in &mut rows {
+            let better = r.matches.iter().find_map(|m| {
+                let m = m
+                    .strip_suffix("/32")
+                    .or_else(|| m.strip_suffix("/128"))
+                    .unwrap_or(m);
+                merged.get(m).cloned()
+            });
+            if better.is_some() {
+                r.identity = better;
+            }
+        }
+        rows
+    }
+    // REQ: OBS-025 — every node identifies the devices it sees; one per device, the most
+    // confident (`identify::merge`), labelled with its node.
+    fn identities(&self) -> Vec<wrendns_api::model::DeviceIdentity> {
+        let mut all = Vec::new();
+        if self.with_me() {
+            let me = self.own_label();
+            all.extend(self.local.identities().into_iter().map(|mut i| {
+                i.node = Some(me.clone());
+                i
+            }));
+        }
+        for (label, v) in
+            self.everyone_labelled::<Vec<wrendns_api::model::DeviceIdentity>>(|| Read::Identities)
+        {
+            all.extend(v.into_iter().map(|mut i| {
+                i.node = Some(label.clone());
+                i
+            }));
+        }
+        crate::identify::merge(all)
+    }
+    // REQ: FLT-017 — every node holds the watcher's table: names and keys are this node's.
+    fn workload(&self, client: &str) -> Option<(String, String)> {
+        self.local.workload(client)
+    }
+    fn kubernetes_status(&self) -> wrendns_api::model::KubernetesStatus {
+        self.local.kubernetes_status()
+    }
+    fn workload_counts(&self) -> Vec<wrendns_api::model::WorkloadCount> {
+        self.local.workload_counts()
+    }
+    // REQ: FLT-017, CLU-002 — the list from this node's table; the counts summed over every
+    // node that answers (each counts the queries it answered).
+    fn kubernetes_workloads(&self) -> Result<Vec<wrendns_api::model::WorkloadInfo>, Problem> {
+        let mut items = self.local.kubernetes_workloads()?;
+        if !self.with_me() {
+            for w in &mut items {
+                (w.queries_24h, w.blocked_24h, w.last_seen) = (0, 0, None);
+            }
+        }
+        let mut sums: std::collections::HashMap<String, (u64, u64, u64)> =
+            std::collections::HashMap::new();
+        for counts in
+            self.everyone::<Vec<wrendns_api::model::WorkloadCount>>(|| Read::WorkloadCounts)
+        {
+            for c in counts {
+                let e = sums.entry(c.key).or_default();
+                e.0 += c.queries_24h;
+                e.1 += c.blocked_24h;
+                e.2 = e.2.max(c.last_seen_unix_seconds);
+            }
+        }
+        // Workloads only other nodes counted, without pods now (a CronJob between runs).
+        let known: std::collections::HashSet<String> =
+            items.iter().map(|w| w.key.clone()).collect();
+        for (key, (q, _, last)) in &sums {
+            if *q == 0 || known.contains(key) {
+                continue;
+            }
+            let Some((text, _)) = self.local.workload(key) else {
+                continue;
+            };
+            let Some(info) = key
+                .parse::<std::net::Ipv6Addr>()
+                .ok()
+                .and_then(|k| crate::api_backend::past_workload(&text, &k.octets()))
+            else {
+                continue;
+            };
+            items.push(wrendns_api::model::WorkloadInfo {
+                last_seen: Some(wrendns_api::time::format_us(last.saturating_mul(1_000_000))),
+                ..info
+            });
+        }
+        for w in &mut items {
+            if let Some((q, b, last)) = sums.get(&w.key) {
+                w.queries_24h += q;
+                w.blocked_24h += b;
+                let mine = w
+                    .last_seen
+                    .as_deref()
+                    .and_then(|t| wrendns_api::time::parse_time(t, 0).ok())
+                    .unwrap_or(0);
+                if *last > mine {
+                    w.last_seen =
+                        Some(wrendns_api::time::format_us(last.saturating_mul(1_000_000)));
+                }
+            }
+        }
+        Ok(items)
+    }
+    fn identity(&self, client: &str) -> Result<wrendns_api::model::DeviceIdentity, Problem> {
+        let mut local = self.local.identity(client)?;
+        local.node = Some(self.own_label());
+        let key = local.client.clone();
+        let mut all = vec![local];
+        for (label, v) in
+            self.everyone_labelled::<Option<wrendns_api::model::DeviceIdentity>>(|| {
+                Read::Identity {
+                    client: key.clone(),
+                }
+            })
+        {
+            all.extend(v.map(|mut i| {
+                i.node = Some(label);
+                i
+            }));
+        }
+        Ok(crate::identify::merge(all)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| crate::identify::unavailable(&key, "not_seen")))
+    }
+    // REQ: FLT-006, API-010 (T24.30, ADR-971, ADR-996) — the policy is the primary's configuration
+    // read, applied to this node's observations of the device, so every node gives Explain's answer:
+    // a replica asks the reachable primary and, when it can't (down, or an older version that
+    // doesn't know the read), answers from its own copy and names the primary in `missingNodes`.
+    fn client_policy(
+        &self,
+        client: &str,
+    ) -> Result<wrendns_api::policy_api::ClientPolicy, Problem> {
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id)
+            .filter(|_| !self.cluster.is_primary());
+        let Some(primary) = primary else {
+            let mut mine = self.local.client_policy(client)?;
+            mine.node = Some(self.own_label());
+            self.record_missing(Vec::new());
+            return Ok(mine);
+        };
+        let observed = self.local.policy_observation(client)?;
+        let reply = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| {
+                self.call_one(
+                    &p,
+                    &Read::ClientPolicy {
+                        client: client.to_owned(),
+                        observed: observed.clone(),
+                    },
+                    DEADLINE,
+                )
+            })
+            .and_then(Result::ok)
+            .and_then(|body| serde_json::from_slice::<PolicyReply>(&body).ok());
+        let label = self.label_of(&primary);
+        let (out, missing) = settle_policy(reply, &label, &self.own_label(), || {
+            self.local.client_policy(client)
+        });
+        self.record_missing(if missing { vec![label] } else { Vec::new() });
+        out
+    }
+    // REQ: FLT-006 — a node's own observations and the primary's read of them are this node's.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<wrendns_api::policy_api::PolicyObservation>, Problem> {
+        self.local.policy_observation(client)
+    }
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &wrendns_api::policy_api::PolicyObservation,
+    ) -> Result<wrendns_api::policy_api::ClientPolicy, Problem> {
+        self.local.client_policy_observed(client, observed)
+    }
+    // REQ: OBS-031 — every node's view of the device (it may roam), summed by domain.
+    fn client_rhythm(
+        &self,
+        client: &str,
+    ) -> Result<wrendns_api::rhythm_api::ClientRhythm, Problem> {
+        let local = self.local.client_rhythm(client)?;
+        let key = local.client.clone();
+        let mut available = local.available;
+        let mut parts = vec![(Some(self.own_label()), local.domains)];
+        for (label, v) in
+            self.everyone_labelled::<Option<wrendns_api::rhythm_api::ClientRhythm>>(|| {
+                Read::ClientRhythm {
+                    client: key.clone(),
+                }
+            })
+        {
+            if let Some(r) = v.filter(|r| r.available) {
+                available = true;
+                parts.push((Some(label), r.domains));
+            }
+        }
+        Ok(wrendns_api::rhythm_api::ClientRhythm {
+            client: key,
+            available,
+            reason: (!available).then(|| "disabled".to_owned()),
+            domains: wrendns_api::rhythm_api::merge(parts),
+            ..wrendns_api::rhythm_api::ClientRhythm::default()
+        })
+    }
+    fn upstreams(&self) -> Vec<UpstreamInfo> {
+        self.local.upstreams()
+    }
+    // REQ: OBS-014, CLU-002 — every node's findings (each learns from the queries it answers):
+    // one entry per finding ID, with the nodes that found it, acknowledged by this node's set
+    // (the primary's).
+    fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
+        let mut parts: Vec<(String, Vec<AnomalyFinding>)> = Vec::new();
+        if self.with_me() {
+            parts.push((self.own_label(), self.local.anomalies(since_s)));
+        }
+        parts.extend(self.everyone_labelled::<Vec<AnomalyFinding>>(|| Read::Anomalies { since_s }));
+        let mut items = merge_findings(parts);
+        self.local.annotate_acks(&mut items);
+        items
+    }
+    fn annotate_acks(&self, items: &mut [AnomalyFinding]) {
+        self.local.annotate_acks(items);
+    }
+    // REQ: OBS-014 (ADR-103) — the primary records acknowledgements; a replica forwards them
+    // (also in a GitOps cluster: they aren't configuration) and records them at once itself,
+    // so its own pages show them before the primary's next version arrives.
+    fn anomaly_ack(
+        &self,
+        w: wrendns_api::AnomalyAckWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::AnomalyAckResult, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.anomaly_ack(w);
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        let local = Arc::clone(&self.local);
+        Box::pin(async move {
+            let r = crate::forward::anomaly_ack(cluster, primary, w.clone()).await?;
+            let _ = local.anomaly_ack(w).await;
+            Ok(r)
+        })
+    }
+    // REQ: FLT-004, CLU-003 — lists download where they compile: on the primary. A replica
+    // forwards (an unsynced replica too: what it compiles itself is replaced once it syncs);
+    // without a reachable primary, this node's own fetcher if it runs one, else 503.
+    fn lists_refresh(
+        &self,
+        w: wrendns_api::ListsRefreshWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::ListsRefreshResult, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.lists_refresh(w);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::lists_refresh(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                w,
+            )),
+            None => self.local.lists_refresh(w),
+        }
+    }
+    // REQ: DSC-004 (ADR-1002) - the SNMP poller runs on the designated node: this one when it runs
+    // the inventory; else, with no `[discovery] node` named, the primary (a replica forwards). A
+    // node that isn't designated and can't forward answers `discovery_not_here` itself.
+    fn snmp_test(
+        &self,
+        w: wrendns_api::SnmpTestWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::SnmpTestResult, Problem>> {
+        let st = self.local.discovery_status();
+        if st.designated || !st.enabled || self.cluster.is_primary() || st.node.is_some() {
+            return self.local.snmp_test(w);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::snmp_test(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                w,
+            )),
+            None => self.local.snmp_test(w),
+        }
+    }
+    // REQ: OBS-901 (ADR-958) — `[map]` and this node's own part are the local backend's.
+    fn map_settings(&self) -> Option<wrendns_api::map::MapSettings> {
+        self.local.map_settings()
+    }
+    fn map_part(&self) -> Option<wrendns_api::map::MapPart> {
+        self.local.map_part()
+    }
+    // REQ: OBS-902 (T26.4) - the GeoIP database is each node's own: the answering node's.
+    fn geoip_status(&self) -> Option<wrendns_api::model::GeoipStatus> {
+        self.local.geoip_status()
+    }
+    fn geoip_update(&self) -> Result<wrendns_api::model::GeoipStatus, Problem> {
+        self.local.geoip_update()
+    }
+    fn geoip_delete(&self) -> Result<wrendns_api::model::GeoipStatus, Problem> {
+        self.local.geoip_delete()
+    }
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> wrendns_api::map::GeoAnswer {
+        self.local.geoip_locate(ips)
+    }
+    // REQ: OBS-901 (ADR-958 section 6) — this node's part, and the peers' last good parts from
+    // the cache. A read never waits on a peer: a separate task polls each one on its own
+    // schedule with the deadline of every federated read and files the answer; a peer not heard
+    // from for 3 intervals is missing (and the snapshot says `partial`). The task runs only while
+    // somebody reads the map and stops after 10 s without a read.
+    fn map_parts(&self) -> wrendns_api::map::MapParts {
+        use wrendns_api::map_api::PeerRef;
+        let mut out = wrendns_api::map::MapParts::default();
+        if self.with_me()
+            && let Some(mut p) = self.local.map_part()
+        {
+            p.node = self.own_label();
+            out.parts.push(p);
+        }
+        if self.map.demand.touch(std::time::Instant::now()) {
+            // The grace of a peer not heard from starts now (the cache may be long idle).
+            self.map.cache.restart(std::time::Instant::now());
+            self.start_map_gather();
+        }
+        let relayed: std::collections::HashSet<String> = self
+            .cluster
+            .relayed_members()
+            .into_iter()
+            .map(|r| r.node_id)
+            .collect();
+        let peers: Vec<PeerRef> = self
+            .cluster
+            .members()
+            .into_iter()
+            .filter(|m| self.in_scope(&m.node_id))
+            .map(|m| PeerRef {
+                label: member_label(&m),
+                connected: m.connected,
+                relayed_up: relayed.contains(&m.node_id),
+                id: m.node_id,
+            })
+            .collect();
+        let seen = self.map.cache.view(&peers, std::time::Instant::now());
+        out.parts.extend(seen.parts);
+        out.missing = seen.missing;
+        out.unseen = seen.unseen;
+        out.pending = seen.pending;
+        out
+    }
+    // REQ: OBS-015 (ADR-104) — every node's own conditions, plus the cluster's (peers
+    // unreachable or behind) as this node sees them.
+    fn health(&self) -> wrendns_api::model::Health {
+        let now = self.local.now_unix_seconds();
+        let mut reasons = Vec::new();
+        let mut reporting = 0;
+        if self.with_me() {
+            let mut own = self.local.health().reasons;
+            for r in &mut own {
+                r.node = Some(self.own_label());
+            }
+            reasons.extend(own);
+            reporting += 1;
+        }
+        for (label, h) in self.everyone_labelled::<wrendns_api::model::Health>(|| Read::Health) {
+            reporting += 1;
+            reasons.extend(h.reasons.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        let mut missing = self.missing_nodes();
+        crate::health::soften_not_serving(&mut reasons, reporting);
+        let view = self.local.cluster();
+        reasons.extend(crate::health::cluster_reasons(&view));
+        // REQ: API-015 (T24.42) - a full member without the cluster's stored secrets.
+        {
+            let mut since = self
+                .secrets_since
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            reasons.extend(crate::health::secret_reasons(
+                &view,
+                &mut since,
+                std::time::Instant::now(),
+            ));
+        }
+        // REQ: OPS-010 (ADR-118) — nodes in maintenance: their conditions are left out (a
+        // node that serves still counted as serving above) and they're listed instead.
+        let maintenance = crate::health::exclude_maintenance(&mut reasons, &mut missing, &view);
+        // REQ: OBS-016 (ADR-105) — an objective spending its budget fast, over every node.
+        reasons.extend(crate::health::slo_reasons(self, now));
+        let mut h = crate::health::summarize(
+            reasons,
+            missing,
+            wrendns_api::time::format_us(now.saturating_mul(1_000_000)),
+        );
+        h.maintenance = maintenance;
+        h
+    }
+    // REQ: OPS-010 (ADR-118) — maintenance is the node's own state: a request for another
+    // node goes to that node over the cluster channel (not to the primary).
+    fn maintenance(
+        &self,
+        node: &str,
+        w: wrendns_api::MaintenanceWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::MaintenanceResult, Problem>> {
+        use wrendns_api::problem::Code;
+        if node == "local" {
+            return self.local.maintenance("local", w);
+        }
+        match self.resolve_node(node) {
+            Ok(None) => self.local.maintenance("local", w),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                let label = self.label_of(&peer);
+                Box::pin(crate::maintenance::send(cluster, peer, label, w))
+            }
+            // A member of the registry this node hasn't heard from since it started.
+            Err(_)
+                if self
+                    .cluster
+                    .identity
+                    .registry()
+                    .iter()
+                    .any(|n| n.node_id == node) =>
+            {
+                let node = node.to_owned();
+                Box::pin(async move {
+                    Err(Problem::new(
+                        Code::NodeUnreachable,
+                        format!("{node} isn't reachable over the cluster channel"),
+                    )
+                    .hint(
+                        "Maintenance is the node's own state, so the node must be up to take it.",
+                    ))
+                })
+            }
+            Err(_) => {
+                let node = node.to_owned();
+                Box::pin(async move {
+                    Err(Problem::new(Code::NodeUnknown, format!("no cluster node `{node}`"))
+                        .hint("Use `local`, or a node's ID, site, or pod name from the Cluster page (or cluster_status)."))
+                })
+            }
+        }
+    }
+    // REQ: CLU-014 (ADR-151) — a drill is the node's own state, like maintenance: a request for
+    // another node goes to that node.
+    fn drill(
+        &self,
+        node: &str,
+        w: wrendns_api::DrillWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::DrillStart, Problem>> {
+        match self.drill_node(node) {
+            Ok(None) => self.local.drill("local", w),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                let label = self.label_of(&peer);
+                Box::pin(crate::drill::send(cluster, peer, label, w))
+            }
+            Err(p) => Box::pin(async move { Err(p) }),
+        }
+    }
+    fn drill_active(
+        &self,
+        node: &str,
+    ) -> BoxFuture<Result<Option<wrendns_api::model::ActiveDrill>, Problem>> {
+        match self.drill_node(node) {
+            Ok(None) => self.local.drill_active("local"),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                Box::pin(async move {
+                    let body = serde_json::to_vec(&crate::drill::Op::Active)
+                        .map_err(|e| Problem::internal(e.to_string()))?;
+                    let reply = cluster
+                        .call(&peer, crate::drill::KIND, body, Duration::from_secs(2))
+                        .await
+                        .map_err(|e| {
+                            Problem::new(
+                                wrendns_api::problem::Code::NodeUnreachable,
+                                format!("{peer} didn't answer: {e}"),
+                            )
+                        })?;
+                    serde_json::from_slice(&reply)
+                        .map_err(|e| Problem::internal(format!("unreadable answer: {e}")))
+                })
+            }
+            Err(p) => Box::pin(async move { Err(p) }),
+        }
+    }
+    // REQ: CLU-014 — every node keeps the reports of the drills it ran: merged, newest first.
+    fn drills(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> BoxFuture<Result<wrendns_api::model::DrillPage, Problem>> {
+        let (local, cluster) = (Arc::clone(&self.local), Arc::clone(&self.cluster));
+        Box::pin(async move {
+            let mut items = local
+                .drills(50, 0)
+                .await
+                .map(|p| p.items)
+                .unwrap_or_default();
+            let (answers, missing) = crate::drill::ask_all(&cluster, &crate::drill::Op::List).await;
+            for (_, body) in answers {
+                if let Ok(v) =
+                    serde_json::from_slice::<Vec<wrendns_api::model::DrillSummary>>(&body)
+                {
+                    items.extend(v);
+                }
+            }
+            Ok(crate::drill::page(items, limit, offset, missing))
+        })
+    }
+    // REQ: CLU-014 — a report lives on the node that ran the drill.
+    fn drill_report(
+        &self,
+        id: &str,
+    ) -> BoxFuture<Result<wrendns_api::model::DrillReport, Problem>> {
+        let (local, cluster, id) = (
+            Arc::clone(&self.local),
+            Arc::clone(&self.cluster),
+            id.to_owned(),
+        );
+        Box::pin(async move {
+            if let Ok(r) = local.drill_report(&id).await {
+                return Ok(r);
+            }
+            let (answers, missing) =
+                crate::drill::ask_all(&cluster, &crate::drill::Op::Report { id: id.clone() }).await;
+            for (_, body) in answers {
+                if let Ok(Some(r)) =
+                    serde_json::from_slice::<Option<wrendns_api::model::DrillReport>>(&body)
+                {
+                    return Ok(r);
+                }
+            }
+            let mut p = Problem::not_found(format!("no drill `{id}`"));
+            p = if missing.is_empty() {
+                p.hint("List them with GET /api/v1/drills.")
+            } else {
+                p.hint(format!(
+                    "It may be on a node that didn't answer: {}.",
+                    missing.join(", ")
+                ))
+            };
+            Err(p)
+        })
+    }
+    // REQ: CLU-014 — every node's seen table, merged per device.
+    fn affinity(&self, days: u32) -> BoxFuture<Result<wrendns_api::model::AffinityPage, Problem>> {
+        let (local, cluster, own) = (
+            Arc::clone(&self.local),
+            Arc::clone(&self.cluster),
+            self.own_label(),
+        );
+        Box::pin(async move {
+            let mine = local.affinity(days).await?;
+            let mut per_node = vec![(own, crate::drill::rows_of(&mine))];
+            let (answers, missing) =
+                crate::drill::ask_all(&cluster, &crate::drill::Op::Seen { days }).await;
+            for (label, body) in answers {
+                if let Ok(rows) = serde_json::from_slice::<Vec<crate::drill::SeenRow>>(&body) {
+                    per_node.push((label, rows));
+                }
+            }
+            Ok(crate::drill::affinity_page(days, per_node, missing))
+        })
+    }
+    // REQ: CLU-013 (T13.2) — the primary runs rollouts and pins: another node asks it (and,
+    // without a reachable primary, shows what the version it applied says).
+    fn rollout_status(&self) -> BoxFuture<Result<wrendns_api::model::RolloutStatus, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.rollout_status();
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        let local = Arc::clone(&self.local);
+        Box::pin(async move {
+            match crate::rollout::surface::send(
+                cluster,
+                primary,
+                crate::rollout::surface::Call::Status,
+            )
+            .await
+            {
+                Ok(s) => Ok(s),
+                Err(_) => local.rollout_status().await,
+            }
+        })
+    }
+    fn cluster_versions(&self) -> BoxFuture<Result<wrendns_api::model::ClusterVersions, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.cluster_versions();
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        Box::pin(crate::rollout::surface::send(
+            cluster,
+            primary,
+            crate::rollout::surface::Call::Versions,
+        ))
+    }
+    fn rollout_command(
+        &self,
+        w: wrendns_api::RolloutWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::RolloutAction, Problem>> {
+        if self.cluster.is_primary() {
+            // ADR-056 — a primary without its lease publishes nothing.
+            if !self.cluster.may_publish() {
+                return Box::pin(async { Err(no_lease()) });
+            }
+            return self.local.rollout_command(w);
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        Box::pin(crate::rollout::surface::send(
+            cluster,
+            primary,
+            crate::rollout::surface::Call::Command(w),
+        ))
+    }
+    // REQ: CLU-001 (ADR-155, GitHub issue #5) — the primary keeps the member list: a replica
+    // sends the request there.
+    fn remove_node(
+        &self,
+        w: wrendns_api::NodeRemoveWrite,
+    ) -> BoxFuture<Result<wrendns_api::model::NodeRemoval, Problem>> {
+        let cluster = Arc::clone(&self.cluster);
+        if cluster.is_primary() {
+            return Box::pin(crate::node_removal::remove(cluster, w));
+        }
+        let primary = cluster.reachable_primary();
+        Box::pin(crate::node_removal::send(cluster, primary, w))
+    }
+    // REQ: OBS-010 (T9.6) — alerts are evaluated here (the primary) or nowhere: this node's.
+    fn alerts_status(&self) -> wrendns_api::model::AlertsStatus {
+        self.local.alerts_status()
+    }
+    // REQ: DSC-906 (T31.2) — the CMDB runs on the node `[discovery]` designates only; any other node
+    // answers 503 naming that node (and the status says where it runs).
+    fn cmdb_status(&self) -> wrendns_api::cmdb_api::CmdbStatus {
+        self.local.cmdb_status()
+    }
+    fn cmdb_cis(
+        &self,
+        q: wrendns_api::cmdb_api::CmdbQuery,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::cmdb_api::CmdbCiPage, Problem>> {
+        self.local.cmdb_cis(q)
+    }
+    fn cmdb_ci(
+        &self,
+        id: String,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::cmdb_api::CmdbCiDetail, Problem>> {
+        self.local.cmdb_ci(id)
+    }
+    fn cmdb_proposals(
+        &self,
+    ) -> wrendns_api::BoxFuture<Result<Vec<wrendns_api::cmdb_api::CmdbProposal>, Problem>> {
+        self.local.cmdb_proposals()
+    }
+    fn cmdb_manual(
+        &self,
+        w: wrendns_api::cmdb_api::CmdbWrite,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::cmdb_api::CmdbChange, Problem>> {
+        self.local.cmdb_manual(w)
+    }
+    // REQ: DSC-014 (T25.3) — this node's own inventory status: each node runs its own workers.
+    fn discovery_status(&self) -> wrendns_api::model::DiscoveryStatus {
+        self.local.discovery_status()
+    }
+    fn alert_test(
+        &self,
+        name: &str,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::AlertTest, Problem>> {
+        self.local.alert_test(name)
+    }
+    // REQ: API-002 (T9.12) — checks run where the request landed.
+    fn check_upstream(
+        &self,
+        body: serde_json::Value,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::CheckResult, Problem>> {
+        self.local.check_upstream(body)
+    }
+    fn check_list(
+        &self,
+        body: serde_json::Value,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::CheckResult, Problem>> {
+        self.local.check_list(body)
+    }
+    // REQ: OBS-024 — the local backend asks the other nodes itself (`sim.run`).
+    fn simulate(
+        &self,
+        config: serde_json::Value,
+        opts: wrendns_api::SimulateOpts,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::Simulation, Problem>> {
+        self.local.simulate(config, opts)
+    }
+    fn client_name(&self, ip: IpAddr) -> Option<String> {
+        self.local.client_name(ip)
+    }
+    // REQ: OBS-010 (T9.5) — any node may meet a device first; the earliest sighting wins.
+    fn new_devices(&self, since_s: u64) -> Vec<wrendns_api::model::NewDevice> {
+        let mut all: Vec<wrendns_api::model::NewDevice> = self
+            .everyone::<Vec<wrendns_api::model::NewDevice>>(|| Read::NewDevices { since_s })
+            .into_iter()
+            .flatten()
+            .collect();
+        all.extend(self.local.new_devices(since_s));
+        all.sort_by_key(|d| d.first_seen_unix_seconds);
+        let mut seen = std::collections::HashSet::new();
+        all.retain(|d| seen.insert(d.client.clone()));
+        all
+    }
+    // REQ: API-010 (T24.41) - the leases come from where the routers are read.
+    fn dhcp_leases(&self) -> Vec<wrendns_api::model::DhcpLease> {
+        let local = self.local.dhcp_leases();
+        match self.primary_router_view() {
+            Some((_, v)) => routers_view::merge_leases(local, v.leases),
+            None => local,
+        }
+    }
+    // REQ: API-013 (T22.2, T24.41) — read where the routers are read, like the leases: a replica
+    // asks the primary and keeps its own interface rows for subnets no router reported.
+    fn networks(&self) -> Vec<wrendns_api::model::NetworkInfo> {
+        let local = self.local.networks();
+        match self.primary_router_view() {
+            Some((_, v)) => routers_view::merge_networks(local, v.networks),
+            None => local,
+        }
+    }
+    // REQ: UPS-004 (T24.36) — the catalog is the same everywhere; the IPv6 route is this node's.
+    fn upstream_presets(&self) -> wrendns_api::model::UpstreamPresets {
+        self.local.upstream_presets()
+    }
+    // REQ: API-016 (T23.7) — the settings are the replicated configuration; the status is this node's.
+    // REQ: API-016 (T24.41) - and a router only the primary reads shows the primary's status.
+    fn router_entries(&self) -> Vec<wrendns_api::model::RouterEntry> {
+        let local = self.local.router_entries();
+        match self.primary_router_view() {
+            Some((by, v)) => routers_view::merge_entries(local, &v.statuses, &by),
+            None => local,
+        }
+    }
+    // REQ: API-016 (T23.10) — every member holds the node-managed providers; the status is this node's.
+    fn oidc_provider_entries(&self) -> wrendns_api::model::OidcProviderList {
+        self.local.oidc_provider_entries()
+    }
+    // REQ: API-016 (T23.11) - every member holds the node-managed sinks; the status is this node's.
+    fn sink_entries(&self) -> wrendns_api::model::SinkList {
+        self.local.sink_entries()
+    }
+    fn otlp_entry(&self) -> wrendns_api::model::OtlpEntry {
+        self.local.otlp_entry()
+    }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — each node's sections are read from
+    // the node that runs them (this one, or a member through the primary's rows).
+    fn node_settings(
+        &self,
+        node: Option<&str>,
+    ) -> Result<wrendns_api::model::NodeSettings, wrendns_api::problem::Problem> {
+        self.local.node_settings(node)
+    }
+    // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
+    fn check_router(
+        &self,
+        draft: serde_json::Value,
+    ) -> wrendns_api::BoxFuture<
+        Result<wrendns_api::model::RouterCheck, wrendns_api::problem::Problem>,
+    > {
+        self.local.check_router(draft)
+    }
+    fn router_certificate(
+        &self,
+        url: String,
+    ) -> wrendns_api::BoxFuture<
+        Result<wrendns_api::model::RouterCertificate, wrendns_api::problem::Problem>,
+    > {
+        self.local.router_certificate(url)
+    }
+    fn new_domains(
+        &self,
+        since_s: u64,
+        client: Option<&str>,
+        limit: usize,
+    ) -> Vec<wrendns_api::model::NewDomain> {
+        self.local.new_domains(since_s, client, limit)
+    }
+    fn local_names(&self) -> Vec<LocalName> {
+        self.local.local_names()
+    }
+    fn zones(&self) -> Vec<wrendns_api::model::ZoneInfo> {
+        self.local.zones()
+    }
+    // REQ: AGT-012 — this node's log and the logs shipped to it (CLU-007).
+    fn vqlog(
+        &self,
+        q: &wrendns_api::vqlog::Query,
+        from_us: u64,
+        to_us: u64,
+        dry_run: bool,
+    ) -> Result<wrendns_api::model::VqlogResult, wrendns_api::problem::Problem> {
+        self.local.vqlog(q, from_us, to_us, dry_run)
+    }
+    fn forwards(&self) -> Vec<ForwardInfo> {
+        self.local.forwards()
+    }
+    // REQ: OBS-018 (ADR-109) — every node's counts, merged by list.
+    fn shadow_lists(&self) -> Vec<wrendns_api::model::ShadowListStats> {
+        let label = |rows: Vec<wrendns_api::model::ShadowListStats>, node: &str| {
+            rows.into_iter()
+                .map(|mut r| {
+                    r.nodes = vec![node.to_owned()];
+                    r
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(label(self.local.shadow_lists(), &self.own_label()));
+        }
+        for (node, rows) in
+            self.everyone_labelled::<Vec<wrendns_api::model::ShadowListStats>>(|| Read::ShadowLists)
+        {
+            parts.push(label(rows, &node));
+        }
+        wrendns_api::federation::merge_shadow(parts)
+    }
+    // REQ: OBS-018 (ADR-109) — every node's suspects, merged by name.
+    fn overblocking(&self, limit: usize) -> Vec<wrendns_api::model::OverblockSuspect> {
+        let label = |rows: Vec<wrendns_api::model::OverblockSuspect>, node: &str| {
+            rows.into_iter()
+                .map(|mut r| {
+                    r.nodes = vec![node.to_owned()];
+                    r
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(label(self.local.overblocking(limit), &self.own_label()));
+        }
+        for (node, rows) in
+            self.everyone_labelled::<Vec<wrendns_api::model::OverblockSuspect>>(|| {
+                Read::Overblocking { limit }
+            })
+        {
+            parts.push(label(rows, &node));
+        }
+        wrendns_api::federation::merge_overblocking(parts, limit)
+    }
+    // REQ: OBS-019 (ADR-108) — each node asks its own upstreams: one entry per node.
+    fn upstream_checks(&self) -> Vec<wrendns_api::model::UpstreamChecks> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = if self.with_me() {
+            self.local
+                .upstream_checks()
+                .into_iter()
+                .map(|mut r| {
+                    r.node = Some(own.clone());
+                    r
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (label, peer_rows) in self
+            .everyone_labelled::<Vec<wrendns_api::model::UpstreamChecks>>(|| Read::UpstreamChecks)
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        rows
+    }
+    // REQ: OBS-020 (ADR-107) — each node probes its own listeners: every node's, labelled.
+    fn probes(&self) -> Vec<wrendns_api::model::ProbeResult> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = if self.with_me() {
+            self.local
+                .probes()
+                .into_iter()
+                .map(|mut r| {
+                    r.node = Some(own.clone());
+                    r
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (label, peer_rows) in
+            self.everyone_labelled::<Vec<wrendns_api::model::ProbeResult>>(|| Read::Probes)
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        rows
+    }
+    // REQ: OBS-033 (ADR-133) — each node keeps its own markers: every node's, labelled,
+    // newest first.
+    fn annotations(
+        &self,
+        f: &wrendns_api::model::AnnotationFilter,
+    ) -> Vec<wrendns_api::model::Annotation> {
+        let label = |rows: Vec<wrendns_api::model::Annotation>, node: &str| {
+            rows.into_iter()
+                .map(|mut a| {
+                    a.node = Some(node.to_owned());
+                    a
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut pages = Vec::new();
+        if self.with_me() {
+            pages.push(label(self.local.annotations(f), &self.own_label()));
+        }
+        for (node, rows) in self.everyone_labelled::<Vec<wrendns_api::model::Annotation>>(|| {
+            Read::Annotations { filter: f.clone() }
+        }) {
+            pages.push(label(rows, &node));
+        }
+        wrendns_api::annotations_api::merge(pages, f.limit)
+    }
+    // REQ: OBS-033 — a note (or a pause or flush asked here) is this node's own marker.
+    fn annotate(
+        &self,
+        a: wrendns_api::model::Annotation,
+    ) -> Result<wrendns_api::model::Annotation, Problem> {
+        let mut written = self.local.annotate(a)?;
+        written.node = Some(self.own_label());
+        Ok(written)
+    }
+    // REQ: DNS-006, CLU-002 (T6.13) — each node has its own cache: one row per node.
+    fn cache_stats(&self) -> Vec<wrendns_api::model::CacheNodeStats> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = self
+            .local
+            .cache_stats()
+            .into_iter()
+            .map(|mut r| {
+                r.node = Some(own.clone());
+                r
+            })
+            .collect();
+        for (label, peer_rows) in
+            self.everyone_labelled::<Vec<wrendns_api::model::CacheNodeStats>>(|| Read::CacheStats)
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        rows
+    }
+    fn cache_lookup(&self, name: &str) -> Result<Vec<wrendns_api::model::CacheEntry>, Problem> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = self
+            .local
+            .cache_lookup(name)?
+            .into_iter()
+            .map(|mut r| {
+                r.node = Some(own.clone());
+                r
+            })
+            .collect();
+        let n = name.to_owned();
+        for (label, peer_rows) in
+            self.everyone_labelled::<Vec<wrendns_api::model::CacheEntry>>(|| Read::CacheLookup {
+                name: n.clone(),
+            })
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        Ok(rows)
+    }
+    fn cache_flush(
+        &self,
+        name: Option<&str>,
+        subtree: bool,
+        node: Option<&str>,
+    ) -> Result<Vec<wrendns_api::model::CacheFlushNode>, Problem> {
+        use wrendns_api::model::CacheFlushNode;
+        let label = |mut v: Vec<CacheFlushNode>, l: &str| {
+            for r in &mut v {
+                r.node = Some(l.to_owned());
+            }
+            v
+        };
+        let read = || Read::CacheFlush {
+            name: name.map(str::to_owned),
+            subtree,
+        };
+        match node.map(|n| self.resolve_node(n)).transpose()? {
+            // One node: this one, or one peer.
+            Some(None) => Ok(label(
+                self.local.cache_flush(name, subtree, None)?,
+                &self.own_label(),
+            )),
+            Some(Some(peer)) => {
+                let l = self.label_of(&peer);
+                Ok(match self.call_one(&peer, &read(), DEADLINE) {
+                    Some(Ok(body)) => label(serde_json::from_slice(&body).unwrap_or_default(), &l),
+                    Some(Err(e)) => vec![CacheFlushNode {
+                        node: Some(l),
+                        removed: None,
+                        error: Some(e),
+                    }],
+                    None => vec![CacheFlushNode {
+                        node: Some(l),
+                        removed: None,
+                        error: Some("no runtime".into()),
+                    }],
+                })
+            }
+            // Every node; those that don't answer are listed with an error.
+            None => {
+                let mut out = label(
+                    self.local.cache_flush(name, subtree, None)?,
+                    &self.own_label(),
+                );
+                let answered = self.everyone_labelled::<Vec<CacheFlushNode>>(read);
+                let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
+                for (l, v) in answered {
+                    out.extend(label(v, &l));
+                }
+                // Labelled like the answers (pods by pod name, T6.14), so a pod that answered
+                // isn't also listed as unreachable.
+                for m in self
+                    .cluster
+                    .members()
+                    .into_iter()
+                    .filter(|m| !self.cluster.is_witness(&m.node_id))
+                {
+                    let l = self.label_of(&m.node_id);
+                    if !names.contains(&l) {
+                        out.push(CacheFlushNode {
+                            node: Some(l),
+                            removed: None,
+                            error: Some("not reachable: flush it when it's back".into()),
+                        });
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+    // REQ: FLT-009, CLU-002 (T7.1) — pauses on every node (or one).
+    fn blocking_state(&self) -> Vec<wrendns_api::model::BlockingNode> {
+        self.blocking_fan(None, |b| Ok(b.blocking_state()), || Read::BlockingState)
+            .unwrap_or_default()
+    }
+    fn blocking_pause(
+        &self,
+        group: Option<&str>,
+        minutes: u32,
+        node: Option<&str>,
+    ) -> Result<Vec<wrendns_api::model::BlockingNode>, Problem> {
+        let g = group.map(str::to_owned);
+        self.blocking_fan(
+            node,
+            |b| b.blocking_pause(group, minutes, None),
+            || Read::BlockingPause {
+                group: g.clone(),
+                minutes,
+            },
+        )
+    }
+    fn blocking_resume(
+        &self,
+        group: Option<&str>,
+        node: Option<&str>,
+    ) -> Result<Vec<wrendns_api::model::BlockingNode>, Problem> {
+        let g = group.map(str::to_owned);
+        self.blocking_fan(
+            node,
+            |b| b.blocking_resume(group, None),
+            || Read::BlockingResume { group: g.clone() },
+        )
+    }
+    // REQ: DNS-006, OBS-003, CLU-002 (T6.15) — each node's top entries and makeup. (Without
+    // this, the trait's empty default left the Cache page's table empty on clustered nodes.)
+    fn cache_entries(
+        &self,
+        sort: &str,
+        limit: usize,
+        node: Option<&str>,
+    ) -> Result<Vec<wrendns_api::model::CacheNodeEntries>, Problem> {
+        use wrendns_api::model::CacheNodeEntries;
+        let label = |mut v: Vec<CacheNodeEntries>, l: &str| {
+            for r in &mut v {
+                r.node = Some(l.to_owned());
+            }
+            v
+        };
+        let read = || Read::CacheEntries {
+            sort: sort.to_owned(),
+            limit,
+        };
+        let failed = |l: String, e: String| CacheNodeEntries {
+            node: Some(l),
+            error: Some(e),
+            ..CacheNodeEntries::default()
+        };
+        match node.map(|n| self.resolve_node(n)).transpose()? {
+            Some(None) => Ok(label(
+                self.local.cache_entries(sort, limit, None)?,
+                &self.own_label(),
+            )),
+            Some(Some(peer)) => {
+                let l = self.label_of(&peer);
+                Ok(match self.call_one(&peer, &read(), DEADLINE) {
+                    Some(Ok(body)) => label(serde_json::from_slice(&body).unwrap_or_default(), &l),
+                    Some(Err(e)) => vec![failed(l, e)],
+                    None => vec![failed(l, "no runtime".into())],
+                })
+            }
+            None => {
+                let mut out = label(
+                    self.local.cache_entries(sort, limit, None)?,
+                    &self.own_label(),
+                );
+                let answered = self.everyone_labelled::<Vec<CacheNodeEntries>>(read);
+                let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
+                for (l, v) in answered {
+                    out.extend(label(v, &l));
+                }
+                for m in self
+                    .cluster
+                    .members()
+                    .into_iter()
+                    .filter(|m| m.connected && !self.cluster.is_witness(&m.node_id))
+                {
+                    let l = self.label_of(&m.node_id);
+                    if !names.contains(&l) {
+                        out.push(failed(
+                            l,
+                            "didn't answer (an older version doesn't list its cache)".into(),
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+    // REQ: FLT-005 (T6.12) — quick rules are shared configuration: this node's copy is the
+    // cluster's. (Without this, the trait's empty default hid them on clustered nodes.)
+    fn rules(&self) -> Vec<wrendns_api::model::RuleInfo> {
+        self.local.rules()
+    }
+    // REQ: CLU-002 — a replica forwards configuration writes to the primary (T5.7).
+    fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
+        match self.write_route() {
+            WriteRoute::Primary(primary) => Box::pin(crate::forward::managed(
+                Arc::clone(&self.cluster),
+                primary,
+                w,
+            )),
+            WriteRoute::Here => self.local.write_managed(w),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
+        }
+    }
+    fn config_version(&self) -> u64 {
+        // A replica's ETags are the primary's version, so If-Match works through any node.
+        if let WriteRoute::Primary(Some(primary)) = self.write_route()
+            && let Some(Ok(body)) = self.call_one(&primary, &Read::ConfigVersion, VERSION_DEADLINE)
+            && let Ok(v) = serde_json::from_slice::<u64>(&body)
+        {
+            return v;
+        }
+        self.local.config_version()
+    }
+    // REQ: API-002 (ADR-069), CLU-002 — the settings editors list the entries in force, and the
+    // configuration is the primary's: a replica asks it (so every node shows the same rows, and
+    // what the API changed on the primary). Without a reachable primary, or with one too old to
+    // answer, this node's own view. (Before: the trait's default, an empty list, so every
+    // editor said "None yet" on a cluster node; owner report 2026-10-09.)
+    fn config_entries(&self, kind: Option<&str>) -> Vec<wrendns_api::model::ConfigEntry> {
+        // REQ: API-016 (T23.11) - sinks are node-managed: the files' sinks are this node's own (the
+        // primary's would be another node's), and every member holds the UI's.
+        if kind == Some("sink") {
+            return self.local.config_entries(kind);
+        }
+        if !self.cluster.is_primary()
+            && let Some(primary) = self.cluster.reachable_primary()
+            && let Some(Ok(body)) = self.call_one(
+                &primary,
+                &Read::ConfigEntries {
+                    kind: kind.map(str::to_owned),
+                },
+                VERSION_DEADLINE,
+            )
+            && let Some(v) = entries_from_primary(&body)
+        {
+            return v;
+        }
+        self.local.config_entries(kind)
+    }
+    // REQ: FLT-901 (T24.29, ADR-994 item 10) - a category selection is checked against the primary,
+    // which fetches and compiles (a replica never downloads a category list); without a reachable
+    // primary, this node's own numbers.
+    fn category_env(&self) -> wrendns_api::categories_api::CategoryEnv {
+        if !self.cluster.is_primary()
+            && let Some(primary) = self.cluster.reachable_primary()
+            && let Some(Ok(body)) = self.call_one(&primary, &Read::CategoryEnv, DEADLINE)
+            && let Ok(mut env) =
+                serde_json::from_slice::<wrendns_api::categories_api::CategoryEnv>(&body)
+        {
+            env.node = Some(self.label_of(&primary));
+            return env;
+        }
+        self.local.category_env()
+    }
+    // REQ: FLT-902 (T24.29) - the picker reads this node's own view (devices are seen by the node
+    // that answers them; the networks come from the routers it reads).
+    // REQ: API-010, API-013 (T24.41) - on a replica the picker lists the primary's router
+    // networks and clients (one read serves both).
+    fn profile_devices(&self) -> wrendns_api::categories_api::ProfileDevices {
+        match self.primary_router_view() {
+            Some((_, v)) => {
+                let nets = routers_view::merge_networks(self.local.networks(), v.networks);
+                let leases = routers_view::merge_leases(self.local.dhcp_leases(), v.leases);
+                self.local.profile_devices_with(&nets, &leases)
+            }
+            None => self.local.profile_devices(),
+        }
+    }
+    // REQ: API-014 — the keyed hash is this node's (the entry node keeps the record).
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.idempotency_request(kind, request, body)
+    }
+    // REQ: API-007 (T24.18, ADR-940) — an import is a configuration change made where the plan
+    // was previewed: on the primary (or a node that takes changes alone). A replica refuses it
+    // (its plans would live on another node), and says where to go.
+    fn pihole_import_preview(
+        &self,
+        req: wrendns_api::PiholeImportRequest,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        match self.write_route() {
+            WriteRoute::Here => self.local.pihole_import_preview(req),
+            WriteRoute::Primary(_) => Box::pin(async { Err(import_elsewhere()) }),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
+        }
+    }
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        match self.write_route() {
+            WriteRoute::Here => self.local.pihole_import_apply(id, by),
+            WriteRoute::Primary(_) => Box::pin(async { Err(import_elsewhere()) }),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
+        }
+    }
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        match self.write_route() {
+            WriteRoute::Here => self.local.pihole_import_discard(id, by),
+            WriteRoute::Primary(_) => Err(import_elsewhere()),
+            WriteRoute::NoLease => Err(no_lease()),
+        }
+    }
+    fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
+        match self.write_route() {
+            WriteRoute::Primary(primary) => Box::pin(crate::forward::client(
+                Arc::clone(&self.cluster),
+                primary,
+                w,
+            )),
+            WriteRoute::Here => self.local.write_client(w),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
+        }
+    }
+    // REQ: API-015, CLU-002 (ADR-903 §4) — a replica lists the primary's secrets (with its own
+    // store, credential fields and node-local references); without the primary, or with one too
+    // old to answer, its own copy marked stale.
+    fn secrets_status(&self) -> Result<wrendns_api::secrets_api::SecretsStatus, Problem> {
+        use crate::secrets_api::{MemberKind, RosterNode};
+        use wrendns_api::secrets_api::SecretsStatus;
+        let local = self.local.secrets_status()?;
+        // REQ: API-015, CLU-002 (T24.42) - every full member is asked for its own stamps and
+        // health (the same read a replica makes of the primary: metadata only, never a value or
+        // a ciphertext), so the list is the same on every node. A member that doesn't answer, or
+        // is too old to, is `unknown` and in `missingNodes`; DNS is untouched.
+        let me = self.cluster.identity.meta.node_id.clone();
+        let registry = self.cluster.identity.registry();
+        let members = self.cluster.members();
+        let mut roster: Vec<(String, RosterNode)> = Vec::new();
+        for n in &registry {
+            let live = members.iter().find(|m| m.node_id == n.node_id);
+            let kind = if n.witness {
+                MemberKind::Witness
+            } else if n.ephemeral {
+                MemberKind::Resolver
+            } else {
+                MemberKind::Full
+            };
+            // A resolver pod that has gone is no longer listed; a full member or witness stays.
+            if kind == MemberKind::Resolver && live.is_none() && n.node_id != me {
+                continue;
+            }
+            let label = if n.node_id == me {
+                self.own_label()
+            } else if let Some(m) = live {
+                member_label(m)
+            } else if n.site.is_empty() {
+                n.node_id.clone()
+            } else {
+                n.site.clone()
+            };
+            roster.push((
+                n.node_id.clone(),
+                RosterNode {
+                    label,
+                    kind,
+                    items: None,
+                },
+            ));
+        }
+        // A live member the registry doesn't list is a resolver pod (as the RPC handler treats
+        // it), unless it is the primary or eligible (a registry can lag a join): then it is
+        // asked like any full member, and `unknown` if it doesn't answer.
+        for m in &members {
+            if !roster.iter().any(|(id, _)| *id == m.node_id) {
+                roster.push((
+                    m.node_id.clone(),
+                    RosterNode {
+                        label: member_label(m),
+                        kind: if m.primary || m.eligible {
+                            MemberKind::Full
+                        } else {
+                            MemberKind::Resolver
+                        },
+                        items: None,
+                    },
+                ));
+            }
+        }
+        // Two members never share a label (pods on one site): the node ID tells them apart.
+        unique_labels(&mut roster);
+        let reachable = self.cluster.reachable_peers();
+        let reads: Vec<(String, Read)> = roster
+            .iter()
+            .filter(|(id, r)| *id != me && r.kind == MemberKind::Full && reachable.contains(id))
+            .map(|(id, _)| (id.clone(), Read::SecretsStatus))
+            .collect();
+        let (answers, _) = self.round(reads);
+        let answered: std::collections::HashMap<String, SecretsStatus> = answers
+            .into_iter()
+            .filter_map(|(_, peer, body)| serde_json::from_slice(&body).ok().map(|s| (peer, s)))
+            .collect();
+        for (id, r) in &mut roster {
+            if *id == me {
+                r.items = Some(local.items.clone());
+            } else if let Some(a) = answered.get(id) {
+                r.items = Some(a.items.clone());
+            }
+        }
+        let mut base = if self.cluster.is_primary() {
+            local.clone()
+        } else if let Some(primary) = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| answered.get(&p))
+        {
+            crate::secrets_api::merge_with_primary(primary.clone(), local.clone())
+        } else {
+            SecretsStatus {
+                stale: true,
+                ..local.clone()
+            }
+        };
+        // Standalone nodes and a registry with no full member but this one keep the plain list.
+        if roster.iter().any(|(_, r)| r.kind != MemberKind::Full) || roster.len() > 1 {
+            let roster: Vec<RosterNode> = roster.into_iter().map(|(_, r)| r).collect();
+            base = crate::secrets_api::with_members(base, &roster);
+        }
+        self.record_missing(base.missing_nodes.clone());
+        Ok(base)
+    }
+    fn secret_refs(&self) -> Vec<(String, wrendns_api::secrets_api::SecretUse)> {
+        self.local.secret_refs()
+    }
+    // REQ: API-015, CLU-010 — the primary applies secret writes; a replica forwards them as
+    // their own RPC kind. Pins, rollouts and a GitOps authority don't route them elsewhere.
+    fn secret_write(
+        &self,
+        w: wrendns_api::secrets_api::SecretWrite,
+    ) -> BoxFuture<Result<wrendns_api::secrets_api::SecretChange, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.secret_write(w);
+        }
+        Box::pin(crate::secrets_api::forward(Arc::clone(&self.cluster), w))
+    }
+    // REQ: AGT-003 — the entry node keeps the record, keyed with its own key.
+    fn secret_idempotency(
+        &self,
+        request: &str,
+        value: Option<&wrendns_api::secrets_api::SecretText>,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.secret_idempotency(request, value)
+    }
+    fn secrets_over_http_allowed(&self) -> bool {
+        self.local.secrets_over_http_allowed()
+    }
+    // REQ: API-902 (T27.13, ADR-956 §5) — guarded changes are node-local: the engine on this node
+    // forwards a request for another node itself (only the primary does), over the cluster
+    // channel with a signed assertion; nothing here gathers or fans out.
+    fn guarded_status(&self) -> BoxFuture<Result<wrendns_api::guarded::GuardedStatus, Problem>> {
+        self.local.guarded_status()
+    }
+    fn guarded_preview(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        req: wrendns_api::guarded::GuardedPreviewRequest,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedPreview, Problem>> {
+        self.local.guarded_preview(caller, id, req)
+    }
+    fn guarded_apply(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        req: wrendns_api::guarded::GuardedApplyRequest,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedApplied, Problem>> {
+        self.local.guarded_apply(caller, id, req)
+    }
+    fn guarded_confirm(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
+        self.local.guarded_confirm(caller, id, token)
+    }
+    fn guarded_cancel(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
+        self.local.guarded_cancel(caller, id)
+    }
+    fn guarded_pending_proxies(&self) -> Option<Vec<(std::net::IpAddr, u8)>> {
+        self.local.guarded_pending_proxies()
+    }
+}
+
+/// REQ: API-015 (ADR-903 §4) — one member's references to stored secrets (`Read::SecretRefs`).
+/// An older member doesn't know the read: an error, so its references count as unknown.
+pub(crate) async fn peer_secret_refs(
+    cluster: &Cluster,
+    peer: &str,
+    timeout: Duration,
+) -> Result<Vec<(String, wrendns_api::secrets_api::SecretUse)>, String> {
+    let body = serde_json::to_vec(&Read::SecretRefs).map_err(|e| e.to_string())?;
+    let reply = cluster.call(peer, KIND, body, timeout).await?;
+    serde_json::from_slice(&reply).map_err(|e| e.to_string())
+}
+
+/// REQ: API-014, ADR-905 — the primary's lists as a replica shows them: the source and errors
+/// redacted again here, since an older primary (N−1) sends them as they are.
+pub(crate) fn lists_from_primary(body: &[u8]) -> Option<Vec<ListInfo>> {
+    let mut v = serde_json::from_slice::<Vec<ListInfo>>(body).ok()?;
+    crate::redact::lists(&mut v);
+    Some(v)
+}
+
+/// REQ: API-014 — the primary's entries as a replica shows them: redacted again here, since an
+/// older primary (N−1) sends its definitions as they are.
+pub(crate) fn entries_from_primary(body: &[u8]) -> Option<Vec<wrendns_api::model::ConfigEntry>> {
+    let mut v = serde_json::from_slice::<Vec<wrendns_api::model::ConfigEntry>>(body).ok()?;
+    crate::redact::entries(&mut v);
+    Some(v)
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use wrendns_api::policy_api::{ClientPolicy, PolicyObservation};
+
+    fn policy(group: &str) -> ClientPolicy {
+        ClientPolicy {
+            client: "10.0.0.5".into(),
+            group: group.into(),
+            ..ClientPolicy::default()
+        }
+    }
+
+    // REQ: FLT-006, CLU-002 (ADR-996) — a replica returns the primary's answer, labelled with the
+    // primary, and the primary is not a missing node.
+    #[test]
+    fn flt_006_replica_asks_the_primary() {
+        let reply = Some(PolicyReply::Found(Box::new(policy("kids"))));
+        let (out, missing) =
+            settle_policy(reply, "primary-a", "replica-b", || Ok(policy("default")));
+        let p = out.unwrap();
+        assert_eq!(p.group, "kids");
+        assert_eq!(p.node.as_deref(), Some("primary-a"));
+        assert!(!missing);
+    }
+
+    // REQ: FLT-006, CLU-002 (ADR-971, ADR-996) — a down primary, or an older one that does not know
+    // the read, is a missing node: the replica answers from its own copy and says so.
+    #[test]
+    fn flt_006_older_primary_is_a_missing_node() {
+        for reply in [None, Some(PolicyReply::Failed)] {
+            let (out, missing) =
+                settle_policy(reply, "primary-a", "replica-b", || Ok(policy("default")));
+            let p = out.unwrap();
+            assert_eq!(p.group, "default");
+            assert_eq!(p.node.as_deref(), Some("replica-b"));
+            assert!(p.notes.iter().any(|n| n.contains("primary didn't answer")));
+            assert!(missing);
+        }
+        // An older primary's bytes are not a `PolicyReply`: they decode to nothing.
+        assert!(serde_json::from_slice::<PolicyReply>(b"null").is_err());
+    }
+
+    // REQ: FLT-006 — the primary saying "no such device" is its answer (404), not a down primary.
+    #[test]
+    fn flt_006_a_primarys_404_is_not_a_missing_node() {
+        let reply = Some(PolicyReply::NotFound("no such device".into()));
+        let (out, missing) =
+            settle_policy(reply, "primary-a", "replica-b", || Ok(policy("default")));
+        assert_eq!(out.unwrap_err().status, 404);
+        assert!(!missing);
+    }
+
+    // REQ: FLT-006 — on the primary (and for a single node) the read is answered locally, and the
+    // observed-device read crosses the channel by name.
+    #[test]
+    fn flt_006_primary_answers_the_policy_read_locally() {
+        let read = Read::ClientPolicy {
+            client: "10.0.0.5".into(),
+            observed: Some(PolicyObservation {
+                ip: "10.0.0.5".into(),
+                mac: Some([2, 0, 0, 0, 0, 1]),
+                client_id: None,
+                wanted: None,
+            }),
+        };
+        let back: Read = serde_json::from_slice(&serde_json::to_vec(&read).unwrap()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let src = crate::http::tests::sources_in(tmp.path());
+        let b = crate::api_backend::ApiBackend { src: Arc::new(src) };
+        let body = answer(&b, back).unwrap();
+        match serde_json::from_slice::<PolicyReply>(&body).unwrap() {
+            PolicyReply::Found(p) => assert_eq!(p.group, "default"),
+            other => panic!("expected the policy, got {other:?}"),
+        }
+        // An unknown name is a 404 reply.
+        let body = answer(
+            &b,
+            Read::ClientPolicy {
+                client: "nobody".into(),
+                observed: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<PolicyReply>(&body).unwrap(),
+            PolicyReply::NotFound(_)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod lists_tests {
+    use super::*;
+
+    fn list(name: &str, state: &str, hits: u64, refreshing: bool) -> ListInfo {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "kind": "block", "enabled": true, "mode": "enforce",
+            "source": format!("https://lists.example/{name}"), "state": state,
+            "bytes": 10, "lines": 1, "entries": 1, "unique": 1, "regexSkipped": 0,
+            "hits": hits, "overlap": [], "refreshing": refreshing,
+        }))
+        .unwrap()
+    }
+
+    // REQ: FLT-004, CLU-003 — a replica shows the primary's lists and download state
+    // (`refreshing` included) with its own hits; a list it hasn't compiled yet has 0 hits.
+    #[test]
+    fn flt_004_replica_lists_merge_the_primarys_state_with_own_hits() {
+        let mine = vec![list("hagezi", "pending", 7, false)];
+        let theirs = vec![
+            list("hagezi", "ok", 900, true),
+            list("new", "failed", 5, false),
+        ];
+        let got = merge_lists(&mine, theirs);
+        let row: Vec<(&str, &str, u64, bool)> = got
+            .iter()
+            .map(|l| (l.name.as_str(), l.state.as_str(), l.hits, l.refreshing))
+            .collect();
+        assert_eq!(
+            row,
+            [("hagezi", "ok", 7, true), ("new", "failed", 0, false)]
+        );
+    }
+
+    // REQ: FLT-004, CLU-003 — the primary answers `Read::Lists` with its own lists (what the
+    // replica merges); the read crosses the channel by name.
+    #[test]
+    fn flt_004_primary_answers_the_lists_read() {
+        let wire = serde_json::to_vec(&Read::Lists).unwrap();
+        let back: Read = serde_json::from_slice(&wire).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut src = crate::http::tests::sources_in(tmp.path());
+        let mut cfg = (**src.config.load()).clone();
+        cfg.list = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[list]]\nname = \"mine\"\nrules = [\"a.example\"]\n",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config
+            .list;
+        src.config = arc_swap::ArcSwap::from_pointee(cfg);
+        let b = crate::api_backend::ApiBackend { src: Arc::new(src) };
+        let body = answer(&b, back).unwrap();
+        let got: Vec<ListInfo> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "mine");
+        assert!(!got[0].refreshing);
+    }
+}
+
+#[cfg(test)]
+mod anomaly_tests {
+    use super::*;
+
+    fn finding(client: &str, observed: f64) -> AnomalyFinding {
+        AnomalyFinding {
+            id: wrendns_api::model::anomaly_id("rate_spike", client, None, 1_790_000_000, 3600),
+            kind: "rate_spike".into(),
+            client: client.into(),
+            client_name: None,
+            domain: None,
+            window_start: "2026-09-21T13:46:40.000Z".into(),
+            window_seconds: 3600,
+            observed,
+            baseline: 100.0,
+            spread: 10.0,
+            threshold: 200.0,
+            detail: format!("{observed} queries"),
+            nodes: Vec::new(),
+            acknowledged: None,
+            informational: false,
+            muted_by: None,
+            rhythm: None,
+        }
+    }
+
+    // REQ: OBS-014, CLU-002 — two pods behind one load balancer find the same device's spike:
+    // one entry, both nodes listed, the larger observation shown.
+    #[test]
+    fn obs_014_the_same_finding_on_two_nodes_is_one_entry() {
+        let merged = merge_findings(vec![
+            (
+                "pod-a".into(),
+                vec![finding("10.0.0.5", 300.0), finding("10.0.0.6", 250.0)],
+            ),
+            ("pod-b".into(), vec![finding("10.0.0.5", 420.0)]),
+        ]);
+        assert_eq!(merged.len(), 2);
+        let five = merged.iter().find(|f| f.client == "10.0.0.5").unwrap();
+        assert_eq!(five.nodes, ["pod-a", "pod-b"]);
+        assert!((five.observed - 420.0).abs() < f64::EPSILON);
+        let six = merged.iter().find(|f| f.client == "10.0.0.6").unwrap();
+        assert_eq!(six.nodes, ["pod-a"]);
+    }
+
+    // REQ: OBS-014 — a peer that doesn't know the anomaly read is skipped, not fatal: the
+    // read is new, and its answer decodes as a list.
+    #[test]
+    fn obs_014_anomaly_and_health_reads_round_trip() {
+        let r: Read =
+            serde_json::from_slice(&serde_json::to_vec(&Read::Anomalies { since_s: 5 }).unwrap())
+                .unwrap();
+        assert!(matches!(r, Read::Anomalies { since_s: 5 }));
+        // REQ: API-005 (ADR-158) — the last-hour read carries its group; peers send every
+        // client so the merged counts stay exact.
+        let r: Read = serde_json::from_slice(
+            &serde_json::to_vec(&Read::TopClientsRolling {
+                limit: 7,
+                group: Some("kids".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            r,
+            Read::TopClientsRolling { limit: 7, group: Some(ref g) } if g == "kids"
+        ));
+        assert!(!changes_state(&r));
+        assert!(!changes_state(&Read::Anomalies { since_s: 5 }));
+        assert!(!changes_state(&Read::Health));
+    }
+
+    // REQ: OBS-901 (ADR-958 section 6) — the map read is a plain read (it changes nothing, so an
+    // ephemeral member may send it), and a peer's answer decodes as an optional part: `null` is
+    // a node whose map is off.
+    #[test]
+    fn obs_901_map_part_read_round_trips() {
+        let text = serde_json::to_string(&Read::MapPart).unwrap();
+        assert_eq!(text, r#"{"read":"map_part"}"#);
+        let r: Read = serde_json::from_str(&text).unwrap();
+        assert!(matches!(r, Read::MapPart));
+        assert!(!changes_state(&r));
+        let off: Option<wrendns_api::map::MapPart> = serde_json::from_str("null").unwrap();
+        assert!(off.is_none());
+        let part = wrendns_api::map::MapPart {
+            node: "pi1".into(),
+            level: "healthy".into(),
+            ..wrendns_api::map::MapPart::default()
+        };
+        let body = serde_json::to_vec(&Some(&part)).unwrap();
+        let back: Option<wrendns_api::map::MapPart> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(back, Some(part));
+    }
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use super::*;
+
+    /// REQ: CLU-009 (ADR-058) — the reads an ephemeral member may not send: the ones that
+    /// change the answering node; plain reads and tails stay allowed.
+    #[test]
+    fn clu_009_ephemeral_members_cannot_change_other_nodes() {
+        assert!(changes_state(&Read::BlockingPause {
+            group: None,
+            minutes: 5
+        }));
+        assert!(changes_state(&Read::BlockingResume { group: None }));
+        assert!(changes_state(&Read::CacheFlush {
+            name: None,
+            subtree: false
+        }));
+        assert!(!changes_state(&Read::CacheStats));
+        assert!(!changes_state(&Read::BlockingState));
+        assert!(!changes_state(&Read::ConfigVersion));
+        assert!(!changes_state(&Read::ConfigEntries { kind: None }));
+        assert!(!changes_state(&Read::Timeseries {
+            step: Step::Minute,
+            from_s: 0,
+            to_s: 1
+        }));
+    }
+
+    /// The `fn` names of one `impl` block in a source file.
+    fn methods(src: &str, marker: &str) -> std::collections::BTreeSet<String> {
+        let start = src.find(marker).expect("the impl block");
+        let end = start + src[start..].find("\n}\n").expect("its end");
+        src[start..end]
+            .lines()
+            .filter_map(|l| l.strip_prefix("    fn "))
+            .filter_map(|l| l.split('(').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// REQ: CLU-002 (regression 2026-10-09) — every API read a node answers on its own, a
+    /// cluster node answers too: `Federated` overrides each `Backend` method `ApiBackend`
+    /// implements, so none silently falls back to the trait's empty default (as
+    /// `config_entries` did: every settings editor said "None yet" on a cluster node). The
+    /// exceptions are reads only peers make, answered by each node's own backend.
+    #[test]
+    fn clu_002_federated_covers_every_backend_read() {
+        let api = methods(
+            include_str!("api_backend.rs"),
+            "impl Backend for ApiBackend",
+        );
+        let fed = methods(include_str!("federated.rs"), "impl Backend for Federated");
+        let peer_only = ["latency_hists", "shipped_timeseries"];
+        let missing: Vec<&String> = api
+            .iter()
+            .filter(|m| !fed.contains(*m) && !peer_only.contains(&m.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Federated doesn't implement {missing:?}"
+        );
+        assert!(fed.contains("config_entries"));
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    use wrendns_api::model::QueryRow;
+
+    fn row(client: &str, name: Option<&str>) -> QueryRow {
+        QueryRow {
+            time: String::new(),
+            ts_unix_micros: 1,
+            client: client.into(),
+            client_name: name.map(str::to_owned),
+            group: None,
+            name: "example.com".into(),
+            qtype: "A".into(),
+            status: "forwarded".into(),
+            rcode: None,
+            proto: "udp".into(),
+            list: None,
+            rule: None,
+            total_ms: 1.0,
+            upstream_ms: 0.5,
+            response_bytes: 40,
+            answers: 1,
+            node: None,
+        }
+    }
+
+    // REQ: CLU-002 (ADR-125) — a resolver pod's unnamed rows take the name the entry node
+    // knows; named rows and unknown devices stay as they came.
+    #[test]
+    fn clu_002_rows_without_a_name_are_named_here() {
+        let mut rows = vec![
+            row("10.50.5.2", Some("k8s")),
+            row("10.50.5.2", None),
+            row("10.50.5.7", Some("tablet")),
+            row("10.50.5.9", None),
+            row("10.50.5.x", None),
+        ];
+        let asked = std::cell::Cell::new(0);
+        name_rows(&mut rows, |ip| {
+            asked.set(asked.get() + 1);
+            (ip == IpAddr::from([10, 50, 5, 2])).then(|| "k8s".to_owned())
+        });
+        let names: Vec<Option<&str>> = rows.iter().map(|r| r.client_name.as_deref()).collect();
+        assert_eq!(
+            names,
+            [Some("k8s"), Some("k8s"), Some("tablet"), None, None]
+        );
+        assert_eq!(
+            asked.get(),
+            2,
+            "each address is looked up once; text that isn't one, never"
+        );
+    }
+}

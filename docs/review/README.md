@@ -1,6 +1,6 @@
-# Code review handoff: TelltaleDNS v0.2.0
+# Code review handoff: WrenDNS v0.2.0
 
-You are reviewing **TelltaleDNS at the `v0.2.0` tag**: about 96,000 lines of Rust in 15 crates,
+You are reviewing **WrenDNS at the `v0.2.0` tag**: about 96,000 lines of Rust in 15 crates,
 a 15,600-line Svelte UI, a Helm chart, install scripts, and docs. The review is split into
 focused **passes**, one capability area at a time (`passes/`). Do one pass per session, in
 order unless the owner says otherwise. This page is the brief every pass shares: read it
@@ -19,7 +19,7 @@ self-contained and easy to judge.
 
 ## The project in one minute
 
-TelltaleDNS is a filtering, encrypted, observable DNS resolver that runs on a Raspberry Pi,
+WrenDNS is a filtering, encrypted, observable DNS resolver that runs on a Raspberry Pi,
 in Kubernetes, or on both as one cluster. Read `EXECUTIVE-SUMMARY.md` (10 minutes) before
 your first pass. The specification is in `spec/` (`01-requirements.md` has every REQ ID;
 `11-decisions.md` has the ADRs). Code comments cite requirement IDs (`// REQ: FLT-003`).
@@ -34,7 +34,7 @@ them):
   not affect answering queries (`spec/02` §8, CLU-004).
 - **The hot path** (receive → parse → cache/filter → answer) allocates nothing and takes no
   locks beyond the cache shard (NFR-002; `spec/02` §3). Changes there need a benchmark.
-- **`unsafe` lives only in `crates/telltale-net/src/sys.rs`**, each block with a
+- **`unsafe` lives only in `crates/wrendns-net/src/sys.rs`**, each block with a
   `// SAFETY:` comment. Everywhere else `unsafe_code = "forbid"`.
 - **No `unwrap()`/`expect()` on runtime paths** (tests may).
 - **Clean room:** no code from Pi-hole, Technitium, AdGuard Home, or other copyleft
@@ -45,7 +45,7 @@ them):
 ## Ground rules for you
 
 - **Review a fixed copy.** Create a worktree at the tag and review there, so `main` can move
-  on: `git -C ~/wrendns worktree add ~/telltale-review v0.2.0` (once; later passes reuse
+  on: `git -C ~/wrendns worktree add ~/wrendns-review v0.2.0` (once; later passes reuse
   it). Line numbers in findings refer to that copy.
 - **Read-only toward the outside world.** Don't commit, push, open issues or PRs, or change
   anything on the live cluster (the Pi at 10.30.3.2, the homelab at 10.50.5.x), in
@@ -60,22 +60,22 @@ them):
 ## Building, testing, measuring
 
 ```sh
-cd ~/telltale-review
-CARGO_BUILD_JOBS=2 cargo build -p telltale                      # debug binary: target/debug/telltale
+cd ~/wrendns-review
+CARGO_BUILD_JOBS=2 cargo build -p wrendns                      # debug binary: target/debug/wrendns
 CARGO_BUILD_JOBS=2 cargo test --workspace -- --skip flt_004_a_slow_list
 CARGO_BUILD_JOBS=2 cargo clippy --workspace --all-targets -- -D warnings
 make bench-smoke                                                # cache-hit and miss throughput, ~1 minute
 python3 bench/gate.py                                           # the v1.0 gate measurements (docs/v1-gate.md)
 python3 bench/memprobe.py                                       # memory by mapping
-cargo bench -p telltale-cache --bench cache_hit                 # criterion micro-benchmarks (also telltale-proto, -filter)
+cargo bench -p wrendns-cache --bench cache_hit                 # criterion micro-benchmarks (also wrendns-proto, -filter)
 ```
 - Per-crate tests: `cargo test -p <crate>`. End-to-end scripts are in `deploy/` (cluster,
   DNSSEC, imports, sinks) and `ui/tests/e2e` (Playwright; see `bench/README.md` and
   `docs/running.md` for setup). Prefer focused tests over the full suite.
 - Benchmarks on this machine are noisy (WSL, shared cores): treat a single run as a hint,
   repeat before claiming a regression, and say how you measured.
-- A local resolver for experiments: write a small `telltale.toml` (see `bench/bench.py`
-  `server_config()` for a minimal one) and run `target/debug/telltale run -c it.toml`
+- A local resolver for experiments: write a small `wrendns.toml` (see `bench/bench.py`
+  `server_config()` for a minimal one) and run `target/debug/wrendns run -c it.toml`
   on a high port. Upstreams: Quad9 over DoT (`tls://9.9.9.9`, `tls_server_name =
   "dns.quad9.net"`) works from here.
 
@@ -106,7 +106,7 @@ Write `docs/review/v0.2.0/NN-<area>.md` for pass NN, and patches as
 1. **Summary** (5-10 lines): the area's overall health and your top three points.
 2. **Strengths:** what's done well, each with where it is (`path:line`) and why it matters.
    Be specific; "clean code" isn't a strength, "the cache-hit path copies the stored answer
-   and patches only the ID and TTLs (`write` in `crates/telltale-cache/src/entry.rs`)" is.
+   and patches only the ID and TTLs (`write` in `crates/wrendns-cache/src/entry.rs`)" is.
 3. **Findings**, most important first, at most about 15 per pass. Each one:
 
    | Field | Content |
@@ -126,8 +126,8 @@ Write `docs/review/v0.2.0/NN-<area>.md` for pass NN, and patches as
 5. **Not reviewed:** what you skipped or couldn't check, so the next pass or the owner knows.
 
 **Patches:**
-- `git diff` format against `v0.2.0`, from the worktree root (`git -C ~/telltale-review diff`
-  after editing, then reset the worktree: `git -C ~/telltale-review checkout -- .`).
+- `git diff` format against `v0.2.0`, from the worktree root (`git -C ~/wrendns-review diff`
+  after editing, then reset the worktree: `git -C ~/wrendns-review checkout -- .`).
 - One finding per patch, as small as it can be, following the code's conventions: REQ IDs
   in comments, a test for behaviour changes, no `unwrap` at runtime.
 - Say in the finding whether the patch builds and its tests pass (`verified`) or not.

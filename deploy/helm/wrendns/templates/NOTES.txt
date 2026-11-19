@@ -1,0 +1,80 @@
+WrenDNS is starting ({{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}).
+
+DNS:
+{{- if .Values.hostNetwork }}
+  Port 53 on the node's address (host network): clients and MAC addresses are seen as they are.
+{{- else if eq .Values.service.dns.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "wrendns.fullname" . }}-dns   # EXTERNAL-IP, port 53 UDP+TCP
+{{- else }}
+  Service {{ include "wrendns.fullname" . }}-dns ({{ .Values.service.dns.type }}), port {{ .Values.service.dns.port }}.
+{{- end }}
+{{- if and (not .Values.hostNetwork) (ne .Values.service.dns.type "ClusterIP") (eq .Values.service.dns.externalTrafficPolicy "Cluster") }}
+
+WARNING: service.dns.externalTrafficPolicy is Cluster. Queries will appear to come from node
+addresses, so per-device blocking, the query log, and client statistics can't tell devices
+apart. Use Local (the default) or hostNetwork: true.
+WrenDNS also checks at runtime and shows a "client IPs appear masked" banner in the UI.
+{{- end }}
+
+Web UI and API:
+{{- if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}/
+{{- else if eq .Values.service.api.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "wrendns.fullname" . }}-api   # http://EXTERNAL-IP:{{ .Values.service.api.port }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "wrendns.fullname" . }}-api {{ .Values.service.api.port }}
+  then open http://127.0.0.1:{{ .Values.service.api.port }}/
+{{- end }}
+
+First admin:
+{{- if .Values.auth.bootstrapAdmin.existingSecret }}
+  Created from Secret {{ .Values.auth.bootstrapAdmin.existingSecret }} on first start.
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} exec {{ include "wrendns.fullname" . }}-0 -- /usr/local/bin/wrendns auth setup-token -c /etc/wrendns/00-chart.toml -c /etc/wrendns/10-values.toml
+{{- end }}
+
+Maintenance: a pod in maintenance (Cluster page, or `wrendns ctl maintenance start`) reports
+not ready, so it leaves every Service that selects it, and keeps answering what still arrives.
+See "Taking a node down for maintenance" in docs/running.md.
+{{- if include "wrendns.scaled" . }}
+{{- if or (eq .Values.service.api.type "LoadBalancer") (eq .Values.cluster.service.type "LoadBalancer") }}
+
+NOTE (mode: scaled): the {{ if eq .Values.service.api.type "LoadBalancer" }}api{{ end }}{{ if and (eq .Values.service.api.type "LoadBalancer") (eq .Values.cluster.service.type "LoadBalancer") }} and {{ end }}{{ if eq .Values.cluster.service.type "LoadBalancer" }}cluster{{ end }} Service is a LoadBalancer.
+  Don't give it the DNS Service's IP: with externalTrafficPolicy Local, MetalLB and Cilium only
+  share an IP between Services that select the same pods, and the DNS Service also selects the
+  resolver pods, so it would lose the IP. For one address, set service.dns.alsoServe.api
+  (and .cluster) instead, and leave those Services on ClusterIP.
+{{- end }}
+{{- /* REQ: OPS-003 (GitHub issue #2) — alsoServe on a DNS Service that also selects resolver pods. */}}
+{{- if and (eq .Values.service.dns.externalTrafficPolicy "Local") (gt (int .Values.resolvers.replicas) 0) (or .Values.service.dns.alsoServe.api .Values.service.dns.alsoServe.cluster) }}
+
+WARNING (mode: scaled): service.dns.alsoServe puts the {{ if .Values.service.dns.alsoServe.api }}api{{ end }}{{ if and .Values.service.dns.alsoServe.api .Values.service.dns.alsoServe.cluster }} and {{ end }}{{ if .Values.service.dns.alsoServe.cluster }}cluster{{ end }} port on the DNS Service,
+  which also selects the resolver pods, and only the controller listens on it. With
+  externalTrafficPolicy Local, a load balancer announces the Service's IP from a node that has a
+  ready pod of that Service and delivers only to the pods on that node. If that node runs only a
+  resolver pod, DNS on port 53 keeps working and that port goes nowhere, and which node
+  announces can change after any restart. This only matters when the pods run on more than one
+  node. Either keep the controller on every node that can announce the address, or give the
+  port its own LoadBalancer Service and address (service.api.type or cluster.service.type:
+  LoadBalancer, each with its own IP), or run no resolver pods (resolvers.replicas: 0).
+  See "Scaling in Kubernetes" in docs/running.md.
+{{- end }}
+{{- end }}
+{{- if .Values.kubernetes.enabled }}
+
+Kubernetes workloads (FLT-017): the {{ if include "wrendns.scaled" . }}controller{{ else }}pod{{ end }} watches pods and namespaces (read-only) and
+names each pod address by its workload, e.g. media/deploy/jellyfin. Pods are seen as themselves
+only when they ask WrenDNS directly; through CoreDNS they all look like CoreDNS. Either:
+  1. Cluster-wide: point the kubelet's cluster DNS at the DNS Service{{ with .Values.service.dns.clusterIP }} ({{ . }}){{ end }}.
+     k3s, in /etc/rancher/k3s/config.yaml on every node, then restart k3s:
+       kubelet-arg: ["cluster-dns={{ .Values.service.dns.clusterIP | default "<the DNS Service's ClusterIP>" }}"]
+     New pods use it; restart workloads to move existing pods. WrenDNS sends
+     {{ .Values.kubernetes.clusterDomain }}{{ if or .Values.kubernetes.podCidr .Values.kubernetes.serviceCidr }} and the {{ if .Values.kubernetes.podCidr }}pod{{ end }}{{ if and .Values.kubernetes.podCidr .Values.kubernetes.serviceCidr }} and {{ end }}{{ if .Values.kubernetes.serviceCidr }}service{{ end }} reverse zones{{ end }} on to CoreDNS ({{ .Values.kubernetes.clusterDns }}).
+  2. Per workload: dnsPolicy: None, with dnsConfig.nameservers set to the DNS Service's address
+     and the cluster search domains.
+{{- if not .Values.service.dns.clusterIP }}
+  Set service.dns.clusterIP to a fixed address first, so the kubelet setting survives reinstalls.
+{{- end }}
+Group workloads with a wrendns.com/group label on a namespace or pod, kubernetes.map, or the
+Clients page's Workloads tab. See "Kubernetes workloads as devices" in docs/running.md.
+{{- end }}

@@ -64,7 +64,7 @@ summary), needs the `operator` role; agents need `ops:drill` (not in the default
 ## 5. Measuring coverage (decision)
 Three ingredients, all off the query path:
 
-**a. The seen table** (new, `crates/telltale-telemetry/src/seen.rs`, on the telemetry thread): per
+**a. The seen table** (new, `crates/wrendns-telemetry/src/seen.rs`, on the telemetry thread): per
 client key → `{ first_s, last_s, queries }`, capped at 4,096 clients (beyond it, `overflow` counts and
 new clients aren't tracked; the report says so), persisted to `<data_dir>/clients-seen.json` hourly and
 at shutdown, loaded at start, 30-day expiry. It gives the **baseline**: who used this node in the hour
@@ -111,8 +111,8 @@ not-ready pod) and labels the device verdicts "via balancer". The owner's two ad
   `missingNodes`) → summaries; `GET /api/v1/drills/{id}` → the full report (from the node that ran it;
   404 with a hint naming the node when it's unreachable). Privacy level 2+: verdict counts only, no
   device names.
-- CLI: `telltale drill start [--for 60s] [--group iot | --client ...] --reason ...`, `telltale drill stop`,
-  `telltale drill report [id]`, `telltale ctl drill ...` over the API.
+- CLI: `wrendns drill start [--for 60s] [--group iot | --client ...] --reason ...`, `wrendns drill stop`,
+  `wrendns drill report [id]`, `wrendns ctl drill ...` over the API.
 - MCP: `plan_failover_drill(node, forSecs, targets, reason)` → a plan (the approval inbox applies when
   `[agents] require_approval`; the plan's impact text names the baseline size and the precondition
   results); `drill_report(id?)` (read; the newest by default); `get_overview` mentions the last drill's
@@ -134,8 +134,8 @@ not-ready pod) and labels the device verdicts "via balancer". The owner's two ad
   text; the glossary gets "drill".
 
 ## 8. Metrics, alerts, health (decision)
-`telltale_drill_active` (0/1), `telltale_drill_dropped_total`, `telltale_drill_last_coverage_percent`,
-`telltale_drill_last_stuck`, `telltale_drill_last_failover_ms{quantile="0.5"|"0.9"}`, `telltale_drills_
+`wrendns_drill_active` (0/1), `wrendns_drill_dropped_total`, `wrendns_drill_last_coverage_percent`,
+`wrendns_drill_last_stuck`, `wrendns_drill_last_failover_ms{quantile="0.5"|"0.9"}`, `wrendns_drills_
 total{result="completed"|"cancelled"}`. Alerts during a drill are muted exactly as in maintenance
 (`maintenance` rule stays silent for drills; **decision:** a drill raises the existing `maintenance`
 alert kind with "drill" in the text when `for_secs = 0`, so operators who want to hear about drills can).
@@ -161,7 +161,7 @@ answering. Run a drill to find out."* No finding, no alert, no health reason.
    closed without a response; infrastructure and excluded addresses are answered even under `all`.
 2. Lifecycle: `forSecs` 301 → 422; a start on a node in maintenance → 409 `drill_refused`; a second start
    → 409 `drill_active`; `DELETE` ends it and the report still runs; a restart during a drill cancels it
-   (readiness back, nothing dropped, `telltale_drills_total{result="cancelled"}`); the window expires by
+   (readiness back, nothing dropped, `wrendns_drills_total{result="cancelled"}`); the window expires by
    itself; both audit entries exist with the actor and reason; an agent without `ops:drill` → 403.
 3. Preconditions: a single-node cluster → 409 with the "no other node" hint; a cluster pinned by a rollout
    → 409; `targets: { group: "nope" }` → 422.

@@ -6,7 +6,7 @@
 #      on node a, and users replicate to the other nodes;
 #   a. each node answers on its own address, and the answer names the node (NSID);
 #   b. the VIP (10.231.250.10) is held by node a and answers as node a;
-#   c. node a is killed hard (its TelltaleDNS and its keepalived, both at once): node b takes the VIP
+#   c. node a is killed hard (its WrenDNS and its keepalived, both at once): node b takes the VIP
 #      within 15 s and answers every query after that, and the cluster promotes node b (the witness
 #      and node b vote; the lease lapses first);
 #   d. node a comes back: it takes the VIP again (keepalived preempts a backup with higher priority)
@@ -19,11 +19,11 @@
 #      a keeps answering on its own address, and when the window ends the VIP returns to a (the
 #      runbook in docs/running.md relies on this).
 # Nothing here touches the LAN, the host network or any other compose project: its own project
-# name (telltale-keepalived), its own bridge network, no published ports. Every container and the
+# name (wrendns-keepalived), its own bridge network, no published ports. Every container and the
 # network are removed at exit, and the image too when this run built it.
 #
 # Usage: deploy/keepalived/e2e.sh                         (needs Docker with Compose v2, about 5 minutes)
-#        TELLTALE_IMAGE=<image> deploy/keepalived/e2e.sh  (use an existing TelltaleDNS image)
+#        WRENDNS_IMAGE=<image> deploy/keepalived/e2e.sh  (use an existing WrenDNS image)
 #        KEEP=1 deploy/keepalived/e2e.sh                  (keeps the built image)
 set -euo pipefail
 
@@ -37,7 +37,7 @@ HERE_W=$HERE
 ROOT_W=$ROOT
 if command -v cygpath >/dev/null 2>&1; then HERE_W=$(cygpath -m "$HERE"); ROOT_W=$(cygpath -m "$ROOT"); fi
 
-PROJECT=telltale-keepalived
+PROJECT=wrendns-keepalived
 SUBNET=10.231.250
 VIP=$SUBNET.10
 # The second network and its VIP (T24.32): the pair's second VLAN.
@@ -45,18 +45,18 @@ SUBNET2=10.231.251
 VIP2=$SUBNET2.10
 NET=${PROJECT}_vip
 NET2=${PROJECT}_vip2
-KA_IMAGE=telltale-keepalived:alpine-3.20
+KA_IMAGE=wrendns-keepalived:alpine-3.20
 # The keepalived image is removed at exit unless it was there before this run (REQ: OPS-010).
 KA_PRESENT=0
 docker image inspect "$KA_IMAGE" >/dev/null 2>&1 && KA_PRESENT=1
 BUILT_IMAGE=
-if [ -n "${TELLTALE_IMAGE:-}" ]; then
-  IMAGE=$TELLTALE_IMAGE
+if [ -n "${WRENDNS_IMAGE:-}" ]; then
+  IMAGE=$WRENDNS_IMAGE
 else
-  IMAGE=telltale:keepalived-test
+  IMAGE=wrendns:keepalived-test
   BUILT_IMAGE=$IMAGE
 fi
-export TELLTALE_IMAGE=$IMAGE
+export WRENDNS_IMAGE=$IMAGE
 COMPOSE=(docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml")
 NODES=(a b)
 # The admin of the test cluster: made on node a, with a password that is random per run (never printed).
@@ -70,7 +70,7 @@ cleanup() {
   set +e
   if [ "$rc" -ne 0 ]; then
     echo "--- the logs (last 40 lines each)"
-    for s in keepalived-a telltale-a keepalived-b telltale-b telltale-witness; do
+    for s in keepalived-a wrendns-a keepalived-b wrendns-b wrendns-witness; do
       echo "--- $s"
       "${COMPOSE[@]}" --profile witness logs --no-color --tail 40 "$s" 2>&1 | sed 's/^/    /'
     done
@@ -150,14 +150,14 @@ vip_owner() { # [vip]
 
 # A join token from node a's primary (reusable until it expires), for a node or the witness to join.
 join_token() { # extra flags...
-  "${COMPOSE[@]}" exec -T telltale-a /usr/local/bin/telltale cluster token create --ttl 30m "$@" \
-    -c /etc/telltale/telltale.toml 2>/dev/null | tr -d '\r' | grep '^tt_join_' || true
+  "${COMPOSE[@]}" exec -T wrendns-a /usr/local/bin/wrendns cluster token create --ttl 30m "$@" \
+    -c /etc/wrendns/wrendns.toml 2>/dev/null | tr -d '\r' | grep '^tt_join_' || true
 }
 
 # Makes the admin on a node with its setup token (node a is the primary, so the users replicate).
 make_admin() { # address
   local setup status
-  setup=$("${COMPOSE[@]}" exec -T telltale-a /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml 2>/dev/null | tr -d '\r' | sed -n 1p)
+  setup=$("${COMPOSE[@]}" exec -T wrendns-a /usr/local/bin/wrendns auth setup-token -c /etc/wrendns/wrendns.toml 2>/dev/null | tr -d '\r' | sed -n 1p)
   [ -n "$setup" ] || return 1
   status=$(docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" -s -o /dev/null -w '%{http_code}' \
     -H 'Content-Type: application/json' \
@@ -171,7 +171,7 @@ admin_login() { # address
   local out
   out=$(docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" -s -i -H 'Content-Type: application/json' \
     -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" "http://$1:8053/api/v1/auth/login" 2>/dev/null) || return 1
-  COOKIE=$(sed -n 's/^[Ss]et-[Cc]ookie: \(telltale_session=[^;]*\).*/\1/p' <<<"$out" | tr -d '\r' | head -n 1)
+  COOKIE=$(sed -n 's/^[Ss]et-[Cc]ookie: \(wrendns_session=[^;]*\).*/\1/p' <<<"$out" | tr -d '\r' | head -n 1)
   CSRF=$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' <<<"$out" | head -n 1)
   [ -n "$COOKIE" ] && [ -n "$CSRF" ]
 }
@@ -190,12 +190,12 @@ api_body() { head -n -1 <<<"$1" | head -c 300; }
 
 # 0 when the VIP answers as the wanted node, for up to budget_ms.
 vip_answers_as() { # budget_ms node
-  until_ok "$1" node_is "$VIP" "telltale-$2"
+  until_ok "$1" node_is "$VIP" "wrendns-$2"
 }
 
 # 0 when both VIPs answer as the wanted node and are held by it, for up to budget_ms (T24.32).
 both_vips_as() { # budget_ms node
-  vip_answers_as "$1" "$2" && until_ok "$1" node_is "$VIP2" "telltale-$2" \
+  vip_answers_as "$1" "$2" && until_ok "$1" node_is "$VIP2" "wrendns-$2" \
     && [ "$(vip_owner "$VIP")" = "$2" ] && [ "$(vip_owner "$VIP2")" = "$2" ]
 }
 
@@ -210,8 +210,8 @@ done
 pass
 
 if [ -n "$BUILT_IMAGE" ]; then
-  step "build the TelltaleDNS image from this checkout ($BUILT_IMAGE)"
-  docker build --build-arg PROFILE=bench-fast --build-arg TELLTALE_BUILD_CHANNEL=dev \
+  step "build the WrenDNS image from this checkout ($BUILT_IMAGE)"
+  docker build --build-arg PROFILE=bench-fast --build-arg WRENDNS_BUILD_CHANNEL=dev \
     -t "$BUILT_IMAGE" "$ROOT_W" >/dev/null 2>&1 || bad "the image build failed"
   pass
 fi
@@ -219,68 +219,68 @@ fi
 step "build the keepalived image and start the nodes"
 "${COMPOSE[@]}" build keepalived-a >/dev/null 2>&1 || bad "the keepalived image build failed"
 "${COMPOSE[@]}" up -d >/dev/null 2>&1 || bad "compose up failed"
-healthy_nodes() { [ "$("${COMPOSE[@]}" ps --format '{{.Service}} {{.Health}}' 2>/dev/null | grep -c '^telltale-[ab] healthy$')" = 2 ]; }
+healthy_nodes() { [ "$("${COMPOSE[@]}" ps --format '{{.Service}} {{.Health}}' 2>/dev/null | grep -c '^wrendns-[ab] healthy$')" = 2 ]; }
 until_ok 120000 healthy_nodes || bad "the two nodes did not come up healthy within 120 s"
 pass
 
 step "0. the cluster: a creates it, b joins, the witness joins, automatic failover is on, an admin is made"
 TB=$(join_token --eligible)
 [ -n "$TB" ] || bad "node a gave no join token"
-"${COMPOSE[@]}" stop telltale-b >/dev/null 2>&1 || bad "could not stop node b to join it"
-"${COMPOSE[@]}" run --rm -T --no-deps telltale-b cluster join "$TB" --site telltale-b --eligible \
-  --advertise "https://$SUBNET.12:8443" -c /etc/telltale/telltale.toml >/dev/null 2>&1 || bad "node b couldn't join the cluster"
-"${COMPOSE[@]}" start telltale-b >/dev/null 2>&1 || bad "node b didn't start after joining"
+"${COMPOSE[@]}" stop wrendns-b >/dev/null 2>&1 || bad "could not stop node b to join it"
+"${COMPOSE[@]}" run --rm -T --no-deps wrendns-b cluster join "$TB" --site wrendns-b --eligible \
+  --advertise "https://$SUBNET.12:8443" -c /etc/wrendns/wrendns.toml >/dev/null 2>&1 || bad "node b couldn't join the cluster"
+"${COMPOSE[@]}" start wrendns-b >/dev/null 2>&1 || bad "node b didn't start after joining"
 TW=$(join_token --witness)
 [ -n "$TW" ] || bad "node a gave no witness token"
-"${COMPOSE[@]}" --profile witness run --rm -T --no-deps telltale-witness cluster join "$TW" --witness \
-  --site witness --advertise "https://$SUBNET.13:8443" -c /etc/telltale/telltale.toml >/dev/null 2>&1 \
+"${COMPOSE[@]}" --profile witness run --rm -T --no-deps wrendns-witness cluster join "$TW" --witness \
+  --site witness --advertise "https://$SUBNET.13:8443" -c /etc/wrendns/wrendns.toml >/dev/null 2>&1 \
   || bad "the witness couldn't join the cluster"
-"${COMPOSE[@]}" --profile witness up -d telltale-witness >/dev/null 2>&1 || bad "the witness didn't start"
-"${COMPOSE[@]}" exec -T telltale-a /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null 2>&1 \
+"${COMPOSE[@]}" --profile witness up -d wrendns-witness >/dev/null 2>&1 || bad "the witness didn't start"
+"${COMPOSE[@]}" exec -T wrendns-a /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null 2>&1 \
   || bad "couldn't turn automatic failover on"
-until_ok 120000 metric_is "$SUBNET.11" telltale_cluster_peer_up 'site="telltale-b"' 1 \
+until_ok 120000 metric_is "$SUBNET.11" wrendns_cluster_peer_up 'site="wrendns-b"' 1 \
   || bad "node a doesn't see node b connected"
-until_ok 120000 metric_is "$SUBNET.11" telltale_cluster_peer_up 'site="witness"' 1 \
+until_ok 120000 metric_is "$SUBNET.11" wrendns_cluster_peer_up 'site="witness"' 1 \
   || bad "node a doesn't see the witness connected"
-[ "$(metric_at "$SUBNET.11" telltale_cluster_primary)" = 1 ] || bad "node a is not the primary"
-[ "$(metric_at "$SUBNET.12" telltale_cluster_primary)" = 0 ] || bad "node b thinks it is the primary"
-until_ok 60000 metric_is "$SUBNET.12" telltale_cluster_failover_auto "" 1 || bad "node b doesn't have automatic failover on"
+[ "$(metric_at "$SUBNET.11" wrendns_cluster_primary)" = 1 ] || bad "node a is not the primary"
+[ "$(metric_at "$SUBNET.12" wrendns_cluster_primary)" = 0 ] || bad "node b thinks it is the primary"
+until_ok 60000 metric_is "$SUBNET.12" wrendns_cluster_failover_auto "" 1 || bad "node b doesn't have automatic failover on"
 make_admin "$SUBNET.11" || bad "the admin couldn't be made on node a"
 pass "primary a, replica b, witness connected, automatic failover on, admin made"
 
 step "a. each node answers on its own address, and names itself"
 for n in "${NODES[@]}"; do
   i=$([ "$n" = a ] && echo 11 || echo 12)
-  until_ok 120000 node_is "$SUBNET.$i" "telltale-$n" || bad "node $n does not answer on $SUBNET.$i as telltale-$n"
+  until_ok 120000 node_is "$SUBNET.$i" "wrendns-$n" || bad "node $n does not answer on $SUBNET.$i as wrendns-$n"
 done
-pass "telltale-a on .11, telltale-b on .12"
+pass "wrendns-a on .11, wrendns-b on .12"
 
-step "b. the VIP is held by a, and answers as telltale-a"
-vip_answers_as 60000 a || bad "the VIP $VIP does not answer as telltale-a within 60 s (owner: '$(vip_owner)')"
-[ "$(vip_owner)" = a ] || bad "the VIP answers as telltale-a but is held by '$(vip_owner)'"
+step "b. the VIP is held by a, and answers as wrendns-a"
+vip_answers_as 60000 a || bad "the VIP $VIP does not answer as wrendns-a within 60 s (owner: '$(vip_owner)')"
+[ "$(vip_owner)" = a ] || bad "the VIP answers as wrendns-a but is held by '$(vip_owner)'"
 [ "$(dig_at "$VIP" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the VIP"
 pass "owner a"
 
 step "f. the second network: each node answers on its own address there, and both VIPs are held by a"
 for n in "${NODES[@]}"; do
   i=$([ "$n" = a ] && echo 11 || echo 12)
-  until_ok 60000 node_is "$SUBNET2.$i" "telltale-$n" || bad "node $n does not answer on $SUBNET2.$i as telltale-$n"
+  until_ok 60000 node_is "$SUBNET2.$i" "wrendns-$n" || bad "node $n does not answer on $SUBNET2.$i as wrendns-$n"
 done
-both_vips_as 60000 a || bad "the VIPs $VIP and $VIP2 are not both held by a and answering as telltale-a (owners: '$(vip_owner "$VIP")' and '$(vip_owner "$VIP2")')"
+both_vips_as 60000 a || bad "the VIPs $VIP and $VIP2 are not both held by a and answering as wrendns-a (owners: '$(vip_owner "$VIP")' and '$(vip_owner "$VIP2")')"
 [ "$(dig_at "$VIP2" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the second VIP"
 # TCP on the second VIP too: the wildcard TCP listener answers on every interface.
 tcp_ok=$(docker run --rm --network "$NET2" --entrypoint dig "$KA_IMAGE" +tcp +time=2 +tries=1 +short "@$VIP2" gateway.vip.home.arpa A 2>/dev/null | head -n 1 || true)
 [ "$tcp_ok" = 192.0.2.1 ] || bad "TCP to the second VIP does not answer (got '$tcp_ok')"
-pass "telltale-a on $SUBNET2.11, telltale-b on $SUBNET2.12, both VIPs on a, UDP and TCP answer on the second"
+pass "wrendns-a on $SUBNET2.11, wrendns-b on $SUBNET2.12, both VIPs on a, UDP and TCP answer on the second"
 
-step "c. kill node a (TelltaleDNS and keepalived at once)"
+step "c. kill node a (WrenDNS and keepalived at once)"
 t0=$(now_ms)
-"${COMPOSE[@]}" kill telltale-a keepalived-a >/dev/null 2>&1 || bad "could not kill node a"
+"${COMPOSE[@]}" kill wrendns-a keepalived-a >/dev/null 2>&1 || bad "could not kill node a"
 lost=0
 took=
 end=$(( t0 + 30000 ))
 while [ "$(now_ms)" -lt "$end" ]; do
-  if [ "$(node_at "$VIP")" = telltale-b ]; then
+  if [ "$(node_at "$VIP")" = wrendns-b ]; then
     took=$(( $(now_ms) - t0 ))
     break
   fi
@@ -289,45 +289,45 @@ while [ "$(now_ms)" -lt "$end" ]; do
 done
 [ -n "$took" ] || bad "the VIP did not move to b within 30 s"
 [ "$took" -le 15000 ] || bad "the VIP moved after ${took} ms (limit 15000 ms)"
-[ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
+[ "$(vip_owner)" = b ] || bad "the VIP answers as wrendns-b but is held by '$(vip_owner)'"
 ok_after=0
 for _ in 1 2 3 4 5; do
-  [ "$(node_at "$VIP")" = telltale-b ] && ok_after=$(( ok_after + 1 ))
+  [ "$(node_at "$VIP")" = wrendns-b ] && ok_after=$(( ok_after + 1 ))
 done
-[ "$ok_after" = 5 ] || bad "only $ok_after of 5 queries answered as telltale-b after the move"
+[ "$ok_after" = 5 ] || bad "only $ok_after of 5 queries answered as wrendns-b after the move"
 [ "$(dig_at "$VIP" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the VIP after the move"
 pass "the VIP moved to b after ${took} ms, $lost failed probes before the first answer, then 5 of 5 answered"
 # The second VIP moves on the same health check (T24.32).
-until_ok 15000 node_is "$VIP2" telltale-b || bad "the second VIP $VIP2 did not move to b (owner: '$(vip_owner "$VIP2")')"
-[ "$(vip_owner "$VIP2")" = b ] || bad "the second VIP answers as telltale-b but is held by '$(vip_owner "$VIP2")'"
+until_ok 15000 node_is "$VIP2" wrendns-b || bad "the second VIP $VIP2 did not move to b (owner: '$(vip_owner "$VIP2")')"
+[ "$(vip_owner "$VIP2")" = b ] || bad "the second VIP answers as wrendns-b but is held by '$(vip_owner "$VIP2")'"
 [ "$(dig_at "$VIP2" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the second VIP after the move"
 pass "both VIPs are on b"
 
-until_ok 60000 metric_is "$SUBNET.12" telltale_cluster_primary "" 1 \
+until_ok 60000 metric_is "$SUBNET.12" wrendns_cluster_primary "" 1 \
   || bad "the cluster did not promote node b within 60 s"
-pass "the cluster promoted b (epoch $(metric_at "$SUBNET.12" telltale_cluster_epoch))"
+pass "the cluster promoted b (epoch $(metric_at "$SUBNET.12" wrendns_cluster_epoch))"
 
 step "d. node a comes back: it takes the VIP again and steps down to a replica"
 "${COMPOSE[@]}" up -d >/dev/null 2>&1 || bad "compose up (node a) failed"
 vip_answers_as 60000 a || bad "node a did not take the VIP back within 60 s (owner: '$(vip_owner)', answered by '$(node_at "$VIP")')"
-[ "$(vip_owner)" = a ] || bad "the VIP answers as telltale-a but is held by '$(vip_owner)'"
+[ "$(vip_owner)" = a ] || bad "the VIP answers as wrendns-a but is held by '$(vip_owner)'"
 both_vips_as 60000 a || bad "the second VIP did not come back to a with the first (owner: '$(vip_owner "$VIP2")')"
-until_ok 90000 metric_is "$SUBNET.11" telltale_cluster_primary "" 0 \
+until_ok 90000 metric_is "$SUBNET.11" wrendns_cluster_primary "" 0 \
   || bad "node a did not step down to a replica within 90 s"
-[ "$(metric_at "$SUBNET.12" telltale_cluster_primary)" = 1 ] || bad "node b lost the primary role"
+[ "$(metric_at "$SUBNET.12" wrendns_cluster_primary)" = 1 ] || bad "node b lost the primary role"
 pass "both VIPs are back on a; a is a replica, b the primary"
 
 step "e. maintenance on a hands the VIP to b, and ending it brings the VIP back"
 admin_login "$SUBNET.11" || bad "the admin can't sign in on node a"
 out=$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":300,"reason":"keepalived e2e"}')
 [ "$(api_status "$out")" = 200 ] || bad "could not start maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
-until_ok 30000 node_is "$VIP" telltale-b || bad "the VIP did not move to b while a is in maintenance (owner: '$(vip_owner)')"
-[ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
+until_ok 30000 node_is "$VIP" wrendns-b || bad "the VIP did not move to b while a is in maintenance (owner: '$(vip_owner)')"
+[ "$(vip_owner)" = b ] || bad "the VIP answers as wrendns-b but is held by '$(vip_owner)'"
 both_vips_as 30000 b || bad "the second VIP did not move to b with the first while a is in maintenance (owner: '$(vip_owner "$VIP2")')"
-[ "$(node_at "$SUBNET2.11")" = telltale-a ] || bad "node a stopped answering on its own second-network address during maintenance"
-[ "$(node_at "$SUBNET.11")" = telltale-a ] || bad "node a stopped answering on its own address during maintenance"
+[ "$(node_at "$SUBNET2.11")" = wrendns-a ] || bad "node a stopped answering on its own second-network address during maintenance"
+[ "$(node_at "$SUBNET.11")" = wrendns-a ] || bad "node a stopped answering on its own address during maintenance"
 # The first identity sync from the primary after node a rejoined replaces the admin that node a made
-# locally, and that ends its sessions (crates/telltale-store identity import). It can land between
+# locally, and that ends its sessions (crates/wrendns-store identity import). It can land between
 # the two calls, so the session is made again before the call that ends maintenance.
 admin_login "$SUBNET.11" || bad "the admin can't sign in on node a before ending maintenance"
 out=$(admin_api "$SUBNET.11" DELETE /api/v1/nodes/local/maintenance)

@@ -1,4 +1,4 @@
-# TelltaleDNS content-category catalog: Culture and Entertainment (REQ: FLT-901, ADR-995).
+# WrenDNS content-category catalog: Culture and Entertainment (REQ: FLT-901, ADR-995).
 # Data, not code: compiled into the binary. Lists are never bundled: a node downloads
 # each source from its maintainer only while a group uses it.
 

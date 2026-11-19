@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Extend the cluster protocol — TelltaleDNS</title>
-<meta name="description" content="How to add a read or a request between TelltaleDNS cluster nodes: older nodes, the one-mebibyte answer limit, who may ask, what a node may never trust from another, and how to test it on real processes.">
+<title>Extend the cluster protocol — WrenDNS</title>
+<meta name="description" content="How to add a read or a request between WrenDNS cluster nodes: older nodes, the one-mebibyte answer limit, who may ask, what a node may never trust from another, and how to test it on real processes.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -31,7 +31,7 @@
   <h2>How a read works</h2>
   <ul>
     <li>The node that was asked is the <i>entry node</i>. For a federated read it asks each reachable peer over the cluster stream and merges the answers with its own.</li>
-    <li>The request is one JSON value of the <code>Read</code> enum in <code>crates/telltale/src/federated.rs</code>, sent with kind <code>api.read</code>. The peer decodes it, answers from its own data in <code>answer()</code>, and replies with JSON.</li>
+    <li>The request is one JSON value of the <code>Read</code> enum in <code>crates/wrendns/src/federated.rs</code>, sent with kind <code>api.read</code>. The peer decodes it, answers from its own data in <code>answer()</code>, and replies with JSON.</li>
     <li>A peer that doesn't answer within two seconds, or errors, is left out and listed in the result's <code>missingNodes</code>: a dead node costs a read two seconds, never more (CLU-002).</li>
     <li>Reads run on blocking threads, never on the DNS path (DNS never depends on the cluster).</li>
   </ul>
@@ -43,7 +43,7 @@
     <thead><tr><th>Rule</th><th>Why</th></tr></thead>
     <tbody>
       <tr><td><b>Old nodes must not answer wrongly.</b> If adding a field changes what a read means, make it a new <code>Read</code> variant, with a doc comment saying "older peers don't know it".</td><td>A peer decodes what it is sent leniently: it ignores a field it does not know. An old node would answer as if you had not asked, and the entry node would merge a wrong answer into a right one. An unknown variant is an error, so the old node is listed as not reached, which is true.</td></tr>
-      <tr><td><b>An answer fits about a mebibyte.</b> One frame is at most 1 MiB (<code>MAX_FRAME</code> in <code>crates/telltale-cluster/src/wire.rs</code>), and an answer a little under it. A larger answer fails with "answer too large", and the node is listed as missing.</td><td>The stream is shared with heartbeats and replication. Cap what you return (a page limit), paginate, or compress; do not assume it fits.</td></tr>
+      <tr><td><b>An answer fits about a mebibyte.</b> One frame is at most 1 MiB (<code>MAX_FRAME</code> in <code>crates/wrendns-cluster/src/wire.rs</code>), and an answer a little under it. A larger answer fails with "answer too large", and the node is listed as missing.</td><td>The stream is shared with heartbeats and replication. Cap what you return (a page limit), paginate, or compress; do not assume it fits.</td></tr>
       <tr><td><b>An ephemeral member can be asked, but may not change or reveal much.</b> A resolver pod is a member with less trust. Requests that change a node's state, forward configuration writes, or return anything sensitive are refused when the asker is ephemeral (the handler already does this for pauses, cache flushes, maintenance, rollouts, and node removal).</td><td>Pods are created by anyone who can schedule one, and they come and go. They get replicated configuration and their own queries, not the users and tokens.</td></tr>
       <tr><td><b>Nothing a peer says is trusted.</b> Check sizes, counts, and paths in what it sends. When you report that a node failed, use your own words, not its text.</td><td>Another node is another machine. A bug or a compromise there must not become a bug or an injection here.</td></tr>
       <tr><td><b>A secret in a request is held in memory and never printable.</b> Give the type a <code>Debug</code> that hides it. Don't log it, store it, or put it in an audit entry.</td><td>The <code>Read</code> enum derives <code>Debug</code>; whatever prints a read (a log, a panic message) would print the secret.</td></tr>
@@ -58,7 +58,7 @@
   <ol class="steps">
     <li class="step"><b>Decide whether it should federate at all.</b> Configuration is replicated from the primary and is the same everywhere; a read that asks each node about <i>its own</i> data (its query log, its cache, its health) is what federates.</li>
     <li class="step"><b>Add the <code>Read</code> variant</b> with a doc comment (the requirement, and "older peers don't know it").</li>
-    <li class="step"><b>Add a method to the <code>Backend</code> trait</b> in <code>crates/telltale-api/src/lib.rs</code> with a default that returns "unavailable", so a node that is not in a cluster still compiles. Implement it for the node's own data in <code>api_backend.rs</code>.</li>
+    <li class="step"><b>Add a method to the <code>Backend</code> trait</b> in <code>crates/wrendns-api/src/lib.rs</code> with a default that returns "unavailable", so a node that is not in a cluster still compiles. Implement it for the node's own data in <code>api_backend.rs</code>.</li>
     <li class="step"><b>Answer it.</b> An arm in <code>answer()</code> that calls the node's own implementation.</li>
     <li class="step"><b>Ask for it.</b> In the <code>Federated</code> implementation, build the reads for the peers in scope, call them (<code>gather</code> runs them in parallel with the two-second deadline), merge what came back with the local answer, and keep the failures in the missing list.</li>
     <li class="step"><b>Gate it.</b> If it changes state or returns anything sensitive, refuse an ephemeral asker in the handler next to the others.</li>
@@ -70,7 +70,7 @@
 <section id="checks">
   <h2>The checks</h2>
   <ul>
-    <li><b>Unit tests</b> in <code>crates/telltale-cluster</code> run real nodes inside one process over real TLS (<code>net_tests.rs</code>), and the federated merge functions are plain functions you can test directly.</li>
+    <li><b>Unit tests</b> in <code>crates/wrendns-cluster</code> run real nodes inside one process over real TLS (<code>net_tests.rs</code>), and the federated merge functions are plain functions you can test directly.</li>
     <li><b>The end-to-end scripts</b> run real processes: <code>deploy/cluster/e2e.sh</code> starts a primary and a replica and walks the features (federated reads, write forwarding, shipped logs, maintenance), and CI's <code>native</code> job also runs the failover, GitOps failover, and node-removal scripts. Add a step for your read there: it is the only test that crosses a real stream with real sizes.</li>
     <li><b>Say what you did not run.</b> A mixed-version cluster is hard to test; if you did not, the task's <i>Done</i> note says so.</li>
     <li><b>Wait for exactly what you assert.</b> A cluster test waits for the condition it then checks. One test asserted a second condition straight after waiting for the first and failed once under load; the suspected cause is that the second is derived from state that arrives separately.</li>

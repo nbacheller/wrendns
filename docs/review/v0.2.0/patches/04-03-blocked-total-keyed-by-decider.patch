@@ -1,7 +1,7 @@
-diff --git a/crates/telltale-telemetry/src/export.rs b/crates/telltale-telemetry/src/export.rs
+diff --git a/crates/wrendns-telemetry/src/export.rs b/crates/wrendns-telemetry/src/export.rs
 index 714d3ec..71cefd4 100644
---- a/crates/telltale-telemetry/src/export.rs
-+++ b/crates/telltale-telemetry/src/export.rs
+--- a/crates/wrendns-telemetry/src/export.rs
++++ b/crates/wrendns-telemetry/src/export.rs
 @@ -7,7 +7,7 @@
  
  use std::collections::HashMap;
@@ -12,10 +12,10 @@ index 714d3ec..71cefd4 100644
  
  const N_BUCKET: usize = BUCKETS_US.len() + 1;
 @@ -16,6 +16,38 @@ const MAX_UPSTREAMS: usize = 256;
- /// (group, list) pairs tracked for `telltale_blocked_total`; beyond this, the rest share one.
+ /// (group, list) pairs tracked for `wrendns_blocked_total`; beyond this, the rest share one.
  const MAX_BLOCK_PAIRS: usize = 4096;
  
-+/// `telltale_blocked_total{list}` keys that aren't list IDs. `Rule::list` names a filter list
++/// `wrendns_blocked_total{list}` keys that aren't list IDs. `Rule::list` names a filter list
 +/// only for list rules: a quick rule carries its 16-bit reference, a schedule its reference,
 +/// and an answer-address block 0, which would all read as some list's name (FLT-013).
 +pub const LIST_NONE: u16 = u16::MAX;
@@ -96,13 +96,13 @@ index 714d3ec..71cefd4 100644
 +        assert_eq!(blocked_label(7, &lists), "unknown");
 +    }
  }
-diff --git a/crates/telltale/src/http.rs b/crates/telltale/src/http.rs
+diff --git a/crates/wrendns/src/http.rs b/crates/wrendns/src/http.rs
 index fab903f..593d1c5 100644
---- a/crates/telltale/src/http.rs
-+++ b/crates/telltale/src/http.rs
+--- a/crates/wrendns/src/http.rs
++++ b/crates/wrendns/src/http.rs
 @@ -1029,7 +1029,7 @@ fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::D
      w.family(
-         "telltale_blocked_total",
+         "wrendns_blocked_total",
          "counter",
 -        "Blocked queries by the client's primary group and the deciding list.",
 +        "Blocked queries by the client's primary group and the deciding list (quick, schedule, answer_ip: no list decided).",
@@ -114,20 +114,20 @@ index fab903f..593d1c5 100644
              .get(usize::from(*g))
              .map_or_else(|| "unknown".to_owned(), |g| g.name.to_string());
 -        let list = lists.get(usize::from(*l)).map_or("unknown", String::as_str);
-+        let list = telltale_telemetry::export::blocked_label(*l, &lists);
++        let list = wrendns_telemetry::export::blocked_label(*l, &lists);
          w.sample(
-             "telltale_blocked_total",
+             "wrendns_blocked_total",
              &[("group", group.as_str()), ("list", list)],
 diff --git a/docs/running.md b/docs/running.md
 index ca9a240..8f8a87d 100644
 --- a/docs/running.md
 +++ b/docs/running.md
 @@ -1582,7 +1582,7 @@ Main metrics:
- | `telltale_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
- | `telltale_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
- | `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
--| `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list |
-+| `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list (`list` is `quick`, `schedule`, or `answer_ip` when a quick rule, a schedule, or rebinding protection decided instead) |
- | `telltale_client_queries_total{client}` | queries per client: off by default; turn on with `[telemetry.metrics] per_client = true` (at most `per_client_cap` clients, default 100; the rest are `client="other"`) |
- | `telltale_list_entries{list}`, `telltale_filter_*` | list sizes, snapshot version, rule count, compile time |
- | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
+ | `wrendns_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
+ | `wrendns_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
+ | `wrendns_upstream_breaker_state`, `wrendns_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
+-| `wrendns_blocked_total{group,list}` | blocks by the client's group and the deciding list |
++| `wrendns_blocked_total{group,list}` | blocks by the client's group and the deciding list (`list` is `quick`, `schedule`, or `answer_ip` when a quick rule, a schedule, or rebinding protection decided instead) |
+ | `wrendns_client_queries_total{client}` | queries per client: off by default; turn on with `[telemetry.metrics] per_client = true` (at most `per_client_cap` clients, default 100; the rest are `client="other"`) |
+ | `wrendns_list_entries{list}`, `wrendns_filter_*` | list sizes, snapshot version, rule count, compile time |
+ | `wrendns_telemetry_dropped_total`, `wrendns_qlog_*`, `wrendns_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |

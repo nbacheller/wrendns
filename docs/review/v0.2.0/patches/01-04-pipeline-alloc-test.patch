@@ -3,17 +3,17 @@ index 96959ef..cbc6a11 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -3366,6 +3366,7 @@ dependencies = [
- name = "telltale"
+ name = "wrendns"
  version = "0.2.0"
  dependencies = [
 + "allocation-counter",
   "arc-swap",
   "axum",
   "base64 0.22.1",
-diff --git a/crates/telltale/Cargo.toml b/crates/telltale/Cargo.toml
+diff --git a/crates/wrendns/Cargo.toml b/crates/wrendns/Cargo.toml
 index a0f904d..cea007f 100644
---- a/crates/telltale/Cargo.toml
-+++ b/crates/telltale/Cargo.toml
+--- a/crates/wrendns/Cargo.toml
++++ b/crates/wrendns/Cargo.toml
 @@ -73,5 +73,7 @@ dhat = { version = "0.3.3", optional = true }
  dhat-heap = ["dep:dhat"]
  
@@ -22,10 +22,10 @@ index a0f904d..cea007f 100644
 +allocation-counter = "0.8.1"
  tempfile = "3.27.0"
  tokio = { version = "1.53.1", features = ["io-util"] }
-diff --git a/crates/telltale/src/main.rs b/crates/telltale/src/main.rs
+diff --git a/crates/wrendns/src/main.rs b/crates/wrendns/src/main.rs
 index 6d4ba71..7506720 100644
---- a/crates/telltale/src/main.rs
-+++ b/crates/telltale/src/main.rs
+--- a/crates/wrendns/src/main.rs
++++ b/crates/wrendns/src/main.rs
 @@ -59,14 +59,16 @@ use tracing::{error, info, warn};
  
  // REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
@@ -45,10 +45,10 @@ index 6d4ba71..7506720 100644
  #[global_allocator]
  static GLOBAL: dhat::Alloc = dhat::Alloc;
  
-diff --git a/crates/telltale/src/pipeline.rs b/crates/telltale/src/pipeline.rs
+diff --git a/crates/wrendns/src/pipeline.rs b/crates/wrendns/src/pipeline.rs
 index 546b2a8..f413da8 100644
---- a/crates/telltale/src/pipeline.rs
-+++ b/crates/telltale/src/pipeline.rs
+--- a/crates/wrendns/src/pipeline.rs
++++ b/crates/wrendns/src/pipeline.rs
 @@ -3526,6 +3526,43 @@ groups = ["kids"]
          rt.shutdown_timeout(Duration::from_secs(1));
      }

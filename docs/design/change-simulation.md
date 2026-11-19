@@ -28,8 +28,8 @@ deciding list. It never asks an upstream, never touches the cache, and never run
    changes. Mutations whose kind can't affect a decision (alerts, users, tokens, exclusions) answer
    `impact: { applicable: false }` rather than 400, so clients can send it blindly.
 2. **Whole configuration.** `POST /api/v1/simulate` with `{ config: <shared configuration as JSON>,
-   window }` — the shape `telltale_config::shared::shared_part` produces, which is also what a Git
-   commit's `telltale/shared.toml` becomes. `telltale config simulate shared.toml --window 24h
+   window }` — the shape `wrendns_config::shared::shared_part` produces, which is also what a Git
+   commit's `wrendns/shared.toml` becomes. `wrendns config simulate shared.toml --window 24h
    [--node URL --token …]` wraps it. This is the GitOps door: test a commit before pushing.
 3. **MCP.** `simulate_change(kind, …, window)` where `kind` ∈ `block_domain | allow_domain | add_list |
    assign_client | update_group` with the same parameters as the matching `plan_*` tool. It calls the
@@ -46,7 +46,7 @@ endpoints already validate and merge each kind; duplicating that in a second bod
 code paths drift. The whole-configuration door exists for the case the dry-run doors can't express.
 
 ## 4. Engine (decision)
-New module `crates/telltale/src/simulate.rs`. Inputs: the dry run's **merged configuration** (`Config`,
+New module `crates/wrendns/src/simulate.rs`. Inputs: the dry run's **merged configuration** (`Config`,
 after the managed-entry merge; the dry-run handlers already have it) and the window. Steps:
 
 1. **Candidate policy.** Build the candidate `Policy`/`ClientTable`/router exactly as a reload would
@@ -57,7 +57,7 @@ after the managed-entry merge; the dry-run handlers already have it) and the win
    - If the candidate's `[[list]]` set (URLs/paths/inline, `kind`, `match`, `mode`, enabled) equals the
      serving one: reuse the serving `FilterState`'s snapshot; recompute per-group/per-client masks for
      the candidate groups.
-   - Else: compile **only the lists that differ or are new** (`telltale_filter::compile` with the
+   - Else: compile **only the lists that differ or are new** (`wrendns_filter::compile` with the
      fetcher's stored sources; a new URL list is fetched through the existing `check_list` path first —
      the dry run for `plan_add_list`/`PUT /lists` already downloads to validate) into a **side
      snapshot** in a temp dir under `<data_dir>/snapshots/sim-<id>/`, one thread, `SCHED_IDLE`, the
@@ -71,7 +71,7 @@ after the managed-entry merge; the dry-run handlers already have it) and the win
    - Property test: for 10k random names × 3 clients, `decide_merged` with (serving = lists A, side =
      list B) equals `decide` on a full compile of A ∪ B, in both lookup modes, excluding `$badfilter`.
 3. **Replay.** Read the query log newest first over the window with the column reader
-   (`telltale_store::qlog::search` with a projection: `ts`, `client`, `group`, `qname`, `qtype`,
+   (`wrendns_store::qlog::search` with a projection: `ts`, `client`, `group`, `qname`, `qtype`,
    `status`, `rule_list`, `upstream_group`), in blocks. For each row: identify the client under the
    candidate table (the event carries the address; MAC/client-ID identification can't be redone — use
    the event's recorded group when the address alone can't identify, and note `identity_from_event`),
@@ -153,8 +153,8 @@ Shared rather than node-local on purpose: the toggles are one place to look and 
 bounds suit a Pi and a pod alike. A node that can't meet `max_secs` reports `partial`, which is fine.
 
 ## 9. Metrics, audit, scopes
-- `telltale_simulations_total{outcome="ok|partial|busy|unavailable|error"}`,
-  `telltale_simulation_duration_seconds` (histogram), `telltale_simulation_rows_total`.
+- `wrendns_simulations_total{outcome="ok|partial|busy|unavailable|error"}`,
+  `wrendns_simulation_duration_seconds` (histogram), `wrendns_simulation_rows_total`.
 - Not audited (a dry run isn't). Scopes: `querylog:read` plus the write scope of the change (as for
   `check_list`/`check_upstream`); the whole-configuration door needs `config:read` + `querylog:read`.
 - Rate: the semaphore is the rate limit; agents hitting `busy` get `retryAfterSecs`.
@@ -169,7 +169,7 @@ bounds suit a Pi and a pod alike. A node that can't meet `max_secs` reports `par
 - Memory: side snapshot ≤ the compiler cap (`[filter] compile_memory`); aggregates bounded (§4.4).
 
 ## 11. Tests (map to the AC in `spec/10`)
-- Unit (`crates/telltale/tests/simulate.rs`): block/allow/route/zero cases over a synthetic log;
+- Unit (`crates/wrendns/tests/simulate.rs`): block/allow/route/zero cases over a synthetic log;
   `decide_merged` property test; bounds (`busy`, `max_rows`, `max_secs`); privacy levels;
   determinism (two runs, byte-equal JSON); skipping special/refused/probe/excluded rows.
 - Cluster e2e step: simulation on the replica includes the primary's rows and a ship-mode node's rows
@@ -182,9 +182,9 @@ bounds suit a Pi and a pod alike. A node that can't meet `max_secs` reports `par
 1. Refactor: candidate `Policy`/router construction as a pure function of `&Config` + snapshot.
 2. `decide_merged` + property test (no I/O yet).
 3. Replay over the query log + aggregation + bounds + determinism tests.
-4. `simulate=` on the dry-run handlers (one shared helper), `impact` type in `telltale-api::model`,
+4. `simulate=` on the dry-run handlers (one shared helper), `impact` type in `wrendns-api::model`,
    OpenAPI regenerated, `applicable: false` for kinds that can't affect decisions.
-5. `POST /api/v1/simulate` + `telltale config simulate`.
+5. `POST /api/v1/simulate` + `wrendns config simulate`.
 6. RPC `sim.run`, `has_qlog` heartbeat bit, federation merge, e2e step.
 7. MCP `simulate_change`; `simulate` on the `plan_*` tools; `plans_by_default`; graceful degradation.
 8. `[simulate]` as a managed one-of section + Settings → System editor + API + audit.

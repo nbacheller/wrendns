@@ -1,5 +1,5 @@
 <script lang="ts">
-  // REQ: OBS-015 (ADR-104) — one icon for how TelltaleDNS is doing, next to the project links:
+  // REQ: OBS-015 (ADR-104) — one icon for how WrenDNS is doing, next to the project links:
   // a circle with a check (healthy, quiet), a triangle with "!" (degraded), an octagon with "×"
   // (severe). The shape changes with the color, so it reads without color too. Clicking lists
   // the reasons, each with its node and where to look.

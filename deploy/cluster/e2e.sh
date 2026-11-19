@@ -21,9 +21,9 @@
 # replica is in the primary's read, and the stopped replica is listed as missing there.
 # (OPS-011, ADR-172): a cluster support package from the primary holds both nodes' parts, redacted on their
 # own nodes, and refuses keepMap.
-# Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= R_PID= H_PID=
@@ -211,8 +211,8 @@ q() { python3 "$E/q.py" one "$@"; }
 # REQ: CLU-014 — the drill hooks: no 10-minute gap between drills, the "came back" check after
 # 15 s instead of 15 minutes, missing parts retried for 10 s instead of 5 minutes, and the health
 # check ignored (these nodes have no working upstream, so their health is severe).
-TELLTALE_KUBERNETES_FIXTURE="$E/k8s.json" TELLTALE_DRILL_GAP_SECS=0 TELLTALE_DRILL_RETURN_SECS=15 \
-  TELLTALE_DRILL_RETRY_SECS=10 TELLTALE_DRILL_IGNORE_HEALTH=1 \
+WRENDNS_KUBERNETES_FIXTURE="$E/k8s.json" WRENDNS_DRILL_GAP_SECS=0 WRENDNS_DRILL_RETURN_SECS=15 \
+  WRENDNS_DRILL_RETRY_SECS=10 WRENDNS_DRILL_IGNORE_HEALTH=1 \
   "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 T=$("$B" cluster token create --ttl 10m --eligible -c "$E/p.toml" 2>/dev/null)
@@ -269,7 +269,7 @@ echo "ok (cluster $both queries, primary alone $own)"
 # 5 s (pushed), a replica started afterwards within 60 s (pulled); a stopped replica is listed as
 # missing, never an error; and the replica names a pod's query by its workload.
 echo "== Kubernetes workloads reach every node (FLT-017)"
-wl() { { curl -s --max-time 2 "http://127.0.0.1:$1/metrics" || true; } | awk '/^telltale_kubernetes_workloads / {print $2+0}'; }
+wl() { { curl -s --max-time 2 "http://127.0.0.1:$1/metrics" || true; } | awk '/^wrendns_kubernetes_workloads / {print $2+0}'; }
 for _ in $(seq 100); do [ "$(wl 29002)" = 2 ] && break; sleep 0.1; done
 [ "$(wl 29002)" = 2 ] || fail "the replica doesn't have the primary's two workloads (has '$(wl 29002)')"
 t0=$(date +%s.%N)
@@ -456,10 +456,10 @@ code=$(curl -s -o "$E/note.json" -w '%{http_code}' -b "$E/rjar" -X POST -H "x-cs
 annok '/api/v1/annotations?kinds=note&from=-15m' note || fail "the primary's read doesn't show the replica's note: $(cat "$E/ann.json")"
 annok '/api/v1/annotations?from=-15m&limit=1' page || fail "a one-marker page isn't truncated with nextBefore: $(cat "$E/ann.json")"
 # The configuration sequence is the same on both nodes; the replica counted its note.
-seqm() { curl -s "http://127.0.0.1:$1/metrics" | awk '/^telltale_config_seq / {print $2}'; }
+seqm() { curl -s "http://127.0.0.1:$1/metrics" | awk '/^wrendns_config_seq / {print $2}'; }
 for _ in $(seq 40); do [ -n "$(seqm 29001)" ] && [ "$(seqm 29001)" = "$(seqm 29002)" ] && break; sleep 0.5; done
-{ [ "$(seqm 29001)" = "$(seqm 29002)" ] && [ "$(seqm 29001)" -gt 0 ]; }   || fail "telltale_config_seq differs: primary $(seqm 29001), replica $(seqm 29002)"
-curl -s http://127.0.0.1:29002/metrics | grep -q '^telltale_annotations_total{kind="note"} 1$'   || fail "the replica's telltale_annotations_total doesn't count its note"
+{ [ "$(seqm 29001)" = "$(seqm 29002)" ] && [ "$(seqm 29001)" -gt 0 ]; }   || fail "wrendns_config_seq differs: primary $(seqm 29001), replica $(seqm 29002)"
+curl -s http://127.0.0.1:29002/metrics | grep -q '^wrendns_annotations_total{kind="note"} 1$'   || fail "the replica's wrendns_annotations_total doesn't count its note"
 echo "ok (configuration $(seqm 29001) on both nodes)"
 
 echo "== quick rules made on the replica apply on every node (T6.12, ADR-067)"
@@ -497,7 +497,7 @@ for i in $(seq 60); do
   node=$(get '/api/v1/queries?name=ship1.r.test&scope=node:local' | field '" ".join(r.get("node","") for r in d["items"])')
   [ "$node" = r ] && break; sleep 1
 done
-shipped=$(curl -s http://127.0.0.1:29001/metrics | awk '/^telltale_qlog_received_segments_total/ {print $2}')
+shipped=$(curl -s http://127.0.0.1:29001/metrics | awk '/^wrendns_qlog_received_segments_total/ {print $2}')
 [ "${shipped:-0}" -gt 0 ] || fail "the primary never received the replica's query log"
 ls "$E/p/qlog-nodes/"*/ >/dev/null 2>&1 || fail "no shipped query log under the primary's qlog-nodes"
 [ "$node" = r ] || fail "the primary's own search doesn't show the shipped row as the replica's (got '$node')"
@@ -541,13 +541,13 @@ assert names.get("ship1.r.test", {}).get("queries") == 1, names
 assert s.get("missingNodes", []) == json.loads(sys.argv[2]), s.get("missingNodes")
 PY
 }
-TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" --json > "$E/sim.json" \
-  || fail "telltale config simulate on the replica failed: $(cat "$E/sim.json")"
+WRENDNS_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" --json > "$E/sim.json" \
+  || fail "wrendns config simulate on the replica failed: $(cat "$E/sim.json")"
 simcheck "$E/sim.json" '[]' || fail "the replica's simulation: $(cat "$E/sim.json")"
-TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" > "$E/sim.txt" \
+WRENDNS_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" > "$E/sim.txt" \
   && grep -q 'newly blocked' "$E/sim.txt" && grep -q 'simp.p.test' "$E/sim.txt" \
   || fail "the text output lacks the counts: $(cat "$E/sim.txt")"
-curl -s http://127.0.0.1:29001/metrics | grep -q '^telltale_simulations_total{outcome="ok"} [1-9]' \
+curl -s http://127.0.0.1:29001/metrics | grep -q '^wrendns_simulations_total{outcome="ok"} [1-9]' \
   || fail "the primary didn't count its part of the simulation"
 echo "ok ($(python3 -c "import json; s=json.load(open('$E/sim.json')); print(s['rows'], 'rows,', s['newlyBlocked']['queries'], 'newly blocked')"))"
 
@@ -622,7 +622,7 @@ PY
 # REQ: OBS-033 — the primary's change markers meanwhile name the stopped node.
 annok '/api/v1/annotations?from=-1h' missing || fail "the primary's markers don't list the stopped replica as missing: $(cat "$E/ann.json")"
 # REQ: OBS-024 — a simulation meanwhile covers what the primary holds and names the stopped node.
-TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$API" --json > "$E/sim2.json" \
+WRENDNS_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$API" --json > "$E/sim2.json" \
   || fail "the primary's simulation with the replica stopped failed: $(cat "$E/sim2.json")"
 simcheck "$E/sim2.json" '["r"]' || fail "the primary's simulation with the replica stopped: $(cat "$E/sim2.json")"
 kill -CONT "$R_PID"
@@ -753,8 +753,8 @@ dannok() { get "/api/v1/annotations?from=-1h&kinds=$1" > "$E/dann.json" && grep 
 dannok drill.started || fail "no drill.started marker"
 dannok drill.ended || fail "no drill.ended marker"
 curl -s http://127.0.0.1:29001/metrics > "$E/dm.txt"
-grep -q '^telltale_drill_last_coverage_percent 50' "$E/dm.txt" || fail "the coverage metric: $(grep drill "$E/dm.txt")"
-grep -q '^telltale_drills_total{result="completed"} 1' "$E/dm.txt" || fail "the drills counter: $(grep drill "$E/dm.txt")"
+grep -q '^wrendns_drill_last_coverage_percent 50' "$E/dm.txt" || fail "the coverage metric: $(grep drill "$E/dm.txt")"
+grep -q '^wrendns_drills_total{result="completed"} 1' "$E/dm.txt" || fail "the drills counter: $(grep drill "$E/dm.txt")"
 # Listed from the replica, with every node's answer.
 curl -sf -b "$E/rjar" "$RAPI/api/v1/drills" > "$E/rdrills.json" || fail "the replica can't list drills"
 python3 - "$E/rdrills.json" "$DID" <<'PY' || fail "drills listed from the replica: $(cat "$E/rdrills.json")"

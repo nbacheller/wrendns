@@ -5,7 +5,7 @@ import { session } from './session.svelte';
 export type Mode = 'simple' | 'advanced';
 
 function key(): string {
-  return `telltale.mode.${session.user?.username ?? ''}`;
+  return `wrendns.mode.${session.user?.username ?? ''}`;
 }
 
 export const mode = $state<{ value: Mode }>({ value: 'simple' });

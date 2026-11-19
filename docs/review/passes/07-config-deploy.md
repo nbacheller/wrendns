@@ -3,23 +3,23 @@
 **Output:** `docs/review/v0.2.0/07-config-deploy.md` (+ `patches/07-*`)
 
 ## Scope
-Getting TelltaleDNS running and keeping it running: the configuration schema and its
+Getting WrenDNS running and keeping it running: the configuration schema and its
 validation, startup and reload, the data directory, backups, imports from Pi-hole and
 Technitium, router integrations, the container image, the Helm chart, Compose, the native
 installer and self-update, and the release pipeline.
 
-- `crates/telltale-config/` (schema, validation, env overrides, shared vs node-local)
-- `crates/telltale/src/`: `main.rs`, `server.rs` (start, reload, shutdown), `datadir.rs`,
+- `crates/wrendns-config/` (schema, validation, env overrides, shared vs node-local)
+- `crates/wrendns/src/`: `main.rs`, `server.rs` (start, reload, shutdown), `datadir.rs`,
   `backup/`, `archive.rs`, `import.rs`, `pihole/`, `technitium/`, `routers.rs`,
   `devices.rs`, `mdns.rs`, `selfupdate.rs`, `updates/`
-- `deploy/image/` (Dockerfile, size and smoke tests), `deploy/helm/telltale/`,
+- `deploy/image/` (Dockerfile, size and smoke tests), `deploy/helm/wrendns/`,
   `deploy/compose/`, `deploy/systemd/install.sh`, `deploy/release/` (preflight, bump,
   verify), `.github/workflows/`
 
 ## Read first
 1. `spec/08-deployment-config-security.md`, `docs/configuration.md`, `docs/releasing.md`;
    ADR-015, ADR-035, ADR-038, ADR-046, ADR-061 to ADR-063, ADR-068, ADR-091, ADR-097.
-2. `crates/telltale-config/src/schema.rs` + `validate.rs` → `crates/telltale/src/server.rs`
+2. `crates/wrendns-config/src/schema.rs` + `validate.rs` → `crates/wrendns/src/server.rs`
    (`load`, `reload`).
 
 ## Look for
@@ -44,8 +44,8 @@ secrets in values files, environment, or logs; workflow permissions (`contents: 
 
 ## Useful
 ```sh
-cargo test -p telltale-config
-helm lint deploy/helm/telltale; helm template t deploy/helm/telltale | less
+cargo test -p wrendns-config
+helm lint deploy/helm/wrendns; helm template t deploy/helm/wrendns | less
 bash deploy/systemd/e2e.sh        # read the header first: it installs into a throwaway environment
 sh deploy/release/verify.sh 0.2.0
 ```

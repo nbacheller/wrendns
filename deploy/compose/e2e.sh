@@ -8,8 +8,8 @@ set -euo pipefail
 IMAGE="${1:?usage: e2e.sh IMAGE}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
-cp "$HERE/compose.yaml" "$HERE/telltale.toml" "$WORK/"
-cat >> "$WORK/telltale.toml" <<'EOF'
+cp "$HERE/compose.yaml" "$HERE/wrendns.toml" "$WORK/"
+cat >> "$WORK/wrendns.toml" <<'EOF'
 
 # e2e override: unprivileged ports.
 [[listen]]
@@ -25,16 +25,16 @@ listen = "127.0.0.1:18053"
 EOF
 cat > "$WORK/compose.override.yaml" <<EOF
 services:
-  telltale:
+  wrendns:
     image: $IMAGE
     pull_policy: never
     healthcheck:
-      test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:18053/readyz"]
+      test: ["CMD", "/usr/local/bin/wrendns", "health", "--url", "http://127.0.0.1:18053/readyz"]
       interval: 2s
       start_period: 5s
 EOF
 cd "$WORK"
-dc() { docker compose -p telltale-e2e "$@"; }
+dc() { docker compose -p wrendns-e2e "$@"; }
 cleanup() {
   dc logs --tail 30 || true
   dc down -v >/dev/null 2>&1 || true
@@ -48,7 +48,7 @@ dc config -q
 dc up -d
 echo "== waiting for healthy"
 for _ in $(seq 1 30); do
-  state="$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q telltale)")"
+  state="$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q wrendns)")"
   [ "$state" = healthy ] && break
   sleep 1
 done
@@ -59,11 +59,11 @@ dig +short +time=3 @127.0.0.1 -p 5300 example.com A | grep -qE '^[0-9.]+$' || { 
 dig +short +tcp +time=3 @127.0.0.1 -p 5300 example.com A | grep -qE '^[0-9.]+$' || { echo "FAIL: TCP"; exit 1; }
 
 echo "== hardening"
-id="$(dc ps -q telltale)"
+id="$(dc ps -q wrendns)"
 [ "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$id")" = true ] || { echo "FAIL: root fs writable"; exit 1; }
 [ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id")" = host ] || { echo "FAIL: not host network"; exit 1; }
 caps="$(docker inspect -f '{{.HostConfig.CapAdd}}' "$id")"
 [ "$caps" = "[NET_BIND_SERVICE]" ] || [ "$caps" = "[CAP_NET_BIND_SERVICE]" ] || { echo "FAIL: caps $caps"; exit 1; }
-dc exec -T telltale telltale auth setup-token -c /etc/telltale/telltale.toml >/dev/null
+dc exec -T wrendns wrendns auth setup-token -c /etc/wrendns/wrendns.toml >/dev/null
 
 echo "PASS"

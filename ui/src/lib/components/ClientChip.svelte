@@ -54,7 +54,7 @@
   let newName = $state('');
   let chosen = $state<string[]>([]);
   // REQ: OBS-025 — what it looks like (pre-fills the name, pre-selects a suggested group) and
-  // what it was set to be ('' = let TelltaleDNS guess).
+  // what it was set to be ('' = let WrenDNS guess).
   let identity = $state<S['DeviceIdentity'] | null>(null);
   let kind = $state('');
   // REQ: FLT-006 (T24.9, ADR-973) — the name the router gave this address, as a label, and whether
@@ -259,7 +259,7 @@
         <p class="muted small">
           <b>{workload.name}</b> is a Kubernetes workload: its name comes from Kubernetes.
           {#if workload.group}Its group is {workload.group} now (set by its {groupFromText[workload.groupFrom] ?? workload.groupFrom}).{:else}It has no
-            group of its own now: its network's group applies.{/if} This adds a rule for exactly this workload; a <code>telltaledns.io/group</code> label on its pods or namespace still
+            group of its own now: its network's group applies.{/if} This adds a rule for exactly this workload; a <code>wrendns.com/group</code> label on its pods or namespace still
           wins, and is the way to do it from Git.<HelpButton id="kubernetes-workloads" />
         </p>
         <label>
@@ -316,7 +316,7 @@
         <label>
           What it is
           <select bind:value={kind} aria-label="What it is">
-            <option value="">Let TelltaleDNS guess</option>
+            <option value="">Let WrenDNS guess</option>
             {#each kinds as k (k)}<option value={k}>{k === 'unknown' ? 'unknown (stop guessing)' : k}</option>{/each}
           </select>
         </label>

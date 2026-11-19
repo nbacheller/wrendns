@@ -9,9 +9,9 @@
 #      it to hand over, and g, not the other non-Git node, is elected (the hold-back), as the
 #      primary rather than an emergency one, with DNS on the emergency primary answered
 #      throughout.
-# Usage: deploy/cluster/gitops-failover-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/cluster/gitops-failover-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 G_PID= N1_PID= N2_PID= LOAD=
@@ -112,9 +112,9 @@ join --site n2 --eligible --advertise https://127.0.0.1:28643 -c "$E/n2.toml"
 
 echo "== 1. g, the Git-managed node, is the primary and holds a lease"
 for port in 29201 29202 29203; do
-  wait_metric $port telltale_cluster_failover_auto 1 40 || fail "automatic failover never turned on at :$port"
+  wait_metric $port wrendns_cluster_failover_auto 1 40 || fail "automatic failover never turned on at :$port"
 done
-wait_metric 29201 telltale_cluster_lease_held 1 40 || fail "g never held a lease"
+wait_metric 29201 wrendns_cluster_lease_held 1 40 || fail "g never held a lease"
 for n in n1 n2; do
   for _ in $(seq 60); do [ -f "$E/$n/cluster/ca.key" ] && break; sleep 0.25; done
   [ -f "$E/$n/cluster/ca.key" ] || fail "$n never received the cluster key"
@@ -123,17 +123,17 @@ for n in n1 n2; do
   for _ in $(seq 120); do grep -q '"candidate":"[0-9a-f]' "$E/$n/cluster/ballot.json" 2>/dev/null && break; sleep 0.25; done
   grep -q '"candidate":"[0-9a-f]' "$E/$n/cluster/ballot.json" 2>/dev/null || fail "$n never granted g a lease"
 done
-echo "ok (epoch $(metric 29201 telltale_cluster_epoch))"
+echo "ok (epoch $(metric 29201 wrendns_cluster_epoch))"
 
 echo "== 2. kill g: a node that isn't Git-managed becomes the emergency primary"
 t0=$(date +%s)
 kill -9 "$G_PID"; wait "$G_PID" 2>/dev/null || true; G_PID=
 EMERG=; OTHER=; EMERG_MET=; OTHER_MET=; EMERG_DNS=
 for _ in $(seq 240); do
-  if [ "$(metric 29202 telltale_cluster_lease_held)" = 1 ]; then
+  if [ "$(metric 29202 wrendns_cluster_lease_held)" = 1 ]; then
     EMERG=n1; OTHER=n2; EMERG_MET=29202; OTHER_MET=29203; EMERG_DNS=25602; break
   fi
-  if [ "$(metric 29203 telltale_cluster_lease_held)" = 1 ]; then
+  if [ "$(metric 29203 wrendns_cluster_lease_held)" = 1 ]; then
     EMERG=n2; OTHER=n1; EMERG_MET=29203; OTHER_MET=29202; EMERG_DNS=25603; break
   fi
   sleep 0.25
@@ -141,7 +141,7 @@ done
 [ -n "$EMERG" ] || fail "nobody was elected within 60 s of g's death"
 took=$(( $(date +%s) - t0 ))
 [ "$took" -le 45 ] || fail "the election took $took s"
-epoch=$(metric "$EMERG_MET" telltale_cluster_epoch)
+epoch=$(metric "$EMERG_MET" wrendns_cluster_epoch)
 [ "$epoch" -ge 2 ] || fail "the new primary's epoch is $epoch"
 grep 'elected primary' "$E/$EMERG.log" | grep -q 'role.*Emergency' || fail "$EMERG wasn't made an emergency primary: $(grep 'elected primary' "$E/$EMERG.log" | tail -1)"
 [ "$(q "$EMERG_DNS" a.fo.test)" = 10.0.0.1 ] || fail "$EMERG doesn't answer DNS"
@@ -149,7 +149,7 @@ echo "ok ($EMERG elected after ${took} s as an emergency primary, epoch $epoch)"
 
 echo "== 3. g returns; it asks the emergency primary to hand over and is elected"
 "$B" run -c "$E/g.toml" > "$E/g2.log" 2>&1 & G_PID=$!
-wait_metric 29201 telltale_cluster_primary 0 40 || fail "g didn't follow the emergency primary after restarting"
+wait_metric 29201 wrendns_cluster_primary 0 40 || fail "g didn't follow the emergency primary after restarting"
 t1=$(date +%s)
 # TAKEOVER_AFTER (60 s) plus the 10 s checks, once g has applied the emergency primary's version.
 for _ in $(seq 360); do
@@ -160,13 +160,13 @@ grep -q "asked the emergency primary to hand over" "$E/g2.log" \
   || fail "g never asked for a handover: $(grep -i 'takeover\|hand over' "$E/g2.log" | tail -3)"
 asked=$(( $(date +%s) - t1 ))
 python3 "$E/q.py" load "$EMERG_DNS" a.fo.test 40 25 > "$E/load.txt" & LOAD=$!
-wait_metric 29201 telltale_cluster_lease_held 1 60 || fail "g wasn't elected after it asked (the other node holds: $(metric "$OTHER_MET" telltale_cluster_lease_held))"
+wait_metric 29201 wrendns_cluster_lease_held 1 60 || fail "g wasn't elected after it asked (the other node holds: $(metric "$OTHER_MET" wrendns_cluster_lease_held))"
 took=$(( $(date +%s) - t1 - asked ))
 [ "$took" -le 40 ] || fail "g's election took $took s after the ask"
-wait_metric "$EMERG_MET" telltale_cluster_primary 0 30 || fail "the emergency primary didn't step down"
-[ "$(metric "$OTHER_MET" telltale_cluster_primary)" = 0 ] || fail "$OTHER became primary instead of g (the hold-back failed)"
-[ "$(metric "$OTHER_MET" telltale_cluster_lease_held)" = 0 ] || fail "$OTHER holds a lease"
-epoch2=$(metric 29201 telltale_cluster_epoch)
+wait_metric "$EMERG_MET" wrendns_cluster_primary 0 30 || fail "the emergency primary didn't step down"
+[ "$(metric "$OTHER_MET" wrendns_cluster_primary)" = 0 ] || fail "$OTHER became primary instead of g (the hold-back failed)"
+[ "$(metric "$OTHER_MET" wrendns_cluster_lease_held)" = 0 ] || fail "$OTHER holds a lease"
+epoch2=$(metric 29201 wrendns_cluster_epoch)
 [ "$epoch2" -gt "$epoch" ] || fail "g's epoch $epoch2 isn't newer than $epoch"
 grep 'elected primary' "$E/g2.log" | grep -q 'role.*Primary' || fail "g wasn't made the primary: $(grep 'elected primary' "$E/g2.log" | tail -1)"
 wait "$LOAD"; LOAD=

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Add an API parameter — TelltaleDNS</title>
-<meta name="description" content="How to add a parameter to a TelltaleDNS API operation end to end: the model, validation, the cluster, the MCP tool, the command line, the web UI, and the generated files, with the query log's not filters as the worked example.">
+<title>Add an API parameter — WrenDNS</title>
+<meta name="description" content="How to add a parameter to a WrenDNS API operation end to end: the model, validation, the cluster, the MCP tool, the command line, the web UI, and the generated files, with the query log's not filters as the worked example.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -32,7 +32,7 @@
     <li><b>Typed, optional, and named for what it does.</b> A <code>bool</code> is a boolean (<code>nameNot=true</code>), a choice is an enum, a number is a number. Names are camelCase. A new parameter is optional, so an old client keeps working.</li>
     <li><b>The doc comment is the documentation.</b> The comments on the model's fields become the OpenAPI descriptions, which an agent reads to decide how to call the operation. Write them for that reader, and say the constraints ("Needs <code>name</code>").</li>
     <li><b>Refuse a mistake; never ignore it.</b> A parameter that makes no sense without another is a 400 whose message names the parameter and whose hint says how to fix it. A silent no-op looks like a bug in the result.</li>
-    <li><b>Every operation is agent-ready</b> (AGT-001 to AGT-005, linted by <code>.spectral.yaml</code>), and exposed as an MCP tool where it fits the catalogue in <a href="https://github.com/paimonsoror/telltaledns/blob/main/spec/13-agent-api-and-mcp.md"><code>spec/13</code></a>.</li>
+    <li><b>Every operation is agent-ready</b> (AGT-001 to AGT-005, linted by <code>.spectral.yaml</code>), and exposed as an MCP tool where it fits the catalogue in <a href="https://github.com/nbacheller/telltaledns/blob/main/spec/13-agent-api-and-mcp.md"><code>spec/13</code></a>.</li>
     <li><b>An older node must not answer wrongly.</b> If the parameter reaches other nodes, one that doesn't know it will ignore it and answer as if it were absent. See <a href="dev-cluster.html">Extend the cluster protocol</a>.</li>
     <li><b>Say what it costs.</b> If a parameter makes a search slower, the description and the docs say so and what keeps it fast (a time range).</li>
   </ul>
@@ -43,12 +43,12 @@
   <ol class="steps">
     <li class="step"><b>Decide what it means, and write it down.</b> A requirement ID if it is new, an ADR (<i>Proposed</i>) if the choice is not obvious, and a roadmap task with acceptance criteria. Decide now whether an older node ignoring it would change the meaning of an answer.</li>
     <li class="step"><b>Implement it where the data is</b>, with a test that compares the result with something independent. For a filter, a scan of every row: "what the search returns equals what a scan keeps".</li>
-    <li class="step"><b>Add it to the model.</b> The parameters struct in <code>crates/telltale-api/src/model.rs</code>: an optional field, a doc comment, and, if it must go to peers, the helper that says so.</li>
-    <li class="step"><b>Validate in the handler.</b> In <code>crates/telltale-api/src/lib.rs</code>, where the other checks are, with a <code>Problem::invalid(…).hint(…)</code> that names the parameter. Put the operation's description (its doc comment) in step with the new behaviour.</li>
-    <li class="step"><b>Wire the backend.</b> <code>crates/telltale/src/api_backend.rs</code> turns the parameters into the storage filter. Anything with its own copy of the filter (the live stream has one) needs the same change.</li>
+    <li class="step"><b>Add it to the model.</b> The parameters struct in <code>crates/wrendns-api/src/model.rs</code>: an optional field, a doc comment, and, if it must go to peers, the helper that says so.</li>
+    <li class="step"><b>Validate in the handler.</b> In <code>crates/wrendns-api/src/lib.rs</code>, where the other checks are, with a <code>Problem::invalid(…).hint(…)</code> that names the parameter. Put the operation's description (its doc comment) in step with the new behaviour.</li>
+    <li class="step"><b>Wire the backend.</b> <code>crates/wrendns/src/api_backend.rs</code> turns the parameters into the storage filter. Anything with its own copy of the filter (the live stream has one) needs the same change.</li>
     <li class="step"><b>Decide the cluster behaviour</b> (see the cluster page): the read variant that older nodes do not know, if the meaning changes.</li>
-    <li class="step"><b>Add it to the MCP tool.</b> The tool's input schema is written by hand in <code>crates/telltale-api/src/mcp.rs</code>, with the list that maps its arguments to query parameters. A parameter missing from the schema is invisible to agents.</li>
-    <li class="step"><b>Add it to the command line</b> if the operation has one (<code>crates/telltale/src/main.rs</code> and its module), refusing the same mistakes.</li>
+    <li class="step"><b>Add it to the MCP tool.</b> The tool's input schema is written by hand in <code>crates/wrendns-api/src/mcp.rs</code>, with the list that maps its arguments to query parameters. A parameter missing from the schema is invisible to agents.</li>
+    <li class="step"><b>Add it to the command line</b> if the operation has one (<code>crates/wrendns/src/main.rs</code> and its module), refusing the same mistakes.</li>
     <li class="step"><b>Add it to the page.</b> The web UI's state, the address's keys, and the call. Keep the old addresses meaning what they meant.</li>
     <li class="step"><b>Regenerate, then document.</b> OpenAPI, the MCP tool list, the UI types, then the trace (<a href="dev-gates.html#generated">the order matters</a>). Update <code>docs/running.md</code>, the spec section, and the ADR and roadmap entries with what you verified and what you did not.</li>
   </ol>
@@ -59,12 +59,12 @@
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>Layer</th><th>File</th></tr></thead>
     <tbody>
-      <tr><td>Storage and its tests</td><td><code>crates/telltale-store/src/qlog/search.rs</code>, <code>qlog/tests.rs</code></td></tr>
-      <tr><td>API model, validation, the operation's description</td><td><code>crates/telltale-api/src/model.rs</code>, <code>crates/telltale-api/src/lib.rs</code></td></tr>
-      <tr><td>Backend and the live view</td><td><code>crates/telltale/src/api_backend.rs</code>, <code>crates/telltale/src/tail.rs</code></td></tr>
-      <tr><td>The cluster</td><td><code>crates/telltale/src/federated.rs</code></td></tr>
-      <tr><td>Agents</td><td><code>crates/telltale-api/src/mcp.rs</code>, <code>docs/api/mcp-tools.json</code> (generated)</td></tr>
-      <tr><td>Command line</td><td><code>crates/telltale/src/main.rs</code>, <code>crates/telltale/src/qlog_cli.rs</code></td></tr>
+      <tr><td>Storage and its tests</td><td><code>crates/wrendns-store/src/qlog/search.rs</code>, <code>qlog/tests.rs</code></td></tr>
+      <tr><td>API model, validation, the operation's description</td><td><code>crates/wrendns-api/src/model.rs</code>, <code>crates/wrendns-api/src/lib.rs</code></td></tr>
+      <tr><td>Backend and the live view</td><td><code>crates/wrendns/src/api_backend.rs</code>, <code>crates/wrendns/src/tail.rs</code></td></tr>
+      <tr><td>The cluster</td><td><code>crates/wrendns/src/federated.rs</code></td></tr>
+      <tr><td>Agents</td><td><code>crates/wrendns-api/src/mcp.rs</code>, <code>docs/api/mcp-tools.json</code> (generated)</td></tr>
+      <tr><td>Command line</td><td><code>crates/wrendns/src/main.rs</code>, <code>crates/wrendns/src/qlog_cli.rs</code></td></tr>
       <tr><td>Web UI</td><td><code>ui/src/pages/Queries.svelte</code>, <code>ui/src/lib/api-types.ts</code> (generated)</td></tr>
       <tr><td>Documents</td><td><code>docs/api/openapi.json</code> (generated), <code>docs/running.md</code>, <code>spec/</code></td></tr>
     </tbody>
@@ -88,7 +88,7 @@
 
 <section id="example">
   <h2>Worked example: "does not contain" in the query log</h2>
-  <p>A user asked to search the query log for what does <i>not</i> match (<a href="https://github.com/paimonsoror/telltaledns/issues/58">#58</a>, ADR-171). The result: five flags (<code>nameNot</code>, <code>clientNot</code>, <code>statusNot</code>, <code>qtypeNot</code>, <code>rcodeNot</code>) on <code>GET /api/v1/queries</code>, four of them on the live stream, the same in the MCP tool, <code>--not-name</code> and its siblings on <code>telltale qlog search</code>, and a "not" in the Match menu and beside the other filters on the page.</p>
+  <p>A user asked to search the query log for what does <i>not</i> match (<a href="https://github.com/paimonsoror/telltaledns/issues/58">#58</a>, ADR-171). The result: five flags (<code>nameNot</code>, <code>clientNot</code>, <code>statusNot</code>, <code>qtypeNot</code>, <code>rcodeNot</code>) on <code>GET /api/v1/queries</code>, four of them on the live stream, the same in the MCP tool, <code>--not-name</code> and its siblings on <code>wrendns qlog search</code>, and a "not" in the Match menu and beside the other filters on the page.</p>
   <ul>
     <li><b>The storage change was small because the design fit.</b> A name filter is resolved against each file's dictionary into a yes or no per name, so negating it flips that set. What it gave up was the bloom filter's shortcut: a bloom says "maybe here", never "not in any row", so a negated name reads every block the time range leaves. The docs say so and advise a time range.</li>
     <li><b>An older node would have answered wrongly.</b> The new flags would be silently ignored, and the result would mix negated rows from new nodes with ordinary rows from old ones. A negated search therefore goes out as a new read that old nodes don't know, and they are listed as not reached.</li>

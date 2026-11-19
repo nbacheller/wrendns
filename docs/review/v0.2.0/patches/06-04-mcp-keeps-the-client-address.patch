@@ -1,8 +1,8 @@
-diff --git a/crates/telltale-api/src/auth/routes.rs b/crates/telltale-api/src/auth/routes.rs
+diff --git a/crates/wrendns-api/src/auth/routes.rs b/crates/wrendns-api/src/auth/routes.rs
 index 9cae629..7f578db 100644
---- a/crates/telltale-api/src/auth/routes.rs
-+++ b/crates/telltale-api/src/auth/routes.rs
-@@ -36,6 +36,12 @@ const ISSUER: &str = "TelltaleDNS";
+--- a/crates/wrendns-api/src/auth/routes.rs
++++ b/crates/wrendns-api/src/auth/routes.rs
+@@ -36,6 +36,12 @@ const ISSUER: &str = "WrenDNS";
  
  type AuthState = Arc<Auth>;
  
@@ -25,10 +25,10 @@ index 9cae629..7f578db 100644
      let peer = req_ext
          .get::<ConnectInfo<SocketAddr>>()
          .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
-diff --git a/crates/telltale-api/src/lib.rs b/crates/telltale-api/src/lib.rs
+diff --git a/crates/wrendns-api/src/lib.rs b/crates/wrendns-api/src/lib.rs
 index 5c0cfc0..da23aa3 100644
---- a/crates/telltale-api/src/lib.rs
-+++ b/crates/telltale-api/src/lib.rs
+--- a/crates/wrendns-api/src/lib.rs
++++ b/crates/wrendns-api/src/lib.rs
 @@ -422,6 +422,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
          api: api.clone(),
          sessions: Arc::new(mcp::Sessions::default()),
@@ -37,10 +37,10 @@ index 5c0cfc0..da23aa3 100644
      };
      // REQ: AGT-008 (T7.4) — RFC 9728 protected-resource metadata (public), for OAuth sign-in
      // from MCP clients.
-diff --git a/crates/telltale-api/src/mcp.rs b/crates/telltale-api/src/mcp.rs
+diff --git a/crates/wrendns-api/src/mcp.rs b/crates/wrendns-api/src/mcp.rs
 index 17558e1..c403099 100644
---- a/crates/telltale-api/src/mcp.rs
-+++ b/crates/telltale-api/src/mcp.rs
+--- a/crates/wrendns-api/src/mcp.rs
++++ b/crates/wrendns-api/src/mcp.rs
 @@ -1208,6 +1208,9 @@ pub struct Mcp {
      pub sessions: Arc<Sessions>,
      /// Plans and the approval policy (AGT-007).
@@ -87,10 +87,10 @@ index 17558e1..c403099 100644
      });
      let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
          let e = rpc_error(&Value::Null, -32700, "parse error: the body isn't JSON");
-diff --git a/crates/telltale-api/src/tests.rs b/crates/telltale-api/src/tests.rs
+diff --git a/crates/wrendns-api/src/tests.rs b/crates/wrendns-api/src/tests.rs
 index bcd2b89..70127bf 100644
---- a/crates/telltale-api/src/tests.rs
-+++ b/crates/telltale-api/src/tests.rs
+--- a/crates/wrendns-api/src/tests.rs
++++ b/crates/wrendns-api/src/tests.rs
 @@ -1402,3 +1402,35 @@ async fn api_003_trusted_proxy_forwards_the_client_address() {
          .unwrap();
      assert_eq!(login[0].remote.as_deref(), Some("192.168.1.20"));

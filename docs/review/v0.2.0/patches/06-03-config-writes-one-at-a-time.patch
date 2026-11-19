@@ -1,7 +1,7 @@
-diff --git a/crates/telltale/src/api_backend.rs b/crates/telltale/src/api_backend.rs
+diff --git a/crates/wrendns/src/api_backend.rs b/crates/wrendns/src/api_backend.rs
 index e39a26f..2a8c641 100644
---- a/crates/telltale/src/api_backend.rs
-+++ b/crates/telltale/src/api_backend.rs
+--- a/crates/wrendns/src/api_backend.rs
++++ b/crates/wrendns/src/api_backend.rs
 @@ -1893,6 +1893,11 @@ impl Backend for ApiBackend {
          }
          let src = Arc::clone(&self.src);
@@ -26,10 +26,10 @@ index e39a26f..2a8c641 100644
              let state = src
                  .auth
                  .get()
-diff --git a/crates/telltale/src/http.rs b/crates/telltale/src/http.rs
+diff --git a/crates/wrendns/src/http.rs b/crates/wrendns/src/http.rs
 index fab903f..e245311 100644
---- a/crates/telltale/src/http.rs
-+++ b/crates/telltale/src/http.rs
+--- a/crates/wrendns/src/http.rs
++++ b/crates/wrendns/src/http.rs
 @@ -82,6 +82,9 @@ pub(crate) struct Sources {
      /// Asks the main loop to re-read the config files and state.db and apply them; answers
      /// whether it worked (ADR-040).
@@ -48,10 +48,10 @@ index fab903f..e245311 100644
              allowed: Vec::new(),
          }
      }
-diff --git a/crates/telltale/src/server.rs b/crates/telltale/src/server.rs
+diff --git a/crates/wrendns/src/server.rs b/crates/wrendns/src/server.rs
 index cac0c94..65d74bb 100644
---- a/crates/telltale/src/server.rs
-+++ b/crates/telltale/src/server.rs
+--- a/crates/wrendns/src/server.rs
++++ b/crates/wrendns/src/server.rs
 @@ -833,6 +833,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
          ship: Arc::default(),
          git_poke: Arc::default(),

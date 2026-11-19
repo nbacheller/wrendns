@@ -78,7 +78,7 @@ MCP `query_flow(window, scope, client?)` — thin wrapper. Metrics: none new.
 
 ## 6. Grafana
 No Sankey in core Grafana; add nothing. `docs/monitoring` can mention the community Sankey panel over
-`telltale_queries_total{status}` / `telltale_responses_total{rcode}` as marginals only.
+`wrendns_queries_total{status}` / `wrendns_responses_total{rcode}` as marginals only.
 
 ## 7. Acceptance criteria
 1. Fixture: 1,000 events over two groups and two upstreams → `group_status` and `status_rcode` sums

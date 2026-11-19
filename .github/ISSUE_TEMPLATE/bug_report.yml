@@ -1,5 +1,5 @@
 name: Bug report
-description: Something doesn't work as documented, or TelltaleDNS behaves oddly
+description: Something doesn't work as documented, or WrenDNS behaves oddly
 labels: [bug]
 body:
   - type: markdown
@@ -19,7 +19,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: "Settings → System, or `telltale --version`. Say how you run it (native, container, Helm)."
+      description: "Settings → System, or `wrendns --version`. Say how you run it (native, container, Helm)."
       placeholder: "0.7.0, Helm on k3s"
     validations:
       required: true
@@ -28,7 +28,7 @@ body:
     attributes:
       label: Support package
       description: |
-        Settings → System → Support package, or `telltale support-package` on the machine
+        Settings → System → Support package, or `wrendns support-package` on the machine
         (`--offline` if the node won't start). The default level (`strict`) replaces addresses and
         names and keeps only warnings and errors from the log. Look it over, then drag the
         `.tar.gz` here. Log lines are redacted by pattern, which is best effort. Don't attach the

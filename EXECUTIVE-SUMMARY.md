@@ -1,17 +1,17 @@
-# TelltaleDNS â€” Executive Summary
+# WrenDNS â€” Executive Summary
 
 *A filtering, encrypted, observable DNS resolver that runs as one cluster across a Raspberry Pi and Kubernetes, managed from one place.*
 
 **Mission:** give everyone who runs a home or small network an honest, real-time view of what their devices are doing, and full control over it, without trading away speed, footprint, or reliability. *See every question. Answer on your terms.*
 
 ## Standing on the shoulders of giants
-TelltaleDNS exists because two projects showed what self-hosted DNS can be:
+WrenDNS exists because two projects showed what self-hosted DNS can be:
 - **Pi-hole** brought network-wide ad blocking to millions of homes on a $35 computer, with a dashboard anyone can read. Its groups model, CNAME-cloaking defense, blocklist ecosystem, and Teleporter backup set the bar for home DNS filtering.
 - **Technitium DNS Server** showed how complete a self-hosted DNS server can be: every encrypted transport, recursion, real zones, serve-stale and prefetch, clustering, and a capable web console.
 
-We learned from both, read their public documentation and data formats (never their code), and import their configurations so trying TelltaleDNS takes minutes. If either already serves you well, keep using it. Our design notes on both projects are in `docs/analysis.md`.
+We learned from both, read their public documentation and data formats (never their code), and import their configurations so trying WrenDNS takes minutes. If either already serves you well, keep using it. Our design notes on both projects are in `docs/analysis.md`.
 
-## What TelltaleDNS is built around
+## What WrenDNS is built around
 A specific combination for people who run Kubernetes *and* a Raspberry Pi and want to see deeply into their network:
 
 | Focus | What it means |
@@ -45,7 +45,7 @@ Each is backed by a design mechanism *and* a measurable release gate (`spec/00 Â
 4. **One cluster across a Pi and Kubernetes, managed from one place, and DNS never goes down because the control plane did.**
    - Any node's UI manages and analyzes the whole cluster. Configuration syncs as signed, versioned snapshots.
    - Every node answers from its last snapshot even if the primary is unreachable.
-   - Safe failover with two nodes needs a third vote, so TelltaleDNS uses a fenced primary with manual promotion, and elects one automatically when a tiny witness or a third node exists.
+   - Safe failover with two nodes needs a third vote, so WrenDNS uses a fenced primary with manual promotion, and elects one automatically when a tiny witness or a third node exists.
 
 5. **Built for the platform you actually run.**
    - A Kubernetes-first Helm chart that *preserves real client IPs*, probes, ServiceMonitor, cert-manager, and GitOps mode.
@@ -59,7 +59,7 @@ Each is backed by a design mechanism *and* a measurable release gate (`spec/00 Â
 **Also:** the groups model and CNAME inspection we learned from Pi-hole; fastest and parallel upstream racing, serve-stale, and prefetch we learned from Technitium; an "explain why" for every decision; and one-command import from Pi-hole and Technitium.
 
 ## When another tool is the better choice
-- **A public authoritative DNS server** (DNSSEC signing, zone transfers): Technitium is excellent at this. TelltaleDNS hosts local records and small zones only.
+- **A public authoritative DNS server** (DNSSEC signing, zone transfers): Technitium is excellent at this. WrenDNS hosts local records and small zones only.
 - **The simplest proven setup on one Pi, or very old or unusual systems:** Pi-hole has a decade of refinement, a large community, and an installer that covers more setups than ours.
 - **LDAP authentication:** out of scope; use an OIDC bridge.
 
@@ -73,6 +73,6 @@ Each is backed by a design mechanism *and* a measurable release gate (`spec/00 Â
 | A young project with a small team | Spec-driven repo, ADRs, requirement-ID traceability, permissive license |
 
 ## Bottom line
-For a homelab running Kubernetes *and* a Raspberry Pi, TelltaleDNS aims to give you a Pi-class footprint, modern encrypted transports, one cluster with one management plane across both, and observability closer to an APM tool than to a hit counter. Every point here is a design commitment tied to a measurable gate.
+For a homelab running Kubernetes *and* a Raspberry Pi, WrenDNS aims to give you a Pi-class footprint, modern encrypted transports, one cluster with one management plane across both, and observability closer to an APM tool than to a hit counter. Every point here is a design commitment tied to a measurable gate.
 
 *Design notes on Pi-hole and Technitium: `docs/analysis.md`. Build spec: `spec/`.*

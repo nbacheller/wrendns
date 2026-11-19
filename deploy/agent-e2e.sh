@@ -6,9 +6,9 @@
 #      that reports an impact and changes nothing; a change without a reason is refused;
 #   3. a real change is attributed `agent:<token> (owner: admin) via <client>` with its reason;
 #   4. `[agents] enabled = false` and a reload refuse the agent and not the admin.
-# Usage: deploy/agent-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
+# Usage: deploy/agent-e2e.sh [path/to/wrendns]   (default: target/debug/wrendns)
 set -euo pipefail
-B=${1:-target/debug/telltale}
+B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
@@ -32,7 +32,7 @@ q() { dig +short +time=1 +tries=2 -p 25991 @127.0.0.1 "$@"; }
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
 write_config() { # agents enabled?
-  cat > "$E/telltale.toml" <<EOF
+  cat > "$E/wrendns.toml" <<EOF
 [node]
 name = "agent-e2e"
 data_dir = "$E/data"
@@ -48,7 +48,7 @@ enabled = $1
 EOF
 }
 write_config true
-"$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
+"$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
 
 echo "== 1. an agent token and its scopes"
@@ -61,9 +61,9 @@ AGENT=$(curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: applicat
   "$API/api/v1/tokens" | field 'd["token"]') || fail "creating an agent token"
 code() { # method path [body] [reason]
   local args=(-s -o "$E/out.json" -w '%{http_code}' -X "$1" -H "authorization: Bearer $AGENT"
-    -H 'x-telltale-client: agent-e2e/1.0' -H 'content-type: application/json')
+    -H 'x-wrendns-client: agent-e2e/1.0' -H 'content-type: application/json')
   [ -n "${3:-}" ] && args+=(-d "$3")
-  [ -n "${4:-}" ] && args+=(-H "x-telltale-reason: $4")
+  [ -n "${4:-}" ] && args+=(-H "x-wrendns-reason: $4")
   curl "${args[@]}" "$API$2"
 }
 [ "$(code GET /api/v1/stats/summary)" = 200 ] || fail "the agent can't read statistics"

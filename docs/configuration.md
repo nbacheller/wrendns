@@ -1,13 +1,13 @@
 # Configuration
 
-TelltaleDNS reads one TOML file, `telltale.toml`, plus optional overrides. Every key is optional: anything you leave out uses a built-in default. A fully commented example lives in [`examples/telltale.toml`](examples/telltale.toml).
+WrenDNS reads one TOML file, `wrendns.toml`, plus optional overrides. Every key is optional: anything you leave out uses a built-in default. A fully commented example lives in [`examples/wrendns.toml`](examples/wrendns.toml).
 
 ## Validate before you deploy
 ```sh
-telltale config check telltale.toml               # "config OK" or a list of errors
-telltale config check telltale.toml node.toml     # later files override earlier ones
-telltale config check telltale.toml --print       # show the effective config (defaults + files + env; credentials as <redacted>, --show-secrets to see them)
-telltale config check telltale.toml --no-env      # ignore TELLTALE_* variables
+wrendns config check wrendns.toml               # "config OK" or a list of errors
+wrendns config check wrendns.toml node.toml     # later files override earlier ones
+wrendns config check wrendns.toml --print       # show the effective config (defaults + files + env; credentials as <redacted>, --show-secrets to see them)
+wrendns config check wrendns.toml --no-env      # ignore WRENDNS_* variables
 ```
 Every problem is reported with the exact key path, and all problems are reported at once:
 ```
@@ -19,15 +19,15 @@ Unknown keys are always errors, so typos never get silently ignored. Values cont
 
 ## Editor completion
 ```sh
-telltale config schema > telltale.schema.json
+wrendns config schema > wrendns.schema.json
 ```
-Point your editor's TOML language server at the schema (e.g. with Taplo/Even Better TOML: `#:schema ./telltale.schema.json` as the first line of the file).
+Point your editor's TOML language server at the schema (e.g. with Taplo/Even Better TOML: `#:schema ./wrendns.schema.json` as the first line of the file).
 
 ## Precedence
 From lowest to highest:
 1. Built-in defaults
 2. Config files, in the order given (tables merge key by key; **arrays such as `[[listen]]` replace** the earlier value entirely)
-3. Environment variables `TELLTALE_<SECTION>_<KEY>`
+3. Environment variables `WRENDNS_<SECTION>_<KEY>`
 4. Command-line flags
 
 ## Environment variables
@@ -35,18 +35,18 @@ Any scalar key can be set from the environment. Upper-case the path and join it 
 
 | Variable | Sets |
 |---|---|
-| `TELLTALE_ROLE=resolver` | `node.role` (keys in `[node]` may skip the `NODE_` part) |
-| `TELLTALE_CLUSTER_SITE=home-pi` | `cluster.site` |
-| `TELLTALE_CACHE_MAX_TTL=3600` | `cache.max_ttl` |
-| `TELLTALE_CACHE_MAX_BYTES=64MiB` | `cache.max_bytes` |
-| `TELLTALE_TELEMETRY_MODE=ship` | `telemetry.mode` |
-| `TELLTALE_TELEMETRY_QLOG_RETENTION_DAYS=7` | `telemetry.qlog.retention_days` |
+| `WRENDNS_ROLE=resolver` | `node.role` (keys in `[node]` may skip the `NODE_` part) |
+| `WRENDNS_CLUSTER_SITE=home-pi` | `cluster.site` |
+| `WRENDNS_CACHE_MAX_TTL=3600` | `cache.max_ttl` |
+| `WRENDNS_CACHE_MAX_BYTES=64MiB` | `cache.max_bytes` |
+| `WRENDNS_TELEMETRY_MODE=ship` | `telemetry.mode` |
+| `WRENDNS_TELEMETRY_QLOG_RETENTION_DAYS=7` | `telemetry.qlog.retention_days` |
 
 - Values are converted to the key's type. Booleans accept `true/false/1/0/yes/no/on/off`. Lists accept a TOML array (`["a","b"]`) or comma-separated text (`a,b`).
 - Arrays of tables (`[[listen]]`, `[[upstream]]`, ...) can't be set from the environment. Use a file.
-- An invalid value is an error that names the variable: `cache.max_ttl (from TELLTALE_CACHE_MAX_TTL): expected an integer, got "soon"`.
-- Unknown `TELLTALE_*` variables are logged as warnings and ignored. This is deliberate: Kubernetes injects `TELLTALE_PORT`, `TELLTALE_SERVICE_HOST`, and similar variables for any Service named `telltale`.
-- `TELLTALE_CONFIG`, `TELLTALE_NODE_CONFIG`, `TELLTALE_LOG`, and `TELLTALE_LOG_FORMAT` are reserved for the binary itself, as are `TELLTALE_BOOTSTRAP_ADMIN_USER`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, and `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` (the first admin from a secret; see `docs/running.md`). Also known and never reported: `TELLTALE_SUPERVISOR` (set by the shipped unit, bundles and chart; see the guarded restart), `TELLTALE_IGNORE_GUARDED`, `TELLTALE_TOKEN` (for `telltale ctl`), and `TELLTALE_LOG_DNSSEC_LIBRARY`.
+- An invalid value is an error that names the variable: `cache.max_ttl (from WRENDNS_CACHE_MAX_TTL): expected an integer, got "soon"`.
+- Unknown `WRENDNS_*` variables are logged as warnings and ignored. This is deliberate: Kubernetes injects `WRENDNS_PORT`, `WRENDNS_SERVICE_HOST`, and similar variables for any Service named `wrendns`.
+- `WRENDNS_CONFIG`, `WRENDNS_NODE_CONFIG`, `WRENDNS_LOG`, and `WRENDNS_LOG_FORMAT` are reserved for the binary itself, as are `WRENDNS_BOOTSTRAP_ADMIN_USER`, `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD`, and `WRENDNS_BOOTSTRAP_ADMIN_PASSWORD_HASH` (the first admin from a secret; see `docs/running.md`). Also known and never reported: `WRENDNS_SUPERVISOR` (set by the shipped unit, bundles and chart; see the guarded restart), `WRENDNS_IGNORE_GUARDED`, `WRENDNS_TOKEN` (for `wrendns ctl`), and `WRENDNS_LOG_DNSSEC_LIBRARY`.
 
 ## Sizes
 Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`, `"2 GiB"`, `"500MB"`. Binary units (KiB, MiB, GiB, TiB) are powers of 1024; decimal units (KB, MB, GB, TB) are powers of 1000.
@@ -57,7 +57,7 @@ A credential that can be read from a file can instead name a secret stored (encr
 ## Sections
 | Section | Purpose | Reference |
 |---|---|---|
-| `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory, `drain_delay_secs`, `maintenance_default_secs` (how long maintenance lasts when a request doesn't say; maintenance itself is node state, started from the Cluster page, `telltale ctl maintenance`, or the API), `secrets_key_file` and `secrets_previous_key_file` (the node's secrets key in a file instead of `TELLTALE_SECRETS_KEY` or `<data_dir>/secrets.key`; see running.md, "Stored secrets", and secrets.md), `secret_file_dirs` (where a file holding a credential set through the UI or API may be; default `/run/secrets`, `/var/run/secrets`, `/etc/telltale/secrets`; see running.md, "Who may point a credential somewhere") | `spec/02`, OPS-010, OPS-014, API-014 |
+| `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory, `drain_delay_secs`, `maintenance_default_secs` (how long maintenance lasts when a request doesn't say; maintenance itself is node state, started from the Cluster page, `wrendns ctl maintenance`, or the API), `secrets_key_file` and `secrets_previous_key_file` (the node's secrets key in a file instead of `WRENDNS_SECRETS_KEY` or `<data_dir>/secrets.key`; see running.md, "Stored secrets", and secrets.md), `secret_file_dirs` (where a file holding a credential set through the UI or API may be; default `/run/secrets`, `/var/run/secrets`, `/etc/wrendns/secrets`; see running.md, "Who may point a credential somewhere") | `spec/02`, OPS-010, OPS-014, API-014 |
 | `[cluster]` | cluster name, site label, primary eligibility | `spec/12` |
 | `[cluster.rollout]` | staged rollouts: `canaries` (node IDs, `site:<name>`, or `ephemeral`; empty, the default, means changes reach every node at once), `bake_secs` (at least 5; 300), `servfail_pct` (5), `require_traffic`, `max_bake_secs` (3,600), `fail_on_disconnect` (true), `history` (versions kept for pinning; 20); shared across a cluster; also in Settings → Cluster | CLU-013, `docs/running.md` |
 | `[[listen]]` | `udp`, `tcp`, `dot`, `doh`, `doh3` (DoH over HTTP/3), and `doq` listeners; `tls` cert/key for the encrypted ones (reloaded on change), DoH `path`, `proxy_protocol` (v2) on TCP-based listeners. Default: UDP + TCP on port 53, IPv4 and IPv6 | `spec/03` §1, DNS-002/003/020 |
@@ -76,7 +76,7 @@ A credential that can be read from a file can instead name a secret stored (encr
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
 | `[exclusions]` | names and devices kept out of the query log, analytics, and exports (still answered and counted in metrics), with an on/off toggle; also in Settings → Query handling | OBS-022 |
 | `[identify]` | device identification: `enabled`, `max_clients` (devices one node identifies, 1 to 65,536), `signatures_file` (more signatures in the catalog's shape); shared across a cluster | OBS-025, `docs/running.md` |
-| `[kubernetes]` | Kubernetes workloads as devices: `enabled`, `namespaces` (empty: all) and `exclude_namespaces`, `default_group`, `label` (`telltaledns.io/group`), and `[[kubernetes.map]]` rules (`namespace` glob, optional `kind` and `name`, `group`); shared across a cluster. Only a node in a pod with a service-account token watches; with the Helm chart, set it through the chart's `kubernetes.*` values | FLT-017, `docs/running.md` |
+| `[kubernetes]` | Kubernetes workloads as devices: `enabled`, `namespaces` (empty: all) and `exclude_namespaces`, `default_group`, `label` (`wrendns.com/group`), and `[[kubernetes.map]]` rules (`namespace` glob, optional `kind` and `name`, `group`); shared across a cluster. Only a node in a pod with a service-account token watches; with the Helm chart, set it through the chart's `kubernetes.*` values | FLT-017, `docs/running.md` |
 | `[drill]` | Scheduled failover drills: `schedule` (`off` or `monthly`), `nodes` (which nodes drill themselves), `group` or `clients` (neither: everyone), `for_secs` (15–300, default 30), `hour` (default 3) and `tz`, `mode` (`drop` or `refused`); shared across a cluster. The report goes out as the `drill_report` alert | CLU-014, `docs/running.md` |
 | `[simulate]` | change simulation over the query log: `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs` (1 to 300), `max_rows` (at least 1,000), `default_window` (at most `7d`); shared across a cluster; also in Settings → Query handling | OBS-024, `docs/running.md` |
 | `[map]` | the live network map's sampler and thresholds: `enabled` (default on; off: no sampling and the map routes answer `404 map_disabled`), `event_rate` (lookups a second each node samples, 10 to 2,000, default 200), `min_sample` (sampled answers before something is coloured, 1 to 1,000, default 20), `warn_latency_ms` (what counts as slow; unset: `[slo] latency_ms`), `warn_slow_pct` (10), `warn_error_pct` (5), `error_pct` (25, at least `warn_error_pct`), `warn_blocked_pct` (60, devices only); shared across a cluster; set in **Settings → Query handling → Network map** (one field each, with a preview of the current map), with `PUT /api/v1/map-settings/default` (agent scope `config:write:map`, MCP `plan_set_map`) | OBS-901, ADR-958, ADR-970 |

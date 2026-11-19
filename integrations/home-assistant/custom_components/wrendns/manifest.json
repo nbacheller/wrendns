@@ -1,0 +1,12 @@
+{
+  "domain": "wrendns",
+  "name": "WrenDNS",
+  "codeowners": ["@nbacheller"],
+  "config_flow": true,
+  "documentation": "https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations/integrations/home-assistant",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/nbacheller/telltaledns/issues",
+  "requirements": [],
+  "version": "0.2.0"
+}

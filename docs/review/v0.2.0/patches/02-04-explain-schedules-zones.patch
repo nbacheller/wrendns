@@ -1,10 +1,10 @@
-diff --git a/crates/telltale/src/explain.rs b/crates/telltale/src/explain.rs
+diff --git a/crates/wrendns/src/explain.rs b/crates/wrendns/src/explain.rs
 index 215e17f..8c1bcbf 100644
---- a/crates/telltale/src/explain.rs
-+++ b/crates/telltale/src/explain.rs
-@@ -15,7 +15,7 @@ use telltale_policy::{ClientTable, IdSource, Neighbors, Pause, Special};
- use telltale_proto::{NameBuf, build_query, class, parse_query};
- use telltale_upstream::Question;
+--- a/crates/wrendns/src/explain.rs
++++ b/crates/wrendns/src/explain.rs
+@@ -15,7 +15,7 @@ use wrendns_policy::{ClientTable, IdSource, Neighbors, Pause, Special};
+ use wrendns_proto::{NameBuf, build_query, class, parse_query};
+ use wrendns_upstream::Question;
  
 -use crate::pipeline::{Dynamic, FilterState, unix_now};
 +use crate::pipeline::{Dynamic, FilterState, ScheduleNow, unix_now};
@@ -54,8 +54,8 @@ index 215e17f..8c1bcbf 100644
 +    e: &mut Explanation,
 +    st: &State<'_>,
 +    clients: &ClientTable,
-+    ident: telltale_policy::Identity,
-+    group: &telltale_policy::Group,
++    ident: wrendns_policy::Identity,
++    group: &wrendns_policy::Group,
 +) -> bool {
 +    let Some(&g) = clients.group_ids(ident).first() else {
 +        return false;
@@ -90,11 +90,11 @@ index 215e17f..8c1bcbf 100644
 +/// depends on the moment, not the name, so it isn't explained.
  fn answered_early(
      policy: &crate::pipeline::Policy,
-     q: &telltale_proto::Query<'_>,
+     q: &wrendns_proto::Query<'_>,
      client: IpAddr,
 +    groups: &[Box<str>],
  ) -> Result<Option<Special>, (Outcome, String)> {
-     if !telltale_policy::is_allowed(&policy.allowed, client) {
+     if !wrendns_policy::is_allowed(&policy.allowed, client) {
          return Err((
 @@ -334,6 +377,20 @@ fn answered_early(
              if policy.local.answer(q, &mut out, None).is_some() {
@@ -117,10 +117,10 @@ index 215e17f..8c1bcbf 100644
              return Ok(special);
          }
      };
-diff --git a/crates/telltale/src/explain/tests.rs b/crates/telltale/src/explain/tests.rs
+diff --git a/crates/wrendns/src/explain/tests.rs b/crates/wrendns/src/explain/tests.rs
 index c4146f6..9b6469a 100644
---- a/crates/telltale/src/explain/tests.rs
-+++ b/crates/telltale/src/explain/tests.rs
+--- a/crates/wrendns/src/explain/tests.rs
++++ b/crates/wrendns/src/explain/tests.rs
 @@ -348,3 +348,92 @@ groups = ["kids"]
          Outcome::Resolved
      );
@@ -143,14 +143,14 @@ index c4146f6..9b6469a 100644
 +window = [{ days = ["daily"], start = "00:00", end = "23:59" }]
 +"#;
 +    let (p, sources) = setup_with(extra);
-+    let cfg = telltale_config::Loader::new()
++    let cfg = wrendns_config::Loader::new()
 +        .toml_str("t.toml", format!("{CONFIG}{extra}"))
 +        .env(Vec::<(String, String)>::new())
 +        .load()
 +        .unwrap()
 +        .config;
-+    let compiled = telltale_config::schedule::compile(&cfg);
-+    let clients = telltale_policy::ClientTable::from_config(&cfg);
++    let compiled = wrendns_config::schedule::compile(&cfg);
++    let clients = wrendns_policy::ClientTable::from_config(&cfg);
 +    p.schedules.store(Arc::new(crate::pipeline::ScheduleNow::compute(
 +        &cfg,
 +        &compiled,
@@ -188,7 +188,7 @@ index c4146f6..9b6469a 100644
 +type = "A"
 +value = "10.10.0.5"
 +"#;
-+    let cfg = telltale_config::Loader::new()
++    let cfg = wrendns_config::Loader::new()
 +        .toml_str("t.toml", format!("{CONFIG}{extra}"))
 +        .env(Vec::<(String, String)>::new())
 +        .load()
@@ -214,10 +214,10 @@ index c4146f6..9b6469a 100644
 +        Outcome::Resolved
 +    );
 +}
-diff --git a/crates/telltale/src/pipeline.rs b/crates/telltale/src/pipeline.rs
+diff --git a/crates/wrendns/src/pipeline.rs b/crates/wrendns/src/pipeline.rs
 index 546b2a8..a0e8ee5 100644
---- a/crates/telltale/src/pipeline.rs
-+++ b/crates/telltale/src/pipeline.rs
+--- a/crates/wrendns/src/pipeline.rs
++++ b/crates/wrendns/src/pipeline.rs
 @@ -511,11 +511,13 @@ impl Pipeline {
      ) -> Result<crate::explain::Explanation, String> {
          let dynamic = self.state.load();

@@ -1,7 +1,7 @@
-diff --git a/crates/telltale/src/cluster.rs b/crates/telltale/src/cluster.rs
+diff --git a/crates/wrendns/src/cluster.rs b/crates/wrendns/src/cluster.rs
 index 4cabc3c..5d506c5 100644
---- a/crates/telltale/src/cluster.rs
-+++ b/crates/telltale/src/cluster.rs
+--- a/crates/wrendns/src/cluster.rs
++++ b/crates/wrendns/src/cluster.rs
 @@ -720,14 +720,20 @@ pub(crate) fn promote_plan(
      if !id.holds_ca() {
          return Err("this node doesn't have the cluster key yet: the primary shares it with eligible nodes once they connect".into());
@@ -33,7 +33,7 @@ index 4cabc3c..5d506c5 100644
  }
  
 +/// The manifest this node last applied (what it would take over from).
-+fn applied_manifest(c: &Cluster) -> Option<telltale_cluster::sync::ClusterManifest> {
++fn applied_manifest(c: &Cluster) -> Option<wrendns_cluster::sync::ClusterManifest> {
 +    let bytes = std::fs::read(c.identity.dir.join("applied.json")).ok()?;
 +    serde_json::from_slice(&bytes).ok()
 +}
@@ -42,7 +42,7 @@ index 4cabc3c..5d506c5 100644
 +/// the emergency primary of the version this node applied, and this node would publish
 +/// (it isn't asking to be an emergency primary itself).
 +fn takeover_allowed(
-+    applied: Option<&telltale_cluster::sync::ClusterManifest>,
++    applied: Option<&wrendns_cluster::sync::ClusterManifest>,
 +    primary_up: &str,
 +    would_publish: bool,
 +) -> bool {
@@ -51,7 +51,7 @@ index 4cabc3c..5d506c5 100644
 +
  /// Promotes this node to primary (ADR-051) after the checks in [`promote_plan`].
  pub(crate) fn promote(c: &Cluster, gitops_source: bool, emergency: bool) -> Result<u64, String> {
-     use telltale_cluster::node::Role;
+     use wrendns_cluster::node::Role;
 @@ -1368,6 +1391,27 @@ mod tests {
          assert_eq!(replica.reload().meta.config_authority, "gitops");
      }
@@ -60,7 +60,7 @@ index 4cabc3c..5d506c5 100644
 +    /// while it's up; nothing else is promoted over a running primary.
 +    #[test]
 +    fn clu_005_takeover_from_an_emergency_primary() {
-+        use telltale_cluster::sync::ClusterManifest;
++        use wrendns_cluster::sync::ClusterManifest;
 +        let held = ClusterManifest {
 +            primary: "pi".into(),
 +            emergency: true,
@@ -84,11 +84,11 @@ diff --git a/docs/running.md b/docs/running.md
 index ca9a240..704487f 100644
 --- a/docs/running.md
 +++ b/docs/running.md
-@@ -1497,6 +1497,8 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
+@@ -1497,6 +1497,8 @@ path = "wrendns/shared.toml"             # the shared settings, in WrenDNS'
      `gitops_managed`);
    - another node can only be promoted as an *emergency* primary, which keeps the cluster
      coordinated on the last version and publishes nothing new until a Git-managed node is back.
-+    When one is back, promote it (its Cluster page, or `telltale cluster promote`): it takes
++    When one is back, promote it (its Cluster page, or `wrendns cluster promote`): it takes
 +    over from the emergency primary, which steps down by itself.
  
    The default is `api`: the primary's own file and UI.

@@ -1,12 +1,12 @@
 """REQ: NFR-002 (T10.2) — which code holds the heap after a burst of unique names.
 
-  cargo build --profile bench-fast -p telltale --features dhat-heap   # with symbols, see below
-  python3 bench/heapprof.py --bin target/bench-fast/telltale --fill 100000
+  cargo build --profile bench-fast -p wrendns --features dhat-heap   # with symbols, see below
+  python3 bench/heapprof.py --bin target/bench-fast/wrendns --fill 100000
 
 Runs a `dhat-heap` build (no lists, so the compile's peak doesn't dominate) against the stub
 upstream, sends `--fill` unique names at `--rate`, waits, stops the server cleanly so dhat
 writes `dhat-heap.json`, and prints the allocation sites holding the most bytes at the heap's
-peak (which, without lists, is right after the fill), grouped by their first TelltaleDNS frames.
+peak (which, without lists, is right after the fill), grouped by their first WrenDNS frames.
 Build with symbols: `CARGO_PROFILE_BENCH_FAST_STRIP=false CARGO_PROFILE_BENCH_FAST_DEBUG=1`.
 """
 
@@ -25,11 +25,11 @@ import gate
 
 
 def frames(ftbl, idxs, depth):
-    """The first `depth` frames in TelltaleDNS code, shortened."""
+    """The first `depth` frames in WrenDNS code, shortened."""
     out = []
     for i in idxs:
         f = ftbl[i]
-        if "telltale" not in f or "dhat" in f:
+        if "wrendns" not in f or "dhat" in f:
             continue
         m = re.search(r": (.*?) \((.*?)\)$", f)
         fn, loc = (m.group(1), m.group(2)) if m else (f, "")
@@ -38,12 +38,12 @@ def frames(ftbl, idxs, depth):
         out.append(f"{fn} ({loc})")
         if len(out) == depth:
             break
-    return out or ["(no TelltaleDNS frame)"]
+    return out or ["(no WrenDNS frame)"]
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/telltale"))
+    ap.add_argument("--bin", default=str(bench.ROOT / "target/bench-fast/wrendns"))
     ap.add_argument("--server-cpus", default="0-3")
     ap.add_argument("--client-cpus", default="4-7")
     ap.add_argument("--workers", type=int, default=4)
@@ -57,7 +57,7 @@ def main():
     ap.add_argument("--depth", type=int, default=3)
     args = ap.parse_args()
 
-    tmp = tempfile.TemporaryDirectory(prefix="telltale-heap-")
+    tmp = tempfile.TemporaryDirectory(prefix="wrendns-heap-")
     gate.pinned_dnsperf(args.client_cpus, tmp.name)
     d = pathlib.Path(tmp.name) / "run"
     d.mkdir()

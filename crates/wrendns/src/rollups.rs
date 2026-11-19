@@ -1,0 +1,441 @@
+//! Feeds `<data_dir>/rollups.db` from the aggregator's in-memory windows (REQ: OBS-004,
+//! `spec/06` §3, ADR-031). Once a minute: completed minute buckets (the last few again, to
+//! pick up late events), the last complete hour's top-K lists and latency percentiles once
+//! it closes, and retention once an hour. All SQLite work runs on a blocking thread;
+//! failures are logged and never touch DNS (rule 5).
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tracing::{info, warn};
+use wrendns_config::Config;
+use wrendns_store::rollup::{LatencyRow, Rollups, TopRow};
+use wrendns_telemetry::agg::{HourSel, LatencyKey, Percentiles, Resolution, TopKind};
+use wrendns_telemetry::{Path as AnswerPath, Proto, QTYPES};
+
+use crate::pipeline::Pipeline;
+
+const TOP_KEPT: usize = 100;
+/// Minutes re-written on every flush, for events that arrive after their minute closed.
+const REFLUSH_S: u64 = 180;
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Opens the rollup database, or logs why not (the API then serves memory only).
+pub(crate) fn open(cfg: &Config) -> Option<Arc<Rollups>> {
+    let dir = Path::new(cfg.node.data_dir.as_str());
+    let path = dir.join("rollups.db");
+    match std::fs::create_dir_all(dir)
+        .map_err(|e| e.to_string())
+        .and_then(|()| Rollups::open(&path).map_err(|e| e.to_string()))
+    {
+        Ok(r) => Some(Arc::new(r)),
+        Err(e) => {
+            warn!(path = %path.display(), "rollups off: {e}");
+            None
+        }
+    }
+}
+
+/// Opens the database and starts its writer (both `None` if it can't be opened).
+pub(crate) fn start(
+    cfg: &Config,
+    pipeline: &Arc<Pipeline>,
+) -> (Option<Arc<Rollups>>, Option<tokio::task::JoinHandle<()>>) {
+    let db = open(cfg);
+    let privacy = cfg.telemetry.qlog.privacy_level;
+    let writer = db
+        .as_ref()
+        .map(|d| spawn(Arc::clone(d), Arc::clone(pipeline), privacy));
+    (db, writer)
+}
+/// Starts the once-a-minute writer. `privacy` is the query log's privacy level, which the
+/// stored top lists follow ([`hour_tops`]).
+pub(crate) fn spawn(
+    db: Arc<Rollups>,
+    pipeline: Arc<Pipeline>,
+    privacy: u8,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Minutes before this process started are already on disk (or lost); never replace
+        // them with this process's partial view.
+        let started_minute = now() - now() % 60;
+        let mut flushed_to = started_minute;
+        // The hour that closed before this process started was saved by the one before it:
+        // the startup replay (T6.16) refills it in memory, but never rewrites it on disk.
+        let mut extras_for: Option<u64> = Some((started_minute / 3600).saturating_sub(1) * 3600);
+        // REQ: OBS-004 (review 04-11) — unless the predecessor stopped before it got to it
+        // (it writes an hour's lists a minute after the hour closes): then that hour is
+        // written once the replay is over, if nothing is stored for it.
+        let mut backfill_for = extras_for;
+        let mut purged_at = 0u64;
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let t = now();
+            let done_to = t - t % 60; // minutes before this one are complete
+            let from = flushed_to.saturating_sub(REFLUSH_S).max(started_minute);
+            let (rows, extras, backfill) = {
+                let agg = pipeline.telemetry.aggregates();
+                let mut rows = agg.series(Resolution::Minute, from, done_to);
+                // REQ: OBS-004 (T6.16) — groups by name, so stored minutes keep their meaning
+                // after a restart or a change to the group table.
+                let names: Vec<String> = pipeline
+                    .current()
+                    .policy
+                    .clients
+                    .groups()
+                    .iter()
+                    .map(|g| g.name.to_string())
+                    .collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                // REQ: OBS-027 — the bad answers' upstreams by name, for the same reason.
+                let ups = upstream_names(&pipeline);
+                let ups: Vec<&str> = ups.iter().map(String::as_str).collect();
+                for (_, c) in &mut rows {
+                    c.name_groups(&names);
+                    c.name_upstreams(&ups);
+                    // REQ: OBS-032 — the flow joints by group and upstream name too.
+                    c.name_flow(&names, &ups);
+                }
+                let extras = agg
+                    .previous_hour_start()
+                    .filter(|h| extras_for != Some(*h))
+                    .map(|h| (h, hour_extras(&agg, &pipeline, privacy)));
+                let replayed = crate::replay::done();
+                let backfill = backfill_for
+                    .filter(|h| replayed && agg.previous_hour_start() == Some(*h))
+                    .map(|h| (h, hour_extras(&agg, &pipeline, privacy)));
+                if replayed {
+                    backfill_for = None;
+                }
+                (rows, extras, backfill)
+            };
+            let d = Arc::clone(&db);
+            let purge = t.saturating_sub(purged_at) >= 3600;
+            let result = tokio::task::spawn_blocking(move || {
+                d.put_minutes(&rows)?;
+                if let Some((h, (tops, lat))) = &backfill
+                    && d.latency(*h)?.is_empty()
+                    && d.top(*h, "domains", 1)?.is_empty()
+                {
+                    let tops: Vec<(&str, Vec<TopRow>)> =
+                        tops.iter().map(|(k, v)| (*k, v.clone())).collect();
+                    d.put_hour_extras(*h, &tops, lat)?;
+                }
+                if let Some((h, (tops, lat))) = &extras {
+                    let tops: Vec<(&str, Vec<TopRow>)> =
+                        tops.iter().map(|(k, v)| (*k, v.clone())).collect();
+                    d.put_hour_extras(*h, &tops, lat)?;
+                }
+                let removed = if purge { d.purge(t)? } else { 0 };
+                Ok::<_, wrendns_store::state::StateError>((extras.map(|(h, _)| h), removed))
+            })
+            .await;
+            match result {
+                Ok(Ok((hour, removed))) => {
+                    flushed_to = done_to;
+                    if hour.is_some() {
+                        extras_for = hour;
+                    }
+                    if purge {
+                        purged_at = t;
+                        if removed > 0 {
+                            info!(rows = removed, "rollups: retention removed old rows");
+                        }
+                    }
+                }
+                Ok(Err(e)) => warn!("rollups: {e}"),
+                Err(e) => warn!("rollups: {e}"),
+            }
+        }
+    })
+}
+
+/// REQ: OBS-027 — this process's upstream names by ID (index 0 is "no upstream").
+pub(crate) fn upstream_names(pipeline: &Pipeline) -> Vec<String> {
+    let router = std::sync::Arc::clone(&pipeline.current().router);
+    let mut v = vec![String::new()];
+    for u in router.upstreams() {
+        let i = usize::from(u.id);
+        if v.len() <= i {
+            v.resize(i + 1, String::new());
+        }
+        v[i].clone_from(&u.name);
+    }
+    v
+}
+
+type Tops = Vec<(&'static str, Vec<TopRow>)>;
+type Extras = (Tops, Vec<LatencyRow>);
+
+/// REQ: OBS-003, OBS-004 (`spec/06` §4; review 04-04) — the last complete hour's top-K lists,
+/// as the query log's privacy level lets them be kept for 400 days. The analytics already
+/// hold names hashed as the query log stores them at 1 and above (`Hub::set_privacy`); at 2
+/// and above there is no list of clients (they're all one).
+fn hour_tops(agg: &wrendns_telemetry::Aggregates, privacy: u8) -> Tops {
+    [
+        ("domains", TopKind::Domains),
+        ("blocked", TopKind::Blocked),
+        ("nxdomain", TopKind::Nxdomain),
+        ("clients", TopKind::Clients),
+        ("internal", TopKind::Internal),
+    ]
+    .into_iter()
+    .filter(|(_, kind)| privacy < 2 || *kind != TopKind::Clients)
+    .map(|(name, kind)| {
+        let rows = agg
+            .top_names(kind, HourSel::Previous, TOP_KEPT)
+            .into_iter()
+            .map(|t| TopRow {
+                key: t.key,
+                count: t.count,
+                error: t.error,
+            })
+            .collect();
+        (name, rows)
+    })
+    .chain(bad_tops(agg, HourSel::Previous, privacy))
+    .chain(client_status_tops(agg, privacy))
+    .collect()
+}
+
+/// REQ: OBS-004 (ADR-159) — the stored clients' split by status, as three lists
+/// (`clients_blocked`, `clients_cached`, `clients_forwarded`) keyed like `clients`, so a read
+/// over stored hours can sum them per client. Zero counts aren't stored; nothing at privacy
+/// level 2 and above (no client list).
+fn client_status_tops(
+    agg: &wrendns_telemetry::Aggregates,
+    privacy: u8,
+) -> Vec<(&'static str, Vec<TopRow>)> {
+    if privacy >= 2 {
+        return Vec::new();
+    }
+    let top = agg.top_clients(HourSel::Previous, None, TOP_KEPT);
+    let list = |kind: &'static str, pick: fn(&wrendns_telemetry::agg::ClientStatus) -> u64| {
+        let rows = top
+            .iter()
+            .filter(|(_, s)| pick(s) > 0)
+            .map(|(t, s)| TopRow {
+                key: t.key.clone(),
+                count: pick(s),
+                error: 0,
+            })
+            .collect();
+        (kind, rows)
+    };
+    vec![
+        list("clients_blocked", |s| s.blocked),
+        list("clients_cached", |s| s.cached),
+        list("clients_forwarded", |s| s.forwarded),
+    ]
+}
+
+/// REQ: OBS-027 (ADR-127) — the bad-answer lists of an hour, as the privacy level lets them be
+/// kept (no client lists at 2 and above), 20 each.
+pub(crate) fn bad_tops(
+    agg: &wrendns_telemetry::Aggregates,
+    sel: HourSel,
+    privacy: u8,
+) -> Vec<(&'static str, Vec<TopRow>)> {
+    wrendns_telemetry::agg::BadTop::ALL
+        .into_iter()
+        .filter(|b| privacy < 2 || !b.is_client())
+        .map(|b| {
+            let rows = agg
+                .bad_top(b, sel, BAD_KEPT)
+                .into_iter()
+                .map(|t| TopRow {
+                    key: t.key,
+                    count: t.count,
+                    error: t.error,
+                })
+                .collect();
+            (b.kind(), rows)
+        })
+        .collect()
+}
+
+/// Bad-answer entries stored per list and hour.
+pub(crate) const BAD_KEPT: usize = 20;
+
+/// The last complete hour's top-K lists and latency summaries.
+fn hour_extras(agg: &wrendns_telemetry::Aggregates, pipeline: &Pipeline, privacy: u8) -> Extras {
+    let tops = hour_tops(agg, privacy);
+
+    let row = |key: String, p: Percentiles| LatencyRow {
+        key,
+        count: p.count,
+        p50: p.p50,
+        p90: p.p90,
+        p99: p.p99,
+        p999: p.p999,
+        max: p.max,
+    };
+    let mut lat = Vec::new();
+    for path in AnswerPath::ALL {
+        for proto in Proto::ALL {
+            if let Some(p) = agg.latency(LatencyKey::Total(path, proto), HourSel::Previous) {
+                lat.push(row(format!("{}/{}", path.label(), proto.label()), p));
+            }
+        }
+    }
+    for (i, (_, name)) in QTYPES.iter().enumerate() {
+        if let Some(p) = agg.latency(LatencyKey::Qtype(i), HourSel::Previous) {
+            lat.push(row(format!("qtype:{name}"), p));
+        }
+    }
+    if let Some(p) = agg.latency(LatencyKey::StageUpstream, HourSel::Previous) {
+        lat.push(row("stage:upstream".to_owned(), p));
+    }
+    for u in pipeline.current().router.upstreams() {
+        if let Some(p) = agg.latency(LatencyKey::Upstream(u.id), HourSel::Previous) {
+            lat.push(row(format!("upstream:{}", u.name), p));
+        }
+    }
+    (tops, lat)
+}
+
+#[cfg(test)]
+mod heatmap_bench {
+    use wrendns_store::rollup::{Level, Rollups};
+    use wrendns_telemetry::agg::Counts;
+
+    /// REQ: OBS-029 (ADR-123's benchmark) — the network heatmap's biggest read: 7 days of
+    /// minutes from the rollups, summed into 15-minute slots, in under 150 ms, and its answer
+    /// under 200 KB. Release builds only (`cargo test --release`): debug builds are ~10× slower.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "timing: run with --release")]
+    fn obs_029_seven_days_of_minutes_read_fast() {
+        let db = Rollups::in_memory().unwrap();
+        let day0 = 1_791_072_000;
+        let rows: Vec<(u64, Counts)> = (0..7 * 1440)
+            .map(|m| {
+                let mut c = Counts {
+                    total: 25,
+                    ..Counts::default()
+                };
+                c.status[0] = 25;
+                c.rcode[0] = 25;
+                (day0 + m * 60, c)
+            })
+            .collect();
+        db.put_minutes(&rows).unwrap();
+        let t = std::time::Instant::now();
+        let read = db.range(Level::Minute, day0, day0 + 7 * 86_400).unwrap();
+        let cells = wrendns_api::heatmap::slots(
+            read.iter().map(|(s, c)| (*s, u64::from(c.total))),
+            day0,
+            900,
+            7 * 96,
+        );
+        let took = t.elapsed();
+        assert_eq!(read.len(), 10_080);
+        assert_eq!(cells.iter().sum::<u64>(), 25 * 10_080);
+        let minute_answer = wrendns_api::heatmap::Heatmap {
+            starts: (0..10_080).map(|i| day0 + i * 60).collect(),
+            values: vec![1402; 10_080],
+            ..wrendns_api::heatmap::Heatmap::default()
+        };
+        let bytes = serde_json::to_vec(&minute_answer).unwrap().len();
+        eprintln!(
+            "obs_029: 7 days of minutes read and summed in {took:?}; a minute-grain answer is {bytes} bytes"
+        );
+        assert!(took < std::time::Duration::from_millis(150), "{took:?}");
+        assert!(bytes < 200_000, "{bytes}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wrendns_telemetry::event::{Name, Record};
+    use wrendns_telemetry::{Aggregates, Proto, QueryEvent, Status};
+
+    const ADS: &[u8] = b"\x03ads\x07example\x00";
+
+    fn query(ts_us: u64, status: Status) -> QueryEvent {
+        let mut client_ip = [0u8; 16];
+        client_ip[10..].copy_from_slice(&[0xff, 0xff, 192, 168, 1, 5]);
+        QueryEvent {
+            ts_us,
+            client_ip,
+            client_ref: 0,
+            group: 0,
+            qtype: 1,
+            qclass: 1,
+            rcode: Some(0),
+            status,
+            proto: Proto::Udp,
+            flags: 0x8180,
+            rule: None,
+            upstream: 0,
+            attempts: 0,
+            t_total_us: 100,
+            t_upstream_us: 0,
+            resp_size: 64,
+            answers: 1,
+        }
+    }
+
+    /// An hour with one blocked query for `ads.example` from 192.168.1.5, then the next hour,
+    /// as the analytics see them at privacy level `level`.
+    fn closed_hour(level: u8) -> Aggregates {
+        let mut agg = Aggregates::new();
+        let hour = 1_700_000_000 / 3600 * 3600 * 1_000_000;
+        let seen = |r: Record| wrendns_telemetry::event::private(&r, level);
+        agg.record(&seen(Record::Query(
+            query(hour + 5, Status::Blocked),
+            Name::from_wire(ADS),
+        )));
+        agg.record(&seen(Record::Query(
+            query(hour + 3_600_000_000, Status::Cached),
+            Name::from_wire(b"\x03new\x07example\x00"),
+        )));
+        agg
+    }
+
+    fn keys<'a>(tops: &'a Tops, kind: &str) -> Option<Vec<&'a str>> {
+        tops.iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, rows)| rows.iter().map(|r| r.key.as_str()).collect())
+    }
+
+    /// REQ: OBS-003, OBS-004 (review 04-04) — the hourly top lists kept in rollups.db follow
+    /// the query log's privacy level: names hashed the way the log stores them at 1, and no
+    /// client list at 2 and above.
+    #[test]
+    fn obs_003_stored_top_lists_follow_the_privacy_level() {
+        let _key = crate::privacy::TEST_KEY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hashed = wrendns_telemetry::event::dotted(&wrendns_store::qlog::hidden_name(ADS));
+        let plain = wrendns_telemetry::event::dotted(ADS);
+        assert_ne!(hashed, plain);
+
+        let full = hour_tops(&closed_hour(0), 0);
+        assert_eq!(keys(&full, "blocked"), Some(vec![plain.as_str()]));
+        assert_eq!(keys(&full, "clients"), Some(vec!["192.168.1.5"]));
+        // REQ: OBS-004 (ADR-159) — and its split: one blocked query, nothing else stored.
+        assert_eq!(keys(&full, "clients_blocked"), Some(vec!["192.168.1.5"]));
+        assert_eq!(keys(&full, "clients_cached"), Some(vec![]));
+
+        let level1 = hour_tops(&closed_hour(1), 1);
+        assert_eq!(keys(&level1, "domains"), Some(vec![hashed.as_str()]));
+        assert_eq!(keys(&level1, "blocked"), Some(vec![hashed.as_str()]));
+        assert_eq!(keys(&level1, "clients"), Some(vec!["192.168.1.5"]));
+
+        for level in [2, 3] {
+            let hidden = hour_tops(&closed_hour(level), level);
+            assert_eq!(keys(&hidden, "blocked"), Some(vec![hashed.as_str()]));
+            assert_eq!(keys(&hidden, "clients"), None, "level {level}");
+            assert_eq!(keys(&hidden, "clients_blocked"), None, "level {level}");
+        }
+    }
+}

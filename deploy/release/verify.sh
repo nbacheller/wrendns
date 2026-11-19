@@ -8,10 +8,10 @@
 # Needs: curl, minisign, sha256sum, helm, cosign, and docker (buildx) or crane.
 set -eu
 v=${1:?usage: verify.sh <X.Y.Z>}
-repo=${GITHUB_REPOSITORY:-paimonsoror/telltaledns}
+repo=${GITHUB_REPOSITORY:-nbacheller/telltaledns}
 owner=${repo%%/*}
-image="ghcr.io/$owner/telltale"
-chart="oci://ghcr.io/$owner/charts/telltale"
+image="ghcr.io/$owner/wrendns"
+chart="oci://ghcr.io/$owner/charts/wrendns"
 cd "$(dirname "$0")/../.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -21,34 +21,34 @@ bad() { echo "FAIL  $*"; fails=$((fails + 1)); }
 
 # 1. The GitHub release: signed sums and index, the binaries match the sums.
 base="https://github.com/$repo/releases/download/v$v"
-for f in SHA256SUMS SHA256SUMS.minisig releases.json releases.json.minisig telltale-x86_64-linux; do
+for f in SHA256SUMS SHA256SUMS.minisig releases.json releases.json.minisig wrendns-x86_64-linux; do
   curl -fsSL --retry 3 -o "$tmp/$f" "$base/$f" || bad "release asset $f missing"
 done
-if minisign -Vq -p deploy/release/telltale-release.pub -m "$tmp/SHA256SUMS" &&
-  minisign -Vq -p deploy/release/telltale-release.pub -m "$tmp/releases.json"; then
+if minisign -Vq -p deploy/release/wrendns-release.pub -m "$tmp/SHA256SUMS" &&
+  minisign -Vq -p deploy/release/wrendns-release.pub -m "$tmp/releases.json"; then
   ok "SHA256SUMS and releases.json signed with the release key"
 else
   bad "signatures don't verify"
 fi
-if (cd "$tmp" && grep ' telltale-x86_64-linux$' SHA256SUMS | sha256sum -c --quiet -); then
-  ok "telltale-x86_64-linux matches SHA256SUMS"
+if (cd "$tmp" && grep ' wrendns-x86_64-linux$' SHA256SUMS | sha256sum -c --quiet -); then
+  ok "wrendns-x86_64-linux matches SHA256SUMS"
 else
-  bad "telltale-x86_64-linux doesn't match SHA256SUMS"
+  bad "wrendns-x86_64-linux doesn't match SHA256SUMS"
 fi
 for t in x86_64-linux aarch64-linux armv7-linux; do
-  grep -q " telltale-$t\$" "$tmp/SHA256SUMS" || bad "no telltale-$t in SHA256SUMS"
+  grep -q " wrendns-$t\$" "$tmp/SHA256SUMS" || bad "no wrendns-$t in SHA256SUMS"
   # REQ: NFR-005 (T10.10) — a CycloneDX SBOM per binary, under the signed sums.
-  grep -q " telltale-$t.cdx.json\$" "$tmp/SHA256SUMS" || bad "no SBOM telltale-$t.cdx.json in SHA256SUMS"
+  grep -q " wrendns-$t.cdx.json\$" "$tmp/SHA256SUMS" || bad "no SBOM wrendns-$t.cdx.json in SHA256SUMS"
   # REQ: OPS-013 — the debug file of each binary is published and signed with the rest.
-  grep -q " telltale-$t.debug.zst\$" "$tmp/SHA256SUMS" || bad "no debug file telltale-$t.debug.zst in SHA256SUMS"
+  grep -q " wrendns-$t.debug.zst\$" "$tmp/SHA256SUMS" || bad "no debug file wrendns-$t.debug.zst in SHA256SUMS"
 done
 grep -q "\"channel\": \"stable\"" "$tmp/releases.json" && grep -q "\"version\": \"$v\"" "$tmp/releases.json" &&
   ok "releases.json: channel stable, version $v" || bad "releases.json isn't stable $v"
-chmod +x "$tmp/telltale-x86_64-linux"
-if "$tmp/telltale-x86_64-linux" --version | grep -q "^telltale $v (.*channel stable"; then
-  ok "the binary says: $("$tmp/telltale-x86_64-linux" --version | head -1)"
+chmod +x "$tmp/wrendns-x86_64-linux"
+if "$tmp/wrendns-x86_64-linux" --version | grep -q "^wrendns $v (.*channel stable"; then
+  ok "the binary says: $("$tmp/wrendns-x86_64-linux" --version | head -1)"
 else
-  bad "the binary reports $("$tmp/telltale-x86_64-linux" --version | head -1)"
+  bad "the binary reports $("$tmp/wrendns-x86_64-linux" --version | head -1)"
 fi
 
 # 2. "Latest release" (what install.sh and self-update take) is this one.

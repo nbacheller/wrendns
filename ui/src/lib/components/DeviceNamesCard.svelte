@@ -168,7 +168,7 @@
 <section class="card" data-testid="device-names-card">
   <h2>Device names in DNS<HelpButton id="device-names-dns" /></h2>
   <p class="small muted">
-    Devices TelltaleDNS knows by name (a named device, a router's DHCP client, Home Assistant, and mDNS names when on) answer as
+    Devices WrenDNS knows by name (a named device, a router's DHCP client, Home Assistant, and mDNS names when on) answer as
     <span class="mono">name.domain</span>. A name is answered within about 10 seconds of the router's next read.
   </p>
   <ErrorNote {error} />

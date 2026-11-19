@@ -4,10 +4,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use telltale_snmp::ber;
-use telltale_snmp::oid::Oid;
-use telltale_snmp::pdu;
-use telltale_snmp::v2c;
+use wrendns_snmp::ber;
+use wrendns_snmp::oid::Oid;
+use wrendns_snmp::pdu;
+use wrendns_snmp::v2c;
 
 fuzz_target!(|data: &[u8]| {
     let _ = ber::read_tlv(data);

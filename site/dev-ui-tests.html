@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Write UI tests — TelltaleDNS</title>
-<meta name="description" content="How the TelltaleDNS web UI is tested: one serial Playwright suite against the real binary, the rules for writing a test that does not disturb the next one, and the timing traps in the query log and the API.">
+<title>Write UI tests — WrenDNS</title>
+<meta name="description" content="How the WrenDNS web UI is tested: one serial Playwright suite against the real binary, the rules for writing a test that does not disturb the next one, and the timing traps in the query log and the API.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -64,10 +64,10 @@
 <pre><code>cd ui
 npm ci
 npm run build
-cargo build -p telltale                 # from the repository root: cd .. first
+cargo build -p wrendns                 # from the repository root: cd .. first
 npx playwright install chromium         # once
 npx playwright test tests/e2e/1-ui.spec.ts -g "first run|your test title"</code></pre>
-    The first-run test is in the pattern because yours needs the admin it creates. <code>TELLTALE_BIN</code> points the server at another binary.</li>
+    The first-run test is in the pattern because yours needs the admin it creates. <code>WRENDNS_BIN</code> points the server at another binary.</li>
     <li class="step"><b>Run the whole file once before you push.</b> A test that passes alone and fails in the suite (or the reverse) is the common failure of this kind. Run the whole <code>ui/tests/e2e</code> folder too: the browser-less files are part of the job.</li>
     <li class="step"><b>Break it on purpose.</b> Put the bug back and watch the test fail. A test you have never seen fail proves nothing.</li>
   </ol>
