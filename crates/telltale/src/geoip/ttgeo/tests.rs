@@ -545,3 +545,41 @@ fn obs_902_geoip_build_memory() {
     run(300_000, 300_000);
     run(500_000, 700_000 - 1);
 }
+
+/// REQ: OBS-902 (ADR-1008 (h), review LOW) - each built table is allocated once at its exact
+/// size, whatever the input: a gap before every row (the hostile case, twice the rows) and
+/// back-to-back rows of one country (merged to one) both end with `capacity == len`.
+#[test]
+fn obs_902_geoip_tables_are_sized_exactly() {
+    let mut gaps = Collector::with_limits(0, 0);
+    for i in 0..1_000u32 {
+        let a = IpAddr::from((i * 4 + 0x0100_0000).to_be_bytes());
+        let b = IpAddr::from((i * 4 + 1 + 0x0100_0000).to_be_bytes());
+        gaps.push_line(&format!("{a},{b},AU")).unwrap();
+        let a = std::net::Ipv6Addr::from((0x2001_0db8u128 << 96) + (u128::from(i) << 66));
+        let b = std::net::Ipv6Addr::from((0x2001_0db8u128 << 96) + (u128::from(i) << 66) + 1);
+        gaps.push_line(&format!("{a},{b},NL")).unwrap();
+    }
+    let t = gaps.finish(&Limits::TEST, None).unwrap();
+    assert_eq!(
+        t.v4.len(),
+        2_001,
+        "a gap row before each range and one after the last"
+    );
+    assert_eq!(t.v4.capacity(), t.v4.len());
+    assert_eq!(t.v6.len(), 2_001);
+    assert_eq!(t.v6.capacity(), t.v6.len());
+    let mut merged = Collector::with_limits(0, 0);
+    for i in 0..1_000u32 {
+        let a = IpAddr::from((i * 4 + 0x0100_0000).to_be_bytes());
+        let b = IpAddr::from((i * 4 + 3 + 0x0100_0000).to_be_bytes());
+        merged.push_line(&format!("{a},{b},AU")).unwrap();
+    }
+    merged
+        .push_line("2001:db8::,2001:db8:0:ffff:ffff:ffff:ffff:ffff,NL")
+        .unwrap();
+    let t = merged.finish(&Limits::TEST, None).unwrap();
+    assert_eq!(t.v4.len(), 3, "gap, one merged range, gap");
+    assert_eq!(t.v4.capacity(), t.v4.len());
+    assert_eq!(t.v6.capacity(), t.v6.len());
+}

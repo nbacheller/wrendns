@@ -108,6 +108,15 @@ pub fn allocator_purge_at_once() {
     sys::allocator_purge_at_once();
 }
 
+/// REQ: NFR-001, OBS-902 (ADR-1008 (h)) — after a rare, allocation-heavy job (the GeoIP build),
+/// the allocator gives the calling thread's freed pages and the arenas' free memory back to the
+/// OS at once. Call it on the thread that did the work, once the work's buffers are dropped. A
+/// no-op off Linux.
+pub fn allocator_collect() {
+    #[cfg(target_os = "linux")]
+    sys::allocator_collect();
+}
+
 /// REQ: DSC-002 (ADR-934) — the text of this process's `/proc/self/io`, read through a descriptor
 /// opened before [`worker::prepare_spawn`] made the process not dumpable (a non-root process
 /// can't open the file itself after that). `None` off Linux or without the file.

@@ -107,17 +107,19 @@ impl Options {
     /// only.
     pub(crate) fn from_env() -> Self {
         let mut o = Self::default();
-        if cfg!(debug_assertions) {
-            if std::env::var_os("TELLTALE_GEOIP_TEST").is_some() {
-                o.limits = Limits::TEST;
-            }
-            if let Some(p) = std::env::var_os("TELLTALE_GEOIP_TEST_CA") {
-                use rustls::pki_types::CertificateDer;
-                use rustls::pki_types::pem::PemObject;
-                match CertificateDer::pem_file_iter(&p) {
-                    Ok(it) => o.extra_roots = it.filter_map(Result::ok).collect(),
-                    Err(e) => warn!("geoip: the test CA file can't be read: {e}"),
-                }
+        if cfg!(debug_assertions) && std::env::var_os("TELLTALE_GEOIP_TEST").is_some() {
+            o.limits = Limits::TEST;
+        }
+        // REQ: OBS-902 (ADR-1008 (h)) - the bench build (`--features geoip-probe`) trusts the
+        // fake source too, with the production limits, so the build is measured as shipped.
+        if (cfg!(debug_assertions) || cfg!(feature = "geoip-probe"))
+            && let Some(p) = std::env::var_os("TELLTALE_GEOIP_TEST_CA")
+        {
+            use rustls::pki_types::CertificateDer;
+            use rustls::pki_types::pem::PemObject;
+            match CertificateDer::pem_file_iter(&p) {
+                Ok(it) => o.extra_roots = it.filter_map(Result::ok).collect(),
+                Err(e) => warn!("geoip: the test CA file can't be read: {e}"),
             }
         }
         o
@@ -460,7 +462,7 @@ impl GeoIp {
             i.fetched_from = Some(Source::of(g));
             i.generation
         };
-        let result = self.fetch_and_build(g, dir, now).await;
+        let result = self.fetch_and_build_apart(g, dir, now).await;
         let mut i = self.inner();
         i.downloading = false;
         if i.generation != generation {
@@ -501,7 +503,48 @@ impl GeoIp {
         }
     }
 
-    /// Downloads, verifies, builds and publishes; the error is a code for the status.
+    /// REQ: OBS-902, NFR-001 (ADR-1008 (h)) - `fetch_and_build` on a thread of its own, with a
+    /// one-thread runtime that ends with it: every buffer of the download (the TLS session, the
+    /// body) and of the build is allocated by that thread's heap, so when the thread has dropped
+    /// them it hands the pages back to the OS (`allocator_collect`) and exits, and the resolver
+    /// returns to its idle size. On the shared runtime the body's pages stayed with the worker
+    /// thread that collected it, a few MiB more after every build (`bench/geoipbuild.py`).
+    async fn fetch_and_build_apart(
+        self: &Arc<Self>,
+        g: &MapGeoipConfig,
+        dir: &Path,
+        now: u64,
+    ) -> Result<Db, String> {
+        let (this, g, dir) = (Arc::clone(self), g.clone(), dir.to_owned());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("geoip-build".to_owned())
+            .spawn(move || {
+                let out = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => {
+                        let out = rt.block_on(this.fetch_and_build(&g, &dir, now));
+                        drop(rt);
+                        out
+                    }
+                    Err(_) => Err("build_failed".to_owned()),
+                };
+                drop((g, dir));
+                telltale_net::allocator_collect();
+                // The code the download and the build ran (once a month) stops counting too.
+                crate::server::trim_code_pages("geoip build");
+                let _ = tx.send(out);
+            });
+        if spawned.is_err() {
+            return Err("build_failed".to_owned());
+        }
+        rx.await.unwrap_or_else(|_| Err("build_failed".to_owned()))
+    }
+
+    /// Downloads, verifies, builds and publishes; the error is a code for the status. Runs on
+    /// the `geoip-build` thread (`fetch_and_build_apart`).
     async fn fetch_and_build(
         &self,
         g: &MapGeoipConfig,
@@ -552,27 +595,22 @@ impl GeoIp {
         };
         let pin = g.sha256.as_ref().map(|d| d.as_str().to_ascii_lowercase());
         let limits = self.opts.limits;
-        let dir = dir.to_owned();
         let crash = self
             .crash_after
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         let previous = self.current().map(|d| u64::from(d.source_rows));
-        tokio::task::spawn_blocking(move || {
-            build_and_publish(
-                body,
-                pin.as_deref(),
-                &limits,
-                previous,
-                &dir,
-                month,
-                now,
-                crash,
-            )
-        })
-        .await
-        .map_err(|_| "build_failed".to_owned())?
+        build_and_publish(
+            body,
+            pin.as_deref(),
+            &limits,
+            previous,
+            dir,
+            month,
+            now,
+            crash,
+        )
     }
 }
 

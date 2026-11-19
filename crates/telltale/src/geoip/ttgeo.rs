@@ -305,72 +305,89 @@ impl Collector {
             return Err(Reject::Overlap);
         }
         // IPv4: merge contiguous ranges of one country, add the gap rows.
-        // REQ: OBS-902 (ADR-1008 M2) - sized from the row count (merging shrinks it, gap rows grow
-        // it by a few percent), so the table is allocated once and never doubled.
+        // REQ: OBS-902 (ADR-1008 (h), review LOW) - a first pass counts the output rows, so each
+        // table is allocated once at its exact size: it never regrows, whatever the input (a
+        // gap before every row doubles the row count; an estimate would then regrow the table
+        // and hold old and new buffers together).
         let src4 = std::mem::take(&mut self.v4);
-        let mut t4: Vec<(u32, u16)> = Vec::with_capacity(src4.len() + src4.len() / 8 + 2);
-        let mut expect: u64 = 0;
-        let mut last: Option<(u64, u16)> = None; // (end + 1, cc) of the row just added
-        for &(s, e, cc) in &src4 {
-            if let Some((next, c)) = last
-                && next == u64::from(s)
-                && c == cc
-            {
-                expect = u64::from(e) + 1;
-                last = Some((expect, cc));
-                continue;
-            }
-            if u64::from(s) > expect {
-                t4.push((u32::try_from(expect).unwrap_or(u32::MAX), 0));
-            }
-            t4.push((s, cc));
-            expect = u64::from(e) + 1;
-            last = Some((expect, cc));
-        }
-        if u32::try_from(expect).is_ok() {
-            t4.push((u32::try_from(expect).unwrap_or(u32::MAX), 0));
-        }
+        let mut n4 = 0usize;
+        merge_v4(&src4, |_| n4 += 1);
+        let mut t4: Vec<(u32, u16)> = Vec::with_capacity(n4);
+        merge_v4(&src4, |row| t4.push(row));
         // The IPv4 source rows are consumed: free them before the IPv6 table is built.
         drop(src4);
-        // IPv6: ranges are cut to /64 (conservative: a range's first and last /64 are wholly its
-        // own). A /64 two ranges share belongs to the earlier one.
         let src6 = std::mem::take(&mut self.v6);
-        let mut t6: Vec<(u64, u16)> = Vec::with_capacity(src6.len() + src6.len() / 8 + 2);
-        let mut expect: u128 = 0;
-        let mut last: Option<(u128, u16)> = None;
-        for &(s, e, cc) in &src6 {
-            let mut s_hi = s >> 64;
-            let e_hi = e >> 64;
-            if s_hi < expect {
-                s_hi = expect;
-            }
-            if s_hi > e_hi {
-                continue;
-            }
-            if let Some((next, c)) = last
-                && next == s_hi
-                && c == cc
-            {
-                expect = e_hi + 1;
-                last = Some((expect, cc));
-                continue;
-            }
-            if s_hi > expect {
-                t6.push((u64::try_from(expect).unwrap_or(u64::MAX), 0));
-            }
-            t6.push((u64::try_from(s_hi).unwrap_or(u64::MAX), cc));
-            expect = e_hi + 1;
-            last = Some((expect, cc));
-        }
-        if u64::try_from(expect).is_ok() {
-            t6.push((u64::try_from(expect).unwrap_or(u64::MAX), 0));
-        }
+        let mut n6 = 0usize;
+        merge_v6(&src6, |_| n6 += 1);
+        let mut t6: Vec<(u64, u16)> = Vec::with_capacity(n6);
+        merge_v6(&src6, |row| t6.push(row));
         drop(src6);
         Ok(Table {
             v4: t4,
             v6: t6,
             source_rows: u32::try_from(rows).unwrap_or(u32::MAX),
         })
+    }
+}
+
+/// The IPv4 table of sorted, non-overlapping source rows: contiguous ranges of one country
+/// merged, a gap row (country 0) before each gap and after the last range. Called twice by
+/// `finish` (count, then fill), so it must not depend on anything but `src`.
+fn merge_v4(src: &[(u32, u32, u16)], mut out: impl FnMut((u32, u16))) {
+    let mut expect: u64 = 0;
+    let mut last: Option<(u64, u16)> = None; // (end + 1, cc) of the row just added
+    for &(s, e, cc) in src {
+        if let Some((next, c)) = last
+            && next == u64::from(s)
+            && c == cc
+        {
+            expect = u64::from(e) + 1;
+            last = Some((expect, cc));
+            continue;
+        }
+        if u64::from(s) > expect {
+            out((u32::try_from(expect).unwrap_or(u32::MAX), 0));
+        }
+        out((s, cc));
+        expect = u64::from(e) + 1;
+        last = Some((expect, cc));
+    }
+    if u32::try_from(expect).is_ok() {
+        out((u32::try_from(expect).unwrap_or(u32::MAX), 0));
+    }
+}
+
+/// The IPv6 table, as `merge_v4`: ranges are cut to /64 (conservative: a range's first and last
+/// /64 are wholly its own), and a /64 two ranges share belongs to the earlier one.
+fn merge_v6(src: &[(u128, u128, u16)], mut out: impl FnMut((u64, u16))) {
+    let mut expect: u128 = 0;
+    let mut last: Option<(u128, u16)> = None;
+    for &(s, e, cc) in src {
+        let mut s_hi = s >> 64;
+        let e_hi = e >> 64;
+        if s_hi < expect {
+            s_hi = expect;
+        }
+        if s_hi > e_hi {
+            continue;
+        }
+        if let Some((next, c)) = last
+            && next == s_hi
+            && c == cc
+        {
+            expect = e_hi + 1;
+            last = Some((expect, cc));
+            continue;
+        }
+        if s_hi > expect {
+            out((u64::try_from(expect).unwrap_or(u64::MAX), 0));
+        }
+        out((u64::try_from(s_hi).unwrap_or(u64::MAX), cc));
+        expect = e_hi + 1;
+        last = Some((expect, cc));
+    }
+    if u64::try_from(expect).is_ok() {
+        out((u64::try_from(expect).unwrap_or(u64::MAX), 0));
     }
 }
 
