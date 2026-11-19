@@ -5597,3 +5597,17 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 4. Nodes that still run an upstream TelltaleDNS build trust only upstream's key and cannot self-update to WrenDNS. They move by `install.sh` or the migration script (ADR-1028), which is the path the rename already requires.
 
 **Rotation:** a new key means a new pair, updating the three places and the secret in one commit, and noting it in the release notes. Nodes on the old key are moved by `install.sh`, as in point 4.
+
+## ADR-1045 - A Pushover alert destination: two secrets, https, no emergency priority (Proposed 2026-11-19, T24.43, owner request)
+
+**Context:** Pi-hole's DHCP hook sent a Pushover message when a new device joined. Pi-hole is gone, and the owner wants the `new_device` alert delivered to Pushover. Pushover takes a form POST with an application token and a user (or group) key, both secrets.
+
+**Decision:**
+1. `[[alerts.destination]] type = "pushover"`. `url` is optional and defaults to `https://api.pushover.net/1/messages.json` (an empty `url` is the default; `url` no longer has to be present in the file). A `url` set must be `https://`; `http://` is accepted only to `127.0.0.1`, `localhost` or `[::1]`, for a test server. This is stricter than the other destinations (which accept `http://`) because the message carries two secrets.
+2. The application token uses the existing `token_file` / `token_ref`. The user or group key is a second credential, `user_key_file` / `user_key_ref`, held exactly as `password_ref` is: a row of `STORED_FIELDS` (`alert_destination`, `user_key`), listed by `GET /api/v1/secrets` with its users, replicated to every member (ADR-903, ADR-917), never shown again, admin only, and `user_key_file` an API path that holds a credential. Both are required for the type (a file or a reference each).
+3. Options: `device` (a Pushover device name), `sound`, `priority_firing` (default 0) and `priority_resolved` (default -1), each priority from -2 to 1. Priority 2 (emergency) needs `retry` and `expire` and repeats until acknowledged: not offered (conservative; a later ADR can add it).
+4. The form carries `token`, `user`, `title` (rule and subject, cut to 250 characters), `message` (the summary with the node and the time, cut to 1024 characters with an ellipsis, the node and time kept), `priority`, `timestamp`, `device` and `sound` when set, and `url` (a link to the device in the UI) only for a `new_device` alert on a node that has `[auth.oidc] public_url`: the node knows no other address of its UI, so without it the link is left out. A link over 512 characters is left out, not cut.
+5. A 4xx with Pushover's `{"status":0,"errors":[...]}` (or a 2xx with `status` 0) is a failed delivery; the deliveries list shows `HTTP 400: <errors>`, cut to 300 characters, with the token and the key replaced by `<redacted>`. Nothing is logged with a secret. Alerts never affect DNS (CLU-004).
+6. `credential_redirected`: a pushover destination holds credentials, so changing its `url` (or `type`, or dropping the `url` to Pushover's default) is an admin's, the existing rule (API-014), and raises the alert.
+
+**Consequences:** the config schema, OpenAPI and `api-types.ts` gain the six fields and the `pushover` type; the support-bundle classify table lists the four string fields; one help topic (`pushover`) says where to find the two values. No new dependency; the image size is unchanged.

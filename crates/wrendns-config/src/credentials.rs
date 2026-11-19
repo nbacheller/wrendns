@@ -161,6 +161,7 @@ pub const API_PATHS: &[(&str, &str, bool)] = &[
     ("upstream", "tls_client_key", true),
     ("alert_destination", "token_file", true),
     ("alert_destination", "password_file", true),
+    ("alert_destination", "user_key_file", true),
     ("alert_destination", "tls_ca", false),
     ("list", "path", false),
 ];
@@ -1118,6 +1119,15 @@ client_secret = "cl13nt"
         assert!(holds_credential(
             "alert_destination",
             &json!({"type": "ntfy", "url": "https://ntfy.sh/t", "token_ref": "ntfy"})
+        ));
+        // REQ: OBS-010 (T24.43) - a pushover destination's user key is a credential too.
+        assert!(holds_credential(
+            "alert_destination",
+            &json!({"type": "pushover", "url": "", "user_key_ref": "po-user"})
+        ));
+        assert!(holds_credential(
+            "alert_destination",
+            &json!({"type": "pushover", "user_key_file": "/run/secrets/u"})
         ));
         assert!(!holds_credential(
             "upstream",

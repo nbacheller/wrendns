@@ -3254,14 +3254,14 @@ test('api_015 secret field is write-only', async () => {
   const field = page.getByTestId('secret-token_ref');
   await expect(field).toHaveAttribute('data-mode', 'unset');
   await expect(field.getByRole('button', { name: 'Save secret' })).toBeDisabled();
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('write-only-token-7731');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('write-only-token-7731');
   await noAnswerCarries('write-only-token-7731', async () => {
     await field.getByRole('button', { name: 'Save secret' }).click();
     await expect(field).toHaveAttribute('data-mode', 'set');
   });
   await expect(field.getByTestId('secret-status')).toContainText('alert.ui-stored.token');
   // Never pre-filled, and never in the page after the save.
-  await expect(field.getByLabel('Token (ntfy, Gotify)', { exact: true })).toHaveCount(0);
+  await expect(field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true })).toHaveCount(0);
   expect(await page.content()).not.toContain('write-only-token-7731');
   await page.getByRole('button', { name: 'Check' }).click();
   await page.getByRole('button', { name: 'Apply' }).click();
@@ -3274,7 +3274,7 @@ test('api_015 replace and clear', async () => {
   const field = page.getByTestId('secret-token_ref');
   await expect(field).toHaveAttribute('data-mode', 'set');
   await field.getByRole('button', { name: 'Replace' }).click();
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('replaced-token-9914');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('replaced-token-9914');
   await noAnswerCarries('replaced-token-9914', async () => {
     await field.getByRole('button', { name: 'Save new value' }).click();
     await expect(field).toHaveAttribute('data-mode', 'set');
@@ -3392,13 +3392,13 @@ test('api_015 a typed secret that is not saved holds Check and Apply', async () 
   await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
   await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfyAlt}/typed`);
   const field = page.getByTestId('secret-token_ref');
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-unsaved-4410');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('typed-unsaved-4410');
   await expect(page.getByRole('button', { name: 'Check' })).toBeDisabled();
   await expect(page.getByTestId('secret-unsaved')).toContainText('Save or discard the secret');
   await field.getByRole('button', { name: 'Discard' }).click();
   await expect(page.getByRole('button', { name: 'Check' })).toBeEnabled();
   await expect(page.getByTestId('secret-unsaved')).toHaveCount(0);
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-saved-4411');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('typed-saved-4411');
   await field.getByRole('button', { name: 'Save secret' }).click();
   await expect(field).toHaveAttribute('data-mode', 'set');
   await expect(field.getByTestId('secret-status')).toContainText('alert.ui-typed.token');
@@ -3478,7 +3478,7 @@ test('api_015 alert destination with a stored token delivers', async () => {
     await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
     await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfy}/topic`);
     const field = page.getByTestId('secret-token_ref');
-    await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('stored-token-5521');
+    await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('stored-token-5521');
     await field.getByRole('button', { name: 'Save secret' }).click();
     await expect(field).toHaveAttribute('data-mode', 'set');
     await page.getByRole('button', { name: 'Check' }).click();
@@ -3494,6 +3494,98 @@ test('api_015 alert destination with a stored token delivers', async () => {
     expect(del.status()).toBe(200);
   } finally {
     ntfy.close();
+  }
+});
+
+// REQ: OBS-010, API-015 (T24.43) - a Pushover destination: both secrets are stored write-only,
+// Send test posts the form to a fake Pushover (never api.pushover.net), and a refusal shows
+// Pushover's reason without the secrets.
+test('obs_010 pushover destination: two write-only secrets and Send test', async () => {
+  const { createServer } = await import('node:http');
+  const got: { type?: string; body: string }[] = [];
+  let refuse = false;
+  const fake = createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      got.push({ type: req.headers['content-type'], body: b });
+      res.setHeader('content-type', 'application/json');
+      if (refuse) {
+        res.statusCode = 400;
+        res.end('{"user":"invalid","errors":["user identifier is invalid"],"status":0,"request":"x"}');
+      } else {
+        res.end('{"status":1,"request":"x"}');
+      }
+    });
+  });
+  await new Promise<void>((r) => fake.listen(PORTS.ntfy, '127.0.0.1', () => r()));
+  const r = page.request;
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/#/alerts');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = page.getByTestId('editor-alert_destination');
+    await dests.getByRole('button', { name: 'Add destination' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-pushover');
+    await page.getByLabel('Type', { exact: true }).selectOption('pushover');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfy}/1/messages.json`);
+    const token = page.getByTestId('secret-token_ref');
+    const user = page.getByTestId('secret-user_key_ref');
+    await expect(user).toHaveAttribute('data-mode', 'unset');
+    await token.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('po-app-token-8812');
+    await noAnswerCarries('po-app-token-8812', async () => {
+      await token.getByRole('button', { name: 'Save secret' }).click();
+      await expect(token).toHaveAttribute('data-mode', 'set');
+    });
+    await user.getByLabel('User or group key (Pushover)', { exact: true }).fill('po-user-key-3377');
+    await noAnswerCarries('po-user-key-3377', async () => {
+      await user.getByRole('button', { name: 'Save secret' }).click();
+      await expect(user).toHaveAttribute('data-mode', 'set');
+    });
+    await expect(user.getByTestId('secret-status')).toContainText('alert.ui-pushover.user_key');
+    // Never shown again: not in a field, not in the page.
+    await expect(user.getByLabel('User or group key (Pushover)', { exact: true })).toHaveCount(0);
+    await expect(token.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true })).toHaveCount(0);
+    const html = await page.content();
+    expect(html).not.toContain('po-app-token-8812');
+    expect(html).not.toContain('po-user-key-3377');
+    await page.getByLabel('Device (Pushover)', { exact: true }).fill('phone');
+    await page.getByLabel('Sound (Pushover)', { exact: true }).fill('siren');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-pushover' });
+    await expect(row).toContainText('pushover:');
+    // The saved entry carries references only.
+    const entries = await (await r.get('/api/v1/config/entries?kind=alert_destination')).text();
+    expect(entries).toContain('alert.ui-pushover.user_key');
+    expect(entries).not.toContain('po-app-token-8812');
+    expect(entries).not.toContain('po-user-key-3377');
+
+    await row.getByRole('button', { name: 'Send test' }).click();
+    await expect(dests.getByTestId('row-action-result')).toContainText('sent');
+    expect(got).toHaveLength(1);
+    expect(got[0].type).toBe('application/x-www-form-urlencoded');
+    const f = new URLSearchParams(got[0].body);
+    expect([f.get('token'), f.get('user'), f.get('device'), f.get('sound'), f.get('priority')]).toEqual(['po-app-token-8812', 'po-user-key-3377', 'phone', 'siren', '0']);
+    expect(f.get('title')).toBe('Test: test');
+    expect(f.get('message')).toContain('This is a test alert');
+
+    // A refusal: Pushover's reason shows, the secrets do not.
+    refuse = true;
+    await row.getByRole('button', { name: 'Send test' }).click();
+    const result = dests.getByTestId('row-action-result');
+    await expect(result).toContainText('user identifier is invalid');
+    await expect(result).not.toContainText('po-app-token-8812');
+    await expect(result).not.toContainText('po-user-key-3377');
+
+    await row.getByRole('button', { name: 'Remove' }).click();
+    await expect(row).toHaveCount(0);
+  } finally {
+    fake.close();
+    const csrf = { 'x-csrf-token': await csrfOf(r) };
+    await r.delete('/api/v1/alerts/destinations/ui-pushover', { headers: csrf });
+    await r.delete('/api/v1/secrets/alert.ui-pushover.token', { headers: csrf });
+    await r.delete('/api/v1/secrets/alert.ui-pushover.user_key', { headers: csrf });
   }
 });
 

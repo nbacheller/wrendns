@@ -1,6 +1,6 @@
 //! Alerts (REQ: OBS-010, `spec/06` §8; T7.12): rules over the node's own read model (the same
 //! data the API serves, federated in a cluster), checked every `[alerts] interval_secs` on the
-//! primary (or a standalone node), sent to webhooks, ntfy, Gotify, or Slack-compatible hooks
+//! primary (or a standalone node), sent to webhooks, ntfy, Gotify, Pushover, or Slack-compatible hooks
 //! when a condition has held for the rule's `for_secs`, and again when it clears.
 //!
 //! Nothing here is on the DNS path: the task reads the API backend on a blocking thread and
@@ -254,6 +254,18 @@ impl Engine {
     }
 }
 
+/// REQ: OBS-010 (T24.43) — the UI's page for a device (`new_device` alerts): the node's public
+/// address and the Clients page of that address. None without a public address.
+fn new_device_link(when: AlertWhen, public_url: &str, client: &str) -> Option<String> {
+    let base = public_url.trim().trim_end_matches('/');
+    (when == AlertWhen::NewDevice && base.starts_with("http") && !client.is_empty()).then(|| {
+        format!(
+            "{base}/#/clients?device={}",
+            crate::kubernetes::encode(client)
+        )
+    })
+}
+
 /// REQ: OBS-010 (T9.6) — a test message to `d`, from `node`.
 pub(crate) async fn send_test(
     d: &AlertDestination,
@@ -271,7 +283,7 @@ pub(crate) async fn send_test(
     };
     let client =
         wrendns_filter::fetch::Client::new(Arc::new(wrendns_filter::fetch::SystemResolver), &[])?;
-    deliver(&client, d, "Test", &n, node, store).await
+    deliver(&client, d, "Test", &n, node, None, store).await
 }
 
 /// Records a delivery's outcome for the status API (the latest per destination).
@@ -776,9 +788,180 @@ fn render(
             "application/json",
             Vec::new(),
         ),
-        // Sent by `deliver_email`, not as HTTP.
-        AlertKind::Email => (text, "text/plain", Vec::new()),
+        // Sent by `deliver_email`, not as HTTP; REQ: OBS-010 (T24.43) — Pushover's form has two
+        // secrets, and `deliver_pushover` builds it.
+        AlertKind::Email | AlertKind::Pushover => (text, "text/plain", Vec::new()),
     }
+}
+
+/// REQ: OBS-010 (T24.43) — Pushover's own address, used when a destination's `url` is empty.
+const PUSHOVER_URL: &str = "https://api.pushover.net/1/messages.json";
+/// Pushover's limits, in characters: the title, the message, the supplementary URL.
+const PUSHOVER_TITLE_MAX: usize = 250;
+const PUSHOVER_MESSAGE_MAX: usize = 1024;
+const PUSHOVER_LINK_MAX: usize = 512;
+
+/// REQ: OBS-010 (T24.43) — `s` cut to at most `max` characters, ending in `…` when it was cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// REQ: OBS-010 (T24.43) — a Pushover priority: the destination's choice, else 0 for a firing
+/// alert and -1 (no sound) for a resolved one. 2 (emergency) needs a retry policy: never sent.
+fn pushover_priority(d: &AlertDestination, firing: bool) -> i8 {
+    let (set, default) = if firing {
+        (d.priority_firing, 0)
+    } else {
+        (d.priority_resolved, -1)
+    };
+    set.unwrap_or(default).clamp(-2, 1)
+}
+
+/// REQ: OBS-010 (T24.43) — the `application/x-www-form-urlencoded` body of a Pushover message:
+/// the rule and subject as the title, the summary with the node and the time as the message,
+/// the priority, the device and sound when set, a link when there is one, and the timestamp.
+/// Cut to Pushover's limits, so a long summary still goes out.
+#[allow(clippy::too_many_arguments)] // the form's own fields
+fn pushover_form(
+    d: &AlertDestination,
+    token: &str,
+    user: &str,
+    rule: &str,
+    n: &Notice,
+    node: &str,
+    link: Option<&str>,
+    now: u64,
+) -> String {
+    use crate::kubernetes::encode;
+    let title = if n.firing {
+        format!("{rule}: {}", n.subject)
+    } else {
+        format!("Resolved: {rule}: {}", n.subject)
+    };
+    let summary = if n.firing {
+        n.summary.clone()
+    } else {
+        format!("Cleared: {}", n.summary)
+    };
+    // The node and the time stay when the summary is cut.
+    let tail = format!("\nNode: {node}\nTime: {}", time_text(now));
+    let room = PUSHOVER_MESSAGE_MAX.saturating_sub(tail.chars().count());
+    let message = format!("{}{tail}", truncate_chars(&summary, room));
+    let mut f: Vec<(&str, String)> = vec![
+        ("token", token.to_owned()),
+        ("user", user.to_owned()),
+        ("title", truncate_chars(&title, PUSHOVER_TITLE_MAX)),
+        ("message", truncate_chars(&message, PUSHOVER_MESSAGE_MAX)),
+        ("priority", pushover_priority(d, n.firing).to_string()),
+        ("timestamp", now.to_string()),
+    ];
+    if let Some(dev) = d.device.as_ref().filter(|x| !x.trim().is_empty()) {
+        f.push(("device", dev.trim().to_owned()));
+    }
+    if let Some(snd) = d.sound.as_ref().filter(|x| !x.trim().is_empty()) {
+        f.push(("sound", snd.trim().to_owned()));
+    }
+    // A link Pushover would refuse for its length is left out, not cut into a broken address.
+    if let Some(l) = link.filter(|l| !l.is_empty() && l.chars().count() <= PUSHOVER_LINK_MAX) {
+        f.push(("url", l.to_owned()));
+    }
+    f.iter()
+        .map(|(k, v)| format!("{k}={}", encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// REQ: OBS-010 (T24.43) — what a Pushover answer means: `Ok` for 2xx with `status` 1, else the
+/// failure as one line: the HTTP status and Pushover's `errors` (`{"status":0,"errors":[...]}`),
+/// with `secrets` (the token, the user key) never shown, and cut so the deliveries list stays short.
+fn pushover_outcome(status: u16, body: &[u8], secrets: &[&str]) -> Result<(), String> {
+    let v: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let ok = (200..300).contains(&status)
+        && v.as_ref()
+            .is_none_or(|v| v.get("status").and_then(serde_json::Value::as_i64) != Some(0));
+    if ok {
+        return Ok(());
+    }
+    let errors: Vec<String> = v
+        .as_ref()
+        .and_then(|v| v.get("errors"))
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = format!("HTTP {status}");
+    if !errors.is_empty() {
+        out.push_str(": ");
+        out.push_str(&errors.join("; "));
+    }
+    for t in secrets.iter().filter(|t| !t.is_empty()) {
+        out = out.replace(t, wrendns_config::credentials::MARKER);
+    }
+    let out: String = out.chars().filter(|c| !c.is_control()).collect();
+    Err(truncate_chars(&out, 300))
+}
+
+/// REQ: OBS-010 (T24.43) — an alert as a Pushover message.
+async fn deliver_pushover(
+    client: &wrendns_filter::fetch::Client,
+    d: &AlertDestination,
+    rule: &str,
+    n: &Notice,
+    node: &str,
+    link: Option<&str>,
+    store: &crate::secrets::SecretStore,
+) -> Result<(), String> {
+    // REQ: OPS-014 (ADR-903 §2) — both secrets from their files or the store.
+    let token = crate::secrets::Credential::of(d.token_file.as_ref(), d.token_ref.as_ref())
+        .resolve(Some(store))?
+        .ok_or("pushover needs the application token (token_file or token_ref)")?
+        .value;
+    let user = crate::secrets::Credential::of(d.user_key_file.as_ref(), d.user_key_ref.as_ref())
+        .resolve(Some(store))?
+        .ok_or("pushover needs the user or group key (user_key_file or user_key_ref)")?
+        .value;
+    let (token, user) = (token.expose(), user.expose());
+    let url = if d.url.trim().is_empty() {
+        PUSHOVER_URL
+    } else {
+        d.url.as_str()
+    };
+    let form = pushover_form(
+        d,
+        token,
+        user,
+        rule,
+        n,
+        node,
+        link,
+        crate::pipeline::unix_now(),
+    );
+    let req = http::Request::post(url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("user-agent", "WrenDNS")
+        .body(form.into_bytes())
+        .map_err(|e| e.to_string())?;
+    let resp = tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024))
+        .await
+        .map_err(|_| "timed out".to_owned())?
+        .map_err(|e| {
+            // REQ: API-014 - an error that quotes the request never shows a secret.
+            let mut m = e.message;
+            for t in [token, user].iter().filter(|t| !t.is_empty()) {
+                m = m.replace(*t, wrendns_config::credentials::MARKER);
+            }
+            m
+        })?;
+    pushover_outcome(resp.status().as_u16(), resp.body(), &[token, user])
 }
 
 /// REQ: OBS-010 (T9.4) — an alert as an email.
@@ -856,10 +1039,14 @@ async fn deliver(
     rule: &str,
     n: &Notice,
     node: &str,
+    link: Option<&str>,
     store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     if d.kind == AlertKind::Email {
         return deliver_email(d, rule, n, node, store).await;
+    }
+    if d.kind == AlertKind::Pushover {
+        return deliver_pushover(client, d, rule, n, node, link, store).await;
     }
     // REQ: OPS-014 (ADR-903 §2) — the token from its file or the store.
     let token = crate::secrets::Credential::of(d.token_file.as_ref(), d.token_ref.as_ref())
@@ -1204,6 +1391,10 @@ pub(crate) async fn run(
                     else {
                         continue;
                     };
+                    // REQ: OBS-010 (T24.43) - a new device's message links to it in the UI,
+                    // when this node knows its address (`[auth.oidc] public_url`).
+                    let link =
+                        new_device_link(rule.when, cfg.auth.oidc.public_url.as_str(), &n.subject);
                     let (client, rname, n, node, src) = (
                         Arc::clone(&client),
                         rule.name.to_string(),
@@ -1212,7 +1403,16 @@ pub(crate) async fn run(
                         Arc::clone(&sources),
                     );
                     tokio::spawn(async move {
-                        let r = deliver(&client, &d, &rname, &n, &node, &src.secrets).await;
+                        let r = deliver(
+                            &client,
+                            &d,
+                            &rname,
+                            &n,
+                            &node,
+                            link.as_deref(),
+                            &src.secrets,
+                        )
+                        .await;
                         if let Err(e) = &r {
                             warn!(destination = %d.name, error = %e, "alert not delivered");
                         }
@@ -1739,6 +1939,12 @@ mod tests {
             password_file: None,
             password_ref: None,
             tls_ca: None,
+            user_key_file: None,
+            user_key_ref: None,
+            device: None,
+            priority_firing: None,
+            priority_resolved: None,
+            sound: None,
         };
         let n = Notice {
             rule: 0,
@@ -1764,6 +1970,358 @@ mod tests {
             "pi",
         );
         assert!(body.contains("Resolved: upstreams: quad9"), "{body}");
+    }
+
+    fn pushover(url: &str) -> AlertDestination {
+        toml::from_str(&format!(
+            "name = \"phone\"\ntype = \"pushover\"\nurl = \"{url}\"\n"
+        ))
+        .unwrap()
+    }
+
+    fn form_pairs(body: &str) -> HashMap<String, String> {
+        body.split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .map(|(k, v)| {
+                let mut out = Vec::new();
+                let b = v.as_bytes();
+                let mut i = 0;
+                while i < b.len() {
+                    if b[i] == b'%' {
+                        out.push(u8::from_str_radix(&v[i + 1..i + 3], 16).unwrap());
+                        i += 3;
+                    } else {
+                        out.push(b[i]);
+                        i += 1;
+                    }
+                }
+                (k.to_owned(), String::from_utf8(out).unwrap())
+            })
+            .collect()
+    }
+
+    /// REQ: OBS-010 (T24.43) - the form: the fields Pushover wants, encoded, with the node and
+    /// time in the message, the link only when known, and the device and sound only when set.
+    #[test]
+    fn obs_010_pushover_form_encoding() {
+        let mut d = pushover("https://api.pushover.net/1/messages.json");
+        let n = Notice {
+            rule: 0,
+            subject: "10.0.0.7".into(),
+            summary: "a new device started using DNS: tv & co (10.0.0.7)".into(),
+            firing: true,
+        };
+        let body = pushover_form(
+            &d,
+            "tok&1",
+            "usr key",
+            "new devices",
+            &n,
+            "node-a",
+            None,
+            1_700_000_000,
+        );
+        assert!(body.contains("token=tok%261&user=usr%20key&"), "{body}");
+        let f = form_pairs(&body);
+        assert_eq!(f["title"], "new devices: 10.0.0.7");
+        assert!(
+            f["message"].starts_with(
+                "a new device started using DNS: tv & co (10.0.0.7)\nNode: node-a\nTime: 2023-11-14 22:13:20 UTC"
+            ),
+            "{}",
+            f["message"]
+        );
+        assert_eq!(
+            (f["priority"].as_str(), f["timestamp"].as_str()),
+            ("0", "1700000000")
+        );
+        assert!(!f.contains_key("url") && !f.contains_key("device") && !f.contains_key("sound"));
+        d.device = wrendns_config::SafeString::new("phone").ok();
+        d.sound = wrendns_config::SafeString::new("siren").ok();
+        let body = pushover_form(
+            &d,
+            "t",
+            "u",
+            "r",
+            &n,
+            "pi",
+            Some("https://w.lan/#/clients?device=10.0.0.7"),
+            1,
+        );
+        let f = form_pairs(&body);
+        assert_eq!(
+            (f["device"].as_str(), f["sound"].as_str(), f["url"].as_str()),
+            ("phone", "siren", "https://w.lan/#/clients?device=10.0.0.7")
+        );
+        let r = pushover_form(
+            &d,
+            "t",
+            "u",
+            "r",
+            &Notice { firing: false, ..n },
+            "pi",
+            None,
+            1,
+        );
+        let f = form_pairs(&r);
+        assert_eq!(f["title"], "Resolved: r: 10.0.0.7");
+        assert!(f["message"].starts_with("Cleared: "), "{}", f["message"]);
+    }
+
+    /// REQ: OBS-010 (T24.43) - Pushover's limits: a title of 250, a message of 1024, a link of
+    /// 512 characters; a cut ends in an ellipsis and keeps the node and time.
+    #[test]
+    fn obs_010_pushover_truncation() {
+        assert_eq!(truncate_chars("abc", 3), "abc");
+        assert_eq!(truncate_chars("abcd", 3), "ab…");
+        assert_eq!(truncate_chars("ééééé", 4), "ééé…");
+        let d = pushover("https://api.pushover.net/1/messages.json");
+        let n = Notice {
+            rule: 0,
+            subject: "s".repeat(400),
+            summary: "x".repeat(5000),
+            firing: true,
+        };
+        let long_link = format!("https://w.lan/{}", "a".repeat(600));
+        let f = form_pairs(&pushover_form(
+            &d,
+            "t",
+            "u",
+            "rule",
+            &n,
+            "node-a",
+            Some(&long_link),
+            1,
+        ));
+        assert_eq!(f["title"].chars().count(), 250);
+        assert!(f["title"].ends_with('…'));
+        assert_eq!(f["message"].chars().count(), 1024);
+        assert!(
+            f["message"].contains("…\nNode: node-a\nTime: 1970-01-01 00:00:01 UTC"),
+            "{}",
+            f["message"]
+        );
+        assert!(
+            !f.contains_key("url"),
+            "a link over 512 characters is left out"
+        );
+    }
+
+    /// REQ: OBS-010 (T24.43) - firing 0 and resolved -1 by default, the destination's choice
+    /// within -2..=1, and never 2 (emergency).
+    #[test]
+    fn obs_010_pushover_priority_mapping() {
+        let mut d = pushover("https://api.pushover.net/1/messages.json");
+        assert_eq!(
+            (pushover_priority(&d, true), pushover_priority(&d, false)),
+            (0, -1)
+        );
+        d.priority_firing = Some(1);
+        d.priority_resolved = Some(-2);
+        assert_eq!(
+            (pushover_priority(&d, true), pushover_priority(&d, false)),
+            (1, -2)
+        );
+        d.priority_firing = Some(2);
+        assert_eq!(pushover_priority(&d, true), 1);
+    }
+
+    /// REQ: OBS-010 (T24.43) - a 4xx with `{"status":0,"errors":[...]}` is a failed delivery that
+    /// shows the errors, never the token or the key; a 2xx with status 1 is delivered.
+    #[test]
+    fn obs_010_pushover_error_parsing() {
+        assert_eq!(
+            pushover_outcome(200, br#"{"status":1,"request":"r"}"#, &["t"]),
+            Ok(())
+        );
+        assert_eq!(pushover_outcome(200, b"", &[]), Ok(()));
+        let e = pushover_outcome(
+            400,
+            br#"{"user":"invalid","errors":["user identifier is invalid","token SECRET-T is bad"],"status":0,"request":"r"}"#,
+            &["SECRET-T", "SECRET-U", ""],
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "HTTP 400: user identifier is invalid; token <redacted> is bad"
+        );
+        assert!(pushover_outcome(200, br#"{"status":0,"errors":["x"]}"#, &[]).is_err());
+        assert_eq!(
+            pushover_outcome(503, b"<html>", &[]).unwrap_err(),
+            "HTTP 503"
+        );
+        let long = format!(r#"{{"status":0,"errors":["{}"]}}"#, "e".repeat(900));
+        assert_eq!(
+            pushover_outcome(400, long.as_bytes(), &[])
+                .unwrap_err()
+                .chars()
+                .count(),
+            300
+        );
+    }
+
+    /// A fake Pushover: answers each request with the next `(status, body)` and keeps the
+    /// content types and request bodies it saw.
+    async fn fake_pushover(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/1/messages.json", l.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keep = Arc::clone(&seen);
+        tokio::spawn(async move {
+            for (status, reply) in answers {
+                let Ok((mut s, _)) = l.accept().await else {
+                    return;
+                };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let (head_end, len) = loop {
+                    let n = s.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break (0, 0);
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..i]).to_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|x| x.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        break (i + 4, len);
+                    }
+                };
+                while buf.len() < head_end + len {
+                    let n = s.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+                let ct = head
+                    .lines()
+                    .find_map(|x| x.strip_prefix("content-type:"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                let body = String::from_utf8_lossy(&buf[head_end..]).into_owned();
+                keep.lock().unwrap().push((ct, body));
+                let r = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                let _ = s.write_all(r.as_bytes()).await;
+                let _ = s.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    /// REQ: OBS-010 (T24.43) - against a local fake Pushover: a firing alert and a resolved one
+    /// are posted as a form with both secrets from their files, a 400 is a failed delivery that
+    /// shows Pushover's errors but no secret, and a destination missing a secret says which.
+    #[tokio::test]
+    async fn obs_010_pushover_delivery_against_a_fake_server() {
+        let (url, seen) = fake_pushover(vec![
+            (200, r#"{"status":1,"request":"a"}"#),
+            (200, r#"{"status":1,"request":"b"}"#),
+            (
+                400,
+                r#"{"user":"invalid","errors":["user identifier is invalid"],"status":0,"request":"c"}"#,
+            ),
+        ])
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let tf = dir.path().join("app-token");
+        let uf = dir.path().join("user-key");
+        std::fs::write(&tf, "APPTOKEN123\n").unwrap();
+        std::fs::write(&uf, "USERKEY456\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.node.data_dir = wrendns_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+        let store = crate::secrets::SecretStore::new(&cfg);
+        let mut d = pushover(&url);
+        d.token_file = wrendns_config::SafeString::new(tf.to_str().unwrap()).ok();
+        d.user_key_file = wrendns_config::SafeString::new(uf.to_str().unwrap()).ok();
+        let client = wrendns_filter::fetch::Client::new(
+            Arc::new(wrendns_filter::fetch::SystemResolver),
+            &[],
+        )
+        .unwrap();
+        let n = Notice {
+            rule: 0,
+            subject: "10.0.0.7".into(),
+            summary: "a new device started using DNS: 10.0.0.7".into(),
+            firing: true,
+        };
+        let link = new_device_link(AlertWhen::NewDevice, "https://w.lan/", "10.0.0.7");
+        assert_eq!(
+            link.as_deref(),
+            Some("https://w.lan/#/clients?device=10.0.0.7")
+        );
+        assert_eq!(new_device_link(AlertWhen::NewDevice, "", "10.0.0.7"), None);
+        assert_eq!(
+            new_device_link(AlertWhen::Anomaly, "https://w.lan", "10.0.0.7"),
+            None
+        );
+        deliver(
+            &client,
+            &d,
+            "new devices",
+            &n,
+            "node-a",
+            link.as_deref(),
+            &store,
+        )
+        .await
+        .unwrap();
+        let cleared = Notice {
+            firing: false,
+            ..n.clone()
+        };
+        deliver(&client, &d, "new devices", &cleared, "node-a", None, &store)
+            .await
+            .unwrap();
+        let e = deliver(&client, &d, "new devices", &n, "node-a", None, &store)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "HTTP 400: user identifier is invalid");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert!(
+            seen.iter()
+                .all(|(ct, _)| ct == "application/x-www-form-urlencoded")
+        );
+        let fire = form_pairs(&seen[0].1);
+        assert_eq!(
+            (
+                fire["token"].as_str(),
+                fire["user"].as_str(),
+                fire["priority"].as_str()
+            ),
+            ("APPTOKEN123", "USERKEY456", "0")
+        );
+        assert_eq!(fire["title"], "new devices: 10.0.0.7");
+        assert_eq!(fire["url"], "https://w.lan/#/clients?device=10.0.0.7");
+        assert!(
+            fire["message"].contains("\nNode: node-a\nTime: "),
+            "{}",
+            fire["message"]
+        );
+        let back = form_pairs(&seen[1].1);
+        assert_eq!(
+            (back["priority"].as_str(), back["title"].as_str()),
+            ("-1", "Resolved: new devices: 10.0.0.7")
+        );
+        assert!(!back.contains_key("url"));
+        // A secret that is missing is said, and nothing is sent.
+        d.user_key_file = None;
+        let e = deliver(&client, &d, "r", &n, "pi", None, &store)
+            .await
+            .unwrap_err();
+        assert!(e.contains("user or group key"), "{e}");
     }
 
     /// REQ: CLU-013 — `rollout_failed` goes out once per failed version; `cluster_pinned` fires

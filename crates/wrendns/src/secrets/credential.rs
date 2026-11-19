@@ -273,6 +273,12 @@ pub(crate) fn fields(
             "password",
             Credential::of(d.password_file.as_ref(), d.password_ref.as_ref()),
         );
+        add(
+            "alert_destination",
+            &d.name,
+            "user_key",
+            Credential::of(d.user_key_file.as_ref(), d.user_key_ref.as_ref()),
+        );
     }
     for p in &cfg.auth.oidc.provider {
         add(

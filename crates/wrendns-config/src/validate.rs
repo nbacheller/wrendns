@@ -856,6 +856,60 @@ fn sink_one(s: &crate::SinkConfig, p: &str, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: OBS-010 (T24.43, ADR-1045) — a `pushover` destination: an empty address is Pushover's
+/// own, a self-hosted proxy is https (http only to this machine, for tests), both secrets are
+/// set, and the priorities are within what is offered.
+fn pushover_destination(d: &crate::schema::AlertDestination, p: &str, r: &mut Report<'_>) {
+    let u = d.url.as_str();
+    if !u.is_empty() && !pushover_url_ok(u) {
+        r.err(
+            format!("{p}.url"),
+            "use an https:// URL (http:// only to 127.0.0.1, localhost or [::1])",
+        );
+    }
+    let has = |f: &Option<crate::SafeString>, rf: &Option<crate::SafeString>| {
+        f.as_ref().is_some_and(|x| !x.trim().is_empty())
+            || rf.as_ref().is_some_and(|x| !x.trim().is_empty())
+    };
+    if !has(&d.token_file, &d.token_ref) {
+        r.err(
+            format!("{p}.token_ref"),
+            "pushover needs the application token: token_file or token_ref",
+        );
+    }
+    if !has(&d.user_key_file, &d.user_key_ref) {
+        r.err(
+            format!("{p}.user_key_ref"),
+            "pushover needs the user or group key: user_key_file or user_key_ref",
+        );
+    }
+    for (field, v) in [
+        ("priority_firing", d.priority_firing),
+        ("priority_resolved", d.priority_resolved),
+    ] {
+        if v.is_some_and(|v| !(-2..=1).contains(&v)) {
+            r.err(
+                format!("{p}.{field}"),
+                "from -2 to 1 (2, emergency, is not offered)",
+            );
+        }
+    }
+}
+
+/// REQ: OBS-010 (T24.43) — a Pushover address: https, or http to this machine.
+fn pushover_url_ok(u: &str) -> bool {
+    if u.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = u.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    ["127.0.0.1", "localhost", "[::1]"]
+        .iter()
+        .any(|h| host == *h || host.strip_prefix(h).is_some_and(|r| r.starts_with(':')))
+}
+
 // REQ: OBS-010 (T7.12) — alerts: unique names, rules sent to destinations that exist,
 // http(s) URLs, a sane interval and threshold.
 fn alerts(cfg: &Config, r: &mut Report<'_>) {
@@ -900,6 +954,8 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
                     "a password is never sent unencrypted: use smtp:// or smtps://",
                 );
             }
+        } else if d.kind == crate::schema::AlertKind::Pushover {
+            pushover_destination(d, &p, r);
         } else if !(u.starts_with("https://") || u.starts_with("http://")) {
             r.err(format!("{p}.url"), "use an http:// or https:// URL");
         }

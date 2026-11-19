@@ -2100,3 +2100,79 @@ fn t24_27_binary_env_vars_are_not_reported_unknown() {
     assert!(unknown.is_empty(), "{unknown:?}");
     assert_eq!(loaded.config.node.drain_delay_secs, 7);
 }
+
+/// REQ: OBS-010 (T24.43) - a `pushover` destination needs both secrets (a file or a stored
+/// secret each), an https address (http only to this machine) or none, and a priority from -2 to 1.
+#[test]
+fn obs_010_pushover_destination_is_validated() {
+    let load = |toml: &str| {
+        wrendns_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let dest = |extra: &str| {
+        format!("[[alerts.destination]]\nname = \"push\"\ntype = \"pushover\"\n{extra}\n")
+    };
+    // No url at all: Pushover's own. Both secrets by reference.
+    let cfg = load(&dest("token_ref = \"pushover-app\"\nuser_key_ref = \"pushover-user\"\ndevice = \"phone\"\nsound = \"siren\"\npriority_firing = 1\npriority_resolved = -2"))
+        .unwrap()
+        .config;
+    let d = &cfg.alerts.destination[0];
+    assert_eq!(d.url.as_str(), "");
+    assert_eq!(
+        (d.priority_firing, d.priority_resolved),
+        (Some(1), Some(-2))
+    );
+    // Files, and loopback http for a test server.
+    for url in [
+        "https://push.example/1/messages.json",
+        "http://127.0.0.1:9/m",
+        "http://localhost/m",
+        "http://[::1]:9/m",
+    ] {
+        let t = dest(&format!(
+            "url = \"{url}\"\ntoken_file = \"/run/secrets/a\"\nuser_key_file = \"/run/secrets/u\""
+        ));
+        assert!(load(&t).is_ok(), "{url}");
+    }
+    let both = "token_ref = \"a\"\nuser_key_ref = \"u\"\n";
+    for (toml, why) in [
+        (dest("user_key_ref = \"u\""), "application token"),
+        (dest("token_ref = \"a\""), "user or group key"),
+        (
+            dest(&format!("url = \"http://push.example/m\"\n{both}")),
+            "https://",
+        ),
+        (
+            dest(&format!(
+                "url = \"http://127.0.0.1.evil.example/m\"\n{both}"
+            )),
+            "https://",
+        ),
+        (dest(&format!("url = \"ftp://x\"\n{both}")), "https://"),
+        (
+            dest(&format!("priority_firing = 2\n{both}")),
+            "from -2 to 1",
+        ),
+        (
+            dest(&format!("priority_resolved = -3\n{both}")),
+            "from -2 to 1",
+        ),
+        (
+            dest("token_ref = \"a\"\ntoken_file = \"/x\"\nuser_key_ref = \"u\""),
+            "not more",
+        ),
+        (
+            dest("token_ref = \"a\"\nuser_key_ref = \"u\"\nuser_key_file = \"/x\""),
+            "not more",
+        ),
+        (
+            dest("token_ref = \"a\"\nuser_key_ref = \"Bad Name\""),
+            "stored secret's name",
+        ),
+    ] {
+        let err = format!("{:?}", load(&toml).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}

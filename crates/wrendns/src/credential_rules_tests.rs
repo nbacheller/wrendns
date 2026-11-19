@@ -728,3 +728,86 @@ async fn api_014_admin_redirect_audited_and_alerted() {
     );
     assert_eq!(engine.step(now + 30, &rules, &[seen]), Vec::new());
 }
+
+/// REQ: API-014, OBS-010 (T24.43) - a pushover destination holds two credentials (the token and
+/// the user key): an operator cannot send them to another address (`url` change is 403, the
+/// `credential_redirected` rule) nor swap the user key's file; an admin can.
+#[tokio::test]
+async fn api_014_pushover_destination_credentials_are_guarded() {
+    let (h, dir, token_file) = with_secret_dir();
+    let op = token(&h, "olive", auth::Role::Operator, None);
+    std::fs::write(dir.path().join("user-key"), "uk_planted\n").unwrap();
+    let user_file = format!("{}/user-key", dir.path().display());
+    let put = json!({"type": "pushover", "url": "https://push.example/1/messages.json", "token_file": token_file, "user_key_file": user_file});
+    // A new destination with a key file: an admin's.
+    let (s, v) = call(
+        &h,
+        &op,
+        "PUT",
+        "/api/v1/alerts/destinations/push",
+        Some(&put),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("user_key_file"),
+        "{v}"
+    );
+    let (s, v) = call(
+        &h,
+        &h.bearer,
+        "PUT",
+        "/api/v1/alerts/destinations/push",
+        Some(&put),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The address.
+    let mut moved = put.clone();
+    moved["url"] = json!("https://push.attacker.example/1/messages.json");
+    let (s, v) = call(
+        &h,
+        &op,
+        "PUT",
+        "/api/v1/alerts/destinations/push",
+        Some(&moved),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("url"), "{v}");
+    // The key file.
+    std::fs::write(dir.path().join("other-key"), "x").unwrap();
+    let mut other = put.clone();
+    other["user_key_file"] = json!(format!("{}/other-key", dir.path().display()));
+    let (s, _) = call(
+        &h,
+        &op,
+        "PUT",
+        "/api/v1/alerts/destinations/push",
+        Some(&other),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Dropping the address (Pushover's own) is a change of where the credentials go too.
+    let mut dropped = put.clone();
+    dropped["url"] = json!("");
+    let (s, _) = call(
+        &h,
+        &op,
+        "PUT",
+        "/api/v1/alerts/destinations/push",
+        Some(&dropped),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // An admin may.
+    let (s, v) = call(
+        &h,
+        &h.bearer,
+        "PUT",
+        "/api/v1/alerts/destinations/push",
+        Some(&moved),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
