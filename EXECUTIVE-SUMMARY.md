@@ -70,7 +70,7 @@ Each is backed by a design mechanism *and* a measurable release gate (`spec/00 Â
 | Custom storage and index formats contain bugs | Versioned formats, fuzzing, golden tests, Parquet export as an escape hatch |
 | HA correctness | Deterministic multi-node simulation and a chaos suite; epoch fencing tested before release |
 | Benchmark claims challenged | Only harness-produced, reproducible numbers are published, with hardware and versions |
-| A young project with a small team | Spec-driven repo, ADRs, requirement-ID traceability, permissive license |
+| A young project with a small team | Spec-driven repo, ADRs, requirement-ID traceability, an open-source licence (AGPL-3.0-or-later, with a commercial licence for those who need one) |
 
 ## Bottom line
 For a homelab running Kubernetes *and* a Raspberry Pi, WrenDNS aims to give you a Pi-class footprint, modern encrypted transports, one cluster with one management plane across both, and observability closer to an APM tool than to a hit counter. Every point here is a design commitment tied to a measurable gate.
