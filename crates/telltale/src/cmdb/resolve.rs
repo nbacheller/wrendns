@@ -231,14 +231,17 @@ pub(crate) fn resolve(evs: &[Ev], nic_pins: &HashMap<String, String>) -> Resolut
     }
     let mut skipped: Vec<(i64, Vec<usize>)> = Vec::new();
     for ev in &order {
+        // A pinned interface is where the owner put it: its records give the MAC and nothing
+        // that could pull other records into its device, or it into another.
+        let pinned = ev.mac.as_ref().is_some_and(|m| nic_pins.contains_key(m));
         let mut claims: Vec<String> = Vec::new();
         if let Some(m) = &ev.mac {
             claims.push(format!("m:{m}"));
         }
-        if let Some(s) = &ev.serial {
+        if !pinned && let Some(s) = &ev.serial {
             claims.push(format!("s:{s}"));
         }
-        if let Some(k) = &ev.devkey {
+        if !pinned && let Some(k) = &ev.devkey {
             claims.push(format!("k:{k}"));
         }
         if claims.is_empty() {
@@ -253,11 +256,11 @@ pub(crate) fn resolve(evs: &[Ev], nic_pins: &HashMap<String, String>) -> Resolut
         let new_serial = ev
             .serial
             .as_ref()
-            .filter(|s| !ids.contains_key(&format!("s:{s}")));
+            .filter(|s| !pinned && !ids.contains_key(&format!("s:{s}")));
         let new_key = ev
             .devkey
             .as_ref()
-            .filter(|k| !ids.contains_key(&format!("k:{k}")));
+            .filter(|k| !pinned && !ids.contains_key(&format!("k:{k}")));
         if !compatible(&uf, &roots, new_serial, new_key) {
             // The record's MAC is still an interface of its own.
             if let Some(m) = &ev.mac {
@@ -276,12 +279,12 @@ pub(crate) fn resolve(evs: &[Ev], nic_pins: &HashMap<String, String>) -> Resolut
         }
         let root = uf.find(root);
         if let Some(i) = uf.info.get_mut(root) {
-            if let Some(s) = &ev.serial
+            if let Some(s) = ev.serial.as_ref().filter(|_| !pinned)
                 && i.serial.is_none()
             {
                 i.serial = Some(s.clone());
             }
-            if let Some(k) = &ev.devkey {
+            if let Some(k) = ev.devkey.as_ref().filter(|_| !pinned) {
                 i.scopes
                     .entry(devkey_scope(k).to_owned())
                     .or_insert_with(|| k.clone());
@@ -471,7 +474,7 @@ mod tests {
     }
 
     /// REQ: DSC-903 - a pin keeps a MAC with its device whatever a serial says: the pinned group
-    /// is not joined to an unpinned one by evidence, it is proposed.
+    /// is not joined to an unpinned one by evidence, and its records claim nothing for others to join.
     #[test]
     fn dsc_903_a_pin_is_not_overridden_by_a_serial() {
         let evs = vec![
@@ -485,7 +488,8 @@ mod tests {
         assert_eq!(r.groups.len(), 2, "the pinned interface stays apart");
         assert!(r.groups.iter().any(|g| g.anchors.contains("ci_x")));
         assert_eq!(r.rule_of[&2], Rule::Manual);
-        assert_eq!(r.disagreements.len(), 1, "a proposal, not a merge");
+        assert!(r.disagreements.is_empty(), "the owner decided: nothing is asked again");
+        assert!(r.groups.iter().any(|g| g.serials.contains("sn-0001")), "the other keeps the serial");
     }
 
     /// REQ: DSC-903 (`dsc_903_any_order_gives_the_same_links`, the pure half) - the groups do not

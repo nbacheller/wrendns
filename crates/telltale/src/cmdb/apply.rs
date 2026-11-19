@@ -114,8 +114,14 @@ pub(crate) struct Cx<'a> {
     pub(crate) proposals: u64,
     /// Proposals raised in this pass; open ones about the same CIs that are not here have ended.
     pub(crate) raised: HashSet<(String, String, String)>,
-    /// Device CIs this pass resolved.
+    /// Device CIs this pass touched (resolved, or got a keyless record).
     pub(crate) devices: BTreeSet<String>,
+    /// Device CIs whose whole component this pass resolved: only these have their open proposals
+    /// compared with what the pass raised.
+    pub(crate) resolved: BTreeSet<String>,
+    /// Devices a resolved group named as a candidate (they may have been merged, split or emptied):
+    /// the keyless records on them are looked at again.
+    pub(crate) candidates: BTreeSet<String>,
     /// CIs whose last-seen the engine should refresh.
     pub(crate) pins: Option<Vec<Pin>>,
 }
@@ -132,6 +138,8 @@ impl<'a> Cx<'a> {
             proposals: 0,
             raised: HashSet::new(),
             devices: BTreeSet::new(),
+            resolved: BTreeSet::new(),
+            candidates: BTreeSet::new(),
             pins: None,
         })
     }
@@ -389,6 +397,8 @@ pub(crate) fn merge_ci(cx: &mut Cx<'_>, loser: &str, survivor: &str) -> Result<(
 struct Plan {
     nics: Vec<(String, Option<String>)>,
     cands: BTreeSet<String>,
+    /// The candidates found through a serial or a device key (not through an interface's parent).
+    keyed: BTreeSet<String>,
     forced: Option<String>,
 }
 
@@ -455,6 +465,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             nics.push((mac.clone(), ci));
         }
         let mut cands: BTreeSet<String> = BTreeSet::new();
+        let mut keyed: BTreeSet<String> = BTreeSet::new();
         let mut forced = None;
         for a in &g.anchors {
             if let Some(id) = cx.ops.resolve_id(a, now)?
@@ -476,6 +487,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
         for s in &g.serials {
             for ci in cx.ops.key_find("serial", s)? {
                 if live_device(cx.ops, &ci)?.is_some() {
+                    keyed.insert(ci.clone());
                     cands.insert(ci);
                 }
             }
@@ -483,13 +495,16 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
         for k in &g.devkeys {
             for ci in cx.ops.key_find("devkey", k)? {
                 if live_device(cx.ops, &ci)?.is_some() {
+                    keyed.insert(ci.clone());
                     cands.insert(ci);
                 }
             }
         }
+        cx.candidates.extend(cands.iter().cloned());
         plans.push(Plan {
             nics,
             cands,
+            keyed,
             forced,
         });
     }
@@ -514,6 +529,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             ))
     });
     let mut claimed: HashSet<String> = HashSet::new();
+    let mut claimed_forced: HashSet<String> = HashSet::new();
     let mut survivors: HashMap<usize, Option<String>> = HashMap::new();
     for gi in order {
         let (Some(plan), Some(group)) = (plans.get(gi), res.groups.get(gi)) else {
@@ -531,9 +547,11 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
         } else {
             let mut avail: Vec<CiRow> = Vec::new();
             for c in &plan.cands {
-                if !claimed.contains(c)
-                    && let Some(row) = cx.ops.ci_get(c)?
-                {
+                // A device the owner pinned interfaces to may still take an interface that a
+                // serial or a key points at (a new interface of that device).
+                let open = !claimed.contains(c)
+                    || (claimed_forced.contains(c) && plan.keyed.contains(c));
+                if open && let Some(row) = cx.ops.ci_get(c)? {
                     avail.push(row);
                 }
             }
@@ -574,6 +592,9 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             }
         };
         claimed.insert(survivor.clone());
+        if plan.forced.is_some() {
+            claimed_forced.insert(survivor.clone());
+        }
         // Candidates only this group wants are the same device now: merge them in.
         for c in &plan.cands {
             if *c != survivor && !claimed.contains(c) && want.get(c).copied() == Some(1) {
@@ -615,6 +636,7 @@ fn apply_groups(cx: &mut Cx<'_>, res: &Resolution, comp: &Component) -> Result<(
             }
         }
         cx.devices.insert(survivor.clone());
+        cx.resolved.insert(survivor.clone());
         survivors.insert(gi, Some(survivor));
     }
     // The links of every record of the component.
@@ -1088,8 +1110,27 @@ pub(crate) fn resolve_seeds(cx: &mut Cx<'_>, seeds: &Seeds) -> Result<()> {
     cx.pins = None;
     resolve_devices(cx, seeds)?;
     apply_natural(cx, &seeds.natural)?;
-    // Keyless records: those that changed, and those that hold an address a changed record holds.
+    // Keyless records: those that changed, those that hold an address a changed record holds, and
+    // those on a device whose interfaces just moved (a device may have been split or folded).
     let mut keyless: BTreeSet<i64> = seeds.keyless.clone();
+    let moved: Vec<String> = cx
+        .candidates
+        .iter()
+        .chain(cx.resolved.iter())
+        .cloned()
+        .collect();
+    for d in &moved {
+        for r in cx.ops.records_of_ci(d)? {
+            if r.ty == "device"
+                && r.mac.is_none()
+                && r.serial.is_none()
+                && r.devkey.is_none()
+                && r.dci.as_deref() == Some(d.as_str())
+            {
+                keyless.insert(r.rid);
+            }
+        }
+    }
     let ips: Vec<String> = seeds.addrs.iter().cloned().collect();
     for r in cx.ops.keyless_by_addr(&ips)? {
         keyless.insert(r.rid);
@@ -1109,7 +1150,7 @@ pub(crate) fn resolve_seeds(cx: &mut Cx<'_>, seeds: &Seeds) -> Result<()> {
     }
     apply_ports(cx, &owners)?;
     // Proposals about the devices resolved that nothing raised again have ended.
-    let dev: Vec<String> = cx.devices.iter().cloned().collect();
+    let dev: Vec<String> = cx.resolved.iter().cloned().collect();
     cx.ops.proposals_prune(&dev, &cx.raised)?;
     Ok(())
 }

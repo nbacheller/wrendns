@@ -1102,6 +1102,30 @@ impl Ops<'_> {
             .optional()?)
     }
 
+    /// How many records a CI holds at its own level: an interface holds the records of its MAC, a
+    /// device the records linked to it that name no interface (the 8-per-CI cap counts these).
+    pub fn record_count_at_level(&self, ci: &str) -> Result<i64> {
+        Ok(self.c.query_row(
+            "SELECT COUNT(*) FROM record WHERE ici = ?1 OR (dci = ?1 AND ici IS NULL)",
+            [ci],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The oldest `absent` record a CI holds at its own level.
+    pub fn oldest_absent_at_level(&self, ci: &str) -> Result<Option<i64>> {
+        Ok(self
+            .c
+            .query_row(
+                "SELECT r.rid FROM record r LEFT JOIN seen s ON s.rid = r.rid
+                 WHERE (r.ici = ?1 OR (r.dci = ?1 AND r.ici IS NULL)) AND r.state = 'absent'
+                 ORDER BY COALESCE(s.last_seen, r.last_changed), r.rid LIMIT 1",
+                [ci],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// How many records a CI holds.
     pub fn record_count_of_ci(&self, ci: &str) -> Result<i64> {
         Ok(self.c.query_row(

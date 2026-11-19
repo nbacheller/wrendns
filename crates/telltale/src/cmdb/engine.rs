@@ -353,24 +353,30 @@ impl Engine {
                 ops.record_state(*rid, "absent")?;
             }
             resolve_seeds(&mut cx, &seeds)?;
-            // At most 8 records per CI: the oldest `absent` goes, else the new one is dropped.
-            let touched: Vec<String> = cx.devices.iter().cloned().collect();
-            for ci in &touched {
-                while ops.record_count_of_ci(ci)? > MAX_RECORDS_PER_CI {
-                    if let Some(rid) = ops.oldest_absent_of_ci(ci)? {
+            // At most 8 records per CI, counted at the CI's own level: the oldest `absent` goes,
+            // else the newest written one is dropped and counted.
+            let mut levels: Vec<String> = Vec::new();
+            for (_, rid, _, _) in &written {
+                if let Some(r) = ops.record_by_id(*rid)?
+                    && let Some(c) = r.ici.or(r.dci)
+                    && !levels.contains(&c)
+                {
+                    levels.push(c);
+                }
+            }
+            for ci in &levels {
+                while ops.record_count_at_level(ci)? > MAX_RECORDS_PER_CI {
+                    if let Some(rid) = ops.oldest_absent_at_level(ci)? {
                         ops.record_delete(rid)?;
                         deleted.push(rid);
                         continue;
                     }
-                    let newest = written
-                        .iter()
-                        .rev()
-                        .find_map(|(_, rid, _, _)| {
-                            ops.record_by_id(*rid)
-                                .ok()
-                                .flatten()
-                                .filter(|r| r.dci.as_deref() == Some(ci.as_str()))
-                        });
+                    let newest = written.iter().rev().find_map(|(_, rid, _, _)| {
+                        ops.record_by_id(*rid).ok().flatten().filter(|r| {
+                            r.ici.as_deref() == Some(ci.as_str())
+                                || (r.ici.is_none() && r.dci.as_deref() == Some(ci.as_str()))
+                        })
+                    });
                     match newest {
                         Some(r) => {
                             ops.record_delete(r.rid)?;

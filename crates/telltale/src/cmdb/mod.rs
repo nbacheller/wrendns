@@ -9,7 +9,12 @@
 
 pub(crate) mod apply;
 pub(crate) mod engine;
+pub(crate) mod manual;
 pub(crate) mod model;
 pub(crate) mod resolve;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_manual;
+#[cfg(test)]
+mod tests_property;
