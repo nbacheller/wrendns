@@ -5448,7 +5448,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** shared bugs are no longer reported upstream by comment unless the owner asks; the "Upstream watch" issue reports candidates for porting instead of a sync; the README's fork box says the project is independent.
 
-## ADR-1027 — Every full member is shown for each stored secret, the same on every node; a member without a secret is a warning and a degraded reason, never a DNS fault (Proposed 2026-11-19)
+## ADR-1027 — Every full member is shown for each stored secret, the same on every node; a member without a secret is a warning and a degraded reason, never a DNS fault (Accepted 2026-11-19)
 
 **Context:** The owner's concern on 2026-11-19: "a single node containing a key/secret defeats the point of the cluster". Secrets do replicate (ADR-903, ADR-917; on the owner's cluster each node reads the UniFi secret), but `GET /api/v1/secrets` listed only the members a node knew had applied it: the primary listed itself, each replica listed the primary and itself. It looked as if one node held the key.
 
