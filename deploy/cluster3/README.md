@@ -59,6 +59,34 @@ so a check that pauses the primary for longer than its lease can promote a repli
 | **j.** upgrade from an older version (T24.40) | every node runs `OLD_IMAGE` (default `wrendns:lapse-base`, a build before ADR-1016) and takes entries through the API, fails over once, is upgraded, and after two more failovers the new primary dry-runs, edits and deletes the inherited entries: the others stay served and the edit and the delete stick. Skipped when `OLD_IMAGE` isn't there (`REQUIRE_UPGRADE=1` makes that a failure); `ONLY=upgrade` runs the bring-up, (a) and (j) alone. It runs after (k) | CLU-015 |
 | **k.** replicas stay linked (T24.38) | after a rolling restart in the owner's order (replicas, then the primary), every node reports `reachableVoters` = `voters` at every sample for 1 minute (`J_WATCH_S` changes it; the whole run takes about 7 minutes at the default) with no `leaving this node` log lines, and no `unstableVoters`; then the primary is killed: a survivor is elected within the lease time and neither survivor moves its link after it | CLU-001, CLU-005 |
 
+### Check l: a rolling upgrade across the rename (T33.2)
+
+<!-- rebrand:keep-start -->
+Check **l** moves a running cluster from an image built before the rename to the renamed one, the
+way an owner would upgrade: every node on the old image first, then each node on the new one,
+replicas first and the primary last (it runs after **j**). Through the whole roll a monitor asks every
+node's DNS every third of a second or so, and at least two of the three nodes must answer at every sample.
+It also checks what must survive the rename: a session cookie made by the old node (`telltale_session`)
+still signs in on the new one with no new sign-in, an API token made on the old primary still works,
+the cluster is whole after every step (a node's certificate carries the cluster name of its version,
+and each version accepts the other's), the record and the list entry made on the old nodes are
+served by all three, a write on the new primary reaches the others, and a new node exports both
+`wrendns_*` and `telltale_*` metrics.
+
+The old image is not built by the run (it is another commit). Build it once from the commit before the
+rename and tag it `telltale:pre-rename` (`PRE_RENAME_IMAGE` names another):
+
+```sh
+git archive <commit before the rename> | tar -x -C /tmp/pre-rename
+docker build -t telltale:pre-rename --build-arg PROFILE=bench-fast --build-arg CARGO_FEATURES=e2e   --build-arg WRENDNS_BUILD_CHANNEL=dev /tmp/pre-rename
+ONLY=prerename deploy/cluster3/e2e.sh        # the bring-up, (a) and (l) alone; REQUIRE_PRERENAME=1 fails when the image is missing
+```
+
+`compose-prerename.yaml` is the overlay a node on the old image needs: its command is `telltale`, it
+keeps its data in `/var/lib/telltale` (the same volume the new image mounts at `/var/lib/wrendns`),
+and its health command differs. `e2e.sh` adds it by itself for any image whose entrypoint is `telltale`.
+<!-- rebrand:keep-end -->
+
 Two things the owner's wording named differently, and how the test handles them:
 
 - Check **f** asks for the clients through `/api/v1/clients`. That endpoint lists the devices you

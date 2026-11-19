@@ -1,0 +1,28 @@
+# Overlay for a node on an image from before the rename (spec/10 T33.2, ADR-1028; e2e.sh checks j
+# and l): its command is `telltale`, it keeps its data in /var/lib/telltale, and the health command
+# of the new image doesn't exist in it. The configuration is mounted at /etc/wrendns/wrendns.toml
+# and passed with `-c`, which the old binary takes from any path. The data volume is the same one
+# the renamed image mounts at /var/lib/wrendns, so a node moved from the old image to the new one
+# keeps its cluster identity, its certificates and its database.
+#
+# Used as a second -f next to compose.yaml, only for images whose entrypoint is `telltale`.
+x-old-health: &old_health
+  test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+  interval: 5s
+  timeout: 5s
+  retries: 30
+  start_period: 10s
+
+services:
+  primary:
+    healthcheck: *old_health
+    volumes:
+      - primary-data:/var/lib/telltale
+  replica-a:
+    healthcheck: *old_health
+    volumes:
+      - replica-a-data:/var/lib/telltale
+  replica-b:
+    healthcheck: *old_health
+    volumes:
+      - replica-b-data:/var/lib/telltale
