@@ -717,7 +717,7 @@ test('obs_901 the node\'s own stream and snapshot draw the map', async ({ page }
   expect(problems).toEqual([]);
 });
 
-test('obs_901 the map chunk is at most 30 KiB and dist at most 400 KiB gzipped', () => {
+test('obs_901 the map chunk is at most 30 KiB and dist at most 512 KiB gzipped', () => {
   const dist = resolve(process.cwd(), 'dist');
   const files: { rel: string; size: number }[] = [];
   const walk = (d: string) => {
@@ -735,7 +735,7 @@ test('obs_901 the map chunk is at most 30 KiB and dist at most 400 KiB gzipped',
   const total = files.reduce((s, f) => s + f.size, 0);
   console.log(`map chunk ${(chunkBytes / 1024).toFixed(1)} KiB gzipped, dist total ${(total / 1024).toFixed(1)} KiB gzipped`);
   expect(chunkBytes).toBeLessThanOrEqual(30 * 1024);
-  expect(total).toBeLessThanOrEqual(400 * 1024);
+  expect(total).toBeLessThanOrEqual(512 * 1024); // ADR-1020
   // The main bundle doesn't carry the page: no layout code in it.
   const main = files.find((f) => /^assets\/index-.*\.js\.gz$/.test(f.rel));
   expect(main).toBeTruthy();
