@@ -1966,6 +1966,59 @@ test('dns_006 cache page', async () => {
   await expect(page.getByTestId('updates')).toContainText('Newer than the published');
 });
 
+// REQ: CLU-005 (T24.38, ADR-1018) — a voter reached only some of the time is a warning on the
+// Failover line (named by site, with its drops) and a failing "voter links" check with its fix;
+// a steady cluster shows neither. The help topic is on the Failover label.
+test('clu_005 a voter whose link comes and goes is a warning on the Cluster page', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.8.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 1, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 5,
+    cacheHitPercent: 80, querySharePercent: 10, ...o,
+  });
+  const view = (flaky: boolean) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-a', newestConfigSeq: 9, healthy: !flaky,
+    checks: [
+      { id: 'peers_up', ok: true, summary: 'All 3 nodes are up' },
+      flaky
+        ? { id: 'voter_links', ok: false, summary: "A voter's link comes and goes: id-b (dropped 5 times in 10 min)", fix: 'Check the network and cluster port between the nodes.' }
+        : { id: 'voter_links', ok: true, summary: "Every voter's link is steady" },
+    ],
+    events: [], conflicts: [], authority: 'primary',
+    failover: {
+      mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: false, votedEpoch: 1,
+      unstableVoters: flaky ? [{ nodeId: 'id-b', drops: 5, windowSeconds: 600, lastDropSecondsAgo: 40 }] : [],
+    },
+    nodes: [
+      node({ nodeId: 'id-a', site: 'replica-a', thisNode: true, link: 'self', rttMs: null }),
+      node({ nodeId: 'id-p', site: 'primary', role: 'primary', link: 'outbound' }),
+      node({ nodeId: 'id-b', site: 'replica-b' }),
+    ],
+  });
+  let current = view(true);
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  try {
+    await page.goto('/#/cluster');
+    const warn = page.getByTestId('cluster-unstable-voters');
+    await expect(warn).toContainText('replica-b');
+    await expect(warn).toContainText('dropped 5 times in the last 10 minutes');
+    await expect(page.getByRole('button', { name: 'Help: Every voter reachable, all the time' })).toBeVisible();
+    // The check, with its fix, on the Health tab.
+    await page.goto('/#/cluster?tab=health');
+    const check = page.getByTestId('cluster-check').filter({ hasText: 'comes and goes' });
+    await expect(check).toContainText('Check the network and cluster port');
+    // Steady again: no warning.
+    current = view(false);
+    await page.goto('/#/cluster');
+    await expect(page.getByTestId('cluster-unstable-voters')).toHaveCount(0, { timeout: 12_000 });
+    await expect(page.getByTestId('cluster-failover')).toContainText('automatic: 3 of 3 voters reachable');
+  } finally {
+    for (const r of ['**/api/v1/cluster', '**/api/v1/cluster/rollout', '**/api/v1/cluster/versions']) await page.unroute(r);
+  }
+});
+
 // REQ: CLU-005 (ADR-960, T21.7) — turning automatic failover on under a running cluster needs no
 // restart: the Cluster page, which polls every 5 s, goes from "manual" to "automatic" with the
 // lease the primary now holds, and the other replica (no stream to this node in manual mode) is

@@ -695,6 +695,16 @@
       "docs": "replicated-secrets"
     },
     {
+      "id": "voter-links",
+      "title": "Every voter reachable, all the time",
+      "term": "Voter link",
+      "summary": "Automatic failover needs each voter to reach the others to vote and to renew the primary's lease. The Cluster page counts the voters this node has a link to, and warns when a voter's link has dropped three or more times in ten minutes: it is up now but cannot be counted on.",
+      "when": "The Failover line shows a warning under it, or the Health tab's Voter links check fails, often after a restart or an upgrade, or when a switch or Wi-Fi bridge between the nodes is flaky.",
+      "example": "node-b: its link dropped 5 times in the last 10 minutes (last 40 s ago). The log's \"the main link ended\" lines give how long each link lasted and why it ended.",
+      "caution": "A single restart is one drop and is not a warning. DNS keeps answering whatever the voters do; what a flaky voter risks is a lost election or a paused configuration change, not answers.",
+      "docs": "clusters"
+    },
+    {
       "id": "cluster-witness",
       "title": "A witness only votes",
       "term": "Witness",
