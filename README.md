@@ -366,7 +366,7 @@ See [Monitoring](docs/running.md#monitoring).
 - The image is one static binary built from scratch, run as a non-root user with a read-only root filesystem and no capabilities; the systemd unit is sandboxed with only `CAP_NET_BIND_SERVICE`.
 - Releases are signed (minisign, ADR-1034), images are signed with cosign, each binary carries its dependency list and an SBOM, and two builds of the same commit are identical.
 - `cargo deny` (licences and advisories, no ignored advisory) and CodeQL run in CI; the DNS parsers are fuzzed. The only `unsafe` code is in `wrendns-net`, each use justified.
-- Credentials are write-only and never shown again; a node sends nothing to MySummitKeep LLC, and its only outbound contact of its own is the signed release check, which can be turned off.
+- Credentials are write-only and never shown again; a node sends nothing to MySummitKeep, LLC, and its only outbound contact of its own is the signed release check, which can be turned off.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md): GitHub private vulnerability reporting, or `support@wrendns.com` marked SECURITY. The design is in [`spec/08-deployment-config-security.md`](spec/08-deployment-config-security.md).
 
@@ -410,7 +410,7 @@ The image gate and the memory gates are hard: CI fails a change that crosses the
 - **Questions and ideas:** [GitHub Discussions](https://github.com/nbacheller/wrendns/discussions).
 - **Bugs:** [an issue](https://github.com/nbacheller/wrendns/issues/new/choose), with a support package (**Settings → System → Support package**, or `wrendns support-package`): it replaces addresses and names and removes secrets.
 - **Help by email:** [support@wrendns.com](mailto:support@wrendns.com); what to expect is on the [support page](https://www.wrendns.com/support).
-- **Support WrenDNS:** WrenDNS is free and stays free. If it saves you time, you can chip in, once ([choose the amount](https://donate.stripe.com/8x28wRghj8W011E1ClcIE00)) or monthly ([$3](https://buy.stripe.com/6oU8wR6GJgosbGi3KtcIE01), [$5](https://buy.stripe.com/14AdRb8ORb48dOqgxfcIE02), [$10](https://buy.stripe.com/3cI7sN3ux2xC8u680JcIE03)). Support is a payment to MySummitKeep LLC, the company that makes WrenDNS. It is not a tax-deductible donation, and it buys no rights, features or priority support ([Terms](https://www.wrendns.com/terms)).
+- **Support WrenDNS:** WrenDNS is free and stays free. If it saves you time, you can chip in, once ([choose the amount](https://donate.stripe.com/8x28wRghj8W011E1ClcIE00)) or monthly ([$3](https://buy.stripe.com/6oU8wR6GJgosbGi3KtcIE01), [$5](https://buy.stripe.com/14AdRb8ORb48dOqgxfcIE02), [$10](https://buy.stripe.com/3cI7sN3ux2xC8u680JcIE03)). Support is a payment to MySummitKeep, LLC, the company that makes WrenDNS. It is not a tax-deductible donation, and it buys no rights, features or priority support ([Terms](https://www.wrendns.com/terms)).
 
 ## Contributing
 
@@ -418,7 +418,7 @@ Contributions are welcome. WrenDNS is built spec first: read [`CONTRIBUTING.md`]
 
 ## Licence
 
-WrenDNS is free software under the [GNU Affero General Public License, version 3 or later](LICENSE) (AGPL-3.0-or-later), copyright MySummitKeep LLC. A **commercial licence** is available for anyone who can't accept the AGPL's terms: ask at [support@wrendns.com](mailto:support@wrendns.com).
+WrenDNS is free software under the [GNU Affero General Public License, version 3 or later](LICENSE) (AGPL-3.0-or-later), copyright MySummitKeep, LLC. A **commercial licence** is available for anyone who can't accept the AGPL's terms: ask at [support@wrendns.com](mailto:support@wrendns.com).
 
 The last version released entirely under Apache-2.0 OR MIT is the [`permissive-final`](https://github.com/nbacheller/wrendns/releases/tag/permissive-final) tag and release; it stays available under those licences. The Home Assistant integration stays Apache-2.0. [LICENSING.md](LICENSING.md) explains it all in plain language, and [NOTICE](NOTICE) has the copyright notices.
 

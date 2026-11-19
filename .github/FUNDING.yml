@@ -1,5 +1,5 @@
 # Support WrenDNS: the Stripe Payment Links of site/data/site.json (spec/10 T33.3). Optional, pay what you
-# want; a payment to MySummitKeep LLC, not a tax-deductible donation, and it buys no rights or features.
+# want; a payment to MySummitKeep, LLC, not a tax-deductible donation, and it buys no rights or features.
 # One-time (choose the amount) first, then the monthly tiers ($3, $5, $10).
 custom:
   - https://donate.stripe.com/8x28wRghj8W011E1ClcIE00

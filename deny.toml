@@ -1,5 +1,5 @@
 # REQ: NFR-005 — supply-chain checks. AGENTS.md rule 6 and ADR-1033: WrenDNS is AGPL-3.0-or-later
-# and MySummitKeep LLC also licenses it commercially, so every dependency must be usable under both:
+# and MySummitKeep, LLC also licenses it commercially, so every dependency must be usable under both:
 # permissive licences only, plus MPL-2.0 (file-level copyleft). No GPL, LGPL or AGPL dependency.
 [graph]
 all-features = true

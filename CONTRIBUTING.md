@@ -42,11 +42,11 @@ Keep commits small and coherent, with messages in the style of the history (`fix
 
 ## Contributor Licence Agreement
 
-WrenDNS is licensed under the AGPL-3.0-or-later, and MySummitKeep LLC also offers it under a commercial licence ([LICENSING.md](LICENSING.md)). To keep both possible, every outside contribution comes with this agreement. **You keep the copyright in your contribution**; you give MySummitKeep LLC a licence to use it, including the right to license it to others under other terms.
+WrenDNS is licensed under the AGPL-3.0-or-later, and MySummitKeep, LLC also offers it under a commercial licence ([LICENSING.md](LICENSING.md)). To keep both possible, every outside contribution comes with this agreement. **You keep the copyright in your contribution**; you give MySummitKeep, LLC a licence to use it, including the right to license it to others under other terms.
 
 ### WrenDNS Individual Contributor Licence Agreement (version 1.0)
 
-By signing, You accept and agree to the following terms for Your present and future Contributions submitted to MySummitKeep LLC ("the Company"), a Florida limited liability company, for the WrenDNS project. Except for the licences granted here, You keep all right, title and interest in Your Contributions.
+By signing, You accept and agree to the following terms for Your present and future Contributions submitted to MySummitKeep, LLC ("the Company"), a Florida limited liability company, for the WrenDNS project. Except for the licences granted here, You keep all right, title and interest in Your Contributions.
 
 1. **Definitions.** "You" means the individual who signs this agreement. "Contribution" means any original work of authorship, including any changes or additions to an existing work, that You intentionally submit to the Company for inclusion in WrenDNS, through a pull request, a patch, an issue or any other form of communication with the project. A Contribution is "submitted" when it is sent to the Company or its representatives, including on the project's GitHub repository, mailing addresses or issue tracker, except communication You mark clearly as "Not a Contribution".
 
