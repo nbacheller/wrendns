@@ -2983,6 +2983,31 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - **Banners.** "Sampled, 1 in N" says the rates are estimates; "Partial" lists a cluster node that didn't answer; at privacy level (`telemetry.qlog.privacy_level`) 2 devices are hidden (one node stands for them) and at 3 only totals show. No domain name ever appears on the map.
 - The page loads on its own, so the rest of the console doesn't carry its code; it uses no map tiles, fonts or scripts from outside.
 
+### Network map settings
+**Settings → Query handling → Network map** holds the map's switch, its sampling rate and the thresholds that colour it. Operators change them; viewers see the values and no control (the server refuses a viewer's change too). A change applies to every node within a few seconds, with no restart, and never changes an answer, an alert or a block: it changes only what the map shows. The same settings are `[map]` in the configuration file, `PUT`/`DELETE /api/v1/map-settings/default` (operator; agents with `config:write:map`) and the MCP tool `plan_set_map`; on a node whose configuration comes from Git, the card shows the TOML to add instead. The page's **Map settings** link opens the card.
+- **Run the network map** (`enabled`, default on). Off: nothing is sampled and the map routes answer `404 map_disabled`.
+- **Lookups sampled per second** (`event_rate`, 10 to 2,000, default 200). Each node samples up to this many lookups a second for the map. Above it, the node keeps every Nth lookup and counts each kept lookup for N, so rates are estimates and the page says **Sampled, 1 in N**. The estimate's error shrinks as the sample grows: a device or flow with 20 sampled answers is read to within roughly a fifth, with 400 to within about 5%. The rate is a ceiling for the work a node does for the map, not a target: a quiet home network never reaches it. A higher rate costs a little aggregator CPU on every node.
+- **Answers needed before colouring** (`min_sample`, 1 to 1,000, default 20). It counts real sampled answers in the last 60 seconds, not the scaled estimate. Fewer: the device, flow or upstream is **Idle** (grey, a dashed circle), never green.
+- **Slow above** (`warn_latency_ms`, 1 to 60,000). An answer slower than this is slow. Empty: it follows the latency objective, `[slo] latency_ms` (the dashboard's **Service level** card), so the map and the objective agree.
+- **The thresholds.** All are a percent of the answers in the window, 1 to 100:
+
+| Setting | Default | Turns | When |
+|---|---|---|---|
+| `warn_slow_pct` | 10 | Warning | this share of a flow's answers are slow |
+| `warn_error_pct` | 5 | Warning | this share are SERVFAIL or time out (not for an answer kind such as cache or blocked) |
+| `error_pct` | 25 | Failing | this share are SERVFAIL or time out; at least `warn_error_pct` |
+| `warn_blocked_pct` | 60 | Warning | this share of a device's answers are blocked (devices only: a network full of blocked ads is the filter working) |
+
+Other things colour the map as well, and no threshold changes them: an upstream whose breaker is open or a node that can't be reached is Failing; a breaker half open, a rate-limited device, an open unacknowledged anomaly, and a router integration that reports an error are Warning. A network or resolver takes the worst colour of what it holds; the gateway is never Failing, because DNS doesn't depend on it.
+
+**Preview.** While you type, a sentence under the fields says what the current map would look like with those values ("2 of 14 would change: camera Warning to Failing"). It reclassifies the flows of the map as it is now, so it is the same decision the server makes, with two limits: it can't know about the rate limiter, anomalies or a breaker (they keep their colour), and the slow share it reads was counted with the *current* slow threshold, so a new `warn_latency_ms` shows only after it is applied. Check shows what the change does before Apply; a value outside its range is refused with the field named (`map.event_rate: from 10 to 2000 lookups per second`).
+
+**What the map shows at each privacy level** (`telemetry.qlog.privacy_level`, one setting for the cluster): at 0 and 1 devices are shown by address and name (no domain name ever appears on the map, and the click-through to queries follows the level's own rules); at 2 devices are hidden (the sampler never receives a client key; one node per network stands for them) and flows are per resolver, upstream and answer kind; at 3 there is no per-event data, so only network and resolver totals are shown. Anomaly-based yellow is off at level 1 and above. A banner says why part of the map is missing.
+
+**In a cluster**, every node samples its own lookups and the node you ask gathers the others' maps in the background (a dead node never delays the map). A node that has stopped answering is shown Failing (**unreachable**) once its grace of a few seconds has passed, and listed in the **Partial** banner; until then, and for a node that has just joined, it is **pending** (Idle), not red. Counts for the same device or flow on several nodes are added. The settings are shared by every node.
+
+**GeoIP** (the world view, an admin's) is off by default and fetches nothing until an admin turns it on. It uses DB-IP's "IP to Country Lite" database, published monthly under the Creative Commons Attribution 4.0 licence (https://creativecommons.org/licenses/by/4.0/): each install downloads it from the publisher (nothing is bundled), and the world view carries the credit "IP geolocation by DB-IP.com". The download is checked (a truncated or tampered file is refused and the current database kept) but the publisher gives no signature, so the checks guard against damage, not against a publisher you don't trust. It never runs on the query path. See the world view and its settings when they are enabled in your build.
+
 ### Where does time go?
 The dashboard's **Where time goes** section (Advanced view) has two views:
 - **Percentiles:** this hour's p50, p90, p99, and max per answer path and transport, and the time spent waiting for upstreams.
