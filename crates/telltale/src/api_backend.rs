@@ -506,8 +506,36 @@ fn stale_days(
     (days >= limit).then_some(days)
 }
 
+/// REQ: OBS-003 (T24.34, ADR-1013) — the live tail's `client`: several, comma-separated; a router
+/// name (`hostname:<label>`) becomes the addresses the router gave it now (at most
+/// `MAX_WORKLOAD_ADDRESSES`, in address order). A router name no address carries leaves nothing, so
+/// the filter is a sentinel no event matches (as in the log search).
+fn resolve_tail_client(client: &str, clients: &telltale_policy::clients::ClientTable) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for t in client.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        if telltale_policy::clients::is_router_key(t) {
+            let mut v = clients.router_name_addresses(&t[9..].to_ascii_lowercase());
+            v.sort();
+            v.truncate(MAX_WORKLOAD_ADDRESSES);
+            out.extend(v.iter().map(ToString::to_string));
+        } else {
+            out.push(t.to_owned());
+        }
+    }
+    if out.is_empty() {
+        "::ffff:0.0.0.0".into()
+    } else {
+        out.join(",")
+    }
+}
+
 /// REQ: FLT-017 — most pod addresses one workload's query-log search covers.
 const MAX_WORKLOAD_ADDRESSES: usize = 64;
+
+/// REQ: OBS-003 (T24.34, ADR-1013) — most clients (tokens) and most addresses one query-log
+/// search may name, with `client` listing several.
+const MAX_CLIENT_TOKENS: usize = 100;
+const MAX_CLIENT_ADDRESSES: usize = 256;
 
 fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter, Problem> {
     let name = q
@@ -1502,7 +1530,13 @@ impl Backend for ApiBackend {
             .map(|g| g.name.to_string())
             .collect();
         let src = Arc::clone(&self.src);
-        let filter = crate::tail::Filter::parse(p, &groups, &self.src.pipeline.workloads)?;
+        // REQ: OBS-003 (T24.34, ADR-1013) — `client` may list several, and may hold router names
+        // (`hostname:<label>`): those become the addresses the router gave them now.
+        let mut p = p.clone();
+        if let Some(c) = &p.client {
+            p.client = Some(resolve_tail_client(c, &policy.clients));
+        }
+        let filter = crate::tail::Filter::parse(&p, &groups, &self.src.pipeline.workloads)?;
         let (events, slot) = tail.subscribe().ok_or_else(|| {
             Problem::unavailable(format!(
                 "too many live tails on this node (at most {})",
@@ -1546,6 +1580,7 @@ impl Backend for ApiBackend {
         ))
     }
 
+    #[allow(clippy::too_many_lines)] // the client filter's resolution, step by step
     fn queries(
         &self,
         q: &QueryParams,
@@ -1564,63 +1599,108 @@ impl Backend for ApiBackend {
         // key): the search covers the addresses it held in the window.
         // REQ: FLT-006 (T24.9, ADR-973) — `client` may be `hostname:<label>`: the addresses a router
         // gave that name now (the query log's router-name filter).
-        let router = q
+        // REQ: OBS-003 (T24.34, ADR-1013) — `client` may list several, comma-separated (the
+        // device picker): each is an address, a router name or a workload, resolved here to
+        // addresses off the DNS path; `clientNot` keeps every other client.
+        let tokens: Vec<&str> = q
             .client
             .as_deref()
-            .filter(|c| telltale_policy::clients::is_router_key(c))
-            .map(|c| c[9..].to_ascii_lowercase());
-        let workload = match router {
-            Some(_) => None,
-            None => q.client.as_deref().and_then(|c| {
-                crate::kubernetes::workload_ref(c, &self.src.pipeline.workloads.load())
-            }),
-        };
-        let mut filter = if workload.is_some() || router.is_some() {
+            .map(|c| {
+                c.split(',')
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let single_plain = tokens.len() == 1
+            && tokens[0].parse::<IpAddr>().is_ok()
+            && crate::kubernetes::workload_ref(tokens[0], &self.src.pipeline.workloads.load())
+                .is_none();
+        let resolve = !tokens.is_empty() && !single_plain;
+        let mut filter = if resolve {
             let mut plain = q.clone();
             plain.client = None;
             qlog_filter(&plain, from_us, to_us)?
         } else {
-            qlog_filter(q, from_us, to_us)?
+            // One plain address: the trimmed token (`1.2.3.4,` is that address too).
+            let mut one = q.clone();
+            if let Some(t) = tokens.first() {
+                one.client = Some((*t).to_owned());
+            }
+            qlog_filter(&one, from_us, to_us)?
         };
         let mut client_truncated = false;
-        if let Some(label) = &router {
-            let mut ips = self
-                .src
-                .pipeline
-                .current()
-                .policy
-                .clients
-                .router_name_addresses(label);
-            ips.sort();
-            client_truncated = ips.len() > MAX_WORKLOAD_ADDRESSES;
-            ips.truncate(MAX_WORKLOAD_ADDRESSES);
-            filter.client_any = ips.into_iter().map(mapped).collect();
-            if filter.client_any.is_empty() {
-                // No address carries the name now: a sentinel key no row has (a workload key never has a
-                // colon). Plain, it matches no row; with clientNot it matches every row.
-                filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
-                    "hostname:{label}"
-                )));
+        let mut workloads: Vec<Box<str>> = Vec::new();
+        // Addresses named outright or through a router name (not through a workload).
+        let mut direct: Vec<[u8; 16]> = Vec::new();
+        if resolve {
+            if tokens.len() > MAX_CLIENT_TOKENS {
+                return Err(Problem::invalid(format!(
+                    "`client`: at most {MAX_CLIENT_TOKENS} clients"
+                ))
+                .hint("Pick a group or fewer devices."));
             }
-        }
-        if let Some(text) = &workload {
             let until_s = if to_us == 0 {
                 u64::MAX
             } else {
                 to_us / 1_000_000 + 1
             };
-            let mut ips =
-                self.src
-                    .pipeline
-                    .workloads
-                    .load()
-                    .addresses_of(text, from_us / 1_000_000, until_s);
-            client_truncated = ips.len() > MAX_WORKLOAD_ADDRESSES;
-            ips.truncate(MAX_WORKLOAD_ADDRESSES);
-            filter.client_any = ips.into_iter().map(mapped).collect();
+            let mut any: Vec<[u8; 16]> = Vec::new();
+            for t in &tokens {
+                let mut ips: Vec<[u8; 16]> = Vec::new();
+                if telltale_policy::clients::is_router_key(t) {
+                    let mut v = self
+                        .src
+                        .pipeline
+                        .current()
+                        .policy
+                        .clients
+                        .router_name_addresses(&t[9..].to_ascii_lowercase());
+                    v.sort();
+                    client_truncated |= v.len() > MAX_WORKLOAD_ADDRESSES;
+                    v.truncate(MAX_WORKLOAD_ADDRESSES);
+                    ips.extend(v.into_iter().map(mapped));
+                    direct.extend(ips.iter().copied());
+                } else if let Some(text) =
+                    crate::kubernetes::workload_ref(t, &self.src.pipeline.workloads.load())
+                {
+                    let mut v = self.src.pipeline.workloads.load().addresses_of(
+                        &text,
+                        from_us / 1_000_000,
+                        until_s,
+                    );
+                    client_truncated |= v.len() > MAX_WORKLOAD_ADDRESSES;
+                    v.truncate(MAX_WORKLOAD_ADDRESSES);
+                    ips.extend(v.into_iter().map(mapped));
+                    workloads.push(text.into());
+                } else {
+                    let ip = t.parse::<IpAddr>().map_err(|_| {
+                        Problem::invalid(format!(
+                            "`client`: `{t}` is not an IP address, a router name or a Kubernetes workload"
+                        ))
+                        .hint("Give addresses, `hostname:<label>`, or workloads as namespace/kind/name, comma-separated.")
+                    })?;
+                    ips.push(mapped(ip));
+                    direct.push(mapped(ip));
+                }
+                for ip in ips {
+                    if !any.contains(&ip) {
+                        any.push(ip);
+                    }
+                }
+            }
+            if any.len() > MAX_CLIENT_ADDRESSES {
+                client_truncated = true;
+                any.truncate(MAX_CLIENT_ADDRESSES);
+            }
+            filter.client_any = any;
             if filter.client_any.is_empty() {
-                // Nothing held by it in the window: match no row (no address is a key).
-                filter.client_ip = Some(telltale_telemetry::workload::key(text));
+                // No address carries any of the names: a sentinel key no row has (a workload key
+                // never has a colon). Plain, it matches no row; with clientNot it matches every row.
+                filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
+                    "client:{}",
+                    tokens.join(",")
+                )));
             }
         }
         if let Some(g) = &q.group {
@@ -1641,17 +1721,22 @@ impl Backend for ApiBackend {
         };
         page.client_truncated = client_truncated;
         // REQ: FLT-017 — an address another workload held at the row's time isn't this one's.
-        if let Some(text) = &workload
-            && let Some(spans) = workload_spans(&self.src, text)
-        {
+        // Only for a plain match: a negated search already left out every address of the set.
+        if !workloads.is_empty() && !q.client_not.unwrap_or(false) {
+            let spans: Vec<_> = workloads
+                .iter()
+                .filter_map(|w| workload_spans(&self.src, w))
+                .flatten()
+                .collect();
             page.items.retain(|r| {
                 let Ok(ip) = r.client.parse::<IpAddr>() else {
                     return false;
                 };
                 let (ip, ts) = (mapped(ip), r.ts_unix_micros / 1_000_000);
-                spans
-                    .iter()
-                    .any(|(a, f, t)| *a == ip && *f <= ts && ts < *t)
+                direct.contains(&ip)
+                    || spans
+                        .iter()
+                        .any(|(a, f, t)| *a == ip && *f <= ts && ts < *t)
             });
         }
         Ok(page)
@@ -1664,17 +1749,7 @@ impl Backend for ApiBackend {
             .ok_or_else(|| Problem::invalid(format!("`qtype`: unknown type `{qtype_text}`")))?;
         let given = p.client.as_deref().unwrap_or("127.0.0.1");
         // REQ: FLT-017 — a Kubernetes workload: as if from one of its pods.
-        let pod_ip = {
-            let t = self.src.pipeline.workloads.load();
-            crate::kubernetes::workload_ref(given, &t).and_then(|text| {
-                t.by_text(&text).and_then(|w| {
-                    w.pods
-                        .iter()
-                        .filter(|p| p.deleted_s.is_none())
-                        .find_map(|p| p.ips.first().copied())
-                })
-            })
-        };
+        let pod_ip = self.pod_address(given);
         let client: IpAddr = match pod_ip {
             Some(ip) => ip,
             None => given.parse().map_err(|_| {
@@ -1711,6 +1786,10 @@ impl Backend for ApiBackend {
                 mac: e.client.mac,
                 device: e.client.device,
                 identified_by: e.client.identified_by.to_owned(),
+                matched_key: e.client.matched_key,
+                group: e.client.group,
+                group_from: e.client.group_from.to_owned(),
+                group_key: e.client.group_key,
                 groups: e.client.groups,
                 workload: e
                     .client
@@ -2006,6 +2085,51 @@ impl Backend for ApiBackend {
                 info
             })
             .collect()
+    }
+
+    // REQ: FLT-006, API-010 (T24.30, ADR-996) — a device's effective policy.
+    fn client_policy(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
+        let subject = self.policy_subject(client)?;
+        Ok(self.policy_of(&subject))
+    }
+
+    // REQ: FLT-006 (ADR-996) — this node's observations of the device, for the primary.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<telltale_api::policy_api::PolicyObservation>, Problem> {
+        let s = self.policy_subject(client)?;
+        if s.stand_in {
+            return Ok(None);
+        }
+        Ok(Some(telltale_api::policy_api::PolicyObservation {
+            ip: s.ip.to_string(),
+            mac: s.mac.or_else(|| self.src.pipeline.neighbors.get(s.ip)),
+            client_id: s.client_id,
+            wanted: s.wanted_device,
+        }))
+    }
+
+    // REQ: FLT-006 (ADR-996) — another node's observations under this node's configuration.
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &telltale_api::policy_api::PolicyObservation,
+    ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
+        let ip = observed
+            .ip
+            .parse::<IpAddr>()
+            .map_err(|_| Problem::not_found("the observed address is not an address"))?;
+        let mut subject = self.policy_subject(client)?;
+        subject.ip = ip;
+        subject.mac = observed.mac;
+        subject.client_id.clone_from(&observed.client_id);
+        subject.stand_in = false;
+        subject.observed = true;
+        Ok(self.policy_of(&subject))
     }
 
     // REQ: OBS-025 (T13.3)
@@ -2493,6 +2617,8 @@ impl Backend for ApiBackend {
                 id: u.id,
                 name: u.name,
                 breaker: u.breaker,
+                groups: u.groups,
+                route_problem: u.route_problem,
             })
             .collect();
         let health = self.health();
@@ -2782,6 +2908,11 @@ impl Backend for ApiBackend {
         url: String,
     ) -> BoxFuture<Result<telltale_api::model::RouterCertificate, Problem>> {
         Box::pin(async move { crate::router_cert::fetch(&url).await })
+    }
+    // REQ: UPS-004, API-002 (T24.36) — the catalog is compiled in; the route check reads the kernel's
+    // table when asked, never from a query.
+    fn upstream_presets(&self) -> telltale_api::model::UpstreamPresets {
+        crate::upstream_presets::presets()
     }
     #[allow(clippy::too_many_lines)] // one table, built in one pass
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
@@ -4234,6 +4365,7 @@ impl Backend for ApiBackend {
                     latency_ewma_ms: h.ewma.map_or(0.0, |d| {
                         ms(u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
                     }),
+                    route_problem: u.route_state().reason().map(str::to_owned),
                     // REQ: UPS-013
                     source: u.source().map(|ip| ip.to_string()),
                     source_problem: u.source_problem(),
@@ -5197,7 +5329,7 @@ fn plan_managed(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let in_files = match w.kind {
         ManagedKind::Record => file
             .record
@@ -5219,7 +5351,13 @@ fn plan_managed(
             Code::Conflict,
             format!("`{name}` is defined in the config files"),
         )
-        .hint("Change it in the config file."));
+        // REQ: CLU-015 (T24.37) — on a promoted primary the base is the cluster version, whose
+        // files are another node's.
+        .hint(if Arc::ptr_eq(&file, &src.file_config.load_full()) {
+            "Change it in the config file."
+        } else {
+            "It comes from the cluster's configuration (the config file of the node that was primary): change it there, or on the node whose file defines it."
+        }));
     }
     let mut entries = crate::managed::entries(state);
     let (before, after) = match w.kind {
@@ -5312,9 +5450,12 @@ fn plan_managed(
         _ => return Err(Problem::internal("handled by plan_override")),
     };
     if w.body.is_none() && before.is_none() {
-        return Err(Problem::not_found(format!(
-            "`{name}` wasn't created through the API"
-        )));
+        return Err(served_not_stored(
+            src,
+            w.kind,
+            &name,
+            Problem::not_found(format!("`{name}` wasn't created through the API")),
+        ));
     }
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
@@ -5494,7 +5635,7 @@ fn plan_settings(
             "there is one {noun}, named `default`"
         )));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let mut entries = crate::managed::entries(state);
     // REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the first write of `[discovery]` waits until no member
     // runs an older version: an older member can't read the section.
@@ -5572,7 +5713,7 @@ fn plan_singleton(
             singleton_noun(w.kind)
         )));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let mut entries = crate::managed::entries(state);
     let change = singleton_change(w.kind, &file, &mut entries, w.body.as_ref())?;
     let warnings = telltale_config::validate_config(&change.merged).unwrap_or_default();
@@ -5589,6 +5730,63 @@ fn plan_singleton(
         candidate: change.merged,
         redirect: None,
     })
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — what a write's entries are merged onto: the config files, or,
+/// on a primary promoted from replica, the cluster version it builds on without the entries it
+/// adopted as its own rows, so every entry the cluster serves can be edited or deleted here.
+pub(crate) fn plan_files(src: &Sources) -> Arc<telltale_config::Config> {
+    let file = src.file_config.load_full();
+    match crate::replication::managed_base(&file) {
+        Some(base) => Arc::new(base),
+        None => file,
+    }
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — a write that finds no entry of that name to change, where
+/// the node serves one: it came from a cluster version whose primary did not hand its API entries
+/// over (an older version), so say that instead of a bare 404.
+fn served_not_stored(src: &Sources, kind: ManagedKind, name: &str, p: Problem) -> Problem {
+    use crate::managed::Named;
+    if p.status != 404 {
+        return p;
+    }
+    // Only a node promoted from replica can hold served-but-not-stored entries of this kind.
+    if !crate::replication::promoted_primary(&src.file_config.load()) {
+        return p;
+    }
+    let cfg = src.config.load();
+    let served = match kind {
+        ManagedKind::Upstream => cfg.upstream.iter().any(|u| u.name() == name),
+        ManagedKind::UpstreamGroup => cfg.upstream_group.iter().any(|u| u.name() == name),
+        ManagedKind::List => cfg.list.iter().any(|u| u.name() == name),
+        ManagedKind::Group => cfg.group.iter().any(|u| u.name() == name),
+        ManagedKind::AlertDestination => cfg.alerts.destination.iter().any(|u| u.name() == name),
+        ManagedKind::AlertRule => cfg.alerts.rule.iter().any(|u| u.name() == name),
+        ManagedKind::Schedule => cfg.schedule.iter().any(|u| u.name() == name),
+        ManagedKind::AnomalyMute => cfg.anomaly_mute.iter().any(|u| u.name() == name),
+        ManagedKind::KubernetesMap => cfg.kubernetes.map.iter().any(|r| r.key() == name),
+        ManagedKind::Record => cfg
+            .record
+            .iter()
+            .any(|r| r.name.as_str().eq_ignore_ascii_case(name)),
+        ManagedKind::Forward => cfg
+            .route
+            .iter()
+            .any(|r| r.upstream_group.as_str() == crate::managed::forward_group(name)),
+        ManagedKind::Rule => cfg.rule.iter().any(|r| r.id.as_str() == name),
+        _ => false,
+    };
+    if !served {
+        return p;
+    }
+    Problem::new(
+        Code::Conflict,
+        format!(
+            "`{name}` is in the cluster's configuration, but this node doesn't hold it as its own entry: it took over from a primary that didn't hand its API entries over (an older version)"
+        ),
+    )
+    .hint("Upgrade every node, then change it on the current primary; or change it in the config file.")
 }
 
 /// ADR-069 — one kind's change: returns (the entry before, the body to store).
@@ -5915,7 +6113,7 @@ fn plan_override(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let mut entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     // REQ: API-014 (ADR-903 §4, the marker rule) — `<redacted>` sent back keeps the value in
@@ -5956,71 +6154,74 @@ fn plan_override(
         upstream_group_in_use(&name, &file, &entries, &before_cfg)?;
     }
 
-    let (before, body) = match w.kind {
-        ManagedKind::Upstream => override_step(
-            &name,
-            body_in,
-            file.upstream.iter().any(|u| u.name() == name),
-            before_cfg.upstream.iter().find(|u| u.name() == name),
-            &mut entries.upstreams,
-        )?,
-        ManagedKind::UpstreamGroup => override_step(
-            &name,
-            body_in,
-            file.upstream_group.iter().any(|u| u.name() == name),
-            before_cfg.upstream_group.iter().find(|u| u.name() == name),
-            &mut entries.upstream_groups,
-        )?,
-        ManagedKind::List => override_step(
-            &name,
-            body_in,
-            file.list.iter().any(|u| u.name() == name),
-            before_cfg.list.iter().find(|u| u.name() == name),
-            &mut entries.lists,
-        )?,
-        ManagedKind::AlertDestination => override_step(
-            &name,
-            body_in,
-            file.alerts.destination.iter().any(|u| u.name() == name),
-            before_cfg
-                .alerts
-                .destination
-                .iter()
-                .find(|u| u.name() == name),
-            &mut entries.alert_destinations,
-        )?,
-        ManagedKind::AlertRule => override_step(
-            &name,
-            body_in,
-            file.alerts.rule.iter().any(|u| u.name() == name),
-            before_cfg.alerts.rule.iter().find(|u| u.name() == name),
-            &mut entries.alert_rules,
-        )?,
-        ManagedKind::Schedule => override_step(
-            &name,
-            body_in,
-            file.schedule.iter().any(|u| u.name() == name),
-            before_cfg.schedule.iter().find(|u| u.name() == name),
-            &mut entries.schedules,
-        )?,
-        ManagedKind::AnomalyMute => override_step(
-            &name,
-            body_in,
-            file.anomaly_mute.iter().any(|u| u.name() == name),
-            before_cfg.anomaly_mute.iter().find(|u| u.name() == name),
-            &mut entries.anomaly_mutes,
-        )?,
-        ManagedKind::KubernetesMap => {
-            kubernetes_map_step(&name, body_in, &file, &before_cfg, &mut entries)?
-        }
-        _ => override_step(
-            &name,
-            body_in,
-            file.group.iter().any(|u| u.name() == name),
-            before_cfg.group.iter().find(|u| u.name() == name),
-            &mut entries.groups,
-        )?,
-    };
+    let step = (|| -> Result<_, Problem> {
+        Ok(match w.kind {
+            ManagedKind::Upstream => override_step(
+                &name,
+                body_in,
+                file.upstream.iter().any(|u| u.name() == name),
+                before_cfg.upstream.iter().find(|u| u.name() == name),
+                &mut entries.upstreams,
+            )?,
+            ManagedKind::UpstreamGroup => override_step(
+                &name,
+                body_in,
+                file.upstream_group.iter().any(|u| u.name() == name),
+                before_cfg.upstream_group.iter().find(|u| u.name() == name),
+                &mut entries.upstream_groups,
+            )?,
+            ManagedKind::List => override_step(
+                &name,
+                body_in,
+                file.list.iter().any(|u| u.name() == name),
+                before_cfg.list.iter().find(|u| u.name() == name),
+                &mut entries.lists,
+            )?,
+            ManagedKind::AlertDestination => override_step(
+                &name,
+                body_in,
+                file.alerts.destination.iter().any(|u| u.name() == name),
+                before_cfg
+                    .alerts
+                    .destination
+                    .iter()
+                    .find(|u| u.name() == name),
+                &mut entries.alert_destinations,
+            )?,
+            ManagedKind::AlertRule => override_step(
+                &name,
+                body_in,
+                file.alerts.rule.iter().any(|u| u.name() == name),
+                before_cfg.alerts.rule.iter().find(|u| u.name() == name),
+                &mut entries.alert_rules,
+            )?,
+            ManagedKind::Schedule => override_step(
+                &name,
+                body_in,
+                file.schedule.iter().any(|u| u.name() == name),
+                before_cfg.schedule.iter().find(|u| u.name() == name),
+                &mut entries.schedules,
+            )?,
+            ManagedKind::AnomalyMute => override_step(
+                &name,
+                body_in,
+                file.anomaly_mute.iter().any(|u| u.name() == name),
+                before_cfg.anomaly_mute.iter().find(|u| u.name() == name),
+                &mut entries.anomaly_mutes,
+            )?,
+            ManagedKind::KubernetesMap => {
+                kubernetes_map_step(&name, body_in, &file, &before_cfg, &mut entries)?
+            }
+            _ => override_step(
+                &name,
+                body_in,
+                file.group.iter().any(|u| u.name() == name),
+                before_cfg.group.iter().find(|u| u.name() == name),
+                &mut entries.groups,
+            )?,
+        })
+    })();
+    let (before, body) = step.map_err(|p| served_not_stored(src, w.kind, &name, p))?;
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
     let after = match w.kind {
@@ -6297,6 +6498,140 @@ fn credential_rules(
         },
         &crate::credential_rules::PathRules::of(file),
     )
+}
+
+impl ApiBackend {
+    /// REQ: FLT-017 — a running pod's address for a Kubernetes workload reference
+    /// (`namespace/kind/name`), so a read can ask "as if from one of its pods".
+    fn pod_address(&self, given: &str) -> Option<IpAddr> {
+        let t = self.src.pipeline.workloads.load();
+        crate::kubernetes::workload_ref(given, &t).and_then(|text| {
+            t.by_text(&text).and_then(|w| {
+                w.pods
+                    .iter()
+                    .filter(|p| p.deleted_s.is_none())
+                    .find_map(|p| p.ips.first().copied())
+            })
+        })
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30) — the policy of `subject` now.
+    fn policy_of(
+        &self,
+        subject: &crate::policy_view::Subject,
+    ) -> telltale_api::policy_api::ClientPolicy {
+        let cfg = self.src.config.load();
+        let now = crate::pipeline::unix_now();
+        self.src
+            .pipeline
+            .with_explain_state(|st| crate::policy_view::build(st, &cfg, subject, now))
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — who a policy read is for: a workload (as one of its
+    /// pods), an address, or a configured device, which is probed with the keys it is matched by
+    /// (its address if it has one or the neighbor table or the routers know one, else a stand-in
+    /// with its MAC) so the identification is the one a query from it would get.
+    fn policy_subject(&self, given: &str) -> Result<crate::policy_view::Subject, Problem> {
+        use telltale_config::MatchKey;
+        let subject = |ip, mac, client_id, wanted, stand_in| crate::policy_view::Subject {
+            asked: given.to_owned(),
+            ip,
+            mac,
+            client_id,
+            wanted_device: wanted,
+            stand_in,
+            observed: false,
+        };
+        if let Some(ip) = self.pod_address(given) {
+            return Ok(subject(ip, None, None, None, false));
+        }
+        if let Ok(ip) = given.parse::<IpAddr>() {
+            return Ok(subject(ip, None, None, None, false));
+        }
+        let cfg = self.src.config.load();
+        let c = cfg
+            .client
+            .iter()
+            .find(|c| c.name.as_str().eq_ignore_ascii_case(given))
+            .ok_or_else(|| {
+                Problem::not_found(format!(
+                    "`{given}` is neither an address, a workload nor a named device"
+                ))
+                .hint("Give a device's name as on the Clients page, or its IP address.")
+            })?;
+        let keys: Vec<MatchKey> = c
+            .match_keys
+            .iter()
+            .filter_map(|k| MatchKey::parse(k.as_str()).ok())
+            .collect();
+        let mac = keys.iter().find_map(|k| match k {
+            MatchKey::Mac(m) => Some(*m),
+            _ => None,
+        });
+        let client_id = keys.iter().find_map(|k| match k {
+            MatchKey::ClientId(i) => Some(i.clone()),
+            _ => None,
+        });
+        let state = self.src.pipeline.current();
+        let clients = &state.policy.clients;
+        let ip = keys
+            .iter()
+            .find_map(|k| match k {
+                MatchKey::Ip(ip) => Some(*ip),
+                _ => None,
+            })
+            .or_else(|| mac.and_then(|m| self.src.pipeline.neighbors.address_of(m)))
+            .or_else(|| {
+                keys.iter().find_map(|k| match k {
+                    MatchKey::Hostname(h) => clients.router_name_addresses(h).into_iter().min(),
+                    _ => None,
+                })
+            });
+        // A network range names no single address: like a MAC-only device, it is a stand-in (its
+        // group depends on the member's address). It is probed at a member address (the range's
+        // first host), never at the range's own address, and the result compared with the device.
+        let wanted = Some(c.name.to_string());
+        let member = keys.iter().find_map(|k| match k {
+            MatchKey::Cidr(c) => Some(member_of(c)),
+            _ => None,
+        });
+        if ip.is_none()
+            && mac.is_none()
+            && client_id.is_none()
+            && let Some(m) = member
+        {
+            return Ok(subject(m, None, None, wanted, true));
+        }
+        Ok(match ip {
+            Some(ip) => subject(ip, None, client_id, wanted, false),
+            // No address to read it at: the MAC (or client ID) says who it is.
+            None => subject(
+                IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                mac,
+                client_id,
+                wanted,
+                true,
+            ),
+        })
+    }
+}
+
+/// A member address of a network (its first host; the address itself for a host route).
+fn member_of(c: &telltale_config::Cidr) -> IpAddr {
+    match c.addr {
+        IpAddr::V4(a) if c.prefix < 32 => IpAddr::V4(std::net::Ipv4Addr::from(
+            (u32::from(a) & u32::MAX.checked_shl(32 - u32::from(c.prefix)).unwrap_or(0))
+                .saturating_add(1),
+        )),
+        IpAddr::V6(a) if c.prefix < 128 => IpAddr::V6(std::net::Ipv6Addr::from(
+            (u128::from(a)
+                & u128::MAX
+                    .checked_shl(128 - u32::from(c.prefix))
+                    .unwrap_or(0))
+            .saturating_add(1),
+        )),
+        a => a,
+    }
 }
 
 impl ApiBackend {
@@ -6592,11 +6927,8 @@ impl ApiBackend {
                 drop(one_at_a_time);
                 if let Some(opts) = &w.simulate {
                     let baseline = Arc::new(
-                        crate::managed::merge(
-                            &src.file_config.load_full(),
-                            &crate::managed::entries(&state),
-                        )
-                        .map_err(|errs| Problem::internal(errs.join("; ")))?,
+                        crate::managed::merge(&plan_files(&src), &crate::managed::entries(&state))
+                            .map_err(|errs| Problem::internal(errs.join("; ")))?,
                     );
                     let candidate = Arc::new(plan.candidate.clone());
                     out.simulation =
@@ -8022,4 +8354,325 @@ fn busy_problem() -> Problem {
 /// REQ: API-902 — the engine isn't there (the API's `state.db` didn't open, or it is starting).
 fn guarded_unavailable() -> Problem {
     Problem::unavailable("guarded settings aren't available on this node yet")
+}
+
+#[cfg(test)]
+mod picker_clients_tests {
+    use super::*;
+    use telltale_api::Backend;
+
+    fn event(ip: &str, ts_s: u64, i: u64) -> telltale_telemetry::QueryEvent {
+        let ip: std::net::Ipv4Addr = ip.parse().unwrap();
+        telltale_telemetry::QueryEvent {
+            ts_us: ts_s * 1_000_000 + i,
+            client_ip: ip.to_ipv6_mapped().octets(),
+            client_ref: 0,
+            group: 0,
+            qtype: telltale_proto::rtype::A,
+            qclass: 1,
+            rcode: Some(0),
+            status: telltale_telemetry::Status::Forwarded,
+            proto: telltale_telemetry::Proto::Udp,
+            flags: 0x8180,
+            rule: None,
+            upstream: 1,
+            attempts: 1,
+            t_total_us: 900,
+            t_upstream_us: 800,
+            resp_size: 64,
+            answers: 1,
+        }
+    }
+
+    fn names(pairs: &[(&str, &str)]) -> std::collections::HashMap<IpAddr, Arc<str>> {
+        pairs
+            .iter()
+            .map(|(ip, n)| (ip.parse().unwrap(), Arc::from(*n)))
+            .collect()
+    }
+
+    fn big() -> Vec<(String, &'static str)> {
+        (0..=MAX_WORKLOAD_ADDRESSES + 5)
+            .map(|i| (format!("10.1.0.{i}"), "big"))
+            .collect()
+    }
+
+    /// REQ: OBS-003 (T24.34, ADR-1013) — the live tail's router names: addresses in order, plain
+    /// tokens kept, a name nobody holds is the sentinel no event matches, and the cap holds.
+    #[test]
+    fn obs_003_tail_client_resolves_router_names() {
+        let src = Arc::new(crate::http::tests::sources());
+        let snap = src.pipeline.current();
+        let clients = &snap.policy.clients;
+        clients.set_router_names(names(&[
+            ("192.168.1.11", "phone"),
+            ("192.168.1.10", "phone"),
+            ("192.168.1.12", "tv"),
+        ]));
+        assert_eq!(
+            resolve_tail_client("hostname:phone", clients),
+            "192.168.1.10,192.168.1.11"
+        );
+        assert_eq!(
+            resolve_tail_client(" 10.0.0.1 , hostname:PHONE,,hostname:tv ", clients),
+            "10.0.0.1,192.168.1.10,192.168.1.11,192.168.1.12"
+        );
+        assert_eq!(
+            resolve_tail_client("hostname:nobody", clients),
+            "::ffff:0.0.0.0"
+        );
+        assert_eq!(resolve_tail_client("10.0.0.1,", clients), "10.0.0.1");
+        let many = big();
+        let many: Vec<(&str, &str)> = many.iter().map(|(a, n)| (a.as_str(), *n)).collect();
+        clients.set_router_names(names(&many));
+        let r = resolve_tail_client("hostname:big", clients);
+        assert_eq!(r.split(',').count(), MAX_WORKLOAD_ADDRESSES, "{r}");
+    }
+
+    /// REQ: OBS-003 (T24.34, ADR-1013) — the log search returns exactly the picked devices'
+    /// queries: addresses, router names, a mix, a trailing comma, `clientNot` as the complement,
+    /// a name nobody holds, and the cap on clients.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obs_003_queries_filter_by_picked_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = telltale_config::Config::default();
+        cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+        cfg.telemetry.qlog.enabled = true;
+        let mut src = crate::http::tests::sources();
+        src.config.store(Arc::new(cfg.clone()));
+        let (qlog, stats) = crate::server::query_log(&cfg);
+        src.qlog = stats;
+        let src = Arc::new(src);
+        let sink = crate::tail::combine(qlog, None, None);
+        let aggregator = src
+            .pipeline
+            .telemetry
+            .spawn_aggregator(std::time::Duration::from_millis(25), sink)
+            .unwrap();
+        let snap = src.pipeline.current();
+        snap.policy.clients.set_router_names(names(&[
+            ("192.168.1.10", "phone"),
+            ("192.168.1.11", "phone"),
+            ("192.168.1.12", "tv"),
+        ]));
+        let t0 = crate::pipeline::unix_now() - 600;
+        let name = b"\x07example\x03com\x00";
+        let hosts = [
+            ("192.168.1.10", 7u64),
+            ("192.168.1.11", 5),
+            ("192.168.1.12", 3),
+            ("192.168.1.13", 2),
+        ];
+        let mut i = 0;
+        for (ip, n) in hosts {
+            for _ in 0..n {
+                i += 1;
+                src.pipeline
+                    .telemetry
+                    .emit_query(&event(ip, t0 + i, i), name);
+            }
+        }
+        let total: usize = hosts.iter().map(|h| usize::try_from(h.1).unwrap()).sum();
+        drop(aggregator); // the final drain finishes the segment
+        let api = ApiBackend {
+            src: Arc::clone(&src),
+        };
+        let run = |client: &str, not: bool| {
+            api.queries(
+                &telltale_api::model::QueryParams {
+                    client: Some(client.into()),
+                    client_not: not.then_some(true),
+                    ..telltale_api::model::QueryParams::default()
+                },
+                t0 * 1_000_000,
+                0,
+                1_000,
+            )
+        };
+        let ips_of = |p: QueryPage| -> std::collections::BTreeSet<String> {
+            p.items.into_iter().map(|r| r.client).collect()
+        };
+        let set = |v: &[&str]| -> std::collections::BTreeSet<String> {
+            v.iter().map(ToString::to_string).collect()
+        };
+        let all = run("192.168.1.10,192.168.1.11,192.168.1.12,192.168.1.13", false)
+            .unwrap()
+            .items
+            .len();
+        assert_eq!(all, total, "every row is in the log");
+        // Two addresses: exactly their rows.
+        let two = run("192.168.1.10, 192.168.1.12", false).unwrap();
+        assert_eq!(two.items.len(), 7 + 3);
+        assert_eq!(ips_of(two), set(&["192.168.1.10", "192.168.1.12"]));
+        // A router name is every address the router gave it.
+        let phone = run("hostname:phone", false).unwrap();
+        assert_eq!(phone.items.len(), 7 + 5);
+        assert_eq!(ips_of(phone), set(&["192.168.1.10", "192.168.1.11"]));
+        // A name and an address, together; the complement is every other client.
+        let mix = run("hostname:phone,192.168.1.13", false).unwrap();
+        assert_eq!(mix.items.len(), 7 + 5 + 2);
+        let rest = run("hostname:phone,192.168.1.13", true).unwrap();
+        assert_eq!(ips_of(rest), set(&["192.168.1.12"]));
+        // A trailing comma is still one plain address.
+        assert_eq!(run("192.168.1.10,", false).unwrap().items.len(), 7);
+        assert_eq!(run("192.168.1.10,", true).unwrap().items.len(), 5 + 3 + 2);
+        // A name nobody holds: nothing, and with `clientNot` everything.
+        assert_eq!(run("hostname:nobody", false).unwrap().items.len(), 0);
+        assert_eq!(run("hostname:nobody", true).unwrap().items.len(), all);
+        // A name that holds more addresses than the cap is cut, and says so.
+        let many = big();
+        let many: Vec<(&str, &str)> = many.iter().map(|(a, n)| (a.as_str(), *n)).collect();
+        snap.policy.clients.set_router_names(names(&many));
+        assert!(run("hostname:big", false).unwrap().client_truncated);
+        assert!(!run("hostname:nobody", false).unwrap().client_truncated);
+        // Too many clients is refused, and so is a token that is nothing.
+        let lots: Vec<String> = (0..=MAX_CLIENT_TOKENS)
+            .map(|i| format!("10.2.0.{i}"))
+            .collect();
+        assert!(run(&lots.join(","), false).is_err());
+        assert!(run("192.168.1.10,nope", false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod client_policy_tests {
+    use super::*;
+    use telltale_api::model::ExplainParams;
+
+    const CONFIG: &str = r#"
+[[group]]
+name = "default"
+[[group]]
+name = "kids"
+[[group]]
+name = "iot"
+networks = ["10.7.0.0/16"]
+
+[[client]]
+name = "phone"
+match = ["aa:bb:cc:dd:ee:02"]
+groups = ["kids"]
+
+[[client]]
+name = "tv"
+match = ["10.7.0.20"]
+
+[[client]]
+name = "printer"
+match = ["10.8.0.0/24"]
+groups = ["iot"]
+"#;
+
+    fn api() -> ApiBackend {
+        let src = Arc::new(crate::http::tests::sources());
+        let cfg = telltale_config::Loader::new()
+            .toml_str("t.toml", CONFIG)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = telltale_policy::LocalData::from_config(&cfg);
+        src.pipeline.reload(
+            Arc::new(telltale_upstream::Router::default()),
+            crate::pipeline::Policy::from_config(&cfg, local),
+        );
+        src.config.store(Arc::new(cfg));
+        ApiBackend { src }
+    }
+
+    fn explain_for(
+        api: &ApiBackend,
+        ip: &str,
+        mac: Option<&str>,
+    ) -> telltale_api::model::Explanation {
+        api.explain(&ExplainParams {
+            name: "www.example.org".into(),
+            client: Some(ip.into()),
+            qtype: None,
+            mac: mac.map(str::to_owned),
+        })
+        .unwrap()
+    }
+
+    /// REQ: FLT-006, API-010, AGT-001 (T24.30) — a device asked for by name is read the way a query
+    /// from it is: a MAC-only device with no address yet is a stand-in (and says so), one the
+    /// neighbor table knows is read at its address, a device with a network key and one with an
+    /// inherited network group are named by their key, and the answer equals Explain's for the same
+    /// device. A name that is nothing is a 404.
+    #[test]
+    fn flt_006_policy_by_device_name_agrees_with_explain() {
+        let api = api();
+        // MAC only, never seen: a stand-in, matched by the MAC.
+        let p = api.client_policy("phone").unwrap();
+        assert_eq!(p.device.as_deref(), Some("phone"));
+        assert_eq!(p.identified_by, "neighbor_mac");
+        assert_eq!(p.matched_key.as_deref(), Some("aa:bb:cc:dd:ee:02"));
+        assert_eq!(
+            (p.group.as_str(), p.group_from.as_str()),
+            ("kids", "device")
+        );
+        assert!(p.address.is_none() && p.notes.iter().any(|n| n.contains("no single address")));
+        let ex = explain_for(&api, "10.9.9.9", Some("aa:bb:cc:dd:ee:02"));
+        assert_eq!(ex.client.identified_by, p.identified_by);
+        assert_eq!(ex.client.matched_key, p.matched_key);
+        assert_eq!(ex.client.groups, p.groups);
+        assert_eq!(ex.client.group_from, p.group_from);
+        // The neighbor table now knows where it is: read at that address, matched the same way.
+        let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02];
+        api.src
+            .pipeline
+            .neighbors
+            .replace([("10.7.0.55".parse().unwrap(), mac)]);
+        let p = api.client_policy("PHONE").unwrap();
+        assert_eq!(p.address.as_deref(), Some("10.7.0.55"));
+        assert_eq!(p.identified_by, "neighbor_mac");
+        assert_eq!(p.group, "kids");
+        // A device with an address key and no groups of its own takes its network's group.
+        let tv = api.client_policy("tv").unwrap();
+        assert_eq!(tv.identified_by, "ip");
+        assert_eq!(tv.matched_key.as_deref(), Some("10.7.0.20"));
+        assert_eq!(
+            (tv.group.as_str(), tv.group_from.as_str()),
+            ("iot", "network")
+        );
+        assert_eq!(tv.group_key.as_deref(), Some("10.7.0.0/16"));
+        let ex = explain_for(&api, "10.7.0.20", None);
+        assert_eq!(
+            (
+                ex.client.group.as_str(),
+                ex.client.group_from.as_str(),
+                ex.client.group_key.clone()
+            ),
+            (
+                tv.group.as_str(),
+                tv.group_from.as_str(),
+                tv.group_key.clone()
+            )
+        );
+        // A network-keyed device.
+        // By name it is a stand-in (no single address; never read at the range's own address) and
+        // the note says why; read at a member's address it is matched by the network.
+        let pr = api.client_policy("printer").unwrap();
+        assert!(pr.address.is_none(), "{pr:?}");
+        assert!(
+            pr.notes.iter().any(|n| n.contains("no single address")),
+            "{:?}",
+            pr.notes
+        );
+        // Probed at a member address it is the printer, in its own group, with no false note.
+        assert_eq!(pr.device.as_deref(), Some("printer"));
+        assert_eq!(pr.identified_by, "cidr");
+        assert_eq!(pr.group, "iot");
+        assert!(
+            !pr.notes.iter().any(|n| n.contains("not recognized")),
+            "{:?}",
+            pr.notes
+        );
+        let member = api.client_policy("10.8.0.9").unwrap();
+        assert_eq!(member.identified_by, "cidr");
+        assert_eq!(member.matched_key.as_deref(), Some("10.8.0.0/24"));
+        // An address that is no device, and a name that is nothing.
+        assert_eq!(api.client_policy("203.0.113.9").unwrap().group, "default");
+        assert!(api.client_policy("nobody").is_err());
+    }
 }

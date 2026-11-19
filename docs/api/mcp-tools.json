@@ -100,11 +100,11 @@
       "additionalProperties": false,
       "properties": {
         "client": {
-          "description": "Client IP or device name.",
+          "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these.",
           "type": "string"
         },
         "clientNot": {
-          "description": "Keep the queries from every client except `client`. Needs `client`.",
+          "description": "Keep the queries from every client except those in `client`. Needs `client`.",
           "type": "boolean"
         },
         "cursor": {
@@ -185,7 +185,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity and groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'.",
+    "description": "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity, the key it matched on and where its group came from, the groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'. For everything that applies to a device, use get_client_policy.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -216,7 +216,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. A device's profile: its identity, groups, top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+    "description": "Read-only. A device's profile: its identity, groups, the policy that applies to it (policy: the group and the key that matched, lists, services, schedules, rules; needs config:read), top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -254,6 +254,21 @@
       "type": "object"
     },
     "name": "list_networks"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_upstream_presets"
   },
   {
     "annotations": {
@@ -432,6 +447,29 @@
       "type": "object"
     },
     "name": "identify_device"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Every filter and rule that applies to one device, and why: the group it lands in and the key that matched (client ID, MAC, workload, address, network or router name, with the precedence ladder), then sections for the block response, the group's lists and blocked services, SafeSearch and YouTube, answer filtering, rewrites, schedules (and whether each is in effect now), the quick rules that apply (with expiry) and the upstream group. It is resolved the way a query and explain_decision resolve the device, so the two agree. Give a device name, an IP, or a Kubernetes workload. Needs config:read; a group-restricted token sees its group's devices only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "A device's name, its IP, or a workload (namespace/kind/name).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "type": "object"
+    },
+    "name": "get_client_policy"
   },
   {
     "annotations": {
@@ -1923,7 +1961,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+    "description": "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1937,6 +1975,28 @@
         "enabled": {
           "description": "Turn the exclusions on or off (the lists are kept).",
           "type": "boolean"
+        },
+        "log": {
+          "additionalProperties": false,
+          "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.",
+          "properties": {
+            "clients": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "domains": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "own_lookups": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
         },
         "names": {
           "description": "Names kept out, each with its subdomains (replaces the current list).",

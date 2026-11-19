@@ -49,6 +49,7 @@
 
 <script lang="ts">
   import { untrack } from 'svelte';
+  import Picker from './Picker.svelte';
   import { api, type S } from '../api';
   import { can } from '../session.svelte';
   import { currentMode } from '../mode.svelte';
@@ -207,6 +208,12 @@
     }
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? name, isNew: !e, values: { ...initial, ...def, ...fill } };
+    // REQ: OBS-903 (T24.35) — a field keyed `log.clients` edits the `clients` of the entry's `log` object.
+    for (const f of fields.filter((f) => f.key.includes('.'))) {
+      const [outer, inner] = f.key.split('.');
+      const o = editing.values[outer];
+      if (o && typeof o === 'object' && inner in (o as Record<string, unknown>)) editing.values[f.key] = (o as Record<string, unknown>)[inner];
+    }
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
   // REQ: FLT-005 (T24.15) — a draft from another page opens a new entry, once per draft object. The
@@ -248,6 +255,16 @@
       if (x === '' || x === null || x === undefined || (Array.isArray(x) && x.length === 0 && f.type !== 'multi')) delete v[f.key];
     }
     for (const f of fields) if (f.enabledWhen && !f.enabledWhen(v)) delete v[f.key];
+    // REQ: OBS-903 — dotted fields go back into their object, which is rebuilt from them alone.
+    const dotted = fields.filter((f) => f.key.includes('.'));
+    for (const outer of new Set(dotted.map((f) => f.key.split('.')[0]))) delete v[outer];
+    for (const f of dotted) {
+      const [outer, inner] = f.key.split('.');
+      const x = v[f.key];
+      delete v[f.key];
+      if (x === undefined) continue;
+      v[outer] = { ...((v[outer] as Record<string, unknown> | undefined) ?? {}), [inner]: x };
+    }
     return v;
   }
 
@@ -424,6 +441,20 @@
                 else delete editing!.values[f.key];
               }}
             />
+          {:else if f.type === 'multi'}
+            <!-- REQ: UI-901 (T24.34) — choose from the list with the searchable picker. Values chosen
+                 earlier that aren't offered now (a node gone) stay visible as chips. -->
+            <div class="mfield">
+              <span class="mlabel">{f.label}</span>
+              <Picker
+                label={f.label}
+                items={[...new Set([...(f.options ?? []), ...(((editing.values[f.key] as string[] | undefined) ?? []))])].map((o) => ({ value: o, label: f.optionLabels?.[o] ?? o }))}
+                selected={(editing.values[f.key] as string[] | undefined) ?? []}
+                disabled={locked(f)}
+                onchange={(v) => (editing!.values[f.key] = v)}
+                maxChips={4}
+              />
+            </div>
           {:else}
           <label>
             {f.label}
@@ -432,24 +463,6 @@
                 <option value={undefined}>(default)</option>
                 {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
               </select>
-            {:else if f.type === 'multi'}
-              <!-- Values chosen earlier that aren't offered now (a node gone) stay visible. -->
-              {@const chosen = (editing.values[f.key] as string[] | undefined) ?? []}
-              <span class="multi" role="group" aria-label={f.label}>
-                {#each [...new Set([...(f.options ?? []), ...chosen])] as o (o)}
-                  {@const arr = (editing.values[f.key] as string[] | undefined) ?? []}
-                  <label class="check"
-                    ><input
-                      type="checkbox"
-                      checked={arr.includes(o)}
-                      onchange={(ev) =>
-                        (editing!.values[f.key] = (ev.currentTarget as HTMLInputElement).checked
-                          ? [...arr, o]
-                          : arr.filter((x) => x !== o))}
-                    />{f.optionLabels?.[o] ?? o}</label
-                  >
-                {/each}
-              </span>
             {:else if f.type === 'lines' && f.fromText}
               <textarea
                 rows="4"
@@ -544,10 +557,9 @@
     display: grid;
     gap: 4px;
   }
-  .multi {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
+  .mfield {
+    display: grid;
+    gap: 4px;
   }
   .check {
     display: inline-flex !important;

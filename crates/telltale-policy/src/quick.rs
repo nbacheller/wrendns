@@ -207,6 +207,17 @@ impl QuickRules {
         &self.rules
     }
 
+    /// REQ: FLT-005, FLT-006 (T24.30) — whether rule `i` is scoped to this client (its device, one
+    /// of its groups, or everyone), by the same test `decide` applies. Expiry isn't checked here.
+    /// Off the query path.
+    pub fn applies_to(&self, i: usize, who: Identity, peer: IpAddr, groups: &[u16]) -> bool {
+        let Some(r) = self.rules.get(i) else {
+            return false;
+        };
+        let host = self.router_names.as_ref().and_then(|n| n.get(peer));
+        applies(&r.scope, who, peer, groups, host.as_deref())
+    }
+
     /// The deciding rule for `qname` (wire format) asked by a client, at `now` (Unix
     /// seconds), or `None` to let the lists decide. Allocation-free.
     pub fn decide(

@@ -18,6 +18,45 @@ pub const WORKER_MEMORY_MAX_MIB: u32 = 128;
 /// REQ: DSC-002 (ADR-908) — the default worker memory limit, in MiB.
 pub const WORKER_MEMORY_DEFAULT_MIB: u32 = 64;
 
+/// REQ: DSC-009 (T25.10, ADR-912) — the shortest `stat/alluser` window, in hours.
+pub const ALL_USERS_MIN_HOURS: u32 = 1;
+/// REQ: DSC-009 (ADR-912) — the longest `stat/alluser` window, in hours (one year).
+pub const ALL_USERS_MAX_HOURS: u32 = 8_760;
+/// REQ: DSC-009 (ADR-912) — the default `stat/alluser` window, in hours (30 days).
+pub const ALL_USERS_DEFAULT_HOURS: u32 = 720;
+
+/// REQ: DSC-009 (T25.10, ADR-912) — which extra read-only UniFi reads the inventory makes, for
+/// each UniFi `[[router]]`. Each one is off until an admin turns it on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UnifiReads {
+    /// Read more fields of the clients the router poll already reads (`stat/sta`, `rest/user`):
+    /// wired or wireless, the switch port, the access point, the VLAN and network, and the first
+    /// time the client was seen. No extra request.
+    pub client_fields: bool,
+    /// `POST stat/alluser` (a query, it changes nothing): clients UniFi has seen within
+    /// `unifi_all_users_within_hours`, as history (class 5). Never a current address.
+    pub all_users: bool,
+    /// `GET stat/device`: UniFi's own devices, their switch-port MAC tables (where a client plugs
+    /// in) and LLDP neighbours.
+    pub devices: bool,
+}
+
+impl UnifiReads {
+    /// Whether any extra UniFi read is on.
+    pub fn any(&self) -> bool {
+        self.client_fields || self.all_users || self.devices
+    }
+}
+
+fn default_within_hours() -> u32 {
+    ALL_USERS_DEFAULT_HOURS
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// REQ: DSC-001 — the network inventory section (`[discovery]`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
@@ -35,6 +74,16 @@ pub struct DiscoveryConfig {
     /// inventory already has, never a list of targets (ADR-907).
     #[serde(default, rename = "subnet")]
     pub subnets: Vec<DiscoverySubnet>,
+    /// REQ: DSC-009 (ADR-912) — the extra UniFi reads, all off by default.
+    #[serde(default)]
+    pub unifi_reads: UnifiReads,
+    /// REQ: DSC-009 (ADR-912) — how far back `stat/alluser` reaches, in hours (1 to 8,760).
+    #[serde(default = "default_within_hours")]
+    pub unifi_all_users_within_hours: u32,
+    /// REQ: DSC-009 (ADR-912) — read Home Assistant's registry devices that have a MAC and no
+    /// entity, into the inventory only. On by default; it applies only when discovery is on.
+    #[serde(default = "default_true")]
+    pub home_assistant_all_devices: bool,
 }
 
 impl Default for DiscoveryConfig {
@@ -44,6 +93,9 @@ impl Default for DiscoveryConfig {
             node: None,
             worker_memory_mib: WORKER_MEMORY_DEFAULT_MIB,
             subnets: Vec::new(),
+            unifi_reads: UnifiReads::default(),
+            unifi_all_users_within_hours: ALL_USERS_DEFAULT_HOURS,
+            home_assistant_all_devices: true,
         }
     }
 }
@@ -211,5 +263,81 @@ mod tests {
         assert_eq!(back, cfg.discovery);
         let bad = load("[discovery]\nenabld = true\n").unwrap_err();
         assert!(bad.iter().any(|e| e.message.contains("enabld")), "{bad:?}");
+    }
+    /// REQ: DSC-009 (T25.10, ADR-912) - the extra reads: every UniFi read is off by default, the
+    /// window is 720 hours, and Home Assistant's all-devices read is on (it applies only when
+    /// discovery is on).
+    #[test]
+    fn dsc_009_defaults_and_keys() {
+        let d = Config::default().discovery;
+        assert!(!d.unifi_reads.any());
+        assert_eq!(d.unifi_all_users_within_hours, 720);
+        assert!(d.home_assistant_all_devices);
+        let cfg = load(
+            "[discovery]
+enabled = true
+unifi_all_users_within_hours = 48
+home_assistant_all_devices = false
+[discovery.unifi_reads]
+all_users = true
+devices = true
+",
+        )
+        .unwrap();
+        assert!(cfg.discovery.unifi_reads.all_users && cfg.discovery.unifi_reads.devices);
+        assert!(!cfg.discovery.unifi_reads.client_fields);
+        assert_eq!(cfg.discovery.unifi_all_users_within_hours, 48);
+        assert!(!cfg.discovery.home_assistant_all_devices);
+        // The set values round-trip, and an unknown read is refused by name.
+        let text = toml::to_string(&cfg.discovery).unwrap();
+        assert_eq!(
+            toml::from_str::<DiscoveryConfig>(&text).unwrap(),
+            cfg.discovery
+        );
+        let bad = load(
+            "[discovery]
+[discovery.unifi_reads]
+alluser = true
+",
+        )
+        .unwrap_err();
+        assert!(bad.iter().any(|e| e.message.contains("alluser")), "{bad:?}");
+    }
+
+    /// REQ: DSC-009 - the `stat/alluser` window is 1 to 8,760 hours.
+    #[test]
+    fn dsc_009_window_bounds() {
+        assert!(
+            load(
+                "[discovery]
+unifi_all_users_within_hours = 0
+"
+            )
+            .is_err()
+        );
+        assert!(
+            load(
+                "[discovery]
+unifi_all_users_within_hours = 8761
+"
+            )
+            .is_err()
+        );
+        assert!(
+            load(
+                "[discovery]
+unifi_all_users_within_hours = 1
+"
+            )
+            .is_ok()
+        );
+        assert!(
+            load(
+                "[discovery]
+unifi_all_users_within_hours = 8760
+"
+            )
+            .is_ok()
+        );
     }
 }

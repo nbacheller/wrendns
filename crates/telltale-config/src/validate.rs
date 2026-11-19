@@ -464,6 +464,38 @@ fn exclusions(cfg: &Config, r: &mut Report<'_>) {
             r.err(format!("exclusions.{what}"), "at most 1,000");
         }
     }
+    // REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log only: domains (exact, or
+    // `*.` for everything under), clients as an address, a network, or a device name.
+    for (i, d) in x.log.domains.iter().enumerate() {
+        if !suffix_name_ok(d) {
+            r.err(
+                format!("exclusions.log.domains[{i}]"),
+                format!("`{d}` isn't a domain name (e.g. localhost or *.lan)"),
+            );
+        }
+    }
+    for (i, c) in x.log.clients.iter().enumerate() {
+        let c = c.trim();
+        let looks_numeric = c.contains('/') || c.parse::<std::net::IpAddr>().is_ok();
+        if (looks_numeric && crate::Cidr::parse(c).is_err())
+            || c.is_empty()
+            || c.len() > 128
+            || c.chars().any(char::is_control)
+        {
+            r.err(
+                format!("exclusions.log.clients[{i}]"),
+                format!("`{c}` isn't an address, a network, or a device name"),
+            );
+        }
+    }
+    for (what, n) in [
+        ("domains", x.log.domains.len()),
+        ("clients", x.log.clients.len()),
+    ] {
+        if n > 1000 {
+            r.err(format!("exclusions.log.{what}"), "at most 1,000");
+        }
+    }
     // REQ: OBS-037 — internal names are domain names too, at most 100.
     let names = &cfg.telemetry.internal_names;
     for (i, n) in names.iter().enumerate() {
@@ -2041,6 +2073,15 @@ fn discovery(cfg: &Config, r: &mut Report<'_>) {
         r.err(
             "discovery.worker_memory_mib",
             "from 32 to 128 (MiB per discovery worker)",
+        );
+    }
+    // REQ: DSC-009 (ADR-912) — the `stat/alluser` window.
+    if !(crate::discovery::ALL_USERS_MIN_HOURS..=crate::discovery::ALL_USERS_MAX_HOURS)
+        .contains(&d.unifi_all_users_within_hours)
+    {
+        r.err(
+            "discovery.unifi_all_users_within_hours",
+            "from 1 to 8,760 (hours, up to one year)",
         );
     }
     for (i, s) in d.subnets.iter().enumerate() {

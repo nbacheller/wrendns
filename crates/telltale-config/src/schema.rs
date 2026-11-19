@@ -1989,6 +1989,11 @@ pub struct ExclusionsConfig {
     pub names: Vec<SafeString>,
     /// Devices left out: addresses or networks.
     pub clients: Vec<Cidr>,
+    /// REQ: OBS-903 (T24.35, ADR-1014) — queries kept out of the query log (and the live view and
+    /// event sinks) only. Unlike the lists above they are still counted in the statistics
+    /// (dashboard, top lists, anomalies) and `/metrics`.
+    #[serde(skip_serializing_if = "LogExclusions::is_default")]
+    pub log: LogExclusions,
 }
 
 impl Default for ExclusionsConfig {
@@ -1997,6 +2002,7 @@ impl Default for ExclusionsConfig {
             enabled: true,
             names: Vec::new(),
             clients: Vec::new(),
+            log: LogExclusions::default(),
         }
     }
 }
@@ -2006,9 +2012,36 @@ impl ExclusionsConfig {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-    /// Whether anything is excluded at all.
+    /// Whether anything is excluded from the statistics too (`names` and `clients`).
     pub fn active(&self) -> bool {
         self.enabled && !(self.names.is_empty() && self.clients.is_empty())
+    }
+    /// Whether anything is kept out of the query log only (`log`).
+    pub fn log_active(&self) -> bool {
+        self.enabled && !self.log.is_default()
+    }
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log but still counts in the
+/// statistics. Applied when the event is written, on the aggregator thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct LogExclusions {
+    /// Clients left out of the log: addresses (`192.168.1.10`), networks (`10.20.0.0/24`), or
+    /// device names (`[[client]] name`, resolved on every reload).
+    pub clients: Vec<SafeString>,
+    /// Domains left out of the log: `localhost` is that name only; `*.lan` is every name under it
+    /// (not `lan` itself).
+    pub domains: Vec<SafeString>,
+    /// This node's own lookups (loopback and the node's own addresses: a health check, a
+    /// watchdog, programs on the host) stay out of the log.
+    pub own_lookups: bool,
+}
+
+impl LogExclusions {
+    /// Whether nothing is left out (the default; not written back).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 

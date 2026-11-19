@@ -422,6 +422,8 @@ export const api = {
   dhcpLeases: () => get<S['Items_DhcpLease']>('/dhcp/leases'),
   // REQ: API-013 (T22.2, T24.15) - the networks the routers report, and the groups' networks.
   networks: () => get<S['Items_NetworkInfo']>('/networks'),
+  // REQ: UPS-004 (T24.36) - the public resolvers the Upstreams page's simple view offers.
+  upstreamPresets: () => get<S['UpstreamPresets']>('/upstream-presets'),
   // REQ: DNS-018 (T8.6)
   zones: () => get<S['Items_ZoneInfo']>('/zones'),
   // REQ: OBS-010 (T9.6)
@@ -434,6 +436,8 @@ export const api = {
   identities: () => get<S['Items_DeviceIdentity']>('/clients/identities'),
   identity: (id: string) => get<S['DeviceIdentity']>(`/clients/${encodeURIComponent(id)}/identity`),
   rhythm: (id: string) => get<S['ClientRhythm']>(`/clients/${encodeURIComponent(id)}/rhythm`),
+  // REQ: FLT-006, API-010 (T24.30, ADR-996) — a device's effective policy.
+  clientPolicy: (id: string) => get<S['ClientPolicy']>(`/clients/${encodeURIComponent(id)}/policy`),
   timeline: (id: string, q: { from?: string; to?: string; bins?: number; lanes?: number } = {}) =>
     get<S['DeviceTimeline']>(`/clients/${encodeURIComponent(id)}/timeline`, q),
   // REQ: FLT-017 (T15.1) — Kubernetes workloads as devices.

@@ -6,6 +6,7 @@
   import FlowDiagram from './FlowDiagram.svelte';
   import type { FlowPath } from '../help';
   import { href } from '../router.svelte';
+  import PolicyLine from './PolicyLine.svelte';
 
   let { x }: { x: S['Explanation'] } = $props();
 
@@ -79,7 +80,7 @@
   {/if}
 
   <section class="card" data-testid="explain-flow">
-    <FlowDiagram highlight={path} device={x.client.device ?? x.client.ip} name={x.name} {detail} />
+    <FlowDiagram highlight={path} device={['neighbor_mac', 'edns_mac', 'client_id'].includes(x.client.identifiedBy) ? (x.client.device ?? x.client.ip) : x.client.ip} name={x.name} {detail} />
   </section>
 
   <section class="card">
@@ -92,6 +93,19 @@
       <dd>{x.client.device ?? 'not a configured device'} <span class="muted small">(by {x.client.identifiedBy})</span></dd>
       <dt>Groups</dt>
       <dd>{x.client.groups.join(', ') || '–'}</dd>
+    </dl>
+    <!-- REQ: FLT-006, API-010 (T24.30, ADR-996) — the policy step: the group, where it came from and the key that matched. -->
+    {#if x.client.group}
+      <PolicyLine
+        device={x.client.device ?? x.client.ip}
+        group={x.client.group}
+        groupFrom={x.client.groupFrom}
+        groupKey={x.client.groupKey}
+        matchedKey={x.client.matchedKey}
+        identifiedBy={x.client.identifiedBy}
+      />
+    {/if}
+    <dl>
       <dt>Query</dt>
       <dd><span class="mono">{x.name}</span> {x.qtype}</dd>
     </dl>

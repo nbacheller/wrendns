@@ -65,7 +65,16 @@ pub(crate) fn is_node_telemetry(kind: ManagedKind) -> bool {
 }
 
 /// REQ: DSC-001 (T25.2, ADR-907) — the fields of `[discovery]` a kind's entry carries.
-const DISCOVERY_KEYS: &[&str] = &["enabled", "node", "worker_memory_mib", "subnet"];
+const DISCOVERY_KEYS: &[&str] = &[
+    "enabled",
+    "node",
+    "worker_memory_mib",
+    "subnet",
+    // REQ: DSC-009 (T25.10, ADR-912) — the extra UniFi and Home Assistant reads.
+    "unifi_reads",
+    "unifi_all_users_within_hours",
+    "home_assistant_all_devices",
+];
 
 /// The fields a kind's API entry carries (what the UI edits).
 pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
