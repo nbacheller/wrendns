@@ -5600,7 +5600,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Rotation:** a new key means a new pair, updating the three places and the secret in one commit, and noting it in the release notes. Nodes on the old key are moved by `install.sh`, as in point 4.
 
-## ADR-1035 — The SPDX header check covers source files added after `permissive-final`, and nothing older (Proposed 2026-11-19, T33.5)
+## ADR-1035 — The SPDX header check covers source files added after `permissive-final`, and nothing older (Accepted 2026-11-19, T33.5)
 
 **Context:** ADR-1033 asks for SPDX headers on new files and a check, without saying which files are new, which kinds of file count, or what is exempt. Editing every existing file would touch most of the repository, mix the licence change into unrelated history, and blur which files upstream wrote.
 
