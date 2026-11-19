@@ -441,6 +441,10 @@ There is no free cloud tier for the roaming resolver: every query needs a device
 
 **Phase 3 — paid tiers.** Dynamic DNS and managed location names (T36.11), the cloud fallback resolver (T36.12), QUIC transport, support grants, more broker capacity behind a load balancer, and an EU region on demand.
 
+## Owner decisions (2026-11-19)
+
+The owner accepted every recommendation in the list below. The domain for tenant names is **wrendns.net**: a tenant is `<slug>.wrendns.net`, its device and dynamic names are on `<slug>-dev.wrendns.net`, and the portal and OIDC issuer stay on `dns.wrendns.com`. wrendns.net is registered for at least two years and submitted to the Public Suffix List before any tenant name is issued (T36.1). The list below is kept as the record of what was decided and why.
+
 ## Open questions for the owner
 
 Asked together at the start of M36, with "accept all recommendations". Ordered by how much they block.
