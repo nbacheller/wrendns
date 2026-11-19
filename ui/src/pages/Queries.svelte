@@ -10,6 +10,7 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
   import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
@@ -263,6 +264,8 @@
 <div class="page">
   <div class="page-head">
     <h1>Query log<HelpButton id="query-log" /></h1>
+    <!-- REQ: OBS-003 (T27.5, ADR-1007) — the store, its retention and its privacy level: an admin's. -->
+    <TuningSettings which="qlog" />
     <span class="switch-track live-toggle">
       <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />Live</label>
       <HelpButton id="live-view" />

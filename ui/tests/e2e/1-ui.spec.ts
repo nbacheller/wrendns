@@ -1624,6 +1624,9 @@ test('api_011 names on my network: wizards, DNS, and the API', async () => {
 // device for an hour; DNS stops blocking it at once, the Rules page shows it with its
 // countdown, and removing it blocks the name again. No list is recompiled.
 test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
+  // The poll below allows 60 s for the allowed query to be logged; the default 30 s test timeout
+  // would end the test first on a starved runner.
+  test.setTimeout(90_000);
   expect(await query('ads.e2e.test')).toBe(0); // blocked: 0.0.0.0
   await page.goto('/#/queries?status=blocked&name=ads.e2e.test&match=exact');
   await page.getByRole('button', { name: 'Why?' }).first().click();
@@ -4048,6 +4051,167 @@ test('dns_023 viewer sees device-name settings read-only', async () => {
   } finally {
     await v.close();
   }
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — a record's TTL and node-only flag from the local DNS page: the
+// answer on the wire carries the TTL, and the node-only name shows as such in the list.
+test('dns_010 record ttl', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/local-dns');
+  await page.getByRole('button', { name: 'Add a name' }).click();
+  const form = page.locator('form').filter({ has: page.getByLabel('TTL in seconds (optional)') });
+  await form.getByLabel('Name', { exact: true }).fill('ttl010.home.arpa');
+  await form.getByLabel('Address', { exact: true }).fill('192.0.2.10');
+  await form.getByLabel('TTL in seconds (optional)').fill('60');
+  await form.getByLabel('Only on this node (the cluster doesn\'t share it)').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const row = page.locator('tr').filter({ hasText: 'ttl010.home.arpa' });
+  await expect(row).toContainText('60');
+  await expect(row).toContainText('this node only');
+  const answer = await queryDetail('ttl010.home.arpa');
+  expect(answer.address).toBe('192.0.2.10');
+  expect(answer.ttl).toBe(60);
+  await row.getByRole('button', { name: 'Remove ttl010.home.arpa' }).click();
+  await expect(page.locator('tr').filter({ hasText: 'ttl010.home.arpa' })).toHaveCount(0);
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — a conditional-forwarding route limited to a client group and a
+// query type, with the trust anchor and node-only choices, shown in the preview and the list.
+test('dns_010 route by group and type', async () => {
+  await page.goto('/#/local-dns');
+  await page.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+  const form = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+  await form.getByLabel('Domain', { exact: true }).fill('routed010.example');
+  await form.getByLabel('Server address', { exact: true }).fill('10.10.10.53');
+  await form.getByLabel('Only for the devices in these groups (optional)').fill('lab');
+  await form.getByLabel('Only for these query types (optional)').fill('ptr');
+  await expect(form.getByText('for the devices in lab')).toBeVisible();
+  await form.getByLabel('Only on this node (the cluster doesn\'t share it)').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'routed010.example for the devices in lab' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const row = page.locator('tr').filter({ hasText: 'routed010.example' });
+  await expect(row).toContainText('for lab');
+  await expect(row).toContainText('PTR');
+  await expect(row).toContainText('this node only');
+  await row.getByRole('button', { name: 'Stop sending routed010.example' }).click();
+  await expect(page.locator('tr').filter({ hasText: 'routed010.example' })).toHaveCount(0);
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — an authoritative zone made from the local DNS page answers its
+// names itself and gives "no such name" for a name the zone doesn't have.
+test('dns_010 add a zone', async () => {
+  await page.goto('/#/local-dns');
+  await page.getByTestId('zone-add').click();
+  const form = page.getByTestId('zone-form');
+  await form.getByLabel('Zone (its domain)').fill('zone010.e2e.test');
+  await form.getByLabel('Record 1 name').fill('printer.zone010.e2e.test');
+  await form.getByLabel('Record 1 type').selectOption('A');
+  await form.getByLabel('Record 1 value').fill('192.168.11.20');
+  await form.getByLabel('Record 1 TTL').fill('120');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'zone010.e2e.test' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const zoneRow = page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' });
+  await expect(zoneRow).toContainText('the UI / API');
+  const answer = await queryDetail('printer.zone010.e2e.test');
+  expect(answer.address).toBe('192.168.11.20');
+  expect(answer.ttl).toBe(120);
+  // The refusal for a name it doesn't have is expected: the zone answers it itself.
+  expect(await query('ghost.zone010.e2e.test')).toBe(3);
+  // REQ: DNS-010 (T27.7) — an API zone is edited in place: the new address is answered at once.
+  await zoneRow.getByRole('button', { name: 'Edit zone zone010.e2e.test' }).click();
+  await page.getByTestId('zone-form').getByLabel('Record 1 value').fill('192.168.11.21');
+  await page.getByTestId('zone-form').getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'zone010.e2e.test' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  expect((await queryDetail('printer.zone010.e2e.test')).address).toBe('192.168.11.21');
+  await zoneRow.getByRole('button', { name: 'Remove zone zone010.e2e.test' }).click();
+  await expect(page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' })).toHaveCount(0);
+});
+
+// REQ: OBS-020 (T27.5, ADR-1007) — the listener checks' interval is changed from Settings → System,
+// applied with no restart (the card reads it back), and reverted to the file.
+test('obs_020 change probe interval', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  const tuning = page.getByTestId('tuning-probe');
+  await tuning.locator('summary').click();
+  const editor = page.getByTestId('editor-probe');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('Every 30 s');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('spinbutton', { name: 'Seconds between rounds' }).fill('45');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('Every 45 s');
+  await expect(row).toContainText('overrides the file');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('Every 30 s');
+});
+
+// REQ: OBS-003 (T27.5, ADR-1007) — the query log's store is an admin's: an operator sees the
+// settings read-only, and the server refuses the privacy level from an operator (403).
+test('obs_003 operator cannot change privacy level', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: 'olive', password: 'an operator password', role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const o = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await o.newPage();
+    await p.goto('/#/queries');
+    await p.getByLabel('Username', { exact: true }).fill('olive');
+    await p.getByLabel('Password', { exact: true }).fill('an operator password');
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await p.goto('/#/queries');
+    await p.getByTestId('tuning-qlog').locator('summary').click();
+    const row = p.getByTestId('editor-qlog_settings').getByTestId('entry-row');
+    await expect(row).toContainText('Privacy level', { timeout: 30_000 });
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    const token = (await (await o.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const refused = await o.request.put('/api/v1/qlog-settings/default', {
+      headers: { 'x-csrf-token': token, 'content-type': 'application/json' },
+      data: { privacy_level: 2 },
+    });
+    expect(refused.status()).toBe(403);
+  } finally {
+    await o.close();
+  }
+});
+
+// REQ: OBS-020 (T27.5, API-901) — the form refuses a probe timeout the server would refuse (a timeout
+// of whole seconds at or above the interval) before it asks the server, and says why.
+test('obs_020 form refuses a timeout longer than the interval', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // The page may already be on this URL (a hash change does not reload it): reload, so the
+  // disclosure starts closed and the click opens it.
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  await page.getByTestId('tuning-probe').locator('summary').click();
+  const row = page.getByTestId('editor-probe').getByTestId('entry-row');
+  await expect(row).toContainText('Every 30 s');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('spinbutton', { name: 'Seconds between rounds' }).fill('5');
+  await page.getByRole('spinbutton', { name: 'Timeout per check (ms)' }).fill('6000');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText('The timeout must be shorter than the interval')).toBeVisible();
+  await expect(row).not.toContainText('Every 5 s');
+});
+
+// REQ: OBS-003 (T27.5, API-901) — the query log's size is checked in the form: a size the server
+// can't read (`2 gigs`) is refused with the accepted units, not sent.
+test('obs_003 form refuses a size it cannot read', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/queries');
+  await page.getByTestId('tuning-qlog').locator('summary').click();
+  const row = page.getByTestId('editor-qlog_settings').getByTestId('entry-row');
+  await expect(row).toContainText('Privacy level');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('textbox', { name: 'Keep at most (size)' }).fill('2 gigs');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText('Keep at most: a size such as 500MiB or 2GiB')).toBeVisible();
 });
 
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.

@@ -1925,7 +1925,11 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // FLT-006's /clients/{id}/policy (T24.30), which the merge of feat/ipam-integrations adds.
     // 171 with UPS-004's /upstream-presets (T24.36), from the same merge.
     // 172 with DSC-004's /discovery/snmp/test (T25.6).
-    assert_eq!(paths.len(), 172);
+    // 173 with DNS-010's /zones/{name} (T27.7), from the merge of feat/t27.5-t27.7-settings.
+    // 179 with the tuning sections' /slo-settings/default, /probe-settings/default,
+    // /upstream-check-settings/default, /anomaly-settings/default, /qlog-settings/default and
+    // /metrics-settings/default (T27.5), from the same merge.
+    assert_eq!(paths.len(), 179);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

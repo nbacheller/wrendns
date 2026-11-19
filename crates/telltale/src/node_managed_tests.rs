@@ -513,3 +513,45 @@ async fn api_016_oidc_on_replica_uses_replicated_secret() {
         "the file's provider is unaffected"
     );
 }
+
+/// REQ: CLU-015 (T24.37, ADR-1016), DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2,
+/// T27.11, ADR-1006), OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005, DNS-010 (T27.5, T27.7,
+/// ADR-1007) — every settings kind the API stores is in exactly one class: node-managed (per node or
+/// node-local) or shared (carried whole so a promoted replica adopts it).
+#[test]
+fn clu_015_every_settings_kind_is_classified_once() {
+    use crate::managed as m;
+    use crate::node_managed::{KINDS, SHARED_KINDS};
+    let node = [
+        m::CACHE,
+        m::SUPPORT,
+        m::UPDATES,
+        m::ANOMALY_SETTINGS,
+        m::QLOG_SETTINGS,
+        m::METRICS_SETTINGS,
+    ];
+    let shared = [
+        m::DNSSEC,
+        m::FILTER,
+        m::DRILL,
+        m::ZONE,
+        m::SLO,
+        m::PROBE,
+        m::UPSTREAM_CHECK,
+    ];
+    for k in node {
+        assert!(
+            KINDS.contains(&k) && !SHARED_KINDS.contains(&k),
+            "{k} is node-managed"
+        );
+    }
+    for k in shared {
+        assert!(
+            SHARED_KINDS.contains(&k) && !KINDS.contains(&k),
+            "{k} is shared"
+        );
+    }
+    for k in KINDS {
+        assert!(!SHARED_KINDS.contains(k), "{k} is in both classes");
+    }
+}

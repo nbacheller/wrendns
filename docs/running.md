@@ -1087,7 +1087,7 @@ default_ttl = 300
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `telltale config check` validates record values and reads the hosts files.
-- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), run **Set up my home domain** (home.arpa by default) for a first device, and **Send a domain to another server** (conditional forwarding). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10"}]}`, and `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers)); all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices.
+- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up my home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
 - **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ### Device names in DNS
@@ -1124,6 +1124,7 @@ type = "A"
 value = "10.10.0.5"
 ```
 - Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry the zone's SOA, owned by its apex, with `negative_ttl`.
+- **Zones made in the UI.** **Names on my network** → **Add a zone** (or `PUT /api/v1/zones/{name}`) makes a zone with the same fields as the file (groups, negative TTL, records with their TTLs and node-only flags), kept in the state database and applied on every node without a restart. A zone the files define is read-only in the UI, and its `file` can only be set in the file.
 - **SOA and NS at the apex** (`dig SOA home.example`, `dig NS home.example`) answer with the zone file's own records. Without a file, or a file without them, they're made up as resolvers serving local zones do: `localhost.` as the name server, `hostmaster.<zone>` as the contact, and `negative_ttl` as the SOA minimum.
 - **Split horizon:** with `groups`, only those groups' devices see the zone; everyone else resolves the domain normally (the public answer). Several zones for the same domain can serve different groups.
 - The most specific zone wins (`a.corp.example.com` over `corp.example.com`). Zones are answered before filtering, like local records.
@@ -1960,7 +1961,7 @@ members = ["home-router"]
 match_suffix = ["home.arpa", "168.192.in-addr.arpa"]   # local names and reverse lookups
 upstream_group = "lan"
 ```
-The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
+The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`, and `match_group = ["kids"]` limits a route to some client groups. `dnssec_nta` (on by default for an API forward) adds a DNSSEC negative trust anchor for the suffixes, and `node_only = true` keeps a route, its group and its servers on the node that has them (CLU-006). In the UI, the **Send a domain to another server** form sets the same fields.
 
 ### Stub zones (the zone's own servers)
 Forwarding asks a server to look the name up for you (recursion desired). A zone's own
@@ -2896,6 +2897,8 @@ primary kept can't be pinned there.
 **Metrics:** `telltale_cluster_pinned` (0/1) and `telltale_cluster_pinned_to{version}`.
 
 ## Monitoring
+**Tuning in the UI (T27.5, ADR-1007).** The objectives (`[slo]`) are on the SLO card, and the listener checks (`[probe]`) on Settings → System, both for operators. Second opinions (`[upstream_check]`) are on the Upstreams page and device anomaly settings (`[telemetry.anomaly]`) on the Anomalies page, and the query log's store, retention and privacy level (`[telemetry.qlog]`) on the Query log page. The per-client metric series (`[telemetry.metrics]`) are on Settings → System. The last four are admin-only, since privacy and retention are at stake, and apply on every node: the privacy level and the anomaly and metric settings within a few seconds, the query log's store after a restart. The API: `PUT`/`DELETE /api/v1/slo-settings/default`, `/probe-settings/default`, `/upstream-check-settings/default`, `/anomaly-settings/default`, `/qlog-settings/default` and `/metrics-settings/default`, with the fields of the file's section as JSON.
+
 **The dashboard across restarts and upgrades.**
 - Charts over time come from `<data_dir>/rollups.db`, kept by minute (7 days), hour (400 days)
   and day. That includes traffic by group, which is stored by group name, so renaming or

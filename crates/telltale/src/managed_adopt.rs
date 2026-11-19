@@ -128,6 +128,28 @@ pub(crate) fn adopt(
     Some(entries)
 }
 
+/// REQ: DNS-010, OBS-016, OBS-020, OBS-019 (T27.5, T27.7) — a zone by apex goes back to the
+/// files' zone of that name (or goes); the SLO, probe and upstream-check sections go back whole.
+fn strip_tuning(cfg: &mut Config, e: &Entry, own: &Config) {
+    match e.kind.as_str() {
+        managed::ZONE => {
+            cfg.zone
+                .retain(|z| !z.name.as_str().eq_ignore_ascii_case(&e.name));
+            if let Some(o) = own
+                .zone
+                .iter()
+                .find(|z| z.name.as_str().eq_ignore_ascii_case(&e.name))
+            {
+                cfg.zone.push(o.clone());
+            }
+        }
+        managed::SLO => cfg.slo = own.slo.clone(),
+        managed::PROBE => cfg.probe = own.probe.clone(),
+        managed::UPSTREAM_CHECK => cfg.upstream_check = own.upstream_check.clone(),
+        _ => {}
+    }
+}
+
 /// Removes from `cfg` (a cluster version, with the API's entries merged in) what `entries` name,
 /// so the node's rows are the only source of them. A name `own` (this node's files) also
 /// defines is put back as the files have it, so deleting the row reveals the files' entry; a
@@ -219,6 +241,9 @@ pub(crate) fn strip(cfg: &mut Config, entries: &[Entry], own: &Config) {
             managed::SPECIAL => cfg.special = own.special.clone(),
             managed::DISCOVERY => cfg.discovery = own.discovery.clone(),
             managed::CLIENTS => cfg.clients.mdns = own.clients.mdns,
+            managed::ZONE | managed::SLO | managed::PROBE | managed::UPSTREAM_CHECK => {
+                strip_tuning(cfg, e, own);
+            }
             managed::LOCAL => {
                 let hosts_files = std::mem::take(&mut cfg.local.hosts_files);
                 cfg.local = own.local.clone();
