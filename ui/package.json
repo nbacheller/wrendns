@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build && node scripts/postbuild.mjs",
     "brand": "node scripts/brand-css.mjs && node scripts/brand-assets.mjs",
-    "check": "node scripts/check-quantifiers.mjs && node scripts/check-no-html.mjs && node scripts/brand-css.mjs --check && node scripts/brand-assets.mjs --check && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "check": "node scripts/check-quantifiers.mjs && node scripts/check-no-html.mjs && node scripts/brand-css.mjs --check && node scripts/brand-assets.mjs --check && node scripts/check-brand.mjs && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
     "check:html": "node scripts/check-no-html.mjs",
     "check:help": "node scripts/check-help.mjs",
