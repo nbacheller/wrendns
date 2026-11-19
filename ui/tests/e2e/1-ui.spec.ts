@@ -3326,6 +3326,57 @@ test('api_015 an existing secret is offered to an entry, not deleted', async () 
   }
 });
 
+// REQ: API-015, CLU-002 (T24.42) — the Secrets page lists every full member of the cluster for each stored
+// secret, the same on every node: one that lacks a secret shows a warning, one that didn't answer is unknown
+// (named in missingNodes), and a resolver pod or a witness is listed as holding none, by design.
+test('api_015 secrets are shown held by every cluster member, with a warning for one that lacks one', async () => {
+  const stamp = { epoch: 1, seq: 3 };
+  const node = (n: string, state: string, held = true) => ({ node: n, applied: state === 'applied', unreadable: state === 'unreadable', state, ...(held ? { stamp } : {}) });
+  const body = {
+    stale: false,
+    head: { epoch: 1, seq: 3, digest: 'd', etag: '1.3.d' },
+    store: { node: 'node-a', state: 'ready', dataEphemeral: false },
+    items: [
+      {
+        name: 'unifi', kind: 'text', set: true, stamp, updated: '2026-11-19T10:00:00Z', updatedBy: 'root', origin: 'cluster', health: 'readable',
+        usedBy: [{ kind: 'router', name: 'udm', field: 'api_key_ref', source: 'stored' }],
+        nodes: [node('node-a', 'applied'), node('node-b', 'applied'), node('node-c', 'missing', false), node('node-d', 'unknown', false)],
+      },
+    ],
+    credentials: [],
+    members: [
+      { node: 'node-a', kind: 'full', state: 'answered', held: 1 },
+      { node: 'node-b', kind: 'full', state: 'answered', held: 1 },
+      { node: 'node-c', kind: 'full', state: 'answered', held: 0 },
+      { node: 'node-d', kind: 'full', state: 'unknown', held: 0 },
+      { node: 'resolver-a', kind: 'resolver', state: 'not_held', held: 0 },
+    ],
+    missingNodes: ['node-d'],
+    warnings: ['`unifi` is missing on node-c'],
+  };
+  await page.route('**/api/v1/secrets', (route) => (route.request().method() === 'GET' ? route.fulfill({ json: body, headers: { etag: '"1.3.d"' } }) : route.fallback()));
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/#/settings?tab=secrets');
+    const members = page.getByTestId('secrets-members');
+    await expect(members).toBeVisible();
+    await expect(members.getByTestId('secrets-member')).toHaveCount(5);
+    await expect(members.getByTestId('secrets-warning')).toContainText('`unifi` is missing on node-c');
+    await expect(page.getByTestId('secrets-missing-nodes')).toContainText('node-d');
+    await expect(members.locator('[data-kind="resolver"]')).toContainText('holds none, by design');
+    const row = page.getByTestId('secret-row').filter({ hasText: 'unifi' });
+    await expect(row.locator('[data-state="applied"]')).toHaveCount(2);
+    await expect(row.locator('[data-state="missing"]')).toContainText('missing');
+    await expect(row.locator('[data-state="unknown"]')).toContainText('unknown');
+    await expect(row.locator('[data-state="applied"]').first()).toContainText('1.3');
+    // The members help topic opens from its button.
+    await members.getByRole('button', { name: /help/i }).first().click();
+    await expect(page.getByText('Which nodes hold a stored secret')).toBeVisible();
+  } finally {
+    await page.unroute('**/api/v1/secrets');
+  }
+});
+
 // REQ: API-015 (T23.6, ADR-903 §9, ADR-919) — a typed value that isn't saved holds Check and Apply
 // (the value would otherwise be dropped without a word); Save or Discard releases them.
 test('api_015 a typed secret that is not saved holds Check and Apply', async () => {

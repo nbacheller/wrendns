@@ -518,6 +518,79 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
     out
 }
 
+/// REQ: API-015, OBS-015 (T24.42) - a full member that has not applied the primary's stored
+/// secrets for this long is degraded (a secret write reaches the members within seconds).
+pub(crate) const SECRETS_LAG_SECONDS: u64 = 60;
+
+/// When each node was first seen out of step with the primary's stored secrets, by node ID.
+pub(crate) type SecretsSince = std::collections::HashMap<String, std::time::Instant>;
+
+/// REQ: API-015, OBS-015 (T24.42) - a full member (never a witness or a resolver pod, which hold
+/// none by design) whose applied secrets head differs from the primary's, or that can't read some
+/// secret, for [`SECRETS_LAG_SECONDS`]: `secret_not_held`, degraded and never severe. DNS doesn't
+/// depend on a stored secret, so this never marks DNS unhealthy. `since` remembers when each node
+/// first looked out of step, so a write in flight isn't reported.
+pub(crate) fn secret_reasons(
+    view: &ClusterView,
+    since: &mut SecretsSince,
+    now: std::time::Instant,
+) -> Vec<HealthReason> {
+    let primary_head = view
+        .nodes
+        .iter()
+        .find(|n| n.role == "primary")
+        .and_then(|n| n.secrets.as_ref())
+        .and_then(|s| s.head.clone());
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    if !view.enabled || primary_head.is_none() {
+        since.clear();
+        return out;
+    }
+    for n in view
+        .nodes
+        .iter()
+        .filter(|n| !n.witness && !n.ephemeral && (n.this_node || n.connected))
+    {
+        let Some(s) = n.secrets.as_ref() else {
+            continue;
+        };
+        if s.in_sync && s.unreadable == 0 {
+            continue;
+        }
+        seen.insert(n.node_id.clone());
+        let first = *since.entry(n.node_id.clone()).or_insert(now);
+        if now.saturating_duration_since(first).as_secs() < SECRETS_LAG_SECONDS {
+            continue;
+        }
+        let name = node_name(n);
+        let what = if s.in_sync {
+            format!(
+                "{name} can't read {} of the stored secrets it holds",
+                s.unreadable
+            )
+        } else {
+            format!(
+                "{name} hasn't received all the stored secrets (it holds {}, the primary {})",
+                s.applied.as_deref().unwrap_or("none"),
+                primary_head.as_deref().unwrap_or("none")
+            )
+        };
+        let mut r = reason(
+            DEGRADED,
+            "secret_not_held",
+            format!(
+                "{what}; a router or webhook that needs one can't be read there after a failover. DNS is unaffected"
+            ),
+            "#/settings?tab=secrets",
+        );
+        r.node = Some(name);
+        out.push(r);
+    }
+    since.retain(|k, _| seen.contains(k));
+    out
+}
+
 /// REQ: OBS-016 (ADR-105) — `[slo]` as the API's settings.
 pub(crate) fn slo_settings(cfg: &telltale_config::Config) -> telltale_api::slo::Settings {
     let s = &cfg.slo;
@@ -1282,5 +1355,81 @@ mod tests {
                 "{quiet}"
             );
         }
+    }
+
+    /// REQ: API-015, OBS-015 (T24.42) - a full member that has not applied the primary's secrets
+    /// for a minute is `secret_not_held` (degraded, never severe); a witness and a resolver pod
+    /// never are; a member that catches up is forgotten; a write in flight is not reported.
+    #[test]
+    fn api_015_t24_42_a_member_without_the_secrets_is_degraded() {
+        use super::{SECRETS_LAG_SECONDS, SecretsSince, secret_reasons};
+        use telltale_api::model::{ClusterNode, ClusterSecrets};
+        let node = |id: &str, role: &str, in_sync: bool| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: role.into(),
+            connected: true,
+            up: true,
+            secrets: Some(ClusterSecrets {
+                head: Some("1.3".into()),
+                applied: (!in_sync).then(|| "1.1".into()),
+                in_sync,
+                ..ClusterSecrets::default()
+            }),
+            ..ClusterNode::default()
+        };
+        let mut witness = node("w", "replica", false);
+        witness.witness = true;
+        let mut pod = node("pod", "replica", false);
+        pod.ephemeral = true;
+        let view = |nodes: Vec<ClusterNode>| ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: Some("p".into()),
+            newest_config_seq: 14,
+            healthy: true,
+            checks: Vec::new(),
+            nodes,
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            rollout: None,
+            host: None,
+        };
+        let v = view(vec![
+            node("p", "primary", true),
+            node("a", "replica", true),
+            node("b", "replica", false),
+            witness,
+            pod,
+        ]);
+        let mut since = SecretsSince::new();
+        let t0 = std::time::Instant::now();
+        // Just seen: not reported yet.
+        assert!(secret_reasons(&v, &mut since, t0).is_empty());
+        let later = t0 + std::time::Duration::from_secs(SECRETS_LAG_SECONDS + 1);
+        let r = secret_reasons(&v, &mut since, later);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(
+            (
+                r[0].code.as_str(),
+                r[0].level.as_str(),
+                r[0].node.as_deref()
+            ),
+            ("secret_not_held", DEGRADED, Some("b"))
+        );
+        assert!(r[0].summary.contains("DNS is unaffected"));
+        // It catches up: forgotten, and a later lapse starts a new window.
+        let v2 = view(vec![node("p", "primary", true), node("b", "replica", true)]);
+        assert!(secret_reasons(&v2, &mut since, later).is_empty());
+        assert!(since.is_empty());
+        // No secrets stored anywhere (the primary has no head): nothing to lack.
+        let mut p = node("p", "primary", true);
+        p.secrets = Some(ClusterSecrets::default());
+        let v3 = view(vec![p, node("b", "replica", false)]);
+        assert!(secret_reasons(&v3, &mut since, later).is_empty());
     }
 }

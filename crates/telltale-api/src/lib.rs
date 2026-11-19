@@ -372,6 +372,12 @@ pub trait Backend: Send + Sync + 'static {
         }
     }
     fn groups(&self) -> Vec<GroupInfo>;
+    /// REQ: API-013, CLU-004 (T24.42) - the groups from this node alone: for the callers that
+    /// only need their contents (the category and list pages, the support package), so they never
+    /// wait on the primary's router read. A backend with no remote data answers as `groups`.
+    fn groups_local(&self) -> Vec<GroupInfo> {
+        self.groups()
+    }
     /// REQ: API-013 (T24.41) - the groups over the networks the caller read (a replica's include
     /// the primary's routers'); a backend without its own router data ignores them.
     fn groups_with(&self, networks: &[model::NetworkInfo]) -> Vec<GroupInfo> {

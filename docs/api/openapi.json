@@ -23285,7 +23285,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`.",
             "example": "upstream_down"
           },
           "level": {
@@ -31124,6 +31124,36 @@
           }
         }
       },
+      "SecretMember": {
+        "type": "object",
+        "description": "REQ: API-015 (T24.42) - one cluster member's part in `GET /api/v1/secrets`: the same list on\nevery node.",
+        "required": [
+          "node",
+          "kind",
+          "state",
+          "held"
+        ],
+        "properties": {
+          "held": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many stored secrets it holds (0 unless it answered).",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "`full` (holds every stored secret), `resolver` (a resolver pod: holds none, by design) or\n`witness` (votes only: holds none, by design)."
+          },
+          "node": {
+            "type": "string",
+            "description": "As the Cluster page names it."
+          },
+          "state": {
+            "type": "string",
+            "description": "`answered`, `unknown` (a full member that didn't answer, or is too old to), or `not_held`."
+          }
+        }
+      },
       "SecretMeta": {
         "type": "object",
         "description": "A stored secret: never its value.",
@@ -31208,6 +31238,21 @@
           },
           "node": {
             "type": "string"
+          },
+          "stamp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SecretStamp",
+                "description": "The stamp it holds (never a value or a hash of one); absent when it holds none or didn't\nanswer."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "REQ: API-015 (T24.42) - how this member holds it: `applied` (the stamp the list shows,\nreadable), `unreadable`, `behind` (an older stamp), `ahead` (a newer one), `missing`, or\n`unknown` (the member didn't answer, or is too old to say). Absent from an older node."
           },
           "unreadable": {
             "type": "boolean",
@@ -31351,6 +31396,20 @@
             },
             "description": "Stored secrets (and names a reference uses that aren't set), by name."
           },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretMember"
+            },
+            "description": "REQ: API-015 (T24.42) - every member of the cluster and whether it holds the secrets, the\nsame on every node. Empty on a standalone node."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Full members that did not answer (offline, or an older version): their state is `unknown`."
+          },
           "stale": {
             "type": "boolean",
             "description": "From this node's own copy: the primary couldn't be asked."
@@ -31358,6 +31417,13 @@
           "store": {
             "$ref": "#/components/schemas/SecretsStore",
             "description": "This node's store."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A full member that lacks a secret, holds an older one or can't read it, in words."
           }
         }
       },

@@ -8321,7 +8321,7 @@ export interface components {
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
              *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
              *     `discovery_agent_failing`,
-             *     `guarded_ignored`, `guarded_bind_fallback`.
+             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`.
              * @example upstream_down
              */
             code: string;
@@ -11565,6 +11565,26 @@ export interface components {
             /** @description One that was set already. */
             wouldReplace: boolean;
         };
+        /**
+         * @description REQ: API-015 (T24.42) - one cluster member's part in `GET /api/v1/secrets`: the same list on
+         *     every node.
+         */
+        SecretMember: {
+            /**
+             * Format: int32
+             * @description How many stored secrets it holds (0 unless it answered).
+             */
+            held: number;
+            /**
+             * @description `full` (holds every stored secret), `resolver` (a resolver pod: holds none, by design) or
+             *     `witness` (votes only: holds none, by design).
+             */
+            kind: string;
+            /** @description As the Cluster page names it. */
+            node: string;
+            /** @description `answered`, `unknown` (a full member that didn't answer, or is too old to), or `not_held`. */
+            state: string;
+        };
         /** @description A stored secret: never its value. */
         SecretMeta: {
             /** @description On the answering node: `readable`, `unreadable` (another key made it) or `corrupt`. */
@@ -11590,6 +11610,13 @@ export interface components {
             /** @description It holds this stamp. */
             applied: boolean;
             node: string;
+            stamp?: components["schemas"]["SecretStamp"] | null;
+            /**
+             * @description REQ: API-015 (T24.42) - how this member holds it: `applied` (the stamp the list shows,
+             *     readable), `unreadable`, `behind` (an older stamp), `ahead` (a newer one), `missing`, or
+             *     `unknown` (the member didn't answer, or is too old to say). Absent from an older node.
+             */
+            state?: string;
             /** @description It holds it but can't read it (another key made it, or it's damaged). */
             unreadable: boolean;
         };
@@ -11647,10 +11674,19 @@ export interface components {
             head: components["schemas"]["SecretsHead"];
             /** @description Stored secrets (and names a reference uses that aren't set), by name. */
             items: components["schemas"]["SecretMeta"][];
+            /**
+             * @description REQ: API-015 (T24.42) - every member of the cluster and whether it holds the secrets, the
+             *     same on every node. Empty on a standalone node.
+             */
+            members?: components["schemas"]["SecretMember"][];
+            /** @description Full members that did not answer (offline, or an older version): their state is `unknown`. */
+            missingNodes?: string[];
             /** @description From this node's own copy: the primary couldn't be asked. */
             stale: boolean;
             /** @description This node's store. */
             store: components["schemas"]["SecretsStore"];
+            /** @description A full member that lacks a secret, holds an older one or can't read it, in words. */
+            warnings?: string[];
         };
         /** @description The answering node's secrets store. */
         SecretsStore: {

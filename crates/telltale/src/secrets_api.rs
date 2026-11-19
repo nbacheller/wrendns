@@ -147,6 +147,15 @@ pub(crate) fn status(src: &Sources) -> SecretsStatus {
                 node: me.clone(),
                 applied: true,
                 unreadable: s.health != RowHealth::Readable,
+                state: if s.health == RowHealth::Readable {
+                    "applied".into()
+                } else {
+                    "unreadable".into()
+                },
+                stamp: Some(SecretStamp {
+                    epoch: s.stamp.epoch,
+                    seq: s.stamp.seq,
+                }),
             }],
         })
         .collect();
@@ -190,6 +199,9 @@ pub(crate) fn status(src: &Sources) -> SecretsStatus {
         },
         items,
         credentials: credentials(src, &me),
+        members: Vec::new(),
+        missing_nodes: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 
@@ -232,6 +244,11 @@ pub(crate) fn merge_with_primary(primary: SecretsStatus, local: SecretsStatus) -
                     if !i.nodes.iter().any(|x| x.node == n.node) {
                         i.nodes.push(SecretNode {
                             applied: li.stamp == i.stamp,
+                            state: if li.stamp == i.stamp {
+                                n.state.clone()
+                            } else {
+                                "behind".into()
+                            },
                             ..n
                         });
                     }
@@ -250,6 +267,153 @@ pub(crate) fn merge_with_primary(primary: SecretsStatus, local: SecretsStatus) -
     out.credentials = local.credentials;
     out.stale = false;
     out
+}
+
+/// What a cluster member is, for the secrets list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberKind {
+    Full,
+    Resolver,
+    Witness,
+}
+
+/// One cluster member as the secrets list sees it: `items` are its own stored secrets (what its
+/// own `GET /secrets` would answer), `None` when it didn't answer. Only a full member's count.
+#[derive(Debug, Clone)]
+pub(crate) struct RosterNode {
+    pub(crate) label: String,
+    pub(crate) kind: MemberKind,
+    pub(crate) items: Option<Vec<SecretMeta>>,
+}
+
+fn stamp_key(s: SecretStamp) -> (u64, u64) {
+    (s.epoch, s.seq)
+}
+
+/// The warnings for `with_members`: what a full member lacks, holds older or newer, can't read,
+/// or still holds after the secret was deleted.
+fn member_warnings(st: &SecretsStatus, roster: &[RosterNode]) -> Vec<String> {
+    fn held(n: &RosterNode) -> Option<Vec<&SecretMeta>> {
+        n.items
+            .as_ref()
+            .map(|v| v.iter().filter(|i| i.set).collect())
+    }
+    let mut warnings = Vec::new();
+    for item in st.items.iter().filter(|i| i.set) {
+        for n in &item.nodes {
+            let w = match n.state.as_str() {
+                "missing" => format!("`{}` is missing on {}", item.name, n.node),
+                "behind" => format!("{} holds an older version of `{}`", n.node, item.name),
+                "unreadable" => format!(
+                    "{} holds `{}` but can't read it (another key made it, or it is damaged)",
+                    n.node, item.name
+                ),
+                "ahead" => format!(
+                    "{} holds a newer version of `{}` than this list (the list is stale)",
+                    n.node, item.name
+                ),
+                _ => continue,
+            };
+            warnings.push(w);
+        }
+    }
+    // A member still holding a name the list no longer has set (deleted on the primary).
+    for n in roster.iter().filter(|n| n.kind == MemberKind::Full) {
+        for m in held(n).unwrap_or_default() {
+            if !st.items.iter().any(|i| i.set && i.name == m.name) {
+                warnings.push(format!(
+                    "{} still holds `{}`, which is deleted or not in this list",
+                    n.label, m.name
+                ));
+            }
+        }
+    }
+    warnings
+}
+
+/// REQ: API-015, CLU-002 (T24.42) - the list every node shows: for each stored secret, every full
+/// member of the cluster with the stamp it holds and whether it is `applied`, `unreadable`,
+/// `behind`, `ahead`, `missing` or `unknown`, plus the members, the full ones that did not answer
+/// and a warning for each full member that lacks something. Only stamps and health come from a
+/// member: never a value, a ciphertext or a hash. A resolver pod and a witness hold no secrets by
+/// design and are listed as such, never as missing. DNS never depends on it.
+pub(crate) fn with_members(mut st: SecretsStatus, roster: &[RosterNode]) -> SecretsStatus {
+    fn held(n: &RosterNode) -> Option<Vec<&SecretMeta>> {
+        n.items
+            .as_ref()
+            .map(|v| v.iter().filter(|i| i.set).collect())
+    }
+    for item in st.items.iter_mut().filter(|i| i.set) {
+        item.nodes = roster
+            .iter()
+            .filter(|n| n.kind == MemberKind::Full)
+            .map(|n| {
+                let Some(mine) = held(n) else {
+                    return SecretNode {
+                        node: n.label.clone(),
+                        applied: false,
+                        unreadable: false,
+                        state: "unknown".into(),
+                        stamp: None,
+                    };
+                };
+                let Some(m) = mine.iter().find(|m| m.name == item.name) else {
+                    return SecretNode {
+                        node: n.label.clone(),
+                        applied: false,
+                        unreadable: false,
+                        state: "missing".into(),
+                        stamp: None,
+                    };
+                };
+                let unreadable = m.health.as_deref().map_or_else(
+                    || m.nodes.first().is_some_and(|x| x.unreadable),
+                    |h| h != "readable",
+                );
+                let state = match stamp_key(m.stamp).cmp(&stamp_key(item.stamp)) {
+                    std::cmp::Ordering::Less => "behind",
+                    std::cmp::Ordering::Greater => "ahead",
+                    std::cmp::Ordering::Equal if unreadable => "unreadable",
+                    std::cmp::Ordering::Equal => "applied",
+                };
+                SecretNode {
+                    node: n.label.clone(),
+                    applied: state == "applied",
+                    unreadable: unreadable && state != "behind",
+                    state: state.into(),
+                    stamp: Some(m.stamp),
+                }
+            })
+            .collect();
+    }
+    st.members = roster
+        .iter()
+        .map(|n| {
+            let (kind, state, count) = match n.kind {
+                MemberKind::Resolver => ("resolver", "not_held", 0),
+                MemberKind::Witness => ("witness", "not_held", 0),
+                MemberKind::Full => match held(n) {
+                    Some(v) => ("full", "answered", v.len()),
+                    None => ("full", "unknown", 0),
+                },
+            };
+            telltale_api::secrets_api::SecretMember {
+                node: n.label.clone(),
+                kind: kind.into(),
+                state: state.into(),
+                held: u32::try_from(count).unwrap_or(u32::MAX),
+            }
+        })
+        .collect();
+    st.missing_nodes = st
+        .members
+        .iter()
+        .filter(|m| m.kind == "full" && m.state == "unknown")
+        .map(|m| m.node.clone())
+        .collect();
+    let warnings = member_warnings(&st, roster);
+    st.warnings = warnings;
+    st
 }
 
 /// The name the UI gives a credential field's secret: `<kind>.<entry>.<field>`, lowercased, with
@@ -631,6 +795,15 @@ fn meta_of(
                 node: node.to_owned(),
                 applied: true,
                 unreadable: info.health != RowHealth::Readable,
+                state: if info.health == RowHealth::Readable {
+                    "applied".into()
+                } else {
+                    "unreadable".into()
+                },
+                stamp: Some(SecretStamp {
+                    epoch: info.stamp.epoch,
+                    seq: info.stamp.seq,
+                }),
             }]
         },
     }

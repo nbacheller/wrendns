@@ -323,7 +323,7 @@ async fn inputs(b: &Shared) -> Result<Inputs, Problem> {
         // The version first: an edit after it makes the apply's write fail, never get lost.
         let config_version = bk.config_version();
         let lists = bk.lists_and_hits().lists;
-        let groups = named_lists(&bk.groups());
+        let groups = named_lists(&bk.groups_local());
         let info = bk.system_info();
         Ok(Inputs {
             lists,

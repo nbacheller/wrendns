@@ -209,7 +209,7 @@ fn collect(
         upstreams: gather(me, started, |b| val(&b.upstreams())),
         lists: gather(me, started, |b| val(&b.lists())),
         clients: gather(me, started, |b| val(&b.clients())),
-        groups: gather(me, started, |b| val(&b.groups())),
+        groups: gather(me, started, |b| val(&b.groups_local())),
         workloads: gather(me, started, |b| {
             b.kubernetes_workloads().map_or(Value::Null, |w| val(&w))
         }),

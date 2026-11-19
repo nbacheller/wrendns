@@ -136,6 +136,31 @@ pub struct SecretNode {
     pub applied: bool,
     /// It holds it but can't read it (another key made it, or it's damaged).
     pub unreadable: bool,
+    /// REQ: API-015 (T24.42) - how this member holds it: `applied` (the stamp the list shows,
+    /// readable), `unreadable`, `behind` (an older stamp), `ahead` (a newer one), `missing`, or
+    /// `unknown` (the member didn't answer, or is too old to say). Absent from an older node.
+    #[serde(default)]
+    pub state: String,
+    /// The stamp it holds (never a value or a hash of one); absent when it holds none or didn't
+    /// answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<SecretStamp>,
+}
+
+/// REQ: API-015 (T24.42) - one cluster member's part in `GET /api/v1/secrets`: the same list on
+/// every node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretMember {
+    /// As the Cluster page names it.
+    pub node: String,
+    /// `full` (holds every stored secret), `resolver` (a resolver pod: holds none, by design) or
+    /// `witness` (votes only: holds none, by design).
+    pub kind: String,
+    /// `answered`, `unknown` (a full member that didn't answer, or is too old to), or `not_held`.
+    pub state: String,
+    /// How many stored secrets it holds (0 unless it answered).
+    pub held: u32,
 }
 
 /// A stored secret: never its value.
@@ -222,6 +247,16 @@ pub struct SecretsStatus {
     pub items: Vec<SecretMeta>,
     /// This node's credential fields.
     pub credentials: Vec<CredentialField>,
+    /// REQ: API-015 (T24.42) - every member of the cluster and whether it holds the secrets, the
+    /// same on every node. Empty on a standalone node.
+    #[serde(default)]
+    pub members: Vec<SecretMember>,
+    /// Full members that did not answer (offline, or an older version): their state is `unknown`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+    /// A full member that lacks a secret, holds an older one or can't read it, in words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// REQ: API-015, AGT-002 — what a `PUT` or `DELETE` did (or, with `dryRun`, would do).

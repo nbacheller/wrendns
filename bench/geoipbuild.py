@@ -34,7 +34,7 @@ What it does, one node per run (`VmHWM` is per process):
 drift over the same time. The
 download (the client collects the body in one buffer, at most `max_download`, 32 MiB) is inside the
 measured window, as in production. Pass: settled - idle <= 1.5 MiB after the last build, and, with
-the gate set-up and the real lists, settled <= `--gate` (64 MiB). Synthetic names compile larger
+the gate set-up and the real lists, settled <= `--gate` (128 MiB, ADR-1031). Synthetic names compile larger
 than the real lists, so without `bench/lists/` only what the build adds is checked.
 """
 
@@ -215,7 +215,7 @@ def main():
     ap.add_argument("--server-cpus", default="0-3")
     ap.add_argument("--settle", type=int, default=10, help="seconds before the idle reading")
     ap.add_argument("--after", type=int, default=30, help="seconds from 'after' to 'settled'")
-    ap.add_argument("--gate", type=float, default=64.0)
+    ap.add_argument("--gate", type=float, default=128.0)  # ADR-1031
     ap.add_argument("--port", type=int, default=6500, help="DNS; +1 upstream stub, +2 metrics, +9 the source")
     ap.add_argument("--builds", type=int, default=1, help="builds in one process (2nd and later: a changed source, SIGHUP)")
     ap.add_argument("--control", action="store_true",
