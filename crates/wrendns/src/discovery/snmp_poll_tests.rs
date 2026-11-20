@@ -59,7 +59,7 @@ fn arp_rows(o: &Outcome) -> usize {
 
 /// REQ: DSC-004 (`dsc_004_arp_physical_then_media_fallback`) — ARP is read from
 /// `ipNetToPhysicalTable`, and from `ipNetToMediaTable` only when the first one does not answer.
-/// The owner's gateway shape: 108 IPv4 (98 with a MAC) and 81 IPv6 entries; the IPv6 ones are
+/// A typical home gateway's shape: 108 IPv4 (98 with a MAC) and 81 IPv6 entries; the IPv6 ones are
 /// counted and ignored, and the incomplete ones are skipped.
 #[test]
 fn dsc_004_arp_physical_then_media_fallback() {

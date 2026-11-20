@@ -1,5 +1,5 @@
 //! Test support for the infrastructure poller (T25.6): the two recorded-shape walks (a Net-SNMP
-//! gateway and an Aruba switch; synthetic, see `tests/fixtures/snmp/generate.py`), a fake agent that
+//! gateway and a managed switch; synthetic, see `tests/fixtures/snmp/generate.py`), a fake agent that
 //! answers GET, GETNEXT and GETBULK from a walk, and a virtual clock. No socket is opened.
 
 #![allow(
@@ -22,7 +22,7 @@ use wrendns_snmp::walk::{Bulk, Pacer};
 use super::snmp_poll::Source;
 
 pub(crate) const GATEWAY: &str = include_str!("../../tests/fixtures/snmp/unifi-gateway.walk");
-pub(crate) const SWITCH: &str = include_str!("../../tests/fixtures/snmp/aruba-switch.walk");
+pub(crate) const SWITCH: &str = include_str!("../../tests/fixtures/snmp/managed-switch.walk");
 
 /// Parses `snmpwalk -On` style lines (`.1.3.6... = TYPE: value`).
 pub(crate) fn parse_walk(text: &str) -> Vec<VarBind> {

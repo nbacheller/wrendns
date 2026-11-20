@@ -313,8 +313,8 @@ async fn clu_015_t24_40_edit_and_delete_stick_across_a_restart() {
     check(&crate::replication::effective(&file));
 }
 
-/// REQ: CLU-015 (T24.40, ADR-1019) — a node that is already primary in this state at startup (the
-/// owner's third node: promoted while every node ran a build without ADR-1016) adopts too, with no
+/// REQ: CLU-015 (T24.40, ADR-1019) — a node that is already primary in this state at startup (a
+/// field cluster's third node: promoted while every node ran a build without ADR-1016) adopts too, with no
 /// promotion step, and the adoption is a fixed point.
 #[tokio::test]
 async fn clu_015_t24_40_a_primary_at_startup_adopts() {

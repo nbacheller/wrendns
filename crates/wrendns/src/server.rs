@@ -2111,13 +2111,13 @@ mod tests {
         use crate::devices::{Lease, Leases};
         use std::net::{IpAddr, Ipv4Addr};
         let kernel = [wrendns_net::Neighbor {
-            ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            ip: IpAddr::V4(Ipv4Addr::new(10, 0, 10, 20)),
             mac: [2, 0, 0, 0, 0, 0x20],
             ifindex: 2,
             state: 0x02,
         }];
         let lease = |last: u8, mac: &str, offline: bool, third: u8| {
-            let ip = Ipv4Addr::new(192, 168, third, last);
+            let ip = Ipv4Addr::new(10, 0, third, last);
             (
                 ip,
                 Lease {
@@ -2145,14 +2145,14 @@ mod tests {
         let n = wrendns_policy::Neighbors::default();
         n.replace(merged_macs(&kernel, &leases));
         let mac41 = Some([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x41]);
-        assert_eq!(n.get("203.0.113.41".parse().unwrap()), mac41);
+        assert_eq!(n.get("10.0.200.41".parse().unwrap()), mac41);
         assert_eq!(n.get("2001:db8:200::41".parse().unwrap()), mac41);
         assert_eq!(
-            n.get("192.0.2.20".parse().unwrap()),
+            n.get("10.0.10.20".parse().unwrap()),
             Some([2, 0, 0, 0, 0, 0x20]),
             "the kernel's entry wins"
         );
-        for gone in ["203.0.113.42", "203.0.113.43", "203.0.113.44"] {
+        for gone in ["10.0.200.42", "10.0.200.43", "10.0.200.44"] {
             assert_eq!(n.get(gone.parse().unwrap()), None, "{gone}");
         }
     }

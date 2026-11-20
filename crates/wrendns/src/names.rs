@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn api_007_t35_1_tails_tell_devices_apart() {
-        assert_eq!(tail("192.0.2.23"), "10.23");
+        assert_eq!(tail("192.0.2.23"), "2.23");
         assert_eq!(tail("AA:BB:CC:DD:EE:0F"), "ee:0f");
         assert_eq!(tail("aa-bb-cc-dd-ee-0f"), "ee:0f");
         assert_eq!(tail("fd00::1:2"), "1:2");

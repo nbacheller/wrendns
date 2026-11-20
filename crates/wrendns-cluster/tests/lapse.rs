@@ -1,6 +1,6 @@
 //! REQ: CLU-005 (T24.26, ADR-990) — a model of a slow ballot store.
 //!
-//! The owner's primary lost its lease every 10 to 20 minutes on SD cards. This drives the real
+//! A primary on SD-card storage lost its lease every 10 to 20 minutes. This drives the real
 //! `Elector` (three voters, a primary, a replica, a witness) with a store that takes `delay` ms
 //! per write, held on the node's election lock: an answer waits for the store of the vote it
 //! carries, a primary's sends wait for the store of its own grant, and a reply that arrives more

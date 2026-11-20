@@ -475,7 +475,7 @@ mod fake_snmpd {
 }
 
 const GATEWAY_WALK: &str = include_str!("fixtures/snmp/unifi-gateway.walk");
-const SWITCH_WALK: &str = include_str!("fixtures/snmp/aruba-switch.walk");
+const SWITCH_WALK: &str = include_str!("fixtures/snmp/managed-switch.walk");
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;

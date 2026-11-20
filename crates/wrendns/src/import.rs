@@ -284,7 +284,7 @@ pub(crate) fn to_toml(im: &Import, source: &str) -> String {
 mod tests {
     use super::*;
 
-    // Technitium's export format (the owner's homelab zone, anonymized).
+    // Technitium's export format (a home-network zone, anonymized).
     const TECHNITIUM: &str = "$ORIGIN example.dev.
 @                     900       IN  SOA           ns1.cluster. hostadmin 22 900 300 604800 900
 @                     14400     IN  NS            ns1.cluster.

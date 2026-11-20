@@ -2,8 +2,8 @@
 """Writes the two SNMP walks the poller's tests serve from a fake agent.
 
 They are SYNTHETIC: laid out as `snmpwalk -On` prints the tables of a Net-SNMP gateway (the shape
-the owner's UniFi gateway answers: ipNetToPhysicalTable with 108 IPv4 and 81 IPv6 entries, 179 with
-a MAC; ipNetToMediaTable with 108; no BRIDGE, Q-BRIDGE or LLDP MIB) and of an Aruba L2 switch (a
+a UniFi gateway answers: ipNetToPhysicalTable with 108 IPv4 and 81 IPv6 entries, 179 with
+a MAC; ipNetToMediaTable with 108; no BRIDGE, Q-BRIDGE or LLDP MIB) and of an L2 managed switch (a
 Q-BRIDGE forwarding table whose FDB IDs differ from its VLAN IDs, an uplink with more than 8 MACs,
 a trunk to the gateway found by LLDP). No device was asked: nothing here was recorded from a real
 network. Run `python3 generate.py` to rewrite the files.
@@ -69,12 +69,12 @@ def gateway():
         w.i("1.3.6.1.2.1.2.2.1.8.%d" % idx, oper)
         w.s("1.3.6.1.2.1.31.1.1.1.1.%d" % idx, name)
     # ipAddrTable (the agent's own addresses) and ipAddressTable.
-    own = [("127.0.0.1", 1), ("10.99.0.2", 2), ("192.0.2.1", 3), ("192.168.20.1", 4), ("192.168.30.1", 5)]
+    own = [("127.0.0.1", 1), ("10.99.0.2", 2), ("10.0.10.1", 3), ("192.168.20.1", 4), ("192.168.30.1", 5)]
     for ip, idx in own:
         w.i("1.3.6.1.2.1.4.20.1.2.%s" % ip, idx)
         w.i("1.3.6.1.2.1.4.34.1.3.1.4.%s" % ip, idx)
     # ipNetToPhysicalTable: 108 IPv4 (98 with a MAC, 10 incomplete) and 81 IPv6.
-    hosts = [("192.0.2.%d" % n, 3) for n in range(10, 70)]
+    hosts = [("10.0.10.%d" % n, 3) for n in range(10, 70)]
     hosts += [("192.168.20.%d" % n, 4) for n in range(10, 48)]
     assert len(hosts) == 98
     n = 0
@@ -168,11 +168,11 @@ def switch():
         w.s("1.0.8802.1.1.2.1.3.7.1.4.%d" % p, "Port %d" % p)
     # A few ARP rows of its own management VLAN.
     for k in range(1, 4):
-        w.h("1.3.6.1.2.1.4.22.1.2.1.192.0.2.%d" % (200 + k), mac([0x3C, 0x22, 0xFB, 0x01], 40 + k))
-        w.i("1.3.6.1.2.1.4.22.1.4.1.192.0.2.%d" % (200 + k), 3)
-    w.i("1.3.6.1.2.1.4.20.1.2.192.0.2.2", 1)
+        w.h("1.3.6.1.2.1.4.22.1.2.1.10.0.10.%d" % (200 + k), mac([0x3C, 0x22, 0xFB, 0x01], 40 + k))
+        w.i("1.3.6.1.2.1.4.22.1.4.1.10.0.10.%d" % (200 + k), 3)
+    w.i("1.3.6.1.2.1.4.20.1.2.10.0.10.2", 1)
     w.s("1.3.6.1.2.1.31.1.1.1.18.1", "")
-    w.dump(os.path.join(HERE, "aruba-switch.walk"))
+    w.dump(os.path.join(HERE, "managed-switch.walk"))
 
 
 if __name__ == "__main__":

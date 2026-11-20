@@ -47,7 +47,7 @@ const ALL: [SnmpTable; 4] = [
 ];
 
 fn subnets() -> Vec<Ipv4Subnet> {
-    ["192.0.2.0/24", "192.168.20.0/24"]
+    ["10.0.10.0/24", "192.168.20.0/24"]
         .iter()
         .map(|s| Ipv4Subnet::parse(s).unwrap())
         .collect()
@@ -245,9 +245,9 @@ fn dsc_004_lldp_neighbors() {
 fn dsc_004_arp_is_filtered_to_the_listed_subnets() {
     let rows = rows_of(GATEWAY, &ALL);
     let infra = InfraSet::default();
-    let sn = vec![Ipv4Subnet::parse("192.0.2.0/24").unwrap()];
+    let sn = vec![Ipv4Subnet::parse("10.0.10.0/24").unwrap()];
     let o = interpret(&rows, &cx("gateway", &sn, &infra));
-    // 60 hosts in 192.0.2.0/24; the 38 in 192.168.20.0/24 and the 10 incomplete (192.168.30.x,
+    // 60 hosts in 10.0.10.0/24; the 38 in 192.168.20.0/24 and the 10 incomplete (192.168.30.x,
     // skipped at parse) are not merged.
     assert_eq!(o.counts.arp_merged, 60);
     assert_eq!(o.counts.arp_outside_subnets, 38);
@@ -267,17 +267,17 @@ fn dsc_004_arp_is_filtered_to_the_listed_subnets() {
     // Addresses that name no host and group MACs are refused.
     let odd = vec![
         Row::Arp {
-            ip: Ipv4Addr::new(192, 0, 2, 255),
+            ip: Ipv4Addr::new(10, 0, 10, 255),
             mac: Mac([2, 0, 0, 0, 0, 1]),
             ifi: 1,
         },
         Row::Arp {
-            ip: Ipv4Addr::new(192, 0, 2, 5),
+            ip: Ipv4Addr::new(10, 0, 10, 5),
             mac: Mac([0xff; 6]),
             ifi: 1,
         },
         Row::Arp {
-            ip: Ipv4Addr::new(192, 0, 2, 6),
+            ip: Ipv4Addr::new(10, 0, 10, 6),
             mac: Mac([0; 6]),
             ifi: 1,
         },
@@ -302,7 +302,7 @@ fn dsc_004_the_agents_own_addresses() {
         .iter()
         .filter(|x| x.name.as_ref().is_some_and(|n| n.1 == "gateway"))
         .collect();
-    // 192.0.2.1 (br0) and 192.168.20.1 (br20); 192.168.30.1 is outside the listed subnets, and
+    // 10.0.10.1 (br0) and 192.168.20.1 (br20); 192.168.30.1 is outside the listed subnets, and
     // 127.0.0.1 and 10.99.0.2 never are.
     assert_eq!(own.len(), 2, "{own:?}");
     assert!(
@@ -327,7 +327,7 @@ fn dsc_004_gateway_and_switch_merge_into_one_device() {
     inv.apply(&sw.observations, NOW);
     let e = inv.get(&Key::Mac(mac_of("3c:22:fb:01:00:01"))).unwrap();
     let cur = e.current().unwrap();
-    assert_eq!(cur.ip, "192.0.2.10".parse::<IpAddr>().unwrap());
+    assert_eq!(cur.ip, "10.0.10.10".parse::<IpAddr>().unwrap());
     assert_eq!(cur.source, Source::SnmpArp);
     assert!(e.snmp_eligible());
     assert_eq!(e.vlan, Some(10));

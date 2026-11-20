@@ -3134,10 +3134,7 @@ fn api_902_replica_clear_queues_a_removal_for_the_primary() {
     let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
     let q = store::removals(&state);
     assert_eq!(q.len(), 1);
-    assert_eq!(
-        (q[0].id.as_str(), q[0].by.as_str()),
-        ("t-stg", "cli:alex")
-    );
+    assert_eq!((q[0].id.as_str(), q[0].by.as_str()), ("t-stg", "cli:alex"));
     assert!(store::suppressed(&state).contains_key("t-stg"));
     // The removal the primary took (its own blob no longer has the entry): queue and suppression go.
     store::removal_done(&state, "t-stg").unwrap();

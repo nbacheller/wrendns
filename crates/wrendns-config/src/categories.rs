@@ -1159,7 +1159,7 @@ mod tests {
         assert!(c.sources.len() >= 30, "{} sources", c.sources.len());
         assert_eq!(c.problems(), Vec::<String>::new());
         assert_eq!(c, *catalog());
-        // The seven UniFi-style groups the owner chose, plus Privacy and Ads (one of the
+        // The seven UniFi-style groups chosen for the catalog, plus Privacy and Ads (one of the
         // seven, Business & Professional, offers nothing and shows only under Not available).
         assert_eq!(
             ids(&c.groups, |g| g.id.as_str()),

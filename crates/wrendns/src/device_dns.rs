@@ -342,11 +342,7 @@ mod tests {
         let routers: Leases = [
             lease([192, 0, 2, 5], "aa:bb:cc:00:00:05", Some("diskstation")),
             lease([192, 0, 2, 7], "AA:BB:CC:00:00:07", Some("macbook-pro")),
-            lease(
-                [192, 0, 2, 21],
-                "aa:bb:cc:00:00:21",
-                Some("Kitchen Tablet"),
-            ),
+            lease([192, 0, 2, 21], "aa:bb:cc:00:00:21", Some("Kitchen Tablet")),
             lease([192, 0, 2, 30], "aa:bb:cc:00:00:30", Some("android")),
             lease([192, 0, 2, 31], "aa:bb:cc:00:00:31", Some("Android")),
             lease([192, 168, 20, 9], "aa:bb:cc:00:00:99", Some("shelly-1")),
@@ -376,10 +372,7 @@ mod tests {
                 ("android.home.arpa".to_owned(), ip([192, 0, 2, 30])),
                 ("brw123.home.arpa".to_owned(), ip([192, 0, 2, 60])),
                 ("dads-laptop.home.arpa".to_owned(), ip([192, 0, 2, 7])),
-                (
-                    "kitchen-tablet.home.arpa".to_owned(),
-                    ip([192, 0, 2, 21])
-                ),
+                ("kitchen-tablet.home.arpa".to_owned(), ip([192, 0, 2, 21])),
                 ("nas.home.arpa".to_owned(), ip([192, 0, 2, 5])),
                 ("peer-printer.home.arpa".to_owned(), ip([192, 0, 2, 50])),
                 ("shelly-1.home.arpa".to_owned(), ip([192, 168, 20, 9])),
@@ -411,8 +404,7 @@ mod tests {
         };
         let (got, _) = names(&inputs, "home.arpa");
         assert!(got.is_empty(), "offline names are not published: {got:?}");
-        let connected: Leases =
-            [lease([192, 0, 2, 53], "aa:bb:cc:00:00:53", Some("ipad"))].into();
+        let connected: Leases = [lease([192, 0, 2, 53], "aa:bb:cc:00:00:53", Some("ipad"))].into();
         let inputs = Inputs {
             clients: &clients,
             routers: [&connected, &empty],
@@ -431,11 +423,7 @@ mod tests {
     #[test]
     fn flt_006_router_names_from_leases() {
         let own: Leases = [
-            lease(
-                [192, 0, 2, 21],
-                "aa:bb:cc:00:00:21",
-                Some("Kitchen Tablet"),
-            ),
+            lease([192, 0, 2, 21], "aa:bb:cc:00:00:21", Some("Kitchen Tablet")),
             lease([192, 0, 2, 22], "aa:bb:cc:00:00:22", Some("***")),
             lease([192, 0, 2, 23], "aa:bb:cc:00:00:23", None),
         ]
@@ -445,11 +433,7 @@ mod tests {
         let peers: Leases = [
             gone,
             lease([192, 0, 2, 21], "aa:bb:cc:00:00:99", Some("other")),
-            lease(
-                [192, 0, 2, 30],
-                "aa:bb:cc:00:00:30",
-                Some("peer-printer"),
-            ),
+            lease([192, 0, 2, 30], "aa:bb:cc:00:00:30", Some("peer-printer")),
         ]
         .into();
         let got = router_names([&own, &peers]);
@@ -523,11 +507,7 @@ match = [\"192.0.2.5\"]
         );
         let mut routers: Leases = [
             lease([192, 0, 2, 5], "aa:bb:cc:00:00:05", Some("diskstation")),
-            lease(
-                [192, 0, 2, 21],
-                "aa:bb:cc:00:00:21",
-                Some("Kitchen Tablet"),
-            ),
+            lease([192, 0, 2, 21], "aa:bb:cc:00:00:21", Some("Kitchen Tablet")),
             lease([192, 0, 2, 30], "aa:bb:cc:00:00:30", Some("android")),
             lease([192, 0, 2, 31], "aa:bb:cc:00:00:31", Some("Android")),
             lease([192, 0, 2, 32], "aa:bb:cc:00:00:32", Some("stale-claim")),

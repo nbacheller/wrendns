@@ -533,18 +533,12 @@ fn obs_035_display_networks() {
     assert!(ok("10.20.2.0/24") && ok("10.0.0.5") && ok("fd00::/8"));
     assert!(!ok("10.20.2.0/33") && !ok("nope") && !ok("10.0.0.0/x"));
     let ip = |s: &str| s.parse::<IpAddr>().ok();
-    assert!(display_network_ok(
-        ip("10.20.2.14"),
-        Some("10.20.2.0/24")
-    ));
+    assert!(display_network_ok(ip("10.20.2.14"), Some("10.20.2.0/24")));
     assert!(display_network_ok(
         ip("::ffff:10.20.2.14"),
         Some("10.0.0.0/8 10.20.2.0/24")
     ));
-    assert!(!display_network_ok(
-        ip("10.30.3.14"),
-        Some("10.20.2.0/24")
-    ));
+    assert!(!display_network_ok(ip("10.30.3.14"), Some("10.20.2.0/24")));
     assert!(!display_network_ok(None, Some("10.20.2.0/24")));
     assert!(display_network_ok(ip("203.0.113.9"), None));
 }

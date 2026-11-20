@@ -458,7 +458,7 @@ priv_protocol = \"aes-128\"
             "[discovery]
 {CRED_V3}[[discovery.snmp_agent]]
 name = \"gateway\"
-address = \"192.0.2.1\"
+address = \"10.0.10.1\"
 credential = \"gw\"
 "
         );

@@ -2948,7 +2948,7 @@ mod voters_linked {
         moves
     }
 
-    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — the owner's upgrade order.
+    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — the documented upgrade order.
     #[tokio::test(flavor = "multi_thread")]
     async fn clu_005_t24_38_replicas_then_primary_restart_keeps_every_voter_linked() {
         rolling([1, 2, 0]).await;
@@ -2962,7 +2962,7 @@ mod voters_linked {
 
     // REQ: CLU-001, CLU-005 (T24.38) — one drop of a replica's main link to the primary is
     // followed by a redial of the primary, not a detour through the other replica (which
-    // `primary_is_back` would have to undo: the owner's "linked, leaving this node, linked").
+    // `primary_is_back` would have to undo: the reported "linked, leaving this node, linked").
     #[tokio::test(flavor = "multi_thread")]
     async fn clu_005_t24_38_one_drop_of_the_primary_link_does_not_detour_through_a_replica() {
         let mut nodes = three();

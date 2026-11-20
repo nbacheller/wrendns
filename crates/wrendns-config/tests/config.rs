@@ -1468,7 +1468,8 @@ fn t8_2_routers_are_validated() {
 /// settings.
 #[test]
 fn api_012_home_assistant_router_is_validated() {
-    const HA: &str = "[[router]]\nname = \"ha\"\ntype = \"home_assistant\"\nurl = \"http://192.0.2.20:8123\"\n";
+    const HA: &str =
+        "[[router]]\nname = \"ha\"\ntype = \"home_assistant\"\nurl = \"http://192.0.2.20:8123\"\n";
     let ok = load_str(&format!("{HA}api_key_file = \"/run/secrets/ha-token\"\n")).unwrap();
     assert_eq!(
         ok.config.router[0].kind,

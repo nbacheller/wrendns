@@ -191,11 +191,7 @@ mod tests {
     fn ops_003_masked_when_infrastructure_carries_over_90_percent() {
         let w = window(
             1000,
-            &[
-                ("10.42.0.1", 700),
-                ("10.50.5.2", 250),
-                ("10.50.5.50", 50),
-            ],
+            &[("10.42.0.1", 700), ("10.50.5.2", 250), ("10.50.5.50", 50)],
         );
         let m = assess(&w, &infra()).unwrap();
         assert_eq!(m.share_percent, 95);
