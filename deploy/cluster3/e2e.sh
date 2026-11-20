@@ -66,6 +66,8 @@
 # Usage: deploy/cluster3/e2e.sh            (needs Docker with Compose v2, and python3)
 #        J_WATCH_S=20 deploy/cluster3/e2e.sh   (a shorter watch in check j; the default is 60 s)
 #        KEEP=1 deploy/cluster3/e2e.sh     (keeps the test image and the temp directory)
+#        WRENDNS_IMAGE=<image> deploy/cluster3/e2e.sh  (runs that image and skips the build; the image
+#          must be built with CARGO_FEATURES=e2e, as the compose build does; it is not removed at exit)
 set -euo pipefail
 
 # Git Bash rewrites arguments that start with "/" into Windows paths; docker needs them as they are.
@@ -76,7 +78,15 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 HERE_W=$HERE
 if command -v cygpath >/dev/null 2>&1; then HERE_W=$(cygpath -m "$HERE"); fi
 PROJECT=wrendns-cluster3
-IMAGE=wrendns:cluster3-test
+# WRENDNS_IMAGE (a prebuilt image, see the usage above) skips the build; unset, the image is built here.
+BUILT_IMAGE=
+if [ -n "${WRENDNS_IMAGE:-}" ]; then
+  IMAGE=$WRENDNS_IMAGE
+else
+  IMAGE=wrendns:cluster3-test
+  BUILT_IMAGE=$IMAGE
+fi
+export WRENDNS_IMAGE=$IMAGE
 COMPOSE=(docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml")
 PY=(python3 "$HERE_W/probe.py")
 NODES=(primary replica-a replica-b)
@@ -120,7 +130,8 @@ cleanup() {
   "${COMPOSE[@]}" unpause >/dev/null 2>&1
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1
   if [ "${KEEP:-}" != 1 ]; then
-    docker image rm "$IMAGE" >/dev/null 2>&1
+    # A prebuilt image (WRENDNS_IMAGE) was made outside this run, so it stays.
+    if [ -n "$BUILT_IMAGE" ]; then docker image rm "$BUILT_IMAGE" >/dev/null 2>&1; fi
     rm -rf "$E"
   else
     echo "KEEP=1: the image $IMAGE and the temp directory $E are kept"
@@ -215,8 +226,15 @@ python3 -c "import secrets,sys; sys.stdout.write('Admin-' + secrets.token_urlsaf
 SECRET=$(python3 -c "import secrets; print('s3cr3t-' + secrets.token_hex(16))")
 put_json secret.json "{\"value\":\"$SECRET\",\"kind\":\"text\"}"
 
-step "bring-up: build the image and start the primary"
-"${COMPOSE[@]}" up -d --build --wait primary >"$E/up.log" 2>&1 || { cat "$E/up.log"; bad "the primary didn't come up healthy"; }
+if [ -n "$BUILT_IMAGE" ]; then
+  step "bring-up: build the image and start the primary"
+  BRINGUP_BUILD=--build
+else
+  step "bring-up: start the primary on the prebuilt image"
+  echo "using the prebuilt image $IMAGE (no build)"
+  BRINGUP_BUILD=--no-build
+fi
+"${COMPOSE[@]}" up -d "$BRINGUP_BUILD" --wait primary >"$E/up.log" 2>&1 || { cat "$E/up.log"; bad "the primary didn't come up healthy"; }
 pass
 
 step "a. the three nodes join; the primary lists three connected nodes"
@@ -740,7 +758,7 @@ at_image() { # image node
   if docker image inspect -f '{{json .Config.Entrypoint}}' "$1" 2>/dev/null | grep -q telltale; then
     files+=(-f "$HERE_W/compose-prerename.yaml")
   fi
-  TT_IMAGE=$1 docker compose -p "$PROJECT" "${files[@]}" up -d --no-deps --no-build --force-recreate --wait "$2" >/dev/null 2>&1
+  WRENDNS_IMAGE=$1 docker compose -p "$PROJECT" "${files[@]}" up -d --no-deps --no-build --force-recreate --wait "$2" >/dev/null 2>&1
 }
 # rebrand:keep-end
 

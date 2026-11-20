@@ -20,13 +20,36 @@ its own ports, every one bound to `127.0.0.1` so nothing on the LAN can reach th
 ```sh
 deploy/cluster3/e2e.sh            # from the repository root, with Docker (Compose v2) and python3
 KEEP=1 deploy/cluster3/e2e.sh     # keeps the test image and the temp directory for a look
+WRENDNS_IMAGE=<image> deploy/cluster3/e2e.sh   # runs a prebuilt image and skips the build
 ```
 
 It works from Windows Git Bash (Docker Desktop) and from Linux (CI). The first run builds the image
 (3 to 6 minutes on a warm laptop; a cold CI runner takes longer, and the workflow allows 60 minutes;
 later builds reuse the build cache). The checks take about 3 minutes (check j adds its watch, 1 minute by default). Every run tears the cluster
-down (`docker compose down -v`) and removes the test image, unless `KEEP=1` is set; a failure prints
+down (`docker compose down -v`) and removes the test image it built, unless `KEEP=1` is set; a failure prints
 the last 40 lines of each node's log first.
+
+With `WRENDNS_IMAGE` set, `e2e.sh` runs that image and does not build: it prints `using the prebuilt image <image> (no build)`
+and leaves the image in place at exit. The image must be built with the `e2e` cargo feature
+(`--build-arg CARGO_FEATURES=e2e`, as the compose build does), because check c2 needs the fake category source.
+Unset, the script builds `wrendns:cluster3-test` from this checkout as before.
+
+### Registry variables
+
+Compose files take the registry host from these variables. Each defaults to the public registry, so
+with none of them set the files resolve to the same images as before. Set one to a pull-through mirror
+host (for example `mirror.example:5000`) and only the registry host of the matching images changes.
+Unset it again to return to the public registries.
+
+| Variable | Default | Used for |
+|---|---|---|
+| `WRENDNS_HUB` | `docker.io` | Docker Hub images: `busybox` (this cluster's fake source) and `postgres`, `redis` (`ui/tests/oidc/compose.yml`) |
+| `WRENDNS_GHCR` | `ghcr.io` | GitHub Container Registry images: Authentik (`ui/tests/oidc/compose.yml`), Home Assistant (`deploy/ha-test/compose.yaml`), and the published WrenDNS image in `deploy/keepalived/compose.yaml` |
+| `WRENDNS_QUAY` | `quay.io` | Keycloak (`ui/tests/oidc/compose.yml`) |
+| `WRENDNS_IMAGE` | `wrendns:cluster3-test` | This cluster's WrenDNS image. `e2e.sh` sets it to the image it builds, or to a prebuilt image you give it; the upgrade check (j) sets it per node |
+
+`HA_TEST_IMAGE` still overrides the Home Assistant image as a whole (`deploy/ha-test/compose.yaml`), and
+`WRENDNS_IMAGE` in `deploy/keepalived/compose.yaml` selects that test's image the same way.
 
 Nothing secret is kept in the repository or in the image's configuration. Each run makes, in a
 temporary directory it removes at exit: the admin password, the secret it writes, and the join token

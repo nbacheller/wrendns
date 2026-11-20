@@ -11,8 +11,9 @@
 name: wrendns-cluster3
 
 x-wrendns: &wrendns
-  # TT_IMAGE: e2e.sh's upgrade step (j) runs nodes on an older image, one at a time.
-  image: ${TT_IMAGE:-wrendns:cluster3-test}
+  # WRENDNS_IMAGE: a prebuilt image (built with the e2e feature) that e2e.sh runs instead of building;
+  # e2e.sh's upgrade step (j) also sets it per node, to an older image, one at a time.
+  image: ${WRENDNS_IMAGE:-wrendns:cluster3-test}
   pull_policy: never
   restart: "no"
   # The image's unprivileged user; the same hardening as the Docker Desktop bundle.
@@ -41,7 +42,7 @@ services:
   # REQ: FLT-901 (T24.29): the category lists' host. BusyBox's httpd logs the address of every request
   # (-vv), which e2e.sh reads to check that only the primary fetches a list.
   fake-source:
-    image: busybox:stable
+    image: ${WRENDNS_HUB:-docker.io}/library/busybox:stable
     restart: "no"
     command: ["httpd", "-f", "-vv", "-p", "8080", "-h", "/www"]
     volumes:
