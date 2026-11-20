@@ -6054,3 +6054,15 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 4. **Listings** in the Entra app gallery (OIDC and SCIM) and the Okta Integration Network come after general availability (T36.27), with the workforce tenant's publisher verification first.
 
 **Consequences:** No SSO tax in the offer; Business carries the cost of the broker, the SCIM server and the export. The listings make onboarding a search in the customer's admin console. Rejected: SSO in Business with SCIM and export as a paid add-on (the "SCIM tax" buyers now complain about), and SSO in every paid tier (consumer tiers have no organization to federate).
+
+
+## ADR-1077 — The watchdog ends when its runtime is gone: Disconnected means stopping, not a stall (Proposed 2026-11-20; OPS-012, OPS-004, fork red-jobs track)
+
+**Context:** The watchdog (ADR-163) asks the runtime to run a task and counts a missing answer as a stall; after `stall_secs` it writes a dump and exits 70. It ends only when the stop signal reads `true`. In-process server tests (`server.rs`) spawn it too, and when a test's runtime is dropped the sender is dropped without sending `true`: the runtime check then fails against the dead runtime (the task is dropped unrun, which the probe read as "no answer"), and a minute later the leaked thread exits the whole test binary with status 70 (CI 2026-11-20, `cargo test` on arm64 and amd64). The same reading would apply to any drop of the node's runtime that skips the drain.
+
+**Decision:**
+1. A probe task dropped unrun (`RecvTimeoutError::Disconnected`) means the runtime is gone and the node is stopping; it passes the runtime check. Only a `Timeout` (a runtime that holds its tasks) is a stall.
+2. The watchdog thread also ends when the stop sender is gone (`has_changed()` is an error), so no thread outlives the runtime that owned its signal.
+3. The `cfg(test)` `exit_process` that logs instead of exiting stays as a backstop.
+
+**Consequences:** A wedged runtime is still detected (it times out; `deploy/watchdog/e2e.sh` and `ops_012_the_runtime_check_sees_a_runtime_whose_only_worker_is_blocked` cover it). Only a process whose runtime has been torn down stops being watched, which is correct. Test: `ops_012_watchdog_ends_when_its_runtime_is_gone`. Rejected: raising `stall_secs` in tests (hides the leak), and aborting the thread from the test server (every spawner would have to remember).

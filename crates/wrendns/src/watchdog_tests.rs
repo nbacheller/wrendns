@@ -343,6 +343,49 @@ fn ops_012_the_thread_exits_with_status_70_and_stops_at_shutdown() {
     assert_eq!(code.load(Ordering::Relaxed), 0);
 }
 
+#[test]
+fn ops_012_watchdog_ends_when_its_runtime_is_gone() {
+    // REQ: OPS-012, ADR-1077 - a runtime that ends without sending the stop signal (an in-process
+    // test server) must not leave a watchdog that calls the dead runtime a stall and exits 70.
+    use std::sync::atomic::AtomicI32;
+    let dir = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let live = Live {
+        handle: rt.handle().clone(),
+        udp: None,
+    };
+    // A stall limit of a millisecond and rounds 10 ms apart: a dead runtime would be a stall at
+    // the first round.
+    let quick = Settings {
+        stall: Duration::from_millis(1),
+        ..settings(dir.path(), true, 6)
+    };
+    let mut wd = Watchdog::new(live, quick, Instant::now());
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let code = std::sync::Arc::new(AtomicI32::new(0));
+    let code2 = code.clone();
+    std::thread::spawn(move || {
+        let mut rec = Recorder::default();
+        run(&mut wd, &mut rec, &rx, Duration::from_millis(10), |c| {
+            code2.store(c, Ordering::Relaxed);
+        });
+        let _ = done_tx.send(rec.dumps.len());
+    });
+    // The runtime goes, and so does the only sender, without a `true`.
+    drop(rt);
+    drop(tx);
+    let dumps = done
+        .recv_timeout(secs(10))
+        .expect("the watchdog thread ends once its runtime and sender are gone");
+    assert_eq!(dumps, 0, "no dump for a runtime that is gone");
+    assert_eq!(code.load(Ordering::Relaxed), 0, "and no exit");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
 // ---- the probe --------------------------------------------------------------------------------
 
 #[test]

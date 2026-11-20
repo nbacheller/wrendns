@@ -119,11 +119,16 @@ http.server.ThreadingHTTPServer(("127.0.0.1", 28998), H).serve_forever()
 PY
 : > "$E/alerts.jsonl"
 python3 "$E/hook.py" "$E/alerts.jsonl" & H_PID=$!
-# alert <rule> <status> <subject>: whether the webhook received it.
-alert() { python3 - "$E/alerts.jsonl" "$1" "$2" "$3" <<'PY'
+# amark: the number of lines the webhook has received so far. Set ALERT_FROM to it so alert
+# only sees what arrived afterwards (an earlier stop's alert must not answer a later check).
+amark() { wc -l < "$E/alerts.jsonl" | tr -d ' '; }
+# alert <rule> <status> <subject>: whether the webhook received it (from line ${ALERT_FROM:-0}).
+alert() { python3 - "$E/alerts.jsonl" "${ALERT_FROM:-0}" "$1" "$2" "$3" <<'PY'
 import json, sys
-path, rule, status, subject = sys.argv[1:]
-for line in open(path):
+path, start, rule, status, subject = sys.argv[1:]
+for n, line in enumerate(open(path)):
+    if n < int(start):
+        continue
     try:
         a = json.loads(line)
     except ValueError:
@@ -318,6 +323,12 @@ for _ in $(seq 400); do
   [ "$(get '/api/v1/cluster' | field 'next((str(n["connected"]) for n in d["nodes"] if n["site"] == "r"), "")')" = True ] && break
   sleep 0.1
 done
+# REQ: OPS-010 — the stop above raised node_down, and reconnecting resolved it (a baseline for
+# the maintenance checks further on, which read only what arrives after their own mark).
+for _ in $(seq 120); do alert down firing r && break; sleep 1; done
+alert down firing r || fail "node_down didn't fire for the stopped replica (FLT-017 stop)"
+for _ in $(seq 60); do alert down resolved r && break; sleep 1; done
+alert down resolved r || fail "node_down didn't resolve after the replica came back"
 echo "ok (pushed in ${pushed} s; a new replica pulled it in ${pulled} s; a stopped one is missing)"
 
 # REQ: AGT-011, CLU-002 (T7.3) â€” a read scoped to a site or a node reads only those nodes.
@@ -587,6 +598,7 @@ alert maint resolved r || fail "the maintenance alert didn't resolve"
 echo "ok ($ok of $sent queries answered across enter, 30 s, and exit)"
 
 echo "== maintenance survives a restart; a stopped node in maintenance stays quiet (OPS-010)"
+ALERT_FROM=$(amark)   # only alerts from here on count for the quiet-in-maintenance checks
 code=$(mreq POST r '{"forSecs":900,"reason":"e2e restart"}')
 [ "$code" = 200 ] || fail "starting maintenance again answered $code"
 u1=$(until_ms)
@@ -631,6 +643,7 @@ for _ in $(seq 120); do [ "$(inmaint)" = True ] && break; sleep 0.5; done
 [ "$(inmaint)" = True ] || fail "the replica didn't reconnect after SIGCONT"
 code=$(mreq DELETE r)
 [ "$code" = 200 ] || fail "ending maintenance after the stop answered $code: $(cat "$E/m.json")"
+ALERT_FROM=$(amark)   # the next check must see its own node_down, not an earlier one
 echo "ok (same window after a restart; no node_down while stopped; health $level with r under maintenance)"
 
 echo "== out of maintenance a stop raises node_down; a timed-out request isn't applied later"

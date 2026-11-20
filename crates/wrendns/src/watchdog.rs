@@ -371,7 +371,13 @@ impl Probes for Live {
         self.handle.spawn(async move {
             let _ = tx.send(());
         });
-        rx.recv_timeout(wait).is_ok()
+        // REQ: OPS-012, ADR-1077 - Disconnected: the runtime dropped the task unrun because it
+        // is gone (shut down, or a test's runtime ended). That is stopping, not a stall; only
+        // a Timeout is a runtime that holds its tasks.
+        !matches!(
+            rx.recv_timeout(wait),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        )
     }
 
     fn listener(&mut self, wait: Duration) -> Option<bool> {
@@ -795,6 +801,13 @@ fn exit_process(code: i32) {
     error!("the watchdog would exit with status {code}: not in a unit-test build");
 }
 
+/// REQ: OPS-012, ADR-1077 - is the node stopping? Its stop signal was sent, or the sender is gone
+/// (the runtime that owned it ended without sending: an in-process test server, or a drop that
+/// skipped the drain), so nothing is left to watch.
+fn stopping(stop: &tokio::sync::watch::Receiver<bool>) -> bool {
+    stop.has_changed().is_err() || *stop.borrow()
+}
+
 /// The rounds, `every` apart, until `stop` or a restart. `exit` ends the process.
 pub(crate) fn run<P: Probes>(
     watchdog: &mut Watchdog<P>,
@@ -810,7 +823,7 @@ pub(crate) fn run<P: Probes>(
         while waited < every {
             std::thread::sleep(slice);
             waited += slice;
-            if *stop.borrow() {
+            if stopping(stop) {
                 return;
             }
         }
@@ -827,7 +840,7 @@ pub(crate) fn run<P: Probes>(
                 );
                 // The lines that say why reach the log files before the process ends.
                 crate::support_log::global().flush();
-                if !*stop.borrow() {
+                if !stopping(stop) {
                     exit(EXIT_STATUS);
                     return;
                 }
