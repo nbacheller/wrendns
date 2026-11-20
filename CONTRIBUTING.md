@@ -44,6 +44,16 @@ cd ui && npm ci && npm run check   # the UI type-checks (and npm run test:e2e fo
 
 Keep commits small and coherent, with messages in the style of the history (`fix(api): ... [API-004]`).
 
+## Continuous integration
+
+Every pull request runs the fast tier (`.github/workflows/pr.yml`). A `changes` job first lists the paths the pull request touched. Code changes (the crates, `bench/`, `fuzz/`, the Cargo files, the toolchain and deny files, the `Makefile`, the `Dockerfile`, `.github/scripts/` and `pr.yml` itself) run formatting, clippy, the amd64 tests and cargo-deny. Changes to the UI, the OpenAPI document or the Spectral rules, and every code change, run the UI job. Changes under `deploy/`, and every code change, run the native-lite job (the Compose bundle and the installer with its systemd unit). A pull request that changes only documentation or the site skips all of those. The site job (the site build, the licence-header, `grep -q` and trace checks) and the privacy check always run.
+
+`pr-ok` is the one check to watch: it passes when every other job passed or was skipped, and it fails when any of them failed or was cancelled. It does not say which job failed, so open the run to see.
+
+After a merge, the full tier (`.github/workflows/ci.yml`) runs on main: the arm64 tests, the end-to-end suites, the Helm and native cluster checks. The image workflow builds the images on main. To run it on a pull request, ask a maintainer to add the `ci:full` label; it runs again for each push while the label stays.
+
+The privacy check needs a secret that pull requests from forks do not get, so it fails on them by design. That failure is not a problem with your change: a maintainer runs the check on a branch of the repository and reports the result.
+
 ## Dependency updates
 
 Dependabot opens the dependency update pull requests: the root Cargo workspace is checked weekly, and the fuzz workspace, the two npm projects, the GitHub Actions and the image's base images are checked monthly. Minor and patch updates are grouped into one pull request for each entry that groups them (the root and fuzz Cargo workspaces, the two npm projects and the GitHub Actions), and every major update is its own pull request; the base images are not grouped. A release must be 5 days old before Dependabot offers it, and security updates do not wait for the schedule or that cooldown. Dependabot does not rebase its pull requests automatically, so a maintainer comments `@dependabot rebase` to refresh one. Merge each update with a squash, and put the requirement tag in the commit message, as the header of `.github/dependabot.yml` says.

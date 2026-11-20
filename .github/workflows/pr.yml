@@ -1,0 +1,292 @@
+# REQ: OPS-004, NFR-005 (ADR-1073) — the fast tier every pull request gets. `pr-ok` is the one
+# required check; the full tier (ci.yml, to become main.yml) runs on main, on dispatch, and on a
+# pull request that carries the `ci:full` label.
+name: pr
+on:
+  pull_request:
+  workflow_dispatch:
+# A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
+# the shared GitHub API limit).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Least privilege: every job reads the repository and nothing more (the repository's default is
+# read-only already; CodeQL's actions/missing-workflow-permissions asks for it to be explicit).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # What did the pull request change? Plain git and shell, no third-party action. A diff that cannot
+  # be computed fails the job: it never reads as "nothing changed". Only the base commit's SHA (a
+  # hex string) reaches the script, through `env:`.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+      ui: ${{ steps.diff.outputs.ui }}
+      native: ${{ steps.diff.outputs.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history, so that the base commit is reachable and the two can be diffed.
+        with: { fetch-depth: 0 }
+      - name: Which parts changed
+        id: diff
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          code=false ui=false native=false
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            code=true ui=true native=true
+          else
+            if [ -z "$BASE_SHA" ]; then
+              echo "::error title=changes::the pull request's base commit is unknown, so the diff cannot be computed"
+              exit 1
+            fi
+            # HEAD is the merge of the pull request into its base: base..HEAD is the pull request's
+            # own change. --no-renames lists both sides of a rename. A failure stops the script (set -e).
+            git diff --name-only --no-renames "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed.txt"
+            echo "Changed paths:"
+            cat "$RUNNER_TEMP/changed.txt"
+            while IFS= read -r path; do
+              case "$path" in
+                crates/*|bench/*|fuzz/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|deny.toml|Makefile|Dockerfile|.github/workflows/pr.yml|.github/scripts/*)
+                  code=true ;;
+                ui/*|docs/api/openapi.json|.spectral.yaml)
+                  ui=true ;;
+                deploy/*)
+                  native=true ;;
+              esac
+            done < "$RUNNER_TEMP/changed.txt"
+            # Code changes need everything that builds or tests code.
+            if [ "$code" = true ]; then ui=true native=true; fi
+          fi
+          {
+            echo "code=$code"
+            echo "ui=$ui"
+            echo "native=$native"
+          } >> "$GITHUB_OUTPUT"
+          echo "code=$code ui=$ui native=$native"
+
+  fmt:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with: { components: rustfmt }
+      - run: cargo fmt --all --check
+
+  clippy:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The amd64 leg only: the arm64 leg stays in the full tier.
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+      - name: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+      # REQ: API-902 (T27.13) - the guarded framework's tests that need the e2e test rows (the other
+      # tests, including the release-build checks, run in the step above).
+      - name: cargo test (feature e2e)
+        run: cargo test -p wrendns-config -p wrendns-api -p wrendns --features wrendns/e2e,wrendns-config/e2e guarded
+      # REQ: CLU-005 — T5.4b AC: the election simulator's 10,000 partition schedules.
+      - name: wrendns-sim (10k schedules, release)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release -p wrendns-cluster --test sim -- --nocapture 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+      # Job logs need a token to read; annotations don't. Surface failing tests there.
+      - name: Annotate failing tests
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "panicked at|^test .* \.\.\. FAILED|^    [a-z0-9_]+(::[a-z0-9_]+)+$" "$RUNNER_TEMP/test.log" \
+            | head -20 | while IFS= read -r line; do echo "::error title=test failure::$line"; done
+
+  deny:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # REQ: DOC-004/005 — the site builds, links resolve, and Standards covers ticked tasks. The
+  # privacy check is its own job below, so that its result is a check of its own.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # The SPDX check compares against the permissive-final tag, so it needs the history and tags.
+        with: { fetch-depth: 0, fetch-tags: true }
+      - run: python3 site/build.py --check
+      # REQ: ADR-1033, ADR-1035 — every source file added since permissive-final carries the AGPL
+      # SPDX header (old files are not mass-edited).
+      - run: python3 scripts/test_check_spdx.py
+      - run: python3 scripts/check-spdx.py
+      # REQ: OPS-004 — no echo or printf piped into grep -q (fails under pipefail on large output).
+      - run: python3 scripts/test_check_pipefail.py
+      - run: python3 scripts/check-pipefail.py
+      # REQ: OPS-004 (ADR-1073) — pr-ok fails on a failed, cancelled or unknown job result and on bad input.
+      - run: python3 scripts/test_pr_ok.py
+      # REQ: OBS-005 — the Grafana dashboard is regenerated from deploy/grafana/build.py.
+      - run: python3 deploy/grafana/build.py --check
+      # T10.6 — every P0 requirement has tests or evidence, and docs/v1-requirements.md is current.
+      - run: python3 spec/trace.py --check
+
+  # REQ: DOC-006 — no tracked file, built site page or generated doc names anything on the
+  # maintainers' private denylist. The list is the repository secret PRIVACY_DENYLIST. In the
+  # maintainers' own repository (nbacheller/wrendns) the list is required and a missing secret fails
+  # the job. That includes a pull request from a fork: it gets no secret, so the script exits 2 and
+  # the check fails closed (owner decision, 2026-11-20; ADR-1080). A contributor who sees that
+  # failure has done nothing wrong: a maintainer runs the check on a branch of this repository, and
+  # the result of that run decides. Dependabot's pull requests get Dependabot secrets only, not this
+  # one (OPS-004, CI 2026-11-20), and change only manifests and lock files: skipped with a notice.
+  # Hits name file:line and the pattern's number, never the pattern. A repository other than
+  # nbacheller/wrendns (a fork's own Actions) skips with a notice.
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # The scan reads the tracked files; history and tags as the site job has them.
+        with: { fetch-depth: 0, fetch-tags: true }
+      - run: python3 scripts/test_check_private.py
+      # The built site is scanned too.
+      - run: python3 site/build.py
+      - run: python3 scripts/check-private.py
+        env:
+          WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
+          WRENDNS_PRIVACY_REQUIRED: ${{ github.repository == 'nbacheller/wrendns' && github.actor != 'dependabot[bot]' }}
+
+  # REQ: API-005 — T3.9 AC: the UI type-checks, its API types match docs/api/openapi.json,
+  # the bundle stays within 400 KiB gzipped, and the Playwright suite passes against the
+  # real binary.
+  ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
+    # job binds fixed host ports, which concurrent jobs on one host would share).
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: API types match the OpenAPI document
+        run: npm run types && git diff --exit-code src/lib/api-types.ts
+      # REQ: AGT-001 (T6.5) — the OpenAPI document is agent-ready (.spectral.yaml).
+      - name: OpenAPI lint (spectral)
+        run: npx -y @stoplight/spectral-cli@6 lint ../docs/api/openapi.json --ruleset ../.spectral.yaml --fail-severity=warn
+      - run: npm run check
+      # REQ: API-011 — every "?" in the UI has a glossary topic and every topic is used.
+      - run: npm run check:help
+      - name: Build (fails over the size budget)
+        run: npm run build
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+      # REQ: API-902 (T27.13) - the e2e server has the guarded framework's test rows and restart hook
+      # (the cargo feature `e2e`, never in a release build).
+      - run: cargo build -p wrendns --features e2e
+        working-directory: .
+      - run: npx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} --only-shell chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: playwright-report
+          path: ui/playwright-report
+          if-no-files-found: ignore
+
+  # REQ: OPS-004 — the Pi/Linux paths on a disposable runner: the Compose bundle (host network,
+  # healthcheck, hardening) and install.sh + the systemd unit (signed fake release, DNS on port 53,
+  # upgrade in place, tampered releases refused). The cluster e2e scripts stay in the full tier.
+  native-lite:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+      # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without WRENDNS_WEDGE_AFTER_SECS.
+      - run: cargo build --profile bench-fast -p wrendns --features wedge-test
+      - name: Compose bundle
+        run: |
+          sh .github/scripts/apt-install.sh dnsutils minisign
+          mkdir ctx && cp target/bench-fast/wrendns ctx/
+          printf '%s\n' 'FROM ubuntu:24.04' \
+            'COPY wrendns /usr/local/bin/wrendns' \
+            'RUN mkdir -p /var/lib/wrendns /etc/wrendns && chown 65532:65532 /var/lib/wrendns' \
+            'ENTRYPOINT ["/usr/local/bin/wrendns"]' 'CMD ["run"]' > ctx/Dockerfile
+          docker build -q -t wrendns:ci ctx
+          bash deploy/compose/e2e.sh wrendns:ci
+      # REQ: OPS-001 (T7.6 AC) — the guided installer's answers produce configs that pass
+      # `config check`; Enter gives the starter config; no questions without a terminal.
+      - name: install.sh guided setup (answers on stdin)
+        run: bash deploy/systemd/guided-e2e.sh target/bench-fast/wrendns
+      - name: install.sh + systemd unit
+        run: sudo bash deploy/systemd/e2e.sh target/bench-fast/wrendns
+      # REQ: OPS-004 (ADR-1028, T33.2) — the migration of a pre-rename native install, and the
+      # release's pre-rename asset names (a fake root; no root or systemd needed).
+      - name: pre-rename install migration and asset names
+        run: |
+          sh deploy/systemd/tests/migrate-test.sh
+          sh deploy/release/tests/legacy-assets-test.sh
+
+  # The one required check. It needs every other job in this file, so a failure anywhere is a
+  # failure here; it runs even when a needed job failed or was skipped (`if: always()`), and
+  # scripts/pr_ok.py passes only when no needed job failed, was cancelled or has an unknown result.
+  # A job skipped because its dependency failed is covered because that dependency is itself in
+  # `needs`: if `changes` fails, fmt, clippy, test, deny, ui and native-lite are all skipped, and
+  # `changes` still fails pr-ok. Jobs covered: changes, fmt, clippy, test, deny, site, privacy, ui
+  # and native-lite. Add every new job to `needs`.
+  pr-ok:
+    needs: [changes, fmt, clippy, test, deny, site, privacy, ui, native-lite]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every needed job passed or was skipped
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/pr_ok.py
