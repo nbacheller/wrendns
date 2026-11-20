@@ -95,7 +95,10 @@ check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
 - **A tag or commit pushed with a workflow's own token starts no workflows.** That's why the
   release workflow starts the tag's build, and CI and edge for its version commit, explicitly
   (`gh workflow run`). `ci.yml` and `image.yml` accept `workflow_dispatch` for this. The
-  image workflow's publish steps run for pushes *and* dispatches on `main` or `v*` tags.
+  image workflow's push, sign and publish jobs (`merge`, `chart`, `release`, `verify`) run for
+  pushes *and* dispatches on `main` or `v*` tags; a dispatch on a branch only builds and tests.
+  Each architecture is one leg (`image`) that compiles once and pushes its image by digest;
+  `merge` joins the three into the tagged manifest list and signs it.
 - **Workspace crates name each other's version** (`wrendns-proto = { version = "X.Y.Z",
   path = … }`). A version change has to update them and `Cargo.lock` too: use
   `deploy/release/bump.sh`, never a hand edit. The committed OpenAPI document
