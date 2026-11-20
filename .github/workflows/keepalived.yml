@@ -41,6 +41,6 @@ jobs:
     # which dominates the run; the checks in e2e.sh take about five minutes on top of it.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: "Two nodes behind a VIP: failover, witness, maintenance (deploy/keepalived)"
         run: bash deploy/keepalived/e2e.sh

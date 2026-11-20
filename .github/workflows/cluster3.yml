@@ -66,6 +66,6 @@ jobs:
     # host; the checks take about five more. 60 minutes leaves room for both.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: "Three nodes: join, replicate, fail over, restart (deploy/cluster3)"
         run: bash deploy/cluster3/e2e.sh
