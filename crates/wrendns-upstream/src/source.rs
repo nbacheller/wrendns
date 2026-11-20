@@ -138,11 +138,15 @@ mod tests {
             a("eth0.100", "198.51.100.12", true),
         ];
         assert_eq!(
-            resolve_source("198.51.100.0/24", &node_a).unwrap().to_string(),
+            resolve_source("198.51.100.0/24", &node_a)
+                .unwrap()
+                .to_string(),
             "198.51.100.11"
         );
         assert_eq!(
-            resolve_source("198.51.100.0/24", &node_b).unwrap().to_string(),
+            resolve_source("198.51.100.0/24", &node_b)
+                .unwrap()
+                .to_string(),
             "198.51.100.12"
         );
         let e = resolve_source("203.0.113.0/24", &node_a).unwrap_err();

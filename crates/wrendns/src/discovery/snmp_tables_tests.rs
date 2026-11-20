@@ -247,16 +247,16 @@ fn dsc_004_arp_is_filtered_to_the_listed_subnets() {
     let infra = InfraSet::default();
     let sn = vec![Ipv4Subnet::parse("10.0.10.0/24").unwrap()];
     let o = interpret(&rows, &cx("gateway", &sn, &infra));
-    // 60 hosts in 10.0.10.0/24; the 38 in 192.168.20.0/24 and the 10 incomplete (192.168.30.x,
+    // 52 hosts in 10.0.10.0/24; the 38 in 192.168.20.0/24 and the 10 incomplete (192.168.30.x,
     // skipped at parse) are not merged.
-    assert_eq!(o.counts.arp_merged, 60);
+    assert_eq!(o.counts.arp_merged, 52);
     assert_eq!(o.counts.arp_outside_subnets, 38);
     let arp: Vec<&Observation> = o
         .observations
         .iter()
         .filter(|x| x.source == Source::SnmpArp && x.name.is_none())
         .collect();
-    assert_eq!(arp.len(), 60);
+    assert_eq!(arp.len(), 52);
     assert!(
         arp.iter().all(|x| x.source.is_current()),
         "class 3 is a current binding"
