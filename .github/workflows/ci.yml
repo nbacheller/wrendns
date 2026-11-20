@@ -35,8 +35,8 @@ jobs:
 
   clippy:
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
-    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
@@ -50,8 +50,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
-    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') || matrix.os }}
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') || matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
