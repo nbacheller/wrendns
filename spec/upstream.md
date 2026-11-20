@@ -1,6 +1,6 @@
 # Upstream ledger — what the fork took, what it changed, and what it watches
 
-Fork-only file. `nbacheller/telltaledns` is based on `paimonsoror/telltaledns`; this file records how far the fork has merged upstream, every intentional difference from upstream, the upstream issues the fork has triaged, and how the daily watch (`.github/workflows/upstream-watch.yml`) reports on new upstream work. Read it before any sync. The watch script reads the three machine-readable blocks below, so keep their format.
+Fork-only file. `nbacheller/telltaledns` is based on `paimonsoror/telltaledns`; this file records how far the fork has merged upstream, every intentional difference from upstream, the upstream issues the fork has triaged, and how the watch reported on new upstream work (its workflow `upstream-watch.yml` was removed on 2026-11-20 by owner decision, ADR-1073). Read it before any sync. The watch script reads the three machine-readable blocks below, so keep their format.
 
 ## Status since 2026-11-19: independent (ADR-1026)
 
@@ -103,7 +103,7 @@ Open upstream PRs that touch a fork deviation, and what the fork does with them 
 
 ## Watch
 
-The workflow `.github/workflows/upstream-watch.yml` runs daily at 06:23 UTC and on demand, with the GitHub token only (`contents: read`, `issues: write`). It runs `.github/scripts/upstream_watch.py` from the fork's `feat/ipam-integrations` checkout. The workflow file is read from `main`, but the script and the ledger come from `feat/ipam-integrations`, so both branches need them. If the script is missing from `feat/ipam-integrations`, the job stops at a check step that says so. The checkout is pinned to a commit SHA and does not keep its token, and the script is retried up to three times.
+The workflow `upstream-watch.yml` was removed on 2026-11-20 by owner decision (ADR-1073); until then it ran daily at 06:23 UTC and on demand, with the GitHub token only (`contents: read`, `issues: write`). It runs `.github/scripts/upstream_watch.py` from the fork's `feat/ipam-integrations` checkout. The workflow file is read from `main`, but the script and the ledger come from `feat/ipam-integrations`, so both branches need them. If the script is missing from `feat/ipam-integrations`, the job stops at a check step that says so. The checkout is pinned to a commit SHA and does not keep its token, and the script is retried up to three times.
 
 What it does:
 

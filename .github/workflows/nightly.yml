@@ -1,17 +1,33 @@
-# Nightly online checks (things that depend on the internet and may be flaky).
+# The nightly tier (ADR-1073): the online checks, the three-node cluster, the keepalived failover,
+# fuzzing and the advisory check every night; coverage, reproducible builds and the catalog check
+# once a week (the second cron below). Scheduled workflows run only from main. The `report` job at
+# the end opens one issue, "Nightly run failed", when a scheduled run fails, and comments on it
+# while it stays open.
 name: nightly
 on:
   schedule:
+    # Every night.
     - cron: "41 4 * * *"
+    # Monday: the weekly set. The jobs below compare github.event.schedule with this exact string.
+    - cron: "17 5 * * 1"
   workflow_dispatch:
+    inputs:
+      weekly:
+        description: Run the weekly jobs (coverage, reproducible, catalog) as well
+        type: boolean
+        default: false
+      seconds:
+        description: Fuzz seconds per target
+        default: "1800"
 
-# Least privilege: jobs read the repository; the coverage job below adds what it needs.
+# Least privilege: jobs read the repository; the coverage, catalog and report jobs below add what they need.
 permissions:
   contents: read
 
 jobs:
   # REQ: UPS-004 / T1.6 AC — every preset endpoint resolves example.com.
   presets-online:
+    if: github.event.schedule != '17 5 * * 1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,6 +38,7 @@ jobs:
 
   # REQ: FLT-001 / ADR-017 — real published lists parse with < 0.1% invalid lines.
   lists-online:
+    if: github.event.schedule != '17 5 * * 1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,8 +49,9 @@ jobs:
 
   # T9.23 — test coverage, to find untested code (no threshold, no badge: see spec/09 §5).
   # The HTML report is published on the project site at /coverage/ by the pages workflow,
-  # which this job starts when the report is ready.
+  # which this job starts when the report is ready. Weekly (ADR-1073).
   coverage:
+    if: github.event.schedule == '17 5 * * 1' || inputs.weekly
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -71,6 +89,7 @@ jobs:
   # identity is the commit's (as the image workflow stamps it), so anyone can rebuild a release
   # and compare it with the published binary.
   reproducible:
+    if: github.event.schedule == '17 5 * * 1' || inputs.weekly
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -93,4 +112,147 @@ jobs:
           else
             echo "::error::two clean builds of the same commit differ ($(cmp -l out1/wrendns out2/wrendns | wc -l) bytes)"
             exit 1
+          fi
+
+  # REQ: CLU-001..005, OPS-007 — the three-node test cluster, every night (deploy/cluster3, T21.5).
+  # The job is the reusable workflow main.yml calls when the cluster code changes.
+  three-node:
+    if: github.event.schedule != '17 5 * * 1'
+    uses: ./.github/workflows/_cluster3.yml
+    permissions:
+      contents: read
+
+  # REQ: CLU-004, CLU-005, OPS-001, OPS-010 — the keepalived failover example, every night (deploy/keepalived, T24.4).
+  vip-failover:
+    if: github.event.schedule != '17 5 * * 1'
+    uses: ./.github/workflows/_keepalived.yml
+    permissions:
+      contents: read
+
+  # REQ: NFR-004 / 09 §4 — fuzzing, 30 minutes per target (ADR-1073).
+  fuzz:
+    if: github.event.schedule != '17 5 * * 1'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse_query, parse_response, cache_response, differential, parse_list, qlog_segment, support_redact, snmp_ber, snmp_usm, snmp_walk]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: fuzz }
+      - run: cargo install cargo-fuzz --locked
+      - name: Restore corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        working-directory: fuzz
+        # +nightly: rust-toolchain.toml pins stable for the repository, and the sanitizer
+        # flags cargo-fuzz passes need nightly.
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ inputs.seconds || 1800 }} -max_len=1500
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+
+  # REQ: OPS-004 — new security advisories against the locked dependencies, every night: a
+  # dependency can become vulnerable with no change in this repository. The same action main.yml's
+  # deny job uses, restricted to the advisories check.
+  advisories:
+    if: github.event.schedule != '17 5 * * 1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  # REQ: FLT-901 (ADR-995 section 3). Weekly live check of the content-category catalog: each source's
+  # licence, last push and archived flag against the GitHub API. Opens (or updates) an issue when a
+  # source goes stale; never fails a build, because it asks the internet.
+  catalog-check:
+    if: github.event.schedule == '17 5 * * 1' || inputs.weekly
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the sources
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 scripts/check-catalog.py > catalog-report.md
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat catalog-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Open an issue when a source is stale
+        if: steps.check.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list --label catalog --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file catalog-report.md
+          else
+            gh issue create --title "Content-category catalog: a source needs attention" --label catalog --body-file catalog-report.md
+          fi
+
+  # One issue for a failed nightly or weekly run. When a scheduled run fails, an open issue titled
+  # "Nightly run failed" gets a comment with the run and the failed jobs, or the issue is created if
+  # none is open. When a run is green and such an issue is open, it gets a comment saying so; it is
+  # closed by hand. The verdict is scripts/pr_ok.py's: a job that failed, was cancelled or has no
+  # readable result counts as failed, and a skipped job (the weekly jobs on a nightly run) as passed.
+  report:
+    needs: [presets-online, lists-online, coverage, reproducible, three-node, vip-failover, fuzz, advisories, catalog-check]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open, update or note the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          TITLE: Nightly run failed
+        run: |
+          set +e
+          verdict=$(python3 scripts/pr_ok.py 2>&1)
+          status=$?
+          set -e
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing=$(gh issue list --state open --limit 200 --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)] | .[0].number // empty')
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "The scheduled run failed: $run_url"
+              echo
+              echo "Jobs that did not pass (the verdict of scripts/pr_ok.py):"
+              echo
+              printf '%s\n' "$verdict" | sed 's/^/- /'
+            } > report.md
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body-file report.md
+            else
+              gh issue create --title "$TITLE" --body-file report.md
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "The scheduled run is green again: $run_url. Close this issue when the cause is understood."
+          else
+            echo "All jobs passed and no open issue titled \"$TITLE\"; nothing to report."
           fi

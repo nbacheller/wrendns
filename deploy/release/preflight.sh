@@ -36,7 +36,7 @@ if grep -q '^_Draft' "deploy/release/notes/v$v.md"; then
 fi
 
 # The CI workflow's runs for this commit: the newest must have succeeded.
-ci=$(gh run list --workflow ci.yml --commit "$sha" --limit 1 --json status,conclusion \
+ci=$(gh run list --workflow main.yml --commit "$sha" --limit 1 --json status,conclusion \
   --jq '.[0] | "\(.status) \(.conclusion)"' 2>/dev/null || true)
 [ "$ci" = "completed success" ] || fail "CI on ${sha%"${sha#???????}"} is '${ci:-missing}', not a success: fix or re-run it first"
 

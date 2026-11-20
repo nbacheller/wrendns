@@ -1,18 +1,10 @@
 # REQ: T22.4 — the Home Assistant integration's tests against a real WrenDNS build and a
-# real Home Assistant core (fork addition).
-name: home-assistant
+# real Home Assistant core (fork addition). A reusable workflow (ADR-1073): main.yml calls it as
+# its `home-assistant` job when the integration's paths changed; workflow_dispatch runs it by hand.
+name: _home-assistant
 on:
-  push:
-    branches: [main, feat/ipam-integrations]
-    paths: ["integrations/home-assistant/**", "crates/wrendns/src/routers.rs", "crates/wrendns/src/device_dns.rs", "deploy/ha-test/**", "crates/wrendns-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
-  pull_request:
-    paths: ["integrations/home-assistant/**", "crates/wrendns/src/routers.rs", "crates/wrendns/src/device_dns.rs", "deploy/ha-test/**", "crates/wrendns-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
+  workflow_call:
   workflow_dispatch:
-# A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
-# the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
