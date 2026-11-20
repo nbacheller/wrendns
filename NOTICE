@@ -36,7 +36,7 @@ at your option. Those permissions cannot be withdrawn, and this NOTICE keeps
 their copyright line and permission text as both licences require.
 
 The last version of this repository released entirely under Apache-2.0 OR MIT
-is the annotated git tag `permissive-final` (commit 8c70f7ff), published on
+is the annotated git tag `permissive-final` (commit 2e99850b), published on
 2026-11-19 as https://github.com/nbacheller/wrendns/releases/tag/permissive-final
 (source only). Changes made after it are licensed under AGPL-3.0-or-later,
 except as stated below; the TelltaleDNS portions keep Apache-2.0 OR MIT.
