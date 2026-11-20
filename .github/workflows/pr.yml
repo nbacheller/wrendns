@@ -157,8 +157,9 @@ jobs:
   # the job. That includes a pull request from a fork: it gets no secret, so the script exits 2 and
   # the check fails closed (owner decision, 2026-11-20; ADR-1080). A contributor who sees that
   # failure has done nothing wrong: a maintainer runs the check on a branch of this repository, and
-  # the result of that run decides. Dependabot's pull requests get Dependabot secrets only, not this
-  # one (OPS-004, CI 2026-11-20), and change only manifests and lock files: skipped with a notice.
+  # the result of that run decides. Dependabot's pull requests are scanned like any other: they get
+  # Dependabot secrets only, so the list is also stored as the Dependabot secret of the same name
+  # (owner decision, 2026-11-20), and a missing one fails the job.
   # Hits name file:line and the pattern's number, never the pattern. A repository other than
   # nbacheller/wrendns (a fork's own Actions) skips with a notice.
   privacy:
@@ -173,7 +174,7 @@ jobs:
       - run: python3 scripts/check-private.py
         env:
           WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
-          WRENDNS_PRIVACY_REQUIRED: ${{ github.repository == 'nbacheller/wrendns' && github.actor != 'dependabot[bot]' }}
+          WRENDNS_PRIVACY_REQUIRED: ${{ github.repository == 'nbacheller/wrendns' }}
 
   # REQ: API-005 — T3.9 AC: the UI type-checks, its API types match docs/api/openapi.json,
   # the bundle stays within 400 KiB gzipped, and the Playwright suite passes against the
