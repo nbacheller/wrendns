@@ -233,7 +233,7 @@ jobs:
   # X and latest), pushed or started there by the release workflow (T9.26). Nothing is pushed or
   # signed on any other ref.
   merge:
-    needs: [version, image]
+    needs: [version, image, assets]
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
