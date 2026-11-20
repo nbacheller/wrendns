@@ -43,6 +43,10 @@ cd ui && npm ci && npm run check   # the UI type-checks (and npm run test:e2e fo
 
 Keep commits small and coherent, with messages in the style of the history (`fix(api): ... [API-004]`).
 
+## Dependency updates
+
+Dependabot opens the dependency update pull requests: the root Cargo workspace is checked weekly, and the fuzz workspace, the two npm projects, the GitHub Actions and the image's base images are checked monthly. Minor and patch updates are grouped into one pull request for each entry that groups them (the root and fuzz Cargo workspaces, the two npm projects and the GitHub Actions), and every major update is its own pull request; the base images are not grouped. A release must be 5 days old before Dependabot offers it, and security updates do not wait for the schedule or that cooldown. Dependabot does not rebase its pull requests automatically, so a maintainer comments `@dependabot rebase` to refresh one. Merge each update with a squash, and put the requirement tag in the commit message, as the header of `.github/dependabot.yml` says.
+
 ## Contributor Licence Agreement
 
 WrenDNS is licensed under the AGPL-3.0-or-later, and MySummitKeep, LLC also offers it under a commercial licence ([LICENSING.md](LICENSING.md)). To keep both possible, every outside contribution comes with this agreement. **You keep the copyright in your contribution**; you give MySummitKeep, LLC a licence to use it, including the right to license it to others under other terms.
