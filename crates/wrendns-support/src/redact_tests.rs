@@ -10,14 +10,14 @@ fn red(level: Level) -> Redactor {
 #[test]
 fn ops_011_strict_replaces_every_shape() {
     let mut r = red(Level::Strict);
-    let input = "client 192.168.1.20:53 from aa:bb:cc:dd:ee:ff wrote person@gmail.com via \
+    let input = "client 192.168.1.20:53 from aa:bb:cc:dd:ee:ff wrote someone@gmail.com via \
                  https://user:hunter2@dns.quad9.net:853/dns-query?token=abc123 see \
                  /home/alice/.cache/x.log key 0123456789abcdef0123456789abcdef0123 host nas.lan error: 10.1.2.3.";
     let out = r.text(input);
     for gone in [
         "192.168.1.20",
         "aa:bb:cc",
-        "person@",
+        "someone@",
         "gmail",
         "hunter2",
         "dns.quad9.net",
@@ -107,14 +107,14 @@ fn ops_011_known_secrets_are_removed_at_every_level() {
 #[test]
 fn ops_011_none_keeps_values_but_never_secrets_or_credentials() {
     let mut r = red(Level::Off);
-    let input = "192.168.1.5 person@gmail.com dns.quad9.net /home/alice/x \
+    let input = "192.168.1.5 someone@gmail.com dns.quad9.net /home/alice/x \
                  https://u:p@host.example.net/x?token=abc&a=b \
                  -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY----- \
                  abcdef0123456789abcdef0123456789";
     let out = r.text(input);
     for kept in [
         "192.168.1.5",
-        "person@gmail.com",
+        "someone@gmail.com",
         "dns.quad9.net",
         "/home/alice/x",
         "host.example.net",

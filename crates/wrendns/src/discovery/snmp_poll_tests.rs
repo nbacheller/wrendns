@@ -59,7 +59,7 @@ fn arp_rows(o: &Outcome) -> usize {
 
 /// REQ: DSC-004 (`dsc_004_arp_physical_then_media_fallback`) — ARP is read from
 /// `ipNetToPhysicalTable`, and from `ipNetToMediaTable` only when the first one does not answer.
-/// A typical home gateway's shape: 108 IPv4 (98 with a MAC) and 81 IPv6 entries; the IPv6 ones are
+/// A typical home gateway's shape: 100 IPv4 (90 with a MAC) and 72 IPv6 entries; the IPv6 ones are
 /// counted and ignored, and the incomplete ones are skipped.
 #[test]
 fn dsc_004_arp_physical_then_media_fallback() {
@@ -72,8 +72,8 @@ fn dsc_004_arp_physical_then_media_fallback() {
         false,
     );
     assert_eq!(choice(&o, "arp"), Some("ipNetToPhysicalTable"));
-    assert_eq!(arp_rows(&o), 98);
-    assert_eq!(o.result.ipv6_ignored, 81);
+    assert_eq!(arp_rows(&o), 90);
+    assert_eq!(o.result.ipv6_ignored, 72);
     assert_eq!(
         o.result.skipped, 10,
         "the incomplete entries are not bindings"
@@ -95,7 +95,7 @@ fn dsc_004_arp_physical_then_media_fallback() {
         false,
     );
     assert_eq!(choice(&o, "arp"), Some("ipNetToMediaTable"));
-    assert_eq!(arp_rows(&o), 98);
+    assert_eq!(arp_rows(&o), 90);
     assert_eq!(o.result.skipped, 10, "type invalid(2) is not a binding");
     assert_eq!(
         media_only.requests_under("1.3.6.1.2.1.4.35"),
@@ -161,7 +161,7 @@ fn dsc_004_capabilities_probed_not_assumed() {
         again.log.borrow().iter().all(|(_, k, _)| *k == "bulk"),
         "no probe, no sysObjectID read"
     );
-    assert_eq!(arp_rows(&o2), 98);
+    assert_eq!(arp_rows(&o2), 90);
 
     // An agent that answers only the bridge and LLDP tables.
     let clock = Clock::new();

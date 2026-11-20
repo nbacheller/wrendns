@@ -5531,7 +5531,7 @@ members = [\"u\"]
         for qtype in [rtype::AXFR, rtype::IXFR] {
             let mut out = [0u8; 4096];
             let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
-                &query("cluster-catalog.cluster.internal", qtype, true),
+                &query("catalog.cluster.internal", qtype, true),
                 &meta(),
                 &mut out,
             ) else {

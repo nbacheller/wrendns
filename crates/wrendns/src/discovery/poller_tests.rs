@@ -277,7 +277,7 @@ async fn dsc_004_a_poll_goes_from_queue_to_board_to_inventory() {
     let gw = rx.recv().await.unwrap();
     assert_eq!(gw.agent, "gateway");
     assert!(
-        gw.observations.len() >= 98 / 2,
+        gw.observations.len() >= 90 / 2,
         "ARP entries of the listed subnets: {}",
         gw.observations.len()
     );
@@ -308,7 +308,7 @@ async fn dsc_004_a_poll_goes_from_queue_to_board_to_inventory() {
         "the gateway has no bridge MIB"
     );
     assert_eq!(state_of(g, "lldp"), "unanswered");
-    assert_eq!(g.last_counts.as_ref().unwrap().ipv6_ignored, 81);
+    assert_eq!(g.last_counts.as_ref().unwrap().ipv6_ignored, 72);
     assert_eq!(
         g.capability.as_ref().unwrap().sys_object_id.as_deref(),
         Some("1.3.6.1.4.1.8072.3.2.10")
@@ -516,7 +516,7 @@ fn dsc_014_agent_metrics_name_each_agent_and_table() {
         walks: vec![WalkStat {
             part: "arp".into(),
             alt: "ipNetToPhysicalTable".into(),
-            rows: 98,
+            rows: 90,
             stop: "end".into(),
             error: None,
         }],
@@ -538,7 +538,7 @@ fn dsc_014_agent_metrics_name_each_agent_and_table() {
         "wrendns_discovery_agent_poll_failures_total{agent=\"gateway\"} 0",
         "wrendns_discovery_agent_last_success_timestamp_seconds{agent=\"gateway\"} 1800000000",
         "wrendns_discovery_agent_poll_duration_seconds{agent=\"gateway\"} 1.5",
-        "wrendns_discovery_agent_table_rows{agent=\"gateway\",table=\"arp\"} 98",
+        "wrendns_discovery_agent_table_rows{agent=\"gateway\",table=\"arp\"} 90",
         "wrendns_discovery_agent_table_answered{agent=\"gateway\",table=\"arp\"} 1",
         "wrendns_discovery_agent_table_answered{agent=\"gateway\",table=\"bridge\"} 0",
     ] {

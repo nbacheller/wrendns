@@ -528,7 +528,7 @@ fn snmp_worker() -> Worker {
 /// REQ: DSC-004 (e2e with a fake snmpd serving recorded walks) - the real worker probes and polls a
 /// gateway-shaped agent over UDP: it finds which tables answer with one GETNEXT each, walks the
 /// ARP and interface tables, and sends the rows in frames before the result. The rows are the
-/// 98 IPv4 ARP entries (81 IPv6 ones counted, 10 incomplete skipped), and the requests are spaced at
+/// 90 IPv4 ARP entries (72 IPv6 ones counted, 10 incomplete skipped), and the requests are spaced at
 /// least 50 ms apart (at most 20 a second).
 #[test]
 fn dsc_004_worker_polls_a_gateway_shaped_agent() {
@@ -545,8 +545,8 @@ fn dsc_004_worker_polls_a_gateway_shaped_agent() {
     let (rows, result) = run_snmp_job(&mut w, &job, Duration::from_secs(60)).expect("a result");
     assert_eq!(result["ok"], true, "{result}");
     let arp = rows.iter().filter(|r| r["k"] == "arp").count();
-    assert_eq!(arp, 98);
-    assert_eq!(result["snmp"]["ipv6_ignored"], 81);
+    assert_eq!(arp, 90);
+    assert_eq!(result["snmp"]["ipv6_ignored"], 72);
     assert_eq!(result["snmp"]["skipped"], 10);
     let cap = &result["snmp"]["capability"];
     assert_eq!(cap["level"], "v2c");
