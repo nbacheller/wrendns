@@ -27,7 +27,7 @@ toml = "1.1.6"
 # REQ: FLT-010 (T7.10) — schedule time zones from the system tz database (/usr/share/zoneinfo;
 # the image ships it). Small, no bundled tzdb.
 wrendns-snmp = { path = "../wrendns-snmp" }
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+jiff = { version = "1.0", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 
 [features]
 # REQ: API-902 (T27.13, ADR-956 §3) — the guarded registry's test rows (`e2e-immediate`,
