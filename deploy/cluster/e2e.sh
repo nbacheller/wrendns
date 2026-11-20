@@ -309,6 +309,9 @@ for _ in $(seq 30); do
   [ -n "$missing" ] && break; sleep 0.5
 done
 [ "$missing" = r ] || fail "the stopped replica isn't listed as missing (got '$missing')"
+# REQ: OPS-010 - while it is certainly down, the primary's evaluation raises node_down.
+for _ in $(seq 120); do alert down firing r && break; sleep 1; done
+alert down firing r || fail "node_down didn't fire for the stopped replica (FLT-017 stop)"
 t0=$(date +%s.%N)
 "$B" run -c "$E/r.toml" >> "$E/r.log" 2>&1 & R_PID=$!
 for _ in $(seq 650); do [ "$(wl 29002)" = 3 ] && break; sleep 0.1; done
@@ -323,10 +326,8 @@ for _ in $(seq 400); do
   [ "$(get '/api/v1/cluster' | field 'next((str(n["connected"]) for n in d["nodes"] if n["site"] == "r"), "")')" = True ] && break
   sleep 0.1
 done
-# REQ: OPS-010 — the stop above raised node_down, and reconnecting resolved it (a baseline for
+# REQ: OPS-010 â€” the stop above raised node_down, and reconnecting resolved it (a baseline for
 # the maintenance checks further on, which read only what arrives after their own mark).
-for _ in $(seq 120); do alert down firing r && break; sleep 1; done
-alert down firing r || fail "node_down didn't fire for the stopped replica (FLT-017 stop)"
 for _ in $(seq 60); do alert down resolved r && break; sleep 1; done
 alert down resolved r || fail "node_down didn't resolve after the replica came back"
 echo "ok (pushed in ${pushed} s; a new replica pulled it in ${pulled} s; a stopped one is missing)"

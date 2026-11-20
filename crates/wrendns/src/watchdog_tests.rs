@@ -386,6 +386,22 @@ fn ops_012_watchdog_ends_when_its_runtime_is_gone() {
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
+#[test]
+fn ops_012_runtime_probe_treats_a_dropped_task_as_alive() {
+    // REQ: OPS-012, ADR-1077 point 1 - a runtime shut down drops the probe task unrun
+    // (Disconnected); that is stopping, not a stall.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let mut live = Live {
+        handle: rt.handle().clone(),
+        udp: None,
+    };
+    rt.shutdown_background();
+    assert!(live.runtime(Duration::from_millis(50)));
+}
+
 // ---- the probe --------------------------------------------------------------------------------
 
 #[test]
