@@ -1,10 +1,10 @@
 # Shadow AI detection (M37) — design
 
-Status: design only (T37.1, fork #42). ADR-1055 to ADR-1059 **Accepted 2026-11-19** with the owner's decisions (below); ADR-1060 (the node side) Proposed. No code is written by T37.1. Revised 2026-11-19 for the owner's decision that **Shadow AI is a commercial feature of WrenDNS Cloud, shipped hosted-only** (ADR-1052's proprietary service). Requirement IDs are reserved now so test names can trace from the first task: in the open node, **OBS-904** the name-class counters export and **FLT-903** cloud-published list sources; in the service, **CLD-906** detection and findings, **CLD-907** the alert and the digest, **CLD-908** the catalog, **CLD-909** AI policy and its lists; **FLT-904** stays reserved for Warn, a later phase. (Free on every branch on 2026-11-19; recheck when the rows are written.)
+Status: design only (T37.1, fork #42). ADR-1055 to ADR-1059 **Accepted 2026-11-19** with the owner's decisions (below); ADR-1060 (the node side) Accepted 2026-11-19 and amended the same day per the owner decisions on cloud writes (third round, below): Block and Allow are signed policy changes, replacing the subscribed cloud lists. No code is written by T37.1. Revised 2026-11-19 for the owner's decision that **Shadow AI is a commercial feature of WrenDNS Cloud, shipped hosted-only** (ADR-1052's proprietary service). Requirement IDs are reserved now so test names can trace from the first task: in the open node, **OBS-904** the name-class counters export and **FLT-903** class rules over a content-signed class map; in the service, **CLD-906** detection and findings, **CLD-907** the alert and the digest, **CLD-908** the catalog, **CLD-909** AI policy and its lists; **FLT-904** stays reserved for Warn, a later phase. (Free on every branch on 2026-11-19; recheck when the rows are written.)
 
 Shadow AI is the use of AI services that the network's owner hasn't approved. This feature shows which devices, and through the CMDB which people, reach which AI services, and lets the owner allow, monitor or block them per group. DNS is a good vantage point because every AI service starts with a lookup, and WrenDNS already knows the device, its group, the time and the device's identity. It is also a limited one: DNS tells you *which known service* a device reached and roughly *when and how much*, not *what was typed*, and for most vendors not *which account*. The design says so wherever a user could otherwise assume coverage it doesn't have.
 
-**Where it runs.** Everything that is Shadow AI (the catalog, detection, confidence, findings, policy, the pages, alerts, the digest and its API) runs in WrenDNS Cloud, in the service's separate repository (ADR-1052 §2). The open AGPL node gains two small, generic, documented pieces that know nothing about AI and are useful for other hosted analytics too: a **name-class counters export** (per device, per opaque class number, 5-minute activity bitmaps, sent over the existing outbound tunnel, ADR-1047) and **cloud-published list sources** (ordinary block and allow lists that the tenant's cloud account publishes and the node fetches). Enforcement reaches the node as ordinary group policy: a group subscribes once to its two cloud lists, and the cloud's Block and Allow decisions arrive as those lists' contents (ADR-1060). A self-hosted node without the cloud keeps everything it has today, including the free `ai` category and the nine `presets/services/ai.toml` services; it gets no Shadow AI.
+**Where it runs.** Everything that is Shadow AI (the catalog, detection, confidence, findings, policy, the pages, alerts, the digest and its API) runs in WrenDNS Cloud, in the service's separate repository (ADR-1052 §2). The open AGPL node gains two small, generic, documented pieces that know nothing about AI and are useful for other hosted analytics too: a **name-class counters export** (per device, per opaque class number, 5-minute activity bitmaps, sent over the existing outbound tunnel, ADR-1047) and **class rules** (per group, block or allow the names of opaque class numbers in a **class map** that MySummitKeep signs with its content key and delivers over the platform channel, ADR-1062). Enforcement reaches the node as ordinary group policy: a Block or Allow set in the portal is a **signed policy change**, confirmed with the editor's change-signing passkey and verified, authorized and applied on the node like every cloud change (ADR-1060, ADR-1061, ADR-1063). There is no subscription to make on the node. A self-hosted node without the cloud keeps everything it has today, including the free `ai` category and the nine `presets/services/ai.toml` services; it gets no Shadow AI.
 
 "Shadow" already means something in WrenDNS: a list in **shadow mode** (`ListMode::Shadow`, OBS-018) is compiled and counted but never blocks. The node has no Shadow AI screen, so the two never appear side by side; in the cloud the watch-only policy is called **Monitor**, and the help topic says it is unrelated to the node's shadow-mode lists.
 
@@ -13,7 +13,7 @@ Shadow AI is the use of AI services that the network's owner hasn't approved. Th
 Final. They replace the list of open decisions in the first draft, and ADR-1055 to ADR-1059 record them.
 
 1. **Catalog:** in-house, written from vendor documentation (ADR-1055). It lives in the service's private repository, not in this one.
-2. **Commercial and hosted-only:** detection, policy evaluation, findings, reports and the catalog live in WrenDNS Cloud and are computed from data the node sends. The open node gains only a generic, documented telemetry export over the tunnel, with no Shadow AI logic or catalog, and enforcement comes back as ordinary group policy through the existing configuration path. It needs WrenDNS Cloud. The cloud's evidence store **amends ADR-1052 §3** (below, ADR-1059). The "catalog subscription" and "delayed open" packaging of the first draft is removed.
+2. **Commercial and hosted-only:** detection, policy evaluation, findings, reports and the catalog live in WrenDNS Cloud and are computed from data the node sends. The open node gains only a generic, documented telemetry export over the tunnel, with no Shadow AI logic or catalog, and enforcement comes back as ordinary group policy through the existing configuration path (since the third round: as changes signed by the editor, ADR-1060 point 3). It needs WrenDNS Cloud. The cloud's evidence store **amends ADR-1052 §3** (below, ADR-1059). The "catalog subscription" and "delayed open" packaging of the first draft is removed.
 3. **Default on new installs:** off until an admin turns it on and acknowledges a monitoring notice; then every group starts at Monitor (ADR-1058).
 4. **Privacy level 1:** full per-device findings, matched before hashing, after an extra acknowledgement; the level-1 description, the docs and the privacy notes say that Shadow AI findings are an exception. Level 2 and above: off (ADR-1058; amends ADR-102 for this export).
 5. **When a device "used" a service:** a use-role hostname in at least 2 active 5-minute periods or on 2 days, on merged evidence, or endpoint-agent confirmation; built-in assistants shown as "OS assistant present"; the ambient-hostname lab before the first release, with the owner's own devices only with a go-ahead (ADR-1056).
@@ -37,21 +37,21 @@ Final. They replace the list of open decisions in the first draft, and ADR-1055 
 
 ### Non-goals
 
-- **No Shadow AI logic or catalog in the open node.** The export and the cloud lists are generic. The only Shadow AI wording on the node is what owner decision 4 requires: the level-1 privacy description, the level-1 acknowledgement and the docs' privacy notes, which say what WrenDNS Cloud's Shadow AI does with the export.
+- **No Shadow AI logic or catalog in the open node.** The export and class rules are generic. The only Shadow AI wording on the node is what owner decision 4 requires: the level-1 privacy description, the level-1 acknowledgement and the docs' privacy notes, which say what WrenDNS Cloud's Shadow AI does with the export.
 - **No query log in the cloud.** Names outside the tenant's class map never leave the node; nothing finer than a 5-minute period is sent.
 - **No TLS inspection, no proxy, no header injection.** OpenAI's and Anthropic's tenant restrictions need a proxy that adds headers after decrypting traffic. WrenDNS does not decrypt and will not start.
 - **No content inspection.** No prompts, responses, file contents or filenames, from DNS or from the endpoint agent.
 - **No probing.** Local LLM servers are found passively or from imported scans only (ADR-907).
 - **No risk score.** Vendor-stated, dated, linked facts only (ADR-1055).
 - **No third-party categorisation feed**, open or commercial (ADR-1055).
-- **The cloud never writes a node's configuration** (ADR-1047 point 3, ADR-1049). Policy reaches the node as list contents the node fetched, under a subscription an admin made on the node (ADR-1060).
+- **The cloud never writes a node's configuration on its own.** A Block or Allow reaches the node only as a change signed by an editor's passkey and checked against the editor's node role (ADR-1061, ADR-1063); catalog content signed by the content key can change which names a class holds, never which classes a group blocks or allows (ADR-1060 point 3).
 - **No Warn in v1.**
 - **No ECH stripping and no RDATA rewriting** (see the threat model).
 - **Not marketed for monitoring children** (owner decision 9).
 
 ## User stories
 
-1. **A household.** An adult runs a two-node cluster at home, linked to WrenDNS Cloud with the Shadow AI add-on. In the portal they turn Shadow AI on and acknowledge the notice; at home, on the node's own UI on the LAN, they turn on the export and subscribe the Adults group to its cloud lists (both are admin work that ADR-1049 point 3 keeps off hosted names by default). Every group starts at Monitor. After a week the portal shows: "study-laptop (192.0.2.21) used Example Chat on 5 days, about 3 h in all. Likely." and "living-room-speaker (192.0.2.40) reaches Example Voice AI. OS assistant present." They set Adults to Allow for the assistant they chose and Block for the rest of the chat kind; within about a minute the Adults group's cloud block list on the node holds those names. Their phones show "Private Relay: opted out by this network" (the default special-names switch), so they stay fully visible; a visitor's laptop with its own DoH resolver set by IP shows "partial: query rate dropped", so its absence from the page proves nothing.
+1. **A household.** An adult runs a two-node cluster at home, linked to WrenDNS Cloud with the Shadow AI add-on. In the portal they turn Shadow AI on and acknowledge the notice; at home, on the node's own UI on the LAN, they turn on the export (admin work that ADR-1049 point 3 keeps off hosted names by default) and check that cloud sync is on with class rules allowed (M36). Every group starts at Monitor. After a week the portal shows: "study-laptop (192.0.2.21) used Example Chat on 5 days, about 3 h in all. Likely." and "living-room-speaker (192.0.2.40) reaches Example Voice AI. OS assistant present." They set Adults to Allow for the assistant they chose and Block for the rest of the chat kind, and confirm with their signing passkey; within seconds the change is Applied on the node, the Adults group's class rules block those names, and the portal shows Accepted once every node has it. Their phones show "Private Relay: opted out by this network" (the default special-names switch), so they stay fully visible; a visitor's laptop with its own DoH resolver set by IP shows "partial: query rate dropped", so its absence from the page proves nothing.
 2. **A small business.** An office of 25 staff on Business, with an approved coding assistant on a business plan whose hosts are separate from the personal plan's, and the company's own cloud model resource. The owner sets the Staff group to Monitor for chat assistants, Allow for the approved coding plan and the company's model resource, and Block for personal coding plans. Each first likely use of an unapproved service by a staff laptop alerts once, grouped: "3 devices in Staff used Example Chat for the first time: laptop-07, laptop-12, phone-03. Likely." The weekly digest lists the services used, new ones first. The page says plainly that WrenDNS can't tell the company's chat workspace from a personal account on services whose hostnames are shared.
 3. **A managed-service provider.** An MSP runs WrenDNS at a dozen client sites, each site a cluster in the MSP's Business tenant. The portal's cross-site view lists services in use per site and group, new services this week and visibility gaps; per-device detail stays per site and needs the site's Shadow AI permission. They have an agent draft each client's monthly review through the service's read tools; any policy change it proposes waits as a plan for a human. (A reseller model spanning several customers' own tenants is an open question.)
 
@@ -64,22 +64,23 @@ Final. They replace the list of open decisions in the first draft, and ADR-1055 
                        ▼
                  primary: OR-merge members' bitmaps, bounded buffer
                        │  up the tunnel (ADR-1047): export batches,
-                       │  requests for the class map and cloud lists
+                       │  requests for the class map
                        ▼
                  WrenDNS Cloud (proprietary, separate repository)
-                   catalog ─▶ per-tenant class map, per-group lists
+                   catalog ─▶ class map, signed by the content key
                    ingest ─▶ evidence store ─▶ findings, first-seen
                    policy ─▶ alert, digest, portal pages, API
-                       │  replies the node asked for: the class map and
-                       │  the group lists (ETag), the list version in
-                       │  heartbeat acknowledgements
+                       │  platform channel: the signed class map the node
+                       │  asked for, its version in heartbeat acks;
+                       │  user channel: Block and Allow as changes signed
+                       │  by the editor's passkey (ADR-1061)
                        ▼
-                 node: cloud lists compiled into the snapshot like any list
+                 node: class rules compiled into the snapshot like any list
 ```
 
 ### What the node sends (ADR-1060)
 
-The **name-class counters export** (OBS-904) is a node feature in `[cloud.export]`, off by default, admin-only and guarded (ADR-1047 point 4), with a UI card under Settings → WrenDNS Cloud that shows exactly what is sent, including a "show the last batch" view. It knows nothing about AI. Its inputs are the drained `QueryEvent`s on the telemetry thread and a **class map** the node fetched from its tenant: a list of name patterns (exact names and `||name^` subtrees only, no regex) each mapped to an opaque `u16` class number, with no names of services, kinds, vendors or anything else. The node compiles the map into a small FST (reversed name to class number), the same structure as the snapshot's, and matches each event's name once (a suffix match: up to one probe per label, typically 2 to 4).
+The **name-class counters export** (OBS-904) is a node feature in `[cloud.export]`, off by default, admin-only and guarded (ADR-1047 point 4), with a UI card under Settings → WrenDNS Cloud that shows exactly what is sent, including a "show the last batch" view. It knows nothing about AI. Its inputs are the drained `QueryEvent`s on the telemetry thread and a **class map** the node requested and verified against the content key (scope `class_map`, ADR-1062; the same map for every tenant, its hash published per `catalog_version`): a list of name patterns (exact names and `||name^` subtrees only, no regex) each mapped to an opaque `u16` class number, each class with up to 4 opaque `u8` tags (the cloud uses them for kinds), with no names of services, kinds, vendors or anything else. A tenant's own local entries are not in it: they arrive as `class_local` entries, signed changes like any policy. The node compiles the map into a small FST (reversed name to class number), the same structure as the snapshot's, and matches each event's name once (a suffix match: up to one probe per label, typically 2 to 4).
 
 Per (device, class, UTC day) it keeps:
 
@@ -105,11 +106,13 @@ For each device with at least one class-map match in the last 7 days (and no oth
 
 **Groups and devices that leave nothing.** `[exclusions]` drops an event before every sink, the export included. `[exclusions.log]` keeps events out of the query log and the event sinks (OBS-903); the export is an off-node per-device record like an event sink, so it honours `[exclusions.log]` too (counts on the node's own dashboard are unaffected). The export also has `groups` (default: all), set on the node; and the cloud's reply to a batch may name groups to omit (a group on Off, or every group when Shadow AI is off), which the node honours from the next interval. That reply can only narrow what is sent, never widen it. The node never sends a name that is not in the class map, never a time finer than a 5-minute period, and never an answer.
 
-### Cloud-published lists (ADR-1060)
+### Policy on the node: class rules over the signed class map (ADR-1060)
 
-A **cloud list** (FLT-903) is an ordinary list (spec/05) whose source is the tenant's WrenDNS Cloud account instead of a URL: `source = { cloud = "<list id>" }`. As with category lists (ADR-994 point 10, ADR-995 point 4), only the primary fetches it, by its own request up the tunnel, with an ETag; replicas and resolver pods (which have no tunnel, ADR-1047 point 1) receive it in the compiled snapshot and never fetch. The cloud's heartbeat acknowledgement to the primary carries the tenant's current list version, so a changed list is fetched within about one heartbeat (20 s), with an hourly poll as the floor. It is compiled into the snapshot like every list; the Lists page shows it with the source "WrenDNS Cloud", its size, last change and the diff since the last version. Its limits are generic: block lists hold exact names and subtrees only, never a public suffix or the node's own names; **allow** lists hold exact names only, and any name in them that a security or threat list blocks is dropped at compile time and reported ("allow ignored: on a threat list"), so a cloud list can never open a hole past a security list. A failed fetch keeps the last good list (FLT-004) under the stale-list rules (OBS-023).
+A **class rule** (FLT-903) is an ordinary, generic group setting: `{group, action: block | allow, classes: [u16], tags: [u8]}` (tags in block rules only). For each group the node compiles a **block set**, the patterns of the named classes and tags from the class map plus the group's `class_local` entries, and an **allow set**, only the exact names of the named classes: a subtree in an allowed class is ignored and reported, and a name that a security or threat list blocks is dropped and reported ("allow ignored: on a threat list"), so an Allow can never open a hole past a security list. Both are compiled into the snapshot like lists, so replicas and resolver pods enforce them without receiving content (ADR-994 point 10). The Lists page shows them as "class rules of <group>", with the class map's version and the diff of each change; Explain names the class rule and its signer.
 
-For Shadow AI the cloud publishes two lists per group, `ai-block-<group>` and `ai-allow-<group>`, each the group's whole effective AI policy. An admin subscribes the group to them **once, on the node**; after that every Block, Allow or approved-tenant change in the portal arrives as list contents, with no configuration change on the node. Subscribing hands part of a group's answers to the cloud, so it is admin-only and guarded: on the LAN, or over a hosted name only where a LAN admin has allowed admin work under ADR-1049 point 3. The block list and the allow list are separate choices, the allow list unticked by default with the line "lets WrenDNS Cloud unblock names that this node's own lists block in this group (never security or threat lists)"; a group needs the allow list only when the node's own `ai` category or service blocks would otherwise stop an approved service.
+**How a Block or Allow reaches the node.** The portal compiles a group's modes into the classes and tags to block and the classes to allow, and shows the editor the change in words ("Block Example Chat and 11 other chat services for Adults; allow Example Assistant"). The editor confirms with the change-signing passkey, and the change is delivered, verified, merged and applied on the primary like every cloud change (ADR-1061, ADR-1063), under the editor's node role. It needs `[cloud.sync]` on, with `class_rule` and `class_local` in its allowlist (turned on once, at home); there is no per-group subscription. A Git-managed cluster gets the TOML lines to commit instead.
+
+**What content can and cannot do.** The class map is platform content: a new `catalog_version` can add a hostname to a class, or a new service to a kind's tag, so a group that blocks a kind keeps blocking it as the catalog grows. It can never change which classes or tags a group blocks or allows, and Allow names classes only, never tags, so content can widen a Block but never an Allow. The map's caps, the refusal of public suffixes, the diffs on the node and the published hash of each `catalog_version` apply.
 
 ### Latency
 
@@ -118,21 +121,22 @@ For Shadow AI the cloud publishes two lists per group, `ai-block-<group>` and `a
 | A lookup to the cloud | the export interval: every 5 minutes, plus up to 60 s of jitter | the buffer's catch-up after an outage |
 | First lookup to a Likely finding | about 5 to 15 minutes after the **second** active period (the use rule needs two); on the second day for use on two days | as above |
 | Finding to alert | the next evaluation, every 5 minutes, then the grouping window (up to 15 minutes, "The alert") | rate limits |
-| A Block in the portal to the node's answer | about 20 to 60 s: the next heartbeat acknowledgement, the list fetch, the snapshot compile | the hourly poll while heartbeats fail |
+| A Block in the portal to the node's answer | a few seconds after the editor signs: delivery over the tunnel, the merge, the snapshot compile | queued as Pending while home is offline, until the change's expiry; the cloud resolver can take it at once with "Apply to roaming now" (ADR-1064) |
+| A catalog change to the node's class map | about 20 to 60 s: the next heartbeat acknowledgement, the signed map fetched and verified, the compile | the hourly poll while heartbeats fail |
 | Digest | weekly, at the tenant's hour | — |
 
 ### Offline behaviour (DNS never depends on the cloud)
 
 | Event | DNS | Export | Policy | What is shown |
 |---|---|---|---|---|
-| Tunnel or cloud down | unaffected | batches wait on the primary, at most 7 days or 4 MiB on disk, oldest dropped first | cloud lists keep their last good contents; the class map its last good version | node: `cloud_unreachable` (degraded, existing). Cloud: "no data from <cluster> since <time>"; findings in that window say "evidence incomplete" |
+| Tunnel or cloud down | unaffected | batches wait on the primary, at most 7 days or 4 MiB on disk, oldest dropped first | class rules keep working on the last good class map; portal changes queue as Pending with their expiry | node: `cloud_unreachable` (degraded, existing). Cloud: "no data from <cluster> since <time>"; findings in that window say "evidence incomplete" |
 | Data arrives late | — | merged when it arrives (OR-merge is idempotent) | — | late first uses alert with "first seen <time>, reported late"; older than 7 days, they go to the digest only |
 | Data lost (outage over 7 days, or a member down longer than its tracker holds) | — | that share of the day is missing | — | the gap is shown; a missing period is never read as "no use" |
-| Subscription cancelled, add-on removed or tenant unlinked | unaffected | stops | the lists are **frozen**, never emptied: the cloud keeps serving their last contents for 90 days and then stops answering, and the node keeps the last good copy; the node's Lists page says "no longer updated" and offers "Keep as a local list" or "Unsubscribe" | the evidence is purged within 30 days (ADR-1059) |
-| Shadow AI turned off in the portal | unaffected | the cloud tells the node to stop in its reply to the next batch; the node stops | lists frozen as above | the purge starts at once and completes within 30 days; turning it on again is a fresh start |
+| Subscription cancelled, add-on removed or tenant unlinked | unaffected | stops | the class map is **frozen**, never emptied: the node keeps the last good copy and class rules, which are the tenant's own configuration, stay; the node's Lists page says "class map no longer updated" and offers "Convert to local lists" or "Remove class rules" | the evidence is purged within 30 days (ADR-1059) |
+| Shadow AI turned off in the portal | unaffected | the cloud tells the node to stop in its reply to the next batch; the node stops | class rules stay until an editor removes them (a signed change) or an admin does on the node; the class map frozen as above | the purge starts at once and completes within 30 days; turning it on again is a fresh start |
 | Export turned off on the node | unaffected | stops at once | unchanged | cloud: "the export is off on <cluster>" |
 
-Because a frozen list keeps blocking what it blocked, cancelling never silently unblocks a group and never breaks DNS; an admin can always unsubscribe on the node without the cloud.
+Because frozen class rules keep blocking what they blocked, cancelling never silently unblocks a group and never breaks DNS; an admin can always remove class rules or convert them to local lists on the node without the cloud.
 
 ## The catalog (ADR-1055)
 
@@ -200,24 +204,24 @@ checked = "2026-11-19"
 - An entry with no `evidence`. (A `checked` date more than 90 days older than `catalog_version` only **warns**: the portal shows "facts not rechecked since <date>".)
 - More than 2,000 services or 12,000 rules (the node's class-map cap).
 
-The same validator runs on a tenant's **local entries** (an internal tool or a service the catalog lacks), added in the portal with the same schema and `source = "local"`, which join only that tenant's class map and lists. Because a local entry can name any hostname, it is also the easiest way to turn Shadow AI into monitoring of non-AI sites, so: at most 50 local entries and 200 patterns per tenant; adding one is a tenant admin's action in the event log, never an agent's; the class map marks their classes as **tenant-defined** (a generic flag, no metadata), the node lists those patterns separately on its Export card, and **at privacy level 1 the node does not match tenant-defined patterns** (owner decision 4's exception covers the catalog's AI services, not arbitrary names; at level 1 a tenant-defined pattern stays hashed like any other name).
+The same validator runs on a tenant's **local entries** (an internal tool or a service the catalog lacks), added in the portal with the same schema and `source = "local"`. They are user policy, not catalog content: each reaches the node as a `class_local` entry in a change signed by a tenant admin's passkey (ADR-1060 point 1), never in the shared class map. Because a local entry can name any hostname, it is also the easiest way to turn Shadow AI into monitoring of non-AI sites, so: at most 50 local entries and 200 patterns per tenant; adding one is a tenant admin's signed change, in the event log and the node's audit, never an agent's; `class_local` entries are **tenant-defined** (a generic flag, no metadata), the node lists those patterns separately on its Export card, and **at privacy level 1 the node does not match tenant-defined patterns** (owner decision 4's exception covers the catalog's AI services, not arbitrary names; at level 1 a tenant-defined pattern stays hashed like any other name).
 
 ### Sources and licensing
 
-- **In-house, authored from vendor documentation** (owner decision 1). Each entry cites the vendor's network or allowlist page and its privacy or retention page. The catalog is MySummitKeep's data in the service's private repository (ADR-1052 §2), under the service's terms; it is not in this repository and not AGPL. The node receives only the compiled class map (numbers, no metadata) and the group lists, as tenant data under the service's terms.
+- **In-house, authored from vendor documentation** (owner decision 1). Each entry cites the vendor's network or allowlist page and its privacy or retention page. The catalog is MySummitKeep's data in the service's private repository (ADR-1052 §2), under the service's terms; it is not in this repository and not AGPL. The node receives only the compiled class map (numbers and opaque tags, no metadata), signed by the content key, under the service's terms.
 - **No usable open feed exists.** UT1's `ai` category (via the olbat mirror) is about 75 flat registrable domains with no kinds or metadata, and its licence is unconfirmed at the source (the mirror says CC BY-SA 4.0); it is used only as a list of names to investigate by the weekly job, never copied. AdGuard's HostlistsRegistry is GPL-3.0 and is ruled out by the clean-room rule (AGENTS rule 6) and ADR-1033 §5; it is not used even as a reference. The AI-content blocklists (uBlock-style lists against AI-generated sites) target a different thing. NextDNS has no AI category.
 - **Commercial feeds are not used.** Cisco Talos and Umbrella have a Generative AI content category, DNSFilter and Sophos have one, Microsoft Defender for Cloud Apps catalogues more than a thousand generative AI apps scored on 90+ risk factors, Cloudflare Gateway has a Technology › Artificial Intelligence subcategory (ID 184), and OEM URL databases (zvelo, Webshrinker, BrightCloud) license per lookup or per database. Their terms normally forbid redistribution and a per-query lookup would send customers' names to another party. They set the scale a business buyer compares against: ours starts at 150 to 250 services and grows.
 - **The open node is unchanged.** `presets/services/ai.toml`, ChatGPT's entry in `messaging.toml` and the `ai` category stay as they are, as the free node's basic AI blocking. No migration and no aliases are needed. A group may use both; the cloud counts the node's own blocks from the export's blocked count.
 
 ### Keeping it current
 
-- **Continuous publishing.** A reviewed catalog change is compiled into every tenant's class map and lists and reaches nodes within about a minute (the heartbeat path); there is no release cadence to wait for. A change can add names to a kind or service a group already blocks; it never changes a group's mode.
+- **Continuous publishing.** A reviewed catalog change is compiled into the class map (one map for every tenant), signed by the content key and reaches nodes within about a minute (the heartbeat path); there is no release cadence to wait for. A change can add names to a service or a kind's tag that a group already blocks; it never changes a group's mode and never widens an Allow.
 - **The weekly job** (in the service's repository; recorded-metadata tests never touch the network): resolves every rule and flags NXDOMAIN or dead names; fetches each evidence URL, extracts and normalises its main text (scripts, navigation, dates and tracking parameters removed) and diffs that, opening one grouped issue per week for vendors whose network or privacy page changed in substance; cross-checks candidate names from UT1's `ai` list and a watchlist and opens a "candidate entries" issue. Nothing enters the catalog without a person's review.
-- **A bad change** is rolled back by publishing the previous `catalog_version`; the node treats a new class map or list like any update (validated, last good kept on failure).
+- **A bad change** is rolled back by republishing the previous `catalog_version`'s content under a new sequence number (nodes refuse an older sequence, ADR-1062); the node treats a new class map like any update (signature and caps checked, last good kept on failure).
 
 ### Size
 
-About 150 to 250 services and 1,000 rules at first release; about 1,000 services and 6,000 rules at enterprise breadth. On the node: the class map's FST about 15 to 150 KB; the group lists at 12 bytes per domain in the snapshot (ADR-1017), at most about 72 KB per group at 1,000 services, shared names stored once per list. The node's image grows only by the export and the cloud list source (code), expected well under 0.1 MB.
+About 150 to 250 services and 1,000 rules at first release; about 1,000 services and 6,000 rules at enterprise breadth. On the node: the class map's FST about 15 to 150 KB; each group's class-rule sets at 12 bytes per domain in the snapshot (ADR-1017), at most about 72 KB per group at 1,000 services. The node's image grows only by the export and class rules (code), expected well under 0.1 MB.
 
 ## Detection in the cloud (ADR-1056)
 
@@ -286,18 +290,18 @@ Per group, per kind, with per-service overrides; set in the portal:
 | **Off** | unchanged | none for this group: the cloud names it in its batch replies and the node stops sending its devices (anything that arrives first is discarded) | — |
 | **Allow** (approved) | unchanged; names in the group's allow list | counted as approved use | "Approved" |
 | **Monitor** | unchanged | findings, page, digest, alert | "Not approved" |
-| **Block** | blocked by the group's cloud block list (the group's block response, EDE 15) | blocked attempts counted | "Blocked" |
+| **Block** | blocked by the group's class rules (the group's block response, EDE 15) | blocked attempts counted | "Blocked" |
 
-- **Compilation in the cloud.** For each group the cloud computes the effective block set (kinds and services on Block, minus services on Allow, minus approved tenants, `dependency` names only with their service, `vendor` names only for `ai_only` entries) into `ai-block-<group>`, and the approved services' exact names and approved tenants into `ai-allow-<group>`. Two lists per group keep far below `MAX_LISTS` (1024).
+- **Compilation in the cloud, signed by the editor.** For each group the cloud computes the classes and tags to block (kinds and services on Block, minus services on Allow, minus approved tenants, `dependency` classes only with their service, `vendor` classes only for `ai_only` entries) and the classes to allow (approved services' exact names and approved tenants), and turns a change of mode into a class-rule change that the editor signs (ADR-1060 point 3). No lists are created, so `MAX_LISTS` (1024) is untouched.
 - **"Block all AI"** blocks the `ai_only = true` kinds and services only.
 - **Per-device exceptions** stay on the node as ordinary device-scoped quick rules (ADR-067); the portal links to them through the remote UI.
 - **Approved tenants** are offered only where `tenant_split = "hostname"` (owner decision 7); elsewhere the portal says "the tenant isn't visible to DNS" and points to the vendor's proxy-based control.
-- **Explain** on the node names the list that decided an answer ("ai-block-staff, from WrenDNS Cloud"); the portal's service page names the policy line behind it.
-- **The one-time link.** A group's AI policy takes effect on the node only after an admin subscribes the group to its two cloud lists on the node; the portal shows "not linked on the node" for any group that isn't, with the steps to do it on the node's UI on the LAN, and a button into that group's page through the remote UI (ADR-1047) that works only where a LAN admin has allowed admin work over hosted names (ADR-1049 point 3); otherwise the page says the subscription must be made at home. A Git-managed cluster gets the TOML lines to commit instead (409 `gitops_managed` otherwise).
+- **Explain** on the node names the class rule that decided an answer ("class rule of Staff, class 214, signed by <editor> in WrenDNS Cloud"); the portal's service page names the policy line behind it.
+- **Where a change can't apply.** When `[cloud.sync]` is off on a cluster or doesn't allow class rules, the portal says "sync is off on <cluster>" with the steps to turn it on at home; when the editor has no signing passkey enrolled on that cluster, it says how to enrol one at home. A Git-managed cluster gets the TOML lines to commit instead (`gitops_managed`). A conflict with an edit made at home is parked in the portal (ADR-1063 point 5).
 
 ### Later: Warn
 
-Warn (block until the user acknowledges a notice, through the browser add-on or `/unblock`, T24.39) is not in v1 (owner decision 10). The first draft's design stays the starting point and gets its own design note when T24.39 exists: Warn only for `chat` and `agent`, holding only browser names; a node-side acknowledgement overlay, checked after the security lists; a Monitor fallback for devices without the add-on. Hosted-only adds a question that note must answer: the overlay would be a node mechanism driven by cloud lists, and must keep working when the cloud is unreachable. FLT-904 stays reserved for it.
+Warn (block until the user acknowledges a notice, through the browser add-on or `/unblock`, T24.39) is not in v1 (owner decision 10). The first draft's design stays the starting point and gets its own design note when T24.39 exists: Warn only for `chat` and `agent`, holding only browser names; a node-side acknowledgement overlay, checked after the security lists; a Monitor fallback for devices without the add-on. Hosted-only adds a question that note must answer: the overlay would be a node mechanism driven by class rules, and must keep working when the cloud is unreachable. FLT-904 stays reserved for it.
 
 ## Defaults (ADR-1058)
 
@@ -314,12 +318,12 @@ Every control ships with its UI, help topic and Playwright test in the same task
 
 **On the node (AGPL):**
 - **Settings → WrenDNS Cloud → Export:** on or off, the groups exported, the level-1 acknowledgement, the class map's version, size and class count, its full pattern list (the names are not secret, ADR-1055) with the diff of each change and the tenant-defined patterns marked, last batch time and size, the buffer's fill, "show the last batch" (the decoded batch, so an operator can see exactly what leaves), and the exclusions that apply.
-- **Lists:** cloud lists with the source "WrenDNS Cloud", version, last change, the diff since the last version, "frozen" when no longer updated, "Keep as a local list" and "Unsubscribe".
-- **Group editor:** subscribing to the group's cloud lists, with a line that their contents are set in WrenDNS Cloud.
+- **Lists:** each group's class rules with the class map's version, last change, the diff since the last version, the signer of the last change, "frozen" when the map is no longer updated, "Convert to local lists" and "Remove class rules".
+- **Group editor:** the group's class rules (read-only summary with their origin, "set in WrenDNS Cloud, signed by <editor>"), with a link to Changes from the cloud.
 
 **In the portal (the service):**
 - **Shadow AI page:** a header with the window, the visibility summary ("31 devices seen, 2 with partial visibility; no data from cluster home-2 since 14:20") and the limits text ("WrenDNS sees which AI services a device reaches by name. It can't see prompts, files, or which account is used for most services. Read more"). Sections: **services in use** (service, kind, groups, devices, active time, trend, first seen, status per group, confidence; "new first"); **a service's detail** (vendor-stated facts with dates and links, hostnames and roles, whether tenants are visible to DNS, devices using it with confidence and evidence, the policy per group); **a device's view** (its services, confidence and evidence, visibility state, CMDB owner); **the catalog** (search, kinds, roles, tenant visibility, facts); **local entries**.
-- **Policy:** per group, the mode per kind, per-service overrides (searchable), approved tenants (only where hostnames split), "not linked on the node" with its button.
+- **Policy:** per group, the mode per kind, per-service overrides (searchable), approved tenants (only where hostnames split), the signing prompt and each change's state (Pending, Applied, Accepted, Conflict, Rejected, Expired).
 - **Settings → Shadow AI:** on or off with the notice, retention, alert destinations (email to tenant members with the Shadow AI permission; Slack-compatible webhook, generic webhook and ntfy with counts and a link unless device names are opted in), mutes, the digest's day and hour, export and purge per device or per CMDB owner.
 - **Cross-site view** (Business): services per cluster and group, new services, visibility gaps.
 - **Help topics:** "What Shadow AI can and can't see", "Policy modes", "Approved tenants", "Confidence levels", "Visibility and bypass", "Telling people you monitor AI use" (with the notice template), "What the node sends", "The AI catalog".
@@ -336,7 +340,7 @@ The service's API (`https://dns.wrendns.com/api/v1/shadow-ai/...`, OpenAPI publi
 | `shadow_ai_findings` | findings with confidence and evidence, filtered by cluster, group, device, service, kind, level and window |
 | `get_ai_catalog` | the catalog or one entry: kinds, hostnames and roles, tenant split, vendor-stated facts with dates and links, catalog version |
 
-Plans (applied by a tenant admin only, ADR-994 §8's rule): `plan_ai_policy` (a group's modes, overrides, approved tenants), `plan_ai_local_entry`. Immediate op: `acknowledge_shadow_ai` (mark a finding reviewed). Turning Shadow AI on, the notice, retention, export and purge are not for agents. On the node, the export's status is in the existing MCP read tool `cloud_status`; turning the export on is not for agents (spec/13 §3.2's list).
+Plans (applied by a person only, ADR-994 §8's rule: applying a plan is a change the editor signs with the change-signing passkey, so no agent can sign one): `plan_ai_policy` (a group's modes, overrides, approved tenants), `plan_ai_local_entry` (a tenant admin's). Immediate op: `acknowledge_shadow_ai` (mark a finding reviewed). Turning Shadow AI on, the notice, retention, export and purge are not for agents. On the node, the export's status is in the existing MCP read tool `cloud_status`; turning the export on is not for agents (spec/13 §3.2's list).
 
 ## Privacy and legal
 
@@ -409,7 +413,7 @@ The operator's responsibility. Shadow AI is not marketed for children and its st
 - **A compromised or mistaken cloud turning the export into surveillance.** The class map decides which names leave the node, so a hostile map could ask about any name. Limits: the node refuses public suffixes and anything but exact names and subtrees, caps the map at 12,000 patterns, shows every change to the map's size and records it in the audit log, and "show the last batch" lets an operator see what leaves; the node never sends names, only numbers, but numbers paired with a hostile map are as revealing. Transparency: the node shows the map's full pattern list and the diff of every change, with tenant-defined patterns marked; the catalog's part of the map is the same for every tenant, and the service publishes its hash per `catalog_version` on wrendns.com so a node can show "catalog part matches the published version" and a pattern aimed at one tenant stands out; at level 1 tenant-defined patterns are not matched. The residual risk is stated in "What the node sends" and is part of trusting the service; the export is off unless an admin on the LAN turns it on.
 - **An operator using Shadow AI to watch non-AI sites.** Local entries are capped, logged, shown on the node and not matched at level 1 (see the validator); the notice template says "AI services", and the help topic says that monitoring other sites is outside the notice.
 - **Alerts leaking to third parties.** Webhook, Slack-compatible and ntfy destinations get counts and a link unless device names are opted in; no message carries the CMDB owner, an address or evidence ("The alert", point 7).
-- **A compromised cloud changing answers.** Cloud lists can only block exact names and subtrees in the groups an admin subscribed, never a public suffix or the node's own names, and allow lists are exact names that never override a security or threat list. Every change is visible as a diff on the node. The cloud never writes configuration.
+- **A compromised cloud changing answers.** A Block or Allow needs an editor's signature and the editor's node role (ADR-1061); a compromised back end can delay or drop one, not create it. A stolen content key can change which names a class or tag holds within the caps (so a kind-level Block covers more), never a public suffix or the node's own names, never an Allow, and never which classes a group blocks; every change is a diff on the node and the catalog part's hash is published. The display gap of ADR-1061 point 7 applies to Shadow AI changes as to any other.
 - **A modified node lying to the cloud.** Every batch is untrusted input (ADR-1047 point 10): bounded, checked against the tenant's class map, and able to affect only its own tenant's findings.
 - **Exposure of usage records.** They are sensitive (who uses which assistant when): the Shadow AI permission, a read scope in no default grant, every read of a device's history logged, retention limits, purge per device and per owner, a DPA, and counsel review.
 - **Agent misuse.** Read tools only by scope; policy as plans; no agent can turn Shadow AI or the export on.
@@ -422,10 +426,10 @@ On the node, against ADR-1031 (idle ≤ 32 MiB, loaded ≤ 128 MiB) and the 25 M
 
 | Item | Cost | Notes |
 |---|---|---|
-| Query path | none | the export is on the telemetry thread; cloud lists are ordinary list membership |
+| Query path | none | the export is on the telemetry thread; class rules are ordinary list membership |
 | Class map | about 15 to 150 KB mapped | built only while the export is on |
 | Tracker | at most 4,096 pairs × about 80 B ≈ 0.33 MiB | caps per device and per class |
-| Snapshot | two cloud lists per subscribed group, about 12 KB to 72 KB each | names shared across groups are stored per list |
+| Snapshot | class-rule sets per group with rules, about 12 KB to 72 KB each | names shared across groups are stored per group |
 | Buffer on the primary | at most 4 MiB on disk | only while the cloud is unreachable |
 | Upload | one compressed batch per cluster every 5 minutes, a few KB | control frames on the existing tunnel (ADR-1047), no new connection or stream budget |
 | Telemetry thread | a suffix match per event (up to one probe per label), expected under 1 µs | only while on; bench-smoke and drain rate on a Pi |
@@ -436,15 +440,15 @@ The Pi's loaded figure from the GeoIP gate run was 60 to 65 MiB; the export adds
 ## Packaging (ADR-1059)
 
 - **Commercial and hosted-only** (owner decision 2). Shadow AI is part of WrenDNS Cloud: a paid **add-on for the Cloud and Cloud Plus tiers** and **included in Business** (the design's placement; final tier placement and every price are the owner's). It needs a linked cluster (M36) and works only while the tenant pays; when it stops, DNS and the lists keep working as "Offline behaviour" describes.
-- **Open, AGPL, free:** the name-class counters export and cloud list sources (generic node features that any hosted analytics or managed policy can use), and everything the node already has, including the `ai` category and the nine `ai.toml` services for basic AI blocking.
+- **Open, AGPL, free:** the name-class counters export and class rules (generic node features that any hosted analytics or managed policy can use), and everything the node already has, including the `ai` category and the nine `ai.toml` services for basic AI blocking.
 - **Not sold:** any risk score, any feed from a third party, anything that makes DNS depend on the cloud (AGENTS rule 5).
 - **Market position.** Cloudflare One is **free for up to 50 users** and its Gateway DNS policies can block the Technology › Artificial Intelligence subcategory (ID 184), so a small office already has a free, cloud-hosted DNS-level AI block; its Shadow AI report needs the gateway and, for the full analytics, TLS inspection. DNSFilter and Sophos sell a Generative AI DNS category; Microsoft Defender for Cloud Apps catalogues more than a thousand generative AI apps with risk scores. WrenDNS does not win on "block AI for free". Its edge is a self-hosted resolver that keeps answering without the cloud, only catalogued names leaving the network and only as numbers, per-device evidence tied to the CMDB, Monitor rather than only block, and honest limits; its gap is catalog breadth. The add-on is priced against "free from Cloudflare" for blocking and against Defender-class tools for discovery.
 
 ## Phased delivery
 
-**Phase 0 — the node (AGPL), after M36's T36.4 and T36.5** (the tunnel and enrolment; built and tested against the fake broker): the name-class counters export (T37.2) and cloud list sources (T37.3). Useful for any hosted analytics; nothing about AI.
+**Phase 0 — the node (AGPL), after M36's T36.4 and T36.5** (the tunnel and enrolment; built and tested against the fake broker), **and for T37.3 also T36.15, T36.16 and T36.18** (signed changes, sync and the platform channel): the name-class counters export (T37.2) and class rules over the signed class map (T37.3). Useful for any hosted analytics; nothing about AI.
 
-**Phase 1 — the service, after M36's T36.9** (the portal), for the owner's tenant first: the catalog, validator, weekly job and per-tenant compile (T37.4); the ambient lab (T37.5, before the first release); ingest, detection and findings with retention, export and purge (T37.6); policy and the group lists (T37.7); the portal pages, the turn-on flow and the alert (T37.8); the digest (T37.9); the API and MCP (T37.10).
+**Phase 1 — the service, after M36's T36.9** (the portal), for the owner's tenant first: the catalog, validator, weekly job and the class-map compile (T37.4); the ambient lab (T37.5, before the first release); ingest, detection and findings with retention, export and purge (T37.6); policy and the group lists (T37.7); the portal pages, the turn-on flow and the alert (T37.8); the digest (T37.9); the API and MCP (T37.10).
 
 **Phase 2 — sale, with M36's phase 2** (billing, the privacy policy and DPA): legal and launch readiness (T37.11).
 
@@ -458,7 +462,7 @@ The Pi's loaded figure from the GeoIP gate run was 60 to 65 MiB; the export adds
 4. Does the cross-site view need an MSP-level tenant spanning several customers' tenants (a reseller model), which hosted.md doesn't have?
 5. Who curates the catalog: the owner alone, or contributors with review?
 6. A hosted MCP endpoint on the portal is new for M36 too; does it land with T37.10 or as an M36 task?
-7. Should the cloud lists also be usable for non-AI managed policy (a tenant-wide block list edited in the portal)? The node side allows it; the portal doesn't offer it in v1.
+7. Answered by the owner decisions on cloud writes: every synced kind is edited in the portal with signed changes (M36), so non-AI managed policy needs no Shadow AI mechanism.
 
 ## Sources
 
@@ -493,5 +497,13 @@ Web (checked 2026-11-19):
 
 ## Owner decisions, second round (2026-11-19)
 
-- **Enforcement:** the cloud publishes `ai-block-<group>` and `ai-allow-<group>` lists that a LAN admin subscribes each group to once; the cloud never changes node configuration (ADR-1060 accepted).
+- **Enforcement:** the cloud publishes `ai-block-<group>` and `ai-allow-<group>` lists that a LAN admin subscribes each group to once; the cloud never changes node configuration (ADR-1060 accepted). *Superseded by the third round.*
 - **Tiers:** Shadow AI is a paid add-on for Cloud and Cloud Plus, and included in Business. Prices are set later.
+
+## Owner decisions, third round: cloud writes (2026-11-19)
+
+With the owner's decisions on cloud writes for M36 (`docs/design/hosted.md`, "Owner decisions on cloud writes"):
+
+- **D. Shadow AI Block and Allow become ordinary signed policy changes,** replacing the subscribed lists: each is confirmed with the editor's change-signing passkey and verified, authorized, merged and audited on the node (ADR-1060 amended; ADR-1061, ADR-1063). There is no per-group subscription.
+- **The catalog arrives over the platform channel,** signed by MySummitKeep's content key, which can change which names a class holds but never user policy (ADR-1062).
+- **Design choices for the owner to confirm:** one class map for every tenant, with tenant local entries as signed `class_local` entries; opaque class tags so a kind-level Block follows the catalog, while Allow names classes only (ADR-1060 points 1 to 3); "Convert to local lists" and "Remove class rules" on cancellation (point 5).
