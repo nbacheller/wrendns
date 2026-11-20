@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""REQ: OPS-004, DOC-006. Daily watch on paimonsoror/telltaledns for the fork.
+"""REQ: OPS-004, DOC-006. On-demand watch on paimonsoror/telltaledns for the fork (ADR-1026: fixes to port).
 
 Reads the ledger spec/upstream.md from the checkout, then: lists upstream commits since the
 last sync and flags any that touch a fork deviation, the numbering files or the image gate;
