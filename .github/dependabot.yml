@@ -1,7 +1,11 @@
 # REQ: NFR-005 — dependency updates arrive as pull requests that CI checks like any other change
-# (clippy, the test suites, cargo-deny, the UI suite). One pull request a week per ecosystem for
-# minor and patch updates, grouped so a week of them is one review; a major update is its own
-# pull request. Security updates ignore the schedule and the limit (Dependabot's own setting).
+# (clippy, the test suites, cargo-deny, the UI suite). The root Cargo workspace is checked weekly on
+# Monday, the other ecosystems monthly, all at 02:00 New York time. At most 2 (root Cargo) or 1 (every
+# other entry) update pull requests are open per entry. Minor and patch updates are grouped so a
+# batch of them is one review; a major update is its own pull request. Pull requests are not rebased
+# automatically (`rebase-strategy: disabled`; comment `@dependabot rebase` to refresh one). A release
+# has to be 5 days old before Dependabot offers it (cooldown). Security updates ignore the schedule,
+# the cooldown and the limit (Dependabot's own setting).
 #
 # Dependabot titles can't carry a requirement ID (AGENTS.md rule 2): merge with a squash and put
 # the tag in the commit message, for example `build(deps): bump vite from 8.3.2 to 8.3.8 [NFR-005]`.
@@ -13,9 +17,14 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    # REQ: OPS-004 - three, not five: each PR starts ci, image, cluster3 and keepalived, and a
+      time: "02:00"
+      timezone: "America/New_York"
+    # REQ: OPS-004 - two, not five: each PR starts ci, image, cluster3 and keepalived, and a
     # burst of them starved the account's runners (CI 2026-11-20).
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 2
+    rebase-strategy: "disabled"
+    cooldown:
+      default-days: 5
     commit-message:
       prefix: "build(deps)"
     groups:
@@ -27,14 +36,22 @@ updates:
       # task; until then the 0.9 series is not offered. Remove this entry with that port.
       - dependency-name: "aes"
         versions: [">= 0.9.0, < 0.10.0"]
+      # jiff 1.0 is a major change that needs its own port (the owner deferred it). Until that port
+      # lands, its major update is not offered. Remove this entry with that port.
+      - dependency-name: "jiff"
+        update-types: ["version-update:semver-major"]
 
   # The fuzz targets are their own workspace.
   - package-ecosystem: cargo
     directory: /fuzz
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 2
+      interval: monthly
+      time: "02:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 1
+    rebase-strategy: "disabled"
+    cooldown:
+      default-days: 5
     commit-message:
       prefix: "build(deps)"
     groups:
@@ -45,9 +62,13 @@ updates:
   - package-ecosystem: npm
     directory: /ui
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+      interval: monthly
+      time: "02:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 1
+    rebase-strategy: "disabled"
+    cooldown:
+      default-days: 5
     commit-message:
       prefix: "build(deps)"
     groups:
@@ -62,9 +83,13 @@ updates:
   - package-ecosystem: npm
     directory: /deploy/mcp-e2e
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 2
+      interval: monthly
+      time: "02:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 1
+    rebase-strategy: "disabled"
+    cooldown:
+      default-days: 5
     commit-message:
       prefix: "build(deps)"
     groups:
@@ -75,9 +100,13 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+      interval: monthly
+      time: "02:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 1
+    rebase-strategy: "disabled"
+    cooldown:
+      default-days: 5
     commit-message:
       prefix: "build(ci)"
     # Minor and patch updates share one pull request; a major update of an action is its own, so
@@ -94,8 +123,12 @@ updates:
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 2
+      interval: monthly
+      time: "02:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 1
+    rebase-strategy: "disabled"
+    cooldown:
+      default-days: 5
     commit-message:
       prefix: "build(image)"
