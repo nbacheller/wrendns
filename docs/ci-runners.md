@@ -1,13 +1,13 @@
 # Self-hosted CI runners
 
-Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. They run the heavier jobs (the native build, the cluster and high-availability tests, the image build) with more CPU and memory and a warm build cache. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
+Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job and the amd64 `test` job, with more CPU and memory and a warm build cache. Moving heavier jobs to them (the native build, the cluster and high-availability tests, the image build legs) is planned under ADR-1076, one job type at a time, once each runner has its own container. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
 
 The repository holds this page, the directory `deploy/ci-runners/` (its README and a read-only inspection script), and the workflow expressions described below. The host-side scripts and the base image recipe are kept by the maintainers on the build host, not in this repository.
 
 ## What they are for
 
-- Running `ci.yml` and `pr.yml` jobs that are slow on GitHub-hosted runners, once the runner variables route them there.
-- Running the image build legs, which compile once per architecture (ADR-1075).
+- Running the `clippy` and `test` jobs of `ci.yml` and `pr.yml` when the runner variables route them there (the state today).
+- Planned, not done yet: the jobs that bind fixed ports (native, ui, oidc, migration, the cluster tests) and the image build legs (ADR-1075), each moved only after it has passed on an isolated runner.
 - Keeping compiled artefacts and package downloads in shared caches, so a job does not start cold.
 
 They are not used for releases. Release builds and signing stay on GitHub-hosted runners (ADR-1076).
@@ -31,11 +31,11 @@ Each runner is one LXD system container. The container runs its own Docker daemo
 - **Reset after every job.** A host-side sweep, run every ten minutes, stops a container that has no job in progress and is stuck, lost its job, or never began listening. It never stops a container that has a job running. The supervisor holds a restart while the host is short of disk or memory, so a restart never interrupts a job.
 - **Identity is copied, not registered.** The runner was registered once, at provisioning, from a one-time token that was never stored. Its identity files (the runner settings and the RSA key that signs its token requests) are copied into the container's snapshot. No registration token and no GitHub token is stored on the host or in the container. Re-registering is not needed, and no workflow ever calls the registration API.
 - **Be clear about the key.** The RSA key is a long-lived runner credential. It exists in the snapshot and in the storage pool file, readable by root and by members of the LXD group. Only trusted jobs reach the runner, for that reason.
-- **Shared build caches** are mounted into every container with idmapped mounts, so the runner user has the same numeric id inside and outside, and both sides see the same ownership. There are two caches: a Rust package cache (`CARGO_HOME`) and a compiler cache (sccache). Locks inside the package cache serialise concurrent writers. Each container's own state directory, for markers and logs, is separate.
+- **Shared build caches** are mounted into every container with only the runner user's id mapped onto the host, so the runner user owns the files on both sides and root inside a container has no power over the host's copy. There are two caches: a Rust package cache (`CARGO_HOME`) and a compiler cache (sccache). Locks inside the package cache serialise concurrent writers. Each container's own state directory, for markers and logs, is separate.
 - **Registry mirrors run on the host.** Mirrors for Docker Hub, ghcr.io and quay.io run on the host and are reached from each container at the bridge address, on three ports: `WRENDNS_HUB`, `WRENDNS_GHCR` and `WRENDNS_QUAY`. The bridge address in the examples here is `10.90.0.1`, an example value from the LXD default private range. The compose files and end-to-end scripts read these variables, with the public registries as defaults. The nested Docker daemon and BuildKit use the same mirrors through their configuration.
-- **CPU and memory caps.** Each container has a limit of 12 CPUs and 14 GiB of memory, enforced hard, with no swap. Its CPU weight is kept low, so the containers together do not outweigh other workloads on the same host.
+- **CPU and memory caps.** Each container has a limit of 12 CPUs and 10 GiB of memory, enforced hard, with no swap. Its CPU weight is kept low, so the containers together do not outweigh other workloads on the same host, and when the host runs short of memory a container's job is ended before anything else on the host.
 - **No AVX2 on the build host.** The build host's CPU lacks AVX2. A job that needs the x86-64-v3 instruction level stays on a GitHub-hosted runner. Run `deploy/ci-runners/inspect.sh` on a host to see which instruction flags it has.
-- **arm emulation comes from the host.** The emulators for arm64 and arm/v7 are registered once, on the host, and the containers use them. A container cannot register them itself, so jobs on these runners skip `docker/setup-qemu-action`.
+- **arm emulation comes from the host.** The emulators for arm64 and arm/v7 are registered once, on the host, and the containers use them. A container cannot register them itself, so a job routed to these runners must skip `docker/setup-qemu-action` (guard the step with `runner.environment == 'github-hosted'`).
 
 ## Adding a runner
 
@@ -73,7 +73,7 @@ A host is ready for the self-hosted jobs when the maintainer has ticked each of 
 - [ ] **V1, Docker inside.** Docker uses the overlay2 driver with cgroup v2. `docker compose` runs a service with a healthcheck on a service network. A buildx `docker-container` builder builds an image.
 - [ ] **V2, isolation.** Two containers bind the same fixed host ports at the same time. Nothing appears on the host, and each Docker daemon sees only its own containers.
 - [ ] **V3, mirrors.** The three mirrors answer on the bridge address, from a container and from a nested container. Docker Hub, ghcr.io and quay.io all serve.
-- [ ] **V4, shared caches.** A write in one container is visible in another and on the host, with the runner user as owner. Concurrent package-cache builds in two containers both succeed. The compiler cache uses the shared directory.
+- [ ] **V4, shared caches.** A write in one container is visible in another and on the host, with the runner user as owner, and root inside a container cannot create a root-owned or setuid file through the mount. Concurrent package-cache builds in two containers both succeed. The compiler cache uses the shared directory.
 - [ ] **V5, arm limits.** arm64 and arm/v7 binaries run in nested Docker through the host's emulators. A buildx build produces both architectures. The container cannot change the emulator registration.
 - [ ] **V6, a real job passes.** The `clippy` and `test (ubuntu-latest)` jobs of `ci.yml` run on the host's container and succeed.
 - [ ] **V7, a byte-clean reset.** After a run that leaves deliberate residue, the restored root filesystem matches the snapshot `clean` by checksum. Nothing of the run is visible after the start.

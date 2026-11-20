@@ -219,7 +219,13 @@ else
         note "pgrep is not available: job state skipped"
       fi
     done
-    [ "$found" -gt 0 ] || note "no directory matches $home/$PAT"
+    if [ "$found" -eq 0 ]; then
+      if [ -r "$home" ] && [ -x "$home" ]; then
+        note "no directory matches $home/$PAT"
+      else
+        note "$home cannot be read by this account, so directories matching $PAT could not be listed (run as a user who can read it)"
+      fi
+    fi
   fi
 fi
 
