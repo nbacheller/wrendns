@@ -1,12 +1,16 @@
 # REQ: 09 §4 — fmt → clippy → test → cargo-deny (image, integration, and bench stages are added by later tasks).
+# This is the full tier (ADR-1073): every push to main, a dispatch, and a pull request only when it
+# carries the `ci:full` label. The fast tier that every pull request gets is pr.yml, whose `pr-ok`
+# job is the one required check. Track branches get no push runs (owner decision 2026-11-17): a run
+# on one is started by hand with `gh workflow run ci.yml --ref <branch>` when it needs the hosted
+# arm64 runner.
 name: ci
 on:
   push:
-    # The fork's integration branch gets CI on every push (nbacheller/wrendns). Track branches don't
-    # (owner decision 2026-11-17): their agents run the same checks locally, and a run on one is started
-    # by hand with `gh workflow run ci.yml --ref <branch>` when it needs the hosted arm64 runner.
-    branches: [main, 'feat/ipam-integrations']
+    branches: [main]
   pull_request:
+    # `labeled` starts the full tier when the `ci:full` label is added to an open pull request.
+    types: [opened, synchronize, reopened, labeled]
   # The release workflow starts CI for the commit it pushes to main (T9.26).
   workflow_dispatch:
 # A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
@@ -26,6 +30,7 @@ env:
 
 jobs:
   fmt:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,6 +39,7 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
@@ -46,6 +52,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
@@ -81,6 +88,7 @@ jobs:
             | head -20 | while IFS= read -r line; do echo "::error title=test failure::$line"; done
 
   deny:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,6 +97,7 @@ jobs:
   # REQ: NFR-001 — the harness runs end to end. Hosted runners are too noisy for the 5%
   # regression gate (09 §2 needs a fixed machine), so this fails only on loss or errors.
   bench-smoke:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -108,6 +117,7 @@ jobs:
 
   # REQ: DOC-004/005 — the site builds, links resolve, and Standards covers ticked tasks.
   site:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -121,6 +131,8 @@ jobs:
       # REQ: OPS-004 — no echo or printf piped into grep -q (fails under pipefail on large output).
       - run: python3 scripts/test_check_pipefail.py
       - run: python3 scripts/check-pipefail.py
+      # REQ: OPS-004 (ADR-1073) — pr-ok fails on a failed, cancelled or unknown job result and on bad input.
+      - run: python3 scripts/test_pr_ok.py
       # REQ: DOC-006 — no tracked file, built site page or generated doc names anything on the
       # maintainers' private denylist. The list is the repository secret PRIVACY_DENYLIST. On the
       # maintainers' own repository (a push, or a pull request from a branch of it) the list is
@@ -143,6 +155,7 @@ jobs:
   # the bundle stays within 400 KiB gzipped, and the Playwright suite passes against the
   # real binary.
   ui:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
     # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
@@ -185,6 +198,7 @@ jobs:
 
   # REQ: API-004 — T3.6 AC: sign in through real Keycloak and Authentik (ui/tests/oidc/).
   oidc:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
     # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
@@ -239,6 +253,7 @@ jobs:
   # REQ: OPS-002, OPS-003 — T4.1 AC: chart-testing lint and install on kind (amd64) and k3d
   # (arm64), plus DNS through a LoadBalancer with the client's address in the query log.
   helm:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     strategy:
       fail-fast: false
       matrix:
@@ -295,6 +310,7 @@ jobs:
   # (host network, healthcheck, hardening) and install.sh + the systemd unit (signed fake
   # release, DNS on port 53, upgrade in place, tampered releases refused).
   native:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     # The cluster e2e's maintenance steps (T13.4) add about six minutes.
     timeout-minutes: 45
@@ -396,6 +412,7 @@ jobs:
   # Pi-hole and Technitium images (Docker), and backup/restore across two nodes. A job of its
   # own: the image pulls and Pi-hole's first gravity run take minutes.
   migration:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
     # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
@@ -445,6 +462,7 @@ jobs:
   # worker previews a gravity.db and a Teleporter zip. `bench-fast` is the release profile without
   # fat LTO: the same musl toolchain, allocator and limits, in a quarter of the build time.
   worker-image:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -462,6 +480,7 @@ jobs:
   # REQ: DSC-003 (T25.4, ADR-908) — the SNMP client against net-snmp `snmpd` in a container on an
   # RFC 1918 Docker network: v2c GET and walk, v3 SHA with and without AES.
   snmp:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
