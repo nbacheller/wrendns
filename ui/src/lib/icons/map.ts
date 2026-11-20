@@ -43,16 +43,6 @@ export function isInternal(name: string): boolean {
  */
 export const isHashed = (name: string): boolean => /^h[0-9a-f]{16}$/.test(clean(name));
 
-/** A hue (0–359) from the name's registrable part: the same owner always gets the same colour. */
-export function hueOf(reg: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < reg.length; i++) {
-    h ^= reg.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h % 360;
-}
-
 /** The letter a name wears: the first of its owner's label (`www.bbc.co.uk` → B, `cdn.nx.example` → N). */
 export function letterOf(reg: string): string {
   const parts = reg.split('.');

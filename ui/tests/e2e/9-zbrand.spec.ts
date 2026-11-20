@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { E2E_ROOT } from './ports';
+import { flockCss } from '../../src/lib/flock';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -370,6 +371,23 @@ for (const theme of ['light', 'dark'] as const) {
         expect([fg, bg]).toEqual([rgb(color(names[i][0], theme)), rgb(color(names[i][1], theme))]);
         expect(contrast(fg, bg), `${names[i][0]} on its tint`).toBeGreaterThanOrEqual(4.5);
       });
+    });
+
+    // REQ: UI-*, DOC-006 (T33.6, ADR-1040) — groups in the flock's order, in this theme's values: a
+    // group the server gave a Day flock colour shows the theme's own token.
+    test(`api_005 doc_006 group colours are the flock, in order, in this theme (${theme}) [T33.6]`, async () => {
+      const names = ['flock-1', 'flock-2', 'flock-3', 'flock-4', 'flock-5', 'flock-other'];
+      const groups = [...names.slice(0, 5).map((_, i) => ({ name: `g${i + 1}`, color: color(names[i], 'light') })), { name: 'g6' }, { name: 'default' }];
+      const vars = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'default'].map((g) => flockCss(groups, g));
+      expect(vars).toEqual([...names.slice(0, 5).map((n) => `var(--brand-${n})`), 'var(--brand-flock-other)', 'var(--brand-flock-other)']);
+      const shown = await page.evaluate((vs) => {
+        const d = document.createElement('div');
+        document.body.append(d);
+        const out = vs.map((v) => ((d.style.color = v), getComputedStyle(d).color));
+        d.remove();
+        return out;
+      }, vars.slice(0, 6));
+      expect(shown).toEqual(names.map((n) => rgb(color(n, theme))));
     });
 
     test(`api_005 doc_006 disabled controls are muted with a hairline edge, never faded (${theme})`, async () => {

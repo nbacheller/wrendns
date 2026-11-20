@@ -30,8 +30,9 @@
   --s-refreshed: color-mix(in srgb, var(--brand-ok) 55%, var(--brand-surface-raised));
   --s-forwarded: var(--brand-sky-strong);
   --s-blocked: var(--brand-alert);
-  /* Not a flock colour: those are for groups only (ADR-1040). */
-  --s-local: var(--brand-sky);
+  /* Not a flock colour (those are for groups only, ADR-1040) and not `sky`, which is under 3:1 on
+     white: `ink` reads on every surface and stays apart from `--s-other`. REQ: UI-*, T33.6 */
+  --s-local: var(--brand-ink);
   --s-other: color-mix(in srgb, var(--brand-ink-muted) 70%, var(--brand-surface-raised));
   --radius: var(--radius-md);
   --gap: var(--space-6);
@@ -190,6 +191,11 @@ code,
   font-size: var(--type-label-size);
   font-weight: 600;
 }
+.pill-link:hover {
+  text-decoration: none;
+  background: var(--brand-sky);
+  color: var(--brand-on-sky);
+}
 .muted {
   color: var(--muted);
 }
@@ -222,6 +228,10 @@ button.primary {
   border-color: var(--accent);
   color: var(--accent-text);
   font-weight: 600;
+}
+/* Hover: the same colour, a step toward ink (T33.6). */
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, var(--text));
 }
 button.danger {
   color: var(--bad);
@@ -339,6 +349,13 @@ form.stack {
   background: var(--surface);
   border-color: var(--border-strong);
   color: var(--text);
+  font-weight: 600;
+}
+/* A selected tab: `sky-soft` with `sky-strong` text, as the sidebar's current page (ADR-1042 §2). */
+.seg button[aria-selected='true'] {
+  background: var(--brand-sky-soft);
+  border-color: var(--border-strong);
+  color: var(--accent);
   font-weight: 600;
 }
 
@@ -490,7 +507,7 @@ td.name {
   display: inline-block;
   padding: 0 var(--space-2);
   border-radius: var(--radius-sm);
-  font-size: var(--type-mono-sm-size);
+  font-size: var(--type-label-size);
   font-weight: 600;
   background: var(--surface-2);
   color: var(--muted);

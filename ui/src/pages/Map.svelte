@@ -383,7 +383,7 @@
                     >
                       {#if p.node.reasons.length}<title>{p.node.label}: {p.node.reasons.map((r) => r.summary).join('; ')}</title>{/if}
                       <rect width={NODE_W} height={NODE_H} rx="8" />
-                      <rect class="ring" x="-4" y="-4" width={NODE_W + 8} height={NODE_H + 8} rx="12" />
+                      <rect class="ring" x="-3" y="-3" width={NODE_W + 6} height={NODE_H + 6} rx="11" />
                       <path class="shape" d={HEALTH_SHAPE[p.node.health]} transform="translate(15 {NODE_H / 2})" />
                       <text class="nlabel" x="30" y="13">{trunc(p.node.label, 19)}</text>
                       <text class="nstate" x="30" y="25">{HEALTH_SHORT[p.node.health]}{p.node.kind === 'gateway' || p.node.kind === 'network' ? '' : ` · ${rate(p.node.qps)}`}</text>

@@ -260,7 +260,7 @@
           >
             <title>{describe(c.node)}</title>
             <rect x={c.x} y={c.y} width={c.w} height={c.h} rx="8" />
-            <rect class="ring" x={c.x - 4} y={c.y - 4} width={c.w + 8} height={c.h + 8} rx="12" />
+            <rect class="ring" x={c.x - 3} y={c.y - 3} width={c.w + 6} height={c.h + 6} rx="11" />
             <circle class="dot" cx={c.x + 14} cy={c.y + 14} r="4" />
             <text class="name" x={c.x + 24} y={c.y + 17}>{fit(label(c.node), c.w - 32 - bw - 6, 7.2)}</text>
             <g class="role-badge {b.kind}" data-testid="topology-role">
@@ -290,7 +290,7 @@
               >
                 <title>{p.more ? `${p.more.length} more pods` : describe(n)}</title>
                 <rect x={p.x} y={p.y} width={p.w} height={p.h} rx="5" />
-                <rect class="ring" x={p.x - 4} y={p.y - 4} width={p.w + 8} height={p.h + 8} rx="9" />
+                <rect class="ring" x={p.x - 3} y={p.y - 3} width={p.w + 6} height={p.h + 6} rx="8" />
                 <text x={p.x + p.w / 2} y={p.y + 15} text-anchor="middle">{p.more ? `+${p.more.length}` : podLabel(n)}</text>
               </g>
             {/if}

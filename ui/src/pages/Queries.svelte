@@ -346,8 +346,8 @@
         <button type="button" class="chip" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{s}</button>
       {/each}
       <span class="spacer"></span>
-      <button type="button" onclick={clear}>Clear</button>
-      <button type="submit" class="primary">Search</button>
+      <!-- Clear and Search stay together when the chips wrap (T33.6). -->
+      <span class="go"><button type="button" onclick={clear}>Clear</button><button type="submit" class="primary">Search</button></span>
     </div>
   </form>
 
@@ -438,6 +438,11 @@
 {/if}
 
 <style>
+  .go {
+    display: inline-flex;
+    gap: var(--space-2);
+    margin-left: auto;
+  }
   /* REQ: OBS-039 — the mark and the name on one line; a long name wraps beside the mark. */
   .nmi {
     display: inline-flex;

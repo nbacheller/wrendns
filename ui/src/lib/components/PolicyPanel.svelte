@@ -137,12 +137,14 @@
     margin: 6px 0;
     padding-left: 18px;
   }
+  /* The numbers sit inside each item, so a wrapped row never runs one into the next. */
   .ladder {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 12px;
-    padding-left: 18px;
-    margin: 8px 0;
+    gap: var(--space-1) var(--space-3);
+    padding-left: 0;
+    margin: var(--space-2) 0;
+    list-style-position: inside;
   }
   .ladder li.matched {
     font-weight: 600;

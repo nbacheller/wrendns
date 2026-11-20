@@ -370,10 +370,6 @@
     opacity: 1;
     width: 2px;
   }
-  .mk:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 0;
-  }
   .mk-count {
     position: absolute;
     top: 0;

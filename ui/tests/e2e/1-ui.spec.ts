@@ -9,6 +9,7 @@ import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
 import { pick } from './picker';
+import { hoverRing, rectRing } from './svg-ring';
 import { alertConditions } from '../../src/lib/alert-conditions';
 import { customUrl, nextCustomName, planFor, readSaved, type Transport } from '../../src/lib/upstream-picker';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
@@ -1795,6 +1796,13 @@ test('clu_008 cluster topology', async () => {
   await expect(topo.getByTestId('topology-site').nth(1).locator('text').first()).toHaveText(/^home-.*….*closet$/);
   await expect(topo.locator('.pod.bad')).toHaveCount(1);
   await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
+  // REQ: UI-*, T33.6 — a node chip's and a pod's focus ring: 2px of focus-ring, 2px outside; never on hover.
+  for (const chip of [topo.getByTestId('topology-node').first(), topo.getByTestId('topology-pod').first()]) {
+    const ring = await rectRing(page, chip);
+    expect(ring.focusVisible).toBe(true);
+    expect([ring.stroke, ring.width, ring.gap]).toEqual([ring.want, '2px', [3, 3, 6, 6]]);
+    expect(await hoverRing(page, chip)).toBe('none');
+  }
 
   // Selecting a pod opens its site in the table and highlights its row.
   await topo.getByRole('button', { name: /wrendns-resolver-bbbbb/ }).click();
@@ -4998,6 +5006,21 @@ test('obs_032 flow', async () => {
   // A band's share: of every answer and of its source.
   await svg.locator('[data-source="upstream:quad9-1"][data-target="rcode:SERVFAIL"]').focus();
   await expect(page.getByTestId('flow-tip')).toContainText('quad9-1 → SERVFAIL: 40 (4.0 % of all · 20.0 % of quad9-1)');
+  // REQ: UI-*, T33.6 — the focused band's ring: 2px of focus-ring, 2px outside the band (a gap of
+  // the surface, then the ring), under it.
+  const ringed = await svg.evaluate((s) => {
+    const probe = document.createElement('div');
+    probe.style.color = 'var(--focus)';
+    document.body.append(probe);
+    const want = getComputedStyle(probe).color;
+    probe.remove();
+    const band = document.activeElement as SVGPathElement;
+    const ring = s.querySelector('[data-testid="flow-focus-ring"]') as SVGPathElement | null;
+    const gap = ring?.nextElementSibling as SVGPathElement | null;
+    const w = (e: Element | null | undefined) => (e ? parseFloat(getComputedStyle(e).strokeWidth) : NaN);
+    return { want, stroke: ring ? getComputedStyle(ring).stroke : '', same: ring?.getAttribute('d') === band.getAttribute('d'), out: [w(ring) - w(band), w(gap) - w(band)].map((x) => Math.round(x * 100) / 100) };
+  });
+  expect(ringed).toEqual({ want: ringed.want, stroke: ringed.want, same: true, out: [8, 4] });
   // Show small keeps everything; a link opens the page behind a node.
   await page.getByTestId('flow-small').check();
   ns = await nodes();

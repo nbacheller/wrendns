@@ -76,19 +76,12 @@
   .tabs button {
     white-space: nowrap;
   }
-  /* Selected: `sky-soft` with `sky-strong` text, as the sidebar's current page (T33.6). */
-  .tabs button[aria-selected='true'] {
-    background: var(--brand-sky-soft);
-    border-color: var(--border-strong);
-    color: var(--accent);
-    font-weight: 600;
-  }
   .count {
     display: inline-block;
     margin-left: var(--space-2);
     padding: 0 var(--space-1);
     border-radius: var(--radius-sm);
-    font-size: var(--type-mono-sm-size);
+    font-size: var(--type-label-size);
     font-weight: 600;
     background: var(--surface);
     color: var(--muted);

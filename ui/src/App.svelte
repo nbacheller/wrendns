@@ -416,7 +416,7 @@
     background: var(--warn-soft);
     color: var(--warn);
     border: 1px solid var(--warn);
-    font-size: var(--type-mono-sm-size);
+    font-size: var(--type-label-size);
     line-height: 18px;
     text-align: center;
   }
@@ -491,7 +491,7 @@
     border: 1px solid var(--side-muted);
     border-radius: var(--radius-sm);
     color: var(--side-muted);
-    font-size: var(--type-mono-sm-size);
+    font-size: var(--type-label-size);
     font-weight: 600;
   }
   .role.primary {

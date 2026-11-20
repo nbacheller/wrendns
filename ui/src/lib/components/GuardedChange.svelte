@@ -428,7 +428,7 @@
     color: var(--bad);
     border-radius: var(--radius-sm);
     padding: 0 var(--space-2);
-    font-size: var(--type-mono-sm-size);
+    font-size: var(--type-label-size);
     font-weight: 600;
     margin-left: var(--space-2);
   }

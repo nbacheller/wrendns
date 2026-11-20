@@ -239,7 +239,7 @@
             onfocus={() => (hover = t)}
           >
             {#if r.w > 64 && r.h > 30}
-              <span class="name">{t.label}</span>
+              <span class="name" class:mono={!t.service}>{t.label}</span>
               {#if r.h > 50}
                 <span class="count">{short(t.count)}{#if t.delta > 0}<span class="delta"> +{short(t.delta)}</span>{/if}</span>
               {/if}
@@ -320,16 +320,17 @@
   .tile.allowed {
     background: color-mix(in srgb, var(--info) var(--mix), var(--surface));
   }
+  /* On the alert tint, not the surface: mixing with the surface gave earth tones in Night (T33.6). */
   .tile.blocked {
-    background: color-mix(in srgb, var(--s-blocked) var(--mix), var(--surface));
+    background: color-mix(in srgb, var(--s-blocked) var(--mix), var(--bad-soft));
   }
   .tile.strong {
     color: var(--tm-ink);
   }
-  .tile:hover,
+  /* REQ: UI-*, T33.6 — the focus ring 2px outside, for focus only (hover shows the details panel). */
   .tile:focus-visible {
     outline: 2px solid var(--focus);
-    outline-offset: -2px;
+    outline-offset: 2px;
     z-index: 2;
   }
   .tile.hot {
@@ -360,7 +361,10 @@
   .count {
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-    opacity: 0.85;
+    color: var(--muted);
+  }
+  .tile.strong .count {
+    color: inherit;
   }
   .empty {
     position: absolute;
