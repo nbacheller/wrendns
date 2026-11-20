@@ -91,7 +91,7 @@
     stroke: var(--border);
   }
   .ok .left {
-    stroke: var(--ok, var(--s-cached));
+    stroke: var(--ok);
   }
   .warn .left {
     stroke: var(--warn);

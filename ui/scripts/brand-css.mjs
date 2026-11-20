@@ -51,7 +51,11 @@ const faces = tokens.type.fonts.map((f) => {
 }`;
 });
 
-const night = [...colorVars('dark'), ...shadow('dark'), '  color-scheme: dark;'];
+// REQ: T33.6 — a select's chevron is an icon in `ink-muted`; a background image can't take a CSS
+// variable, so each theme gets its own, drawn from the token here rather than hard-coded in app.css.
+const chevron = (theme) =>
+  `  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23${resolve('ink-muted', theme).slice(1)}' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");`;
+const night = [...colorVars('dark'), ...shadow('dark'), chevron('dark'), '  color-scheme: dark;'];
 const css = `/* Generated from brand/tokens.json by scripts/brand-css.mjs. Do not edit; run \`node scripts/brand-css.mjs\`. */
 ${faces.join('\n')}
 
@@ -59,6 +63,7 @@ ${faces.join('\n')}
 :root {
 ${colorVars('light').join('\n')}
 ${shadow('light').join('\n')}
+${chevron('light')}
   --brand-font-sans: ${tokens.type.families.sans};
   --brand-font-mono: ${tokens.type.families.mono};
 ${type.join('\n')}

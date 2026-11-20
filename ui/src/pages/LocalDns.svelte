@@ -1,5 +1,5 @@
 <script lang="ts">
-  // REQ: API-011, DNS-010, UPS-007 (T3.12) — "Names on my network": the names WrenDNS answers
+  // REQ: API-011, DNS-010, UPS-007 (T3.12) — "Names on your network": the names WrenDNS answers
   // itself, grouped by domain (a zone-lite view: SOA/NS are generated, never asked for), plus the
   // domains sent to other servers. A wizard sets up a home domain; another sends a domain
   // elsewhere. Every change is previewed (sentence + diagram) and can be tested with Explain.
@@ -66,7 +66,7 @@
     formError = done = '';
   }
   function openWizard() {
-    ed = { title: 'Set up my home domain', name: '', rtype: 'A', value: '', ttl: '', nodeOnly: false, existing: [], wizard: true, step: 1, domain: 'home.arpa', label: '' };
+    ed = { title: 'Set up your home domain', name: '', rtype: 'A', value: '', ttl: '', nodeOnly: false, existing: [], wizard: true, step: 1, domain: 'home.arpa', label: '' };
     formError = done = '';
   }
 
@@ -253,14 +253,14 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Names on my network<HelpButton id="local-dns" /></h1>
+    <h1>Names on your network<HelpButton id="local-dns" /></h1>
     <span class="muted small">Local DNS</span>
   </div>
   <ErrorNote {error} />
 
   {#if canEdit}
     <div class="row actions">
-      <button class="primary" onclick={openWizard}>Set up my home domain</button>
+      <button class="primary" onclick={openWizard}>Set up your home domain</button>
       <button onclick={openAdd}>Add a name</button>
       <button onclick={() => ((fw = { domain: '', servers: '', stub: false, groups: '', qtypes: '', dnssec: true, nodeOnly: false }), (formError = done = ''))}>Send a domain to another server</button>
       <button onclick={openZone} data-testid="zone-add">Add a zone</button>
@@ -273,7 +273,7 @@
   {#if groups.length === 0}
     <section class="card">
       <p class="empty">
-        No local names yet. “Set up my home domain” gives your NAS, printer, or server a name like
+        No local names yet. “Set up your home domain” gives your NAS, printer, or server a name like
         <code>nas.home.arpa</code> that every device can use.
       </p>
     </section>

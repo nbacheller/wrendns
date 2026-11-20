@@ -6,6 +6,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page, type Route } from '@playwright/test';
 import { readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { hoverRing, rectRing } from './svg-ring';
 import { NO_FILTERS, animatedBudget, filterSnapshot, flowRows, layout, links, pulse, seed, via, type Snapshot } from '../../src/lib/map';
 
 test.describe.configure({ mode: 'serial' });
@@ -590,6 +591,13 @@ test('obs_901 keyboard opens a node panel', async ({ browser }) => {
     id = await o.page.evaluate(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-node') ?? null);
   }
   expect(id, 'a node took focus').toBeTruthy();
+  // REQ: UI-*, T33.6 — its ring: 2px of focus-ring, 2px outside the node; hover never draws it.
+  const focused = o.page.locator(`[data-node="${id}"]`);
+  const ring = await rectRing(o.page, focused);
+  expect(ring.focusVisible).toBe(true);
+  expect([ring.stroke, ring.width, ring.gap]).toEqual([ring.want, '2px', [3, 3, 6, 6]]);
+  expect(await hoverRing(o.page, focused)).toBe('none');
+  await focused.focus();
   const label = (await o.page.locator(`[data-node="${id}"]`).getAttribute('aria-label')) ?? '';
   expect(label.length).toBeGreaterThan(5);
   await o.page.keyboard.press('Enter');

@@ -5935,3 +5935,55 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 4. Every step is audited, an event and a health note; MCP gains a read tool `update_status`; agents get plans only.
 
 **Consequences:** Unattended Pis stay current without the owner signing in, using a guard already proven for configuration, and a bad release is caught on a canary. A compromise of the release key alone cannot reach any node automatically, and a malicious release is public in the log for a day before it installs; each automatic release costs the owner a hardware-key signature. Rejected: the release key alone for automatic installs (one online key would be root on every opted-in node), the cloud starting updates (it would start code on a node), updates outside the cluster's order (the primary could restart first), and containers updating themselves (their orchestrator owns the image).
+
+## ADR-1040 — Group colours are the brand's flock, in configured order (Accepted 2026-11-19, T33.6, API-005, DOC-006)
+
+**Context:** the brand book (`brand/README.md`, Color) gives device groups `flock-1` to `flock-5` in a fixed order, then `flock-other`, and keeps flock colours away from status. The server filled in a group's colour from a ten-colour Tailwind cycle (`#3b82f6`, `#22c55e`...), `default` got a slate grey, and the UI took any colour as given; the chart series for local answers (`--s-local`) reused `flock-3`. The book does not say what a colour set in the configuration does.
+
+**Decision:**
+1. **The server's automatic colour** for a group without one is `flock-1` to `flock-5` (their Day values from `brand/tokens.json`) by the group's place among the configured groups, `default` not counted; the sixth group on, and `default`, take `flock-other`. A unit test checks the values against `tokens.json`. The API field and its meaning ("configured, or a stable pick") are unchanged.
+2. **The UI shows the theme's own flock:** a group whose colour is one of the flock's Day values is drawn with that token (`var(--brand-flock-N)`), so Night shows Night's value; a group with no colour takes the token for its place. `ui/src/lib/flock.ts` does this for every group chip, dot, card swatch and chart series.
+3. **An explicit `color` in the configuration still wins** as written (the conservative choice: a setting the operator chose is never dropped silently). The docs say it overrides the brand colour for that place, and the demo network no longer sets one.
+4. **Not a flock colour for status:** `--s-local` (answers from your own names) is `sky`, not `flock-3`.
+
+**Consequences:** API clients (Grafana, Home Assistant) see the brand's colours for groups without one; a client that compared a group's colour to the old cycle sees new values.
+
+## ADR-1041 — Icons: Lucide-style paths drawn in the app, no icon library (Accepted 2026-11-19, T33.6, API-005, DOC-006)
+
+**Context:** the brand book recommends Lucide at 20px with a 1.75px stroke in `ink` or `ink-muted`, "a recommendation, not a bundled asset". The UI had its own `Icon.svelte` (18px default) and used Unicode symbols as icons in places (✕, ▸ ▾, ✓ ✗, ★, ▲ ▼, ⚠; ⚠ draws as a colour emoji on Windows). The UI is within 4 KiB of its 512 KiB budget (ADR-1020), and the `lucide` package would add far more than the dozen shapes used.
+
+**Decision:**
+1. **No icon package.** `Icon.svelte` keeps drawing Lucide-style single paths (24×24 viewBox, `currentColor`, 1.75 stroke). The pass added `x`, `chevron-right`, `chevron-down`, `check`, `alert`, `star`, `up`, `down`, and distinct icons for Routers, CMDB and Network inventory (each had borrowed another page's).
+2. **Sizes:** 20px by default (the sidebar, the header); 16px inline with body-sm text (status marks, the Picker's tick, drawers' list marks), 12px beside a percentage change, 14px in a chip's remove button. Every Unicode symbol used as an icon was replaced; "×" stays where it is the multiplication sign (`×3`).
+3. **Notices' status icons** (info, alert-triangle, circle-check) are CSS masks in `app.css`, coloured by the tone, so the about 140 notices gained an icon without touching their markup.
+4. The wren stays the logo only (ADR-1030 §4); no icon draws it.
+
+**Consequences:** a new icon is a path added to `Icon.svelte`; if a custom set ships later it replaces the paths in one file.
+
+## ADR-1042 — The brand book's gaps in a dense admin UI, filled conservatively (Accepted 2026-11-19, T33.6, API-005, DOC-006)
+
+**Context:** the T33.6 audit (27 findings) met cases the brand book leaves open. Each was settled with the most conservative choice consistent with the book and ADR-1030.
+
+**Decision:**
+1. **Disabled** controls (buttons, inputs, selects, the switch, Picker, menu items) are `ink-muted` text with a `line` edge on `surface-raised`, opacity 1 (including Chrome's own fade of a disabled select); rows and options that are off are muted text, not faded.
+2. **Selected** is `sky-soft` with `sky-strong` text everywhere: tabs, pressed filter chips, the Picker's active option, menus' hovered item, the Cluster page's selected row. A pressed segment in a segmented control stays `surface-raised` with a `line-strong` edge (no shadow).
+3. **Notices** are a whole `line` hairline on the tone's `-soft` tint (`sky-soft` for information) with the tone's status icon (ADR-1041 §3), never a coloured left border; card titles lost their accent bar; the health panel's reasons lead with their level's shape.
+4. **The switch:** off is an `ink-muted` knob on `surface-raised` with a `line-strong` edge; on is `sky-strong` with an `on-sky-strong` knob. (The audit suggested a `surface-raised` knob when off; on a sunken track that is under 3:1, so the knob takes `ink-muted`.)
+5. **Overlays** wash the page toward `surface` (a `color-mix` of the page colour) instead of a dark scrim, in both themes; drawers, menus and popovers take the one shadow, `shadow-float`. A drawer's panel holds focus without a ring (it is not a control; a ring along its edge read as a coloured border); its controls keep theirs.
+6. **The Flow diagram's "WrenDNS decides" box** is the identity tint, `sky` with `on-sky` text (`sky-strong` is for interaction only; `ink` failed in Night).
+7. **No gradients:** chart area fills are flat and translucent; the two hatch patterns (maintenance in the topology legend, no data in the heatmap) are stripes, not colour gradients, and are allowlisted (ADR-1043). Domain monograms use the brand's neutrals instead of a hashed hue per name (the hues reached browns and oranges, which the palette excludes); other brands' marks keep their own colours.
+8. **Motion:** one token, `--motion: 160ms ease-out`, for every transition; `prefers-reduced-motion: reduce` turns every transition and animation off (one global rule) and the Cluster page jumps instead of scrolling smoothly. The wall display's slow title fade (0.8 s) stays: it is a display, not the app, and it is off under reduced motion.
+9. **Type and shape:** drawers and help panels use Figtree `body-sm` (they set a system font); domains on the dashboard's top lists and the wall are IBM Plex Mono; text under 12px became 12px (except labels inside scaled SVGs); radii map to `radius-sm` (badges, chips, small panels), `radius-md` (buttons, inputs, cards) and `radius-full` (pills, toggles); the app's primitives (cards, buttons, inputs, tables, badges, the shell) are on the 4px space scale. Snapping every other off-scale padding in the pages (about 300 values) is left for later work.
+
+**Consequences:** the UI bundle went from 508.5 KiB to 507.8 KiB gzipped: removing dead fallbacks, the gradient code and the hashed monogram colours paid for the icons and notices.
+
+## ADR-1043 — `npm run check` keeps the UI on-brand (Accepted 2026-11-19, T33.6, API-005, DOC-006)
+
+**Context:** the brand pass fixed what the audit found; without a check the next change can bring a hard-coded colour, a removed focus ring or an exclamation mark back.
+
+**Decision:**
+1. **`ui/scripts/check-brand.mjs`** runs in `npm run check` and fails on: a hard-coded colour (hex, `rgb()`/`hsl()`/`oklch()` and the like, or a named colour in a colour property or a `var()` fallback) outside the token files (`src/brand.css` generated from `brand/tokens.json`; `app.css` names only `var()`s); `outline: none` (or 0) in a file that draws no replacement focus style (`var(--focus)`); an emoji, or an exclamation mark ending a word, in a UI string (script string literals, markup text and quoted attribute values) or in `docs/help/topics.json`; a CSS or canvas gradient; and "Telltale" anywhere in `ui/src`, `ui/index.html` or the help topics. Comments are not UI and are skipped (except for the old name). The generated API types and other brands' marks (`icons/brands.ts`) are not checked.
+2. **Exceptions** go in `ui/scripts/brand-allowlist.txt`, one per line with the check, the file, text on the line and why; an entry nothing matches fails the check, so the list only holds live exceptions. It starts with five: another brand's mark's letter colour, the flock's Day values the server fills in (ADR-1040), the two hatch patterns, and the drawer panel's focus (ADR-1042 §5).
+3. **Help topics are not loaded on demand** in this pass: they are already their own lazy chunk, the budget counts every chunk, so splitting them further would not lower the measured total, and the pass ended under the budget without it.
+4. **Playwright** (`9-zbrand.spec.ts`) checks, in Day and Night: the 2px `focus-ring`, 2px outside, on a nav link, a segmented button, an icon button, a switch, a select, the search box, a tab and a primary button (3:1 against what is around it); every status badge on eight pages has a word, and each tone is its colour on its `-soft` tint at 4.5:1; disabled controls are `ink-muted` on a `line` edge at opacity 1, and no disabled control on the page is faded; reduced motion leaves nothing moving on four pages, and without it the switch moves in 160 ms ease-out.
+5. **Review round 1 (T33.6):** the outline check is per rule, not per file: an `outline: none` (or `0`, `0px`, `outline-style`/`outline-width`) passes only on a selector that a `var(--focus)` rule in the same file names a class or element of, or on `:focus:not(:focus-visible)`, and never in an inline style. Three more checks: `case` (`text-transform: uppercase`, small caps), `disabled` (`opacity` below 1 on a `:disabled`/`[disabled]`/`[aria-disabled]` rule) and `edge` (a left border that isn't a 1px line-colour divider). Named colours are caught in SVG attributes, Svelte `style:` directives and canvas styles too. `flock` checks that the Day copies of the group colours (`src/lib/flock.ts`, the server's defaults) match `brand/tokens.json`. Playwright adds the SVG rings (a Flow band, a map node, a topology chip and pod: 2px of `focus-ring` covering 2px to 4px out, none on hover; in `1-ui` and `7-map`, which hold the mocked data) and the group colours in each theme.

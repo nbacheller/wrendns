@@ -172,9 +172,9 @@
 
 <div class="page">
   <h1>Upstreams<HelpButton id="upstreams" /></h1>
-  <div class="seg" role="tablist" aria-label="Upstreams view">
-    <button role="tab" aria-selected={view === 'simple'} class:on={view === 'simple'} onclick={() => setView('simple')} data-testid="view-simple">Simple</button>
-    <button role="tab" aria-selected={view === 'advanced'} class:on={view === 'advanced'} onclick={() => setView('advanced')} data-testid="view-advanced">Advanced</button>
+  <div class="seg view-tabs" role="tablist" aria-label="Upstreams view">
+    <button role="tab" aria-selected={view === 'simple'} onclick={() => setView('simple')} data-testid="view-simple">Simple</button>
+    <button role="tab" aria-selected={view === 'advanced'} onclick={() => setView('advanced')} data-testid="view-advanced">Advanced</button>
   </div>
   <ErrorNote {error} />
   <div hidden={view !== 'simple'} data-testid="upstreams-simple">
@@ -299,34 +299,21 @@
   </div>
   <p class="muted small">
     To send one domain to a different server (a work network, your router), add a forwarded domain on the
-    <a href={href('/local-dns')}>Names on my network</a> page.<HelpButton id="routes" />
+    <a href={href('/local-dns')}>Names on your network</a> page.<HelpButton id="routes" />
   </p>
 </div>
 
 <style>
-  .seg {
-    display: inline-flex;
-    gap: 0;
-    margin: 4px 0 8px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-  .seg button {
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    padding: 6px 16px;
-  }
-  .seg button.on {
-    background: var(--accent);
-    color: var(--accent-text);
+  /* REQ: UI-*, T33.6 — the global .seg (no clipping, so the focus ring shows); selected is sky-soft. */
+  .view-tabs {
+    justify-self: start;
+    margin: var(--space-1) 0 var(--space-2);
   }
   .chip {
     display: inline-block;
     padding: 0 6px;
     margin: 1px 4px 1px 0;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     white-space: nowrap;
   }

@@ -3,6 +3,7 @@
   // time goes, top lists, upstream share and health (`spec/07` §3). It is kept, unchanged, behind
   // `#/?view=legacy` (see Dashboard.svelte) for anyone who prefers it, and is meant to be removed.
   import { api, type S } from '../lib/api';
+  import { flock, flockCss } from '../lib/flock';
   import { href } from '../lib/router.svelte';
   import { poll } from '../lib/poll';
   import { clock, ms, num, pct, short } from '../lib/format';
@@ -77,7 +78,7 @@
   let groups = $state<S['GroupInfo'][]>([]);
   // ADR-050 — the top lists for one kind of device ('' = everyone).
   let group = $state('');
-  const groupColor = (n: string) => groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
+  const groupColor = (n: string) => flockCss(groups, n);
   // REQ: CLU-002 — the whole cluster ('' ), one node (`node:<id>`), or one site's nodes
   // (`site:<name>`). Remembered in this browser only.
   let nodes = $state<S['ClusterView']['nodes']>([]);
@@ -233,7 +234,7 @@
   const groupSeries = $derived.by(() => {
     const names = new Set<string>();
     for (const b of buckets) for (const k of Object.keys(b.byGroup ?? {})) names.add(k);
-    const color = (n: string) => groups.find((g) => g.name === n)?.color ?? '--s-other';
+    const color = (n: string) => flock(groups, n);
     return [...names]
       .sort()
       .map((n) => ({ label: n, color: color(n), values: buckets.map((b) => b.byGroup?.[n] ?? 0) }))
@@ -541,14 +542,14 @@
   .bar {
     height: 5px;
     background: var(--surface-2);
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     margin-top: 3px;
     overflow: hidden;
   }
   .bar span {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--accent);
   }
   /* REQ: OBS-004 — a top client's bar, split by status. */

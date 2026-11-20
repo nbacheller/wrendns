@@ -29,7 +29,7 @@
     display: inline-flex;
     align-items: center;
     padding: 4px 10px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: color-mix(in srgb, var(--warn) 18%, transparent);
     color: var(--warn-strong, var(--text));
     font-size: 0.85rem;

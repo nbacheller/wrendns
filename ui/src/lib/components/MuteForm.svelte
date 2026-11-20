@@ -33,7 +33,7 @@
     { v: '1d', l: '1 day', ms: 86_400_000 },
     { v: '1w', l: '1 week', ms: 7 * 86_400_000 },
     { v: '30d', l: '30 days', ms: 30 * 86_400_000 },
-    { v: 'never', l: 'Until I remove it', ms: null },
+    { v: 'never', l: 'Until removed', ms: null },
   ];
 
   // The address is what findings are made from, so it is the default; a device name works too when

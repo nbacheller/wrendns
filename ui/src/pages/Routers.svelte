@@ -457,8 +457,8 @@
   }
   textarea {
     width: 100%;
-    font-family: ui-monospace, monospace;
-    font-size: 0.85rem;
+    font-family: var(--mono);
+    font-size: var(--type-mono-size);
   }
   .creds {
     list-style: none;
@@ -474,14 +474,9 @@
     flex-wrap: wrap;
   }
   .ok-text {
-    color: var(--ok, #1b7f3a);
+    color: var(--ok);
   }
   .bad-text {
-    color: var(--bad, #b00020);
-  }
-  .notice {
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
-    background: var(--panel-2, rgba(127, 127, 127, 0.12));
+    color: var(--bad);
   }
 </style>

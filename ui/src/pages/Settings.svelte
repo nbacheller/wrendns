@@ -241,7 +241,7 @@
     ['querylog:read', 'The query log (who asked for what)'],
     ['config:read', 'Lists, groups, devices, names, upstreams'],
     ['config:write:clients', 'Name and regroup devices'],
-    ['config:write:records', 'Change names on my network'],
+    ['config:write:records', 'Change names on your network'],
     ['config:write:forwards', 'Send domains to other servers'],
     ['ops:pause', 'Pause and resume blocking'],
     ['ops:anomalies', 'Acknowledge device anomalies (and take it back)'],
@@ -608,7 +608,7 @@
       <form class="row" onsubmit={createToken}>
         <input aria-label="Token name" required placeholder="name, e.g. grafana" bind:value={tokenName} />
         <select aria-label="Kind" bind:value={tokenKind}>
-          <option value="user">for my scripts</option>
+          <option value="user">for scripts</option>
           <option value="agent">for an AI agent</option>
         </select>
         {#if tokenKind === 'user'}
@@ -1128,8 +1128,8 @@
     display: grid;
     gap: 0.35rem;
     margin: 0.75rem 0;
-    border: 1px solid var(--border, #ddd);
-    border-radius: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     padding: 0.75rem 1rem;
   }
   .stack-card {
@@ -1159,7 +1159,7 @@
     flex: 1 1 260px;
     background: var(--surface-2);
     padding: 6px 8px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
   }
   .new-token {
     margin: 10px 0;

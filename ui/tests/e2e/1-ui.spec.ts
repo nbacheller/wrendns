@@ -9,6 +9,7 @@ import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
 import { pick } from './picker';
+import { hoverRing, rectRing } from './svg-ring';
 import { alertConditions } from '../../src/lib/alert-conditions';
 import { customUrl, nextCustomName, planFor, readSaved, type Transport } from '../../src/lib/upstream-picker';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
@@ -198,7 +199,7 @@ test('query log finds the blocked query and explains it', async () => {
   await page.getByRole('button', { name: 'Why?' }).first().click();
   const drawer = page.getByRole('dialog');
   await expect(drawer).toContainText('e2e-block');
-  await expect(drawer).toContainText('★');
+  await expect(drawer.getByTestId('rule-winner').first()).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(drawer).toBeHidden();
   // Status chips filter, and the filter lands in the URL.
@@ -1570,12 +1571,12 @@ test('api_011 help panels, diagrams, and simple/advanced', async () => {
 
 // REQ: API-011 (T3.12 AC) — a novice creates nas.home.arpa and sends corp.example elsewhere through
 // the wizards, without docs; DNS answers at once; the API does the same with dry-run.
-test('api_011 names on my network: wizards, DNS, and the API', async () => {
+test('api_011 names on your network: wizards, DNS, and the API', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/local-dns');
-  await expect(page.getByRole('heading', { name: 'Names on my network' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Names on your network' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Set up my home domain', exact: true }).click();
+  await page.getByRole('button', { name: 'Set up your home domain', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Home domain', exact: true })).toHaveValue('home.arpa');
   await page.getByRole('button', { name: 'Next' }).click();
   await page.getByRole('textbox', { name: 'Device name', exact: true }).fill('nas');
@@ -1790,11 +1791,18 @@ test('clu_008 cluster topology', async () => {
   // Long pod and site names are shortened in the middle to fit (the full name is in the tooltip).
   await expect(topo.getByTestId('topology-node').first()).toContainText(/wrend.*….*-8j9h9/);
   // The primary is marked as such; the Pi is a replica.
-  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('PRIMARY');
+  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('Primary');
   await expect(topo.getByTestId('topology-node').nth(1).getByTestId('topology-role')).toHaveText('replica');
   await expect(topo.getByTestId('topology-site').nth(1).locator('text').first()).toHaveText(/^home-.*….*closet$/);
   await expect(topo.locator('.pod.bad')).toHaveCount(1);
   await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
+  // REQ: UI-*, T33.6 — a node chip's and a pod's focus ring: 2px of focus-ring, 2px outside; never on hover.
+  for (const chip of [topo.getByTestId('topology-node').first(), topo.getByTestId('topology-pod').first()]) {
+    const ring = await rectRing(page, chip);
+    expect(ring.focusVisible).toBe(true);
+    expect([ring.stroke, ring.width, ring.gap]).toEqual([ring.want, '2px', [3, 3, 6, 6]]);
+    expect(await hoverRing(page, chip)).toBe('none');
+  }
 
   // Selecting a pod opens its site in the table and highlights its row.
   await topo.getByRole('button', { name: /wrendns-resolver-bbbbb/ }).click();
@@ -1878,7 +1886,7 @@ test('clu_009 a witness is a voter, not a full node', async () => {
   await page.keyboard.press('Escape');
   // The tabs count nothing for it: Health is clean.
   await page.getByRole('tab', { name: /^Health/ }).click();
-  await expect(page.getByTestId('cluster-check').filter({ hasText: '✗' })).toHaveCount(0);
+  await expect(page.locator('[data-testid="cluster-check"].fail')).toHaveCount(0);
   // Down: still a failing check (automatic failover needs its vote), and red in the topology.
   current = view(false);
   await expect(page.getByTestId('cluster-health')).toContainText('Needs attention', { timeout: 10_000 });
@@ -5095,6 +5103,21 @@ test('obs_032 flow', async () => {
   // A band's share: of every answer and of its source.
   await svg.locator('[data-source="upstream:quad9-1"][data-target="rcode:SERVFAIL"]').focus();
   await expect(page.getByTestId('flow-tip')).toContainText('quad9-1 → SERVFAIL: 40 (4.0 % of all · 20.0 % of quad9-1)');
+  // REQ: UI-*, T33.6 — the focused band's ring: 2px of focus-ring, 2px outside the band (a gap of
+  // the surface, then the ring), under it.
+  const ringed = await svg.evaluate((s) => {
+    const probe = document.createElement('div');
+    probe.style.color = 'var(--focus)';
+    document.body.append(probe);
+    const want = getComputedStyle(probe).color;
+    probe.remove();
+    const band = document.activeElement as SVGPathElement;
+    const ring = s.querySelector('[data-testid="flow-focus-ring"]') as SVGPathElement | null;
+    const gap = ring?.nextElementSibling as SVGPathElement | null;
+    const w = (e: Element | null | undefined) => (e ? parseFloat(getComputedStyle(e).strokeWidth) : NaN);
+    return { want, stroke: ring ? getComputedStyle(ring).stroke : '', same: ring?.getAttribute('d') === band.getAttribute('d'), out: [w(ring) - w(band), w(gap) - w(band)].map((x) => Math.round(x * 100) / 100) };
+  });
+  expect(ringed).toEqual({ want: ringed.want, stroke: ringed.want, same: true, out: [8, 4] });
   // Show small keeps everything; a link opens the page behind a node.
   await page.getByTestId('flow-small').check();
   ns = await nodes();

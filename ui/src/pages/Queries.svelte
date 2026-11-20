@@ -2,6 +2,7 @@
   // REQ: API-005, OBS-007 — the query log: filters (kept in the URL), newest first, paging by
   // cursor, a stage-timing bar per row, and "Why?" (explain, FLT-013) in a drawer.
   import { api, type S } from '../lib/api';
+  import { flockCss } from '../lib/flock';
   import { route, navigate } from '../lib/router.svelte';
   import { logDate, logTime, ms, num } from '../lib/format';
   import Drawer from '../lib/components/Drawer.svelte';
@@ -78,7 +79,7 @@
       .then((g) => (groups = g.items))
       .catch(() => {});
   });
-  const groupColor = (n: string | null | undefined) => groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
+  const groupColor = (n: string | null | undefined) => flockCss(groups, n);
 
   // Links into the log (dashboard, clients, the nav) change the URL without remounting.
   $effect(() => {
@@ -345,8 +346,8 @@
         <button type="button" class="chip" aria-pressed={statuses.has(s)} onclick={() => toggleStatus(s)}>{s}</button>
       {/each}
       <span class="spacer"></span>
-      <button type="button" onclick={clear}>Clear</button>
-      <button type="submit" class="primary">Search</button>
+      <!-- Clear and Search stay together when the chips wrap (T33.6). -->
+      <span class="go"><button type="button" onclick={clear}>Clear</button><button type="submit" class="primary">Search</button></span>
     </div>
   </form>
 
@@ -437,6 +438,11 @@
 {/if}
 
 <style>
+  .go {
+    display: inline-flex;
+    gap: var(--space-2);
+    margin-left: auto;
+  }
   /* REQ: OBS-039 — the mark and the name on one line; a long name wraps beside the mark. */
   .nmi {
     display: inline-flex;
@@ -494,14 +500,16 @@
   }
   .chip {
     min-height: 28px;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 12.5px;
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-full);
+    font-size: var(--type-label-size);
   }
+  /* Selected: sky-soft with sky-strong text and edge (T33.6). */
   .chip[aria-pressed='true'] {
-    background: var(--accent);
-    color: var(--accent-text);
+    background: var(--brand-sky-soft);
+    color: var(--accent);
     border-color: var(--accent);
+    font-weight: 600;
   }
   .log td {
     font-size: 13px;

@@ -222,7 +222,7 @@
 <style>
   .levels {
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 6px 12px 10px;
     display: grid;
     gap: 8px;

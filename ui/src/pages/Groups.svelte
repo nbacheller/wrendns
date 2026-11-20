@@ -1,7 +1,9 @@
 <script lang="ts">
+  import Icon from '../lib/components/Icon.svelte';
   // REQ: API-005, FLT-005 (ADR-050) — groups as categories of devices: each group's networks,
   // what its devices did in the last 24 hours, its heaviest names this hour, and its settings.
   import { api, type S } from '../lib/api';
+  import { flockCss } from '../lib/flock';
   import { href, navigate, route } from '../lib/router.svelte';
   import { dateTime, num, pct } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -198,7 +200,7 @@
       help: 'Off hides the name of the list that blocked the name from the error text.' },
     { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
       help: 'When a device matches several groups, the highest priority wins.' },
-    { key: 'color', label: 'Color', type: 'text', placeholder: '#4f8cff', advanced: true },
+    { key: 'color', label: 'Color', type: 'text', placeholder: 'the brand colour for its place', advanced: true },
   ]);
 
   function load() {
@@ -251,7 +253,7 @@
   {:else}
     <span class="chiprow">
       {#each list.slice(0, CHIPS) as c (c.label)}
-        <span class="pchip" data-testid="chip" title={c.title}>{c.label}{#if c.warn}<span class="warn-icon" data-testid="chip-private" role="img" aria-label="Private Wi-Fi address" title="Private Wi-Fi address: the profile may not follow it">⚠</span>{/if}</span>
+        <span class="pchip" data-testid="chip" title={c.title}>{c.label}{#if c.warn}<span class="warn-icon" data-testid="chip-private" role="img" aria-label="Private Wi-Fi address" title="Private Wi-Fi address: the profile may not follow it"><Icon name="alert" size={16} /></span>{/if}</span>
       {/each}
       {#if list.length > CHIPS}
         <span class="pchip more" data-testid="chip-more" title={list.slice(CHIPS).map((c) => c.label).join(', ')}>+{list.length - CHIPS}</span>
@@ -278,7 +280,7 @@
     </div>
     <div class="table-wrap">
       <table data-testid="profile-table">
-        <thead><tr><th>Name</th><th>Source</th><th>Filter Scope</th><th>Safe Search</th><th>Schedule</th>{#if can('operator')}<th><span class="sr-only">Edit</span></th>{/if}</tr></thead>
+        <thead><tr><th>Name</th><th>Source</th><th>Filter scope</th><th>Safe search</th><th>Schedule</th>{#if can('operator')}<th><span class="sr-only">Edit</span></th>{/if}</tr></thead>
         <tbody>
           {#each groups as g (g.name)}
             <tr data-testid="profile-row" data-profile={g.name}>
@@ -300,9 +302,9 @@
 
   <div class="group-grid">
     {#each groups as g (g.name)}
-      <section class="card group" data-testid="group-card" style:--gc={g.color}>
+      <section class="card group" data-testid="group-card" style:--gc={flockCss(groups, g.name)}>
         <div class="card-head">
-          <h2>{g.name}</h2>
+          <h2><span class="swatch" aria-hidden="true"></span>{g.name}</h2>
           {#if g.pausedUntilUnixSeconds}
             <span class="badge warn">paused until {dateTime(g.pausedUntilUnixSeconds)}</span>
           {/if}
@@ -440,7 +442,7 @@
     align-items: center;
     gap: 4px;
     padding: 1px 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     border: 1px solid var(--border);
     font-size: 0.85em;
@@ -467,10 +469,14 @@
   .group {
     margin: 0;
   }
-  /* T6.8 — the title's accent bar carries the group's color. */
-  .group h2::before {
+  /* The group's flock colour, beside its name (T33.6, ADR-1040): never a coloured border. */
+  .swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: var(--space-2);
+    border-radius: var(--radius-full);
     background: var(--gc);
-    width: 4px;
   }
   .stats {
     display: grid;

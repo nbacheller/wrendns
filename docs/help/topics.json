@@ -447,7 +447,7 @@
     },
     {
       "id": "local-dns",
-      "title": "Names on my network",
+      "title": "Names on your network",
       "term": "Local records (zone)",
       "summary": "Names WrenDNS answers itself, like nas.home.arpa → 192.168.1.10, so you type a name instead of an address.",
       "when": "You run a NAS, printer, or server at home and want a name for it.",
@@ -706,7 +706,7 @@
       "summary": "WrenDNS keeps upstream answers until their time to live runs out, so repeat questions are answered in microseconds. Here you can see each node's hit rate, look up what's cached for a name (and how long it stays fresh), and flush a name, everything under it, or the whole cache, on every node or one.",
       "when": "A site moved to a new address and you don't want to wait for the old answer to expire, or you're checking whether an answer came from the cache.",
       "example": "Look up www.example.com: A, NOERROR, 1 answer, validated, 212 s left, on both nodes. Flush it, and the next query asks the upstreams again.",
-      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on my network instead. Each node in a cluster has its own cache.",
+      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on your network instead. Each node in a cluster has its own cache.",
       "docs": "cache-tools"
     },
     {
@@ -781,7 +781,7 @@
     },
     {
       "id": "updates",
-      "title": "Which version am I running?",
+      "title": "Which version is running?",
       "term": "Version and update status",
       "summary": "The exact build (version, commit, channel), and whether a newer one exists on your channel, checked once a day against a signed release list.",
       "when": "Before reporting a problem, or to know when to update.",
@@ -1082,7 +1082,7 @@
     },
     {
       "id": "vqlog",
-      "title": "vqlog",
+      "title": "The vqlog language",
       "term": "Analytics in one query",
       "summary": "A small query language over the query log: filter, group, top lists, percentiles, and time series, with the cost shown. Never SQL.",
       "when": "Asking a question no dashboard answers, yourself or through an AI agent (the MCP tool vqlog).",

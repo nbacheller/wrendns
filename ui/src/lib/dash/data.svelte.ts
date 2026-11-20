@@ -4,6 +4,7 @@
 import { api, type S } from '../api';
 import { poll } from '../poll';
 import { currentMode } from '../mode.svelte';
+import { flock, flockCss } from '../flock';
 import { clock } from '../format';
 import { changes } from '../annotations.svelte';
 import type { RawSeries } from './smooth';
@@ -106,7 +107,7 @@ export class DashData {
   stages = $state<S['LatencyRow'][]>([]);
   slo = $state<S['SloStatus'] | null>(null);
 
-  groupColor = (n: string) => this.groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
+  groupColor = (n: string) => flockCss(this.groups, n);
 
   /** REQ: OBS-004 (ADR-160) — the top lists and active clients follow the range, by whole hours: a
    *  range under a day says from which hour; a group's lists cover this hour only. */
@@ -160,10 +161,9 @@ export class DashData {
   groupSeries = $derived.by((): RawSeries[] => {
     const names = new Set<string>();
     for (const b of this.buckets) for (const k of Object.keys(b.byGroup ?? {})) names.add(k);
-    const color = (n: string) => this.groups.find((g) => g.name === n)?.color ?? '--s-other';
     return [...names]
       .sort()
-      .map((n) => ({ label: n, color: color(n), values: this.buckets.map((b) => b.byGroup?.[n] ?? 0) }))
+      .map((n) => ({ label: n, color: flock(this.groups, n), values: this.buckets.map((b) => b.byGroup?.[n] ?? 0) }))
       .filter((s) => s.values.some((v) => v > 0));
   });
   /** Exchanges with upstream resolvers, and the failed ones. */

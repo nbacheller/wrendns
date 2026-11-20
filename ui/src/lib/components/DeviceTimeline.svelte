@@ -75,8 +75,8 @@
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const css = getComputedStyle(canvas);
-    const v = (n: string, f: string) => css.getPropertyValue(n).trim() || f;
-    draw(ctx, data, g, { ink: v('--hm-ink', '#3b6fb6'), bad: v('--bad', '#c2413a'), warn: v('--warn', '#c98a00'), muted: v('--muted', '#888'), grid: v('--border', '#ddd') }, coverage);
+    const v = (n: string) => css.getPropertyValue(n).trim();
+    draw(ctx, data, g, { ink: v('--hm-ink'), bad: v('--bad'), warn: v('--warn'), muted: v('--muted'), grid: v('--border') }, coverage);
   });
 
   const hm = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -314,7 +314,7 @@
     pointer-events: none;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     padding: 4px 6px;
     white-space: nowrap;
     z-index: 3;
