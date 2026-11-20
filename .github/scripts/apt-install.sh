@@ -5,6 +5,16 @@
 #
 #   sh .github/scripts/apt-install.sh dnsperf minisign
 set -u
+# Packages already present (always the case on the self-hosted runners, whose user has no sudo)
+# are skipped; only the missing ones are installed.
+missing=""
+for p in "$@"; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+[ -z "$missing" ] && exit 0
+set -- $missing
+if [ "${RUNNER_ENVIRONMENT:-github-hosted}" = "self-hosted" ]; then
+  echo "::error title=apt::$* missing on the self-hosted runner; install it on the runner host"
+  exit 1
+fi
 for attempt in 1 2 3; do
   if timeout 180 sh -c "sudo apt-get update -qq && sudo apt-get install -y -qq $*"; then
     exit 0

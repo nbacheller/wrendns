@@ -9,6 +9,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# REQ: OPS-004 - a newer push to a pull request supersedes its run (ten Dependabot PRs at once
+# queued 25 runs, CI 2026-11-20); runs on main and on tags are never cancelled (they publish).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -32,7 +38,7 @@ jobs:
       # GitHub OIDC identity (Sigstore's Fulcio certificate, Rekor transparency log).
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v3
 
@@ -127,7 +133,7 @@ jobs:
           legacy="$(sh deploy/release/legacy-assets.sh dist)"
           (cd dist && sha256sum wrendns-* $legacy > SHA256SUMS && cat SHA256SUMS)
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries
           path: dist/
@@ -171,7 +177,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@v4
       - name: Package and push
         run: |
@@ -197,8 +203,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: binaries
           path: dist
@@ -265,7 +271,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@v4
       - name: Verify the release
         run: |

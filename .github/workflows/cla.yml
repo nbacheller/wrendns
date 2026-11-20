@@ -9,14 +9,26 @@
 #
 # pull_request_target runs with this repository's token on a fork's PR, so this workflow never checks out
 # or runs the PR's code: it only reads comments and writes the signature file and a status.
+#
+# REQ: OPS-004 — triggers kept to what the action needs, so the workflow leaves few skipped runs: pull
+# requests into main only (opened, reopened, a push to the PR, closed for the lock), and new comments.
+# GitHub can't filter issue_comment by its text, so a comment that isn't one of the two below still
+# makes one skipped run (the job's `if`); comments posted with a workflow's GITHUB_TOKEN make none.
 name: cla
 on:
   issue_comment:
     types: [created]
   pull_request_target:
-    types: [opened, closed, synchronize]
+    types: [opened, reopened, synchronize, closed]
+    branches: [main]
 
 permissions: {}
+
+# One run at a time per pull request, none cancelled: two runs for one PR could both write its
+# signature. (A single repository-wide group would drop all but the newest queued run.)
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
   cla:

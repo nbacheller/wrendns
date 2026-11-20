@@ -54,6 +54,9 @@ WRENDNS_RELEASE_PUBKEY="$(sed -n 2p "$WORK/test.pub")"
 export WRENDNS_RELEASE_PUBKEY
 
 echo "== install"
+# REQ: OPS-004 - what holds port 53 before the install, for a failed bind's log.
+ss -Hlnup 'sport = :53' || true
+ss -Hlntp 'sport = :53' || true
 sh "$HERE/install.sh" --disable-resolved-stub
 
 echo "== DNS on port 53"
