@@ -102,17 +102,22 @@ jobs:
         if: matrix.arch != 'amd64'
       - uses: docker/setup-buildx-action@v3
 
-      # REQ: OPS-004 - the release profile's last compile (fat LTO, one codegen unit) can need more
-      # memory than a hosted runner has: rustc was killed on arm/v7 (CI 2026-11-20). With swap the
-      # compile gets slower instead of failing. A self-hosted runner has the memory.
-      - name: Swap for the release compile
+      # REQ: OPS-004 - a hosted runner has about 8 GiB of memory and little free disk. The release
+      # profile's last compile (fat LTO, one codegen unit) needs more memory than that: rustc was
+      # killed on arm/v7 (CI 2026-11-20). Preinstalled toolchains this job never uses are removed to
+      # make room, then a swap file is added, so the compile gets slower instead of failing. A first
+      # try that put a 12 GiB swap file on /mnt filled the disk Docker builds on.
+      - name: Disk and swap for the release compile
         if: runner.environment == 'github-hosted'
         run: |
-          sudo fallocate -l 12G /mnt/wrendns-swap
-          sudo chmod 600 /mnt/wrendns-swap
-          sudo mkswap /mnt/wrendns-swap >/dev/null
-          sudo swapon /mnt/wrendns-swap
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / /mnt
+          sudo fallocate -l 8G /wrendns-swap
+          sudo chmod 600 /wrendns-swap
+          sudo mkswap /wrendns-swap >/dev/null
+          sudo swapon /wrendns-swap
           free -m
+          df -h / /mnt
 
       - name: Registry login
         if: env.PUSH == 'true'
