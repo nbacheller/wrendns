@@ -225,7 +225,9 @@ mod tests {
             other => panic!("expected Held, got {other:?}"),
         }
         drop(first);
-        let again = lock(&dir, Duration::ZERO);
+        // The lock goes with the last descriptor on the file. Another test in this binary that
+        // starts a child process holds a copy between its fork and exec, so allow that moment.
+        let again = lock(&dir, Duration::from_secs(5));
         assert!(again.is_ok(), "{again:?}");
         drop(again);
         let _ = fs::remove_dir_all(&dir);
