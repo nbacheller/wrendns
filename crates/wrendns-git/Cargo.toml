@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 # REQ: CLU-003 (ADR-049) — packfile objects are zlib streams: miniz_oxide is pure Rust and
 # small. SHA-1 object IDs and Ed25519 commit signatures use ring, already in the tree.
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 ring = "0.17.14"
 base64 = "0.23.1"
 

@@ -22,7 +22,7 @@ futures-util = { version = "0.3", default-features = false }
 blake3 = "1.8.7"
 # REQ: NFR-001 (ADR-168) — the embedded UI keeps only its `.gz` files; a client that doesn't accept
 # gzip gets them inflated. Already in the tree (wrendns-git, wrendns-support, wrendns).
-miniz_oxide = "0.8.9"
+miniz_oxide = "0.9.1"
 rand = "0.10.3"
 # REQ: API-004 (ADR-951) — OIDC signature checks: RSA, ECDSA and Ed25519 verification. Already in
 # the tree through rustls and rcgen, so this is a direct edge, not a new crate.
