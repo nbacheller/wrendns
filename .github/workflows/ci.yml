@@ -34,23 +34,29 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
         with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.os }}
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') || matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - name: cargo test --workspace
         shell: bash
         run: |
@@ -89,6 +95,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - run: sh .github/scripts/apt-install.sh dnsperf
         timeout-minutes: 12
       - run: make bench-smoke
@@ -133,7 +140,9 @@ jobs:
   # the bundle stays within 400 KiB gzipped, and the Playwright suite passes against the
   # real binary.
   ui:
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ui
@@ -157,11 +166,12 @@ jobs:
         run: npm run build
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       # REQ: API-902 (T27.13) - the e2e server has the guarded framework's test rows and restart hook
       # (the cargo feature `e2e`, never in a release build).
       - run: cargo build -p wrendns --features e2e
         working-directory: .
-      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} --only-shell chromium
       - run: npm run test:e2e
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
@@ -172,7 +182,9 @@ jobs:
 
   # REQ: API-004 — T3.6 AC: sign in through real Keycloak and Authentik (ui/tests/oidc/).
   oidc:
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ui
@@ -189,11 +201,12 @@ jobs:
       - run: npm run build
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       # REQ: API-902 (T27.13) - the e2e server has the guarded framework's test rows and restart hook
       # (the cargo feature `e2e`, never in a release build).
       - run: cargo build -p wrendns --features e2e
         working-directory: .
-      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} --only-shell chromium
       - name: Wait for Authentik to apply its blueprint
         run: |
           # Authentik's startup blueprint run can die on a Postgres deadlock and isn't retried
@@ -286,6 +299,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without WRENDNS_WEDGE_AFTER_SECS.
       - run: cargo build --profile bench-fast -p wrendns --features wedge-test
       - name: Compose bundle
@@ -379,12 +393,15 @@ jobs:
   # Pi-hole and Technitium images (Docker), and backup/restore across two nodes. A job of its
   # own: the image pulls and Pi-hole's first gravity run take minutes.
   migration:
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - run: cargo build --profile bench-fast -p wrendns
       - run: sh .github/scripts/apt-install.sh dnsutils
         timeout-minutes: 12
@@ -436,6 +453,7 @@ jobs:
         run: bash deploy/worker-image-e2e.sh wrendns:ci
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - name: Worker tests on an optimized build
         run: cargo test -j 4 --profile bench-fast -p wrendns --test pihole_import_worker --test discovery_workers
   # REQ: DSC-003 (T25.4, ADR-908) — the SNMP client against net-snmp `snmpd` in a container on an
@@ -447,6 +465,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - run: bash deploy/snmp-e2e.sh
       # REQ: DSC-003 (T25.5): v3 at authNoPriv and authPriv, SHA and SHA-256, on its own network.
       - run: bash crates/wrendns-snmp/tests/v3-e2e.sh
