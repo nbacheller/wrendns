@@ -21,9 +21,10 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # What did the pull request change? Plain git and shell, no third-party action. A diff that cannot
-  # be computed fails the job: it never reads as "nothing changed". Only the base commit's SHA (a
-  # hex string) reaches the script, through `env:`.
+  # What did the pull request change? scripts/pr_changes.py classifies each changed path; a path it
+  # does not know runs the tests (deny by default). A diff that cannot be computed, or an empty one,
+  # fails the job: it never reads as "nothing changed". Only the base commit's SHA (a hex string)
+  # reaches the shell, through `env:`.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -42,38 +43,21 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          code=false ui=false native=false
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
-            code=true ui=true native=true
-          else
-            if [ -z "$BASE_SHA" ]; then
-              echo "::error title=changes::the pull request's base commit is unknown, so the diff cannot be computed"
-              exit 1
-            fi
-            # HEAD is the merge of the pull request into its base: base..HEAD is the pull request's
-            # own change. --no-renames lists both sides of a rename. A failure stops the script (set -e).
-            git diff --name-only --no-renames "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed.txt"
-            echo "Changed paths:"
-            cat "$RUNNER_TEMP/changed.txt"
-            while IFS= read -r path; do
-              case "$path" in
-                crates/*|bench/*|fuzz/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|deny.toml|Makefile|Dockerfile|.github/workflows/pr.yml|.github/scripts/*)
-                  code=true ;;
-                ui/*|docs/api/openapi.json|.spectral.yaml)
-                  ui=true ;;
-                deploy/*)
-                  native=true ;;
-              esac
-            done < "$RUNNER_TEMP/changed.txt"
-            # Code changes need everything that builds or tests code.
-            if [ "$code" = true ]; then ui=true native=true; fi
+            python3 scripts/pr_changes.py --all | tee -a "$GITHUB_OUTPUT"
+            exit 0
           fi
-          {
-            echo "code=$code"
-            echo "ui=$ui"
-            echo "native=$native"
-          } >> "$GITHUB_OUTPUT"
-          echo "code=$code ui=$ui native=$native"
+          if [ -z "$BASE_SHA" ]; then
+            echo "::error title=changes::the pull request's base commit is unknown, so the diff cannot be computed"
+            exit 1
+          fi
+          # HEAD is the merge of the pull request into its base: base..HEAD is the pull request's
+          # own change. -z lists NUL-separated, unquoted paths; --no-renames lists both sides of a
+          # rename. A failed diff or script stops here (pipefail), and an empty diff is an error.
+          git -c core.quotePath=false diff -z --name-only --no-renames "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed.z"
+          echo "Changed paths:"
+          tr '\0' '\n' < "$RUNNER_TEMP/changed.z"
+          python3 scripts/pr_changes.py < "$RUNNER_TEMP/changed.z" | tee -a "$GITHUB_OUTPUT"
 
   fmt:
     needs: changes
@@ -160,6 +144,8 @@ jobs:
       - run: python3 scripts/check-pipefail.py
       # REQ: OPS-004 (ADR-1073) — pr-ok fails on a failed, cancelled or unknown job result and on bad input.
       - run: python3 scripts/test_pr_ok.py
+      # REQ: OPS-004 (ADR-1073) — the changes job's classification: unknown paths run the tests.
+      - run: python3 scripts/test_pr_changes.py
       # REQ: OBS-005 — the Grafana dashboard is regenerated from deploy/grafana/build.py.
       - run: python3 deploy/grafana/build.py --check
       # T10.6 — every P0 requirement has tests or evidence, and docs/v1-requirements.md is current.
