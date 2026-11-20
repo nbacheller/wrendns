@@ -6054,3 +6054,16 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 4. **Listings** in the Entra app gallery (OIDC and SCIM) and the Okta Integration Network come after general availability (T36.27), with the workforce tenant's publisher verification first.
 
 **Consequences:** No SSO tax in the offer; Business carries the cost of the broker, the SCIM server and the export. The listings make onboarding a search in the customer's admin console. Rejected: SSO in Business with SCIM and export as a paid add-on (the "SCIM tax" buyers now complain about), and SSO in every paid tier (consumer tiers have no organization to federate).
+
+## ADR-1071 — The network map: a Wiring view and a Places view over one graph, device detail pages, motion from real data, and non-IP devices from Home Assistant read-only through their hub (Accepted 2026-11-19, owner accepted all recommendations; owner request of 2026-11-19; M38)
+
+**Context:** The owner proposed a network map earlier and, after looking at the public netpulse demo, said its animations are "more like what I envisioned" and that the work "is worth developing". netpulse is AGPL-3.0: the clean-room rule and the commercial licence (ADR-1033) mean only ideas from its rendered pages are used, never its code. WrenDNS already reads UniFi ports and LLDP into the CMDB, and each device's Home Assistant area with its name.
+
+**Decision:**
+1. **One graph, two views.** `GET /api/v1/topology` serves nodes, links and places; the Wiring view draws the physical network and the Places view groups by site, floor and area. Clicking a node in either opens its detail page.
+2. **Hand-written SVG in a lazy chunk**, with no graph or animation library; a deterministic layout with per-user pins; the links table is the text equivalent of the map.
+3. **Motion shows real data.** Dot speed and density follow measured per-link rates and DNS query rates; blocked queries are red and stop at the node; a link with no traffic is still. Off under `prefers-reduced-motion`, paused in a hidden tab, with a toggle.
+4. **Non-IP devices** (Zigbee, Z-Wave, Thread, Matter) come read-only from Home Assistant's device list and appear only in Places, linked to their hub; they never enter the clients list, the query log or policy.
+5. **Order and scope:** first among the enhancements after the speed wave, all four parts (Wiring, Places, device pages, clients list) as one big development wave that starts once the repository is public, so GitHub Actions minutes are free; #40's location names and T24.45 folded in.
+
+**Consequences:** The map's motion is a monitoring signal, not decoration, so it needs per-link rates from the integrations and a quantised, capped animation budget. The UI budget is protected by loading the map only when it opens. Rejected: decorative motion (it would show a dead link as busy), a graph library (size budget), and reading netpulse's source (licence).
