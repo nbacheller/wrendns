@@ -239,9 +239,12 @@ export interface paths {
          * @description The body has the same fields as `[[alerts.destination]]` (the name comes from the path):
          *     `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
          *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
-         *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-         *     Secrets stay in files on the node (`token_file`, `password_file`) or in its encrypted store
-         *     (`token_ref`, `password_ref` name a stored secret: 422 `secret_missing` when none has that
+         *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`, or for
+         *     Pushover `{"type": "pushover", "token_ref": "pushover-app", "user_key_ref": "pushover-user"}`
+         *     (the `url` defaults to Pushover's own; optional `device`, `sound`, `priority_firing`
+         *     (default 0), `priority_resolved` (default -1)).
+         *     Secrets stay in files on the node (`token_file`, `password_file`, `user_key_file`) or in its
+         *     encrypted store (`token_ref`, `password_ref`, `user_key_ref` name a stored secret: 422 `secret_missing` when none has that
          *     name): only the path or the name is sent, and a password in `url` reads `<redacted>` wherever
          *     the destination is shown (API-014; send it back as it is to keep it, as long as the URL's host
          *     is unchanged). Setting a file or a reference is an admin's (OPS-014).

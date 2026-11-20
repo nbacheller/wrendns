@@ -1,4 +1,4 @@
-"""REQ: DOC-001, DOC-006 (T33.3, ADR-1030) — the site's brand, support section and headers.
+"""REQ: DOC-001, DOC-006 (T33.3, T33.5, ADR-1030, ADR-1033) — the site's brand, support section, licence and headers.
 
 Run: python3 -m unittest site/test_site.py   (or python3 site/test_site.py)
 Standard library only. The full build (links, partials, generated pages) is `python3 site/build.py --check`.
@@ -128,7 +128,7 @@ class Legal(unittest.TestCase):
 
     def test_every_page_has_the_footer_with_support_privacy_terms_and_the_maker(self):
         footer = read("partials", "footer.html")
-        for needle in ('href="support.html"', 'href="privacy.html"', 'href="terms.html"', "WrenDNS is a product of MySummitKeep LLC"):
+        for needle in ('href="support.html"', 'href="privacy.html"', 'href="terms.html"', "WrenDNS is wholly owned by MySummitKeep, LLC.", "© 2026 MySummitKeep, LLC", "The WrenDNS name and logo are trademarks of MySummitKeep, LLC."):
             self.assertIn(needle, footer)
         for name in build.PAGES:
             self.assertIn("<!-- @footer -->", read(name), name)
@@ -138,6 +138,123 @@ class Legal(unittest.TestCase):
         self.assertIn("support@wrendns.com", support)
         self.assertIn("Stopping a monthly payment", support)
         self.assertIn("no service level", support)
+
+
+class Licence(unittest.TestCase):
+    """REQ: DOC-006 (T33.5, ADR-1033) — AGPL-3.0-or-later with a commercial licence, said the same way everywhere."""
+
+    footer = read("partials", "footer.html")
+
+    def test_the_footer_faq_and_download_say_agpl_commercial_and_the_baseline(self):
+        pages = {n: read(n) for n in build.LICENCE_PAGES}
+        self.assertEqual(build.licence_errors(self.footer, pages), [])
+        self.assertIn("https://github.com/nbacheller/wrendns/blob/main/LICENSING.md", self.footer)
+        self.assertIn("https://github.com/nbacheller/wrendns/releases/tag/permissive-final", self.footer)
+        self.assertIn("support@wrendns.com", read("faq.html"))
+
+    def test_a_missing_licence_word_is_found(self):
+        pages = {n: read(n) for n in build.LICENCE_PAGES}
+        errs = build.licence_errors(self.footer.replace("AGPL-3.0-or-later", "GPL"), pages)
+        self.assertTrue(any(e.startswith("footer:") for e in errs), errs)
+        pages["faq.html"] = pages["faq.html"].replace("permissive-final", "the old tag")
+        self.assertTrue(any(e.startswith("faq.html:") for e in build.licence_errors(self.footer, pages)))
+
+    def test_the_old_licence_alone_and_an_ai_note_are_refused(self):
+        errs = build.licence_errors(self.footer, {"x.html": "<p>Licensed under Apache-2.0 OR MIT.</p>", "faq.html": read("faq.html"), "download.html": read("download.html")})
+        self.assertTrue(any("x.html" in e and "permissive-final" in e for e in errs), errs)
+        errs = build.licence_errors(self.footer, {"y.html": "<h3>Built with Claude</h3>", "faq.html": read("faq.html"), "download.html": read("download.html")})
+        self.assertTrue(any("y.html" in e for e in errs), errs)
+        # The ADR pages are a record and may say what the licence was.
+        self.assertEqual(build.licence_errors(self.footer, {"decisions-2.html": "Apache-2.0 OR MIT", "faq.html": read("faq.html"), "download.html": read("download.html")}), [])
+
+    def test_no_page_source_carries_the_old_built_with_claude_entry(self):
+        for name in build.PAGES:
+            self.assertNotIn("built-with-claude", read(name).lower(), name)
+            self.assertNotIn("Co-Authored-By: Claude", read(name), name)
+
+
+class Prominence(unittest.TestCase):
+    """REQ: DOC-006 (T33.3, owner decisions 2026-11-19) — the support links in the hero, the header and the homepage."""
+
+    index = read("index.html")
+    header = read("partials", "header.html")
+    full = Support.full
+    empty = {"support": {"one_time_url": "", "monthly": []}}
+
+    def test_hero_button_header_link_and_section_exist_when_links_are_configured(self):
+        page = build.render_support_home(self.index, self.full)
+        self.assertIn('<a class="btn" href="#support">Support WrenDNS</a>', page)
+        self.assertIn('<section id="support"', page)
+        self.assertIn("WrenDNS is free to use. If it helps your network, you can support its development.", page)
+        self.assertIn("Support payments are not tax-deductible.", page)
+        self.assertIn('href="terms.html#4-5-refunds"', page)
+        self.assertIn('href="support.html"', page)
+        for url in ("https://donate.stripe.com/aaa", "https://buy.stripe.com/bbb", "https://buy.stripe.com/ccc"):
+            self.assertIn('href="{}" rel="noopener noreferrer"'.format(url), page)
+        self.assertLess(page.index('href="start.html">Get started'), page.index("Support WrenDNS</a>"))
+        nav = build.render_support_nav(self.header, self.full)
+        self.assertIn('<a href="support.html#give" data-page="support">Support</a>', nav)
+        self.assertNotIn("@support", page + nav)
+
+    def test_all_three_are_hidden_while_no_link_is_set(self):
+        page = build.render_support_home(self.index, self.empty)
+        self.assertNotIn("Support WrenDNS", page)
+        self.assertNotIn('id="support"', page)
+        self.assertNotIn("@support", page)
+        # The header keeps its link to the Support page, which also holds the help.
+        self.assertIn('href="support.html" data-page="support"', build.render_support_nav(self.header, self.empty))
+
+    def test_the_support_section_sits_after_the_content_and_the_download_page_keeps_its_block(self):
+        self.assertIn("<!-- @support-home -->", self.index)
+        self.assertIn("<!-- @support -->", read("download.html"))
+        self.assertIn("<!-- @support-nav -->", self.header)
+
+
+class LinkPreviews(unittest.TestCase):
+    """REQ: DOC-006 (T33.3, owner decisions 2026-11-19) — Open Graph and Twitter tags on every page."""
+
+    def test_every_page_has_the_tags_with_absolute_https_urls(self):
+        import re
+
+        for name in build.PAGES:
+            page = read(name)
+            tagged = build.add_social_tags(name, page)
+            url = build.page_url(name)
+            self.assertTrue(url.startswith("https://www.wrendns.com/"), name)
+            for needle in (
+                '<link rel="canonical" href="{}">'.format(url),
+                '<meta property="og:type" content="website">',
+                '<meta property="og:site_name" content="WrenDNS">',
+                '<meta property="og:url" content="{}">'.format(url),
+                '<meta property="og:image" content="https://www.wrendns.com/assets/brand/social-preview.png">',
+                '<meta property="og:image:width" content="1280">',
+                '<meta property="og:image:height" content="640">',
+                '<meta property="og:image:alt" content="',
+                '<meta name="twitter:card" content="summary_large_image">',
+                '<meta property="og:title" content="',
+                '<meta property="og:description" content="',
+            ):
+                self.assertIn(needle, tagged, name)
+            desc = re.search(r'<meta name="description" content="([^"]+)"', page)
+            self.assertTrue(desc and len(desc.group(1)) > 40, name)
+            self.assertNotIn("!", re.sub("Put a bird on it!", "", desc.group(1)), name)
+            for m in re.finditer(r'<(?:meta property="og:(?:url|image)"|link rel="canonical"|meta name="twitter:image")[^>]*?(?:content|href)="([^"]+)"', tagged):
+                self.assertTrue(m.group(1).startswith("https://"), (name, m.group(1)))
+
+    def test_the_image_exists_and_is_1280_by_640(self):
+        import struct
+
+        with open(build.SOCIAL_IMAGE_SRC, "rb") as f:
+            head = f.read(24)
+        self.assertEqual(head[1:4], b"PNG")
+        self.assertEqual(struct.unpack(">II", head[16:24]), build.SOCIAL_IMAGE_SIZE)
+        self.assertTrue(build.SOCIAL_IMAGE_PATH.endswith("social-preview.png"))
+
+    def test_the_homepage_is_the_site_root_and_titles_are_escaped(self):
+        self.assertEqual(build.page_url("index.html"), "https://www.wrendns.com/")
+        self.assertEqual(build.page_url("faq.html"), "https://www.wrendns.com/faq")
+        tagged = build.add_social_tags("x.html", '<head><title>A &amp; "B" — WrenDNS</title><meta name="description" content="It&#x27;s calm."></head>')
+        self.assertIn('content="A &amp; &quot;B&quot; — WrenDNS"', tagged)
 
 
 class Headers(unittest.TestCase):
@@ -216,6 +333,76 @@ class Brand(unittest.TestCase):
             css = read("assets", name)
             self.assertNotIn("e4572e", css)
             self.assertNotIn("flutter", css)
+
+
+class RepoLinks(unittest.TestCase):
+    """REQ: DOC-006 — while the repository is private, no page links into it (site.json "repoPublic")."""
+
+    cfg = json.loads(read("data", "site.json"))
+
+    def test_the_committed_setting_is_private(self):
+        self.assertIs(self.cfg.get("repoPublic"), False)
+        self.assertFalse(build.repo_public(self.cfg))
+        self.assertTrue(build.repo_public({"repoPublic": True}))
+        self.assertFalse(build.repo_public({}))
+
+    def test_header_footer_and_download_links_become_plain_text(self):
+        page = read("partials", "header.html") + read("download.html") + read("partials", "footer.html")
+        out = build.unlink_repo(page)
+        self.assertNotRegex(out, r'href="https://(github\.com|raw\.githubusercontent\.com)/nbacheller/wrendns')
+        self.assertNotIn('class="icon-link"', out)
+        self.assertIn('<span class="repo-pending" title="Source and downloads open at launch"><code>install.sh</code></span>', out)
+        self.assertIn("AGPL-3.0-or-later, with a commercial licence available</span>", out)
+        self.assertEqual(out.count('callout repo-pending-note'), 1)
+        self.assertEqual(build.repo_link_errors(self.cfg, {"download.html": out}), [])
+
+    def test_commands_that_fetch_from_the_repository_get_a_note(self):
+        out = build.unlink_repo(read("start.html"))
+        self.assertGreaterEqual(out.count("repo-pending-note"), 2)
+        self.assertIn("</pre>\n<p class=\"muted small repo-pending-note\">Source and downloads open at launch.</p>", out)
+
+    def test_other_links_are_left_alone(self):
+        page = ('<a href="https://github.com/paimonsoror/telltaledns/issues/58">up</a> '
+                '<a href="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt">list</a> '
+                '<a href="https://github.com/nbacheller/wrendnsx">other</a> <a href="faq.html">FAQ</a>')
+        self.assertEqual(build.unlink_repo(page), page)
+
+    def test_a_left_over_link_fails_the_build_only_while_private(self):
+        page = {"x.html": '<a href="https://github.com/nbacheller/wrendns/issues">open an issue</a>'}
+        self.assertEqual(len(build.repo_link_errors({"repoPublic": False}, page)), 1)
+        self.assertEqual(build.repo_link_errors({"repoPublic": True}, page), [])
+        self.assertEqual(build.repo_link_errors({"repoPublic": "no"}, {}), ["site.json: repoPublic must be true or false"])
+
+
+class Decisions(unittest.TestCase):
+    """REQ: DOC-005, DOC-006 — the records are published, four-digit numbers included, and links reach their part page."""
+
+    def test_records_are_published_with_four_digit_numbers(self):
+        self.assertTrue(build.PUBLISH_DECISIONS)
+        self.assertTrue(build.ADR_HEAD.match("## ADR-1000 — A title (Accepted)"))
+        nums = [a["num"] for a in build.parse_adrs()]
+        self.assertTrue(any(n >= 1000 for n in nums))
+        _, reqs = build.repo_ids()
+        pages = build.render_decisions(read("decisions.html"), reqs)
+        parts = "".join(v for k, v in pages.items() if k != "decisions.html")
+        self.assertIn('id="adr-1000"', parts)
+        self.assertIn('id="adr-1045"', parts)
+
+    def test_an_adr_mention_links_to_its_part_page(self):
+        out = build.md_inline("See ADR-040 and ADR-1000.", {"ADR-040", "ADR-1000"})
+        self.assertIn('<a href="decisions-1.html#adr-040">ADR-040</a>', out)
+        self.assertIn('<a href="decisions-20.html#adr-1000">ADR-1000</a>', out)
+
+    def test_the_hash_redirect_takes_four_digits(self):
+        self.assertIn(r"/^#(adr-\d{3,4})$/", read("assets", "decisions.js"))
+
+
+class LegalComments(unittest.TestCase):
+    def test_html_comments_are_dropped_wherever_they_sit(self):
+        _, body = build.render_legal("# T\n\nA clause <!-- TODO: check --> ends here.\n\n- item <!-- note\nover lines --> two\n")
+        self.assertNotIn("TODO", body)
+        self.assertNotIn("&lt;!--", body)
+        self.assertIn("A clause  ends here.", body)
 
 
 if __name__ == "__main__":

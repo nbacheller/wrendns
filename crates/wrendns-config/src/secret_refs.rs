@@ -77,6 +77,13 @@ pub const STORED_FIELDS: &[StoredField] = &[
         "password_ref",
     ),
     f(
+        "alert_destination",
+        "user_key",
+        None,
+        "user_key_file",
+        "user_key_ref",
+    ),
+    f(
         "oidc_provider",
         "client_secret",
         Some("client_secret"),
@@ -155,6 +162,12 @@ pub fn references(cfg: &Config) -> Vec<Reference> {
             &d.name,
             "password_ref",
             d.password_ref.as_ref(),
+        );
+        add(
+            "alert_destination",
+            &d.name,
+            "user_key_ref",
+            d.user_key_ref.as_ref(),
         );
     }
     for p in cfg

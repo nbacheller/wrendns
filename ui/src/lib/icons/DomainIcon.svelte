@@ -10,10 +10,10 @@
   // Decorative: the name beside it is the label, so it is hidden from screen readers.
   //
   // One saturated thing in a list: brand tiles carry the colour, so a recognisable name is found
-  // at a glance; monograms are low-chroma tints at one lightness, so no hue outweighs another and
-  // the rest recedes. Near-black marks flip to a light tile in the dark theme, where black would
+  // at a glance; monograms are the brand's quiet neutrals (T33.6, ADR-1042), so the
+  // rest recedes. Near-black marks flip to a light tile in the dark theme, where black would
   // vanish. A blocked name wears the same mark with most of its colour drained.
-  import { brandFor, brandTitle, registrable, hueOf, letterOf, isInternal, isHashed, inkFor, luminance } from './map';
+  import { brandFor, brandTitle, registrable, letterOf, isInternal, isHashed, inkFor, luminance } from './map';
   import { brandData, ensureBrands } from './brands.svelte';
   import { iconPrefs } from './prefs.svelte';
   import { ICON_PX } from './prefs';
@@ -28,7 +28,6 @@
   });
   const glyph = $derived(slug ? brandData.data[slug] : undefined);
   const reg = $derived(registrable(name));
-  const hue = $derived(hueOf(reg));
   const letter = $derived(letterOf(reg));
   const hex = $derived(glyph?.[0] ?? '000000');
   const dim = $derived(!!glyph && luminance(hex) < 0.05);
@@ -51,7 +50,6 @@
     data-kind={kind}
     data-size={size}
     style:--s="{size}px"
-    style:--h={hue}
     style:--bg={'#' + hex}
     style:--ink={inkFor(hex)}
     title={slug ? brandTitle(slug) : undefined}
@@ -84,15 +82,15 @@
     user-select: none;
     vertical-align: middle;
   }
-  /* A monogram: one lightness and one chroma for every hue, so none outweighs another. */
+  /* A name with no known mark: its letter, quiet, in the brand's neutrals (no hashed rainbow; T33.6). */
   .mono {
-    background: oklch(0.935 0.04 var(--h));
-    color: oklch(0.42 0.11 var(--h));
+    background: var(--surface-2);
+    color: var(--muted);
   }
   .brand {
     background: var(--bg);
     color: var(--ink);
-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 10%);
+    border: 1px solid var(--border);
   }
   .house {
     background: var(--surface-2);
@@ -103,30 +101,15 @@
   }
   .quiet {
     filter: saturate(0.3);
-    opacity: 0.8;
-  }
-  :global(:root[data-theme='dark']) .mono {
-    background: oklch(0.32 0.05 var(--h));
-    color: oklch(0.86 0.1 var(--h));
-  }
-  :global(:root[data-theme='dark']) .brand {
-    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 16%);
   }
   :global(:root[data-theme='dark']) .brand.dim {
     background: var(--text);
-    color: #111418;
+    color: var(--bg);
   }
   @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-theme='light'])) .mono {
-      background: oklch(0.32 0.05 var(--h));
-      color: oklch(0.86 0.1 var(--h));
-    }
-    :global(:root:not([data-theme='light'])) .brand {
-      box-shadow: inset 0 0 0 1px rgb(255 255 255 / 16%);
-    }
     :global(:root:not([data-theme='light'])) .brand.dim {
       background: var(--text);
-      color: #111418;
+      color: var(--bg);
     }
   }
 </style>

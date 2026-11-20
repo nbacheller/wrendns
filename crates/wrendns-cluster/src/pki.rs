@@ -352,7 +352,7 @@ mod tests {
                 .any(|s| s.contains(&format!("{id}.node.telltale.invalid"))) // rebrand:keep
         );
         assert!(sans.iter().any(|s| s.contains("pi.lan")));
-        assert!(sans.iter().any(|s| s.contains("c0:a8:03:02")), "{sans:?}");
+        assert!(sans.iter().any(|s| s.contains("0a:1e:03:02")), "{sans:?}");
         // The issuer is the cluster CA, and the lifetime is 90 days.
         let ca_der = der_of(&ca.cert_pem).unwrap();
         let (_, cac) = x509_parser::parse_x509_certificate(&ca_der).unwrap();

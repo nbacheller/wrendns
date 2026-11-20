@@ -95,7 +95,7 @@
     align-items: center;
     gap: 6px;
     padding: 4px 10px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: color-mix(in srgb, var(--warn) 18%, transparent);
     color: var(--warn-strong, var(--text));
     font-size: 0.85rem;
@@ -119,10 +119,10 @@
     gap: 6px;
     min-width: 200px;
     padding: 10px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--surface);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow, 0 4px 16px rgb(0 0 0 / 15%));
+    box-shadow: var(--shadow);
   }
   .menu p {
     margin: 0 0 2px;

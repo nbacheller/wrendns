@@ -116,7 +116,7 @@
     mq.removeEventListener('change', onTheme);
     obs.disconnect();
   });
-  const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888';
+  const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
   $effect(() => {
     void themeTick;
@@ -382,7 +382,7 @@
     z-index: 2;
     max-width: 260px;
     padding: 6px 8px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);

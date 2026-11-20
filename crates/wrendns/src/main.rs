@@ -43,6 +43,7 @@ mod guarded;
 mod health;
 mod host;
 mod http;
+mod http_redirect;
 mod identify;
 mod import;
 mod kubernetes;

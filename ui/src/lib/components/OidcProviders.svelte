@@ -420,14 +420,9 @@
     gap: 0.25rem;
   }
   .bad-text {
-    color: var(--bad, #b00020);
+    color: var(--bad);
   }
   .warn-text {
-    color: var(--warn, #8a5a00);
-  }
-  .notice {
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.5rem;
-    background: var(--panel-2, rgba(127, 127, 127, 0.12));
+    color: var(--warn);
   }
 </style>

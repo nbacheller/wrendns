@@ -2,8 +2,8 @@
 """Writes the two SNMP walks the poller's tests serve from a fake agent.
 
 They are SYNTHETIC: laid out as `snmpwalk -On` prints the tables of a Net-SNMP gateway (the shape
-the owner's UniFi gateway answers: ipNetToPhysicalTable with 108 IPv4 and 81 IPv6 entries, 179 with
-a MAC; ipNetToMediaTable with 108; no BRIDGE, Q-BRIDGE or LLDP MIB) and of an Aruba L2 switch (a
+a UniFi gateway answers: ipNetToPhysicalTable with 100 IPv4 and 72 IPv6 entries, 162 with
+a MAC; ipNetToMediaTable with 100; no BRIDGE, Q-BRIDGE or LLDP MIB) and of an L2 managed switch (a
 Q-BRIDGE forwarding table whose FDB IDs differ from its VLAN IDs, an uplink with more than 8 MACs,
 a trunk to the gateway found by LLDP). No device was asked: nothing here was recorded from a real
 network. Run `python3 generate.py` to rewrite the files.
@@ -58,7 +58,7 @@ def gateway():
     w.o("1.3.6.1.2.1.1.2.0", ".1.3.6.1.4.1.8072.3.2.10")
     ifs = [
         (1, "lo", None, 1),
-        (2, "eth8", bytes([0x70, 0xA7, 0x41, 0xAA, 0x00, 0x02]), 1),
+        (2, "eth4", bytes([0x70, 0xA7, 0x41, 0xAA, 0x00, 0x02]), 1),
         (3, "br0", gw_mac, 1),
         (4, "br20", gw_mac, 1),
         (5, "br30", gw_mac, 2),
@@ -69,14 +69,14 @@ def gateway():
         w.i("1.3.6.1.2.1.2.2.1.8.%d" % idx, oper)
         w.s("1.3.6.1.2.1.31.1.1.1.1.%d" % idx, name)
     # ipAddrTable (the agent's own addresses) and ipAddressTable.
-    own = [("127.0.0.1", 1), ("10.99.0.2", 2), ("192.0.2.1", 3), ("192.168.20.1", 4), ("192.168.30.1", 5)]
+    own = [("127.0.0.1", 1), ("10.99.0.2", 2), ("10.0.10.1", 3), ("192.168.20.1", 4), ("192.168.30.1", 5)]
     for ip, idx in own:
         w.i("1.3.6.1.2.1.4.20.1.2.%s" % ip, idx)
         w.i("1.3.6.1.2.1.4.34.1.3.1.4.%s" % ip, idx)
-    # ipNetToPhysicalTable: 108 IPv4 (98 with a MAC, 10 incomplete) and 81 IPv6.
-    hosts = [("192.0.2.%d" % n, 3) for n in range(10, 70)]
+    # ipNetToPhysicalTable: 100 IPv4 (90 with a MAC, 10 incomplete) and 72 IPv6.
+    hosts = [("10.0.10.%d" % n, 3) for n in range(10, 62)]
     hosts += [("192.168.20.%d" % n, 4) for n in range(10, 48)]
-    assert len(hosts) == 98
+    assert len(hosts) == 90
     n = 0
     for ip, idx in hosts:
         n += 1
@@ -98,7 +98,7 @@ def gateway():
         mb = "5.%s" % ip
         w.h("1.3.6.1.2.1.4.22.1.2.%s" % mb, b"")
         w.i("1.3.6.1.2.1.4.22.1.4.%s" % mb, 2)
-    for k in range(1, 82):
+    for k in range(1, 73):
         v6 = [0xFE, 0x80] + [0] * 6 + [0x02, 0x11, 0x22, 0xFF, 0xFE, 0x00, 0x00, k]
         base = "3.2.16.%s" % ".".join(str(b) for b in v6)
         w.h("1.3.6.1.2.1.4.35.1.4.%s" % base, mac([0x3C, 0x22, 0xFB, 0x02], k))
@@ -161,18 +161,18 @@ def switch():
         w.s("%s.9.%s" % (base, k), name)
 
     rem(5, 1, 4, bytes([0xB4, 0xFB, 0xE4, 0x10, 0x20, 0x30]), 5, "eth0", "Ethernet", "ap-lobby")
-    rem(23, 1, 4, bytes([0x70, 0xA7, 0x41, 0xAA, 0x00, 0x01]), 5, "eth8", "WAN", "unifi-gateway")
+    rem(23, 1, 4, bytes([0x70, 0xA7, 0x41, 0xAA, 0x00, 0x01]), 5, "eth4", "WAN", "unifi-gateway")
     rem(11, 1, 7, b"chassis-local-id", 7, "1", "", "printer-x")
     for p in range(1, ports + 1):
         w.s("1.0.8802.1.1.2.1.3.7.1.3.%d" % p, "%d" % p)
         w.s("1.0.8802.1.1.2.1.3.7.1.4.%d" % p, "Port %d" % p)
     # A few ARP rows of its own management VLAN.
     for k in range(1, 4):
-        w.h("1.3.6.1.2.1.4.22.1.2.1.192.0.2.%d" % (200 + k), mac([0x3C, 0x22, 0xFB, 0x01], 40 + k))
-        w.i("1.3.6.1.2.1.4.22.1.4.1.192.0.2.%d" % (200 + k), 3)
-    w.i("1.3.6.1.2.1.4.20.1.2.192.0.2.2", 1)
+        w.h("1.3.6.1.2.1.4.22.1.2.1.10.0.10.%d" % (200 + k), mac([0x3C, 0x22, 0xFB, 0x01], 40 + k))
+        w.i("1.3.6.1.2.1.4.22.1.4.1.10.0.10.%d" % (200 + k), 3)
+    w.i("1.3.6.1.2.1.4.20.1.2.10.0.10.2", 1)
     w.s("1.3.6.1.2.1.31.1.1.1.18.1", "")
-    w.dump(os.path.join(HERE, "aruba-switch.walk"))
+    w.dump(os.path.join(HERE, "managed-switch.walk"))
 
 
 if __name__ == "__main__":

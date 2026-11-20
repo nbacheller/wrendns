@@ -11,6 +11,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import PolicyLine from '../lib/components/PolicyLine.svelte';
+  import { flockCss } from '../lib/flock';
 
   const windows = [
     { id: '15m', label: '15 min', from: '-15m', device: true },
@@ -108,6 +109,15 @@
   const lay = $derived(folded && width > 0 ? layout(folded.nodes, folded.links, width - 2 * pad, height - (vertical ? 24 : 0), vertical) : null);
   const byId = $derived(new Map((lay?.nodes ?? []).map((n) => [n.id, n])));
 
+  // REQ: UI-*, T33.6 (ADR-1040) — group nodes take their group's flock colour, as everywhere else.
+  let groups = $state<S['GroupInfo'][]>([]);
+  $effect(() => {
+    api
+      .groups()
+      .then((g) => (groups = g.items))
+      .catch(() => {});
+  });
+
   const STATUS_COLOR: Record<string, string> = {
     cached: '--s-cached',
     refreshed: '--s-refreshed',
@@ -121,6 +131,7 @@
     if (!n) return 'var(--s-other)';
     if (n.stage === 'status') return `var(${STATUS_COLOR[n.name] ?? '--s-other'})`;
     if (n.stage === 'rcode') return n.name === 'SERVFAIL' ? 'var(--bad)' : n.name === 'NOERROR' ? 'var(--s-cached)' : 'var(--s-other)';
+    if (n.stage === 'group') return n.name === 'other' ? 'var(--brand-flock-other)' : flockCss(groups, n.name);
     return n.stage === 'upstream' ? 'var(--s-forwarded)' : 'var(--info)';
   }
   /** The page behind a node: its group, the lists for blocked, the query log for a status or
@@ -160,7 +171,11 @@
   function hoverNode(e: MouseEvent, n: PlacedNode) {
     tip = { ...at(e), text: nodeText(n) };
   }
+  // REQ: T33.6 — the band with keyboard focus gets the brand's focus ring (drawn under it), which
+  // hover never shows.
+  let ring = $state<PlacedLink | null>(null);
   function focusLink(l: PlacedLink) {
+    ring = l;
     tip = { x: l.x1, y: l.y1, text: linkText(l) };
   }
   function setClient(e: SubmitEvent) {
@@ -270,6 +285,10 @@
           data-scale={lay.scale}
           data-total={data?.total}
         >
+          {#if ring}
+            <path class="ring" d={ring.d} stroke-width={Math.max(1, ring.width) + 8} data-testid="flow-focus-ring"></path>
+            <path class="ring-gap" d={ring.d} stroke-width={Math.max(1, ring.width) + 4}></path>
+          {/if}
           <g class="links">
             {#each lay.links as l (l.source + '>' + l.target)}
               <path
@@ -293,7 +312,7 @@
                 onmousemove={(e) => hoverLink(e, l)}
                 onmouseleave={() => (tip = null)}
                 onfocus={() => focusLink(l)}
-                onblur={() => (tip = null)}
+                onblur={() => ((tip = null), (ring = null))}
               ></path>
             {/each}
           </g>
@@ -348,7 +367,7 @@
     justify-content: space-between;
     font-size: 12px;
     color: var(--muted);
-    margin-bottom: 4px;
+    margin-bottom: var(--space-1);
   }
   svg {
     display: block;
@@ -370,6 +389,18 @@
     stroke-opacity: 0.7;
     outline: none;
   }
+  /* The focus ring: 2px of the focus colour, 2px outside the band. */
+  path.ring,
+  path.ring-gap {
+    stroke-opacity: 1;
+    pointer-events: none;
+  }
+  path.ring {
+    stroke: var(--focus);
+  }
+  path.ring-gap {
+    stroke: var(--surface);
+  }
   text {
     font-size: 12px;
     fill: var(--text);
@@ -385,8 +416,8 @@
     position: absolute;
     z-index: 2;
     max-width: 260px;
-    padding: 6px 8px;
-    border-radius: 8px;
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import Icon from './Icon.svelte';
 
   let { title, onclose, children }: { title: string; onclose: () => void; children: Snippet } = $props();
   let panel = $state<HTMLElement | undefined>();
@@ -19,7 +20,7 @@
 <div class="drawer" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={panel}>
   <header>
     <h2>{title}</h2>
-    <button class="link" onclick={onclose} aria-label="Close">✕</button>
+    <button class="icon-btn" onclick={onclose} aria-label="Close"><Icon name="x" /></button>
   </header>
   <div class="body">{@render children()}</div>
 </div>
@@ -28,7 +29,8 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgb(0 0 0 / 35%);
+    /* The page behind washes out to the page colour: no dark scrim (airy, T33.6). */
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
     z-index: 20;
   }
   .drawer {
@@ -39,14 +41,16 @@
     width: min(640px, 100vw);
     background: var(--bg);
     border-left: 1px solid var(--border);
+    box-shadow: var(--shadow-float);
     z-index: 21;
     display: flex;
     flex-direction: column;
+    /* The panel takes focus only to hold it for the dialog: it isn't a control, and a ring round it
+       reads as a coloured edge. Its controls keep their own ring. */
     outline: none;
     /* Opened from a "?" inside a page heading, it would otherwise take the heading's size and
-       weight: the body text's own type, whatever it sits in. */
-    font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-    font-weight: 400;
+       weight: the body text's own type (Figtree, body-sm), whatever it sits in. */
+    font: var(--type-body-sm-weight) var(--type-body-sm-size) / var(--type-body-sm-line) var(--brand-font-sans);
     letter-spacing: normal;
     text-transform: none;
     text-align: left;
@@ -56,7 +60,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
+    padding: var(--space-3) var(--space-4);
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
@@ -66,9 +70,9 @@
   }
   .body {
     overflow-y: auto;
-    padding: 16px;
+    padding: var(--space-4);
     display: grid;
-    gap: 14px;
+    gap: var(--space-4);
     align-content: start;
   }
 </style>

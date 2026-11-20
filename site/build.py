@@ -51,7 +51,7 @@ STRIPE_HOSTS = ("https://buy.stripe.com/", "https://donate.stripe.com/")
 STRIPE_SECRET = re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+")
 # Said wherever a gift is offered: the account belongs to a for-profit company.
 SUPPORT_TAX = (
-    "Support is a payment to MySummitKeep LLC, the company that makes WrenDNS. It is not a tax-deductible donation, "
+    "Support is a payment to MySummitKeep, LLC, the company that makes WrenDNS. It is not a tax-deductible donation, "
     "and no tax receipt is issued. WrenDNS stays free either way."
 )
 
@@ -144,6 +144,166 @@ def render_support(page, cfg):
     return page.replace("<!-- @support-tax -->", html.escape(SUPPORT_TAX))
 
 
+# REQ: DOC-006 (T33.3; owner decisions 2026-11-19) — where the support links show beyond the Download and Support
+# pages: a "Support WrenDNS" button in the homepage hero, a "Support" link in every page's header, and a short
+# section near the end of the homepage. All three are left out while site.json has no link, as the cards are.
+def support_configured(cfg):
+    sup = cfg.get("support", {})
+    return bool(sup.get("one_time_url") or sup.get("monthly"))
+
+
+def render_support_home(page, cfg):
+    """`<!-- @support-hero -->` (a secondary button) and `<!-- @support-home -->` (the section); both vanish when no link is set."""
+    sup = cfg.get("support", {})
+    hero, section = "", ""
+    if support_configured(cfg):
+        hero = '<a class="btn" href="#support">Support WrenDNS</a>'
+        links = []
+        if sup.get("one_time_url"):
+            links.append('<a class="btn primary" href="{}" rel="noopener noreferrer">Give once</a>'.format(html.escape(sup["one_time_url"], quote=True)))
+        for t in sup.get("monthly", []):
+            links.append('<a class="btn" href="{}" rel="noopener noreferrer">{}</a>'.format(html.escape(t["url"], quote=True), html.escape(t["label"])))
+        section = (
+            '<section id="support" aria-labelledby="support-title">\n  <p class="eyebrow">Optional</p>\n'
+            '  <h2 id="support-title">Support WrenDNS</h2>\n'
+            '  <p class="lede">WrenDNS is free to use. If it helps your network, you can support its development.</p>\n'
+            '  <p class="cta" role="group" aria-label="Ways to support WrenDNS">' + " ".join(links) + "</p>\n"
+            '  <p class="muted small">Support payments are not tax-deductible. See the <a href="terms.html#4-5-refunds">terms</a> for refunds, '
+            'or <a href="support.html">contact us</a>.</p>\n</section>'
+        )
+    page = page.replace("      <!-- @support-hero -->\n", ("      " + hero + "\n") if hero else "")
+    return page.replace("<!-- @support-home -->\n\n", (section + "\n\n") if section else "").replace("<!-- @support-home -->", section)
+
+
+def render_support_nav(header, cfg):
+    """The header's Support link: to the Support page's giving section when links are set, else to the Support page."""
+    href = "support.html#give" if support_configured(cfg) else "support.html"
+    return header.replace("<!-- @support-nav -->", '<a href="{}" data-page="support">Support</a>'.format(href))
+
+
+# REQ: DOC-006 (T33.3; owner decisions 2026-11-19) — link previews. One place makes the Open Graph and Twitter card
+# tags and the canonical link for every page, from the page's own title and description. The image is the brand's
+# social-preview.png (1280x640), copied into assets/brand/ by the build.
+SITE_URL = "https://www.wrendns.com/"
+SOCIAL_IMAGE_PATH = "assets/brand/social-preview.png"
+SOCIAL_IMAGE_SRC = os.path.join(ROOT, "brand", "social-preview.png")
+SOCIAL_IMAGE_SIZE = (1280, 640)
+SOCIAL_IMAGE_ALT = "WrenDNS, with the tagline Put a bird on it!, beside its wren logo on a sky-blue panel."
+
+
+def page_url(name):
+    return SITE_URL if name == "index.html" else SITE_URL + name[:-5]
+
+
+def social_tags(name, page):
+    m = re.search(r"<title>(.*?)</title>", page, re.S)
+    d = re.search(r'<meta name="description" content="([^"]*)"', page)
+    if not m or not d:
+        sys.exit("{}: needs a <title> and a meta description for its link preview".format(name))
+    q = lambda v: html.escape(html.unescape(v), quote=True)
+    url = page_url(name)
+    rows = [
+        '<link rel="canonical" href="{}">'.format(url),
+        '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="WrenDNS">',
+        '<meta property="og:title" content="{}">'.format(q(m.group(1).strip())),
+        '<meta property="og:description" content="{}">'.format(q(d.group(1))),
+        '<meta property="og:url" content="{}">'.format(url),
+        '<meta property="og:image" content="{}{}">'.format(SITE_URL, SOCIAL_IMAGE_PATH),
+        '<meta property="og:image:width" content="{}">'.format(SOCIAL_IMAGE_SIZE[0]),
+        '<meta property="og:image:height" content="{}">'.format(SOCIAL_IMAGE_SIZE[1]),
+        '<meta property="og:image:alt" content="{}">'.format(q(SOCIAL_IMAGE_ALT)),
+        '<meta name="twitter:card" content="summary_large_image">',
+        '<meta name="twitter:title" content="{}">'.format(q(m.group(1).strip())),
+        '<meta name="twitter:description" content="{}">'.format(q(d.group(1))),
+        '<meta name="twitter:image" content="{}{}">'.format(SITE_URL, SOCIAL_IMAGE_PATH),
+        '<meta name="twitter:image:alt" content="{}">'.format(q(SOCIAL_IMAGE_ALT)),
+    ]
+    return "".join("{}\n".format(r) for r in rows)
+
+
+def add_social_tags(name, page):
+    return page.replace("</head>", social_tags(name, page) + "</head>", 1)
+
+
+# REQ: DOC-006 — while the repository is private (site.json "repoPublic": false), its GitHub pages, releases and
+# raw files (install.sh, the compose bundle) answer 404, so the site shows them as plain text instead of links.
+# Setting "repoPublic": true at launch brings every link back; nothing else changes.
+REPO_PENDING = "Source and downloads open at launch"
+_REPO_URL = r'(?:https://github\.com/nbacheller/wrendns(?=["/#?])[^"]*|https://raw\.githubusercontent\.com/nbacheller/wrendns/[^"]*)'
+_REPO_LINK = re.compile(r'<a\b([^>]*)\bhref="' + _REPO_URL + r'"[^>]*>(.*?)</a>', re.S)
+_REPO_DOWNLOAD = re.compile(r'https://(?:raw\.githubusercontent\.com/nbacheller/wrendns/|github\.com/nbacheller/wrendns/releases/latest/download/)')
+_REPO_PRE = re.compile(r'(<pre\b[^>]*>(?:(?!</pre>).)*?https://(?:raw\.githubusercontent\.com|github\.com)/nbacheller/wrendns'
+                       r'(?:(?!</pre>).)*?</pre>)', re.S)
+
+
+def repo_public(cfg):
+    return cfg.get("repoPublic", False) is True
+
+
+def unlink_repo(page):
+    """Every link into the repository becomes its text; a download or command that needs it gets a note."""
+    downloads = bool(_REPO_DOWNLOAD.search(page.split("<footer")[0]))
+
+    def plain(m):
+        if 'class="icon-link"' in m.group(1):
+            return ""
+        return '<span class="repo-pending" title="{}">{}</span>'.format(REPO_PENDING, m.group(2))
+
+    page = _REPO_LINK.sub(plain, page)
+    page, commands = _REPO_PRE.subn(lambda m: m.group(1) + '\n<p class="muted small repo-pending-note">{}.</p>'.format(REPO_PENDING), page)
+    if downloads and not commands:
+        page = re.sub(r'(<p class="lede">.*?</p>)', lambda m: m.group(1) + '\n  <p class="callout repo-pending-note">{}.</p>'.format(REPO_PENDING),
+                      page, count=1, flags=re.S)
+    return page
+
+
+def repo_link_errors(cfg, pages):
+    """`pages` maps a page name to its built HTML."""
+    if not isinstance(cfg.get("repoPublic", False), bool):
+        return ["site.json: repoPublic must be true or false"]
+    if repo_public(cfg):
+        return []
+    return ["{}: links into the private repository ({} left)".format(n, len(_REPO_LINK.findall(p)))
+            for n, p in pages.items() if _REPO_LINK.search(p)]
+
+
+# REQ: DOC-006 (T33.5, ADR-1033) — the licence is said the same way everywhere: AGPL-3.0-or-later, a commercial
+# licence available, a link to LICENSING.md, and the permissive-final baseline. Apache-2.0 OR MIT may appear only
+# beside that baseline or upstream's portions, and no page carries a "Built with Claude" note (owner's rule).
+LICENCE_NEEDLES = ["AGPL-3.0-or-later", "commercial licence", "LICENSING.md", "permissive-final"]
+LICENCE_PAGES = ["faq.html", "download.html"]
+PERMISSIVE_CLAIM = re.compile(r"Apache[- ]2\.0,? (?:OR|or) (?:the )?MIT|MIT (?:OR|or) Apache", re.IGNORECASE)
+NO_ATTRIBUTION = re.compile(r"Built with Claude|Co-Authored-By: Claude|Generated with Claude", re.IGNORECASE)
+
+
+OWNER_NO_COMMA = re.compile(r"mysummitkeep llc", re.I)
+
+
+def licence_errors(footer, pages):
+    """`pages` maps a page name to its built HTML; `footer` is the footer partial."""
+    errs = []
+    for needle in LICENCE_NEEDLES:
+        if needle not in footer:
+            errs.append("footer: the licence line lacks {!r}".format(needle))
+    for name in LICENCE_PAGES:
+        main = pages.get(name, "").replace(footer, "")
+        for needle in LICENCE_NEEDLES:
+            if needle not in main:
+                errs.append("{}: the licence text lacks {!r}".format(name, needle))
+    for name, page in pages.items():
+        # The decision pages are the ADRs, a record that says what the licence was when each was written.
+        record = name.startswith("decisions")
+        for line in page.splitlines():
+            if not record and PERMISSIVE_CLAIM.search(line) and not re.search(r"permissive-final|TelltaleDNS", line):  # rebrand:keep
+                errs.append("{}: says Apache-2.0 OR MIT without the permissive-final baseline: {}".format(name, line.strip()[:120]))
+            if not record and OWNER_NO_COMMA.search(line):
+                errs.append("{}: the owner is MySummitKeep, LLC (with the comma): {}".format(name, line.strip()[:120]))
+            if NO_ATTRIBUTION.search(line):
+                errs.append("{}: carries an AI attribution note: {}".format(name, line.strip()[:120]))
+    return errs
+
+
 # REQ: DOC-006 (T33.3) — the Content-Security-Policy in staticwebapp.config.json allows no inline script or style,
 # so a page may not carry one. The headers the site is served with are checked here too.
 SWA_HEADERS = ["Content-Security-Policy", "Strict-Transport-Security", "X-Content-Type-Options", "Referrer-Policy"]
@@ -207,6 +367,8 @@ def render_legal(md):
             out.append(md_table(rows, set()))
         para, bullets, rows = [], [], []
 
+    # Every HTML comment goes, wherever it sits: a block, a line, or mid-sentence.
+    md = re.sub(r"<!--.*?-->", "", md, flags=re.S)
     title = ""
     in_comment = False
     for raw in md.splitlines():
@@ -693,8 +855,10 @@ def md_inline(s, known):
     s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
     s = re.sub(r"(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])", r"<i>\1</i>", s)
     s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
-    s = re.sub(r"\bADR-(\d{3})\b",
-               lambda m: '<a href="#adr-{0}">ADR-{0}</a>'.format(m.group(1)) if "ADR-" + m.group(1) in known else m.group(0), s)
+    # The record's own part page, so the link works from every part (a bare #adr-NNN only works on its own part).
+    s = re.sub(r"\bADR-(\d{3,4})\b",
+               lambda m: '<a href="{1}">ADR-{0}</a>'.format(m.group(1), adr_href("ADR-" + m.group(1)))
+               if "ADR-" + m.group(1) in known else m.group(0), s)
     return re.sub("\x00(\\d+)\x00", lambda m: "<code>{}</code>".format(codes[int(m.group(1))]), s)
 
 
@@ -759,7 +923,7 @@ def md_blocks(lines, known):
     return "\n".join(out)
 
 
-ADR_HEAD = re.compile(r"^## (ADR-(\d{3})) — (.*?)(?: \(([^()]*)\))?\s*$")
+ADR_HEAD = re.compile(r"^## (ADR-(\d{3,4})) — (.*?)(?: \(([^()]*)\))?\s*$")
 SECTION = re.compile(r"^\*\*([A-Z][A-Za-z ]+):\*\*\s*(.*)$")
 
 
@@ -786,6 +950,8 @@ def parse_adrs():
             cur = {"id": m.group(1), "num": int(m.group(2)), "title": m.group(3).strip(),
                    "status": (m.group(4) or "Proposed").strip(), "heading": line[3:].strip(), "lines": []}
             adrs.append(cur)
+        elif line.startswith("## ADR-"):
+            sys.exit("spec/11-decisions.md: a record heading is not '## ADR-NNN — Title (Status)': " + line[:40])
         elif line.startswith("## ") or line.startswith("# "):
             cur = None
         elif cur is not None:
@@ -793,9 +959,9 @@ def parse_adrs():
     return adrs
 
 
-# REQ: DOC-006 — the decision records are off the public site while they are rewritten to remove
-# details of the owner's own network (owner, 2026-11-19). Set True to publish them again.
-PUBLISH_DECISIONS = False
+# REQ: DOC-006 — the decision records are published. False takes them off the public site (the index
+# then shows DECISIONS_PAUSED) while they are being edited.
+PUBLISH_DECISIONS = True
 DECISIONS_PAUSED = ('<p class="legend">The decision records are being edited and will be back soon. '
                     'The design is described in the guides and on the For nerds page.</p>')
 
@@ -809,7 +975,7 @@ def render_decisions(page, reqs):
         sys.exit("spec/11-decisions.md: an ADR number is used twice")
     for a in adrs:
         body = "\n".join(a["lines"])
-        a["mentions"] = sorted({x for x in re.findall(r"\bADR-\d{3}\b", body) if x in known and x != a["id"]})
+        a["mentions"] = sorted({x for x in re.findall(r"\bADR-\d{3,4}\b", body) if x in known and x != a["id"]})
         a["reqs"] = sorted({x for x in re.findall(r"\b[A-Z]{3}-\d{3}\b", body) if x in reqs})
         a["areas"] = sorted({r[:3] for r in a["reqs"] if r[:3] in AREAS})
     mentioned_by = {a["id"]: [] for a in adrs}
@@ -976,7 +1142,7 @@ def gh_anchor(heading):
 def repo_ids():
     adrs = {}
     for line in read(os.path.join(ROOT, "spec", "11-decisions.md")).splitlines():
-        m = re.match(r"^## (ADR-\d{3})\b(.*)$", line)
+        m = re.match(r"^## (ADR-\d{3,4})\b(.*)$", line)
         if m:
             adrs[m.group(1)] = (line[3:].strip(), gh_anchor(line[3:].strip()))
     # Requirement rows: spec/01, plus the agent requirements (AGT) defined in spec/13 §2.
@@ -1165,7 +1331,9 @@ def render_nerds(page, arch, adrs, reqs):
     def cards(items, key="title"):
         out = []
         for it in items:
-            code = ' <a class="small" href="{}{}">code</a>'.format(GH, it["code"]) if it.get("code") else ""
+            # A directory is a /tree/ link on GitHub; /blob/ is for files only.
+            base = GH_TREE if it.get("code") and os.path.isdir(os.path.join(ROOT, it["code"])) else GH
+            code = ' <a class="small" href="{}{}">code</a>'.format(base, it["code"]) if it.get("code") else ""
             out.append('<article class="card"><h3>{}</h3><p>{}{}</p>{}</article>'.format(
                 html.escape(it[key]), html.escape(it["summary"]), code, _chips(it, adrs, reqs)))
         return "\n".join(out)
@@ -1284,6 +1452,7 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     shutil.copytree(os.path.join(SITE, "assets"), os.path.join(out, "assets"))
+    shutil.copyfile(SOCIAL_IMAGE_SRC, os.path.join(out, SOCIAL_IMAGE_PATH))
     header = read(os.path.join(SITE, "partials", "header.html"))
     footer = read(os.path.join(SITE, "partials", "footer.html")).replace("@@BUILD@@", build_stamp())
     data = json.loads(read(os.path.join(SITE, "data", "standards.json")))
@@ -1295,7 +1464,8 @@ def main():
     swa_cfg = json.loads(read(os.path.join(SITE, "staticwebapp.config.json")))
     adrs, reqs = repo_ids()
     values_rows = parse_values(read(HELM_VALUES))
-    written = []
+    header = render_support_nav(header, site_cfg)
+    written, linked = [], {}
     for name in PAGES:
         page = read(os.path.join(SITE, name))
         slug = name[:-5]
@@ -1319,6 +1489,8 @@ def main():
             page = render_standards(page, data)
         if name in ("download.html", "support.html", "thanks.html"):
             page = render_support(page, site_cfg)
+        if name == "index.html":
+            page = render_support_home(page, site_cfg)
         if name in LEGAL:
             title, body = render_legal(read(os.path.join(ROOT, "docs", "legal", LEGAL[name])))
             page = page.replace("<!-- @legal-title -->", html.escape(title)).replace("<!-- @legal -->", body)
@@ -1334,11 +1506,16 @@ def main():
                 sys.exit("{}: a [confirm] marker reached the public page".format(gname))
             if "<!-- @" in gpage:
                 sys.exit("{}: unreplaced marker".format(gname))
+            # The licence wording is checked on the page as written, links included.
+            linked[gname] = gpage
+            if not repo_public(site_cfg):
+                gpage = unlink_repo(gpage)
             with open(os.path.join(out, gname), "w", encoding="utf-8") as f:
-                f.write(gpage)
+                f.write(add_social_tags(gname, gpage))
             written.append(gname)
     shutil.copyfile(os.path.join(SITE, "staticwebapp.config.json"), os.path.join(out, "staticwebapp.config.json"))
-    errors = (
+    built = {n: read(os.path.join(out, n)) for n in written}
+    errors = licence_errors(footer, linked) + repo_link_errors(site_cfg, built) + (
         coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
         + ["brand: " + p for p in brand.problems()] + site_config_errors(site_cfg) + swa_errors(swa_cfg) + csp_errors(out, written)
     )

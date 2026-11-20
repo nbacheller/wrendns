@@ -164,7 +164,7 @@ pub(crate) async fn fill(a: &Harness) {
         .unwrap();
 }
 
-/// REQ: CLU-015, API-010 (T24.37) — the owner's case: entries added through the API while A was
+/// REQ: CLU-015, API-010 (T24.37) — the field case: entries added through the API while A was
 /// primary can be dry-run deleted, deleted and edited on B after B is promoted, whatever their kind,
 /// and a deleted entry stays deleted.
 #[tokio::test]

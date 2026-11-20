@@ -131,12 +131,7 @@ async fn api_007_t35_1_repair_decodes_stored_names_and_what_names_them() {
 
     // The node builds on the repaired rows.
     let merged = crate::managed::merge(&file, &crate::managed::entries(h.auth.state())).unwrap();
-    assert!(
-        merged
-            .client
-            .iter()
-            .any(|c| c.name.as_str() == "Alex's PC")
-    );
+    assert!(merged.client.iter().any(|c| c.name.as_str() == "Alex's PC"));
 }
 
 #[tokio::test]

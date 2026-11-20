@@ -599,6 +599,14 @@
       "description": "One place alerts go.",
       "type": "object",
       "properties": {
+        "device": {
+          "description": "`pushover`: one of the account's devices by name (empty: all of them).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "from": {
           "description": "REQ: OBS-010 (T9.4) — `email`: the sender address.",
           "type": [
@@ -627,6 +635,33 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "priority_firing": {
+          "description": "`pushover`: the priority of a firing alert (-2 to 1; default 0) and of a resolved one\n(default -1, a message without a sound). 2 (emergency) needs a retry policy and is not\noffered.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int8",
+          "maximum": 127,
+          "minimum": -128
+        },
+        "priority_resolved": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int8",
+          "maximum": 127,
+          "minimum": -128
+        },
+        "sound": {
+          "description": "`pushover`: the notification sound's name (`siren`; empty: the account's default).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "tls_ca": {
           "description": "`email`: a PEM file with the mail server's certificate (or its CA), for a private\nserver; public ones are trusted already.",
           "type": [
@@ -644,7 +679,7 @@
           }
         },
         "token_file": {
-          "description": "A file holding the token (ntfy access token, Gotify application token), so it stays\nout of the config and Git.",
+          "description": "A file holding the token (ntfy access token, Gotify or Pushover application token), so it stays\nout of the config and Git.",
           "type": [
             "string",
             "null"
@@ -660,12 +695,28 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`webhook` (JSON POST), `ntfy`, `gotify`, `slack` (Slack-compatible webhooks:\nSlack, Mattermost, Discord's `/slack` endpoint), or `email`.",
+          "description": "`webhook` (JSON POST), `ntfy`, `gotify`, `pushover`, `slack` (Slack-compatible webhooks:\nSlack, Mattermost, Discord's `/slack` endpoint), or `email`.",
           "$ref": "#/$defs/AlertKind"
         },
         "url": {
-          "description": "The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), the Gotify server,\nor the mail server: `smtp://smtp.gmail.com:587` (STARTTLS), `smtps://host:465` (TLS),\nor `smtp+insecure://127.0.0.1:1025` (no encryption: a local mail catcher only).",
+          "description": "The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), the Gotify server,\nPushover's messages endpoint (empty: `https://api.pushover.net/1/messages.json`; a\nself-hosted proxy otherwise), or the mail server: `smtp://smtp.gmail.com:587` (STARTTLS), `smtps://host:465` (TLS),\nor `smtp+insecure://127.0.0.1:1025` (no encryption: a local mail catcher only).",
           "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "user_key_file": {
+          "description": "REQ: OBS-010 (T24.43) — `pushover`: a file holding the user or group key (a secret, like\nthe application token in `token_file`), or the name of a stored secret holding it\n(`user_key_ref`); at most one of them.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "user_key_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "username": {
@@ -680,8 +731,7 @@
       "additionalProperties": false,
       "required": [
         "name",
-        "type",
-        "url"
+        "type"
       ]
     },
     "AlertKind": {
@@ -695,6 +745,11 @@
             "gotify",
             "slack"
           ]
+        },
+        {
+          "description": "REQ: OBS-010 (T24.43)",
+          "type": "string",
+          "const": "pushover"
         },
         {
           "description": "REQ: OBS-010 (T9.4)",
@@ -1088,6 +1143,13 @@
         "enabled": {
           "type": "boolean",
           "default": true
+        },
+        "http_redirect": {
+          "description": "REQ: API-003 (T24.44, ADR-1053) — a second, plain-HTTP listener at this address (for\nexample `\"0.0.0.0:80\"`) that answers every request with a `308` to the same path over\n`https://`, on this host's own name (the request's `Host` without its port, plus the API's\nport when it isn't 443), so `http://host/` reaches the UI on 443. It also answers `/livez`,\n`/readyz` and `/healthz` as the API does, and serves nothing else. Needs `tls` above. A bind\nfailure (port 80 needs `CAP_NET_BIND_SERVICE`, which the systemd unit grants) is logged and\naffects neither DNS nor the API. Default: off.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "listen": {
           "description": "Where the API listens (default `0.0.0.0:8053`).",

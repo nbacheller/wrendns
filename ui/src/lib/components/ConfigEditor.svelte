@@ -442,6 +442,7 @@
                 else delete editing!.values[f.key];
               }}
             />
+            {#if f.helpTopic}<HelpButton id={f.helpTopic} />{/if}
           {:else if f.type === 'multi'}
             <!-- REQ: UI-901 (T24.34) — choose from the list with the searchable picker. Values chosen
                  earlier that aren't offered now (a node gone) stay visible as chips. -->
@@ -569,7 +570,7 @@
   }
   .preview {
     border: 1px dashed var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 10px 12px;
   }
   .preview p {

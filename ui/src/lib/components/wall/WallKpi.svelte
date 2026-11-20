@@ -66,7 +66,7 @@
     font-size: 3.2vmin;
   }
   .value.healthy {
-    color: var(--ok, var(--s-cached));
+    color: var(--ok);
   }
   .value.degraded {
     color: var(--warn);

@@ -2,7 +2,7 @@
 
 This bundle runs this fork's WrenDNS in Docker Desktop on Windows or macOS, so you can try the network-inventory features (milestone M22 in `spec/10`) against your own UniFi gateway and Home Assistant:
 
-- **Router names:** device names from your UniFi Cloud Gateway. That covers connected clients, plus reserved devices while they're offline.
+- **Router names:** device names from your UniFi console. That covers connected clients, plus reserved devices while they're offline.
 - **Home Assistant names:** the names you gave devices in Home Assistant.
 - **Names in DNS:** those names answered as `kitchen-tablet.home.arpa`, with reverse lookups.
 - **Network inventory:** your LANs and VLANs, with how full each one is.
@@ -36,8 +36,8 @@ Each file holds just the key or token on one line. On macOS, keep the files read
 
 Edit `wrendns.toml`:
 
-- `[[router]] gateway` → `url`: your Cloud Gateway's address (default `https://192.0.2.1`).
-- `[[router]] home-assistant` → `url`: your Home Assistant (`http://192.0.2.20:8123`).
+- `[[router]] gateway` → `url`: your UniFi console's address (for example `https://192.0.2.1`).
+- `[[router]] home-assistant` → `url`: your Home Assistant (`http://homeassistant.local:8123`).
 
 The gateway's certificate is self-signed, so the file starts with `tls_insecure_skip_verify = true`. To verify the gateway properly instead, save its certificate:
 

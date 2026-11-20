@@ -215,15 +215,15 @@
     display: inline-block;
     width: 80px;
     height: 8px;
-    background: var(--surface-2, rgba(127, 127, 127, 0.15));
-    border-radius: 4px;
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
     vertical-align: middle;
     margin-right: 6px;
   }
   .bar {
     display: block;
     height: 100%;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: var(--brand);
   }
 </style>

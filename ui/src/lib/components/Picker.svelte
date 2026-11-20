@@ -210,7 +210,7 @@
       {#each shown as v (v)}
         <span class="chip" data-testid="picker-chip">
           {labelOf(v)}
-          <button type="button" class="x" aria-label={`Remove ${labelOf(v)}`} {disabled} onclick={(e) => { e.stopPropagation(); remove(v); }}>×</button>
+          <button type="button" class="x" aria-label={`Remove ${labelOf(v)}`} {disabled} onclick={(e) => { e.stopPropagation(); remove(v); }}><Icon name="x" size={14} /></button>
         </span>
       {/each}
       {#if rest}<span class="chip more" data-testid="picker-more" title={selected.slice(maxChips).map(labelOf).join(', ')}>+{rest}</span>{/if}
@@ -283,7 +283,7 @@
                 onclick={() => toggle(it)}
                 onmousemove={() => (active = i)}
               >
-                {#if multiple}<span class="tick" aria-hidden="true">{chosen.has(it.value) ? '✓' : ''}</span>{/if}
+                {#if multiple}<span class="tick" aria-hidden="true">{#if chosen.has(it.value)}<Icon name="check" size={16} />{/if}</span>{/if}
                 {#if it.kind && paths[it.kind]}<span class="ico" aria-hidden="true"><Icon name={it.kind} size={15} /></span>{/if}
                 <span class="lab">{it.label}</span>
                 {#if it.secondary}<span class="sec muted small">{it.secondary}</span>{/if}
@@ -305,20 +305,22 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 4px;
-    padding: 3px 6px;
-    min-height: 34px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    min-height: 36px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
     background: var(--surface);
     cursor: text;
   }
+  /* The focus ring goes round the whole box, 2px outside it (the bare input inside has none). */
   .box:focus-within {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
   .box.disabled {
-    opacity: 0.6;
+    color: var(--muted);
+    border-color: var(--border);
     cursor: default;
   }
   .box input {
@@ -334,10 +336,10 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-1);
     max-width: 180px;
-    padding: 1px 4px 1px 8px;
-    border-radius: 999px;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border);
     font-size: 0.85em;
@@ -368,12 +370,12 @@
     z-index: 30;
     left: 0;
     right: 0;
-    margin-top: 4px;
+    margin-top: var(--space-1);
     min-width: 280px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-float);
   }
   .bar {
     display: flex;
@@ -406,10 +408,10 @@
     white-space: nowrap;
   }
   .opt.on {
-    background: var(--hover, rgb(127 127 127 / 14%));
+    background: var(--brand-sky-soft);
   }
   .opt[aria-disabled='true'] {
-    opacity: 0.5;
+    color: var(--muted);
     cursor: default;
   }
   .tick {

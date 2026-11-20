@@ -1046,7 +1046,7 @@ args = ["--datacenter", "home"]
 *(REQ: UPS-013; ADR-997)* Devices ask WrenDNS (DHCP hands out its address), and WrenDNS asks a commercial filter for the names it doesn't answer itself. You keep WrenDNS's per-device policy and visibility, and the commercial categories apply on top.
 
 ### With a gateway that filters traffic (UniFi content filtering, CyberSecure)
-A gateway's content filtering may work on DNS, not on traffic. That was measured on a UniFi Cloud Gateway Fiber (2026-11-18): its content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (WrenDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and WrenDNS for a name the filter should block, then try the site's address directly. On such a gateway:
+A gateway's content filtering may work on DNS, not on traffic. On UniFi gateways tested in 2026, the content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (WrenDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and WrenDNS for a name the filter should block, then try the site's address directly. On such a gateway:
 - **A device that uses WrenDNS is filtered only by WrenDNS** (its lists and categories), unless WrenDNS forwards that device's group to the gateway's DNS from the device's own network (the `source` setting below, with the node on that VLAN, see "Serving several networks"), so the gateway applies that network's profile.
 - **WrenDNS** decides what a name resolves to, per device and group, and records who asked what.
 - **The gateway** catches a device that bypasses the LAN resolver with plain DNS to the internet; DoH or DoT in an app bypasses both unless the gateway blocks encrypted DNS.
@@ -1161,7 +1161,7 @@ default_ttl = 300
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `wrendns config check` validates record values and reads the hosts files.
-- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up my home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
+- **In the web UI:** **Names on your network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up your home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
 - **Moving from another DNS server:** `wrendns import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: WrenDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ### Device names in DNS
@@ -1198,7 +1198,7 @@ type = "A"
 value = "10.10.0.5"
 ```
 - Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry the zone's SOA, owned by its apex, with `negative_ttl`.
-- **Zones made in the UI.** **Names on my network** → **Add a zone** (or `PUT /api/v1/zones/{name}`) makes a zone with the same fields as the file (groups, negative TTL, records with their TTLs and node-only flags), kept in the state database and applied on every node without a restart. A zone the files define is read-only in the UI, and its `file` can only be set in the file.
+- **Zones made in the UI.** **Names on your network** → **Add a zone** (or `PUT /api/v1/zones/{name}`) makes a zone with the same fields as the file (groups, negative TTL, records with their TTLs and node-only flags), kept in the state database and applied on every node without a restart. A zone the files define is read-only in the UI, and its `file` can only be set in the file.
 - **SOA and NS at the apex** (`dig SOA home.example`, `dig NS home.example`) answer with the zone file's own records. Without a file, or a file without them, they're made up as resolvers serving local zones do: `localhost.` as the name server, `hostmaster.<zone>` as the contact, and `negative_ttl` as the SOA minimum.
 - **Split horizon:** with `groups`, only those groups' devices see the zone; everyone else resolves the domain normally (the public answer). Several zones for the same domain can serve different groups.
 - The most specific zone wins (`a.corp.example.com` over `corp.example.com`). Zones are answered before filtering, like local records.
@@ -1462,7 +1462,7 @@ makes groups a way to see *which kinds of devices* make which traffic:
 [[group]]
 name = "IOT"
 networks = ["10.20.2.0/24"]
-color = "#22c55e"                        # optional: its color in charts and chips
+# color = "#22c55e"                      # optional: overrides the brand colour for its place
 
 [[group]]
 name = "Surveillance"
@@ -1472,6 +1472,7 @@ networks = ["192.168.7.0/24"]
 name = "Trust"
 networks = ["192.0.2.0/24"]
 ```
+- **Its colour:** groups take the brand's five group colours (sky, tangerine, plum, leaf, rose) in the order the configuration lists them, and every group after the fifth, and `default`, a neutral grey. A group keeps its colour when you filter. A `color` set on the group overrides it.
 - **Which group a device gets:** the group of the most specific matching network. A
   `[[client]]` entry with its own `groups` still wins. Naming a device (in the UI or with a
   `[[client]]` entry without `groups`) keeps it in its network's group. Devices outside every
@@ -1740,7 +1741,7 @@ Home Assistant knows your IoT devices by the names you gave them ("Porch light",
 [[router]]
 name = "home-assistant"
 type = "home_assistant"
-url = "http://192.0.2.20:8123"
+url = "http://homeassistant.local:8123"
 api_key_file = "/etc/wrendns/ha-token"   # Profile → Security → Long-lived access tokens
 ```
 On the Routers page, choose **Home Assistant** and enter the address and the token (stored, never shown again). The token belongs to an administrator's account; Home Assistant renders the template only with one.
@@ -2119,7 +2120,7 @@ dnssec_nta = true             # internal zones are usually unsigned
   answer except SERVFAIL counts as up, even REFUSED from servers that host only zones below
   it (a server that says it is failing for its own zone isn't up). A name under a delegated
   server that fails is a failed lookup, like with `recursive://`.
-- From the UI: **Names on my network → Send a domain to another server**, and tick **These
+- From the UI: **Names on your network → Send a domain to another server**, and tick **These
   servers only know this domain**. Through the API:
   `PUT /api/v1/forwards/corp.example` with `{"servers": ["10.0.0.53"], "stub": true}`
   (agents: `plan_forward_domain` with `stub: true`).
@@ -3581,14 +3582,14 @@ note    = "hourly reverse-DNS sweep"
 - **Through the API:** `PUT /api/v1/anomaly-mutes/<name>` with the same fields (add `?dryRun=true` to preview), `DELETE` to remove, `GET /api/v1/config/entries?kind=anomaly_mute` to list. The operator role; agents need `config:write:anomalies` (a mute can hide a compromised device, so it isn't part of any other scope, though `config:write:*` includes it) and use `plan_set_anomaly_mute` / `plan_remove_anomaly_mute`. Every change is audited as `config.anomaly_mute`.
 
 ## Alerts
-WrenDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
+WrenDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh), Gotify or [Pushover](https://pushover.net), in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
 ```toml
 [alerts]
 interval_secs = 30                       # how often rules are checked
 
 [[alerts.destination]]
 name = "phone"
-type = "ntfy"                            # webhook | ntfy | gotify | slack | email
+type = "ntfy"                            # webhook | ntfy | gotify | pushover | slack | email
 url = "https://ntfy.sh/my-home-dns"
 # token_file = "/run/secrets/ntfy-token" # an access token, kept out of the config
 
@@ -3603,6 +3604,32 @@ name = "Too many failures"
 when = "servfail_rate"
 threshold = 5                            # percent of queries over the last 5 minutes
 to = ["phone"]
+```
+The destination types:
+
+| `type` | Sends | `url` | Secrets |
+|---|---|---|---|
+| `webhook` | a JSON POST | the receiver | none |
+| `ntfy` | text to a topic | the topic URL | optional `token_file` / `token_ref` |
+| `gotify` | a message to your Gotify server | the server | `token_file` / `token_ref` (application token) |
+| `pushover` | a push through Pushover | empty (pushover.net), or a proxy's `https://` URL | `token_file` / `token_ref` (application token) and `user_key_file` / `user_key_ref` (user or group key) |
+| `slack` | a Slack-compatible message | the webhook URL | none (the URL is the secret) |
+| `email` | an email over SMTP | `smtp://host:587`, `smtps://host:465` | `password_file` / `password_ref` |
+
+**Pushover.** Create an application on pushover.net (Your Applications, Create an Application/API Token) for its API token, and copy your user key from the dashboard. Both are secrets: keep them in files (`token_file`, `user_key_file`) or in the node's encrypted store (`token_ref`, `user_key_ref`; **Alerts** → the destination's token fields), where they replicate to every cluster member and are never shown again. Optional: `device` (one of your devices by name; empty is all of them), `sound`, and the priority per state, `priority_firing` (default 0) and `priority_resolved` (default -1, no sound), each from -2 to 1; emergency priority (2) is not offered. A message has the rule and subject as its title, the summary with the node and the time as its text, and, for a `new_device` alert on a node with `[auth.oidc] public_url`, a link to the device in the UI; Pushover's limits (250 characters for the title, 1024 for the text) cut a long one with an ellipsis. A refusal from Pushover (a wrong token or key) shows its reason in the last-delivery list, without the secrets. A `url` other than Pushover's must be `https://` (`http://` only to this machine, for a test server), and changing it is an admin's, as for any destination that holds a credential.
+```toml
+[[alerts.destination]]
+name = "pushover"
+type = "pushover"
+token_ref = "pushover-app"               # or token_file = "/run/secrets/pushover-token"
+user_key_ref = "pushover-user"           # or user_key_file = "/run/secrets/pushover-user"
+# device = "iphone"
+# sound = "siren"
+
+[[alerts.rule]]
+name = "New device"
+when = "new_device"                      # what Pi-hole's DHCP hook used to send
+to = ["pushover"]
 ```
 Rules watch:
 
@@ -3740,7 +3767,7 @@ A credential that comes from a file can instead name a **stored secret**: a valu
 name = "unifi"
 type = "unifi"
 url = "https://192.168.1.1"
-api_key_ref = "unifi"     # the secret named `unifi`
+api_key_ref = "router-key"   # the secret named `router-key`
 ```
 
 - **One source per credential.** A field takes its inline value, its `_file`, or its `_ref`: setting two is a configuration error. `<redacted>` (what a redacted copy shows) is never a value: in the files it is an error too.
@@ -4131,6 +4158,16 @@ tls = { self_signed = true }                 # a certificate made on first start
 - Over HTTPS the session cookie is `Secure` and HTTP Basic works, as behind a TLS proxy.
 - `wrendns ctl` and `wrendns mcp --stdio` on the node use `https://` and trust its self-signed certificate by themselves. From another machine, copy `cert.pem` and pass `--ca-file cert.pem` (with `--url https://<node>:8053`).
 - Changing `[api] tls` needs a restart. If the certificate can't be made or loaded, the API stays off (it's logged), rather than falling back to plain HTTP; DNS keeps answering.
+- **Port 80 to HTTPS.** With the UI on 443, `http://dns.example.com/` on port 80 can be sent to it too: set `[api] http_redirect` (off by default; it needs `[api] tls`):
+  ```toml
+  [api]
+  listen = "0.0.0.0:443"
+  tls = { cert = "/etc/wrendns/api.crt", key = "/etc/wrendns/api.key" }
+  http_redirect = "0.0.0.0:80"
+  ```
+  A second, plain-HTTP listener answers every request with a `308` to `https://<the request's host, without its port>/<same path and query>` (with `:<port>` added when the UI isn't on 443), and `/livez`, `/readyz` and `/healthz` as on the UI's port. It serves nothing else, every response is `no-store`, and a `Host` that isn't a plain hostname or IP address (userinfo, a path, spaces, or a trailing dot such as `dns.example.com.`) gets a `400`, so it can't redirect anywhere but this host. It also shows in **Listener checks** (`/livez` must answer 200, `/` must redirect). It is set on **Settings → System → HTTP to HTTPS redirect** (a guarded change: review, the phrase, and it takes effect at the next start) or in the file, which wins.
+  - **systemd:** port 80 is below 1024; the shipped unit grants `CAP_NET_BIND_SERVICE` (`AmbientCapabilities`), so nothing else is needed. A node started another way without that capability logs `[api] http_redirect ...: Permission denied` and carries on: DNS and the UI are not affected, only port 80 isn't redirected.
+  - **Docker Compose and Helm:** there is no default port 80 mapping. Publish it yourself (Compose: `ports: ["80:80"]` with `http_redirect = "0.0.0.0:80"` in the file; Helm: add a container port and a Service or ingress rule for it) if you want it.
 - **Settings → System → Listener checks** shows the web UI's certificate: self-signed or yours, the names it covers, its SHA-256 fingerprint (compare it with your browser's before trusting it), and for your own, the days left, with the same health level and alerts as the DNS listeners' certificates ([Listener checks](#listener-checks)).
 
 **Behind a reverse proxy or ingress,** tell WrenDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
@@ -4140,7 +4177,8 @@ trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingres
 ```
 The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts, except for setting a stored secret, where it must be listed as well ([Setting a stored secret](#setting-a-stored-secret)).
 
-**Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Wrendns-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
+### Audit log
+Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Wrendns-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 
 If the audit log can't be written (a full disk, a broken database), the change that failed to be recorded is logged as an error, and the next change first writes an `audit.gap` entry saying how many went unrecorded and why. Until that works, changes through the API and UI are refused with 503; DNS keeps answering.
 

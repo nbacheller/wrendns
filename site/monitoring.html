@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Monitoring and alerts — WrenDNS</title>
-<meta name="description" content="What WrenDNS shows and tells you: metrics and Grafana, a searchable query log and a cluster-wide live view, per-device anomalies, alerts by email, ntfy, Gotify, Slack, or webhook, and exports to syslog, OpenTelemetry, and dnstap.">
+<meta name="description" content="What WrenDNS shows and tells you: metrics and Grafana, a searchable query log and a cluster-wide live view, per-device anomalies, alerts by email, ntfy, Gotify, Pushover, Slack, or webhook, and exports to syslog, OpenTelemetry, and dnstap.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -102,7 +102,7 @@
       <p class="muted">A node in maintenance (planned work: a Pi's SD card, a move, an upgrade) is left out of the other rules and the health icon until its window ends, so a planned stop never pages you. It keeps answering whatever still reaches it.</p>
     </div>
     <div>
-      <p class="muted"><b>Destinations:</b> email (any provider's SMTP: Gmail with an app password works, no mail server of your own), <a href="https://ntfy.sh">ntfy</a> and Gotify push to your phone, Slack-compatible channels (Slack, Mattermost, Discord), or any webhook.</p>
+      <p class="muted"><b>Destinations:</b> email (any provider's SMTP: Gmail with an app password works, no mail server of your own), <a href="https://ntfy.sh">ntfy</a> and Gotify push to your phone, so does <a href="https://pushover.net">Pushover</a> (its application token and your user key are kept as stored secrets), Slack-compatible channels (Slack, Mattermost, Discord), or any webhook.</p>
 <pre><code>[[alerts.destination]]
 name = "inbox"
 type = "email"

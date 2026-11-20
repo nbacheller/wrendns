@@ -234,7 +234,7 @@ test('flt_902 a device with a private address warns; one selected by address or 
   await expect(rowEl.locator('[data-col="safe"]')).toContainText('Google');
   await expect(rowEl.locator('[data-col="safe"]')).toContainText('YouTube');
   const head = page.getByTestId('profile-table').locator('thead th');
-  await expect(head).toHaveText(['Name', 'Source', 'Filter Scope', 'Safe Search', 'Schedule', 'Edit']);
+  await expect(head).toHaveText(['Name', 'Source', 'Filter scope', 'Safe search', 'Schedule', 'Edit']);
 
   // The device added from the editor is a named device in the profile (AC12) ...
   const clients = await (await r.get('/api/v1/clients')).json();

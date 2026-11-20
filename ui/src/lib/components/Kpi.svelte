@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   // T6.8 — a KPI tile: the number, its change against the previous period (colored by what's
   // good for this metric, not by direction), and an optional sparkline.
   let {
@@ -37,7 +38,7 @@
     if (delta == null || !Number.isFinite(delta)) return '';
     const p = Math.abs(delta) * 100;
     const shown = p >= 100 ? Math.round(p).toLocaleString() : p.toFixed(p < 10 ? 1 : 0);
-    return `${delta > 0 ? '▲' : delta < 0 ? '▼' : '•'} ${shown}%`;
+    return `${shown}%`;
   });
   // The sparkline as a 100×28 path.
   const sparkPath = $derived.by(() => {
@@ -64,7 +65,9 @@
   <div class="label">{label}</div>
   <div class="value {tone}">{value}</div>
   <div class="foot">
-    {#if deltaText}<span class="delta {deltaClass}" title="Against the previous period of the same length">{deltaText}</span>{/if}
+    {#if deltaText}<span class="delta {deltaClass}" title="Against the previous period of the same length"
+      >{#if delta}<Icon name={delta > 0 ? 'up' : 'down'} size={12} /><span class="sr-only">{delta > 0 ? 'up' : 'down'}</span>{/if} {deltaText}</span
+    >{/if}
     {#if sub}<span class="sub muted small">{sub}</span>{/if}
   </div>
   {#if sparkPath}
@@ -110,7 +113,7 @@
   }
   .delta {
     padding: 0 7px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     font-size: 11.5px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
@@ -146,7 +149,6 @@
     width: 100%;
     height: 28px;
     margin-top: auto;
-    padding-top: 6px;
-    opacity: 0.85;
+    padding-top: var(--space-2);
   }
 </style>

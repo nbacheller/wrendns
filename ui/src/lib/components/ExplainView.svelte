@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   // FLT-013: why a name is or isn't blocked for a client, every matching rule, and the route.
   import type { S } from '../api';
   import { dateTime } from '../format';
@@ -132,12 +133,12 @@
     {:else if x.filter.rules.length === 0}
       <p class="muted">No list has a rule for this name (snapshot {x.filter.snapshot ?? '–'}).</p>
     {:else}
-      <p class="muted small">Snapshot {x.filter.snapshot ?? '–'}, in precedence order. ★ decides; dimmed lists aren't used by this client.</p>
+      <p class="muted small">Snapshot {x.filter.snapshot ?? '–'}, in precedence order. The starred rule decides; muted lists aren't used by this client.</p>
       <ul class="rules">
         {#each x.filter.rules as r, i (i)}
           <li class:winner={r.winner} class:off={!r.enabled}>
             <div class="row">
-              <span class="mark">{r.winner ? '★' : ''}</span>
+              <span class="mark">{#if r.winner}<span role="img" aria-label="Decides" data-testid="rule-winner"><Icon name="star" size={16} /></span>{/if}</span>
               <span class="badge {r.tier.includes('allow') ? 'ok' : 'bad'}">{tierLabel[r.tier] ?? r.tier}</span>
               <strong>{r.list}</strong>
               <!-- REQ: OBS-018 — a shadow list's rule is counted, never enforced. -->
@@ -193,18 +194,19 @@
   }
   .rules li {
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 8px 10px;
   }
   .rules li.winner {
     border-color: var(--accent);
   }
   .rules li.off {
-    opacity: 0.55;
+    color: var(--muted);
   }
   .mark {
-    width: 1em;
-    color: var(--accent);
+    display: inline-flex;
+    width: 16px;
+    color: var(--text);
   }
   .line {
     margin-top: 4px;

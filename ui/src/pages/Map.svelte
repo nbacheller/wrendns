@@ -383,6 +383,7 @@
                     >
                       {#if p.node.reasons.length}<title>{p.node.label}: {p.node.reasons.map((r) => r.summary).join('; ')}</title>{/if}
                       <rect width={NODE_W} height={NODE_H} rx="8" />
+                      <rect class="ring" x="-3" y="-3" width={NODE_W + 6} height={NODE_H + 6} rx="11" />
                       <path class="shape" d={HEALTH_SHAPE[p.node.health]} transform="translate(15 {NODE_H / 2})" />
                       <text class="nlabel" x="30" y="13">{trunc(p.node.label, 19)}</text>
                       <text class="nstate" x="30" y="25">{HEALTH_SHORT[p.node.health]}{p.node.kind === 'gateway' || p.node.kind === 'network' ? '' : ` · ${rate(p.node.qps)}`}</text>
@@ -509,7 +510,7 @@
   }
   .pill-field input {
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     min-height: 28px;
     padding: 3px 12px;
     background: var(--surface);
@@ -533,11 +534,10 @@
     max-width: 100%;
     height: auto;
   }
+  /* Sentence case, the label style (T33.6). */
   .coltitle {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
     fill: var(--muted);
   }
   .track {
@@ -587,7 +587,7 @@
     }
   }
   .ratelabel {
-    font-size: 10px;
+    font-size: 12px;
     fill: var(--text);
     paint-order: stroke;
     stroke: var(--surface);
@@ -620,12 +620,17 @@
   .node.selected rect {
     fill: var(--surface-2);
   }
+  /* Keyboard focus: a 2px ring 2px outside the node (its own rect), which hover never draws. */
   .node:focus {
     outline: none;
   }
-  .node:focus-visible rect {
+  .mapscroll .node > rect.ring {
+    fill: none;
+    stroke: none;
+  }
+  .mapscroll .node:focus-visible > rect.ring {
     stroke: var(--focus);
-    stroke-width: 3;
+    stroke-width: 2;
     stroke-dasharray: none;
   }
   .shape {
@@ -652,7 +657,7 @@
     fill: var(--text);
   }
   .nstate {
-    font-size: 10px;
+    font-size: 12px;
     fill: var(--muted);
   }
   .legend {

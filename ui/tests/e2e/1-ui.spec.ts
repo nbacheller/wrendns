@@ -9,6 +9,7 @@ import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
 import { pick } from './picker';
+import { hoverRing, rectRing } from './svg-ring';
 import { alertConditions } from '../../src/lib/alert-conditions';
 import { customUrl, nextCustomName, planFor, readSaved, type Transport } from '../../src/lib/upstream-picker';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
@@ -198,7 +199,7 @@ test('query log finds the blocked query and explains it', async () => {
   await page.getByRole('button', { name: 'Why?' }).first().click();
   const drawer = page.getByRole('dialog');
   await expect(drawer).toContainText('e2e-block');
-  await expect(drawer).toContainText('★');
+  await expect(drawer.getByTestId('rule-winner').first()).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(drawer).toBeHidden();
   // Status chips filter, and the filter lands in the URL.
@@ -1570,12 +1571,12 @@ test('api_011 help panels, diagrams, and simple/advanced', async () => {
 
 // REQ: API-011 (T3.12 AC) — a novice creates nas.home.arpa and sends corp.example elsewhere through
 // the wizards, without docs; DNS answers at once; the API does the same with dry-run.
-test('api_011 names on my network: wizards, DNS, and the API', async () => {
+test('api_011 names on your network: wizards, DNS, and the API', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/local-dns');
-  await expect(page.getByRole('heading', { name: 'Names on my network' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Names on your network' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Set up my home domain', exact: true }).click();
+  await page.getByRole('button', { name: 'Set up your home domain', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Home domain', exact: true })).toHaveValue('home.arpa');
   await page.getByRole('button', { name: 'Next' }).click();
   await page.getByRole('textbox', { name: 'Device name', exact: true }).fill('nas');
@@ -1790,11 +1791,18 @@ test('clu_008 cluster topology', async () => {
   // Long pod and site names are shortened in the middle to fit (the full name is in the tooltip).
   await expect(topo.getByTestId('topology-node').first()).toContainText(/wrend.*….*-8j9h9/);
   // The primary is marked as such; the Pi is a replica.
-  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('PRIMARY');
+  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('Primary');
   await expect(topo.getByTestId('topology-node').nth(1).getByTestId('topology-role')).toHaveText('replica');
   await expect(topo.getByTestId('topology-site').nth(1).locator('text').first()).toHaveText(/^home-.*….*closet$/);
   await expect(topo.locator('.pod.bad')).toHaveCount(1);
   await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
+  // REQ: UI-*, T33.6 — a node chip's and a pod's focus ring: 2px of focus-ring, 2px outside; never on hover.
+  for (const chip of [topo.getByTestId('topology-node').first(), topo.getByTestId('topology-pod').first()]) {
+    const ring = await rectRing(page, chip);
+    expect(ring.focusVisible).toBe(true);
+    expect([ring.stroke, ring.width, ring.gap]).toEqual([ring.want, '2px', [3, 3, 6, 6]]);
+    expect(await hoverRing(page, chip)).toBe('none');
+  }
 
   // Selecting a pod opens its site in the table and highlights its row.
   await topo.getByRole('button', { name: /wrendns-resolver-bbbbb/ }).click();
@@ -1878,7 +1886,7 @@ test('clu_009 a witness is a voter, not a full node', async () => {
   await page.keyboard.press('Escape');
   // The tabs count nothing for it: Health is clean.
   await page.getByRole('tab', { name: /^Health/ }).click();
-  await expect(page.getByTestId('cluster-check').filter({ hasText: '✗' })).toHaveCount(0);
+  await expect(page.locator('[data-testid="cluster-check"].fail')).toHaveCount(0);
   // Down: still a failing check (automatic failover needs its vote), and red in the topology.
   current = view(false);
   await expect(page.getByTestId('cluster-health')).toContainText('Needs attention', { timeout: 10_000 });
@@ -3254,14 +3262,14 @@ test('api_015 secret field is write-only', async () => {
   const field = page.getByTestId('secret-token_ref');
   await expect(field).toHaveAttribute('data-mode', 'unset');
   await expect(field.getByRole('button', { name: 'Save secret' })).toBeDisabled();
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('write-only-token-7731');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('write-only-token-7731');
   await noAnswerCarries('write-only-token-7731', async () => {
     await field.getByRole('button', { name: 'Save secret' }).click();
     await expect(field).toHaveAttribute('data-mode', 'set');
   });
   await expect(field.getByTestId('secret-status')).toContainText('alert.ui-stored.token');
   // Never pre-filled, and never in the page after the save.
-  await expect(field.getByLabel('Token (ntfy, Gotify)', { exact: true })).toHaveCount(0);
+  await expect(field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true })).toHaveCount(0);
   expect(await page.content()).not.toContain('write-only-token-7731');
   await page.getByRole('button', { name: 'Check' }).click();
   await page.getByRole('button', { name: 'Apply' }).click();
@@ -3274,7 +3282,7 @@ test('api_015 replace and clear', async () => {
   const field = page.getByTestId('secret-token_ref');
   await expect(field).toHaveAttribute('data-mode', 'set');
   await field.getByRole('button', { name: 'Replace' }).click();
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('replaced-token-9914');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('replaced-token-9914');
   await noAnswerCarries('replaced-token-9914', async () => {
     await field.getByRole('button', { name: 'Save new value' }).click();
     await expect(field).toHaveAttribute('data-mode', 'set');
@@ -3340,7 +3348,7 @@ test('api_015 secrets are shown held by every cluster member, with a warning for
     store: { node: 'node-a', state: 'ready', dataEphemeral: false },
     items: [
       {
-        name: 'unifi', kind: 'text', set: true, stamp, updated: '2026-11-19T10:00:00Z', updatedBy: 'root', origin: 'cluster', health: 'readable',
+        name: 'router-key', kind: 'text', set: true, stamp, updated: '2026-11-19T10:00:00Z', updatedBy: 'root', origin: 'cluster', health: 'readable',
         usedBy: [{ kind: 'router', name: 'udm', field: 'api_key_ref', source: 'stored' }],
         nodes: [node('node-a', 'applied'), node('node-b', 'applied'), node('node-c', 'missing', false), node('node-d', 'unknown', false)],
       },
@@ -3354,7 +3362,7 @@ test('api_015 secrets are shown held by every cluster member, with a warning for
       { node: 'resolver-a', kind: 'resolver', state: 'not_held', held: 0 },
     ],
     missingNodes: ['node-d'],
-    warnings: ['`unifi` is missing on node-c'],
+    warnings: ['`router-key` is missing on node-c'],
   };
   await page.route('**/api/v1/secrets', (route) => (route.request().method() === 'GET' ? route.fulfill({ json: body, headers: { etag: '"1.3.d"' } }) : route.fallback()));
   try {
@@ -3363,10 +3371,10 @@ test('api_015 secrets are shown held by every cluster member, with a warning for
     const members = page.getByTestId('secrets-members');
     await expect(members).toBeVisible();
     await expect(members.getByTestId('secrets-member')).toHaveCount(5);
-    await expect(members.getByTestId('secrets-warning')).toContainText('`unifi` is missing on node-c');
+    await expect(members.getByTestId('secrets-warning')).toContainText('`router-key` is missing on node-c');
     await expect(page.getByTestId('secrets-missing-nodes')).toContainText('node-d');
     await expect(members.locator('[data-kind="resolver"]')).toContainText('holds none, by design');
-    const row = page.getByTestId('secret-row').filter({ hasText: 'unifi' });
+    const row = page.getByTestId('secret-row').filter({ hasText: 'router-key' });
     await expect(row.locator('[data-state="applied"]')).toHaveCount(2);
     await expect(row.locator('[data-state="missing"]')).toContainText('missing');
     await expect(row.locator('[data-state="unknown"]')).toContainText('unknown');
@@ -3392,13 +3400,13 @@ test('api_015 a typed secret that is not saved holds Check and Apply', async () 
   await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
   await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfyAlt}/typed`);
   const field = page.getByTestId('secret-token_ref');
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-unsaved-4410');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('typed-unsaved-4410');
   await expect(page.getByRole('button', { name: 'Check' })).toBeDisabled();
   await expect(page.getByTestId('secret-unsaved')).toContainText('Save or discard the secret');
   await field.getByRole('button', { name: 'Discard' }).click();
   await expect(page.getByRole('button', { name: 'Check' })).toBeEnabled();
   await expect(page.getByTestId('secret-unsaved')).toHaveCount(0);
-  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-saved-4411');
+  await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('typed-saved-4411');
   await field.getByRole('button', { name: 'Save secret' }).click();
   await expect(field).toHaveAttribute('data-mode', 'set');
   await expect(field.getByTestId('secret-status')).toContainText('alert.ui-typed.token');
@@ -3478,7 +3486,7 @@ test('api_015 alert destination with a stored token delivers', async () => {
     await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
     await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfy}/topic`);
     const field = page.getByTestId('secret-token_ref');
-    await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('stored-token-5521');
+    await field.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('stored-token-5521');
     await field.getByRole('button', { name: 'Save secret' }).click();
     await expect(field).toHaveAttribute('data-mode', 'set');
     await page.getByRole('button', { name: 'Check' }).click();
@@ -3494,6 +3502,103 @@ test('api_015 alert destination with a stored token delivers', async () => {
     expect(del.status()).toBe(200);
   } finally {
     ntfy.close();
+  }
+});
+
+// REQ: OBS-010, API-015 (T24.43) - a Pushover destination: both secrets are stored write-only,
+// Send test posts the form to a fake Pushover (never api.pushover.net), and a refusal shows
+// Pushover's reason without the secrets.
+test('obs_010 pushover destination: two write-only secrets and Send test', async () => {
+  const { createServer } = await import('node:http');
+  const got: { type?: string; body: string }[] = [];
+  let refuse = false;
+  const fake = createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      got.push({ type: req.headers['content-type'], body: b });
+      res.setHeader('content-type', 'application/json');
+      if (refuse) {
+        res.statusCode = 400;
+        res.end('{"user":"invalid","errors":["user identifier is invalid"],"status":0,"request":"x"}');
+      } else {
+        res.end('{"status":1,"request":"x"}');
+      }
+    });
+  });
+  await new Promise<void>((r) => fake.listen(PORTS.ntfy, '127.0.0.1', () => r()));
+  const r = page.request;
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/#/alerts');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = page.getByTestId('editor-alert_destination');
+    await dests.getByRole('button', { name: 'Add destination' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-pushover');
+    await page.getByLabel('Type', { exact: true }).selectOption('pushover');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfy}/1/messages.json`);
+    const token = page.getByTestId('secret-token_ref');
+    const user = page.getByTestId('secret-user_key_ref');
+    await expect(user).toHaveAttribute('data-mode', 'unset');
+    await token.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true }).fill('po-app-token-8812');
+    await noAnswerCarries('po-app-token-8812', async () => {
+      await token.getByRole('button', { name: 'Save secret' }).click();
+      await expect(token).toHaveAttribute('data-mode', 'set');
+    });
+    await user.getByLabel('User or group key (Pushover)', { exact: true }).fill('po-user-key-3377');
+    await noAnswerCarries('po-user-key-3377', async () => {
+      await user.getByRole('button', { name: 'Save secret' }).click();
+      await expect(user).toHaveAttribute('data-mode', 'set');
+    });
+    await expect(user.getByTestId('secret-status')).toContainText('alert.ui-pushover.user_key');
+    // Never shown again: not in a field, not in the page.
+    await expect(user.getByLabel('User or group key (Pushover)', { exact: true })).toHaveCount(0);
+    await expect(token.getByLabel('Token (ntfy, Gotify, Pushover app)', { exact: true })).toHaveCount(0);
+    const html = await page.content();
+    expect(html).not.toContain('po-app-token-8812');
+    expect(html).not.toContain('po-user-key-3377');
+    await page.getByLabel('Device (Pushover)', { exact: true }).fill('phone');
+    await page.getByLabel('Sound (Pushover)', { exact: true }).fill('siren');
+    await page.getByLabel('Priority when firing (Pushover)', { exact: true }).fill('1');
+    await page.getByRole('button', { name: 'Help: Pushover keys' }).click();
+    await expect(page.getByTestId('help-panel')).toBeVisible();
+    await page.getByRole('dialog', { name: 'Pushover keys' }).getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByTestId('help-panel')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Check' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-pushover' });
+    await expect(row).toContainText('pushover:');
+    // The saved entry carries references only.
+    const entries = await (await r.get('/api/v1/config/entries?kind=alert_destination')).text();
+    expect(entries).toContain('alert.ui-pushover.user_key');
+    expect(entries).not.toContain('po-app-token-8812');
+    expect(entries).not.toContain('po-user-key-3377');
+
+    await row.getByRole('button', { name: 'Send test' }).click();
+    await expect(dests.getByTestId('row-action-result')).toContainText('sent');
+    expect(got).toHaveLength(1);
+    expect(got[0].type).toBe('application/x-www-form-urlencoded');
+    const f = new URLSearchParams(got[0].body);
+    expect([f.get('token'), f.get('user'), f.get('device'), f.get('sound'), f.get('priority')]).toEqual(['po-app-token-8812', 'po-user-key-3377', 'phone', 'siren', '1']);
+    expect(f.get('title')).toBe('Test: test');
+    expect(f.get('message')).toContain('This is a test alert');
+
+    // A refusal: Pushover's reason shows, the secrets do not.
+    refuse = true;
+    await row.getByRole('button', { name: 'Send test' }).click();
+    const result = dests.getByTestId('row-action-result');
+    await expect(result).toContainText('user identifier is invalid');
+    await expect(result).not.toContainText('po-app-token-8812');
+    await expect(result).not.toContainText('po-user-key-3377');
+
+    await row.getByRole('button', { name: 'Remove' }).click();
+    await expect(row).toHaveCount(0);
+  } finally {
+    fake.close();
+    const csrf = { 'x-csrf-token': await csrfOf(r) };
+    await r.delete('/api/v1/alerts/destinations/ui-pushover', { headers: csrf });
+    await r.delete('/api/v1/secrets/alert.ui-pushover.token', { headers: csrf });
+    await r.delete('/api/v1/secrets/alert.ui-pushover.user_key', { headers: csrf });
   }
 });
 
@@ -4998,6 +5103,21 @@ test('obs_032 flow', async () => {
   // A band's share: of every answer and of its source.
   await svg.locator('[data-source="upstream:quad9-1"][data-target="rcode:SERVFAIL"]').focus();
   await expect(page.getByTestId('flow-tip')).toContainText('quad9-1 → SERVFAIL: 40 (4.0 % of all · 20.0 % of quad9-1)');
+  // REQ: UI-*, T33.6 — the focused band's ring: 2px of focus-ring, 2px outside the band (a gap of
+  // the surface, then the ring), under it.
+  const ringed = await svg.evaluate((s) => {
+    const probe = document.createElement('div');
+    probe.style.color = 'var(--focus)';
+    document.body.append(probe);
+    const want = getComputedStyle(probe).color;
+    probe.remove();
+    const band = document.activeElement as SVGPathElement;
+    const ring = s.querySelector('[data-testid="flow-focus-ring"]') as SVGPathElement | null;
+    const gap = ring?.nextElementSibling as SVGPathElement | null;
+    const w = (e: Element | null | undefined) => (e ? parseFloat(getComputedStyle(e).strokeWidth) : NaN);
+    return { want, stroke: ring ? getComputedStyle(ring).stroke : '', same: ring?.getAttribute('d') === band.getAttribute('d'), out: [w(ring) - w(band), w(gap) - w(band)].map((x) => Math.round(x * 100) / 100) };
+  });
+  expect(ringed).toEqual({ want: ringed.want, stroke: ringed.want, same: true, out: [8, 4] });
   // Show small keeps everything; a link opens the page behind a node.
   await page.getByTestId('flow-small').check();
   ns = await nodes();
@@ -6933,14 +7053,14 @@ test('dsc_004 add an agent and test it', async () => {
   // The agent needs a credential and a private address; a bad name is refused in the form.
   await settings.getByTestId('agent-add').click();
   const aform = settings.getByTestId('agent-form');
-  await aform.getByLabel('Agent name').fill('192.0.2.1');
-  await aform.getByLabel('Agent address').fill('192.0.2.1');
+  await aform.getByLabel('Agent name').fill('10.0.0.1');
+  await aform.getByLabel('Agent address').fill('10.0.0.1');
   await aform.getByTestId('agent-keep').click();
   await expect(aform.getByRole('alert')).toContainText('is not an address');
   await aform.getByLabel('Agent name').fill('gateway');
   await aform.getByLabel('Agent credential').selectOption('gw-v3');
   await aform.getByTestId('agent-keep').click();
-  await expect(settings.getByTestId('agent-gateway')).toContainText('192.0.2.1');
+  await expect(settings.getByTestId('agent-gateway')).toContainText('10.0.0.1');
   // An unsaved agent can't be tested yet.
   await expect(settings.getByRole('button', { name: 'Test agent gateway' })).toBeDisabled();
   // The real server checks the whole change and stores exactly what was checked.

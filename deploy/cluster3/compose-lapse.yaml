@@ -1,5 +1,5 @@
-# The soak topology for T24.26 (lapse-soak.sh): two eligible nodes and a witness, like the owner's
-# three Raspberry Pis, in its own compose project and its own volumes. No host ports are
+# The soak topology for T24.26 (lapse-soak.sh): two eligible nodes and a witness, like a
+# three-node Raspberry Pi cluster, in its own compose project and its own volumes. No host ports are
 # published. Each node's data volume sits on the Docker data disk; DISK_DEV (a block device
 # of the Docker VM, e.g. /dev/sdb) with WRITE_BPS caps the write rate of every node, which is
 # how a slow SD card is imitated (compose's blkio_config).

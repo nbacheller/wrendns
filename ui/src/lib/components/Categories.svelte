@@ -348,7 +348,7 @@
   }
   .cgroup {
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     padding: 8px 12px;
   }
   .cgroup header {
@@ -398,26 +398,22 @@
     margin: 4px 0;
   }
   .tiers button {
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     background: var(--surface);
     color: var(--text);
-    padding: 2px 10px;
-    font-size: 0.85em;
+    padding: 0 var(--space-3);
+    font-size: var(--type-label-size);
     cursor: pointer;
   }
   .tiers button:first-child {
-    border-radius: 6px 0 0 6px;
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
   }
   .tiers button:last-child {
-    border-radius: 0 6px 6px 0;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   }
   .tiers button.on {
     background: var(--accent);
-    color: var(--on-accent, #fff);
-  }
-  .tiers button:disabled {
-    opacity: 0.6;
-    cursor: default;
+    color: var(--accent-text);
   }
   .cat-source {
     display: block;
@@ -427,7 +423,7 @@
   .pop {
     margin-top: 6px;
     padding: 6px 10px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
   }
   .pop p {

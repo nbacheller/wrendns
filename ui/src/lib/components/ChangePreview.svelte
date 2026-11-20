@@ -31,7 +31,7 @@
 <style>
   .preview {
     border: 1px dashed var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 10px 12px;
   }
   .preview p {

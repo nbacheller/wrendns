@@ -58,7 +58,7 @@
     outline: none;
   }
   .tip:focus-visible {
-    outline: 2px solid var(--focus, var(--accent));
+    outline: 2px solid var(--focus);
     outline-offset: 2px;
     border-radius: 3px;
   }
@@ -67,12 +67,12 @@
     z-index: 50;
     width: max-content;
     max-width: min(320px, 80vw);
-    padding: 8px 10px;
-    border-radius: 8px;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow, 0 4px 16px rgb(0 0 0 / 15%));
+    box-shadow: var(--shadow-float);
     font-size: 0.8125rem;
     font-weight: 400;
     line-height: 1.4;
@@ -82,7 +82,7 @@
     pointer-events: none;
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.12s;
+    transition: opacity var(--motion);
   }
   .bubble.open {
     opacity: 1;

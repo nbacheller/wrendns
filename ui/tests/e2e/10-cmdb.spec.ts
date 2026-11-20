@@ -161,6 +161,10 @@ test('dsc_903 merge two devices with a preview; the old id redirects', async () 
   await rowA.getByRole('button').click();
   const ci = page.getByTestId('cmdb-ci');
   await expect(ci).toHaveAttribute('data-ci', idA);
+  // The seen line keeps its spaces ("9:20:15 PM on 1 day", never "PMon"): Svelte trims a block's
+  // leading space.
+  await expect(ci.locator('p.small').first()).toContainText('first seen');
+  await expect(ci.locator('p.small').first()).not.toHaveText(/\Son \d+ days?/);
   await expect(ci.locator('[data-testid="cmdb-record"][data-source="config"]')).toBeVisible();
   // Merge A into B: the preview lists A's records, nothing is written until Apply.
   await ci.getByTestId('cmdb-merge').click();

@@ -125,7 +125,7 @@ command -v "$SYSTEMCTL" >/dev/null 2>&1 || SYSTEMCTL=true
 preflight_dir "$OLD_DATA" "$NEW_DATA"
 preflight_dir "$OLD_ETC" "$NEW_ETC"
 
-# Other units the owner runs as the telltale user (a witness, a trial watchdog): found now, because
+# Other units an operator runs as the telltale user (a witness, a trial watchdog): found now, because
 # the rename of the user needs them stopped, and they must run as wrendns afterwards.
 OTHER_UNITS=""
 if [ -d "$UNIT_DIR" ]; then

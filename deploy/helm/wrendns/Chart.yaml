@@ -14,3 +14,6 @@ keywords: [dns, resolver, adblock, dot, doh, prometheus]
 maintainers:
   - name: WrenDNS
     url: https://github.com/nbacheller/wrendns
+# REQ: ADR-1033 — WrenDNS is AGPL-3.0-or-later (Chart.yaml v2 has no licence field; Artifact Hub reads this).
+annotations:
+  artifacthub.io/license: AGPL-3.0-or-later

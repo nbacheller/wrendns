@@ -72,9 +72,9 @@
     max-width: 640px;
   }
   .flow figcaption {
-    font-size: 13px;
+    font-size: var(--type-label-size);
     color: var(--muted);
-    margin-top: 6px;
+    margin-top: var(--space-2);
   }
   :global(.flow-box) {
     fill: var(--surface);
@@ -92,18 +92,18 @@
     stroke: var(--bad);
     stroke-width: 2.5;
   }
+  /* WrenDNS itself: the identity tint (`sky`) with `on-sky` text, readable in Day and Night (T33.6). */
   :global(.flow-core) {
-    fill: var(--brand);
+    fill: var(--brand-sky);
   }
   :global(.flow-core-text) {
-    fill: #fff;
+    fill: var(--brand-on-sky);
     font-weight: 700;
     font-size: 14px;
   }
   :global(.flow-core-sub) {
-    fill: #fff;
-    opacity: 0.8;
-    font-size: 11px;
+    fill: var(--brand-on-sky);
+    font-size: 12px;
   }
   :global(.flow-text) {
     fill: var(--text);
@@ -112,18 +112,16 @@
   }
   :global(.flow-sub) {
     fill: var(--muted);
-    font-size: 11px;
+    font-size: 12px;
   }
   :global(.flow-line) {
     fill: none;
     stroke: var(--border);
     stroke-width: 1.5;
-    opacity: 0.6;
   }
   :global(.flow-line.flow-on) {
     stroke: var(--accent);
     stroke-width: 3;
-    opacity: 1;
   }
   :global(.flow-head) {
     fill: var(--accent);

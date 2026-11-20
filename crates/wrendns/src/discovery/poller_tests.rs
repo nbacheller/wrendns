@@ -26,7 +26,7 @@ fn config(dir: &std::path::Path, extra: &str) -> Config {
     std::fs::write(dir.join("auth"), "planted-auth-secret").unwrap();
     let toml = format!(
         "[node]\nsecret_file_dirs = [\"{d}\"]\n[discovery]\nenabled = true\n\
-         [[discovery.subnet]]\ncidr = \"192.0.2.0/24\"\n\
+         [[discovery.subnet]]\ncidr = \"10.0.10.0/24\"\n\
          [[discovery.subnet]]\ncidr = \"192.168.20.0/24\"\n\
          [[discovery.snmp_credential]]\nname = \"v2\"\ncommunity_file = \"{d}/comm\"\n\
          [[discovery.snmp_credential]]\nname = \"v3\"\nversion = \"v3\"\nuser = \"u\"\nauth_protocol = \"sha\"\nauth_password_file = \"{d}/auth\"\npriv_protocol = \"aes-128\"\n\
@@ -53,14 +53,14 @@ fn dsc_004_request_checks_destination_and_reads_the_credential() {
         dir.path(),
         &format!(
             "{}{}",
-            agent_toml("gateway", "192.0.2.1", "v3"),
-            agent_toml("old", "192.0.2.2", "v2")
+            agent_toml("gateway", "10.0.10.1", "v3"),
+            agent_toml("old", "10.0.10.2", "v2")
         ),
     );
     let ctx = PollerCtx::of(&cfg);
     let gw = ctx.agent("gateway").unwrap();
     let req = ctx.request(gw, None).unwrap();
-    assert_eq!(req.address, Ipv4Addr::new(192, 0, 2, 1));
+    assert_eq!(req.address, Ipv4Addr::new(10, 0, 10, 1));
     match &req.auth {
         AuthSpec::V3 {
             user,
@@ -113,7 +113,7 @@ fn dsc_004_request_checks_destination_and_reads_the_credential() {
 #[test]
 fn dsc_014_agent_state_follows_its_polls() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let cfg = config(dir.path(), &agent_toml("gateway", "10.0.10.1", "v2"));
     let ctx = PollerCtx::of(&cfg);
     let board = AgentsBoard::default();
     board.configure(&ctx.agents);
@@ -158,7 +158,7 @@ fn dsc_014_agent_state_follows_its_polls() {
 #[test]
 fn dsc_004_test_cooldown_is_sixty_seconds() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let cfg = config(dir.path(), &agent_toml("gateway", "10.0.10.1", "v2"));
     let ctx = PollerCtx::of(&cfg);
     let board = AgentsBoard::default();
     board.configure(&ctx.agents);
@@ -180,7 +180,7 @@ fn dsc_004_test_cooldown_is_sixty_seconds() {
 #[test]
 fn dsc_004_the_oids_a_test_queries() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let cfg = config(dir.path(), &agent_toml("gateway", "10.0.10.1", "v2"));
     let agent = PollerCtx::of(&cfg).agents[0].clone();
     let oids = test_oids(&agent);
     let arp: Vec<&str> = oids
@@ -251,8 +251,8 @@ async fn dsc_004_a_poll_goes_from_queue_to_board_to_inventory() {
         dir.path(),
         &format!(
             "{}{}",
-            agent_toml("gateway", "192.0.2.1", "v2"),
-            agent_toml("sw1", "192.0.2.2", "v2")
+            agent_toml("gateway", "10.0.10.1", "v2"),
+            agent_toml("sw1", "10.0.10.2", "v2")
         ),
     );
     let ctx = Arc::new(PollerCtx::of(&cfg));
@@ -277,7 +277,7 @@ async fn dsc_004_a_poll_goes_from_queue_to_board_to_inventory() {
     let gw = rx.recv().await.unwrap();
     assert_eq!(gw.agent, "gateway");
     assert!(
-        gw.observations.len() >= 98 / 2,
+        gw.observations.len() >= 90 / 2,
         "ARP entries of the listed subnets: {}",
         gw.observations.len()
     );
@@ -308,7 +308,7 @@ async fn dsc_004_a_poll_goes_from_queue_to_board_to_inventory() {
         "the gateway has no bridge MIB"
     );
     assert_eq!(state_of(g, "lldp"), "unanswered");
-    assert_eq!(g.last_counts.as_ref().unwrap().ipv6_ignored, 81);
+    assert_eq!(g.last_counts.as_ref().unwrap().ipv6_ignored, 72);
     assert_eq!(
         g.capability.as_ref().unwrap().sys_object_id.as_deref(),
         Some("1.3.6.1.4.1.8072.3.2.10")
@@ -332,7 +332,7 @@ async fn dsc_004_a_poll_goes_from_queue_to_board_to_inventory() {
 #[tokio::test]
 async fn dsc_004_failed_polls_merge_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let cfg = config(dir.path(), &agent_toml("gateway", "10.0.10.1", "v2"));
     let ctx = Arc::new(PollerCtx::of(&cfg));
     let board = Arc::new(AgentsBoard::default());
     board.configure(&ctx.agents);
@@ -379,7 +379,7 @@ fn dsc_004_a_closed_reply_marks_a_stale_request() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dsc_004_snmp_test_dry_run_and_cooldown() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let cfg = config(dir.path(), &agent_toml("gateway", "10.0.10.1", "v2"));
     let rt = Runtime::default();
     let write = |agent: &str, dry_run: bool| wrendns_api::SnmpTestWrite {
         agent: agent.into(),
@@ -452,7 +452,7 @@ fn dsc_004_arp_bindings_expire_after_twice_the_interval() {
         dir.path(),
         &format!(
             "{}interval_secs = 3600\n",
-            agent_toml("gateway", "192.0.2.1", "v2")
+            agent_toml("gateway", "10.0.10.1", "v2")
         ),
     );
     let ctx = Arc::new(PollerCtx::of(&cfg));
@@ -470,7 +470,7 @@ fn dsc_004_arp_bindings_expire_after_twice_the_interval() {
     let mut o = Observation::new(super::super::inventory::Source::SnmpArp, now);
     let mac = parse_mac("3c:22:fb:01:00:01").unwrap();
     o.mac = Some(mac);
-    o.ip = Some("192.0.2.10".parse().unwrap());
+    o.ip = Some("10.0.10.10".parse().unwrap());
     inv.apply(&[o], now);
     thread::tick(&mut inv, &providers, now + 7_000);
     assert!(inv.get(&Key::Mac(mac)).unwrap().snmp_eligible());
@@ -487,7 +487,7 @@ fn dsc_004_arp_bindings_expire_after_twice_the_interval() {
 #[test]
 fn dsc_014_agent_metrics_name_each_agent_and_table() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let cfg = config(dir.path(), &agent_toml("gateway", "10.0.10.1", "v2"));
     let rt = Runtime::default();
     rt.designate_for_tests(&cfg);
     let mut w = wrendns_telemetry::prom::PromWriter::new();
@@ -516,7 +516,7 @@ fn dsc_014_agent_metrics_name_each_agent_and_table() {
         walks: vec![WalkStat {
             part: "arp".into(),
             alt: "ipNetToPhysicalTable".into(),
-            rows: 98,
+            rows: 90,
             stop: "end".into(),
             error: None,
         }],
@@ -538,7 +538,7 @@ fn dsc_014_agent_metrics_name_each_agent_and_table() {
         "wrendns_discovery_agent_poll_failures_total{agent=\"gateway\"} 0",
         "wrendns_discovery_agent_last_success_timestamp_seconds{agent=\"gateway\"} 1800000000",
         "wrendns_discovery_agent_poll_duration_seconds{agent=\"gateway\"} 1.5",
-        "wrendns_discovery_agent_table_rows{agent=\"gateway\",table=\"arp\"} 98",
+        "wrendns_discovery_agent_table_rows{agent=\"gateway\",table=\"arp\"} 90",
         "wrendns_discovery_agent_table_answered{agent=\"gateway\",table=\"arp\"} 1",
         "wrendns_discovery_agent_table_answered{agent=\"gateway\",table=\"bridge\"} 0",
     ] {

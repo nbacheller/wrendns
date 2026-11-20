@@ -2,7 +2,7 @@
 # REQ: DSC-003 (T25.5, ADR-908, ADR-911): SNMPv3 USM interop against a throwaway net-snmp snmpd.
 #
 # The agent runs in a container on a Docker bridge network made for this script (172.30.247.0/24,
-# an RFC 1918 range, isolated: no host networking, nothing published, not the owner's LAN). The
+# an RFC 1918 range, isolated: no host networking, nothing published, not the host's LAN). The
 # USM users and their passwords are generated at run time into files in a private work directory,
 # never printed and never committed. The users cover SHA and SHA-256, each at authNoPriv and
 # authPriv (AES-128). The network, the container and the work directory are removed on exit,

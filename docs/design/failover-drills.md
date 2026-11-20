@@ -97,8 +97,8 @@ window.
 **A Kubernetes resolver pod behind one balancer address** gets the same drill but a different story: its
 clients never see a server change; what the report measures is the balancer. For an ephemeral node the
 report adds `balancerSwitchMs` = last dropped query − drill start (how long the Service kept sending to a
-not-ready pod) and labels the device verdicts "via balancer". The owner's two addresses (the Pi and
-.112) are two servers from a device's point of view; the Pi is the interesting drill.
+not-ready pod) and labels the device verdicts "via balancer". Two resolver addresses (a Pi and
+another server) are two servers from a device's point of view; the Pi is the interesting drill.
 
 ## 6. API, CLI, MCP (decision)
 - `POST /api/v1/nodes/{id}/drill` `{ "forSecs": 60, "targets": "all" | { "clients": ["10.20.2.14",
@@ -192,5 +192,5 @@ answering. Run a drill to find out."* No finding, no alert, no health reason.
 - **Dropping versus answering REFUSED:** the design drops because every stub resolver fails over on a
   timeout and only some on REFUSED. If the owner prefers a faster, less realistic drill, `mode:
   "refused"` is a one-line addition; don't build it unless asked.
-- **The live Pi:** the obvious first real drill. Ask before running it; suggest a 30-second drill on the
-  owner's own laptop first, then a group, then all.
+- **A live Pi:** the obvious first real drill. Ask before running it; suggest a 30-second drill on
+  one laptop first, then a group, then all.

@@ -527,7 +527,7 @@
       <section class="card" data-testid="cmdb-ci" data-ci={detail.ci.id}>
         <h2>{detail.ci.name ?? detail.ci.id}</h2>
         <p class="small">
-          <code>{detail.ci.id}</code> · {detail.ci.ty}{#if detail.ci.kind} ({detail.ci.kind}){/if} · first seen {when(detail.ci.firstSeen)}{#if detail.ci.lastSeen}, last seen {when(detail.ci.lastSeen)}{/if}{#if detail.ci.daysSeen} on {detail.ci.daysSeen} day{detail.ci.daysSeen === 1 ? '' : 's'}{/if}
+          <code>{detail.ci.id}</code> · {detail.ci.ty}{#if detail.ci.kind} ({detail.ci.kind}){/if} · first seen {when(detail.ci.firstSeen)}{#if detail.ci.lastSeen}, last seen {when(detail.ci.lastSeen)}{/if}{#if detail.ci.daysSeen}{' '}on {detail.ci.daysSeen} day{detail.ci.daysSeen === 1 ? '' : 's'}{/if}
         </p>
         {#if detail.ci.unconfirmed}<p class="small">No source confirms this yet: it was made from a record with no key that matched no device.</p>{/if}
         {#each detail.aliases as a (a.id)}
@@ -615,7 +615,7 @@
 <style>
   tr.differs th,
   tr.differs td {
-    background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
   }
   ul.plain {
     list-style: none;
@@ -627,10 +627,10 @@
   }
   .chip {
     display: inline-block;
-    padding: 0 0.4rem;
-    margin-right: 0.25rem;
-    border: 1px solid var(--border, #8884);
-    border-radius: 999px;
-    font-size: 0.75rem;
+    padding: 0 var(--space-1);
+    margin-right: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-mono-sm-size);
   }
 </style>

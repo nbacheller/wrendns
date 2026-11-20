@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   // REQ: CLU-013 (T13.2, ADR-116) — staged rollouts and pins on the Cluster page: a banner while
   // the cluster is pinned (to what, since when, by whom, why, what it holds back; Unpin), the
   // version baking (canaries and what each runs, time left, the guard's readings; Promote,
@@ -190,7 +191,7 @@
               <td>
                 {n.appliedSeq}
                 {#if status.version && status.stage === 'canary'}
-                  {#if String(n.appliedSeq) === status.version.split('.')[1]}<span class="ok-text" title="runs the version baking">✓</span>
+                  {#if String(n.appliedSeq) === status.version.split('.')[1]}<span class="ok-text" role="img" aria-label="runs the version baking" title="runs the version baking"><Icon name="check" size={16} /></span>
                   {:else if n.canary}<span class="muted" title="getting it">…</span>{/if}
                 {/if}
               </td>
@@ -279,7 +280,7 @@
   }
   .baking {
     border: 1px dashed var(--warn);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 8px 12px;
     margin: 8px 0;
   }

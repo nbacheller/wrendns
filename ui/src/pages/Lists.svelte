@@ -609,7 +609,7 @@
           <div class="row">
             <strong>{s.list}</strong>
             <span class="muted small">
-              {num(s.hits)} {s.hits === 1 ? 'query' : 'queries'} from {num(s.devices)} {s.devices === 1 ? 'device' : 'devices'}{#if s.since} since {ago(Date.parse(s.since) / 1000)}{/if}{#if s.lastHitAt} · last {ago(Date.parse(s.lastHitAt) / 1000)}{/if}
+              {num(s.hits)} {s.hits === 1 ? 'query' : 'queries'} from {num(s.devices)} {s.devices === 1 ? 'device' : 'devices'}{#if s.since}{' '}since {ago(Date.parse(s.since) / 1000)}{/if}{#if s.lastHitAt}{' '}· last {ago(Date.parse(s.lastHitAt) / 1000)}{/if}
             </span>
           </div>
           {#if s.topNames.length}
@@ -662,16 +662,16 @@
     margin: 0 0 8px;
   }
   .chip {
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     background: var(--surface);
     color: var(--text);
-    border-radius: 999px;
-    padding: 2px 12px;
+    border-radius: var(--radius-full);
+    padding: 0 var(--space-3);
     cursor: pointer;
   }
   .chip.on {
     background: var(--accent);
-    color: var(--on-accent, #fff);
+    color: var(--accent-text);
   }
   .head-side {
     display: flex;
@@ -716,8 +716,9 @@
   .warn-text {
     color: var(--warn);
   }
-  tr.off {
-    opacity: 0.6;
+  /* A list that is off: muted text, not faded (T33.6). */
+  tr.off td {
+    color: var(--muted);
   }
   .shadow-list {
     display: grid;

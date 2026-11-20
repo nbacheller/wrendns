@@ -1249,18 +1249,13 @@ mod tests {
         };
         r.put_hour_extras(
             3600,
-            &[(
-                "clients",
-                vec![row("10.20.2.14", 900), row("10.0.0.9", 4)],
-            )],
+            &[("clients", vec![row("10.20.2.14", 900), row("10.0.0.9", 4)])],
             &[],
         )
         .unwrap();
         r.put_hour_extras(7200, &[("clients", vec![row("10.0.0.9", 7)])], &[])
             .unwrap();
-        let (found, hours) = r
-            .top_key_hours(0, 10_800, "clients", "10.20.2.14")
-            .unwrap();
+        let (found, hours) = r.top_key_hours(0, 10_800, "clients", "10.20.2.14").unwrap();
         assert_eq!(found, [(3600, 900)]);
         assert_eq!(hours, [3600, 7200], "listed in 7200 too, without the key");
     }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '../components/Icon.svelte';
   // Dashboard lab — one number with its label and its change against the previous period. No
   // card, ring or sparkline: the change is plain colored text, colored by what is good for the
   // metric, not by direction.
@@ -26,7 +27,7 @@
   const text = $derived.by(() => {
     if (delta == null || !Number.isFinite(delta) || Math.abs(delta) < 0.005) return '';
     const p = Math.abs(delta) * 100;
-    return `${delta > 0 ? '▲' : '▼'} ${p >= 100 ? Math.round(p).toLocaleString() : p.toFixed(p < 10 ? 1 : 0)}%`;
+    return `${p >= 100 ? Math.round(p).toLocaleString() : p.toFixed(p < 10 ? 1 : 0)}%`;
   });
 </script>
 
@@ -35,7 +36,9 @@
   <div class="value {tone}">{value}</div>
   {#if text || sub}
     <div class="foot">
-      {#if text}<span class="delta {kind}" title="Against the previous period of the same length">{text}</span>{/if}
+      {#if text}<span class="delta {kind}" title="Against the previous period of the same length"
+          ><Icon name={(delta ?? 0) > 0 ? 'up' : 'down'} size={12} /><span class="sr-only">{(delta ?? 0) > 0 ? 'up' : 'down'}</span> {text}</span
+        >{/if}
       {#if sub}<span class="sub">{sub}</span>{/if}
     </div>
   {/if}
@@ -66,7 +69,7 @@
     font-size: 26px;
   }
   .lg .value {
-    font-size: 38px;
+    font-size: var(--type-h1-size);
   }
   .value.bad {
     color: var(--bad);

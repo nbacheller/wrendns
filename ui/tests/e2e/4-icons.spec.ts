@@ -4,7 +4,7 @@
 import { expect, test } from '@playwright/test';
 import { BRANDS } from '../../src/lib/icons/brands';
 import { BRAND_OF, BRAND_TITLE } from '../../src/lib/icons/map.data';
-import { brandFor, hueOf, inkFor, isHashed, isInternal, letterOf, registrable } from '../../src/lib/icons/map';
+import { brandFor, inkFor, isHashed, isInternal, letterOf, registrable } from '../../src/lib/icons/map';
 import { DEFAULT_PREFS, ICON_PX, parsePrefs } from '../../src/lib/icons/prefs';
 
 test('obs_039 a brand owns its domains, subdomains and CDNs, on label boundaries only', () => {
@@ -86,16 +86,8 @@ test('obs_039 a name the privacy level hid wears no icon, and a look-alike is st
   expect(isHashed('hello')).toBe(false);
 });
 
-test('obs_039 a name without a brand keeps one colour and one letter', () => {
-  // The same owner is always the same colour, whatever the subdomain.
-  expect(hueOf(registrable('a.example.org'))).toBe(hueOf(registrable('b.c.example.org')));
-  for (const reg of ['example.org', 'nx.example', 'tv-vendor.example', 'bbc.co.uk', 'x.io']) {
-    const h = hueOf(reg);
-    expect(Number.isInteger(h) && h >= 0 && h < 360, reg).toBe(true);
-  }
-  // Different owners spread over the wheel (a degenerate hash would put them all together).
-  const hues = new Set(['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'f.com', 'g.com', 'h.com'].map(hueOf));
-  expect(hues.size).toBeGreaterThan(4);
+// A name without a brand wears its owner's letter (T33.6 dropped the per-owner hue, now unused).
+test('obs_039 a name without a brand keeps one letter', () => {
   expect(letterOf('bbc.co.uk')).toBe('B');
   expect(letterOf('www.example.com')).toBe('E');
   expect(letterOf(registrable('cdn.nx.example'))).toBe('N');

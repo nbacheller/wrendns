@@ -535,7 +535,7 @@ UNIT=/etc/systemd/system/wrendns.service
 if [ -f "$HERE/wrendns.service" ]; then cp "$HERE/wrendns.service" "$TMP/wrendns.service"
 else fetch "$REPO_RAW/deploy/systemd/wrendns.service" "$TMP/wrendns.service"; fi
 if [ "$MIGRATED" = yes ] && [ -f "$UNIT" ]; then
-  # The unit the migration carried over from the old one holds the owner's edits: keep it.
+  # The unit the migration carried over from the old one holds the operator's edits: keep it.
   say "Keeping $UNIT, carried over from the old unit"
 else
   sed "s#/usr/local/bin/wrendns#$PREFIX/bin/wrendns#" "$TMP/wrendns.service" > "$UNIT"

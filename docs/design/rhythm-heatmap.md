@@ -36,7 +36,7 @@ and the response stay < 200 KB (send `u32` arrays, not objects). Default grain: 
 
 Weekday mode folds the days of the window onto Mon..Sun (sum or mean per cell; default **mean**, so a
 4-week window reads as a typical week). Local time comes from the browser; the API returns UTC
-starts, never local hours (nodes in different zones are the owner's eventual case).
+starts, never local hours (nodes in different zones are a possible later case).
 
 ## 4. API (decision)
 `GET /api/v1/stats/heatmap?from&to&grain=hour|15m|minute&kind=network|client|name&key=&measure=queries|blocked&scope`

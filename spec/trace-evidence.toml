@@ -13,7 +13,7 @@
 "NFR-006" = [
   "clean-room rule in `AGENTS.md` (rule 6) and `docs/analysis.md` (what was learned from public docs only)",
   "importers read Pi-hole's and Technitium's documented formats, no code (`spec/11`)",
-  "dependencies are permissive licenses only (`deny.toml`, the CI `deny` job)",
+  "Rust dependencies are permissive licenses, plus MPL-2.0 per file (`deny.toml`, the CI `deny` job)",
 ]
 "OPS-002" = [
   "the chart is linted (`helm lint --strict`) and installed on kind and k3d in CI (the `helm` jobs, `deploy/helm/scaled-e2e.sh`)",

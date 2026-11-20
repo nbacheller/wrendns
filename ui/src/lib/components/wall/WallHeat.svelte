@@ -30,7 +30,7 @@
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, hgt);
-    const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888';
+    const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
     draw(ctx, grid, geo, { ink: css('--hm-ink'), bg: css('--hm-bg'), muted: css('--muted'), hatch: css('--hm-hatch') }, null);
   });
 </script>

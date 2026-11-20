@@ -447,7 +447,7 @@
     },
     {
       "id": "local-dns",
-      "title": "Names on my network",
+      "title": "Names on your network",
       "term": "Local records (zone)",
       "summary": "Names WrenDNS answers itself, like nas.home.arpa → 192.168.1.10, so you type a name instead of an address.",
       "when": "You run a NAS, printer, or server at home and want a name for it.",
@@ -706,7 +706,7 @@
       "summary": "WrenDNS keeps upstream answers until their time to live runs out, so repeat questions are answered in microseconds. Here you can see each node's hit rate, look up what's cached for a name (and how long it stays fresh), and flush a name, everything under it, or the whole cache, on every node or one.",
       "when": "A site moved to a new address and you don't want to wait for the old answer to expire, or you're checking whether an answer came from the cache.",
       "example": "Look up www.example.com: A, NOERROR, 1 answer, validated, 212 s left, on both nodes. Flush it, and the next query asks the upstreams again.",
-      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on my network instead. Each node in a cluster has its own cache.",
+      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on your network instead. Each node in a cluster has its own cache.",
       "docs": "cache-tools"
     },
     {
@@ -781,7 +781,7 @@
     },
     {
       "id": "updates",
-      "title": "Which version am I running?",
+      "title": "Which version is running?",
       "term": "Version and update status",
       "summary": "The exact build (version, commit, channel), and whether a newer one exists on your channel, checked once a day against a signed release list.",
       "when": "Before reporting a problem, or to know when to update.",
@@ -833,12 +833,22 @@
       "id": "alerts",
       "title": "Alerts",
       "term": "Alert rules and destinations",
-      "summary": "Messages to ntfy, Gotify, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
+      "summary": "Messages to ntfy, Gotify, Pushover, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
       "when": "You want to hear about problems without watching the dashboard.",
       "example": "An ntfy push to your phone when Quad9 has been unreachable for a minute, and another when it's back.",
       "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in a stored secret (the token field keeps it encrypted), not in the config file.",
       "docs": "alerts",
       "general": true
+    },
+    {
+      "id": "pushover",
+      "title": "Pushover keys",
+      "term": "Pushover application token and user key",
+      "summary": "A Pushover destination needs two secrets: the API token of an application you make for WrenDNS, and your user key (or a delivery group's key).",
+      "when": "You are adding a Pushover alert destination and need to know where the two values come from.",
+      "example": "On pushover.net, sign in: your user key is shown at the top right of the dashboard. Under Your Applications choose Create an Application/API Token, name it WrenDNS, and copy its API Token/Key. Paste the token into the Token field and the user key into the User or group key field.",
+      "caution": "Both are stored encrypted on the node and never shown again; anyone with them can send you messages. If one leaks, reset the token on pushover.net and store the new one. Alerts go out with priority 0 (firing) and -1 (resolved) unless you change them; emergency priority is not offered.",
+      "docs": "alerts"
     },
     {
       "id": "alert-conditions",
@@ -1072,7 +1082,7 @@
     },
     {
       "id": "vqlog",
-      "title": "vqlog",
+      "title": "The vqlog language",
       "term": "Analytics in one query",
       "summary": "A small query language over the query log: filter, group, top lists, percentiles, and time series, with the cost shown. Never SQL.",
       "when": "Asking a question no dashboard answers, yourself or through an AI agent (the MCP tool vqlog).",
@@ -1170,7 +1180,7 @@
       "term": "Stored secret",
       "summary": "A password or token (a router's API key, an alert's token, an OIDC client secret) kept in WrenDNS's own database, encrypted with the node's key, and never shown again once saved. Settings → Integrations & secrets lists them and shows where each one is used.",
       "when": "You'd rather type a password or token into the UI than put a file on the machine.",
-      "example": "api_key_ref = \"unifi\" uses the stored secret named unifi as the UniFi console's API key.",
+      "example": "api_key_ref = \"router-key\" uses the stored secret named router-key as the UniFi console's API key.",
       "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups leave them out unless you give a passphrase (Settings → System → Backup).",
       "docs": "stored-secrets"
     },
@@ -1180,7 +1190,7 @@
       "term": "Secret held by every member",
       "summary": "A stored secret is replicated, encrypted, to every full member of the cluster, so the node that becomes the primary can use it (a router's API key keeps working after a failover). This list is the same on every node: for each full member it shows whether it has the secret, can read it, holds an older version, or didn't answer. Only stamps and health are exchanged, never a value or a ciphertext. A resolver pod or a witness holds none, by design.",
       "when": "You see the secret on one node and wonder whether the cluster really keeps a copy on the others, or a warning says a member is missing one.",
-      "example": "node-a, node-b and node-c each show \"has it\" with the same stamp for the secret unifi: if node-b is lost, node-a reads the router with its own copy.",
+      "example": "node-a, node-b and node-c each show \"has it\" with the same stamp for the secret router-key: if node-b is lost, node-a reads the router with its own copy.",
       "caution": "A member that is missing a secret, holds an older one or can't read it raises a warning and a degraded health reason (secret_not_held), never an unhealthy DNS: DNS doesn't use stored secrets. A member that didn't answer is shown as unknown, not as missing. Give it a minute, then check its secrets key.",
       "docs": "stored-secrets"
     },
@@ -1322,7 +1332,7 @@
       "when": "You are moving from Pi-hole to WrenDNS, or want to see what a Pi-hole export holds before you decide.",
       "example": "Upload the Teleporter zip from Pi-hole v6. The preview lists its upstreams, local names, lists and groups, and the notes say what has no equivalent, such as the DHCP server and the query history. Apply writes them in one change, which the audit log records as import.pihole.",
       "caution": "Nothing changes until you apply. Names the config files define are skipped, and DNSSEC is set in the file, not here. The Points to column shows where each entry goes: a file list reads a file on this machine, and the notes say so. Discard forgets a preview without a change. Only admins can import, and agents can't. A preview expires after ten minutes; if the configuration changes meanwhile, preview again.",
-      "docs": "migrating-from-pihole"
+      "docs": "moving-from-pi-hole"
     },
     {
       "id": "pihole-api",
@@ -1342,7 +1352,7 @@
       "when": "Before you switch your network's DNS to WrenDNS, to see what would change for the names you use.",
       "example": "The sample has your local names, the CNAMEs, and a few blocked domains. A difference such as NXDOMAIN on WrenDNS against an address on the Pi-hole means that name isn't answered the same yet.",
       "caution": "WrenDNS answers from its running configuration. Run the imported configuration first, or the comparison shows what the node answers now. Each name costs two queries to each server, and the comparison stops after a minute.",
-      "docs": "migrating-from-pihole"
+      "docs": "moving-from-pi-hole"
     },
     {
       "id": "network-inventory",
@@ -1704,6 +1714,16 @@
       "example": "A printer's mDNS record attached to the wrong device. Unlink it: it will not be matched to that device again and stands on its own, or Move it to the printer's own item.",
       "caution": "A MAC address identifies an interface, so moving or unlinking a record with a MAC moves the whole interface with every record of that MAC. Operators and admins may do this; nothing here changes the network.",
       "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "api-http-redirect",
+      "title": "Send port 80 to HTTPS",
+      "term": "HTTP to HTTPS redirect",
+      "summary": "When the web UI is served over HTTPS (for example on 443), this opens a second, plain-HTTP listener (for example 0.0.0.0:80) that answers every request with a redirect to the https:// address of the same host and path, and answers the health probes. It serves nothing else.",
+      "when": "You put the UI on port 443 with [api] tls and want http://host/ to reach it. Leave it empty to keep it off.",
+      "example": "Address 0.0.0.0:80 with the UI on 443: typing http://dns.example.com in a browser lands on https://dns.example.com/. With the UI on 8053 the redirect adds the port: https://dns.example.com:8053/.",
+      "caution": "Needs [api] tls, and takes effect at the next start (Restart now where the node has a supervisor). Port 80 needs CAP_NET_BIND_SERVICE: the systemd unit has it; in Docker and Kubernetes publish the port yourself. If it can't bind, only a log line says so: DNS and the UI are not affected. A value set in the configuration file wins and locks the control.",
+      "docs": "https-without-a-proxy"
     }
   ]
 }

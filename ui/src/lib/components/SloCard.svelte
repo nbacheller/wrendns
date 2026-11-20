@@ -120,13 +120,13 @@
   .bar {
     height: 8px;
     background: var(--surface-2);
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     overflow: hidden;
   }
   .bar span {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--muted);
   }
   .bar.ok span {

@@ -81,3 +81,7 @@ The palette is sky, navy and white: no browns, tans or earth tones. Two themes s
 ## Logo
 
 The logo is the wren alone, in one color: `ink` on Day surfaces and Night's `ink` on Night surfaces. In the lockup it sits on the baseline of the **wrendns** wordmark. All files are in the Logos group; see the Logo section for clear space, sizes and don'ts. Never redraw, recolor or re-type it.
+
+## Social preview
+
+`social-preview.png` (1280×640, PNG) is the GitHub repository's social preview image, uploaded in Settings, General (GitHub takes PNG, JPG or GIF, not SVG). `social-preview.svg` is its source, with the text as outlines so it renders without the fonts. It is the owner's design: the Day lockup, "Put a bird on it!", the one-line description and the repository address, on the Day surface with the sky panel and the brand swatches.

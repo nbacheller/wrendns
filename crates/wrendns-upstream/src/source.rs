@@ -111,16 +111,16 @@ mod tests {
     #[test]
     fn ups_013_resolve_address_held_and_foreign() {
         let held = [
-            a("eth0", "192.168.1.252", true),
-            a("eth0.100", "198.51.100.252", true),
+            a("eth0", "192.168.1.12", true),
+            a("eth0.100", "198.51.100.12", true),
         ];
-        let ip: IpAddr = "198.51.100.252".parse().unwrap();
-        assert_eq!(resolve_source("198.51.100.252", &held).unwrap(), ip);
-        assert_eq!(resolve_source("198.51.100.252:0", &held).unwrap(), ip);
+        let ip: IpAddr = "198.51.100.12".parse().unwrap();
+        assert_eq!(resolve_source("198.51.100.12", &held).unwrap(), ip);
+        assert_eq!(resolve_source("198.51.100.12:0", &held).unwrap(), ip);
         let e = resolve_source("203.0.113.252", &held).unwrap_err();
         assert!(e.contains("holds no such address"), "{e}");
-        assert!(e.contains("198.51.100.252 on eth0.100"), "{e}");
-        assert!(resolve_source("198.51.100.252:53", &held).is_err());
+        assert!(e.contains("198.51.100.12 on eth0.100"), "{e}");
+        assert!(resolve_source("198.51.100.12:53", &held).is_err());
         assert!(resolve_source("0.0.0.0", &held).is_err());
         assert!(resolve_source("not an address", &held).is_err());
     }
@@ -129,27 +129,27 @@ mod tests {
     /// upstream works on nodes whose addresses differ (.12 on one node, .11 on the other).
     #[test]
     fn ups_013_resolve_network_picks_the_nodes_own_address() {
-        let pi1 = [
-            a("eth0", "192.168.1.251", true),
-            a("eth0.100", "198.51.100.251", true),
+        let node_a = [
+            a("eth0", "192.168.1.11", true),
+            a("eth0.100", "198.51.100.11", true),
         ];
-        let pi2 = [
-            a("eth0", "192.168.1.252", true),
-            a("eth0.100", "198.51.100.252", true),
+        let node_b = [
+            a("eth0", "192.168.1.12", true),
+            a("eth0.100", "198.51.100.12", true),
         ];
         assert_eq!(
-            resolve_source("198.51.100.0/24", &pi1)
+            resolve_source("198.51.100.0/24", &node_a)
                 .unwrap()
                 .to_string(),
-            "198.51.100.251"
+            "198.51.100.11"
         );
         assert_eq!(
-            resolve_source("198.51.100.0/24", &pi2)
+            resolve_source("198.51.100.0/24", &node_b)
                 .unwrap()
                 .to_string(),
-            "198.51.100.252"
+            "198.51.100.12"
         );
-        let e = resolve_source("203.0.113.0/24", &pi1).unwrap_err();
+        let e = resolve_source("203.0.113.0/24", &node_a).unwrap_err();
         assert!(e.contains("holds no address in that network"), "{e}");
     }
 

@@ -107,6 +107,9 @@ RULES = [
 
 KEEP_PATHS = [
     "LICENSE*",
+    # the licence notices name upstream's product and authors as attribution (T33.5, ADR-1033)
+    "NOTICE",
+    "LICENSING.md",
     "brand/*",
     ".github/issues-archive/*",
     "spec/upstream.md",

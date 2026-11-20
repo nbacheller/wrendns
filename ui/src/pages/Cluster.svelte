@@ -184,7 +184,9 @@
     if (n.ephemeral && !openSites.includes(n.site)) openSites = [...openSites, n.site];
     selected = n.nodeId;
     await tick();
-    document.getElementById(`node-${n.nodeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Reduced motion: jump instead of scrolling (T33.6).
+    const behavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    document.getElementById(`node-${n.nodeId}`)?.scrollIntoView({ behavior, block: 'center' });
   }
   const avg = (xs: (number | null | undefined)[]) => {
     const v = xs.filter((x): x is number => x != null);
@@ -537,7 +539,7 @@ wrendns cluster join tt_join_…</pre>
                     {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
                     {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
                     <div class="small {n.configLag ? 'warn-text' : 'muted'}">
-                      {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
+                      {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null}{' '}for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
                     </div>
                     {/if}
                   </td>
@@ -622,7 +624,7 @@ wrendns cluster join tt_join_…</pre>
                 <tr class="pods" data-testid="cluster-pods">
                   <td colspan="7">
                     <button class="link" onclick={() => toggleSite(site)} aria-expanded={openSites.includes(site)}>
-                      {openSites.includes(site) ? '▾' : '▸'} <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
+                      <Icon name={openSites.includes(site) ? 'chevron-down' : 'chevron-right'} size={16} /> <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
                     </button>
                     <span class="muted small">
                       {pods.filter((p) => p.up).length} up · {pods.filter((p) => p.ready).length} ready ·
@@ -646,7 +648,7 @@ wrendns cluster join tt_join_…</pre>
         <ul class="checks">
           {#each view.checks as c (c.id)}
             <li class:fail={!c.ok} data-testid="cluster-check">
-              <span class="mark" aria-hidden="true">{c.ok ? '✓' : '✗'}</span>
+              <span class="mark" aria-hidden="true"><Icon name={c.ok ? 'check' : 'x'} size={16} /></span>
               <div>
                 <div>{c.summary}</div>
                 {#if c.fix}<div class="muted small">{c.fix}</div>{/if}
@@ -744,16 +746,16 @@ wrendns cluster join tt_join_…</pre>
   }
   .checks li {
     display: flex;
-    gap: 10px;
+    gap: var(--space-3);
     align-items: flex-start;
   }
   .checks .mark {
-    color: var(--ok, green);
-    font-weight: 700;
-    width: 1em;
+    display: inline-flex;
+    padding-top: 2px;
+    color: var(--ok);
   }
   .checks li.fail .mark {
-    color: var(--bad, crimson);
+    color: var(--bad);
   }
   .table-wrap {
     overflow-x: auto;
@@ -761,13 +763,13 @@ wrendns cluster join tt_join_…</pre>
   .nodes td {
     vertical-align: top;
   }
+  /* Selected: sky-soft, no accent bar (T33.6). */
   .nodes tr.selected td,
   .host-slot.selected :global(.card) {
-    box-shadow: inset 3px 0 0 var(--accent);
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    background: var(--brand-sky-soft);
   }
   .warn-text {
-    color: var(--warn, darkorange);
+    color: var(--warn);
   }
   .events {
     list-style: none;
@@ -823,7 +825,7 @@ wrendns cluster join tt_join_…</pre>
   pre {
     overflow-x: auto;
     padding: 8px;
-    background: var(--surface-2, rgb(127 127 127 / 8%));
-    border-radius: 6px;
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
   }
 </style>

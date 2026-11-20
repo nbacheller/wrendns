@@ -856,6 +856,76 @@ fn sink_one(s: &crate::SinkConfig, p: &str, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: OBS-010 (T24.43, ADR-1045) — a `pushover` destination: an empty address is Pushover's
+/// own, a self-hosted proxy is https (http only to this machine, for tests), both secrets are
+/// set, and the priorities are within what is offered.
+fn pushover_destination(d: &crate::schema::AlertDestination, p: &str, r: &mut Report<'_>) {
+    let u = d.url.as_str();
+    if !u.is_empty() && !pushover_url_ok(u) {
+        r.err(
+            format!("{p}.url"),
+            "use an https:// URL (http:// only to 127.0.0.1, localhost or [::1])",
+        );
+    }
+    let has = |f: &Option<crate::SafeString>, rf: &Option<crate::SafeString>| {
+        f.as_ref().is_some_and(|x| !x.trim().is_empty())
+            || rf.as_ref().is_some_and(|x| !x.trim().is_empty())
+    };
+    if !has(&d.token_file, &d.token_ref) {
+        r.err(
+            format!("{p}.token_ref"),
+            "pushover needs the application token: token_file or token_ref",
+        );
+    }
+    if !has(&d.user_key_file, &d.user_key_ref) {
+        r.err(
+            format!("{p}.user_key_ref"),
+            "pushover needs the user or group key: user_key_file or user_key_ref",
+        );
+    }
+    for (field, v) in [
+        ("priority_firing", d.priority_firing),
+        ("priority_resolved", d.priority_resolved),
+    ] {
+        if v.is_some_and(|v| !(-2..=1).contains(&v)) {
+            r.err(
+                format!("{p}.{field}"),
+                "from -2 to 1 (2, emergency, is not offered)",
+            );
+        }
+    }
+}
+
+/// REQ: OBS-010 (T24.43) — a Pushover address: https, or http to this machine.
+fn pushover_url_ok(u: &str) -> bool {
+    if u.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = u.strip_prefix("http://") else {
+        return false;
+    };
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // A username or password in the address hides the real host (`localhost:80@evil.example`).
+    if auth.contains(['@', '\\']) {
+        return false;
+    }
+    let (host, port) = match auth.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((h, r)) => (
+                format!("[{h}]"),
+                r.strip_prefix(':').or(r.is_empty().then_some("")),
+            ),
+            None => return false,
+        },
+        None => match auth.split_once(':') {
+            Some((h, pt)) => (h.to_owned(), Some(pt)),
+            None => (auth.to_owned(), Some("")),
+        },
+    };
+    port.is_some_and(|pt| pt.bytes().all(|b| b.is_ascii_digit()))
+        && ["127.0.0.1", "localhost", "[::1]"].contains(&host.as_str())
+}
+
 // REQ: OBS-010 (T7.12) — alerts: unique names, rules sent to destinations that exist,
 // http(s) URLs, a sane interval and threshold.
 fn alerts(cfg: &Config, r: &mut Report<'_>) {
@@ -900,6 +970,8 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
                     "a password is never sent unencrypted: use smtp:// or smtps://",
                 );
             }
+        } else if d.kind == crate::schema::AlertKind::Pushover {
+            pushover_destination(d, &p, r);
         } else if !(u.starts_with("https://") || u.starts_with("http://")) {
             r.err(format!("{p}.url"), "use an http:// or https:// URL");
         }
@@ -1453,6 +1525,22 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
                 "api.tls",
                 "set self_signed = true, or both cert and key (PEM files)",
             ),
+        }
+    }
+    // REQ: API-003 (T24.44, ADR-1053) — the plain-HTTP redirect listener only makes sense next
+    // to HTTPS, and must not take the API's own address.
+    if let Some(addr) = cfg.api.http_redirect {
+        if cfg.api.tls.is_none() {
+            r.err(
+                "api.http_redirect",
+                "needs [api] tls: it sends browsers to the HTTPS address, so there must be one",
+            );
+        }
+        if addr.port() == 0 {
+            r.err("api.http_redirect", "the port must be 1 to 65535");
+        }
+        if addrs_clash(addr, cfg.api.listen) {
+            r.err("api.http_redirect", "must differ from [api] listen");
         }
     }
     // REQ: API-902 (ADR-956 §3) — the confirmation window of a guarded address change.
@@ -2918,6 +3006,14 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
             "a two-letter country code such as NL",
         );
     }
+}
+
+/// REQ: API-003 (T24.44) - two listen addresses clash when they share a port and either the
+/// addresses are equal or one is the unspecified address (0.0.0.0 or [::], which covers the
+/// other).
+#[must_use]
+pub fn addrs_clash(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
+    a.port() == b.port() && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
 }
 
 #[cfg(test)]

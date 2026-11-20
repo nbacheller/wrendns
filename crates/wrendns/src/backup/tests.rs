@@ -181,7 +181,7 @@ fn api_007_backup_paths_stay_inside() {
 
 #[test]
 fn api_007_backup_default_name() {
-    let n = default_name("Pi 4").display().to_string();
+    let n = default_name("Node D").display().to_string();
     assert!(
         n.starts_with("wrendns-node-d-2") && n.ends_with("Z.ttbk"),
         "{n}"

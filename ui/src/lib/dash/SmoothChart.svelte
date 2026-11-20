@@ -107,7 +107,7 @@
   const css = (c: string) => (c.startsWith('--') ? `var(${c})` : c);
   function color(c: string): string {
     if (!c.startsWith('--')) return c;
-    return getComputedStyle(document.documentElement).getPropertyValue(c).trim() || '#888';
+    return getComputedStyle(document.documentElement).getPropertyValue(c).trim();
   }
 
   const pts = $derived(maxPoints || Math.max(24, Math.min(120, Math.round(width / 6))));
@@ -144,13 +144,8 @@
     const grid = color('--surface-2');
     const surface = color('--surface');
     const { ys, order } = layout();
-    const fade = (c: string) => (u: uPlot) => {
-      if (!Number.isFinite(u.bbox?.top) || !Number.isFinite(u.bbox?.height)) return c + '55';
-      const g = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
-      g.addColorStop(0, c + (mode === 'stack' ? 'cc' : '66'));
-      g.addColorStop(1, c + (mode === 'stack' ? '44' : '08'));
-      return g;
-    };
+    // A flat, translucent fill: the brand has no gradients (T33.6).
+    const fade = (c: string) => c + (mode === 'stack' ? '8c' : '26');
     const sparse = view.times.length < 3;
     const opts: uPlot.Options = {
       width,
@@ -437,12 +432,12 @@
     z-index: 3;
     min-width: 150px;
     max-width: 260px;
-    padding: 8px 10px;
-    border-radius: 10px;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
-    box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
-    font-size: 12.5px;
+    box-shadow: var(--shadow-float);
+    font-size: var(--type-label-size);
     pointer-events: none;
   }
   .when {
@@ -538,18 +533,14 @@
     opacity: 1;
     width: 2px;
   }
-  .mk:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 0;
-  }
   .mk-count {
     position: absolute;
     top: 0;
     left: 6px;
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1;
     padding: 1px 3px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     color: var(--text);
     white-space: nowrap;
@@ -560,7 +551,7 @@
     z-index: 4;
     max-width: 240px;
     padding: 6px 8px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);

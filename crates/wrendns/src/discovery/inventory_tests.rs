@@ -328,7 +328,7 @@ fn dsc_008_rename_replaces_name() {
     let mut inv = Inventory::new(0);
     let mut a = obs(Source::Router, Some(A), Some("192.168.1.38"), 100);
     a.name = Some((NameKind::RouterAlias, "old".to_owned()));
-    a.name_origin = Some("ucg".to_owned());
+    a.name_origin = Some("gateway".to_owned());
     inv.apply(std::slice::from_ref(&a), 100);
     a.name = Some((NameKind::RouterAlias, "new".to_owned()));
     a.seen = 200;
@@ -1011,7 +1011,7 @@ fn dsc_008_entry_size_at_caps() {
             e.names.push(NameEntry {
                 kind: NameKind::RouterAlias,
                 label: format!("device-{i}-{k}"),
-                origin: Some("ucg".to_owned()),
+                origin: Some("gateway".to_owned()),
             });
         }
         e.ports = (0..u16::try_from(MAX_PORTS).unwrap_or(0)).collect();
@@ -1056,7 +1056,7 @@ fn dsc_008_tick_reads_router_view() {
             ip: Ipv4Addr::new(192, 168, 1, 120),
             hostname: Some("printer".to_owned()),
             expires: 0,
-            router: Some("ucg".to_owned()),
+            router: Some("gateway".to_owned()),
             offline: false,
             ipv6: Vec::new(),
         },
