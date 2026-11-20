@@ -62,6 +62,7 @@ const TABLE: &[(&str, Class)] = &[
     ("anomaly_mute[].groups[]", Name(C::Group)),
     ("anomaly_mute[].name", Free),
     ("anomaly_mute[].note", Free),
+    ("api.http_redirect", Scan),
     ("api.listen", Scan),
     ("api.tls.cert", Scan),
     ("api.tls.key", Scan),

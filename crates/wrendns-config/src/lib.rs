@@ -43,7 +43,7 @@ pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, SourceSpec, parse_rfc3339, parse_source};
 pub use validate::{
-    MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, otlp_errors, probe_target,
+    MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, addrs_clash, otlp_errors, probe_target,
     provider_errors as oidc_provider_errors, sink_errors, valid_list_name,
 };
 

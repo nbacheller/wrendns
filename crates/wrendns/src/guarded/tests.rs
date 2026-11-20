@@ -3244,3 +3244,27 @@ fn api_902_proof_listener_serves_only_the_confirmation() {
     assert!(!ok(&Method::DELETE, "/"));
     assert!(!ok(&Method::PUT, "/api/v1/guarded/pending/abc/confirm"));
 }
+
+/// REQ: API-003 (T24.44, ADR-1053 §5) — a redirect listener that can't bind never fails a staged
+/// entry's probation; a failing DNS listener still does.
+#[test]
+fn api_003_a_failing_redirect_probe_does_not_block_probation() {
+    use wrendns_api::model::ProbeResult;
+    let probe = |proto: &str, ok: bool| ProbeResult {
+        target: "probe".to_owned(),
+        proto: proto.to_owned(),
+        listener: true,
+        ok,
+        ..ProbeResult::default()
+    };
+    let redirect = crate::probes::REDIRECT_PROTO;
+    assert!(super::probation::dns_probes_ok(&[
+        probe("udp", true),
+        probe(redirect, false),
+        probe(redirect, false),
+    ]));
+    assert!(!super::probation::dns_probes_ok(&[
+        probe("udp", false),
+        probe(redirect, true),
+    ]));
+}

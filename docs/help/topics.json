@@ -1714,6 +1714,16 @@
       "example": "A printer's mDNS record attached to the wrong device. Unlink it: it will not be matched to that device again and stands on its own, or Move it to the printer's own item.",
       "caution": "A MAC address identifies an interface, so moving or unlinking a record with a MAC moves the whole interface with every record of that MAC. Operators and admins may do this; nothing here changes the network.",
       "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "api-http-redirect",
+      "title": "Send port 80 to HTTPS",
+      "term": "HTTP to HTTPS redirect",
+      "summary": "When the web UI is served over HTTPS (for example on 443), this opens a second, plain-HTTP listener (for example 0.0.0.0:80) that answers every request with a redirect to the https:// address of the same host and path, and answers the health probes. It serves nothing else.",
+      "when": "You put the UI on port 443 with [api] tls and want http://host/ to reach it. Leave it empty to keep it off.",
+      "example": "Address 0.0.0.0:80 with the UI on 443: typing http://dns.example.com in a browser lands on https://dns.example.com/. With the UI on 8053 the redirect adds the port: https://dns.example.com:8053/.",
+      "caution": "Needs [api] tls, and takes effect at the next start (Restart now where the node has a supervisor). Port 80 needs CAP_NET_BIND_SERVICE: the systemd unit has it; in Docker and Kubernetes publish the port yourself. If it can't bind, only a log line says so: DNS and the UI are not affected. A value set in the configuration file wins and locks the control.",
+      "docs": "https-without-a-proxy"
     }
   ]
 }

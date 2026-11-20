@@ -217,7 +217,7 @@ pub(crate) async fn serve(
     Ok(bound)
 }
 
-async fn only_allowed(
+pub(crate) async fn only_allowed(
     State(src): State<Arc<Sources>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: axum::extract::Request,
@@ -232,7 +232,7 @@ async fn only_allowed(
 
 /// `/readyz?startup=1`: the Kubernetes startup probe's view.
 #[derive(Debug, serde::Deserialize)]
-struct ReadyQuery {
+pub(crate) struct ReadyQuery {
     #[serde(default)]
     startup: Option<String>,
 }
@@ -241,7 +241,7 @@ struct ReadyQuery {
 /// (`{"ready":false,"reason":"maintenance"}`, handy in `kubectl describe`). With `startup=1`
 /// maintenance doesn't count: a pod restarted inside its window has started, and the
 /// startup probe mustn't kill it for being in maintenance (ADR-118, amended).
-async fn readyz(
+pub(crate) async fn readyz(
     State(src): State<Arc<Sources>>,
     axum::extract::Query(q): axum::extract::Query<ReadyQuery>,
 ) -> Response {

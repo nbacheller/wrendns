@@ -293,6 +293,16 @@ impl Health {
     }
 }
 
+/// REQ: API-003 (T24.44, ADR-1053 §5) — every DNS listener probe passes. The plain-HTTP redirect
+/// is a listener target but not a DNS one: a redirect that can't bind is never a failed start for
+/// a staged entry's probation.
+pub(crate) fn dns_probes_ok(results: &[wrendns_api::model::ProbeResult]) -> bool {
+    results
+        .iter()
+        .filter(|p| p.listener && p.proto != crate::probes::REDIRECT_PROTO)
+        .all(|p| p.ok)
+}
+
 /// The node proved healthy: entries on probation become active, the counter is deleted and the
 /// outcome is recorded (`applied`).
 pub(crate) fn mark_healthy(state: &State, node: &str, data_dir: &Path, now: u64) -> Vec<String> {
@@ -462,12 +472,7 @@ pub(crate) fn spawn_watch(
             let h = Health {
                 state_open: true,
                 api_bound: src.readiness.serving(),
-                dns_probe_ok: src
-                    .probes
-                    .results()
-                    .iter()
-                    .filter(|p| p.listener)
-                    .all(|p| p.ok),
+                dns_probe_ok: dns_probes_ok(&src.probes.results()),
                 secrets_unlocked: matches!(
                     src.secrets.status().state,
                     crate::secrets::store::StoreState::Ready

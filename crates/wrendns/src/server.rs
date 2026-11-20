@@ -719,8 +719,9 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.api.enabled != new.api.enabled
         || old.api.listen != new.api.listen
         || old.api.tls != new.api.tls
+        || old.api.http_redirect != new.api.http_redirect
     {
-        v.push("[api] enabled / listen / tls");
+        v.push("[api] enabled / listen / tls / http_redirect");
     }
     v
 }
@@ -1031,6 +1032,22 @@ async fn start_http(
         .map_err(|e| io::Error::new(e.kind(), format!("api {addr}: {e}")))?;
         let scheme = if tls.is_some() { "https" } else { "http" };
         info!(addr = %bound, scheme, "serving the API at /api/v1 (OpenAPI: /api/v1/openapi.json)");
+        // REQ: API-003 (T24.44, ADR-1053) — the plain-HTTP redirect to the HTTPS address. A bind
+        // failure (port 80 without CAP_NET_BIND_SERVICE, or taken) is logged and nothing else is
+        // affected: DNS and the API are already serving.
+        if let (Some(r), true) = (cfg.api.http_redirect, tls.is_some()) {
+            let app = crate::http_redirect::router(sources, bound);
+            match http::serve(r, app, stopped(stop.clone())).await {
+                Ok(b) => {
+                    info!(addr = %b, "redirecting plain HTTP to https ([api] http_redirect)");
+                }
+                Err(e) => {
+                    warn!(
+                        "[api] http_redirect {r}: {e} (port 80 needs CAP_NET_BIND_SERVICE); plain HTTP is not redirected"
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }

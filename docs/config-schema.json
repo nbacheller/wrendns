@@ -1144,6 +1144,13 @@
           "type": "boolean",
           "default": true
         },
+        "http_redirect": {
+          "description": "REQ: API-003 (T24.44, ADR-1053) — a second, plain-HTTP listener at this address (for\nexample `\"0.0.0.0:80\"`) that answers every request with a `308` to the same path over\n`https://`, on this host's own name (the request's `Host` without its port, plus the API's\nport when it isn't 443), so `http://host/` reaches the UI on 443. It also answers `/livez`,\n`/readyz` and `/healthz` as the API does, and serves nothing else. Needs `tls` above. A bind\nfailure (port 80 needs `CAP_NET_BIND_SERVICE`, which the systemd unit grants) is logged and\naffects neither DNS nor the API. Default: off.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "listen": {
           "description": "Where the API listens (default `0.0.0.0:8053`).",
           "type": "string",
