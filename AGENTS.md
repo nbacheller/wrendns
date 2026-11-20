@@ -35,3 +35,14 @@ spec/                  # this specification
 
 ## Owner priorities (for tie-breaking)
 Performance > lightweight footprint > observability > Kubernetes + Pi deployability > clustering/HA with a single management plane > protocol breadth > UI polish. Auth = local users (basic) + OIDC; **no LDAP**. Every new API operation must be agent-ready (AGT-001..005) and, where it fits the catalog, exposed as an MCP tool (`spec/13`).
+
+## graphify (optional, local)
+
+A knowledge graph of this repository can be built locally with graphify (`/graphify`). It is written to `graphify-out/`, which is ignored and never committed, so it exists only where someone has built it.
+
+When `graphify-out/graph.json` exists:
+- The reading order at the top of this file still comes first. After it, for a question about the code, run `graphify query "<question>"` before the first grep, search or source-file read, and put this rule in the prompt of every subagent that explores code. Read raw files only for lines the graph or an earlier read already located.
+- Use `graphify path "<A>" "<B>"` for relationships, `graphify explain "<concept>"` for one concept, and `graphify section "<heading>"` to print the text under a Markdown heading.
+- Read `graphify-out/GRAPH_REPORT.md` only for a broad architecture review, or when query, path and explain do not surface enough.
+- Skip graphify only when the task is about stale or wrong graph output, or the owner says not to use it. The graph is a map, not a source of truth: the spec and the code win.
+- After changing code, run `graphify update .` in the main checkout (AST only, no API cost). Worktrees under `.wt/` have no graph of their own.

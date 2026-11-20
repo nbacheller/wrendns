@@ -18,3 +18,7 @@
 __pycache__/
 deploy/mcp-e2e/node_modules/
 /.v3e2e.*/
+
+# graphify output and local Claude Code settings (AGENTS.md, graphify)
+/graphify-out/
+/.claude/settings.local.json
