@@ -28,6 +28,8 @@ What that means for a pull request:
 - **Docs.** User-visible behaviour is documented in `docs/` and on the site (`site/`).
 - **New source files** start with an SPDX line, for example `// SPDX-License-Identifier: AGPL-3.0-or-later` (CI checks it with `scripts/check-spdx.py`). Files under `integrations/home-assistant/` are Apache-2.0 instead. A file taken from another project keeps its own licence line and goes under a `vendor/` or `third_party/` directory, which the check skips; say where it came from in the pull request.
 
+- **No private details.** Examples use documentation addresses (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), `example` domains and generic names ("a smart TV", "node-a"), never a real network, household, person or machine. Maintainers keep a private denylist of identifiers that must not appear in the repository; CI checks every tracked file, the built site and the generated docs against it (`scripts/check-private.py`, which reads the list from a repository secret and reports only `file:line` and the pattern's number). Without the list the check skips, so contributors don't need it. If it flags your pull request, a maintainer will say which line to generalize.
+
 Before you push, run the checks CI runs:
 
 ```sh
@@ -35,6 +37,7 @@ make check                         # cargo fmt --check, clippy -D warnings, test
 python3 site/build.py --check      # the site builds and its links resolve
 python3 spec/trace.py --check      # requirements and tests stay traced
 python3 scripts/check-spdx.py      # SPDX headers on new files
+python3 scripts/check-private.py   # maintainers: with WRENDNS_PRIVACY_DENYLIST set to the private list
 cd ui && npm ci && npm run check   # the UI type-checks (and npm run test:e2e for Playwright)
 ```
 
