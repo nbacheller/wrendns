@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // REQ: API-003, API-902 (T24.44, ADR-1053) — Settings -> System: the HTTP to HTTPS redirect field
 // ([api] http_redirect) under the guarded-change flow: the dry run (what it opens, the port warning,
 // the refusals), the typed phrase, the staged "pending restart" outcome, and the help topic. The e2e

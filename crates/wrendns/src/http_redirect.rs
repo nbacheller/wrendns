@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! REQ: API-003 (T24.44, ADR-1053) — the plain-HTTP redirect listener (`[api] http_redirect`).
 //!
 //! With the web UI and API on HTTPS (usually 443), `http://host/` on port 80 should reach the UI.

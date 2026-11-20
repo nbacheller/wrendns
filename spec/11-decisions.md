@@ -5726,7 +5726,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** The protections tenants rely on are open and auditable; the paid service is a separate product. A competitor hosting a modified WrenDNS is bound by AGPL §13. The platform costs tens of dollars a month before the first customer; DDoS protection is the largest fixed cost from the beta. A failover moves one address and changes nothing on any device. Rejected: everything AGPL (no defensible paid service), the broker on Container Apps alone (no TCP 443 passthrough), DNS failover of `tunnel.` (pinned clients cannot follow) and a per-device address log (location history with no use the node does not already cover).
 
-## ADR-1053 - A plain-HTTP redirect listener for the HTTPS web UI: staged, TLS-only, validated Host (Accepted 2026-11-19, T24.44, owner request)
+## ADR-1053 — A plain-HTTP redirect listener for the HTTPS web UI: staged, TLS-only, validated Host (Accepted 2026-11-19, T24.44, owner request)
 
 **Context:** the test Pis serve the UI and API on 443 with `[api] tls`. `http://host/` on port 80 should reach them. The API port already redirects plain requests on its own port (307), but a browser typing a bare name asks port 80.
 
