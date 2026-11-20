@@ -490,3 +490,8 @@ Web (checked 2026-11-19):
 - Connecticut §31-48d: https://law.justia.com/codes/connecticut/2022/title-31/chapter-557/section-31-48d/, https://www.ebglaw.com/insights/publications/reminder-changes-to-connecticuts-electronic-monitoring-statute-now-in-effect; Delaware §705: https://delcode.delaware.gov/title19/c007/sc01/
 - ICO monitoring workers: https://ico.org.uk/media/for-organisations/uk-gdpr-guidance-and-resources/employment-information/employment-practices-and-data-protection-monitoring-workers-1-0.pdf
 - BetrVG §87(1) No. 6: https://www.luther-lawfirm.com/en/newsroom/blog/detail/dauerbrenner-software-vs-mitbestimmung-87-abs-1-nr-6-betrvg, https://www.goerg.de/en/insights/publications/20-03-2024/it-co-determination-updates
+
+## Owner decisions, second round (2026-11-19)
+
+- **Enforcement:** the cloud publishes `ai-block-<group>` and `ai-allow-<group>` lists that a LAN admin subscribes each group to once; the cloud never changes node configuration (ADR-1060 accepted).
+- **Tiers:** Shadow AI is a paid add-on for Cloud and Cloud Plus, and included in Business. Prices are set later.
