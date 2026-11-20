@@ -641,7 +641,11 @@ The owner's request: "The cloud control plane needs to be able to update the con
 14. Shadow AI's kind-level Block uses opaque class tags, which content can widen; Allow names classes only (ADR-1060 points 2 and 3).
 15. Tier placement: two-way sync, offline edits and the cloud resolver in Cloud (ADR-1052 point 5, amended). Prices remain the owner's.
 
-## Open owner decisions from the security review (2026-11-19)
+## Owner decisions from the security review (2026-11-19)
+
+The owner accepted all eight recommendations below.
+
+ (2026-11-19)
 
 A security review of the cloud-write design found that a page the portal serves cannot be trusted to show what is signed, that relayed sessions could write synced kinds without signing, that managed updates rested on one online key, and that a change could switch off the alert meant to report it. The design above adopts the recommended option of each question below (the most conservative one consistent with decisions A to D); the ADRs mark each point "security review decision N, to confirm".
 
