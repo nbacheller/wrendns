@@ -6091,7 +6091,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 4. The owner decided on 2026-11-20 that no image is built on pull requests. Images build on main only, over the recommendation to build them on pull requests.
 5. Fork pull requests and Dependabot pull requests run on GitHub-hosted runners. Same-repository pull requests run on the self-hosted box through `WRENDNS_PR_RUNNER` (owner decision, 2026-11-20; ADR-1076).
 
-Waits for the speed wave round 2 owner batch, which sets the membership of the fast and full tiers.
+Answered by the owner on 2026-11-20 (speed wave round 2), for where the jobs run: heavy compiles (the `bins` job, clippy and the amd64 tests, about three at once) run on the self-hosted box, and the script jobs (the native shards, ui, oidc, migration) stay on GitHub-hosted runners until the per-runner LXD containers are live, then are measured and moved. The answer does not say which jobs sit in the fast and full tiers, so that membership still waits for the owner.
 
 **Consequences:** One required check keeps the ruleset stable while jobs change. The cost is that `pr-ok` alone does not name the failing job, so the reader must open the run. Rejected: folding cluster3, keepalived and the Home Assistant job into `ci.yml` as path-gated jobs (the earlier draft of this milestone), because it diverges from the decided six-workflow shape. Rejected: image builds on pull requests (the owner's decision above).
 
@@ -6120,7 +6120,7 @@ Waits for the speed wave round 2 owner batch, which sets the membership of the f
 5. Reproducibility holds: the binaries stay byte-identical, as the nightly reproducible job checks. If cargo-chef breaks that, the stub-crate approach is used.
 6. Once ADR-1076 is live, the main image legs build on the self-hosted box. Release builds and signing stay on GitHub-hosted runners (owner decision, 2026-11-20). Until then the legs run hosted.
 
-Waits for the owner answer on the LXD footprint (pool size and memory) and the cutover order, which set when the image legs move.
+Answered by the owner on 2026-11-20 (speed wave round 2): the LXD footprint is a 200 GiB loop pool with 12 CPUs and 14 GiB per container, with passwordless sudo inside. The cutover order is not in that answer and still waits for the owner, which sets when the image legs move.
 
 **Consequences:** The layer must keep the `cargo auditable` metadata identical, which is checked before it is accepted. Rejected: a shorter build by changing the release profile, because the owner ranks performance first.
 
@@ -6137,7 +6137,7 @@ Waits for the owner answer on the LXD footprint (pool size and memory) and the c
 6. Nothing built for the box targets x86-64-v3. Jobs that need x86-64-v3, such as the Home Assistant python job (setup-python 26.04 builds need it), stay hosted.
 7. Cutover starts with a single canary runner that must pass checks V1 to V9 for about a day before the other runners move.
 
-Waits for the owner answer on the LXD footprint (pool size and memory) and the cutover order.
+Answered by the owner on 2026-11-20 (speed wave round 2): the LXD footprint is a 200 GiB loop pool with 12 CPUs and 14 GiB per container, with passwordless sudo inside. The registry mirrors stay on the host, as point 2 records. The cutover order is not in that answer and still waits for the owner.
 
 **Consequences:** A fresh container starts with cold caches, which is why ADR-1074 saves caches from a hosted job. Rollback is to the hosted runners for every job. Rejected: fork pull requests on the box (they are untrusted code). Rejected: moving the registry mirrors into the containers, because they stay on the host.
 
@@ -6176,7 +6176,7 @@ Waits for the owner answer on whether Dependabot runs on the self-hosted box onc
 2. The spike measures the options. Its numbers go in the spike's pull request, and the branch is not merged.
 3. Any switch that reaches the hot path needs `make bench-smoke` output and must stay within the RSS gates (ADR-1031), and the image stays within the 25 MiB per-architecture gate (ADR-916).
 
-Waits for the owner answer on the post-quantum TLS scope, once the spike numbers are in.
+Answered by the owner on 2026-11-20 (speed wave round 2): the post-quantum TLS work is a measurement-only spike of X25519MLKEM768 on aws-lc-rs. The spike is never merged, and the scope is decided on its numbers.
 
 **Consequences:** No code changes until the owner answers. Rejected: deciding the scope before the numbers exist.
 
@@ -6193,3 +6193,46 @@ Waits for the owner answer on the post-quantum TLS scope, once the spike numbers
 6. Self-hosted runner trust follows ADR-1076: fork pull requests never run on the box, and release builds and signing stay on GitHub-hosted runners.
 
 **Consequences:** A fork pull request cannot pass the required privacy check, so it cannot merge under this ruleset as written. The owner has to decide how outside changes are taken in before the repository is public. Rejected: skipping the privacy check for fork pull requests, as the Dependabot path does today. Rejected: making CodeQL a required check now, because it has not yet reported on this repository.
+
+## ADR-1081 — Location names: a location is a first-class object with an optional parent domain, and a private location's names are answered only to its own networks (Proposed 2026-11-20; DSC-908 to DSC-914; #40; T36.10a, T36.10c)
+
+**Context:** A node names every device `<name>.<[local] device_domain>`, with one domain and no notion of where a device is. #40 asks for locations (Home, Work, a site) as first-class objects, with device names `<device>.<location>.<domain>` that follow the CMDB device, and with split horizon per location. The CMDB already holds network CIs and the router reads say which device is on which network (DSC-902), so a device's location can follow its network. ADR-1050 already names a hosted location's node `<location>.<slug>.<suffix>`; this ADR covers the node's own names and does not change that. The owner answered on 2026-11-20: the names are `<device>.<location>.<domain>`, with an optional parent domain per location that defaults to the global domain, and with no locations configured the behaviour is exactly today's; and a client may resolve a location's private names only when its source network belongs to that location.
+
+**Decision:**
+1. **The location object.** A location is a `[[location]]` table with a slug (lowercase letters, digits and hyphens, unique in the cluster), a label, the networks or VLAN IDs that belong to it, the serving nodes, an optional parent domain and a visibility of `shared` or `private`. A table that fails validation is refused with the bad field named, and the last good configuration stays in force. Locations replicate with the cluster configuration. A node that predates the table reads it as absent, so a rolling upgrade is not refused.
+2. **Names (owner answer, 2026-11-20).** A device's name is `<device>.<location>.<domain>`, where `<domain>` is the location's parent domain, which defaults to the global `[local] device_domain`. A device on no location's network keeps `<device>.<device_domain>`. With no `[[location]]` table, names and answers are exactly as before.
+3. **The device's location** comes from the network it is on, through the CMDB network CIs and the router reads. A device keeps one CMDB configuration item when it moves (DSC-910), and its name follows the new network. A manual location set on the device's CMDB record, with a reason, wins over the network until it is cleared.
+4. **Collisions.** Conservative choice: when two devices compose the same name, both are reported on the Locations page and neither name is answered until one is renamed or moved. No device wins silently.
+5. **Who may resolve private names (owner answer, 2026-11-20).** A name under a private location is answered only to a client whose source address is in one of that location's networks. The serving node and the VIP are not part of the test. Any other client gets the same answer as for an unknown name. A shared location's names are answered to every client that `[access]` allows. Because a source address can be forged on a LAN, this is a split-horizon convenience and not an access control.
+6. **The query path.** The location map and this rule are compiled into the policy snapshot when it is built. The query path does no allocation, locking or I/O for them, and the answer is keyed by the client's location in the cache. `make bench-smoke` runs for `wrendns-policy` and `wrendns-cache`. Locations decide which names exist and who may see them. They are not filtering policy and never change whether a query is blocked.
+7. **Surfaces.** The API, MCP tools and the Locations page follow DSC-913 and DSC-914. The location code is AGPL in the node (ADR-1052 point 1).
+
+**Consequences:** Devices on a location's network get new names only once locations are configured; nothing changes without them. The private rule follows the source address the client sends, so a device that reaches the node through another network is not treated as part of that location. Rejected: the VIP or the serving node as the test for private names (the VIP is the same on every network, and the owner chose the source network); a separate configuration per location (it duplicates `device_domain` and its settings); `deny_unknown_fields` on the table (it would break a rolling upgrade); a silent winner on a collision (a name would point at the wrong device with no sign of it).
+
+## ADR-1082 — Certificates for a cluster's own names: one issuer node completes ACME for the shared names, which replicate as stored secrets, and each node issues its own name (Proposed 2026-11-20; CLD-903; #40; T36.10d)
+
+**Context:** A self-hosted cluster has its certificates made by hand with lego today (#40). Let's Encrypt allows 5 new certificates per exact set of names per 7 days; renewals through ARI are exempt and first issuances are not. If every node asks for the shared names, the cluster asks several times for one set and several nodes write one `_acme-challenge` record set. Stored secrets replicate to full members (ADR-917). ADR-1051 point 1 keeps the key on the node for hosted names and rejects replicating one; this ADR answers the self-hosted question only and does not amend ADR-1051.
+
+**Decision:**
+1. **One issuer node (owner answer, 2026-11-20).** One node per cluster completes the ACME orders for the shared names. The cluster names it. The default is the primary, and when the primary changes the new primary becomes the issuer. (Conservative choice of the default; the owner may name another.)
+2. **Shared names.** The cluster's own names, and each location's `*.<location>.<domain>` wildcard when that location opts in (DSC-908). The issuer completes DNS-01 through a configured provider (CLD-904).
+3. **Distribution (owner answer, 2026-11-20).** The shared certificate, its chain and the ACME account key are stored secrets (ADR-903), replicated to full members outside the configuration versions as ADR-917 describes. Each full member writes the chain next to its key and reloads it without a restart, so another member can serve the shared names when the issuer changes.
+4. **Per-node names (owner answer, 2026-11-20).** Each node's own name `<node>.<domain>` is issued by that node, with its own key and CSR. That key is never replicated.
+5. **Renewal and failure.** Renewal is timed by ARI. The first run uses Let's Encrypt staging. A failed renewal raises a health warning 30 days before expiry and a severe reason 7 days before. It never affects query answering (CLU-004).
+
+**Consequences:** The shared names are ordered from one place, so the cluster stays under the issuance limits and writes one record set at a time. If the issuer fails, the shared certificates stay valid until they expire, and the health warning gives time to fail over. Every full member holds the provider credential, as it holds other stored secrets; the narrow scope in CLD-904 limits what that credential can do. Rejected: every node issuing the shared names (repeat orders for one name set and several writers on one record set); replicating each node's key (a key would leave the node it was made on, which ADR-1051 point 1 rejects for hosted names); a separate DNS credential per node (more credentials to scope and rotate).
+
+## ADR-1083 — Dynamic DNS takes a location's WAN address from the router or gateway read in the CMDB, with no external lookup, and sits in the open core (Proposed 2026-11-20; DSC-915; #40; T36.10e)
+
+**Context:** #40 asks for dynamic DNS on the operator's own domain, which needs the WAN address. An external "what is my address" check (STUN or an HTTP service) adds an outside dependency and tells an outside party about the network. The CMDB already reads the router and gateway data (DSC-902). The hosted service's managed dynamic DNS (T36.11, ADR-1050) follows the address the broker sees, which is a different source and stays as it is here. ADR-1051 point 7 and ADR-1052 point 1 already place dynamic DNS on the tenant's own domain in the AGPL node. The owner answered on 2026-11-20 that a location's WAN address comes from the router or gateway read already in the CMDB, with no external lookup.
+
+**Decision:**
+1. **Source (owner answer, 2026-11-20).** The address is the WAN address that the router or gateway read stores in the CMDB. The node makes no external lookup for it, and the address is not sent to any third party for this purpose.
+2. **No read, no publish.** With no router or gateway read for a location, no address is published, and the location's panel says why. Conservative choice: there is no fallback lookup.
+3. **Refusals.** A WAN address in 100.64.0.0/10 (carrier-grade NAT, where inbound traffic cannot reach it), or in a private, reserved or loopback range, is not published, and the panel says why. IPv6 is handled separately from IPv4.
+4. **One writer.** The node that runs the CMDB (DSC-906) writes each location's record, so several nodes or several WANs with policy routing do not make it flap.
+5. **Change handling.** A change is debounced. Updates are rate limited, by default one a minute per record with a TTL of 60 s, both set in configuration.
+6. **Writes.** Updates go through the DNS-provider table (CLD-904): admin-only, audited, with dry run, and never written by an agent. A failure is a health reason only, and DNS answers are unaffected (CLU-004).
+7. **Placement.** Conservative reading of the plan: the node's dynamic DNS on the operator's own domain is in the open core (AGPL) and free, consistent with ADR-1051 point 7 and ADR-1052 point 1. Publishing a chosen local name publicly is a separate opt-in, off by default and audited; it is not decided here.
+
+**Consequences:** A location with no router or gateway integration has no dynamic DNS. The owner's rule removes the outside dependency and the privacy cost of an external check, at the price of depending on the router read. A location behind carrier-grade NAT gets no public record and a reason. Open, for the owner: whether the same rule also governs the managed dynamic DNS of T36.11, which still follows the address the broker sees. Rejected: STUN and HTTP address checks (an outside dependency, and an outside party learns the address; the owner chose the router read); the broker-seen address on the node path (it is the tunnel's address, not the WAN address, and belongs to the hosted design); publishing behind carrier-grade NAT with a warning (the record would point at an address nothing can reach).
