@@ -7030,14 +7030,14 @@ test('dsc_004 add an agent and test it', async () => {
   // The agent needs a credential and a private address; a bad name is refused in the form.
   await settings.getByTestId('agent-add').click();
   const aform = settings.getByTestId('agent-form');
-  await aform.getByLabel('Agent name').fill('192.0.2.1');
-  await aform.getByLabel('Agent address').fill('192.0.2.1');
+  await aform.getByLabel('Agent name').fill('10.0.0.1');
+  await aform.getByLabel('Agent address').fill('10.0.0.1');
   await aform.getByTestId('agent-keep').click();
   await expect(aform.getByRole('alert')).toContainText('is not an address');
   await aform.getByLabel('Agent name').fill('gateway');
   await aform.getByLabel('Agent credential').selectOption('gw-v3');
   await aform.getByTestId('agent-keep').click();
-  await expect(settings.getByTestId('agent-gateway')).toContainText('192.0.2.1');
+  await expect(settings.getByTestId('agent-gateway')).toContainText('10.0.0.1');
   // An unsaved agent can't be tested yet.
   await expect(settings.getByRole('button', { name: 'Test agent gateway' })).toBeDisabled();
   // The real server checks the whole change and stores exactly what was checked.
