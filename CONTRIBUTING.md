@@ -37,7 +37,7 @@ make check                         # cargo fmt --check, clippy -D warnings, test
 python3 site/build.py --check      # the site builds and its links resolve
 python3 spec/trace.py --check      # requirements and tests stay traced
 python3 scripts/check-spdx.py      # SPDX headers on new files
-python3 scripts/check-private.py   # maintainers: with WRENDNS_PRIVACY_DENYLIST set to the private list
+python3 scripts/check-private.py   # maintainers: with WRENDNS_PRIVACY_DENYLIST set to the private list (CI requires it)
 cd ui && npm ci && npm run check   # the UI type-checks (and npm run test:e2e for Playwright)
 ```
 

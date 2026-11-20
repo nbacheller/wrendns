@@ -11,7 +11,9 @@ of its entries: it reads them at run time from
     WRENDNS_PRIVACY_DENYLIST_TEXT  the denylist itself (how CI passes a secret)
 
 Both may be set; their patterns are combined (the file's first). With neither set, the check
-is skipped with a notice and exits 0, so contributors without the list are not blocked.
+is skipped with a notice and exits 0, so contributors without the list are not blocked, unless
+`--require` is given or WRENDNS_PRIVACY_REQUIRED is `true`: then a missing list fails (exit 2).
+CI requires it on the maintainers' own repository and before every site deploy.
 
 Denylist format, one pattern per line:
 
@@ -29,7 +31,8 @@ A hit is reported as `path:line: pattern #N`, where N is the 1-based position of
 among the loaded patterns (comments and blank lines are not counted). The pattern and the
 matched text are never printed, so the report can sit in a public CI log.
 
-Usage: python3 scripts/check-private.py [--root DIR] [--extra DIR ...]   (exit 1 on any hit)
+Usage: python3 scripts/check-private.py [--root DIR] [--extra DIR ...] [--require]
+(exit 1 on any hit, 2 on a missing or unusable list when required, or a bad argument)
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ from pathlib import Path
 
 ENV_FILE = "WRENDNS_PRIVACY_DENYLIST"
 ENV_TEXT = "WRENDNS_PRIVACY_DENYLIST_TEXT"
+ENV_REQUIRED = "WRENDNS_PRIVACY_REQUIRED"
 REGEX_PREFIX = "regex:"
 # Built or generated output that is scanned even though git does not track it.
 EXTRA_TREES = ("site/_site",)
@@ -108,8 +112,11 @@ def tracked_files(root: Path) -> list[str]:
 
 def extra_files(root: Path, extra_dirs: list[str]) -> list[str]:
     found: list[str] = []
+    root = root.resolve()
     for tree in list(EXTRA_TREES) + extra_dirs:
-        base = root / tree
+        base = (root / tree).resolve()
+        if not base.is_relative_to(root):
+            raise DenylistError("an --extra directory must be inside --root")
         if base.is_dir():
             found += [p.relative_to(root).as_posix() for p in base.rglob("*") if p.is_file()]
     for directory, pattern in EXTRA_GLOBS:
@@ -173,6 +180,11 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
     parser.add_argument(
         "--extra", action="append", default=[], help="another directory to scan (repeatable)"
     )
+    parser.add_argument(
+        "--require",
+        action="store_true",
+        help=f"fail when no denylist is set (also: {ENV_REQUIRED}=true)",
+    )
     args = parser.parse_args(argv)
     env = dict(os.environ) if env is None else env
 
@@ -180,6 +192,11 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         patterns = load_patterns(env)
     except DenylistError as err:
         print(f"check-private: {err}", file=sys.stderr)
+        return 2
+    required = args.require or env.get(ENV_REQUIRED, "").strip().lower() == "true"
+    if patterns is None and required:
+        message = f"check-private: required, but neither {ENV_FILE} nor {ENV_TEXT} is set"
+        print(f"::error::{message}" if env.get("GITHUB_ACTIONS") == "true" else message, file=sys.stderr)
         return 2
     if patterns is None:
         message = f"check-private: skipped, neither {ENV_FILE} nor {ENV_TEXT} is set"
@@ -195,7 +212,11 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         ).stdout.strip()
         root = Path(top)
 
-    files = files_to_scan(root, args.extra)
+    try:
+        files = files_to_scan(root, args.extra)
+    except DenylistError as err:
+        print(f"check-private: {err}", file=sys.stderr)
+        return 2
     report = scan(root, files, patterns)
     if report:
         print("\n".join(report))

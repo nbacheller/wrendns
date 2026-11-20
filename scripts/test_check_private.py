@@ -142,6 +142,29 @@ class Scan(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("skipped", out)
 
+    def test_doc_006_required_without_a_denylist_fails(self):
+        code, _, err = run(["--root", str(self.root), "--require"], {})
+        self.assertEqual(code, 2)
+        self.assertIn("required", err)
+        code, _, _ = run(["--root", str(self.root)], {cp.ENV_REQUIRED: "true"})
+        self.assertEqual(code, 2)
+        code, _, _ = run(["--root", str(self.root)], {cp.ENV_REQUIRED: "false"})
+        self.assertEqual(code, 0)
+
+    def test_doc_006_required_with_a_denylist_scans(self):
+        code, out, _ = run(["--root", str(self.root), "--require"], {cp.ENV_TEXT: DENYLIST})
+        self.assertEqual(code, 1)
+        self.assertIn("dirty.md:2: pattern #1", out)
+
+    def test_doc_006_extra_outside_root_is_an_error_without_a_pattern(self):
+        with tempfile.TemporaryDirectory() as other:
+            Path(other, "x.txt").write_text("zebra-wombat\n", encoding="utf-8")
+            code, out, err = run(["--root", str(self.root), "--extra", other], {cp.ENV_TEXT: DENYLIST})
+        self.assertEqual(code, 2)
+        self.assertIn("inside --root", err)
+        for needle in ("zebra", "wombat", "quokka", "Traceback"):
+            self.assertNotIn(needle, out + err)
+
     def test_doc_006_unreadable_file_is_an_error_without_the_path(self):
         missing = str(self.root / "no-such-denylist.txt")
         code, _, err = run(["--root", str(self.root)], {cp.ENV_FILE: missing})

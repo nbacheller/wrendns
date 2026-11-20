@@ -48,6 +48,15 @@ jobs:
           if [ ! -f site/_site/coverage/index.html ]; then
             printf '<!doctype html><meta charset="utf-8"><title>Test coverage</title><p>No coverage report yet: the nightly workflow makes one.</p>\n' > site/_site/coverage/index.html
           fi
+      # REQ: DOC-006 — nothing on the private denylist reaches the public site. The check runs on
+      # the built site (with the coverage report) before anything is deployed, and the list is
+      # required whenever a deploy would happen: a missing PRIVACY_DENYLIST secret fails the job
+      # instead of publishing an unchecked site. Hits name file:line and a pattern number only.
+      - name: Privacy check (tracked files, built site, generated docs)
+        env:
+          WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
+          WRENDNS_PRIVACY_REQUIRED: ${{ env.HAS_TOKEN }}
+        run: python3 scripts/check-private.py
       - name: Lighthouse (all categories >= 0.9)
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:
