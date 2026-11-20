@@ -6069,6 +6069,78 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Consequences:** The map's motion is a monitoring signal, not decoration, so it needs per-link rates from the integrations and a quantised, capped animation budget. The UI budget is protected by loading the map only when it opens. Rejected: decorative motion (it would show a dead link as busy), a graph library (size budget), and reading netpulse's source (licence).
 
 
+## ADR-1072 — A wave's gate runs the tests of the crates and specs it touches, and the full suite runs in CI (Proposed 2026-11-20; OPS-004, NFR-005; M39, T39.2, T39.8)
+
+**Context:** Each implementation wave runs its own gate before it commits. Running the whole workspace suite and the full Playwright suite on every wave repeats what CI runs anyway, and the waiting time is paid on every round. Process-per-test isolation with nextest (T39.2) makes a run of a subset of tests reliable.
+
+**Decision:**
+1. A wave runs `cargo nextest run` and `cargo test --doc` on the crates it touches, and the Playwright specs it touches.
+2. One gate per round: `cargo fmt --check`, clippy on the affected crates, and nextest on the affected crates.
+3. The full workspace suite runs in CI on the branch before merge. The full e2e, arm64 and image jobs run after merge on main (owner decision, 2026-11-19).
+
+**Consequences:** A wave's gate is faster, and CI stays the complete check. A wave can pass its gate and still fail in CI, so `pr-ok` must be green before a merge. Rejected: the full workspace suite in every wave gate, because CI already runs it and the cost falls on every round.
+
+## ADR-1073 — CI runs as six workflows, with a fast tier on pull requests and one required check, pr-ok (Proposed 2026-11-20; OPS-004, NFR-005; M39, T39.1, T39.12)
+
+**Context:** CI had grown into one large workflow and several separate ones, and the repository ruleset had no required checks. cluster3 and keepalived ran only on pushes to main that touched their paths, and no schedule ran them, so the rule of running them on merge to main and nightly was not met. The owner decided the target shape on 2026-11-19 (the CI redesign plan). This ADR records that decision; it does not propose a new one.
+
+**Decision:**
+1. The owner decided on 2026-11-19 on six workflows: `pr.yml` (the fast tier, target under 15 minutes), `main.yml` (the full tier: compile once, share artifacts, native arm runners), `nightly.yml` (cluster3 reusing the main image, keepalived, fuzz, advisories, weekly coverage, reproducibility and catalog checks, and one failure issue), `release.yml` (the reusable image and chart), `site.yml`, and CodeQL. `upstream-watch` is deleted and the `feat/ipam-integrations` triggers are dropped.
+2. The fast tier runs a `changes` job, fmt, clippy, the amd64 test leg, deny, site, ui and the native-lite job. The full tier runs on push to main, on pull requests labelled `ci:full`, and on dispatch. cluster3 and keepalived run nightly and when their paths change on main (owner decision, 2026-11-19).
+3. `pr-ok` is the single required check. It has `if: always()`, lists every job in `needs`, and passes only when no needed job has the result failure or cancelled. A job that is skipped counts as passed. It is added to the ruleset only after the first green run on main.
+4. The owner decided on 2026-11-20 that no image is built on pull requests. Images build on main only, over the recommendation to build them on pull requests.
+5. Fork pull requests and Dependabot pull requests run on GitHub-hosted runners. Same-repository pull requests run on the self-hosted box through `WRENDNS_PR_RUNNER` (owner decision, 2026-11-20; ADR-1076).
+
+Waits for the speed wave round 2 owner batch, which sets the membership of the fast and full tiers.
+
+**Consequences:** One required check keeps the ruleset stable while jobs change. The cost is that `pr-ok` alone does not name the failing job, so the reader must open the run. Rejected: folding cluster3, keepalived and the Home Assistant job into `ci.yml` as path-gated jobs (the earlier draft of this milestone), because it diverges from the decided six-workflow shape. Rejected: image builds on pull requests (the owner's decision above).
+
+## ADR-1074 — Each binary is built once per run and shared as an artifact, and tests run as separate processes (Proposed 2026-11-20; OPS-004; M39, T39.3)
+
+**Context:** The same profiles were compiled in several jobs. The ui, oidc, migration, native, worker-image and Home Assistant jobs each built WrenDNS, and the Home Assistant job built the debug binary twice. Compilation is most of the wall time. A debug `dev-e2e` build embeds the path of `ui/dist` it was built at (`crates/wrendns-api/src/ui.rs`, line 15), so a debug binary served from another path finds no UI.
+
+**Decision:**
+1. A `bins` job builds each profile and feature set once per run: dev-e2e (the e2e feature, for ui and oidc), bench-fast (migration, bench-smoke and the worker-image cargo test), and bench-fast-wedge (the wedge-test feature, for the native shards). Each is uploaded as an artifact, and each consumer runs `chmod +x` after the download, because artifacts lose the executable bit.
+2. e2e and wedge-test stay separate binaries. They are not combined into one binary for every job.
+3. dev-e2e has to run on any runner class, so the UI assets are embedded in the artifact rather than read from the build path. The implementation chooses the mechanism (rust-embed debug embedding or an embedding profile).
+4. Every cargo test run uses nextest process isolation (ADR-1072, T39.2).
+5. The rust-cache entries are saved by a hosted job (the nightly job), not by the self-hosted legs, because the main-branch amd64 legs run on the self-hosted box.
+
+**Consequences:** A failed `bins` job fails `pr-ok`. A consumer's build no longer depends on its own runner's cache. The embedded UI makes the debug artifact larger; its size is measured. Rejected: one combined binary for every job.
+
+## ADR-1075 — The image builds from a dependency layer, with one leg per architecture merged into one manifest, and the release profile unchanged (Proposed 2026-11-20; NFR-005, NFR-001; M39, T39.4, T39.5)
+
+**Context:** The image job took 38 minutes 3 seconds in one buildx run for three platforms. `COPY . .` comes before the build, so every source change rebuilds the dependencies. The cargo registry and target mounts are not exported to the GitHub cache. The baseline image sizes are amd64 16.13 MiB, arm64 15.25 MiB and arm/v7 15.86 MiB, against the 25 MiB per-architecture gate (ADR-916).
+
+**Decision:**
+1. The dependencies sit in their own layer before the source copy, by cargo-chef or by a manifest-only copy with stub crates. The build tool does not enter the final scratch image.
+2. Each architecture is a separate leg with its own `type=gha` cache scope, followed by a manifest merge job. Cosign signing, the edge and release tags, the chart, release and verify jobs keep working.
+3. Images build on main only (owner decision, 2026-11-20; ADR-1073).
+4. The release profile (fat LTO, `codegen-units=1`) is unchanged. The owner ranks performance first.
+5. Reproducibility holds: the binaries stay byte-identical, as the nightly reproducible job checks. If cargo-chef breaks that, the stub-crate approach is used.
+6. Once ADR-1076 is live, the main image legs build on the self-hosted box. Release builds and signing stay on GitHub-hosted runners (owner decision, 2026-11-20). Until then the legs run hosted.
+
+Waits for the owner answer on the LXD footprint (pool size and memory) and the cutover order, which set when the image legs move.
+
+**Consequences:** The layer must keep the `cargo auditable` metadata identical, which is checked before it is accepted. Rejected: a shorter build by changing the release profile, because the owner ranks performance first.
+
+## ADR-1076 — Self-hosted runners run each job in a fresh LXD container reset from a snapshot, with the registry mirrors on the host and fork and Dependabot pull requests kept off the box (Proposed 2026-11-20; OPS-004; M39, T39.6, T39.9)
+
+**Context:** The self-hosted box runs eight runners. When six cargo jobs shared it, one cargo test took 1223 s on the box against 249 s on a hosted runner, so the box needs isolation and a cap. Its CPU is Ivy Bridge, which supports x86-64-v2 only. The owner rule of 2026-11-19 kept pull requests on GitHub-hosted runners, and the owner widened that rule on 2026-11-20 for same-repository pull requests, as described below.
+
+**Decision:**
+1. Each runner is an LXD container. A `--once` runner resets from a snapshot after each job, keeps its runner identity, and no runner token is kept on the host. The owner accepted LXD per-runner containers on 2026-11-20.
+2. The registry mirrors stay on the host, and the containers reach them through the LXD bridge (owner decision, 2026-11-20).
+3. Same-repository pull requests run on the self-hosted box through the `WRENDNS_PR_RUNNER` repository variable (owner decision, 2026-11-20). This widens the 2026-11-19 rule that pull requests stay on GitHub-hosted runners. The widening is deliberate and is recorded here. It is revisited once the per-runner reset is live.
+4. Fork pull requests never run on the box. Dependabot pull requests run on GitHub-hosted runners (owner decision, 2026-11-20; ADR-1078).
+5. Release builds and signing stay on GitHub-hosted runners.
+6. Nothing built for the box targets x86-64-v3. Jobs that need x86-64-v3, such as the Home Assistant python job (setup-python 26.04 builds need it), stay hosted.
+7. Cutover starts with a single canary runner that must pass checks V1 to V9 for about a day before the other runners move.
+
+Waits for the owner answer on the LXD footprint (pool size and memory) and the cutover order.
+
+**Consequences:** A fresh container starts with cold caches, which is why ADR-1074 saves caches from a hosted job. Rollback is to the hosted runners for every job. Rejected: fork pull requests on the box (they are untrusted code). Rejected: moving the registry mirrors into the containers, because they stay on the host.
+
 ## ADR-1077 — The watchdog ends when its runtime is gone: Disconnected means stopping, not a stall (Proposed 2026-11-20; OPS-012, OPS-004, fork red-jobs track)
 
 **Context:** The watchdog (ADR-163) asks the runtime to run a task and counts a missing answer as a stall; after `stall_secs` it writes a dump and exits 70. It ends only when the stop signal reads `true`. In-process server tests (`server.rs`) spawn it too, and when a test's runtime is dropped the sender is dropped without sending `true`: the runtime check then fails against the dead runtime (the task is dropped unrun, which the probe read as "no answer"), and a minute later the leaked thread reports a stall and, before the `cfg(test)` backstop (point 3, which now only logs the exit) existed, exited the whole test binary with status 70 (CI 2026-11-20, `cargo test` on arm64 and amd64); this change ends the leaked thread itself. The same reading would apply to any drop of the node's runtime that skips the drain.
@@ -6079,3 +6151,45 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 3. The `cfg(test)` `exit_process` that logs instead of exiting stays as a backstop.
 
 **Consequences:** A wedged runtime is still detected (it times out; `deploy/watchdog/e2e.sh` and `ops_012_the_runtime_check_sees_a_runtime_whose_only_worker_is_blocked` cover it). Only a process whose runtime has been torn down stops being watched, which is correct. Test: `ops_012_watchdog_ends_when_its_runtime_is_gone`. Rejected: raising `stall_secs` in tests (hides the leak), and aborting the thread from the test server (every spawner would have to remember).
+
+## ADR-1078 — Dependabot opens few pull requests, never rebases them, waits five days after a release, and its jobs run on GitHub-hosted runners (Proposed 2026-11-20; NFR-005, OPS-004; M39, T39.7)
+
+**Context:** Dependabot opened pull requests weekly for every ecosystem, with a cargo limit of 3 and other limits up to 3, and its rebases re-ran CI on every open pull request after each merge. A Dependabot pull request is not a fork pull request, so until the actor guard lands it runs clippy and test on the self-hosted box. The policy's groups and three ignores (aes 0.9, typescript major, and the dtolnay/rust-toolchain tag) stay as they are.
+
+**Decision:**
+1. The cooldown is five days (owner decision, 2026-11-19). A release is proposed only after its five-day cooldown.
+2. Automatic rebases are disabled on every entry (`rebase-strategy: disabled`).
+3. The open-pull-request limits are 2 for cargo and 1 for every other ecosystem.
+4. Cargo updates run weekly. npm, fuzz, github-actions and docker updates run monthly. The schedule fixes the time at 02:00 in America/New_York.
+5. Dependabot pull requests run their jobs on GitHub-hosted runners, enforced by an actor guard in the runner expressions (owner decision, 2026-11-20).
+
+Waits for the owner answer on whether Dependabot runs on the self-hosted box once ADR-1076 is live.
+
+**Consequences:** Dependency updates arrive more slowly and in smaller numbers. A contributor who wants a rebase has to ask for it. Rejected: automatic rebases, because each merge would re-run CI on every open pull request.
+
+## ADR-1079 — The post-quantum TLS scope is a placeholder until the spike numbers exist and the owner decides it (Proposed 2026-11-20; NFR-001; M39, T39.10)
+
+**Context:** rustls, tokio-rustls, quinn and rustls-webpki use the ring provider in `wrendns-cluster`, `wrendns-filter` and `wrendns-net`. The aws-lc-rs provider can offer hybrid X25519MLKEM768 key exchange (prefer-post-quantum). A change would touch the handshakes on the hot path and the image size. The spike (T39.10) measures it on a branch that is never merged, and the box cannot measure the AVX2 paths of aws-lc-rs.
+
+**Decision:**
+1. Not decided. This ADR records only the open question: whether WrenDNS switches its TLS provider to aws-lc-rs with hybrid post-quantum key exchange, and in which crates.
+2. The spike measures the options. Its numbers go in the spike's pull request, and the branch is not merged.
+3. Any switch that reaches the hot path needs `make bench-smoke` output and must stay within the RSS gates (ADR-1031), and the image stays within the 25 MiB per-architecture gate (ADR-916).
+
+Waits for the owner answer on the post-quantum TLS scope, once the spike numbers are in.
+
+**Consequences:** No code changes until the owner answers. Rejected: deciding the scope before the numbers exist.
+
+## ADR-1080 — The public repository requires four checks, fails closed on fork pull requests, pins every action to a commit SHA, and scans its history (Proposed 2026-11-20; OPS-004, NFR-005, DOC-006; M39, T39.11, T39.13)
+
+**Context:** The repository is to become public, and its workflows run on a self-hosted box and handle secrets. The privacy gate (DOC-006, ADR-1033) has to hold for the history as well as for the current tree. Fork pull requests get no secret, so the privacy check cannot run for them. Actions referenced by a tag can change under the workflow.
+
+**Decision:**
+1. The ruleset requires four checks: privacy, site, pr-ok and CLA. `pr-ok` is the aggregate of the CI jobs (ADR-1073). The CLA context name is confirmed from a real pull request (T39.13).
+2. The required privacy check fails closed on fork pull requests. It fails with a notice that it cannot run without the secret, and it does not skip (owner decision, 2026-11-20).
+3. Every action in the workflows is pinned to a full commit SHA with a version comment. An unpinned-uses check fails CI on any `uses:` that is not a 40-hex SHA, except local `./` references and the actions the plan leaves on tags.
+4. `scripts/check-private.py --history` scans the added lines of every commit and every branch and tag name, and it never prints a pattern.
+5. CodeQL reports only, at first. Whether it becomes a required check waits for the speed wave round 2 owner batch.
+6. Self-hosted runner trust follows ADR-1076: fork pull requests never run on the box, and release builds and signing stay on GitHub-hosted runners.
+
+**Consequences:** A fork pull request cannot pass the required privacy check, so it cannot merge under this ruleset as written. The owner has to decide how outside changes are taken in before the repository is public. Rejected: skipping the privacy check for fork pull requests, as the Dependabot path does today. Rejected: making CodeQL a required check now, because it has not yet reported on this repository.
