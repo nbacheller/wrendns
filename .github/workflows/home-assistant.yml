@@ -41,9 +41,9 @@ jobs:
   # Home Assistant (deploy/ha-test): devices named and addressed, the names in DNS, the sensors;
   # T24.10: and the Home Assistant Pi-hole integration against the Pi-hole compatible API.
   ha-test:
-    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
-    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
+    # job binds fixed host ports, which concurrent jobs on one host would share).
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

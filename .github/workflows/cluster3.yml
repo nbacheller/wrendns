@@ -60,9 +60,9 @@ permissions:
 
 jobs:
   three-node:
-    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
-    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
+    # job binds fixed host ports, which concurrent jobs on one host would share).
+    runs-on: ubuntu-latest
     # A cold image build on a 4-vCPU runner (the UI, then the workspace with thin LTO, and an empty
     # build cache) takes well over the README's 3 to 6 minutes, which was measured on a warm 24-core
     # host; the checks take about five more. 60 minutes leaves room for both.
