@@ -2065,17 +2065,22 @@ impl Backend for ApiBackend {
                 day.1[i] += u64::from(*n);
             }
         }
-        policy
-            .clients
-            .groups()
+        let groups = policy.clients.groups();
+        groups
             .iter()
             .enumerate()
             .map(|(i, g)| GroupInfo {
                 networks: g.networks.iter().map(ToString::to_string).collect(),
-                color: g
-                    .color
-                    .as_deref()
-                    .map_or_else(|| palette(i, &g.name), str::to_owned),
+                // The group's place among the configured groups, `default` not counted.
+                color: g.color.as_deref().map_or_else(
+                    || {
+                        palette(
+                            groups[..i].iter().filter(|x| &*x.name != "default").count(),
+                            &g.name,
+                        )
+                    },
+                    str::to_owned,
+                ),
                 queries_24h: day.0.get(i).copied().unwrap_or(0),
                 blocked_24h: day.1.get(i).copied().unwrap_or(0),
                 devices_this_hour: u64::try_from(agg.group_devices(
@@ -7606,17 +7611,46 @@ pub(crate) fn provenance(by: &str, version: u64) {
     }
 }
 
-/// A stable color for a group without one (ADR-050): `default` is neutral; others cycle a
-/// palette by position, so colors don't shift when a group's stats change.
+/// A stable color for a group without one (ADR-050): the brand's group colors, `flock-1` to
+/// `flock-5` (Day) by position among the configured groups, then `flock-other`, which `default`
+/// takes too (REQ: API-005, DOC-006; T33.6, ADR-1040; brand/tokens.json). Colors don't shift when
+/// a group's stats change. The web UI shows each in its Night value in the dark theme.
 fn palette(i: usize, name: &str) -> String {
-    const COLORS: [&str; 10] = [
-        "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16",
-        "#f97316", "#14b8a6",
-    ];
+    const FLOCK: [&str; 5] = ["#226fb3", "#d55c13", "#894d97", "#33903c", "#a63f66"];
+    const OTHER: &str = "#5b6b7c";
     if name == "default" {
-        "#94a3b8".into()
+        OTHER.into()
     } else {
-        COLORS[i % COLORS.len()].into()
+        FLOCK.get(i).copied().unwrap_or(OTHER).into()
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::palette;
+
+    /// REQ: API-005 — groups take the brand's flock in order, then flock-other (T33.6, ADR-1040).
+    #[test]
+    fn api_005_groups_take_the_flock_in_order_then_other() {
+        let tokens: serde_json::Value =
+            serde_json::from_str(include_str!("../../../brand/tokens.json"))
+                .expect("brand/tokens.json");
+        let day = |n: &str| {
+            tokens["color"]["tokens"]
+                .as_array()
+                .and_then(|a| a.iter().find(|t| t["name"] == n))
+                .and_then(|t| t["value"]["light"].as_str())
+                .map(str::to_owned)
+        };
+        for i in 0..5 {
+            assert_eq!(
+                Some(palette(i, "g")),
+                day(&format!("flock-{}", i + 1)),
+                "group {i}"
+            );
+        }
+        assert_eq!(Some(palette(5, "g")), day("flock-other"));
+        assert_eq!(Some(palette(0, "default")), day("flock-other"));
     }
 }
 

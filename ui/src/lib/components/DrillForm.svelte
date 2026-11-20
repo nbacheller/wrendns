@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
   // REQ: CLU-014 (ADR-151) — start a failover drill on a node: how long, whom (everyone, a
   // group, or some devices), why; a preview first (the dry run: every precondition, the devices
   // it would stop answering, what that does to them), then Start when every check passes.
@@ -115,7 +116,7 @@
       <p>{preview.preview}</p>
       <ul class="checks">
         {#each preview.checks as c (c.name)}
-          <li class:fail={!c.ok}><span aria-hidden="true">{c.ok ? '✓' : '✗'}</span> {c.detail}</li>
+          <li class:fail={!c.ok}><span class="mark" aria-hidden="true"><Icon name={c.ok ? 'check' : 'x'} size={16} /></span> {c.detail}</li>
         {/each}
       </ul>
       {#if (preview.devices ?? []).length}

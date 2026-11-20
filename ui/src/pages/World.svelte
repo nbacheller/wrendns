@@ -343,7 +343,7 @@
     }
   }
   .ratelabel {
-    font-size: 10px;
+    font-size: 12px;
     fill: var(--text);
     paint-order: stroke;
     stroke: var(--surface);

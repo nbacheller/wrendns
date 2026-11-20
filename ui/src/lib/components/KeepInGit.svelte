@@ -29,7 +29,7 @@
 <style>
   .keep {
     border: 1px solid var(--info, var(--border));
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 10px 12px;
     background: color-mix(in srgb, var(--info, var(--accent)) 7%, transparent);
   }
@@ -46,7 +46,7 @@
     padding: 8px;
     overflow-x: auto;
     background: var(--surface);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     white-space: pre;
   }
 </style>

@@ -29,22 +29,18 @@ strategy = "fastest"
 [[group]]
 name = "Family"
 networks = ["127.0.1.0/24"]
-color = "#3b82f6"
 
 [[group]]
 name = "Kids"
 networks = ["127.0.2.0/24"]
-color = "#f59e0b"
 
 [[group]]
 name = "IoT"
 networks = ["127.0.3.0/24"]
-color = "#8b5cf6"
 
 [[group]]
 name = "Work"
 networks = ["127.0.4.0/24"]
-color = "#10b981"
 
 [[client]]
 name = "Mom's Phone"

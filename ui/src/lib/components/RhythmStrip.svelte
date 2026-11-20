@@ -173,7 +173,7 @@
     stroke-width: 1.5;
   }
   .axis text {
-    font-size: 10px;
+    font-size: 12px;
     fill: var(--muted);
   }
   .period {

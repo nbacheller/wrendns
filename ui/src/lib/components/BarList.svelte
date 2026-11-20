@@ -82,13 +82,13 @@
   .bar {
     display: flex;
     height: 7px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     overflow: hidden;
   }
   .bar span {
     background: var(--s-blocked);
-    border-radius: 999px;
+    border-radius: var(--radius-full);
   }
   /* The error bound: the true count may be this much lower. */
   .bar i {

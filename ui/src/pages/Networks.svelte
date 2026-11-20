@@ -222,7 +222,7 @@
     width: 64px;
     height: 8px;
     margin-right: 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: var(--border);
     overflow: hidden;
     vertical-align: middle;

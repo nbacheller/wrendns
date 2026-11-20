@@ -2,6 +2,7 @@
   // REQ: API-005, API-010 — configured devices and the clients seen in the last hour (60–65
   // minutes up to now, not the clock hour: ADR-158); name a device from either list.
   import { api, type S } from '../lib/api';
+  import { flockCss } from '../lib/flock';
   import { href, navigate, route } from '../lib/router.svelte';
   import { ago, num } from '../lib/format';
   import { session } from '../lib/session.svelte';
@@ -20,7 +21,7 @@
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
-  const groupColor = (n: string) => groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
+  const groupColor = (n: string) => flockCss(groups, n);
   const fromText: Record<string, string> = {
     network: 'from its network',
     default: 'default: no network group matches',

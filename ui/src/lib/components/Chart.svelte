@@ -98,7 +98,7 @@
 
   function color(c: string): string {
     if (!c.startsWith('--')) return c;
-    return getComputedStyle(document.documentElement).getPropertyValue(c).trim() || '#888';
+    return getComputedStyle(document.documentElement).getPropertyValue(c).trim();
   }
 
   // The legend's values change on hover ("total" becomes a time, the range's sums one bucket's
@@ -132,15 +132,8 @@
     // Stacked: plot running sums, drawn top band first so lower bands paint over it.
     let ys = series.map((s) => s.values);
     let order = series.map((_, i) => i);
-    // A fill that fades towards the baseline.
-    const fade = (c: string) => (u: uPlot) => {
-      // uPlot asks for the fill before the plot box is measured on its first draw.
-      if (!Number.isFinite(u.bbox?.top) || !Number.isFinite(u.bbox?.height)) return c + '80';
-      const g = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
-      g.addColorStop(0, c + 'b3');
-      g.addColorStop(1, c + '33');
-      return g;
-    };
+    // A flat, translucent fill: the brand has no gradients (T33.6).
+    const fade = (c: string) => c + '73';
     if (stacked) {
       const acc = new Array(times.length).fill(0);
       ys = series.map((s) => s.values.map((v, i) => (acc[i] += v ?? 0)));
@@ -377,18 +370,14 @@
     opacity: 1;
     width: 2px;
   }
-  .mk:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 0;
-  }
   .mk-count {
     position: absolute;
     top: 0;
     left: 6px;
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1;
     padding: 1px 3px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     color: var(--text);
     white-space: nowrap;
@@ -399,7 +388,7 @@
     z-index: 2;
     max-width: 240px;
     padding: 6px 8px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);

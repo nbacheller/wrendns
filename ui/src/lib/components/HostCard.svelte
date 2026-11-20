@@ -122,7 +122,7 @@
   .warnings {
     margin: 0;
     padding: 8px 12px 8px 28px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--bad) 10%, transparent);
     color: var(--bad-strong);
     font-size: 13px;
@@ -148,14 +148,14 @@
   .bar {
     height: 8px;
     margin: 4px 0;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     overflow: hidden;
   }
   .bar span {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--accent);
   }
   .bar span.warn {
@@ -174,7 +174,6 @@
     stroke: var(--accent);
     stroke-width: 1.5;
     vector-effect: non-scaling-stroke;
-    opacity: 0.8;
   }
   .facts {
     display: grid;

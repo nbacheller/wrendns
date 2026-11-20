@@ -292,7 +292,7 @@
     gap: 1.5vmin;
     align-items: center;
     font-size: 2.2vmin;
-    opacity: 0.75;
+    color: var(--muted);
     z-index: 2;
   }
   .clock {
@@ -300,8 +300,6 @@
   }
   .paused {
     font-size: 1.6vmin;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
   }
   .motion .title {
     transition: opacity 0.8s ease;
@@ -356,7 +354,7 @@
     font-size: 1.9vmin;
     padding: 1vmin 0 1.5vmin;
     border-top: 1px solid var(--border);
-    font-family: ui-monospace, monospace;
+    font-family: var(--mono);
   }
   .wall.side .tail {
     flex-direction: column;

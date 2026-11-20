@@ -101,8 +101,7 @@
     stroke-opacity: 0.6;
   }
   .node {
-    fill: var(--text);
-    opacity: 0.8;
+    fill: var(--muted);
   }
   text {
     font-size: 1.8vmin;

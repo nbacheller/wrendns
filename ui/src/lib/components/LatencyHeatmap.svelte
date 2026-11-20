@@ -108,7 +108,7 @@
     mq.removeEventListener('change', onTheme);
     obs.disconnect();
   });
-  const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888';
+  const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
   $effect(() => {
     void themeTick;
@@ -283,7 +283,7 @@
   .chip {
     min-height: 26px;
     padding: 2px 10px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     font-size: 12px;
     display: inline-flex;
     gap: 6px;
@@ -294,8 +294,9 @@
     height: 8px;
     border-radius: 50%;
   }
+  /* Off: muted text, not faded (T33.6). */
   .chip[aria-pressed='false'] {
-    opacity: 0.55;
+    color: var(--muted);
   }
   .plot {
     width: 100%;
@@ -330,7 +331,7 @@
     position: absolute;
     z-index: 2;
     padding: 6px 8px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);

@@ -156,7 +156,7 @@
   }
   .card-in {
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 10px 12px;
   }
   .card-in p {
@@ -172,8 +172,8 @@
     display: grid;
     gap: 2px;
     padding: 8px;
-    border-radius: 6px;
-    background: var(--surface-2, var(--bg));
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
   }
   .tile.bad .num {
     color: var(--bad);

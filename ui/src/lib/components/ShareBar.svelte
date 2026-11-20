@@ -15,13 +15,13 @@
     margin-top: 5px;
     margin-left: auto;
     max-width: 120px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface-2);
     overflow: hidden;
   }
   .share span {
     display: block;
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
   }
 </style>

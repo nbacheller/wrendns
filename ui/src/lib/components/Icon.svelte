@@ -1,6 +1,6 @@
 <script lang="ts" module>
-  // T6.8 — a few line icons drawn here (no icon library: the bundle budget is 400 KiB).
-  // 24×24 viewBox, stroked with currentColor.
+  // T6.8 — a few line icons drawn here (no icon library: the bundle budget, ADR-1041). Lucide-style
+  // (the brand book): 24×24 viewBox, 20px by default, a 1.75 stroke in currentColor (ink or ink-muted).
   export const paths: Record<string, string> = {
     dashboard: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
     queries: 'M4 6h16M4 12h16M4 18h10',
@@ -43,13 +43,26 @@
     'health-severe': 'M8.2 2.5h7.6l5.7 5.7v7.6l-5.7 5.7H8.2l-5.7-5.7V8.2zM9 9l6 6M15 9l-6 6',
     // REQ: FLT-017 — a Kubernetes workload (a container: a plain cube, no logo).
     workload: 'M12 2.5l8.5 4.75v9.5L12 21.5l-8.5-4.75v-9.5zM3.5 7.25L12 12l8.5-4.75M12 12v9.5',
+    // REQ: API-005, DOC-006 (T33.6) — symbols that were Unicode characters (✕ ▸ ▾ ✓ ✗ ★ ▲ ▼ ⚠), and the
+    // pages that shared another page's icon.
+    x: 'M18 6 6 18M6 6l12 12',
+    'chevron-right': 'm9 18 6-6-6-6',
+    'chevron-down': 'm6 9 6 6 6-6',
+    check: 'M20 6 9 17l-5-5',
+    alert: 'M10.3 4.2 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0zM12 9v4.5M12 17.5h.01',
+    star: 'm12 2.5 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5-4.8-4.6 6.6-.9z',
+    up: 'M12 19V5M5 12l7-7 7 7',
+    down: 'M12 5v14M19 12l-7 7-7-7',
+    router: 'M2 14h20v6H2zM6 17h.01M10 17h.01M15 10v4M17.8 7.2a4 4 0 0 0-5.6 0M20.7 4.3a8 8 0 0 0-11.4 0',
+    cmdb: 'M3 4h18v4H3zM5 8v12h14V8M10 12h4',
+    inventory: 'M9 3h6v3H9zM15 4.5h3a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h3M9 11h6M9 15h6',
     // REQ: OPS-010 — maintenance (a wrench).
     wrench: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z',
   };
 </script>
 
 <script lang="ts">
-  let { name, size = 18 }: { name: string; size?: number } = $props();
+  let { name, size = 20 }: { name: string; size?: number } = $props();
 </script>
 
 <svg

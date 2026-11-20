@@ -306,11 +306,9 @@
     flex-wrap: wrap;
   }
   .finding.acked,
-  .finding.muted-finding {
-    opacity: 0.75;
-  }
+  .finding.muted-finding,
   .ended {
-    opacity: 0.6;
+    color: var(--muted);
   }
   .ack-line {
     margin: 4px 0;

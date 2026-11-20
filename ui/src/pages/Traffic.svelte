@@ -239,7 +239,7 @@
             onfocus={() => (hover = t)}
           >
             {#if r.w > 64 && r.h > 30}
-              <span class="name">{t.label}</span>
+              <span class="name" class:mono={!t.service}>{t.label}</span>
               {#if r.h > 50}
                 <span class="count">{short(t.count)}{#if t.delta > 0}<span class="delta"> +{short(t.delta)}</span>{/if}</span>
               {/if}
@@ -301,7 +301,7 @@
     position: absolute;
     box-sizing: border-box;
     border: 1px solid var(--surface);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     padding: 4px 6px;
     overflow: hidden;
     display: flex;
@@ -309,26 +309,28 @@
     gap: 1px;
     color: var(--text);
     text-decoration: none;
+    /* Every tile moves together, in the brand's one motion (T33.6). */
     transition:
-      left 0.6s ease,
-      top 0.6s ease,
-      width 0.6s ease,
-      height 0.6s ease,
-      background-color 0.6s ease;
+      left var(--motion),
+      top var(--motion),
+      width var(--motion),
+      height var(--motion),
+      background-color var(--motion);
   }
   .tile.allowed {
     background: color-mix(in srgb, var(--info) var(--mix), var(--surface));
   }
+  /* On the alert tint, not the surface: mixing with the surface gave earth tones in Night (T33.6). */
   .tile.blocked {
-    background: color-mix(in srgb, var(--s-blocked) var(--mix), var(--surface));
+    background: color-mix(in srgb, var(--s-blocked) var(--mix), var(--bad-soft));
   }
   .tile.strong {
     color: var(--tm-ink);
   }
-  .tile:hover,
+  /* REQ: UI-*, T33.6 — the focus ring 2px outside, for focus only (hover shows the details panel). */
   .tile:focus-visible {
     outline: 2px solid var(--focus);
-    outline-offset: -2px;
+    outline-offset: 2px;
     z-index: 2;
   }
   .tile.hot {
@@ -359,7 +361,10 @@
   .count {
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-    opacity: 0.85;
+    color: var(--muted);
+  }
+  .tile.strong .count {
+    color: inherit;
   }
   .empty {
     position: absolute;
@@ -379,7 +384,7 @@
   .badge {
     font-size: 12px;
     padding: 2px 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     color: var(--tm-ink);
   }
   .badge.allowed {
