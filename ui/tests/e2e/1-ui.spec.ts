@@ -2546,6 +2546,16 @@ test('flt_004 lists fit a phone width (375 px)', async () => {
 // that is over its size limit, remove-or-replace for a 404, and turn-off/remove for a list whose names
 // are all in another. The changes are answered by a stand-in here (the lists stay as the suite expects).
 test('t24_27 list failures offer a fix', async () => {
+  // REQ: T24.27 - the page refreshes the lists while the test swaps their stand-in: a request the
+  // old stand-in caught is finished by Playwright once it is unrouted, and its late fulfill throws
+  // "Route is already handled!" (CI 2026-11-20). That request's answer no longer matters.
+  const fulfillLate = async (route: Route, answer: Parameters<Route['fulfill']>[0]) => {
+    try {
+      await route.fulfill(answer);
+    } catch (e) {
+      if (!String(e).includes('Route is already handled')) throw e;
+    }
+  };
   const rowOf = (name: string) =>
     page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
   const failing = {
@@ -2560,7 +2570,7 @@ test('t24_27 list failures offer a fix', async () => {
     const r = await route.fetch();
     const json = await r.json();
     json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
-    await route.fulfill({ response: r, json });
+    await fulfillLate(route, { response: r, json });
   });
   const changes: { method: string; url: string; body: Record<string, unknown> | null }[] = [];
   await page.route(/\/api\/v1\/lists\/e2e-(block|shadow)$/, async (route) => {
@@ -2605,7 +2615,7 @@ test('t24_27 list failures offer a fix', async () => {
     const r = await route.fetch();
     const json = await r.json();
     json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
-    await route.fulfill({ response: r, json });
+    await fulfillLate(route, { response: r, json });
   });
   try {
     await page.reload();
@@ -2628,7 +2638,7 @@ test('t24_27 list failures offer a fix', async () => {
           ? { ...l, ...coverOverride }
           : l,
     );
-    await route.fulfill({ response: r, json });
+    await fulfillLate(route, { response: r, json });
   });
   await page.route(/\/api\/v1\/lists\/e2e-block$/, async (route) => {
     redundantChanges.push(route.request().postDataJSON());

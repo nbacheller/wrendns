@@ -769,9 +769,7 @@ pub(crate) fn spawn(
     let thread = std::thread::Builder::new()
         .name("wrendns-watchdog".to_owned())
         .spawn(move || {
-            run(&mut watchdog, &mut writer, &stop, CHECK_EVERY, |code| {
-                std::process::exit(code)
-            });
+            run(&mut watchdog, &mut writer, &stop, CHECK_EVERY, exit_process);
         });
     match thread {
         Ok(_) => info!(
@@ -780,6 +778,21 @@ pub(crate) fn spawn(
         ),
         Err(e) => warn!("the watchdog couldn't start: {e}"),
     }
+}
+
+/// REQ: OPS-012 - a restart ends the process with `code` for its supervisor.
+#[cfg(not(test))]
+fn exit_process(code: i32) {
+    std::process::exit(code)
+}
+
+/// REQ: OPS-012, OPS-004 - in this crate's unit tests the servers run inside the test binary, where
+/// a loaded CI runner can hold the runtime past `stall_secs`: a real exit ended the whole test
+/// binary with status 70 and no test failed (CI 2026-11-20). A unit-test build writes the dump and
+/// logs the restart instead; the watchdog e2e (`deploy/watchdog/e2e.sh`) runs the real binary.
+#[cfg(test)]
+fn exit_process(code: i32) {
+    error!("the watchdog would exit with status {code}: not in a unit-test build");
 }
 
 /// The rounds, `every` apart, until `stop` or a restart. `exit` ends the process.

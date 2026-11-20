@@ -18,11 +18,13 @@ permissions:
   contents: read
 jobs:
   test:
+    # OPS-004: GitHub-hosted: setup-python's Ubuntu 26.04 builds need x86-64-v3, which the
+    # self-hosted runners' CPU lacks.
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Build WrenDNS (debug)
@@ -39,12 +41,15 @@ jobs:
   # Home Assistant (deploy/ha-test): devices named and addressed, the names in DNS, the sensors;
   # T24.10: and the Home Assistant Pi-hole integration against the Pi-hole compatible API.
   ha-test:
+    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
+    # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
       - run: cargo build -p wrendns
       - name: Home Assistant source against a throwaway Home Assistant
         run: bash deploy/ha-test/e2e.sh target/debug/wrendns

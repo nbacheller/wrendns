@@ -70,3 +70,17 @@ services:
   authentik-worker:
     <<: *authentik
     command: worker
+    # The server runs the migrations; a worker started alongside it on a slower CPU fails its
+    # health check before they finish, so it waits for the server and gets the same allowance.
+    depends_on:
+      authentik-db:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_started
+      authentik-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ak healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 60

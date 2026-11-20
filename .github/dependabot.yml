@@ -13,12 +13,20 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    # REQ: OPS-004 - three, not five: each PR starts ci, image, cluster3 and keepalived, and a
+    # burst of them starved the account's runners (CI 2026-11-20).
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "build(deps)"
     groups:
       rust-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # aes 0.9 moves to the cipher 0.5 traits (`BlockEncrypt` and `encrypt_block` are gone), so
+      # wrendns-snmp doesn't build with it (CI 2026-11-20). Porting the SNMP privacy code is its own
+      # task; until then the 0.9 series is not offered. Remove this entry with that port.
+      - dependency-name: "aes"
+        versions: [">= 0.9.0, < 0.10.0"]
 
   # The fuzz targets are their own workspace.
   - package-ecosystem: cargo
@@ -39,7 +47,7 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "build(deps)"
     groups:

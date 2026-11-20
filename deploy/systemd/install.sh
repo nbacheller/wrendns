@@ -572,6 +572,19 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null \
       "$was" > "$RESOLVED_DROPIN"
     ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
     systemctl restart systemd-resolved
+    # REQ: OPS-004 - the stub's sockets can close a moment after the restart returns: wait for
+    # port 53 to be free (up to 10 s), and name what still holds it (CI 2026-11-20: "Address
+    # already in use" with the stub turned off).
+    if command -v ss >/dev/null 2>&1; then
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -z "$(ss -Hlnu 'sport = :53' 2>/dev/null)" ] && break
+        sleep 1
+      done
+      if [ -n "$(ss -Hlnu 'sport = :53' 2>/dev/null)" ]; then
+        say "Port 53 is still in use after turning the stub listener off:"
+        ss -Hlnup 'sport = :53' 2>/dev/null || true
+      fi
+    fi
   else
     say "Leaving systemd-resolved as is: if port 53 is busy, set [[listen]] to this machine's LAN address"
   fi

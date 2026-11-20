@@ -81,9 +81,15 @@ async def test_entities(hass: HomeAssistant, wrendns_node: Node, socket_enabled)
     assert hass.states.get(_entity(hass, entry, "open_anomalies")).state == "0"
     # The fork's inventory endpoints: readable with config:read.
     assert hass.states.get(_entity(hass, entry, "known_devices")).state == "0"
+    # REQ: T22.4, API-013 (T24.32) - no router here: the kids group's network, plus the private
+    # networks the test machine is directly on (a CI runner's own LAN; none in a container).
     networks = hass.states.get(_entity(hass, entry, "networks"))
-    assert networks.state == "1", "the kids group's network (no router here)"
-    assert networks.attributes["networks"][0] == {
+    listed = networks.attributes["networks"]
+    assert int(networks.state) == len(listed)
+    kids = [n for n in listed if n["group"] == "kids"]
+    assert len(kids) == 1, listed
+    assert all(n["group"] is None for n in listed if n is not kids[0]), listed
+    assert kids[0] == {
         "name": "kids",
         "subnet": "10.9.0.0/24",
         "vlan": None,
