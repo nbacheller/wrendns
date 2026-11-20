@@ -50,6 +50,8 @@ Every pull request runs the fast tier (`.github/workflows/pr.yml`). A `changes` 
 
 `pr-ok` is the one check to watch: it passes when every other job passed or was skipped, and it fails when any of them failed or was cancelled. Its log names each job that failed, and the run's job list shows where.
 
+Some jobs run on self-hosted runners, but never for fork or Dependabot pull requests; `docs/ci-runners.md` describes the runners and the trust rule.
+
 After a merge, the full tier (`.github/workflows/ci.yml`) runs on main: the arm64 tests, the end-to-end suites, the Helm and native cluster checks. The image workflow builds the images on main. To run it on a pull request, ask a maintainer to add the `ci:full` label; it runs again for each push while the label stays.
 
 The privacy check needs a secret that pull requests from forks do not get, so it fails on them by design. That failure is not a problem with your change: a maintainer runs the check on a branch of the repository and reports the result.
