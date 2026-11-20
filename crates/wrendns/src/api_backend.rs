@@ -2073,7 +2073,12 @@ impl Backend for ApiBackend {
                 networks: g.networks.iter().map(ToString::to_string).collect(),
                 // The group's place among the configured groups, `default` not counted.
                 color: g.color.as_deref().map_or_else(
-                    || palette(groups[..i].iter().filter(|x| &*x.name != "default").count(), &g.name),
+                    || {
+                        palette(
+                            groups[..i].iter().filter(|x| &*x.name != "default").count(),
+                            &g.name,
+                        )
+                    },
                     str::to_owned,
                 ),
                 queries_24h: day.0.get(i).copied().unwrap_or(0),
@@ -7628,7 +7633,8 @@ mod palette_tests {
     #[test]
     fn api_005_groups_take_the_flock_in_order_then_other() {
         let tokens: serde_json::Value =
-            serde_json::from_str(include_str!("../../../brand/tokens.json")).expect("brand/tokens.json");
+            serde_json::from_str(include_str!("../../../brand/tokens.json"))
+                .expect("brand/tokens.json");
         let day = |n: &str| {
             tokens["color"]["tokens"]
                 .as_array()
@@ -7637,7 +7643,11 @@ mod palette_tests {
                 .map(str::to_owned)
         };
         for i in 0..5 {
-            assert_eq!(Some(palette(i, "g")), day(&format!("flock-{}", i + 1)), "group {i}");
+            assert_eq!(
+                Some(palette(i, "g")),
+                day(&format!("flock-{}", i + 1)),
+                "group {i}"
+            );
         }
         assert_eq!(Some(palette(5, "g")), day("flock-other"));
         assert_eq!(Some(palette(0, "default")), day("flock-other"));
