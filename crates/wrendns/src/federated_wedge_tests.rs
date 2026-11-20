@@ -639,7 +639,10 @@ fn roster(
 fn api_015_t24_42_every_member_is_listed_with_what_it_holds() {
     use crate::secrets_api::MemberKind::{Full, Resolver, Witness};
     let canonical = SecretsStatus {
-        items: vec![meta("unifi", 3, "readable"), meta("hook", 2, "readable")],
+        items: vec![
+            meta("router-key", 3, "readable"),
+            meta("hook", 2, "readable"),
+        ],
         ..SecretsStatus::default()
     };
     let members = [
@@ -647,16 +650,20 @@ fn api_015_t24_42_every_member_is_listed_with_what_it_holds() {
             "node-b",
             Full,
             Some(vec![
-                meta("unifi", 3, "readable"),
+                meta("router-key", 3, "readable"),
                 meta("hook", 2, "readable"),
             ]),
         ),
-        roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
+        roster(
+            "node-a",
+            Full,
+            Some(vec![meta("router-key", 3, "readable")]),
+        ),
         roster(
             "node-c",
             Full,
             Some(vec![
-                meta("unifi", 2, "readable"),
+                meta("router-key", 2, "readable"),
                 meta("hook", 2, "unreadable"),
             ]),
         ),
@@ -700,7 +707,10 @@ fn api_015_t24_42_every_member_is_listed_with_what_it_holds() {
     assert_eq!(out.missing_nodes, ["node-d"]);
     let w = out.warnings.join("\n");
     assert!(w.contains("`hook` is missing on node-a"), "{w}");
-    assert!(w.contains("node-c holds an older version of `unifi`"), "{w}");
+    assert!(
+        w.contains("node-c holds an older version of `router-key`"),
+        "{w}"
+    );
     assert!(w.contains("node-c holds `hook` but can't read it"), "{w}");
     assert!(!w.contains("pod-a") && !w.contains("node-d"), "{w}");
     // No value, ciphertext or hash can be in it: the type has no such field.
@@ -717,12 +727,20 @@ fn api_015_t24_42_every_member_is_listed_with_what_it_holds() {
 fn api_015_t24_42_the_list_is_the_same_on_every_node() {
     use crate::secrets_api::MemberKind::Full;
     let canon = || SecretsStatus {
-        items: vec![meta("unifi", 3, "readable")],
+        items: vec![meta("router-key", 3, "readable")],
         ..SecretsStatus::default()
     };
     let forward = [
-        roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
-        roster("node-b", Full, Some(vec![meta("unifi", 3, "readable")])),
+        roster(
+            "node-a",
+            Full,
+            Some(vec![meta("router-key", 3, "readable")]),
+        ),
+        roster(
+            "node-b",
+            Full,
+            Some(vec![meta("router-key", 3, "readable")]),
+        ),
     ];
     let reversed = [forward[1].clone(), forward[0].clone()];
     let (from_one, from_two) = (
@@ -762,7 +780,7 @@ fn secrets_handler(answer: bool) -> wrendns_cluster::net::RpcHandler {
                 return Err("unknown read".to_owned());
             }
             let st = SecretsStatus {
-                items: vec![meta("unifi", 3, "readable")],
+                items: vec![meta("router-key", 3, "readable")],
                 ..SecretsStatus::default()
             };
             serde_json::to_vec(&st).map_err(|e| e.to_string())
@@ -794,7 +812,7 @@ fn secrets_list(handler: wrendns_cluster::net::RpcHandler) -> serde_json::Value 
 fn api_015_t24_42_a_replica_lists_every_full_member() {
     let v = secrets_list(secrets_handler(true));
     let item = &v["items"][0];
-    assert_eq!(item["name"], "unifi", "{v}");
+    assert_eq!(item["name"], "router-key", "{v}");
     let nodes = item["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 2, "{v}");
     let by = |n: &str| nodes.iter().find(|x| x["node"] == n).unwrap();
@@ -831,18 +849,22 @@ fn api_015_t24_42_a_member_that_does_not_answer_is_unknown() {
 fn api_015_t24_42_ahead_and_deleted_secrets_warn() {
     use crate::secrets_api::MemberKind::Full;
     let canon = SecretsStatus {
-        items: vec![meta("unifi", 3, "readable")],
+        items: vec![meta("router-key", 3, "readable")],
         ..SecretsStatus::default()
     };
     let out = crate::secrets_api::with_members(
         canon,
         &[
-            roster("node-a", Full, Some(vec![meta("unifi", 3, "readable")])),
+            roster(
+                "node-a",
+                Full,
+                Some(vec![meta("router-key", 3, "readable")]),
+            ),
             roster(
                 "node-b",
                 Full,
                 Some(vec![
-                    meta("unifi", 4, "readable"),
+                    meta("router-key", 4, "readable"),
                     meta("gone", 1, "readable"),
                 ]),
             ),
@@ -852,6 +874,9 @@ fn api_015_t24_42_ahead_and_deleted_secrets_warn() {
         "
 ",
     );
-    assert!(w.contains("node-b holds a newer version of `unifi`"), "{w}");
+    assert!(
+        w.contains("node-b holds a newer version of `router-key`"),
+        "{w}"
+    );
     assert!(w.contains("node-b still holds `gone`"), "{w}");
 }

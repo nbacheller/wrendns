@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // REQ: API-005, DOC-006 (T33.6, ADR-1040) — a group's colour: the brand's flock-1 to flock-5 in the
 // groups' configured order, then flock-other (also for `default`, the ungrouped devices). A group
 // keeps its colour when filters change. The server fills in that colour (in its Day value) for a

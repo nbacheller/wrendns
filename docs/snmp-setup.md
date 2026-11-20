@@ -19,11 +19,11 @@ The gateway serves `ipNetToPhysicalTable` (and the older `ipNetToMediaTable`) an
 
 **Turn off v1/v2c.** Many gateways still answer SNMP v1/v2c with the community `public`. Once v3 works, switch the old versions off: anyone on the LAN can read a device that answers `public`, and v2c sends its community in clear text.
 
-## 3. Aruba (HPE) switches
+## 3. Managed switches
 
-UniFi's API never reports these switches' ports. They need SNMP of their own, each as its own agent with its own credential.
+UniFi's API never reports the ports of a switch that isn't UniFi. They need SNMP of their own, each as its own agent with its own credential.
 
-1. On the switch, enable SNMPv3: create a user with SHA authentication and AES (128-bit) privacy, and give it read-only access to the standard MIBs (the bridge, Q-BRIDGE, IF-MIB and LLDP tables). The commands differ between ArubaOS-Switch and AOS-CX and between models; follow the vendor's SNMPv3 documentation for yours.
+1. On the switch, enable SNMPv3: create a user with SHA authentication and AES (128-bit) privacy, and give it read-only access to the standard MIBs (the bridge, Q-BRIDGE, IF-MIB and LLDP tables). The commands differ between vendors, switch operating systems and models; follow the vendor's SNMPv3 documentation for yours.
 2. Allow only the DNS host's address, as the model's access-list or SNMP source setting allows.
 3. Add the switch as an agent with `bridge` and `lldp` (and `ifmib` for port names). **Test** shows which of `dot1qTpFdbTable` (Q-BRIDGE) or `dot1dTpFdbTable` (BRIDGE) answered, whether `dot1dBasePortIfIndex` maps its ports, and whether the VLAN table `dot1qVlanCurrentTable` is there.
 
@@ -51,7 +51,7 @@ secret_file_dirs = ["/run/secrets"]
 enabled = true
 
 [[discovery.subnet]]
-cidr = "192.0.2.0/24"
+cidr = "192.168.1.0/24"
 
 [[discovery.snmp_credential]]
 name = "gateway-v3"
@@ -64,7 +64,7 @@ priv_protocol = "aes-128"                  # leave out for authNoPriv
 
 [[discovery.snmp_agent]]
 name = "gateway"
-address = "192.0.2.1"                   # an RFC 1918 IPv4 literal; never a host name
+address = "192.168.1.1"                # an RFC 1918 IPv4 literal; never a host name
 credential = "gateway-v3"
 interval_secs = 300
 tables = ["arp", "ifmib"]                  # arp, ifmib, bridge, lldp

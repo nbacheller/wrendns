@@ -255,5 +255,5 @@ minutes (reason text: "pods may be named by address until the API server is reac
 - **Job pods and CronJobs:** v1 collapses a CronJob's runs into one device; if per-run visibility matters
   to the owner, add a `job` evidence field with the run name rather than a device per run (decision
   unless told otherwise).
-- **The kubelet change** is the owner's to make on the homelab; the design doesn't require it (per-
+- **The kubelet change** is the operator's to make on their cluster; the design doesn't require it (per-
   workload `dnsConfig` works without it). Ask before documenting any live step as done.

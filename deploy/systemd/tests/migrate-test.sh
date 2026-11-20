@@ -51,7 +51,7 @@ StateDirectory=telltale
 LimitNOFILE=1234
 EOF
 printf '[Service]\nEnvironment=TELLTALE_BOOTSTRAP_ADMIN_USER=admin\n' > "$R/etc/systemd/system/telltale.service.d/10-first-admin.conf"
-# things the owner runs next to it: a witness unit running as the telltale user, a trial script, a sudoers line
+# things an operator runs next to it: a witness unit running as the telltale user, a trial script, a sudoers line
 printf '[Service]
 User=telltale
 Group=telltale

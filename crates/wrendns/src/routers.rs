@@ -1915,17 +1915,11 @@ mod tests {
         );
         assert_eq!(
             trackers,
-            HashMap::from([(
-                "a8:03:2a:00:00:03".to_owned(),
-                Ipv4Addr::new(192, 0, 2, 33)
-            )])
+            HashMap::from([("a8:03:2a:00:00:03".to_owned(), Ipv4Addr::new(192, 0, 2, 33))])
         );
         // The porch light's address comes from a router; the TV's second MAC from HA's own
         // tracker; its first MAC has no address anywhere and is skipped.
-        let addrs = HashMap::from([(
-            "a8:03:2a:00:00:01".to_owned(),
-            Ipv4Addr::new(192, 0, 2, 31),
-        )]);
+        let addrs = HashMap::from([("a8:03:2a:00:00:01".to_owned(), Ipv4Addr::new(192, 0, 2, 31))]);
         let seen = ha_seen(&devices, &trackers, &addrs);
         assert_eq!(
             seen,

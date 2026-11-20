@@ -57,7 +57,7 @@ so a check that pauses the primary for longer than its lease can promote a repli
 | **e2.** a replica shows the primary's router data (T24.41) | a fake UniFi (served by the fake source over http, read with the stored key) is polled by the primary only; both replicas list its networks (VLAN 30, a domain), its clients and its state, labelled as read by the primary; with the primary paused a replica answers 200 and names it in `missingNodes` | API-013, API-016, API-010, CLU-002 |
 | **h (T24.42).** every member holds the stored key, and the new primary uses it | in the failover check: a fake UniFi (the fake source's CGI, which logs the key each read carried and the address it came from) is read with the stored key by the primary only; every node's `GET /api/v1/secrets` lists all three members holding it, with one stamp; the primary is killed, and its replacement reads the fake UniFi with its replicated copy of the key within one interval plus the election while the other replica never polls; with the old primary back all three members hold the key. `ONLY=secrets` runs the bring-up, (a) to (e2) and (h), and stops | API-015, CLU-002, CLU-015, ADR-903, ADR-917 |
 | **j.** upgrade from an older version (T24.40) | every node runs `OLD_IMAGE` (default `wrendns:lapse-base`, a build before ADR-1016) and takes entries through the API, fails over once, is upgraded, and after two more failovers the new primary dry-runs, edits and deletes the inherited entries: the others stay served and the edit and the delete stick. Skipped when `OLD_IMAGE` isn't there (`REQUIRE_UPGRADE=1` makes that a failure); `ONLY=upgrade` runs the bring-up, (a) and (j) alone. It runs after (k) | CLU-015 |
-| **k.** replicas stay linked (T24.38) | after a rolling restart in the owner's order (replicas, then the primary), every node reports `reachableVoters` = `voters` at every sample for 1 minute (`J_WATCH_S` changes it; the whole run takes about 7 minutes at the default) with no `leaving this node` log lines, and no `unstableVoters`; then the primary is killed: a survivor is elected within the lease time and neither survivor moves its link after it | CLU-001, CLU-005 |
+| **k.** replicas stay linked (T24.38) | after a rolling restart in the usual order (replicas, then the primary), every node reports `reachableVoters` = `voters` at every sample for 1 minute (`J_WATCH_S` changes it; the whole run takes about 7 minutes at the default) with no `leaving this node` log lines, and no `unstableVoters`; then the primary is killed: a survivor is elected within the lease time and neither survivor moves its link after it | CLU-001, CLU-005 |
 
 ### Check l: a rolling upgrade across the rename (T33.2)
 
@@ -87,7 +87,7 @@ keeps its data in `/var/lib/telltale` (the same volume the new image mounts at `
 and its health command differs. `e2e.sh` adds it by itself for any image whose entrypoint is `telltale`.
 <!-- rebrand:keep-end -->
 
-Two things the owner's wording named differently, and how the test handles them:
+Two things the task's wording named differently, and how the test handles them:
 
 - Check **f** asks for the clients through `/api/v1/clients`. That endpoint lists the devices you
   configured, with no counts or node labels. The per-node view is the top clients statistic,
@@ -137,14 +137,14 @@ the build cache small on a laptop).
 
 ## The lease-lapse soak (`lapse-soak.sh`, T24.26)
 
-Two eligible nodes and a witness (the owner's Pi layout) under automatic failover, in their own
+Two eligible nodes and a witness (a common Pi layout) under automatic failover, in their own
 compose project (`wrendns-lapse`, `compose-lapse.yaml`), nothing published on the host. It soaks for
 `SOAK_S` seconds (default 600) and counts "lease lapsed" in the primary's log; any lapse prints the
 renewal-round debug lines. `DISK_DEV=/dev/sdd WRITE_BPS=8192` caps every node's disk writes (a slow
 SD card); `FSYNC_STALL_S=4` pauses a random node for that long every 40 s; `LAPSE_IMAGE` soaks an
 image that is already built (for example the one from before a fix). Run it under the same lock as
 `e2e.sh`. In Docker the write cap slows the ballot store (the slow-store warning shows) but did not
-reproduce a lapse; the test Pis are the real test.
+reproduce a lapse; real Pi hardware is the real test.
 
 The image builds with its own cache (`BUILD_CACHE_SCOPE=-cluster3`), apart from the default one that every
 worktree shares: a shared cache can hold a crate built from another worktree's sources and fail with a

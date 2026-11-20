@@ -3,7 +3,7 @@
   "name": "WrenDNS test devices",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/nbacheller/wrendns/tree/feat/ipam-integrations/deploy/ha-test",
+  "documentation": "https://github.com/nbacheller/wrendns/tree/main/deploy/ha-test",
   "integration_type": "device",
   "iot_class": "calculated",
   "requirements": [],

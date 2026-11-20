@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! REQ: API-003 (T24.44, ADR-1053) — with `[api] tls` and `[api] http_redirect`, a plain-HTTP request
 //! on the redirect address is answered with a 308 to the HTTPS address, a bad Host with a 400, and
 //! the health probes as on the API port. DNS keeps answering whether or not the redirect binds.

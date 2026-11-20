@@ -37,7 +37,7 @@
 #      the new primary dry-runs, edits and deletes the entries the old primary's API added, the others
 #      stay served, and the edit and the delete stick. Skipped when OLD_IMAGE isn't there
 #      (REQUIRE_UPGRADE=1 makes that a failure). ONLY=upgrade runs the bring-up, (a) and (j) alone.
-#   k. (T24.38) after a rolling restart in the owner's order (replicas, then the primary) every node
+#   k. (T24.38) after a rolling restart in the usual order (replicas, then the primary) every node
 #      reports reachableVoters = voters for 1 minute with no "leaving this node" churn, and the
 #      primary's death is still an election within the lease time, with no flapping after it.
 # rebrand:keep-start
@@ -647,7 +647,7 @@ cat "$E/rolling.json"
 pass
 
 step "k. replicas stay linked (T24.38): after a rolling restart (replicas, then the primary) every node reaches every voter for 3 minutes, with no link churn; the primary's death is still an election"
-# The owner's upgrade order on 2026-11-18: the replicas first, then the primary. The bug: a replica
+# The usual upgrade order: the replicas first, then the primary. The bug: a replica
 # that fell back to another replica while the primary restarted lost the voter link between the two
 # replicas for good (one stream's end marked the peer disconnected and took the other's place in the
 # outbox), so reachableVoters stayed at 2 and the replicas moved between the primary and each other.
@@ -725,7 +725,7 @@ pass "replicas then the primary restarted; 3 of 3 voters for 3 minutes; $killed 
 fi
 
 # ---------------------------------------------------------------------------------------------
-# T24.40 (ADR-1019): the owner's upgrade. Entries added through the API while every node ran a build
+# T24.40 (ADR-1019): an upgrade seen on a test cluster. Entries added through the API while every node ran a build
 # without ADR-1016, a failover in that state, then every node upgraded: the primary then holds
 # entries it serves but has no rows for, and used to answer a dry-run write with before: null and to
 # publish a candidate without the other entries.
@@ -959,7 +959,7 @@ else
     await_dns 15000 "$n" l.cluster3.test 10.0.0.77 || bad "$n doesn't answer the record on the pre-rename image"
     list_is "$n" present t332-keep || bad "$n doesn't list t332-keep on the pre-rename image"
   done
-  # The roll: replicas first, the primary last (the owner's order), DNS asked of every node throughout.
+  # The roll: replicas first, the primary last (the usual order), DNS asked of every node throughout.
   probe_start l.cluster3.test 10.0.0.77
   for n in "${NODES[@]}"; do
     [ "$n" = "$P" ] && continue

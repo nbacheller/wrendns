@@ -287,7 +287,7 @@ hints, not gates. How each was taken is in the finding or the command.
 ## Questions for the owner
 
 1. **Rate limiting defaults.** DNS-014 fixes the default at 1,000 queries per 60 s per
-   address with REFUSED. In the owner's own topologies the client address is real (the
+   address with REFUSED. In the topologies tested the client address is real (the
    Pi serves devices directly; the homelab Service keeps source IPs), so each device gets
    its own budget. A router that forwards for a whole LAN, or anything that proxies many
    devices behind one address, would be refused above about 17 queries per second

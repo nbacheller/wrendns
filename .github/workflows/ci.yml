@@ -111,6 +111,18 @@ jobs:
       # SPDX header (old files are not mass-edited).
       - run: python3 scripts/test_check_spdx.py
       - run: python3 scripts/check-spdx.py
+      # REQ: DOC-006 — no tracked file, built site page or generated doc names anything on the
+      # maintainers' private denylist. The list is the repository secret PRIVACY_DENYLIST. On the
+      # maintainers' own repository (a push, or a pull request from a branch of it) the list is
+      # required and a missing secret fails the job; on a fork, or a pull request from one, where
+      # secrets are not passed, the check skips with a notice. Hits name file:line and the pattern's
+      # number, never the pattern.
+      - run: python3 scripts/test_check_private.py
+      - run: python3 site/build.py
+      - run: python3 scripts/check-private.py
+        env:
+          WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
+          WRENDNS_PRIVACY_REQUIRED: ${{ github.repository == 'nbacheller/wrendns' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
       # REQ: OBS-005 — the Grafana dashboard is regenerated from deploy/grafana/build.py.
       - run: python3 deploy/grafana/build.py --check
       # T10.6 — every P0 requirement has tests or evidence, and docs/v1-requirements.md is current.

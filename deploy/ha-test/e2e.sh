@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # REQ: T24.21 (DSC-013, API-012, DSC-008, DNS-023) — the WrenDNS Home Assistant source
 # against a real Home Assistant: a throwaway Home Assistant (deploy/ha-test/compose.yaml, never
-# the owner's) is onboarded through its API, given a long-lived token made at test time, and seeded
+# a real one) is onboarded through its API, given a long-lived token made at test time, and seeded
 # with fake devices (fixtures/wrendns_seed). A WrenDNS node runs in a throwaway container on
 # the same network. The script checks the device names and addresses the node reports, the names
 # it answers in DNS, and the WrenDNS integration's sensors inside Home Assistant.
@@ -124,7 +124,7 @@ for _ in $(seq 30); do
   [ "$(ha_get /api/states/device_tracker.tablet | field 'd.get("state")')" = home ] && break
   sleep 1
 done
-[ "$(ha_get /api/states/device_tracker.tablet | field 'd.get("attributes",{}).get("ip")')" = 192.0.2.43 ] \
+[ "$(ha_get /api/states/device_tracker.tablet | field 'd.get("attributes",{}).get("ip")')" = 192.168.1.43 ] \
   || fail "the seeded devices didn't appear"
 echo ok
 
@@ -149,7 +149,7 @@ device_domain = "home.arpa"
 [discovery]
 enabled = true
 [[discovery.subnet]]
-cidr = "192.0.2.0/24"
+cidr = "192.168.1.0/24"
 [[router]]
 name = "home-assistant"
 type = "home_assistant"
@@ -185,9 +185,9 @@ printf '%s' "$LEASES" | "$PY" -c '
 import json, sys
 items = [x for x in json.load(sys.stdin)["items"] if x.get("router") == "home-assistant"]
 want = {
-    "aa:bb:cc:00:00:01": ("Porch Light", "192.0.2.31", "porch-light.home.arpa"),
-    "aa:bb:cc:00:00:02": ("Living Room TV", "192.0.2.42", "living-room-tv.home.arpa"),
-    "aa:bb:cc:00:00:03": ("Kitchen Tablet", "192.0.2.43", "kitchen-tablet.home.arpa"),
+    "aa:bb:cc:00:00:01": ("Porch Light", "192.168.1.31", "porch-light.home.arpa"),
+    "aa:bb:cc:00:00:02": ("Living Room TV", "192.168.1.42", "living-room-tv.home.arpa"),
+    "aa:bb:cc:00:00:03": ("Kitchen Tablet", "192.168.1.43", "kitchen-tablet.home.arpa"),
 }
 got = {x["mac"].lower(): x for x in items}
 for mac, (name, ip, dns) in want.items():
@@ -203,7 +203,7 @@ print("3 devices named and addressed as expected (the garage sensor has no addre
 echo ok
 
 echo "== 5. the names answer in DNS"
-for pair in kitchen-tablet.home.arpa:192.0.2.43 living-room-tv.home.arpa:192.0.2.42 porch-light.home.arpa:192.0.2.31; do
+for pair in kitchen-tablet.home.arpa:192.168.1.43 living-room-tv.home.arpa:192.168.1.42 porch-light.home.arpa:192.168.1.31; do
   name=${pair%%:*}
   ip=${pair##*:}
   got=$("$PY" -c '

@@ -255,7 +255,7 @@ fn compile_threads(configured: u8) -> usize {
     (wrendns_net::default_workers() / 2).clamp(1, 4)
 }
 
-/// `0` = auto: one thread for a recompile under a serving snapshot. Measured on the homelab
+/// `0` = auto: one thread for a recompile under a serving snapshot. Measured on a test host
 /// (12 threads, 20k qps `realistic-home`, 2.7M names): 4 threads compile in 2.1 s and raise
 /// p99 by 143%; one thread takes 5.9 s and raises it by 7.5% (ADR-023).
 fn live_compile_threads(configured: u8) -> usize {

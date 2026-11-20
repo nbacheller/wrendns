@@ -29,7 +29,7 @@ strategy = "fastest"
 name = "default"
 content = { ads = true }
 
-# Your UniFi Cloud Gateway Fiber: connected clients, reservations, and networks (read-only).
+# Your UniFi console (UDM/UCG): connected clients, reservations, and networks (read-only).
 # API key: UniFi Network → Settings → Control Plane → Integrations → Create API key.
 [[router]]
 name = "gateway"
@@ -49,7 +49,7 @@ tls_insecure_skip_verify = true
 [[router]]
 name = "home-assistant"
 type = "home_assistant"
-url = "http://192.0.2.20:8123"
+url = "http://homeassistant.local:8123"
 api_key_file = "/run/secrets/ha-token"
 
 # Answer the devices' names in DNS: kitchen-tablet.home.arpa, with PTRs.

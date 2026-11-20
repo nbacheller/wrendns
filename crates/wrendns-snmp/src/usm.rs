@@ -78,7 +78,7 @@ impl Refused {
                 "MD5 is refused: its collisions are practical, and ring provides no MD5 digest."
             }
             Self::Sha224 => {
-                "SHA-224 is refused: the client supports SHA-1 and the SHA-2 variants of 256 bits and up, and the owner's devices use those."
+                "SHA-224 is refused: the client supports SHA-1 and the SHA-2 variants of 256 bits and up, and common devices use those."
             }
             Self::Des => "DES is refused: it is broken and has no key that can be kept secret.",
             Self::Aes192 => {
