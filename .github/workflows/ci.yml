@@ -233,7 +233,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: azure/setup-helm@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - uses: helm/chart-testing-action@v2.9.0
       - run: ct lint --config ct.yaml --all
