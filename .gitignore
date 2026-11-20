@@ -19,6 +19,12 @@ __pycache__/
 deploy/mcp-e2e/node_modules/
 /.v3e2e.*/
 
-# graphify output and local Claude Code settings (AGENTS.md, graphify)
+# Local agent tooling, never committed: graphify output, Claude Code settings, and the files
+# `ruflo init` writes (its CLAUDE.md, runtime data and swarm memory). AGENTS.md is the project's
+# instruction file.
 /graphify-out/
-/.claude/settings.local.json
+/.claude/
+/.claude-flow/
+/.swarm/
+/.mcp.json
+/CLAUDE.md
