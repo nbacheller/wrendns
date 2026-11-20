@@ -1,6 +1,13 @@
 # REQ: OPS-001 / T0.4 — multi-arch FROM-scratch image, size gate, QEMU smoke, `edge` on main.
 # REQ: OPS-004 / T4.3 — the same build's static binaries, signed, as GitHub release assets:
 # the `edge` prerelease follows main; a `v*` tag publishes a release and versioned image tags.
+#
+# Shape (ADR-1075, T39.5): `version` fixes one build identity; `image` is one leg per platform on
+# its own runner, each compiling its architecture ONCE (one `docker buildx bake`, see
+# deploy/image/leg-build.sh) and taking the image and the release binaries from that one compile;
+# `assets` builds the release assets from the legs' binaries; `merge` (main and tags only) joins the
+# legs' pushed images into one manifest list under the tags and signs it. Nothing builds twice and
+# no step relies on a cache from an earlier step.
 name: image
 on:
   push:
@@ -23,28 +30,24 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/wrendns
-  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
 
 jobs:
-  image:
+  # One build identity for every architecture of this commit, computed once.
+  version:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
     outputs:
+      version: ${{ steps.v.outputs.version }}
       build_version: ${{ steps.v.outputs.build_version }}
       build_commit: ${{ steps.v.outputs.build_commit }}
       build_date: ${{ steps.v.outputs.build_date }}
       build_channel: ${{ steps.v.outputs.build_channel }}
-    permissions:
-      contents: read
-      packages: write
-      # REQ: NFR-005 (T10.10) — cosign signs the pushed images keylessly with this run's
-      # GitHub OIDC identity (Sigstore's Fulcio certificate, Rekor transparency log).
-      id-token: write
+      source_date_epoch: ${{ steps.v.outputs.source_date_epoch }}
+      # `true` on main and on `v*` tags (pushed, or started there by the release workflow, T9.26):
+      # the only refs that push images and sign them. Any other ref builds and tests only.
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v3
-
       - name: Version
         id: v
         run: |
@@ -61,43 +64,126 @@ jobs:
           {
             echo "build_version=$bv"; echo "build_channel=$ch"; echo "build_date=$date"
             echo "build_commit=${GITHUB_SHA::7}"
+            echo "source_date_epoch=$(git log -1 --format=%ct)"
           } >> "$GITHUB_OUTPUT"
-          sde=$(git log -1 --format=%ct)
-          echo "BUILD_ARGS=--build-arg WRENDNS_BUILD_VERSION=$bv --build-arg WRENDNS_BUILD_COMMIT=${GITHUB_SHA::7} --build-arg WRENDNS_BUILD_DATE=$date --build-arg WRENDNS_BUILD_CHANNEL=$ch --build-arg SOURCE_DATE_EPOCH=$sde" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else echo "publish=false" >> "$GITHUB_OUTPUT"; fi
 
-      - name: Build all platforms (OCI layout)
-        run: |
-          docker buildx build $BUILD_ARGS --platform "$PLATFORMS" \
-            --build-arg VERSION=${{ steps.v.outputs.version }} --build-arg REVISION="$GITHUB_SHA" \
-            --cache-from type=gha --cache-to type=gha,mode=max \
-            --output type=oci,dest=image.tar .
+  # One leg per platform, each on its own runner. The build stage is cross-compiled, so an arm leg
+  # needs no arm runner; QEMU is only for running the arm image in the smoke test (T0.4 AC: runs on
+  # arm64 under QEMU).
+  image:
+    name: image (${{ matrix.arch }})
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64 }
+          - { platform: linux/arm64, arch: arm64 }
+          - { platform: linux/arm/v7, arch: armv7 }
+    permissions:
+      contents: read
+      # Pushes this platform's image by digest (main and tags only).
+      packages: write
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
+      OUT: bin/leg
+      PUSH: ${{ needs.version.outputs.publish }}
+      BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+      BUILD_COMMIT: ${{ needs.version.outputs.build_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@v4
+        if: matrix.arch != 'amd64'
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Registry login
+        if: env.PUSH == 'true'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      # One bake, one compile of this architecture: it writes the OCI layout (size gate), loads the
+      # image (smoke test), exports the `bin` stage (release binaries) and, on main and tags, pushes
+      # the platform image by digest with no tag. The step fails if the log shows the compile twice.
+      # The cache (scope image-<arch>) only speeds a later run; an empty cache is a full build.
+      # A leg that fails a gate below leaves an untagged image in the registry and no tag: `merge`
+      # runs only when every leg passed.
+      - name: Build (one compile)
+        env:
+          CACHE: gha
+          VERSION: ${{ needs.version.outputs.version }}
+          REVISION: ${{ github.sha }}
+          WRENDNS_BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          WRENDNS_BUILD_COMMIT: ${{ needs.version.outputs.build_commit }}
+          WRENDNS_BUILD_DATE: ${{ needs.version.outputs.build_date }}
+          WRENDNS_BUILD_CHANNEL: ${{ needs.version.outputs.build_channel }}
+          SOURCE_DATE_EPOCH: ${{ needs.version.outputs.source_date_epoch }}
+        run: deploy/image/leg-build.sh
 
       - name: Size gate (≤ 25 MiB compressed per arch, ADR-916)
-        run: python3 deploy/image/size.py --oci image.tar
+        run: python3 deploy/image/size.py --oci "$OUT/image.tar"
 
-      # The build stage is cross-compiled, so these loads come from cache; only running the
-      # arm images uses QEMU (T0.4 AC: runs on arm64 under QEMU).
-      - name: Smoke test each platform
+      - name: Smoke test
         run: |
           sh .github/scripts/apt-install.sh dnsutils
-          for p in ${PLATFORMS//,/ }; do
-            tag="wrendns:smoke-${p//\//-}"
-            docker buildx build $BUILD_ARGS --platform "$p" --cache-from type=gha --load -t "$tag" .
-            deploy/image/smoke.sh "$tag" "$p"
-          done
+          deploy/image/smoke.sh "wrendns:smoke-$ARCH" "$PLATFORM"
 
-      - name: Release binaries (from the same cached build)
+      # T6.9 AC: every architecture reports the same version and commit; NFR-005 (T10.10): the
+      # binary carries its dependency list (cargo-auditable).
+      - name: Check the binary
         run: |
-          docker buildx build $BUILD_ARGS --platform "$PLATFORMS" --target bin --cache-from type=gha \
-            --output type=local,dest=bin .
+          f="$OUT/bin/wrendns"
+          line="$BUILD_VERSION (commit $BUILD_COMMIT"
+          grep -aqF "$line" "$f" || { echo "::error::$ARCH binary doesn't carry '$line'"; exit 1; }
+          readelf -S "$f" | grep -q '\.dep-v0' || { echo "::error::$ARCH binary has no cargo-auditable data"; exit 1; }
+          if [ "$ARCH" = amd64 ]; then chmod 755 "$f" && "$f" --version; fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.arch }}
+          path: bin/leg/bin/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.PUSH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: bin/leg/digest
+          if-no-files-found: error
+          retention-days: 7
+
+  # The release assets, from the three legs' binaries: nothing is built here.
+  assets:
+    needs: [version, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+      BUILD_COMMIT: ${{ needs.version.outputs.build_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bin-*
+          path: legs
+
+      - name: Release binaries
+        run: |
           mkdir dist
-          cp bin/linux_amd64/wrendns dist/wrendns-x86_64-linux
-          cp bin/linux_arm64/wrendns dist/wrendns-aarch64-linux
-          cp bin/linux_arm_v7/wrendns dist/wrendns-armv7-linux
+          cp legs/bin-amd64/wrendns dist/wrendns-x86_64-linux
+          cp legs/bin-arm64/wrendns dist/wrendns-aarch64-linux
+          cp legs/bin-armv7/wrendns dist/wrendns-armv7-linux
           chmod 755 dist/*
           dist/wrendns-x86_64-linux --version
           # T6.9 AC: every architecture reports the same version and commit.
-          line="${{ steps.v.outputs.build_version }} (commit ${{ steps.v.outputs.build_commit }}"
+          line="$BUILD_VERSION (commit $BUILD_COMMIT"
           for f in dist/wrendns-*; do
             grep -aqF "$line" "$f" || { echo "::error::$f doesn't carry '$line'"; exit 1; }
           done
@@ -106,8 +192,8 @@ jobs:
           # It is covered by the signed SHA256SUMS like the binaries (after the checks above, which
           # look for the version line inside every binary).
           sh .github/scripts/apt-install.sh zstd
-          for pair in amd64:x86_64 arm64:aarch64 arm_v7:armv7; do
-            src="bin/linux_${pair%%:*}/wrendns.debug"
+          for pair in amd64:x86_64 arm64:aarch64 armv7:armv7; do
+            src="legs/bin-${pair%%:*}/wrendns.debug"
             test -s "$src" || { echo "::error::no debug file for ${pair%%:*}"; exit 1; }
             zstd -10 -T0 -q "$src" -o "dist/wrendns-${pair##*:}-linux.debug.zst"
           done
@@ -142,37 +228,74 @@ jobs:
           path: dist/
           retention-days: 7
 
-      - name: Push edge
-        # Pushed to main, or started on main by the release workflow (T9.26).
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker buildx build $BUILD_ARGS --platform "$PLATFORMS" \
-            --build-arg VERSION=edge --build-arg REVISION="$GITHUB_SHA" \
-            --cache-from type=gha --metadata-file "$RUNNER_TEMP/edge.json" \
-            -t "$IMAGE:edge" -t "$IMAGE:sha-${GITHUB_SHA::7}" --push .
-          python3 deploy/image/size.py --remote "$IMAGE:edge"
-          sh .github/scripts/cosign-sign.sh "$IMAGE" "$RUNNER_TEMP/edge.json"
+  # Joins the legs' pushed images into one manifest list under the tags, checks it, and signs it.
+  # Main (`edge`, `sha-<7>`) and `v*` tags (the version, and without a pre-release suffix also X.Y,
+  # X and latest), pushed or started there by the release workflow (T9.26). Nothing is pushed or
+  # signed on any other ref.
+  merge:
+    needs: [version, image]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      # REQ: NFR-005 (T10.10) — cosign signs the pushed images keylessly with this run's
+      # GitHub OIDC identity (Sigstore's Fulcio certificate, Rekor transparency log).
+      id-token: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          path: digests
 
-      - name: Push release tags
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Create the manifest list
         run: |
-          v="${{ steps.v.outputs.version }}"
-          tags=(-t "$IMAGE:$v")
-          if [[ "$v" != *-* ]]; then   # no pre-release suffix: also X.Y, X, and latest
-            tags+=(-t "$IMAGE:${v%.*}" -t "$IMAGE:${v%%.*}" -t "$IMAGE:latest")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tags=(-t "$IMAGE:$VERSION")
+            if [[ "$VERSION" != *-* ]]; then   # no pre-release suffix: also X.Y, X, and latest
+              tags+=(-t "$IMAGE:${VERSION%.*}" -t "$IMAGE:${VERSION%%.*}" -t "$IMAGE:latest")
+            fi
+          else
+            tags=(-t "$IMAGE:edge" -t "$IMAGE:sha-${GITHUB_SHA::7}")
           fi
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker buildx build $BUILD_ARGS --platform "$PLATFORMS" \
-            --build-arg VERSION="$v" --build-arg REVISION="$GITHUB_SHA" \
-            --cache-from type=gha --metadata-file "$RUNNER_TEMP/release.json" "${tags[@]}" --push .
-          sh .github/scripts/cosign-sign.sh "$IMAGE" "$RUNNER_TEMP/release.json"
+          srcs=()
+          for a in amd64 arm64 armv7; do
+            d="$(cat "digests/digest-$a/digest")"
+            [[ "$d" == sha256:* ]] || { echo "::error::no digest for $a"; exit 1; }
+            srcs+=("$IMAGE@$d")
+          done
+          docker buildx imagetools create "${tags[@]}" "${srcs[@]}"
+          echo "MAIN_TAG=${tags[1]#"$IMAGE:"}" >> "$GITHUB_ENV"
+
+      - name: Check the pushed image (three platforms, ≤ 25 MiB each, ADR-916)
+        run: |
+          python3 deploy/image/check-platforms.py "$IMAGE:$MAIN_TAG" linux/amd64 linux/arm64 linux/arm/v7
+          python3 deploy/image/size.py --remote "$IMAGE:$MAIN_TAG"
+
+      # Signs the manifest list's digest, as one buildx push's metadata did before.
+      - name: Sign
+        run: |
+          digest="$(docker buildx imagetools inspect "$IMAGE:$MAIN_TAG" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" == sha256:* ]] || { echo "::error::no manifest list digest for $IMAGE:$MAIN_TAG"; exit 1; }
+          printf '{"containerimage.digest": "%s"}\n' "$digest" > "$RUNNER_TEMP/image.json"
+          sh .github/scripts/cosign-sign.sh "$IMAGE" "$RUNNER_TEMP/image.json"
 
   # REQ: OPS-002 — the Helm chart as an OCI artifact, so others install it without cloning:
   # `helm install wrendns oci://ghcr.io/<owner>/charts/wrendns --version <v>`. Main
   # publishes `<chart version>-edge.<run>` (appVersion edge); a `v*` tag publishes that version.
   chart:
-    needs: image
+    needs: merge
     # A push to main or a v* tag, or the same started by the release workflow (T9.26).
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
@@ -195,7 +318,7 @@ jobs:
   # Signs SHA256SUMS with the release key (secret MINISIGN_SECRET_KEY; public half in
   # deploy/release/wrendns-release.pub and built into `wrendns self-update`) and publishes.
   release:
-    needs: image
+    needs: [version, assets, merge]
     # A push to main or a v* tag, or the same started by the release workflow (T9.26).
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     # Two pushes in a row replaced `edge` at once, and one got a 403; the newer one wins.
@@ -215,6 +338,10 @@ jobs:
         id: sign
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          BUILD_CHANNEL: ${{ needs.version.outputs.build_channel }}
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          BUILD_COMMIT: ${{ needs.version.outputs.build_commit }}
+          BUILD_DATE: ${{ needs.version.outputs.build_date }}
         run: |
           if [ -z "$MINISIGN_SECRET_KEY" ]; then
             echo "::warning title=release not published::Add the MINISIGN_SECRET_KEY repository secret to publish signed binaries (install.sh and self-update refuse unsigned ones)."
@@ -222,9 +349,9 @@ jobs:
           fi
           sh .github/scripts/apt-install.sh minisign
           # REQ: OPS-004 (ADR-046) — the release index nodes check for updates.
-          python3 deploy/release/index.py dist "${{ needs.image.outputs.build_channel }}" \
-            "${{ needs.image.outputs.build_version }}" "${{ needs.image.outputs.build_commit }}" \
-            "${{ needs.image.outputs.build_date }}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/${GITHUB_REF_NAME/main/edge}" \
+          python3 deploy/release/index.py dist "$BUILD_CHANNEL" \
+            "$BUILD_VERSION" "$BUILD_COMMIT" \
+            "$BUILD_DATE" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/${GITHUB_REF_NAME/main/edge}" \
             > dist/releases.json
           cat dist/releases.json
           umask 077
@@ -270,7 +397,7 @@ jobs:
   # REQ: OPS-004 (T9.26, ADR-097) — a stable tag isn't done until everything it publishes is
   # there and consistent: signed assets, "latest release", the four image tags, the chart.
   verify:
-    needs: [image, chart, release]
+    needs: [merge, chart, release]
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     steps:
