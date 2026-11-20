@@ -280,9 +280,18 @@ test('flt_901 a category on a profile makes an owned list the node downloads onc
   await expect(ed).toBeHidden();
   // The Lists page: the category's list, owned and read-only, downloaded once.
   await page.goto('/#/lists');
-  const owned = page.locator('tr', { hasText: 'cat-hagezi-nsfw' });
+  // The list's own name is the row's direct `td > strong`; the other category lists' redundancy
+  // note also names cat-hagezi-nsfw once the snapshot is compiled.
+  const owned = page.locator('tbody tr').filter({ has: page.locator('td > strong', { hasText: /^cat-hagezi-nsfw$/ }) });
   await expect(owned.getByTestId('list-owner')).toContainText('Owned by category: Adult content');
   await expect(owned.getByText('ok', { exact: true })).toBeVisible({ timeout: 30_000 });
+  // Entries come from the compiled snapshot, which lands just after the new rules go live.
+  const compiled = () =>
+    expect
+      .poll(async () => ((await (await r.get('/api/v1/lists')).json()).items as { name: string; entries: number }[])
+        .find((l) => l.name === 'cat-hagezi-nsfw')?.entries ?? 0, { timeout: 30_000 })
+      .toBeGreaterThan(0);
+  await compiled();
   // The kids profile (Basic) and the lab profile (Adult content) share the source: it was downloaded once.
   expect(requested.filter((u) => u.includes('nsfw-onlydomains')).length).toBe(1);
   // Only the categories' lists, with the chip.
@@ -302,9 +311,9 @@ test('flt_901 a category on a profile makes an owned list the node downloads onc
   await expect(owned.getByTestId('list-update-now')).toBeEnabled({ timeout: 30_000 });
   // Shadow mode and back.
   await owned.getByTestId('list-shadow-toggle').click();
-  await expect(page.locator('tr', { hasText: 'cat-hagezi-nsfw' }).getByText('shadow', { exact: true })).toBeVisible();
-  await page.locator('tr', { hasText: 'cat-hagezi-nsfw' }).getByTestId('list-shadow-toggle').click();
-  await expect(page.locator('tr', { hasText: 'cat-hagezi-nsfw' }).getByText('shadow', { exact: true })).toHaveCount(0);
+  await expect(owned.getByText('shadow', { exact: true })).toBeVisible();
+  await owned.getByTestId('list-shadow-toggle').click();
+  await expect(owned.getByText('shadow', { exact: true })).toHaveCount(0);
   // The name in the list is blocked for the lab profile, and Explain names the category.
   await expect
     .poll(async () => (await queryDetail('x.blocked-by-category.e2e.test')).address, { timeout: 30_000 })
@@ -313,7 +322,8 @@ test('flt_901 a category on a profile makes an owned list the node downloads onc
   expect(answer.ede.map((e) => e.text).join(' ')).toContain('blocked by category Adult content (list cat-hagezi-nsfw)');
   const ex = await (await r.get('/api/v1/explain?name=x.blocked-by-category.e2e.test&client=127.0.0.1')).json();
   expect(ex.block).toMatchObject({ list: 'cat-hagezi-nsfw', category: 'Adult content' });
-  // The Categories tab shows the source as downloaded.
+  // The Categories tab shows the source as downloaded (the shadow toggles recompiled the snapshot).
+  await compiled();
   await page.goto('/#/lists?tab=categories');
   await expect(row('adult')).toBeVisible();
   // REQ: FLT-004 (T24.28): how much of the source the lists already in use cover.

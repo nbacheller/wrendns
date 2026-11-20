@@ -281,7 +281,8 @@ grep -q "withinHours=720" "$E/history.path" || fail "the history request didn't 
 # REQ: API-013 (T22.2) — the networks, their sizes, and the devices in them.
 curl -sf -b "$E/jar" "$API/api/v1/networks" | python3 -c '
 import json, sys
-nets = {n["name"]: n for n in json.load(sys.stdin)["items"]}
+# Router networks only: the node also lists its own interfaces (a CI runner has eth0).
+nets = {n["name"]: n for n in json.load(sys.stdin)["items"] if n.get("source") == "router"}
 assert set(nets) == {"Default", "IoT"}, nets
 d, iot = nets["Default"], nets["IoT"]
 assert (d["subnet"], d["gateway"], d["dhcpStart"], d["dhcpEnd"], d["domain"]) == ("192.168.1.0/24", "192.168.1.1", "192.168.1.6", "192.168.1.49", "home.arpa"), d

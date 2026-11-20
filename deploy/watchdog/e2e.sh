@@ -119,7 +119,7 @@ if grep -q wedge_here "$E/nm.txt" && command -v addr2line >/dev/null; then
   addrs=$(grep -E "^wrendns-rt \(" "$F" | grep -oE "0x[0-9a-f]+" | while read -r a; do printf '0x%x\n' $(( a - 1 - base )); done)
   # shellcheck disable=SC2086
   names=$(addr2line -f -C -e "$B" $addrs | tr '\n' ' ')
-  echo "$names" | grep -q wedge_here || fail "no worker stack resolves to wedge_here: $names"
+  grep -q wedge_here <<<"$names" || fail "no worker stack resolves to wedge_here: $names"
   echo "ok: the workers' stacks resolve to wedge_here"
 else
   echo "skip: this binary has no symbols, so the stacks are not resolved"
@@ -131,13 +131,14 @@ for _ in $(seq 60); do [ "$(q 25901 a.wd.test)" = 10.0.0.1 ] && break; sleep 0.2
 [ "$(q 25901 a.wd.test)" = 10.0.0.1 ] || fail "the restarted node doesn't answer"
 grep -q "the previous run was restarted by the watchdog" "$E/node2.log" || { cp "$E/node2.log" "$E/node.log"; fail "the log doesn't say the previous run was restarted by the watchdog"; }
 for _ in $(seq 40); do
+  # A here-string, not `echo | grep -q`: under pipefail, grep leaving at its first match fails the echo (EPIPE).
   M=$(curl -sf http://127.0.0.1:29901/metrics) || M=
-  echo "$M" | grep -q '^wrendns_watchdog_check_age_seconds{check="runtime"}' && break
+  grep -q '^wrendns_watchdog_check_age_seconds{check="runtime"}' <<<"$M" && break
   sleep 0.5
 done
 [ -n "$M" ] || fail "no metrics"
-echo "$M" | grep -q '^wrendns_watchdog_enabled 1' || fail "wrendns_watchdog_enabled isn't 1"
-echo "$M" | grep -q '^wrendns_watchdog_check_age_seconds{check="runtime"}' || fail "no runtime check age"
-echo "$M" | grep -qE '^wrendns_watchdog_last_action_timestamp_seconds [1-9]' || fail "no last action time"
+grep -q '^wrendns_watchdog_enabled 1' <<<"$M" || fail "wrendns_watchdog_enabled isn't 1"
+grep -q '^wrendns_watchdog_check_age_seconds{check="runtime"}' <<<"$M" || fail "no runtime check age"
+grep -qE '^wrendns_watchdog_last_action_timestamp_seconds [1-9]' <<<"$M" || fail "no last action time"
 echo "ok: the next run says why, answers, and reports"
 echo "PASS"

@@ -6067,3 +6067,15 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 5. **Order and scope:** first among the enhancements after the speed wave, all four parts (Wiring, Places, device pages, clients list) as one big development wave that starts once the repository is public, so GitHub Actions minutes are free; #40's location names and T24.45 folded in.
 
 **Consequences:** The map's motion is a monitoring signal, not decoration, so it needs per-link rates from the integrations and a quantised, capped animation budget. The UI budget is protected by loading the map only when it opens. Rejected: decorative motion (it would show a dead link as busy), a graph library (size budget), and reading netpulse's source (licence).
+
+
+## ADR-1077 — The watchdog ends when its runtime is gone: Disconnected means stopping, not a stall (Proposed 2026-11-20; OPS-012, OPS-004, fork red-jobs track)
+
+**Context:** The watchdog (ADR-163) asks the runtime to run a task and counts a missing answer as a stall; after `stall_secs` it writes a dump and exits 70. It ends only when the stop signal reads `true`. In-process server tests (`server.rs`) spawn it too, and when a test's runtime is dropped the sender is dropped without sending `true`: the runtime check then fails against the dead runtime (the task is dropped unrun, which the probe read as "no answer"), and a minute later the leaked thread reports a stall and, before the `cfg(test)` backstop (point 3, which now only logs the exit) existed, exited the whole test binary with status 70 (CI 2026-11-20, `cargo test` on arm64 and amd64); this change ends the leaked thread itself. The same reading would apply to any drop of the node's runtime that skips the drain.
+
+**Decision:**
+1. A probe task dropped unrun (`RecvTimeoutError::Disconnected`) means the runtime is gone and the node is stopping; it passes the runtime check. Only a `Timeout` (a runtime that holds its tasks) is a stall.
+2. The watchdog thread also ends when the stop sender is gone (`has_changed()` is an error), so no thread outlives the runtime that owned its signal.
+3. The `cfg(test)` `exit_process` that logs instead of exiting stays as a backstop.
+
+**Consequences:** A wedged runtime is still detected (it times out; `deploy/watchdog/e2e.sh` and `ops_012_the_runtime_check_sees_a_runtime_whose_only_worker_is_blocked` cover it). Only a process whose runtime has been torn down stops being watched, which is correct. Test: `ops_012_watchdog_ends_when_its_runtime_is_gone`. Rejected: raising `stall_secs` in tests (hides the leak), and aborting the thread from the test server (every spawner would have to remember).

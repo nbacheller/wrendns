@@ -253,12 +253,15 @@ EOF
 # are kept on disk, then sent once it's up, and the spill file goes. A deadline, not a count of
 # tries: on a loaded runner the retries take longer (CI 2026-11-20 gave up after 30 s). A query
 # now and then keeps a batch going to the refused collector.
+# The spill file is late-<12 hex of the endpoint's hash>.spill: print the ones that exist.
+late_spill() { local f; for f in "$E"/data/sinks/late-*.spill; do [ -e "$f" ] && echo "$f"; done; return 0; }
+late_spill_nonempty() { local f; for f in "$E"/data/sinks/late-*.spill; do [ -s "$f" ] && echo "$f"; done; return 0; }
 deadline=$(( $(date +%s) + 120 ))
-until [ -s "$E/data/sinks/late.spill" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+until [ -n "$(late_spill_nonempty)" ] || [ "$(date +%s)" -ge "$deadline" ]; do
   dig +short +time=1 -p 25994 @127.0.0.1 ads.sinks.test >/dev/null 2>&1 || true
   sleep 1
 done
-if [ ! -s "$E/data/sinks/late.spill" ]; then
+if [ -z "$(late_spill_nonempty)" ]; then
   ls -la "$E/data/sinks" 2>&1 || true
   fail "no spill file for the late webhook (waited 120 s)"
 fi
@@ -281,9 +284,9 @@ http.server.ThreadingHTTPServer(("127.0.0.1", 25581), H).serve_forever()
 EOF
 python3 "$E/late.py" "$E" & L=$!
 dig +short +time=1 -p 25994 @127.0.0.1 nas.sinks.test >/dev/null || true
-for _ in $(seq 60); do grep -lq 'ads.sinks.test' "$E"/late/* 2>/dev/null && [ ! -e "$E/data/sinks/late.spill" ] && break; sleep 0.5; done
+for _ in $(seq 60); do grep -lq 'ads.sinks.test' "$E"/late/* 2>/dev/null && [ -z "$(late_spill)" ] && break; sleep 0.5; done
 grep -lq 'ads.sinks.test' "$E"/late/* 2>/dev/null || fail "the kept batches never reached the late collector"
-[ ! -e "$E/data/sinks/late.spill" ] || fail "spill file left after sending: $(wc -c < "$E/data/sinks/late.spill") bytes"
+[ -z "$(late_spill)" ] || fail "spill file left after sending: $(late_spill)"
 echo "webhook spill: $(cat "$E"/late/* | grep -c '"name"') events delivered late"
 
 # DNS never waited: still answering.
