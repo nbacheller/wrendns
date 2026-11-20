@@ -127,6 +127,16 @@ class Scan(unittest.TestCase):
         for needle in ("zebra", "wombat", "quokka", "Quokka", "10.99", "10\\.99"):
             self.assertNotIn(needle, out + err)
 
+    @unittest.skipIf(os.name == "nt", "Windows file names cannot hold these characters")
+    def test_doc_006_tree_report_shows_a_path_in_a_safe_single_line_form(self):
+        self.write("::error::a\nb.md", "host zebra-wombat\n")
+        subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
+        code, out, err = run(["--root", str(self.root)], {cp.ENV_TEXT: DENYLIST})
+        self.assertEqual(code, 1)
+        self.assertIn("./::error::a\\x0ab.md:1: pattern #1", out.splitlines())
+        self.assertFalse(any(line.startswith("::") for line in out.splitlines()))
+        self.assertNotIn("zebra", out + err)
+
     def test_doc_006_extra_dir(self):
         self.write("build/out.txt", "zebra-wombat\n")
         code, out, _ = run(["--root", str(self.root), "--extra", "build"], {cp.ENV_TEXT: DENYLIST})
@@ -489,10 +499,155 @@ class History(unittest.TestCase):
                            ("core.quotePath", "false"), ("diff.renames", "copies"),
                            ("color.ui", "always"), ("diff.suppressBlankEmpty", "true"),
                            ("diff.external", "false"), ("log.showSignature", "true"),
-                           ("i18n.logOutputEncoding", "ISO-8859-1")):
+                           ("i18n.logOutputEncoding", "ISO-8859-1"),
+                           ("log.diffMerges", "dense-combined")):
             self.git("config", key, value)
         code, out, err = self.history()
         self.assertEqual((code, out.splitlines()), (1, [f"commit {sha} sp ace/ünï.txt: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def blob(self, content: str | bytes) -> str:
+        data = content.encode("utf-8") if isinstance(content, str) else content
+        return subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=self.root, input=data,
+            check=True, capture_output=True,
+        ).stdout.decode().strip()
+
+    def commit_paths(self, paths: dict[str, str], message: str = "work") -> str:
+        """Commits a tree built with `git mktree`, so a path no file system allows (a newline, a
+        leading `::`) can be used on any host. The working tree is not touched."""
+        records = b"".join(
+            f"100644 blob {self.blob(text)}\t{path}".encode("utf-8") + b"\0" for path, text in paths.items()
+        )
+        tree = subprocess.run(
+            ["git", "mktree", "-z"], cwd=self.root, input=records, check=True, capture_output=True
+        ).stdout.decode().strip()
+        commit = self.git("commit-tree", tree, "-m", message)
+        self.git("update-ref", "refs/heads/main", commit)
+        return self.head()
+
+    def test_doc_006_history_tag_reachable_only_through_another_tag_is_scanned(self):
+        sha = self.commit({"a.txt": "harmless\n"})
+        self.git("tag", "-a", "-m", "zebra-wombat inner", "inner")
+        self.git("tag", "-a", "-m", "clean", "outer", "inner")
+        self.git("tag", "-d", "inner")
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"tag -> {sha}: message: pattern #1"]))
+        self.assert_safe(out, err)
+        # Three deep, with the secret in the middle tag's name field.
+        self.git("tag", "-a", "-m", "clean", "mid-quokka4", "outer")
+        self.git("tag", "-a", "-m", "clean", "top", "mid-quokka4")
+        self.git("update-ref", "-d", "refs/tags/outer")
+        self.git("update-ref", "-d", "refs/tags/mid-quokka4")
+        code, out, err = self.history()
+        self.assertEqual(
+            sorted(out.splitlines()),
+            sorted([f"tag -> {sha}: message: pattern #1", f"tag -> {sha}: name: pattern #2"]),
+        )
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_merge_records_do_not_depend_on_log_diff_merges(self):
+        self.two_branches()
+        self.merge_no_commit("side")
+        (self.root / "zebra-wombat.txt").write_text("harmless\n", encoding="utf-8", newline="\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "merge side")
+        merge = self.head()
+        for value in ("combined", "dense-combined", "first-parent", "off"):
+            self.git("config", "log.diffMerges", value)
+            code, out, err = self.history()
+            self.assertEqual(
+                (code, out.splitlines()), (1, [f"commit {merge} <path withheld>: pattern #1"]), value
+            )
+            self.assert_safe(out, err)
+
+    def test_doc_006_history_tag_name_field_that_differs_from_the_ref_name(self):
+        sha = self.commit({"a.txt": "harmless\n"})
+        self.git("tag", "-a", "-m", "clean", "zebra-wombat")
+        self.git("update-ref", "refs/tags/v1", "refs/tags/zebra-wombat")
+        self.git("tag", "-d", "zebra-wombat")
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"tag -> {sha}: name: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_tag_on_a_blob_is_scanned(self):
+        self.commit({"a.txt": "harmless\n"})
+        blob = self.blob("host zebra-wombat\n")
+        self.git("tag", "-a", "-m", "clean", "blobtag", blob)
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"object {blob[:12]}: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_lightweight_tag_on_a_blob_and_a_binary_blob(self):
+        self.commit({"a.txt": "harmless\n"})
+        blob = self.blob("Quokka9\n")
+        self.git("tag", "light", blob)
+        self.git("tag", "binary", self.blob(b"\0\0zebra-wombat"))
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"object {blob[:12]}: pattern #2"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_tag_on_a_tree_scans_paths_and_text_blobs(self):
+        self.commit({"a.txt": "harmless\n"})
+        ok = self.blob("fine\n")
+        bad = self.blob("zebra-wombat inside\n")
+        self.git("update-index", "--add", "--cacheinfo", f"100644,{bad},docs/notes.txt")
+        self.git("update-index", "--add", "--cacheinfo", f"100644,{ok},quokka3/clean.txt")
+        tree = self.git("write-tree")
+        self.git("reset", "-q", "--hard")
+        self.git("tag", "-a", "-m", "clean", "treetag", tree)
+        self.git("tag", "light-tree", tree)
+        code, out, err = self.history()
+        self.assertEqual(code, 1)
+        lines = out.splitlines()
+        self.assertIn(f"object {tree[:12]} docs/notes.txt: pattern #1", lines)
+        self.assertIn(f"object {tree[:12]}: pattern #2", lines)  # the path matched: no path shown
+        self.assertEqual(len(lines), 2)
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_ref_to_an_unreadable_object_is_an_error(self):
+        self.commit({"a.txt": "harmless\n"})
+        blob = self.blob("zebra-wombat\n")
+        self.git("tag", "light", blob)
+        obj = self.root / ".git" / "objects" / blob[:2] / blob[2:]
+        obj.chmod(0o600)
+        obj.unlink()
+        code, out, err = self.history()
+        self.assertEqual(code, 2)
+        self.assertNotIn("clean", out)
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_hit_lines_show_a_path_in_a_safe_single_line_form(self):
+        path = "::error::a\nb\x1b[31mc.txt"
+        sha = self.commit_paths({path: "zebra-wombat\n"})
+        code, out, err = self.history()
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            out.splitlines(), [f"commit {sha} ::error::a\\x0ab\\x1b[31mc.txt: pattern #1"]
+        )
+        self.assertFalse(any(line.startswith("::") for line in out.splitlines()))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_path_outside_the_console_code_page_does_not_raise(self):
+        sha = self.commit({"日本/x.txt": "zebra-wombat\n"})
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(err):
+            code = cp.main(["--root", str(self.root), "--history"], {cp.ENV_TEXT: DENYLIST})
+        stream.flush()
+        out = stream.buffer.getvalue().decode("cp1252")
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), [f"commit {sha} \\u65e5\\u672c/x.txt: pattern #1"])
+        self.assert_safe(out, err.getvalue())
+
+    def test_doc_006_safe_text_and_safe_line(self):
+        self.assertEqual(cp.safe_text("a b/ü.txt"), "a b/ü.txt")
+        self.assertEqual(
+            cp.safe_text("a\nb\tc\\d\x7f‮\U0001f600\x00"),
+            "a\\x0ab\\x09c\\\\d\\x7f\\u202e😀\\x00",
+        )
+        self.assertEqual(cp.safe_line("::error::x"), "./::error::x")
+        self.assertEqual(cp.safe_line("commit abc: pattern #1"), "commit abc: pattern #1")
 
     def test_doc_006_history_orphan_branch_root_is_scanned(self):
         self.commit({"a.txt": "main\n"})

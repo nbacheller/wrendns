@@ -34,8 +34,11 @@ matched text are never printed, so the report can sit in a public CI log.
 With `--history` the script scans the repository's history instead of the working tree (the two
 modes are run separately; `--extra` does not apply to `--history`). It reads, from every ref
 (`git log --all`, which includes HEAD): (1) every added line of every commit, (2) every commit message,
-(3) every branch and tag name, local and remote-tracking, (4) the message of every annotated tag, and (5) every file path that appears in
-the history. Lines and messages are matched like the tree scan matches a line: as written and with
+(3) every branch and tag name, local and remote-tracking, (4) the message and the `tag` name field of every
+annotated tag object (a tag that points at another tag is followed to the end, and every tag object on the
+way is scanned), (5) every file path that appears in the history, and (6) the content of whatever a ref
+points at that is not a commit (a blob, or a tree with its paths and its text blobs), which `git log` never
+walks. Lines and messages are matched like the tree scan matches a line: as written and with
 backslash escapes removed. Binary changes carry no text and are skipped (so is a file that
 `.gitattributes` marks `-diff`, because git then prints no text for it). Git's output is streamed
 and never held whole.
@@ -43,17 +46,20 @@ and never held whole.
 Merge commits are read in two forms. For added lines `-c` (combined diff) shows only the lines a
 merge adds relative to every one of its parents, which is exactly the text a conflict resolution can
 introduce; a line a merge merely brings in from one parent was added by an ordinary commit on that
-side, and that commit is scanned in its own right. For paths `-m` is used, because `--raw` prints
-nothing for a merge otherwise: a file that first appears in a merge is then listed (once per parent,
+side, and that commit is scanned in its own right. For paths `--diff-merges=separate` is used (so
+`log.diffMerges` cannot turn the records into combined ones), because `--raw` prints nothing for a merge
+otherwise: a file that first appears in a merge is then listed (once per parent,
 which is harmless, the report is de-duplicated). Root commits (also of orphan branches) are always
 included (`--root`).
 
-Not scanned: author and committer names and emails (and a tag's tagger), git notes and reflogs.
+Not scanned: author and committer names and emails (and a tag's tagger), git notes and reflogs. A ref whose
+target cannot be read, or is of a kind this script does not know, makes the run fail (exit 2); no ref is
+skipped silently.
 
 Git is run with user configuration pinned where it could change what is printed. `-c` sets
 log.showRoot, diff.renames, diff.noprefix, diff.mnemonicPrefix, diff.relative, diff.submodule,
 diff.ignoreSubmodules, diff.suppressBlankEmpty, diff.external, core.quotePath, color.ui,
-log.showSignature and i18n.logOutputEncoding (UTF-8, so a message in another encoding is converted
+log.diffMerges (separate), log.showSignature and i18n.logOutputEncoding (UTF-8, so a message in another encoding is converted
 rather than garbled); flags give the prefixes, `--no-color`, `--no-ext-diff`, `--no-textconv`,
 `--no-notes` and `--no-show-signature`. Other settings cannot change the result: diff.context
 (`-U0` is explicit), diff.algorithm (it only picks between diffs with the same added text), the
@@ -70,8 +76,20 @@ ref name or a path that itself matched, any of which can be the private string:
                                                  tags, remotes or other and K is the 1-based position
                                                  of the ref among the refs of that kind in
                                                  `git for-each-ref` order (one line per ref)
-    tag -> <12 hex of the tag's target>: message: pattern #N
-                                                 the message of an annotated tag object
+    tag -> <12 hex of the final target>: message: pattern #N
+    tag -> <12 hex of the final target>: name: pattern #N
+                                                 the message, or the `tag` name field (which can differ
+                                                 from the ref name), of an annotated tag object; the
+                                                 target is the first object that is not a tag
+    object <12 hex>: pattern #N                  a ref's non-commit target: a blob, or a tree that holds
+                                                 the text or the path; the path follows the 12 hex
+                                                 (`object <12 hex> <path>: pattern #N`) for a text blob
+                                                 in a tree, unless the path itself matches
+
+A path that is shown is printed in a safe single-line form: backslashes, control characters and other
+non-printable characters are written as backslash escapes (the tree scan's `path:line` lines too), no
+report line can begin with `::` (which GitHub Actions reads as a workflow command), and output that the
+console's code page cannot encode is written with backslash escapes instead of raising.
 
 One line is printed per distinct (commit, path, pattern) (per ref and per tag object for those two), and the run ends with a count. A shallow
 clone cannot prove a clean history, so `--history` fails on one (exit 2), as it does when git itself
@@ -106,6 +124,41 @@ SNIFF = 8192
 # run time, so no file content can imitate it (content lines carry a diff prefix in any case).
 MARKER = "wrendns-history-commit:"
 WITHHELD = "<path withheld>"
+
+
+def safe_text(text: str) -> str:
+    """A single-line form of text: backslashes, control characters and other non-printable
+    characters are escaped; printable characters (non-ASCII ones too) are kept."""
+    out: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch.isprintable():
+            out.append(ch)
+        elif code < 0x100:
+            out.append(f"\\x{code:02x}")
+        elif code < 0x10000:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
+    return "".join(out)
+
+
+def safe_line(line: str) -> str:
+    """A report line that GitHub Actions cannot read as a workflow command."""
+    return "./" + line if line.startswith("::") else line
+
+
+def make_output_safe() -> None:
+    """Makes the standard streams unable to raise on a character the console cannot encode."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
 
 
 class DenylistError(Exception):
@@ -223,7 +276,7 @@ def scan(root: Path, files: list[str], patterns: list[re.Pattern[str]]) -> list[
         if text is None:
             continue
         for lineno, index in scan_text(text, patterns):
-            report.append(f"{rel}:{lineno}: pattern #{index}")
+            report.append(safe_line(f"{safe_text(rel)}:{lineno}: pattern #{index}"))
     return report
 
 
@@ -231,7 +284,7 @@ def scan(root: Path, files: list[str], patterns: list[re.Pattern[str]]) -> list[
 PINNED_CONFIG = tuple(
     arg
     for setting in (
-        "log.showRoot=true", "diff.renames=false", "diff.noprefix=false",
+        "log.showRoot=true", "log.diffMerges=separate", "diff.renames=false", "diff.noprefix=false",
         "diff.mnemonicPrefix=false", "diff.relative=false", "diff.submodule=short",
         "diff.ignoreSubmodules=none", "diff.suppressBlankEmpty=false", "diff.external=",
         "core.quotePath=true", "color.ui=never", "log.showSignature=false",
@@ -384,38 +437,138 @@ def ref_kind(ref: str) -> str:
     return "other"
 
 
-def for_each_ref(root: Path) -> Iterator[tuple[str, str, str, str, str]]:
-    """(object type, object id, peeled id, ref name, tag message) for every ref. The message is
-    only filled in for an annotated tag object. Fields are NUL-separated (none can hold a NUL)."""
-    fmt = (
-        "%(objecttype)%00%(objectname)%00%(*objectname)%00%(refname)%00"
-        "%(if:equals=tag)%(objecttype)%(then)%(contents)%(end)%00"
-    )
+def for_each_ref(root: Path) -> Iterator[tuple[str, str, str]]:
+    """(object type, object id, ref name) for every ref. Fields are NUL-separated (none can
+    hold a NUL)."""
+    fmt = "%(objecttype)%00%(objectname)%00%(refname)%00"
     fields: list[str] = []
     for record in git_records(root, ["for-each-ref", f"--format={fmt}"]):
         fields.append(record.decode("utf-8", errors="replace"))
-        if len(fields) == 5:
-            yield fields[0].lstrip("\n"), fields[1], fields[2], fields[3], fields[4]
+        if len(fields) == 3:
+            yield fields[0].lstrip("\n"), fields[1], fields[2]
             fields = []
     if [f for f in fields if f.strip("\n")]:
         raise GitError("unexpected for-each-ref output")
 
 
+def read_tag(root: Path, oid: str) -> tuple[str, str, str, str]:
+    """(target id, target type as the tag states it, `tag` name field, message) of a tag object."""
+    raw = b"".join(git_chunks(root, ["cat-file", "tag", oid])).decode("utf-8", errors="replace")
+    head, _, message = raw.partition("\n\n")
+    fields: dict[str, str] = {}
+    for line in head.split("\n"):
+        key, _, value = line.partition(" ")
+        fields.setdefault(key, value)
+    target = fields.get("object", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{40,64}", target):
+        raise GitError("unexpected tag object")
+    return target, fields.get("type", "").strip(), fields.get("tag", ""), message
+
+
+def scan_tag_chain(
+    root: Path, oid: str, patterns: list[re.Pattern[str]], report: HistoryReport, ref_name: str = ""
+) -> str:
+    """Scans the message and name of the tag object `oid` and of every tag it points to in turn
+    (the outer tag's name is skipped when it is the ref's own name, which the ref line covers),
+    and returns the id of the first object that is not a tag (the one the hits are reported against)."""
+    chain: list[tuple[str, str]] = []
+    current = oid
+    while True:
+        target, kind, name, message = read_tag(root, current)
+        chain.append((name, message))
+        if kind != "tag":
+            break
+        current = target
+    short = target[:12]
+    for position, (name, message) in enumerate(chain):
+        for index in match_indices(message, patterns):
+            report.add(f"tag -> {short}: message: pattern #{index}", unique=False)
+        if position == 0 and name == ref_name:
+            continue
+        for index in match_indices(name, patterns):
+            report.add(f"tag -> {short}: name: pattern #{index}", unique=False)
+    return target
+
+
+def blob_indices(root: Path, oid: str, patterns: list[re.Pattern[str]]) -> set[int]:
+    """The pattern numbers that match a line of the blob's text; none for a binary blob (a NUL in
+    the first bytes, as the tree scan decides). The blob is read in chunks."""
+    found: set[int] = set()
+    rest = b""
+    sniffed = False
+    for chunk in git_chunks(root, ["cat-file", "blob", oid]):
+        rest += chunk
+        if not sniffed:
+            if len(rest) < SNIFF:
+                continue
+            if b"\0" in rest[:SNIFF]:
+                return set()
+            sniffed = True
+        *lines, rest = rest.split(b"\n")
+        for line in lines:
+            found.update(match_indices(line.decode("utf-8", errors="replace"), patterns))
+    if not sniffed and b"\0" in rest[:SNIFF]:
+        return set()
+    found.update(match_indices(rest.decode("utf-8", errors="replace"), patterns))
+    return found
+
+
+def scan_non_commit(
+    root: Path, kind: str, oid: str, patterns: list[re.Pattern[str]], report: HistoryReport,
+    blobs: dict[str, set[int]],
+) -> None:
+    """Scans a blob or a tree a ref points at (a commit is walked by `git log` instead)."""
+    short = oid[:12]
+    if kind == "blob":
+        if oid not in blobs:
+            blobs[oid] = blob_indices(root, oid, patterns)
+        for index in sorted(blobs[oid]):
+            report.add(f"object {short}: pattern #{index}")
+        return
+    for record in git_records(root, ["ls-tree", "-r", "-z", oid]):
+        meta, tab, path = record.decode("utf-8", errors="replace").partition("\t")
+        parts = meta.split(" ")
+        if not tab or len(parts) != 3:
+            raise GitError("unexpected ls-tree output")
+        entry_type, entry_oid = parts[1], parts[2]
+        path_hits = match_indices(path, patterns)
+        for index in path_hits:
+            report.add(f"object {short}: pattern #{index}")
+        if entry_type == "commit":  # a submodule: its content is not in this repository
+            continue
+        if entry_type != "blob":
+            raise GitError("unexpected ls-tree output")
+        if entry_oid not in blobs:
+            blobs[entry_oid] = blob_indices(root, entry_oid, patterns)
+        where = short if path_hits else f"{short} {safe_text(path)}"
+        for index in sorted(blobs[entry_oid]):
+            report.add(f"object {where}: pattern #{index}")
+
+
 def scan_ref_names(root: Path, patterns: list[re.Pattern[str]], report: HistoryReport) -> None:
-    """Scans every ref name (branches, tags, remote-tracking, in full and without `refs/<kind>/`)
-    and the message of every annotated tag. Every ref is reported on its own line."""
+    """Scans every ref name (branches, tags, remote-tracking, in full and without `refs/<kind>/`),
+    the message and name of every annotated tag object (followed through tags that point at tags),
+    and what a ref points at when that is a blob or a tree. Every ref is reported on its own line."""
     seen: dict[str, int] = {}
-    for object_type, oid, peeled, ref, message in for_each_ref(root):
+    blobs: dict[str, set[int]] = {}
+    done: set[str] = set()
+    for object_type, oid, ref in for_each_ref(root):
         kind = ref_kind(ref)
         seen[kind] = seen.get(kind, 0) + 1
-        target = (peeled or oid)[:12]
+        if object_type == "tag":
+            oid = scan_tag_chain(root, oid, patterns, report, ref.split("/", 2)[2] if ref.count("/") >= 2 else ref)
+            object_type = git_text(root, ["cat-file", "-t", oid])
+        target = oid[:12]
         names = [ref] + ([ref.split("/", 2)[2]] if ref.count("/") >= 2 else [])
         found = {index for name in names for index in match_indices(name, patterns)}
         for index in sorted(found):
             report.add(f"ref {kind} #{seen[kind]} -> {target}: pattern #{index}")
-        if object_type == "tag":
-            for index in match_indices(message, patterns):
-                report.add(f"tag -> {target}: message: pattern #{index}", unique=False)
+        if object_type in ("blob", "tree"):
+            if oid not in done:
+                done.add(oid)
+                scan_non_commit(root, object_type, oid, patterns, report, blobs)
+        elif object_type != "commit":
+            raise GitError("a ref points at an object of an unknown kind")
 
 
 def scan_added_lines(
@@ -441,7 +594,7 @@ def scan_added_lines(
             return WITHHELD
         if path not in path_matches:
             path_matches[path] = bool(match_indices(path, patterns))
-        return WITHHELD if path_matches[path] else path
+        return WITHHELD if path_matches[path] else safe_text(path)
 
     for raw in git_lines(root, args):
         if raw.startswith(marker):
@@ -471,12 +624,13 @@ def scan_paths(
 ) -> None:
     """Scans every path that appears in the history, deleted ones included. The raw `-z` output
     is read by position (a path always follows its metadata record), so a path cannot be taken
-    for a commit marker. `-m` makes a merge print ordinary raw records against each parent, and
+    for a commit marker. `--diff-merges=separate` makes a merge print ordinary raw records against
+    each parent whatever `log.diffMerges` says, and
     `--root` includes root commits. Nothing else is accepted: an unexpected record is an error."""
     token = secrets.token_hex(16)
     marker = (MARKER + token).encode()
     args = [
-        "log", *revs, "--root", "-m", "--raw", "-z", "--no-abbrev", "--no-renames",
+        "log", *revs, "--root", "--diff-merges=separate", "--raw", "-z", "--no-abbrev", "--no-renames",
         "--no-show-signature", "--no-notes", "--no-ext-diff", "--no-textconv",
         f"--format={MARKER}{token}%H",
     ]
@@ -532,6 +686,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         help="scan the git history (added lines, messages, ref names, paths) instead of the tree",
     )
     args = parser.parse_args(argv)
+    make_output_safe()
     if args.history and args.extra:
         parser.error("--extra does not apply to --history")
     env = dict(os.environ) if env is None else env
@@ -567,7 +722,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
             print(f"check-private: {err}", file=sys.stderr)
             return 2
         if history.lines:
-            print("\n".join(history.lines))
+            print("\n".join(safe_line(line) for line in history.lines))
             print(
                 f"check-private: {len(history.lines)} history hit(s) in {commits} commit(s)"
                 f" against {len(patterns)} pattern(s); the numbers are the denylist's",
@@ -584,7 +739,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         return 2
     report = scan(root, files, patterns)
     if report:
-        print("\n".join(report))
+        print("\n".join(safe_line(line) for line in report))
         print(
             f"check-private: {len(report)} hit(s) in {len({r.rsplit(':', 2)[0] for r in report})}"
             f" file(s) against {len(patterns)} pattern(s); generalize them (see CONTRIBUTING.md)",
