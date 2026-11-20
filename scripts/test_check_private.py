@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 import subprocess
 import tempfile
 import unittest
@@ -269,28 +270,28 @@ class History(unittest.TestCase):
         self.git("branch", "feature/zebra-wombat-work")
         code, out, err = self.history()
         self.assertEqual(code, 1)
-        self.assertEqual(out.splitlines(), [f"ref -> {sha}: pattern #1"])
+        self.assertEqual(out.splitlines(), [f"ref heads #1 -> {sha}: pattern #1"])
         self.assert_safe(out, err)
 
     def test_doc_006_history_tag_name_only(self):
         sha = self.commit({"a.txt": "harmless\n"})
         self.git("tag", "release-zebra-wombat")
         code, out, err = self.history()
-        self.assertEqual((code, out.splitlines()), (1, [f"ref -> {sha}: pattern #1"]))
+        self.assertEqual((code, out.splitlines()), (1, [f"ref tags #1 -> {sha}: pattern #1"]))
         self.assert_safe(out, err)
 
     def test_doc_006_history_annotated_tag_reports_its_commit(self):
         sha = self.commit({"a.txt": "harmless\n"})
         self.git("tag", "-a", "-m", "release", "v-zebra-wombat")
         code, out, err = self.history()
-        self.assertEqual((code, out.splitlines()), (1, [f"ref -> {sha}: pattern #1"]))
+        self.assertEqual((code, out.splitlines()), (1, [f"ref tags #1 -> {sha}: pattern #1"]))
         self.assert_safe(out, err)
 
     def test_doc_006_history_remote_tracking_ref_name(self):
         sha = self.commit({"a.txt": "harmless\n"})
         self.git("update-ref", "refs/remotes/origin/zebra-wombat", "HEAD")
         code, out, err = self.history()
-        self.assertEqual((code, out.splitlines()), (1, [f"ref -> {sha}: pattern #1"]))
+        self.assertEqual((code, out.splitlines()), (1, [f"ref remotes #1 -> {sha}: pattern #1"]))
         self.assert_safe(out, err)
 
     def test_doc_006_history_side_branch_that_is_not_head(self):
@@ -427,6 +428,157 @@ class History(unittest.TestCase):
         self.git("merge", "-q", "--no-ff", "-m", "merge side", "side")
         code, out, _ = self.history()
         self.assertEqual(out.splitlines(), [f"commit {side} g.txt: pattern #2"])
+
+    def merge_no_commit(self, branch: str):
+        self.git("merge", "-q", "--no-ff", "--no-commit", branch)
+
+    def two_branches(self):
+        self.commit({"f.txt": "base\n"})
+        self.git("switch", "-q", "-c", "side")
+        self.commit({"s.txt": "side\n"})
+        self.git("switch", "-q", "main")
+        self.commit({"m.txt": "main\n"})
+
+    def test_doc_006_history_path_first_seen_in_a_merge_is_checked(self):
+        self.two_branches()
+        self.merge_no_commit("side")
+        (self.root / "zebra-wombat.txt").write_text("harmless\n", encoding="utf-8", newline="\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "merge side")
+        merge = self.head()
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"commit {merge} <path withheld>: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_merge_adds_a_line_neither_parent_has(self):
+        self.two_branches()
+        self.merge_no_commit("side")
+        with open(self.root / "f.txt", "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("added by the merge: zebra-wombat\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "merge side")
+        merge = self.head()
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"commit {merge} f.txt: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_root_commit_is_scanned_with_log_show_root_false(self):
+        root_sha = self.commit({"zebra-wombat.txt": "Quokka5 in the root\n"})
+        self.commit({"b.txt": "later\n"})
+        self.git("config", "log.showRoot", "false")
+        code, out, err = self.history()
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            sorted(out.splitlines()),
+            sorted([f"commit {root_sha} <path withheld>: pattern #1",
+                    f"commit {root_sha} <path withheld>: pattern #2"]),
+        )
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_root_added_line_is_scanned_with_log_show_root_false(self):
+        root_sha = self.commit({"r.txt": "zebra-wombat\n"})
+        self.commit({"b.txt": "later\n"})
+        self.git("config", "log.showRoot", "false")
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"commit {root_sha} r.txt: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_user_diff_configuration_does_not_change_the_result(self):
+        sha = self.commit({"sp ace/ünï.txt": "zebra-wombat\n"})
+        for key, value in (("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"),
+                           ("core.quotePath", "false"), ("diff.renames", "copies"),
+                           ("color.ui", "always"), ("diff.suppressBlankEmpty", "true"),
+                           ("diff.external", "false"), ("log.showSignature", "true"),
+                           ("i18n.logOutputEncoding", "ISO-8859-1")):
+            self.git("config", key, value)
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"commit {sha} sp ace/ünï.txt: pattern #1"]))
+
+    def test_doc_006_history_orphan_branch_root_is_scanned(self):
+        self.commit({"a.txt": "main\n"})
+        self.git("switch", "-q", "--orphan", "lonely")
+        orphan = self.commit({"o.txt": "zebra-wombat\n"})
+        self.git("switch", "-q", "main")
+        self.git("config", "log.showRoot", "false")
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"commit {orphan} o.txt: pattern #1"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_several_refs_on_one_commit_give_one_line_each(self):
+        sha = self.commit({"a.txt": "harmless\n"})
+        self.git("branch", "zebra-wombat-one")
+        self.git("tag", "zebra-wombat-two")
+        self.git("update-ref", "refs/remotes/origin/zebra-wombat-three", "HEAD")
+        code, out, err = self.history()
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            sorted(out.splitlines()),
+            sorted([f"ref heads #2 -> {sha}: pattern #1", f"ref tags #1 -> {sha}: pattern #1",
+                    f"ref remotes #1 -> {sha}: pattern #1"]),
+        )
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_ref_ordinal_counts_within_the_kind(self):
+        sha = self.commit({"a.txt": "harmless\n"})
+        self.git("branch", "aaa-first")
+        self.git("branch", "zebra-wombat-b")
+        self.git("update-ref", "refs/stash", "HEAD")
+        self.git("update-ref", "refs/zebra-wombat-other", "HEAD")
+        code, out, err = self.history()
+        self.assertEqual(
+            sorted(out.splitlines()),
+            sorted([f"ref heads #3 -> {sha}: pattern #1", f"ref other #2 -> {sha}: pattern #1"]),
+        )
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_annotated_tag_message_is_scanned(self):
+        sha = self.commit({"a.txt": "harmless\n"})
+        self.git("tag", "-a", "-m", "release notes\n\nsee Quokka6 here", "v1")
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"tag -> {sha}: message: pattern #2"]))
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_two_annotated_tags_on_one_commit_report_twice(self):
+        sha = self.commit({"a.txt": "harmless\n"})
+        self.git("tag", "-a", "-m", "zebra-wombat", "v1")
+        self.git("tag", "-a", "-m", "zebra-wombat", "v2")
+        code, out, err = self.history()
+        self.assertEqual(out.splitlines(), [f"tag -> {sha}: message: pattern #1"] * 2)
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_path_with_space_non_ascii_and_quote(self):
+        quote = "" if os.name == "nt" else '"'  # Windows file names cannot hold a double quote
+        name = f"q {quote}uo{quote} ü/it's fine.txt"
+        sha = self.commit({name: "zebra-wombat\n"})
+        code, out, err = self.history()
+        self.assertEqual((code, out.splitlines()), (1, [f"commit {sha} {name}: pattern #1"]))
+        # The same path in a merge, where it is read from the raw records.
+        self.git("switch", "-q", "-c", "side")
+        self.commit({"x.txt": "x\n"})
+        self.git("switch", "-q", "main")
+        self.commit({"y.txt": "y\n"})
+        self.merge_no_commit("side")
+        bad = f"q {quote}uo{quote} ü/it's zebra-wombat.txt"
+        (self.root / bad).write_text("harmless\n", encoding="utf-8", newline="\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "merge")
+        merge = self.head()
+        code, out, err = self.history()
+        self.assertIn(f"commit {merge} <path withheld>: pattern #1", out.splitlines())
+        self.assert_safe(out, err)
+
+    def test_doc_006_history_unexpected_raw_record_is_an_error(self):
+        orig = cp.git_records
+
+        def broken(root, args):
+            yield b"not a record"
+
+        cp.git_records = broken
+        try:
+            with self.assertRaises(cp.GitError):
+                cp.scan_paths(self.root, ["--all"], cp.parse_denylist(DENYLIST), cp.HistoryReport())
+        finally:
+            cp.git_records = orig
 
     def test_doc_006_history_shallow_clone_fails(self):
         self.commit({"a.txt": "one\n"})
