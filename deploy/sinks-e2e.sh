@@ -250,9 +250,18 @@ print("alert:", a["summary"])
 EOF
 
 # REQ: OBS-010 (T9.11) — the late collector: refused batches (after their retries, about 7 s)
-# are kept on disk, then sent once it's up, and the spill file goes.
-for _ in $(seq 60); do [ -s "$E/data/sinks/late.spill" ] && break; sleep 0.5; done
-[ -s "$E/data/sinks/late.spill" ] || fail "no spill file for the late webhook"
+# are kept on disk, then sent once it's up, and the spill file goes. A deadline, not a count of
+# tries: on a loaded runner the retries take longer (CI 2026-11-20 gave up after 30 s). A query
+# now and then keeps a batch going to the refused collector.
+deadline=$(( $(date +%s) + 120 ))
+until [ -s "$E/data/sinks/late.spill" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+  dig +short +time=1 -p 25994 @127.0.0.1 ads.sinks.test >/dev/null 2>&1 || true
+  sleep 1
+done
+if [ ! -s "$E/data/sinks/late.spill" ]; then
+  ls -la "$E/data/sinks" 2>&1 || true
+  fail "no spill file for the late webhook (waited 120 s)"
+fi
 cat > "$E/late.py" <<'EOF'
 import http.server, os, sys
 out = sys.argv[1]

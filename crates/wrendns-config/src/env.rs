@@ -69,6 +69,12 @@ const RESERVED: &[&str] = &[
     "MEMORY_LIMIT",
     // REQ: FLT-901 - the cluster test's fake source (read only by a build with the `e2e` feature).
     "E2E_CATALOG_BASE",
+    // REQ: OPS-001, OPS-004 - deploy/systemd/install.sh's own settings (a mirror, its key, the
+    // install prefix). The installer runs `wrendns` with them in its environment, so they are
+    // known names, not typos to warn about.
+    "RELEASE_URL",
+    "RELEASE_PUBKEY",
+    "PREFIX",
 ];
 
 /// REQ: OPS-014, API-014 (ADR-903 §3) — variables a process this one starts (an `exec://`

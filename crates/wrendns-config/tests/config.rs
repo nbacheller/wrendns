@@ -2102,6 +2102,26 @@ fn t24_27_binary_env_vars_are_not_reported_unknown() {
     assert_eq!(loaded.config.node.drain_delay_secs, 7);
 }
 
+/// REQ: OPS-004 - install.sh's own variables (a mirror, its key, the prefix) are in the
+/// environment when the installer runs `wrendns`: known names, not warned about.
+#[test]
+fn ops_004_installer_env_vars_are_not_reported_unknown() {
+    let loaded = Loader::new()
+        .env([
+            ("WRENDNS_RELEASE_URL", "http://127.0.0.1:8765"),
+            ("WRENDNS_RELEASE_PUBKEY", "k"),
+            ("WRENDNS_PREFIX", "/usr/local"),
+        ])
+        .load()
+        .unwrap();
+    let unknown: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.contains("unknown environment variable"))
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+}
+
 /// REQ: OBS-010 (T24.43) - a `pushover` destination needs both secrets (a file or a stored
 /// secret each), an https address (http only to this machine) or none, and a priority from -2 to 1.
 #[test]
