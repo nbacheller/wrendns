@@ -16,6 +16,13 @@ ui/playwright-report/
 **/*Zone.Identifier
 **/__pycache__/
 
+# REQ: OPS-004 - what the image workflow writes beside the sources (the OCI layout, the release
+# binaries and their assets). In the context they changed `COPY . .`, so every later build step
+# of the same run compiled all three platforms again.
+/image.tar
+/bin/
+/dist/
+
 # Git worktrees used for parallel work (each has its own node_modules and build output).
 .wt/
 
