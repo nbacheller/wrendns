@@ -71,7 +71,7 @@
     }).forEach(function (d) { list.appendChild(d); });
   }
   function openHash() {
-    var m = /^#(adr-\d{3})$/.exec(location.hash);
+    var m = /^#(adr-\d{3,4})$/.exec(location.hash);
     if (!m) return;
     var d = document.getElementById(m[1]);
     if (!d) return;

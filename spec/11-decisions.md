@@ -5612,7 +5612,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a contributor adding a source file adds one line; `.mjs`, `.css`, `.html`, `.toml` and other files are not checked (a later ADR can widen the list). A file copied from another project keeps its own licence line and is listed as third-party work (CONTRIBUTING.md, CLA §6). It goes under a `vendor/` or `third_party/` directory, which the check skips; anywhere else the check fails on it, so a reviewer sees it.
 
-## ADR-1045 - A Pushover alert destination: two secrets, https, no emergency priority (Accepted 2026-11-19, T24.43, owner request)
+## ADR-1045 — A Pushover alert destination: two secrets, https, no emergency priority (Accepted 2026-11-19, T24.43, owner request)
 
 **Context:** Pi-hole's DHCP hook sent a Pushover message when a new device joined. Pi-hole is gone, and the owner wants the `new_device` alert delivered to Pushover. Pushover takes a form POST with an application token and a user (or group) key, both secrets.
 

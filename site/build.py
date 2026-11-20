@@ -226,6 +226,48 @@ def add_social_tags(name, page):
     return page.replace("</head>", social_tags(name, page) + "</head>", 1)
 
 
+# REQ: DOC-006 — while the repository is private (site.json "repoPublic": false), its GitHub pages, releases and
+# raw files (install.sh, the compose bundle) answer 404, so the site shows them as plain text instead of links.
+# Setting "repoPublic": true at launch brings every link back; nothing else changes.
+REPO_PENDING = "Source and downloads open at launch"
+_REPO_URL = r'(?:https://github\.com/nbacheller/wrendns(?=["/#?])[^"]*|https://raw\.githubusercontent\.com/nbacheller/wrendns/[^"]*)'
+_REPO_LINK = re.compile(r'<a\b([^>]*)\bhref="' + _REPO_URL + r'"[^>]*>(.*?)</a>', re.S)
+_REPO_DOWNLOAD = re.compile(r'https://(?:raw\.githubusercontent\.com/nbacheller/wrendns/|github\.com/nbacheller/wrendns/releases/latest/download/)')
+_REPO_PRE = re.compile(r'(<pre\b[^>]*>(?:(?!</pre>).)*?https://(?:raw\.githubusercontent\.com|github\.com)/nbacheller/wrendns'
+                       r'(?:(?!</pre>).)*?</pre>)', re.S)
+
+
+def repo_public(cfg):
+    return cfg.get("repoPublic", False) is True
+
+
+def unlink_repo(page):
+    """Every link into the repository becomes its text; a download or command that needs it gets a note."""
+    downloads = bool(_REPO_DOWNLOAD.search(page.split("<footer")[0]))
+
+    def plain(m):
+        if 'class="icon-link"' in m.group(1):
+            return ""
+        return '<span class="repo-pending" title="{}">{}</span>'.format(REPO_PENDING, m.group(2))
+
+    page = _REPO_LINK.sub(plain, page)
+    page, commands = _REPO_PRE.subn(lambda m: m.group(1) + '\n<p class="muted small repo-pending-note">{}.</p>'.format(REPO_PENDING), page)
+    if downloads and not commands:
+        page = re.sub(r'(<p class="lede">.*?</p>)', lambda m: m.group(1) + '\n  <p class="callout repo-pending-note">{}.</p>'.format(REPO_PENDING),
+                      page, count=1, flags=re.S)
+    return page
+
+
+def repo_link_errors(cfg, pages):
+    """`pages` maps a page name to its built HTML."""
+    if not isinstance(cfg.get("repoPublic", False), bool):
+        return ["site.json: repoPublic must be true or false"]
+    if repo_public(cfg):
+        return []
+    return ["{}: links into the private repository ({} left)".format(n, len(_REPO_LINK.findall(p)))
+            for n, p in pages.items() if _REPO_LINK.search(p)]
+
+
 # REQ: DOC-006 (T33.5, ADR-1033) — the licence is said the same way everywhere: AGPL-3.0-or-later, a commercial
 # licence available, a link to LICENSING.md, and the permissive-final baseline. Apache-2.0 OR MIT may appear only
 # beside that baseline or upstream's portions, and no page carries a "Built with Claude" note (owner's rule).
@@ -325,6 +367,8 @@ def render_legal(md):
             out.append(md_table(rows, set()))
         para, bullets, rows = [], [], []
 
+    # Every HTML comment goes, wherever it sits: a block, a line, or mid-sentence.
+    md = re.sub(r"<!--.*?-->", "", md, flags=re.S)
     title = ""
     in_comment = False
     for raw in md.splitlines():
@@ -811,8 +855,10 @@ def md_inline(s, known):
     s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
     s = re.sub(r"(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])", r"<i>\1</i>", s)
     s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
-    s = re.sub(r"\bADR-(\d{3})\b",
-               lambda m: '<a href="#adr-{0}">ADR-{0}</a>'.format(m.group(1)) if "ADR-" + m.group(1) in known else m.group(0), s)
+    # The record's own part page, so the link works from every part (a bare #adr-NNN only works on its own part).
+    s = re.sub(r"\bADR-(\d{3,4})\b",
+               lambda m: '<a href="{1}">ADR-{0}</a>'.format(m.group(1), adr_href("ADR-" + m.group(1)))
+               if "ADR-" + m.group(1) in known else m.group(0), s)
     return re.sub("\x00(\\d+)\x00", lambda m: "<code>{}</code>".format(codes[int(m.group(1))]), s)
 
 
@@ -877,7 +923,7 @@ def md_blocks(lines, known):
     return "\n".join(out)
 
 
-ADR_HEAD = re.compile(r"^## (ADR-(\d{3})) — (.*?)(?: \(([^()]*)\))?\s*$")
+ADR_HEAD = re.compile(r"^## (ADR-(\d{3,4})) — (.*?)(?: \(([^()]*)\))?\s*$")
 SECTION = re.compile(r"^\*\*([A-Z][A-Za-z ]+):\*\*\s*(.*)$")
 
 
@@ -904,6 +950,8 @@ def parse_adrs():
             cur = {"id": m.group(1), "num": int(m.group(2)), "title": m.group(3).strip(),
                    "status": (m.group(4) or "Proposed").strip(), "heading": line[3:].strip(), "lines": []}
             adrs.append(cur)
+        elif line.startswith("## ADR-"):
+            sys.exit("spec/11-decisions.md: a record heading is not '## ADR-NNN — Title (Status)': " + line[:40])
         elif line.startswith("## ") or line.startswith("# "):
             cur = None
         elif cur is not None:
@@ -911,9 +959,9 @@ def parse_adrs():
     return adrs
 
 
-# REQ: DOC-006 — the decision records are off the public site while they are rewritten to remove
-# details of the owner's own network (owner, 2026-11-19). Set True to publish them again.
-PUBLISH_DECISIONS = False
+# REQ: DOC-006 — the decision records are published. False takes them off the public site (the index
+# then shows DECISIONS_PAUSED) while they are being edited.
+PUBLISH_DECISIONS = True
 DECISIONS_PAUSED = ('<p class="legend">The decision records are being edited and will be back soon. '
                     'The design is described in the guides and on the For nerds page.</p>')
 
@@ -927,7 +975,7 @@ def render_decisions(page, reqs):
         sys.exit("spec/11-decisions.md: an ADR number is used twice")
     for a in adrs:
         body = "\n".join(a["lines"])
-        a["mentions"] = sorted({x for x in re.findall(r"\bADR-\d{3}\b", body) if x in known and x != a["id"]})
+        a["mentions"] = sorted({x for x in re.findall(r"\bADR-\d{3,4}\b", body) if x in known and x != a["id"]})
         a["reqs"] = sorted({x for x in re.findall(r"\b[A-Z]{3}-\d{3}\b", body) if x in reqs})
         a["areas"] = sorted({r[:3] for r in a["reqs"] if r[:3] in AREAS})
     mentioned_by = {a["id"]: [] for a in adrs}
@@ -1094,7 +1142,7 @@ def gh_anchor(heading):
 def repo_ids():
     adrs = {}
     for line in read(os.path.join(ROOT, "spec", "11-decisions.md")).splitlines():
-        m = re.match(r"^## (ADR-\d{3})\b(.*)$", line)
+        m = re.match(r"^## (ADR-\d{3,4})\b(.*)$", line)
         if m:
             adrs[m.group(1)] = (line[3:].strip(), gh_anchor(line[3:].strip()))
     # Requirement rows: spec/01, plus the agent requirements (AGT) defined in spec/13 §2.
@@ -1283,7 +1331,9 @@ def render_nerds(page, arch, adrs, reqs):
     def cards(items, key="title"):
         out = []
         for it in items:
-            code = ' <a class="small" href="{}{}">code</a>'.format(GH, it["code"]) if it.get("code") else ""
+            # A directory is a /tree/ link on GitHub; /blob/ is for files only.
+            base = GH_TREE if it.get("code") and os.path.isdir(os.path.join(ROOT, it["code"])) else GH
+            code = ' <a class="small" href="{}{}">code</a>'.format(base, it["code"]) if it.get("code") else ""
             out.append('<article class="card"><h3>{}</h3><p>{}{}</p>{}</article>'.format(
                 html.escape(it[key]), html.escape(it["summary"]), code, _chips(it, adrs, reqs)))
         return "\n".join(out)
@@ -1415,7 +1465,7 @@ def main():
     adrs, reqs = repo_ids()
     values_rows = parse_values(read(HELM_VALUES))
     header = render_support_nav(header, site_cfg)
-    written = []
+    written, linked = [], {}
     for name in PAGES:
         page = read(os.path.join(SITE, name))
         slug = name[:-5]
@@ -1456,12 +1506,16 @@ def main():
                 sys.exit("{}: a [confirm] marker reached the public page".format(gname))
             if "<!-- @" in gpage:
                 sys.exit("{}: unreplaced marker".format(gname))
+            # The licence wording is checked on the page as written, links included.
+            linked[gname] = gpage
+            if not repo_public(site_cfg):
+                gpage = unlink_repo(gpage)
             with open(os.path.join(out, gname), "w", encoding="utf-8") as f:
                 f.write(add_social_tags(gname, gpage))
             written.append(gname)
     shutil.copyfile(os.path.join(SITE, "staticwebapp.config.json"), os.path.join(out, "staticwebapp.config.json"))
     built = {n: read(os.path.join(out, n)) for n in written}
-    errors = licence_errors(footer, built) + (
+    errors = licence_errors(footer, linked) + repo_link_errors(site_cfg, built) + (
         coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
         + ["brand: " + p for p in brand.problems()] + site_config_errors(site_cfg) + swa_errors(swa_cfg) + csp_errors(out, written)
     )
