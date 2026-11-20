@@ -321,7 +321,7 @@ asked=$(printf '%s\n' "$FS" | grep -c 'url:/hagezi/dns-blocklists/main/wildcard/
 [ "$asked" -ge 1 ] || bad "the fake source was never asked for the list: $FS"
 nodeip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container "$1")" | tr -d '\r'; }
 pip=$(nodeip primary)
-printf '%s\n' "$FS" | grep -qF "$pip" || bad "the primary ($pip) didn't fetch the list: $FS"
+grep -qF "$pip" <<<"$FS" || bad "the primary ($pip) didn't fetch the list: $FS"
 for r in replica-a replica-b; do
   rip=$(nodeip "$r")
   printf '%s\n' "$FS" | grep -F 'url:' | grep -qF "[::ffff:$rip]" && bad "$r ($rip) downloaded a category list: $FS"

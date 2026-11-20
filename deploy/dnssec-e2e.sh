@@ -75,8 +75,8 @@ echo "== insecure"
 echo ok
 echo "== bogus"
 out=$(d dnssec-failed.org A)
-echo "$out" | grep -q "status: SERVFAIL" || fail "dnssec-failed.org wasn't SERVFAIL"
-echo "$out" | grep -q "EDE: 6" || fail "dnssec-failed.org has no EDE 6"
+grep -q "status: SERVFAIL" <<<"$out" || fail "dnssec-failed.org wasn't SERVFAIL"
+grep -q "EDE: 6" <<<"$out" || fail "dnssec-failed.org has no EDE 6"
 [ "$(status dnssec-failed.org A +cd)" = NOERROR ] || fail "CD=1 didn't return the unvalidated answer"
 echo ok
 echo "== signed denials"
@@ -90,16 +90,16 @@ synth() { curl -s 127.0.0.1:29951/metrics | sed -n 's/^wrendns_dnssec_synthesize
 [ "$(status zz-wrendns-a1 A)" = NXDOMAIN ] || fail "a made-up TLD wasn't NXDOMAIN"
 before=$(synth)
 out=$(d zz-wrendns-b2 A +dnssec)
-echo "$out" | grep -q "status: NXDOMAIN" || fail "the second made-up TLD wasn't NXDOMAIN"
-echo "$out" | grep -qE "flags: [a-z ]* ad" || fail "the synthesized NXDOMAIN has no AD"
-echo "$out" | grep -qE "IN[[:space:]]+NSEC" || fail "no NSEC records for a DO client: $(echo "$out" | head -30)"
+grep -q "status: NXDOMAIN" <<<"$out" || fail "the second made-up TLD wasn't NXDOMAIN"
+grep -qE "flags: [a-z ]* ad" <<<"$out" || fail "the synthesized NXDOMAIN has no AD"
+grep -qE "IN[[:space:]]+NSEC" <<<"$out" || fail "no NSEC records for a DO client: $(echo "$out" | head -30)"
 after=$(synth)
 [ "${after:-0}" -gt "${before:-0}" ] || fail "not answered from the NSEC cache ($before -> $after)"
 [ "$(status zz-wrendns-c3 AAAA +nodnssec)" = NXDOMAIN ] || fail "a non-DO client didn't get NXDOMAIN"
 echo ok
 echo "== counted"
 m=$(curl -s 127.0.0.1:29951/metrics | grep '^wrendns_dnssec_validation_total')
-echo "$m" | grep -q 'result="secure"} [1-9]' || fail "no secure verdicts counted: $m"
-echo "$m" | grep -q 'result="bogus"} [1-9]' || fail "no bogus verdicts counted: $m"
+grep -q 'result="secure"} [1-9]' <<<"$m" || fail "no secure verdicts counted: $m"
+grep -q 'result="bogus"} [1-9]' <<<"$m" || fail "no bogus verdicts counted: $m"
 echo ok
 echo PASS

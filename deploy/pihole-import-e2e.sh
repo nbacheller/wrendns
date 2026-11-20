@@ -142,8 +142,8 @@ EOF
   # with backoff; they must not hold back the others (at most [filter] settle, 10 s).
   for _ in $(seq 60); do d denied.example A | grep -q 'EDE: 15' && break; sleep 0.5; done
   out=$(d denied.example A)
-  echo "$out" | grep -q 'EDE: 15' || fail "$v: denied.example isn't blocked"
-  echo "$out" | grep -q 'status: NXDOMAIN' || fail "$v: blocking mode isn't NXDOMAIN"
+  grep -q 'EDE: 15' <<<"$out" || fail "$v: denied.example isn't blocked"
+  grep -q 'status: NXDOMAIN' <<<"$out" || fail "$v: blocking mode isn't NXDOMAIN"
   d ad7.example A | grep -q 'EDE: 15' || fail "$v: the regex deny doesn't block ad7.example A"
   d ad7.example AAAA | grep -q 'EDE: 15' && fail "$v: ;querytype=A blocked AAAA too"
   d kidsonly.example A | grep -q 'EDE: 15' && fail "$v: a Kids-only entry blocked the default group"

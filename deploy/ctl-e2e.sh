@@ -57,29 +57,29 @@ WRENDNS_TOKEN=$(curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: 
   -d '{"name":"ctl-e2e","scope":"write"}' "$API/api/v1/tokens" | field 'd["token"]')
 ctl() { "$B" ctl --url "$API" "$@"; }
 
-ctl status | grep -q "^WrenDNS" || fail "status"
+grep -q "^WrenDNS" <<<"$(ctl status)" || fail "status"
 echo "status: ok"
 
 # Block a name now: DNS blocks it, the rule is listed, and it can be removed.
 dig +short -p 25991 @127.0.0.1 safe.ctl.test >/dev/null || true
-ctl block safe.ctl.test --note "ctl e2e" | grep -q "^done" || fail "block"
+grep -q "^done" <<<"$(ctl block safe.ctl.test --note "ctl e2e")" || fail "block"
 for _ in $(seq 20); do [[ $(dig +time=1 -p 25991 @127.0.0.1 safe.ctl.test) == *"EDE: 15"* ]] && break; sleep 0.2; done
 [[ $(dig +time=1 -p 25991 @127.0.0.1 safe.ctl.test) == *"EDE: 15"* ]] || fail "the blocked name still resolves"
-ctl rules | grep -q "block-safe-ctl-test" || fail "rules"
+grep -q "block-safe-ctl-test" <<<"$(ctl rules)" || fail "rules"
 ctl rules --json | python3 -c 'import sys, json; assert json.load(sys.stdin)["items"][0]["domain"] == "safe.ctl.test"' || fail "rules --json"
-ctl unrule block-safe-ctl-test | grep -q removed || fail "unrule"
+grep -q removed <<<"$(ctl unrule block-safe-ctl-test)" || fail "unrule"
 echo "block/rules/unrule: ok"
 
-ctl pause --minutes 5 | grep -q "paused" || fail "pause"
+grep -q "paused" <<<"$(ctl pause --minutes 5)" || fail "pause"
 ctl get blocking | python3 -c 'import sys, json; d = json.load(sys.stdin); assert d["items"][0]["pauses"], d' || fail "paused state"
-ctl resume | grep -q "resumed" || fail "resume"
-ctl flush | grep -q "^flushed" || fail "flush"
-ctl lists | grep -qE "^ads +block" || fail "lists"
+grep -q "resumed" <<<"$(ctl resume)" || fail "resume"
+grep -q "^flushed" <<<"$(ctl flush)" || fail "flush"
+grep -qE "^ads +block" <<<"$(ctl lists)" || fail "lists"
 echo "pause/resume/flush/lists: ok"
 
 dig +short -p 25991 @127.0.0.1 nas.ctl.test >/dev/null
 sleep 2 # the query log flushes every second here
-ctl queries --name nas.ctl.test | grep -q "nas.ctl.test" || fail "queries"
+grep -q "nas.ctl.test" <<<"$(ctl queries --name nas.ctl.test)" || fail "queries"
 ctl get stats/summary from=-1h | python3 -c 'import sys, json; assert json.load(sys.stdin)["queries"] >= 1' || fail "raw get"
 echo "queries/get: ok"
 

@@ -400,7 +400,7 @@ code=$(curl -s -o "$E/fwd.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csrf
 for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 [ "$(q 25301 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record isn't on the primary"
 [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record didn't come back to the replica"
-get '/api/v1/audit' | grep -q 'admin via r' || fail "the primary's audit log doesn't name the user and entry node"
+grep -q 'admin via r' <<<"$(get '/api/v1/audit')" || fail "the primary's audit log doesn't name the user and entry node"
 echo "ok"
 
 # REQ: OPS-011 (ADR-172) — one support package for the cluster: the primary makes a key and asks the
@@ -471,7 +471,7 @@ annok '/api/v1/annotations?from=-15m&limit=1' page || fail "a one-marker page is
 seqm() { curl -s "http://127.0.0.1:$1/metrics" | awk '/^wrendns_config_seq / {print $2}'; }
 for _ in $(seq 40); do [ -n "$(seqm 29001)" ] && [ "$(seqm 29001)" = "$(seqm 29002)" ] && break; sleep 0.5; done
 { [ "$(seqm 29001)" = "$(seqm 29002)" ] && [ "$(seqm 29001)" -gt 0 ]; }   || fail "wrendns_config_seq differs: primary $(seqm 29001), replica $(seqm 29002)"
-curl -s http://127.0.0.1:29002/metrics | grep -q '^wrendns_annotations_total{kind="note"} 1$'   || fail "the replica's wrendns_annotations_total doesn't count its note"
+grep -q '^wrendns_annotations_total{kind="note"} 1$' <<<"$(curl -s http://127.0.0.1:29002/metrics)"   || fail "the replica's wrendns_annotations_total doesn't count its note"
 echo "ok (configuration $(seqm 29001) on both nodes)"
 
 echo "== quick rules made on the replica apply on every node (T6.12, ADR-067)"
@@ -559,7 +559,7 @@ simcheck "$E/sim.json" '[]' || fail "the replica's simulation: $(cat "$E/sim.jso
 WRENDNS_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" > "$E/sim.txt" \
   && grep -q 'newly blocked' "$E/sim.txt" && grep -q 'simp.p.test' "$E/sim.txt" \
   || fail "the text output lacks the counts: $(cat "$E/sim.txt")"
-curl -s http://127.0.0.1:29001/metrics | grep -q '^wrendns_simulations_total{outcome="ok"} [1-9]' \
+grep -q '^wrendns_simulations_total{outcome="ok"} [1-9]' <<<"$(curl -s http://127.0.0.1:29001/metrics)" \
   || fail "the primary didn't count its part of the simulation"
 echo "ok ($(python3 -c "import json; s=json.load(open('$E/sim.json')); print(s['rows'], 'rows,', s['newlyBlocked']['queries'], 'newly blocked')"))"
 
@@ -583,9 +583,9 @@ code=$(readyz 29002)
 [ "$(readyz 29001)" = 200 ] || fail "the primary stopped being ready"
 for _ in $(seq 40); do alert maint firing r && break; sleep 0.5; done
 alert maint firing r || fail "the maintenance alert didn't fire for the replica"
-curl -sf -b "$E/rjar" "$RAPI/api/v1/audit?action=node.maintenance.start" | grep -q 'e2e SD card swap' \
+grep -q 'e2e SD card swap' <<<"$(curl -sf -b "$E/rjar" "$RAPI/api/v1/audit?action=node.maintenance.start")" \
   || fail "the replica's audit log doesn't record the maintenance it was asked for"
-get '/api/v1/audit?action=node.maintenance.start' | grep -q '"r"' || fail "the primary's audit log doesn't name the replica"
+grep -q '"r"' <<<"$(get '/api/v1/audit?action=node.maintenance.start')" || fail "the primary's audit log doesn't name the replica"
 sleep 30
 code=$(mreq DELETE r)
 [ "$code" = 200 ] || fail "ending the replica's maintenance answered $code: $(cat "$E/m.json")"
