@@ -18,9 +18,9 @@ permissions:
   contents: read
 jobs:
   test:
-    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
-    # requests only while WRENDNS_PR_RUNNER is set, never from forks), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    # OPS-004: GitHub-hosted: setup-python's Ubuntu 26.04 builds need x86-64-v3, which the
+    # self-hosted runners' CPU lacks.
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
