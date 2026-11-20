@@ -321,10 +321,10 @@ asked=$(printf '%s\n' "$FS" | grep -c 'url:/hagezi/dns-blocklists/main/wildcard/
 [ "$asked" -ge 1 ] || bad "the fake source was never asked for the list: $FS"
 nodeip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container "$1")" | tr -d '\r'; }
 pip=$(nodeip primary)
-printf '%s\n' "$FS" | grep -qF "$pip" || bad "the primary ($pip) didn't fetch the list: $FS"
+grep -qF "$pip" <<<"$FS" || bad "the primary ($pip) didn't fetch the list: $FS"
 for r in replica-a replica-b; do
   rip=$(nodeip "$r")
-  printf '%s\n' "$FS" | grep -F 'url:' | grep -qF "[::ffff:$rip]" && bad "$r ($rip) downloaded a category list: $FS"
+  grep -F 'url:' <<<"$FS" | grep -F "[::ffff:$rip]" >/dev/null && bad "$r ($rip) downloaded a category list: $FS"
 done
 pass "$asked request(s), all from the primary"
 
@@ -425,10 +425,10 @@ for n in replica-a replica-b; do
 done
 FS=$("${COMPOSE[@]}" logs --no-color fake-source 2>&1)
 pip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container primary)" | tr -d '\r')
-printf '%s\n' "$FS" | grep -F 'stat/sta' | grep -qF "$pip" || bad "the primary's read of the fake UniFi isn't in its log: ${FS:0:400}"
+grep -F 'stat/sta' <<<"$FS" | grep -F "$pip" >/dev/null || bad "the primary's read of the fake UniFi isn't in its log: ${FS:0:400}"
 for r in replica-a replica-b; do
   rip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container "$r")" | tr -d '\r')
-  printf '%s\n' "$FS" | grep -F 'stat/sta' | grep -qF "[::ffff:$rip]" && bad "$r ($rip) polled the fake UniFi: ${FS:0:400}"
+  grep -F 'stat/sta' <<<"$FS" | grep -F "[::ffff:$rip]" >/dev/null && bad "$r ($rip) polled the fake UniFi: ${FS:0:400}"
 done
 # With the primary away a replica answers from its own data, names the primary, and never errors.
 docker pause "$(container primary)" >/dev/null
@@ -558,7 +558,7 @@ put_json router3.json '{"type":"unifi","url":"http://fake-source:8080/cgi-bin/u"
 call "$killed" PUT /api/v1/routers/fake-udm-h "$E/router3.json"
 [ "$RS" = 200 ] || bad "the fake UniFi's write on $killed answered $RS: $RB"
 polled_by() { # node: 0 when the fake source saw a read from that node's address carrying the stored key
-  "${COMPOSE[@]}" logs --no-color fake-source 2>&1 | grep -F 'unifi key=' | grep -F "key=$SECRET " | grep -qF "from=[::ffff:${NODE_IP[$1]}]"
+  grep -F 'unifi key=' <<<"$("${COMPOSE[@]}" logs --no-color fake-source 2>&1)" | grep -F "key=$SECRET " | grep -F "from=[::ffff:${NODE_IP[$1]}]" >/dev/null
 }
 for _ in $(seq 90); do polled_by "$killed" && break; sleep 1; done
 polled_by "$killed" || bad "the primary $killed never read the fake UniFi with the stored key: $("${COMPOSE[@]}" logs --no-color fake-source 2>&1 | tail -5)"
@@ -850,7 +850,7 @@ else
   [ "$(jget 'd["before"] is None')" = False ] || bad "the dry run on $N1 shows no 'before' for an entry it serves: $RB"
   # Which path ran: the node adopted what it serves (an older primary's version has no rows). A
   # promotion from replica takes the same code; the unit tests (clu_015_t24_40_*) cover that entry.
-  "${COMPOSE[@]}" logs --no-color "$N1" 2>&1 | grep -qE "it adopted them as its own.*kinds=[a-z]+ [0-9]+"   || bad "$N1 served the inherited entries but its log doesn't say it adopted them as its own"
+  grep -qE "it adopted them as its own.*kinds=[a-z]+ [0-9]+"   <<<"$("${COMPOSE[@]}" logs --no-color "$N1" 2>&1)" || bad "$N1 served the inherited entries but its log doesn't say it adopted them as its own"
   docker kill "$(container "$N1")" >/dev/null
   N2=$(wait_primary 90 "$N1") || bad "no survivor was promoted after the upgrade"
   for n in "${NODES[@]}"; do

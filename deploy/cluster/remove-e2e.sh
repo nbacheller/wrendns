@@ -173,7 +173,7 @@ code=$(rm_node 28303 "$E/sjar" "$SCSRF" "$T_ID")
   || fail "removing the stale record through s answered $code: $(cat "$E/rm.json")"
 case "$(listed 28301 "$E/pjar")" in *"$T_ID"*) fail "t is still listed" ;; esac
 audit=$(curl -sf -b "$E/pjar" "http://127.0.0.1:28301/api/v1/audit?action=cluster.node.remove")
-echo "$audit" | grep -q "$T_ID" && echo "$audit" | grep -q "$R_ID" || fail "the audit log is missing a removal: $audit"
-echo "$audit" | grep -q " via " || fail "the forwarded removal isn't audited with the entry node: $audit"
+grep -q "$T_ID" <<<"$audit" && grep -q "$R_ID" <<<"$audit" || fail "the audit log is missing a removal: $audit"
+grep -q " via " <<<"$audit" || fail "the forwarded removal isn't audited with the entry node: $audit"
 echo "ok"
 echo PASS

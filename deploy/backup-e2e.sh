@@ -70,7 +70,7 @@ for _ in $(seq 50); do [ "$(q from-api.backup.test)" = 10.1.0.2 ] && break; slee
 
 echo "== 2. backup while A runs (the API download, then the CLI)"
 hdrs=$(curl -sf -D - -o "$E/api.ttbk" -b "$E/jar" "$API/api/v1/backup") || fail "the API backup download"
-echo "$hdrs" | grep -qi 'content-disposition: attachment; filename="wrendns-node-a-' \
+grep -qi 'content-disposition: attachment; filename="wrendns-node-a-' <<<"$hdrs" \
   || fail "the download isn't named as an attachment: $hdrs"
 "$B" backup show "$E/api.ttbk" | grep -q 'data/state.db' || fail "the API backup doesn't check out"
 "$B" backup create -c "$E/a/etc/wrendns.toml" -o "$E/a.ttbk" 2> "$E/create.log" || fail "backup create"
@@ -100,8 +100,8 @@ curl -sf -c "$E/jar2" -H 'content-type: application/json' \
   -d '{"username":"admin","password":"backup-e2e-pass-1"}' "$API/api/v1/auth/login" >/dev/null \
   || fail "the admin can't sign in on B"
 audit=$(curl -sf -b "$E/jar2" "$API/api/v1/audit")
-echo "$audit" | grep -q 'from-api.backup.test' || fail "the audit log didn't come along"
-echo "$audit" | grep -q 'backup.create' || fail "the API download isn't in the audit log"
+grep -q 'from-api.backup.test' <<<"$audit" || fail "the audit log didn't come along"
+grep -q 'backup.create' <<<"$audit" || fail "the API download isn't in the audit log"
 [ -e "$E/b/data/setup-token" ] && fail "B asks for first-run setup again"
 stop
 

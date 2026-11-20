@@ -15,7 +15,13 @@ sha=$(git rev-parse "${2:-HEAD}")
 cd "$(dirname "$0")/../.."
 fail() { echo "::error title=preflight::$*"; echo "preflight: $*" >&2; exit 1; }
 
-echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "version must be X.Y.Z (got '$v')"
+# X.Y.Z: digits only in three parts. Reject letters, empty parts, a missing or extra part.
+case "$v" in
+  ''|.*|*.|*..*|*[!0-9.]*|*.*.*.*) ok=no ;;
+  *.*.*) ok=yes ;;
+  *) ok=no ;;
+esac
+[ "$ok" = yes ] || fail "version must be X.Y.Z (got '$v')"
 cargo_v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ "$cargo_v" = "$v" ] || fail "Cargo.toml says $cargo_v, not $v: run deploy/release/bump.sh $v on main first"
 chart_v=$(awk '/^version:/ {print $2}' deploy/helm/wrendns/Chart.yaml)

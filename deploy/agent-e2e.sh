@@ -102,8 +102,8 @@ dry DELETE /api/v1/forwards/corp.agent.test ''
 [ "$(q nas.agent.test)" = 10.9.9.9 ] || fail "a dry-run delete removed the name"
 code GET /api/v1/clients >/dev/null; grep -q '"tv"' "$E/out.json" || fail "a dry-run delete removed the device"
 audit=$(curl -sf -b "$E/jar" "$API/api/v1/audit")
-echo "$audit" | grep -q 'agent:helper (owner: admin) via agent-e2e/1.0' || fail "no agent attribution: $(echo "$audit" | head -c 400)"
-echo "$audit" | grep -q 'the NAS moved' || fail "the reason isn't in the audit log"
+grep -q 'agent:helper (owner: admin) via agent-e2e/1.0' <<<"$audit" || fail "no agent attribution: $(echo "$audit" | head -c 400)"
+grep -q 'the NAS moved' <<<"$audit" || fail "the reason isn't in the audit log"
 echo ok
 
 echo "== 4. the kill switch"

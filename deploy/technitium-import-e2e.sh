@@ -78,7 +78,7 @@ for _ in 1 2 3; do
   out=$(curl -s -G "$U/api/apps/downloadAndInstall" --data-urlencode "token=$S" \
     --data-urlencode "name=Advanced Blocking" \
     --data-urlencode "url=https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip")
-  echo "$out" | grep -q '"status":"ok"' && { APP=1; break; }
+  grep -q '"status":"ok"' <<<"$out" && { APP=1; break; }
   sleep 5
 done
 if [ "$APP" = 0 ]; then
@@ -102,7 +102,7 @@ cat > "$E/ab.json" <<'EOF'
 EOF
 if [ "$APP" = 1 ]; then
   out=$(curl -s "$U/api/apps/config/set?token=$S" --data-urlencode "name=Advanced Blocking" --data-urlencode "config@$E/ab.json")
-  echo "$out" | grep -q '"status":"ok"' || fail "Advanced Blocking config: $(echo "$out" | head -c 300)"
+  grep -q '"status":"ok"' <<<"$out" || fail "Advanced Blocking config: $(echo "$out" | head -c 300)"
 fi
 # (Technitium ships a "Default" scope for 192.168.1.0/24, so use another network.)
 api dhcp/scopes/set name=lan startingAddress=10.77.0.100 endingAddress=10.77.0.200 \
@@ -154,8 +154,8 @@ names=(listed.example blocked.example)
 [ "$APP" = 1 ] && names+=(app-blocked.example tracker7.example)
 for n in "${names[@]}"; do
   out=$(d "$n" A)
-  echo "$out" | grep -q 'EDE: 15' || fail "$n isn't blocked"
-  echo "$out" | grep -q 'status: NXDOMAIN' || fail "$n: blocking mode isn't NXDOMAIN"
+  grep -q 'EDE: 15' <<<"$out" || fail "$n isn't blocked"
+  grep -q 'status: NXDOMAIN' <<<"$out" || fail "$n: blocking mode isn't NXDOMAIN"
 done
 d also-allowed.example A | grep -q 'EDE: 15' && fail "an allowed name was blocked"
 d games.example A | grep -q 'EDE: 15' && fail "a kids-only name blocked the default group"

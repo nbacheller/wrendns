@@ -55,7 +55,7 @@ EOF
 "$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
 for i in $(seq 20); do dig +short +time=1 -p 25993 @127.0.0.1 tv-portal.mcp.test >/dev/null || true; done
-for _ in $(seq 30); do dig +time=1 -p 25993 @127.0.0.1 ads.mcp.test | grep -q 'EDE: 15' && break; sleep 0.3; done
+for _ in $(seq 30); do grep -q 'EDE: 15' <<<"$(dig +time=1 -p 25993 @127.0.0.1 ads.mcp.test)" && break; sleep 0.3; done
 # REQ: OBS-024 — five queries for a name a plan will block, for the simulations to find.
 for i in $(seq 5); do dig +short +time=1 -p 25993 @127.0.0.1 sim.mcp.test >/dev/null || true; done
 sleep 2 # the query log flushes every second here
@@ -79,7 +79,7 @@ CLUSTER_TOKEN=$(token '["analytics:read","cluster:admin"]')
 (cd deploy/mcp-e2e && npm install --silent --no-audit --no-fund >/dev/null)
 node deploy/mcp-e2e/check.mjs "$API" "$B" docs/api/mcp-tools.json
 # AGT-007: the applied plan blocks the name in DNS itself.
-dig +time=1 -p 25993 @127.0.0.1 agent.mcp.test | grep -q 'EDE: 15' || fail "agent.mcp.test isn't blocked in DNS after apply_plan"
+grep -q 'EDE: 15' <<<"$(dig +time=1 -p 25993 @127.0.0.1 agent.mcp.test)" || fail "agent.mcp.test isn't blocked in DNS after apply_plan"
 echo 'ok: agent.mcp.test is blocked in DNS'
 
 # Every tool call was an agent request: the audit log names the MCP client on changes only,

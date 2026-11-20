@@ -118,6 +118,9 @@ jobs:
       # SPDX header (old files are not mass-edited).
       - run: python3 scripts/test_check_spdx.py
       - run: python3 scripts/check-spdx.py
+      # REQ: OPS-004 — no echo or printf piped into grep -q (fails under pipefail on large output).
+      - run: python3 scripts/test_check_pipefail.py
+      - run: python3 scripts/check-pipefail.py
       # REQ: DOC-006 — no tracked file, built site page or generated doc names anything on the
       # maintainers' private denylist. The list is the repository secret PRIVACY_DENYLIST. On the
       # maintainers' own repository (a push, or a pull request from a branch of it) the list is
