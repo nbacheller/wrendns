@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // REQ: UI-*, DOC-006 (T33.6, ADR-1042) — the focus ring on an SVG control (a map node, a topology
 // chip), which can't take a CSS outline: its own `rect.ring`, 2px of `focus-ring` centred 3px outside
 // the control's edge (so it covers 2px to 4px out), drawn on keyboard focus and never on hover.
