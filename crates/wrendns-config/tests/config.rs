@@ -2188,3 +2188,34 @@ fn obs_010_pushover_destination_is_validated() {
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+// REQ: API-003 (T24.44, ADR-1053) — `[api] http_redirect` is off by default, is valid next to
+// `[api] tls`, and is a validation error without it, on port 0, or on the API's own address.
+#[test]
+fn api_003_http_redirect_needs_tls() {
+    assert!(load_str("").unwrap().config.api.http_redirect.is_none());
+    let ok =
+        load_str("[api]\ntls = { self_signed = true }\nhttp_redirect = \"0.0.0.0:80\"\n").unwrap();
+    assert_eq!(
+        ok.config.api.http_redirect,
+        Some("0.0.0.0:80".parse().unwrap())
+    );
+    for (toml, why) in [
+        ("[api]\nhttp_redirect = \"0.0.0.0:80\"\n", "needs [api] tls"),
+        (
+            "[api]\ntls = { self_signed = true }\nhttp_redirect = \"0.0.0.0:0\"\n",
+            "1 to 65535",
+        ),
+        (
+            "[api]\nlisten = \"0.0.0.0:8053\"\ntls = { self_signed = true }\nhttp_redirect = \"0.0.0.0:8053\"\n",
+            "must differ",
+        ),
+        (
+            "[api]\nlisten = \"[::]:8053\"\ntls = { self_signed = true }\nhttp_redirect = \"192.0.2.1:8053\"\n",
+            "must differ",
+        ),
+    ] {
+        let err = format!("{:?}", load_str(toml).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}

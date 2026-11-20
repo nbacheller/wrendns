@@ -29,6 +29,8 @@ use wrendns_config::{Config, ListenProto};
 pub(crate) const PROBE_QNAME: &str = "probe.wrendns.invalid";
 /// The `proto` of the web UI and API's check (ADR-149).
 pub(crate) const API_PROTO: &str = "api";
+/// REQ: API-003 (T24.44, ADR-1053) — the `proto` of the plain-HTTP redirect listener's checks.
+pub(crate) const REDIRECT_PROTO: &str = "api-redirect";
 /// Failures in a row that degrade the health level and fire `probe_failing`.
 pub(crate) const FAILING_AFTER: u32 = 2;
 
@@ -116,6 +118,23 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
             skipped: None,
         });
     }
+    // REQ: API-003 (T24.44, ADR-1053) — the redirect listener: `/livez` answers 200 and `/` is
+    // redirected (308), both over plain HTTP.
+    if cfg.api.enabled
+        && cfg.api.tls.is_some()
+        && let Some(addr) = cfg.api.http_redirect
+    {
+        for path in ["/livez", "/"] {
+            out.push(Target {
+                url: format!("http://{}{path}", reachable(addr)),
+                proto: REDIRECT_PROTO,
+                listener: true,
+                cert: None,
+                self_signed: false,
+                skipped: None,
+            });
+        }
+    }
     for t in &cfg.probe.targets {
         let Ok((scheme, _, _)) = wrendns_config::probe_target(t) else {
             continue;
@@ -189,6 +208,56 @@ async fn ask_https(url: &str, timeout: Duration) -> Result<Duration, String> {
         Ok(Ok(r)) if r.status().is_success() => Ok(start.elapsed()),
         Ok(Ok(r)) => Err(format!("HTTP {}", r.status())),
         Ok(Err(e)) => Err(e.message),
+        Err(_) => Err("timed out".to_owned()),
+    }
+}
+
+/// REQ: API-003 (T24.44) — one plain `GET` of the redirect listener: `/` must answer 308 (with a
+/// `Location` over `https://`), anything else (`/livez`) 200.
+async fn ask_redirect(url: &str, timeout: Duration) -> Result<Duration, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("not an http:// address")?;
+    let (hostport, path) = rest
+        .split_once('/')
+        .map_or((rest, "/"), |(h, _)| (h, &rest[h.len()..]));
+    let want = if path == "/" { 308 } else { 200 };
+    let start = Instant::now();
+    let run = async {
+        let mut tcp = tokio::net::TcpStream::connect(hostport)
+            .await
+            .map_err(|e| e.to_string())?;
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
+        tcp.write_all(req.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while buf.len() < 4096 && !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = tcp.read(&mut chunk).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let head = String::from_utf8_lossy(&buf).into_owned();
+        let status: u16 = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .ok_or("no HTTP answer")?;
+        if status != want {
+            return Err(format!("HTTP {status}, expected {want}"));
+        }
+        if want == 308 && !head.to_ascii_lowercase().contains("\r\nlocation: https://") {
+            return Err("the redirect has no https:// Location".to_owned());
+        }
+        Ok(())
+    };
+    match tokio::time::timeout(timeout, run).await {
+        Ok(Ok(())) => Ok(start.elapsed()),
+        Ok(Err(e)) => Err(e),
         Err(_) => Err("timed out".to_owned()),
     }
 }
@@ -311,6 +380,8 @@ impl Probes {
                 let url = t.url.clone();
                 if t.proto == API_PROTO {
                     set.spawn(async move { (i, ask_https(&url, timeout).await) });
+                } else if t.proto == REDIRECT_PROTO {
+                    set.spawn(async move { (i, ask_redirect(&url, timeout).await) });
                 } else {
                     set.spawn(async move { (i, ask(&url, timeout).await) });
                 }
@@ -458,6 +529,75 @@ targets = ["udp://10.50.5.112:53"]
             r.cert_days_left.unwrap() > 365 * 100,
             "a self-signed one doesn't expire"
         );
+    }
+
+    // REQ: API-003 (T24.44) — with `[api] http_redirect` the redirect listener is checked over plain
+    // HTTP: `/livez` must answer 200 and `/` must be redirected (308); without TLS there is no check.
+    #[tokio::test]
+    async fn api_003_the_http_redirect_is_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(&format!(
+            "[node]
+data_dir = {:?}
+[api]
+listen = \"0.0.0.0:443\"
+tls = {{ self_signed = true }}
+http_redirect = \"0.0.0.0:80\"
+",
+            dir.path().to_string_lossy()
+        ));
+        let t: Vec<_> = targets(&c)
+            .into_iter()
+            .filter(|t| t.proto == REDIRECT_PROTO)
+            .collect();
+        assert_eq!(
+            t.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(),
+            ["http://127.0.0.1:80/livez", "http://127.0.0.1:80/"]
+        );
+        // A tiny server that answers like the redirect listener.
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut s, _)) = l.accept().await {
+                // Strict like a real server: it answers only a request ended by CRLF CRLF, with
+                // CRLF line ends, and then keeps the connection open (keep-alive).
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 512];
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                let head = String::from_utf8_lossy(&raw).into_owned();
+                if !head.contains("\r\nHost: ") || head.replace("\r\n", "").contains('\n') {
+                    continue;
+                }
+                let out = if head.starts_with("GET /livez ") {
+                    "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nok\n"
+                } else {
+                    "HTTP/1.1 308 Permanent Redirect\r\nlocation: https://127.0.0.1/\r\ncontent-length: 0\r\n\r\n"
+                };
+                let _ = s.write_all(out.as_bytes()).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+        let to = Duration::from_secs(5);
+        assert!(
+            ask_redirect(&format!("http://127.0.0.1:{port}/livez"), to)
+                .await
+                .is_ok()
+        );
+        assert!(
+            ask_redirect(&format!("http://127.0.0.1:{port}/"), to)
+                .await
+                .is_ok()
+        );
+        let mut plain = c.clone();
+        plain.api.tls = None;
+        assert!(targets(&plain).iter().all(|t| t.proto != REDIRECT_PROTO));
     }
 
     // REQ: OBS-020 — failures in a row count up and reset on success; the last success and the

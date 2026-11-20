@@ -482,7 +482,11 @@ fn api_902_test_row_absent_in_release() {
         .iter()
         .map(|d| d.row.id)
         .collect();
-    assert_eq!(ids, ["restart-now"], "only the real rows have appliers");
+    assert_eq!(
+        ids,
+        ["restart-now", "api-http-redirect"],
+        "only the real rows have appliers"
+    );
     assert!(wrendns_config::guarded::rows().iter().all(|r| !r.test_only));
     // The restart's hook is named only behind the feature, so the variable can't reach it.
     let src = include_str!("restart.rs");
