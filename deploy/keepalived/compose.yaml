@@ -20,7 +20,7 @@ name: wrendns-keepalived
 
 x-wrendns: &wrendns
   # Set WRENDNS_IMAGE to a local build (e2e.sh does); otherwise the published image is pulled.
-  image: ${WRENDNS_IMAGE:-ghcr.io/nbacheller/wrendns:${WRENDNS_TAG:-latest}}
+  image: ${WRENDNS_IMAGE:-${WRENDNS_GHCR:-ghcr.io}/nbacheller/wrendns:${WRENDNS_TAG:-latest}}
   pull_policy: missing
   restart: "no"
   command: ["run", "-c", "/etc/wrendns/wrendns.toml"]
@@ -104,7 +104,7 @@ services:
   # The witness of the cluster (CLU-005): a vote-only process, started with `--profile witness` after it
   # has joined (README.md). It has no DNS listener, no API and no VIP; it only votes on promotion.
   wrendns-witness:
-    image: ${WRENDNS_IMAGE:-ghcr.io/nbacheller/wrendns:${WRENDNS_TAG:-latest}}
+    image: ${WRENDNS_IMAGE:-${WRENDNS_GHCR:-ghcr.io}/nbacheller/wrendns:${WRENDNS_TAG:-latest}}
     pull_policy: missing
     profiles: [witness]
     restart: "no"

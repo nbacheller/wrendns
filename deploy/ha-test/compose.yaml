@@ -9,7 +9,7 @@
 name: wrendns-hatest
 services:
   homeassistant:
-    image: ${HA_TEST_IMAGE:-ghcr.io/home-assistant/home-assistant:stable}
+    image: ${HA_TEST_IMAGE:-${WRENDNS_GHCR:-ghcr.io}/home-assistant/home-assistant:stable}
     ports:
       - "127.0.0.1:${HA_TEST_PORT:-18124}:8123"
     volumes:

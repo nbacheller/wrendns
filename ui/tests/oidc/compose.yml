@@ -5,7 +5,7 @@
 name: wrendns-oidc-test
 
 x-authentik: &authentik
-  image: ghcr.io/goauthentik/server:2025.10.1
+  image: ${WRENDNS_GHCR:-ghcr.io}/goauthentik/server:2025.10.1
   environment:
     AUTHENTIK_SECRET_KEY: wrendns-e2e-only-secret-key-0123456789abcdefghijkl
     AUTHENTIK_BOOTSTRAP_PASSWORD: wrendns-e2e-admin
@@ -28,7 +28,7 @@ x-authentik: &authentik
 
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4
+    image: ${WRENDNS_QUAY:-quay.io}/keycloak/keycloak:26.4
     command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
@@ -43,7 +43,7 @@ services:
       retries: 60
 
   authentik-db:
-    image: postgres:16-alpine
+    image: ${WRENDNS_HUB:-docker.io}/library/postgres:16-alpine
     environment:
       POSTGRES_USER: authentik
       POSTGRES_PASSWORD: authentik
@@ -55,7 +55,7 @@ services:
       retries: 30
 
   authentik-redis:
-    image: redis:7-alpine
+    image: ${WRENDNS_HUB:-docker.io}/library/redis:7-alpine
 
   authentik-server:
     <<: *authentik
