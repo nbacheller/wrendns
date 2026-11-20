@@ -6,14 +6,17 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-  pull_request:
+  # REQ: OPS-004 (ADR-1073, T39.5) - no image build on pull requests (owner decision 2026-11-20): the
+  # three-platform build takes the longest of any job and a pull request publishes nothing. The
+  # image is built on main and on tags; `gh workflow run image.yml --ref <branch>` builds a branch
+  # by hand.
   workflow_dispatch:
 
-# REQ: OPS-004 - a newer push to a pull request supersedes its run (ten Dependabot PRs at once
-# queued 25 runs, CI 2026-11-20); runs on main and on tags are never cancelled (they publish).
+# Runs on main and on tags are never cancelled (they publish); a newer dispatch on another ref
+# supersedes the one in progress.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
 
 permissions:
   contents: read
