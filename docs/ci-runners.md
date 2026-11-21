@@ -1,6 +1,6 @@
 # Self-hosted CI runners
 
-Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job, the amd64 `test` job and the `migration` job, with more CPU and memory and a warm build cache. Since 2026-11-21 every runner is isolated: each one runs in its own container and is reset after every job (ADR-1076). Moving the other heavy jobs (the native build, the ui and oidc jobs, the cluster and high-availability tests, the image build legs) is planned, one job type at a time, each measured before the next moves. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
+Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job and the amd64 `test` job, with more CPU and memory and a warm build cache; the `migration` job is routed to them as the first job that binds fixed ports, and is being measured there. Since 2026-11-21 every runner is isolated: each one runs in its own container and is reset after every job (ADR-1076). Moving the other heavy jobs (the native build, the ui and oidc jobs, the cluster and high-availability tests, the image build legs) is planned, one job type at a time, each measured before the next moves. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
 
 The repository holds this page, the directory `deploy/ci-runners/` (its README and a read-only inspection script), and the workflow expressions described below. The host-side scripts and the base image recipe are kept by the maintainers on the build host, not in this repository.
 
@@ -49,7 +49,7 @@ A new runner is one more container made from the base image, with its own identi
 
 ## Rebuilding the base image
 
-The base is a sealed, stopped container built from Ubuntu 24.04. It holds the Rust toolchain, the compilers and linkers, Docker with the overlay2 driver, and the runner software at the same release as the host runners. Rebuild it when:
+The base is a sealed, stopped container built from Ubuntu 26.04. It holds the Rust toolchain, the compilers and linkers, Docker with the overlay2 driver, and the runner software at the same release as the host runners. Rebuild it when:
 
 - GitHub publishes a newer runner release. Every reset restores the old one, so every job would download the update first. Rebuild with the new tarball and its published checksum, then recreate each runner's container from the new base.
 - The toolchain pin changes. The image records the runner, Rust and base versions in `/etc/wrendns-image`.
