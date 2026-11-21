@@ -195,8 +195,27 @@ grep -q "never sent unencrypted" "$E/check.txt" || fail "the check didn't explai
 echo "ok: config check refuses a password without encryption"
 
 "$B" run -c "$E/wrendns.toml" > "$E/node.log" 2>&1 & P=$!
-for _ in $(seq 120); do [ "$(ls "$E/mail" 2>/dev/null | wc -l)" -ge 3 ] && break; sleep 0.5; done
-[ "$(ls "$E/mail" | wc -l)" -ge 3 ] || fail "three emails (two for the list, one for the disk) didn't arrive"
+# A busy machine can take a minute for the first list refresh, so wait up to two.
+for _ in $(seq 240); do [ "$(ls "$E/mail" 2>/dev/null | wc -l)" -ge 3 ] && break; sleep 0.5; done
+if [ "$(ls "$E/mail" | wc -l)" -lt 3 ]; then
+  # Say which mails arrived and what the data disk looks like: the disk alert needs more than
+  # 0.1% of the filesystem in use (one decimal, rounded), which a large, nearly empty
+  # filesystem (a container's btrfs root) may not have.
+  got=$(python3 - "$E/mail" <<'PY' 2>&1 || true
+import json, os, sys
+d = sys.argv[1]
+for f in sorted(os.listdir(d)):
+    m = json.load(open(os.path.join(d, f)))
+    subj = [l for l in m["data"].splitlines() if l.startswith("Subject:")][:1]
+    print(f, m["to"], subj)
+PY
+)
+  echo "arrived: ${got:-none}"
+  echo "data filesystem: $(stat -f -c 'type=%T blocks=%b free=%a bsize=%S used=%u' "$E" 2>&1 || true)"
+  df -P "$E" 2>&1 | tail -1 || true
+  grep -c . "$E/node.log" > /dev/null 2>&1 && grep -i 'alert\|disk\|host' "$E/node.log" | tail -8 || true
+  fail "three emails (two for the list, one for the disk) didn't arrive"
+fi
 python3 - "$E/mail" <<'EOF'
 import base64, email, json, os, sys
 d = sys.argv[1]
