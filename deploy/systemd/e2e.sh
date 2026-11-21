@@ -65,7 +65,14 @@ publish "$BIN"
 (cd "$REL" && exec python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1) &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null; rm -r "$WORK"' EXIT
-sleep 1
+# The server may take longer than a second to listen on a busy machine: wait for the answer
+# (at most 30 s) instead of a fixed pause.
+up=""
+for _ in $(seq 1 60); do
+  curl -sf -o /dev/null "http://127.0.0.1:8765/SHA256SUMS" && { up=1; break; }
+  sleep 0.5
+done
+[ -n "$up" ] || fail "the local release server did not answer within 30 s"
 
 export WRENDNS_RELEASE_URL=http://127.0.0.1:8765
 WRENDNS_RELEASE_PUBKEY="$(sed -n 2p "$WORK/test.pub")"
