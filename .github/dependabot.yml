@@ -7,8 +7,9 @@
 # has to be 5 days old before Dependabot offers it (cooldown). Security updates ignore the schedule,
 # the cooldown and the limit (Dependabot's own setting).
 #
-# Dependabot titles can't carry a requirement ID (AGENTS.md rule 2): merge with a squash and put
-# the tag in the commit message, for example `build(deps): bump vite from 8.3.2 to 8.3.8 [NFR-005]`.
+# Dependabot titles can't carry a requirement ID (AGENTS.md rule 2), and this repository allows
+# merge commits only: put the tag in the merge commit's subject, for example
+# `merge: dependabot ui-minor-patch into main; vite 8.3.2 to 8.3.8 [NFR-005]`.
 version: 2
 updates:
   # The Rust workspace (Cargo.lock at the root).
