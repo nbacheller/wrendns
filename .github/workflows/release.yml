@@ -63,6 +63,6 @@ jobs:
           git commit -am "chore: start $next development (after v$VERSION) [OPS-004]"
           git push origin HEAD:main
           # A push with this workflow's token starts no workflows: start CI and edge.
-          gh workflow run ci.yml --ref main
+          gh workflow run main.yml --ref main
           gh workflow run image.yml --ref main
           echo "::notice title=main moved on::$next (edge builds are now $next-edge.N)"

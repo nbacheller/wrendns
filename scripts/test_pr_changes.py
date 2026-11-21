@@ -37,7 +37,7 @@ class Classify(unittest.TestCase):
             "docs/review/README.md",
             "docs/images/map-day.jpg",
             ".github/CODEOWNERS",
-            ".github/workflows/ci.yml",
+            ".github/workflows/main.yml",
             ".github/dependabot.yml",
             "README.md",
             "CONTRIBUTING.md",

@@ -58,8 +58,9 @@ and Home Assistant's logs.
 Environment: `HA_TEST_PORT` (18124), `NODE_API_PORT` (18053), `NODE_DNS_PORT` (18153) choose the
 host ports. Needs Docker, curl and Python 3 (or `python` on Windows), and the `ubuntu:24.04` image.
 
-CI runs it as the `ha-test` job in `.github/workflows/home-assistant.yml` (20 minutes), with a
-debug build of the binary.
+CI runs it as the `ha-test` job in the reusable workflow `.github/workflows/_home-assistant.yml` (20 minutes), with a
+debug build of the binary. `main.yml` calls it when the Home Assistant paths change;
+to start it by hand, run `gh workflow run _home-assistant.yml --ref <branch>`.
 
 The Docker Desktop bundle's `test-ha` profile (`deploy/docker-desktop/compose.yaml`) is the same
 Home Assistant for trying things by hand. This script uses its own Compose project so that it

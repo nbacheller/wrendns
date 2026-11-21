@@ -6,7 +6,7 @@ The repository holds this page, the directory `deploy/ci-runners/` (its README a
 
 ## What they are for
 
-- Running the `clippy` and `test` jobs of `ci.yml` and `pr.yml` when the runner variables route them there (the state today).
+- Running the `clippy` and `test` jobs of `main.yml` and `pr.yml` when the runner variables route them there (the state today).
 - Planned, not done yet: the jobs that bind fixed ports (native, ui, oidc, migration, the cluster tests) and the image build legs (ADR-1075), each moved only after it has passed on an isolated runner.
 - Keeping compiled artefacts and package downloads in shared caches, so a job does not start cold.
 
@@ -18,7 +18,7 @@ A self-hosted runner executes whatever code a job checks out, and a job can read
 
 - **Fork pull requests and Dependabot pull requests never run on these runners.** They build third-party code. The workflows send them to GitHub-hosted runners.
 - **Trusted events and same-repository pull requests may run on them.** A push to `main`, a manual dispatch and other non-pull-request events are trusted, and so is a pull request opened from a branch of this repository.
-- **The workflows enforce this, not the runners.** The `runs-on` expressions in `.github/workflows/ci.yml` and `.github/workflows/pr.yml` name the rule. A pull request uses `vars.WRENDNS_PR_RUNNER` only when `!github.event.pull_request.head.repo.fork` and the author is not `dependabot[bot]`. Every other event uses `vars.WRENDNS_RUNNER`. If the variable is unset, or the pull request is from a fork or Dependabot, the job falls back to `ubuntu-latest`.
+- **The workflows enforce this, not the runners.** The `runs-on` expressions in `.github/workflows/main.yml` and `.github/workflows/pr.yml` name the rule. A pull request uses `vars.WRENDNS_PR_RUNNER` only when `!github.event.pull_request.head.repo.fork` and the author is not `dependabot[bot]`. Every other event uses `vars.WRENDNS_RUNNER`. If the variable is unset, or the pull request is from a fork or Dependabot, the job falls back to `ubuntu-latest`.
 - **Never route a `pull_request_target` or `workflow_run` job that checks out pull request code** to a self-hosted runner.
 
 If you add a self-hosted job, keep the same guard in its `runs-on`.
@@ -75,7 +75,7 @@ A host is ready for the self-hosted jobs when the maintainer has ticked each of 
 - [ ] **V3, mirrors.** The three mirrors answer on the bridge address, from a container and from a nested container. Docker Hub, ghcr.io and quay.io all serve.
 - [ ] **V4, shared caches.** A write in one container is visible in another and on the host, with the runner user as owner, and root inside a container cannot create a root-owned or setuid file through the mount. Concurrent package-cache builds in two containers both succeed. The compiler cache uses the shared directory.
 - [ ] **V5, arm limits.** arm64 and arm/v7 binaries run in nested Docker through the host's emulators. A buildx build produces both architectures. The container cannot change the emulator registration.
-- [ ] **V6, a real job passes.** The `clippy` and `test (ubuntu-latest)` jobs of `ci.yml` run on the host's container and succeed.
+- [ ] **V6, a real job passes.** The `clippy` and `test (ubuntu-latest)` jobs of `main.yml` run on the host's container and succeed.
 - [ ] **V7, a byte-clean reset.** After a run that leaves deliberate residue, the restored root filesystem matches the snapshot `clean` by checksum. Nothing of the run is visible after the start.
 - [ ] **V8, identity.** The same runner id is used after at least three resets and after a forced stop. GitHub shows exactly one record, online. The identity files' checksums are unchanged. No registration token or GitHub token is stored on the host.
 - [ ] **V9, no job lost.** A job queued while a runner is busy or resetting is picked up after the reset. The gap is measured. Nothing stays queued, and no job ends with a lost-communication error.

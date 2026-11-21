@@ -8,7 +8,7 @@
 <p align="center"><strong>Put a bird on it!</strong></p>
 
 <p align="center">
-  <a href="https://github.com/nbacheller/wrendns/actions/workflows/ci.yml?query=branch%3Amain"><img alt="CI" src="https://github.com/nbacheller/wrendns/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/nbacheller/wrendns/actions/workflows/main.yml?query=branch%3Amain"><img alt="CI" src="https://github.com/nbacheller/wrendns/actions/workflows/main.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/nbacheller/wrendns/actions/workflows/image.yml?query=branch%3Amain"><img alt="Image" src="https://github.com/nbacheller/wrendns/actions/workflows/image.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/nbacheller/wrendns/actions/workflows/site.yml?query=branch%3Amain"><img alt="Site" src="https://github.com/nbacheller/wrendns/actions/workflows/site.yml/badge.svg?branch=main"></a>
   <a href="LICENSING.md"><img alt="Licence: AGPL-3.0-or-later" src="https://img.shields.io/badge/licence-AGPL--3.0--or--later-22609c.svg"></a>
