@@ -685,8 +685,6 @@ test('ups_013 upstream source address: suggestions and a lost-address problem', 
   } finally {
     await page.unroute(isUpstreams, upstreams);
     await page.unroute(isInfo, info);
-    // The view is remembered per user: leave it Simple, as the other tests expect to find it.
-    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
   }
 });
 
