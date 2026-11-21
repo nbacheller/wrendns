@@ -8,7 +8,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 B=${1:-target/debug/wrendns}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
-E=$(mktemp -d)
+# The disk alert below needs a data filesystem that is at least a little full (its rule fires above
+# 0.1 % used). Where /tmp is an empty tmpfs (a container, Ubuntu 26.04) that never happens, so the
+# working directory goes on the first of these places whose filesystem is at least 1 % used.
+E=""
+for base in "${TMPDIR:-/tmp}" "$PWD/target" "$HOME"; do
+  [ -d "$base" ] || continue
+  used=$(python3 -c 'import os,sys; s=os.statvfs(sys.argv[1]); print(int(100*(s.f_blocks-s.f_bavail)/max(s.f_blocks,1)))' "$base")
+  if [ "$used" -ge 1 ]; then E=$(mktemp -d -p "$base" wrendns-email-e2e.XXXXXX); break; fi
+done
+[ -n "$E" ] || { echo "FAIL: no filesystem at least 1% used to hold the data directory, so the disk alert cannot fire"; exit 1; }
 P=
 S=
 cleanup() {
