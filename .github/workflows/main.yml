@@ -270,6 +270,7 @@ jobs:
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
     # Each runner has its own network namespace now, so this job's fixed host ports no longer collide.
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ui
