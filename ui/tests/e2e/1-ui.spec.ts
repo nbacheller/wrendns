@@ -4931,9 +4931,17 @@ test('obs_029 heatmap', async () => {
   await page.getByRole('button', { name: 'Show', exact: true }).click();
   const canvas = page.getByTestId('heatmap-canvas');
   await expect(canvas).toBeVisible();
-  await canvas.focus();
-  await page.keyboard.press('ArrowRight');
-  await expect(page.getByTestId('heatmap-tip')).toContainText('101 queries');
+  // The grid ignores keys until its data and measured width have both landed (keydown returns
+  // early without a grid or geometry), which can trail the canvas becoming visible by a frame.
+  // The first press starts from no focus cell, as a person's would; a retry presses Home first, so
+  // ArrowRight lands on the same cell however often it is repeated.
+  let presses = 0;
+  await expect(async () => {
+    await canvas.focus();
+    if (presses++ > 0) await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByTestId('heatmap-tip')).toContainText('101 queries', { timeout: 1000 });
+  }).toPass({ timeout: 15_000 });
   await page.keyboard.press('ArrowLeft');
   await expect(page.getByTestId('heatmap-tip')).toContainText("below this hour's top list");
   // A typical week: each weekday's hour is the mean of its days (one day each here).
