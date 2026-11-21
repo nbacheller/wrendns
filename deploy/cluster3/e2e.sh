@@ -450,10 +450,21 @@ for r in replica-a replica-b; do
 done
 # With the primary away a replica answers from its own data, names the primary, and never errors.
 docker pause "$(container primary)" >/dev/null
-call replica-a GET /api/v1/networks
-rs_n=$RS; has missingNodes && miss_n=yes || miss_n=no
-call replica-a GET /api/v1/routers
-rs_r=$RS; has missingNodes && miss_r=yes || miss_r=no
+# A replica reuses the primary's last router read for ROUTER_VIEW_TTL (5 s, federated.rs), and the
+# read just before the pause filled that cache: until it expires the answer is the primary's data
+# as of that read, so a single read right after the pause can't name the primary. The page names it
+# once the cache has expired and one call has timed out (2 s), so the answer is polled for, with a
+# bound well past that, and every answer on the way must still be a 200.
+rs_n=0; rs_r=0; miss_n=no; miss_r=no
+for _ in $(seq 40); do
+  call replica-a GET /api/v1/networks
+  rs_n=$RS; has missingNodes && miss_n=yes || miss_n=no
+  call replica-a GET /api/v1/routers
+  rs_r=$RS; has missingNodes && miss_r=yes || miss_r=no
+  [ "$rs_n" = 200 ] && [ "$rs_r" = 200 ] || break
+  [ "$miss_n" = yes ] && [ "$miss_r" = yes ] && break
+  sleep 0.5
+done
 docker unpause "$(container primary)" >/dev/null
 [ "$rs_n" = 200 ] && [ "$rs_r" = 200 ] || bad "a replica answered $rs_n/$rs_r while the primary was paused"
 [ "$miss_n" = yes ] && [ "$miss_r" = yes ] || bad "a replica didn't name the paused primary ($miss_n/$miss_r)"
