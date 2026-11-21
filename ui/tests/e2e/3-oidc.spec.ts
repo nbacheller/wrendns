@@ -58,11 +58,10 @@ for (const id of providers) {
     const ended = page
       .getByRole('heading', { name: 'Sign in' })
       .or(page.getByRole('heading', { name: /logged out of WrenDNS/ }));
-    // Wait for whichever page comes first (the question, or the end), not a fixed 8 s for the
-    // question: on a busy machine the provider's page can take longer than that to draw, and
-    // the end check would then run against the question page.
-    await confirm.or(ended).first().waitFor({ state: 'visible', timeout: 30_000 });
-    if (await confirm.isVisible()) await confirm.click();
+    // Keycloak always asks, so its question is waited for and clicked (not asked for once with a
+    // short limit: on a busy machine its page can take longer to draw, and the end check would
+    // then run against the question page). Authentik does not ask.
+    if (id === 'keycloak') await confirm.click({ timeout: 30_000 });
     await expect(ended).toBeVisible({ timeout: 20_000 });
     await page.goto('/#/');
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
