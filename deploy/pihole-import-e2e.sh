@@ -144,6 +144,8 @@ EOF
   out=$(d denied.example A)
   grep -q 'EDE: 15' <<<"$out" || fail "$v: denied.example isn't blocked"
   grep -q 'status: NXDOMAIN' <<<"$out" || fail "$v: blocking mode isn't NXDOMAIN"
+  # The regex deny can land in a later recompile than the exact one: ask until it holds.
+  for _ in $(seq 60); do d ad7.example A | grep -q 'EDE: 15' && break; sleep 0.5; done
   d ad7.example A | grep -q 'EDE: 15' || fail "$v: the regex deny doesn't block ad7.example A"
   d ad7.example AAAA | grep -q 'EDE: 15' && fail "$v: ;querytype=A blocked AAAA too"
   d kidsonly.example A | grep -q 'EDE: 15' && fail "$v: a Kids-only entry blocked the default group"
