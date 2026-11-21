@@ -149,14 +149,31 @@ d() { dig +time=2 +tries=2 -p "$port" @127.0.0.1 "$@"; }
 for _ in $(seq 100); do d +short nas.home.arpa A 2>/dev/null | grep -q 192.168.1.10 && break; sleep 0.2; done
 [ "$(d +short nas.home.arpa A)" = 192.168.1.10 ] || fail "nas.home.arpa doesn't answer"
 d media.home.arpa A | grep -q 'media.home.arpa.*300.*CNAME.*nas.home.arpa' || fail "media.home.arpa isn't a CNAME with TTL 300"
-for _ in $(seq 60); do d listed.example A | grep -q 'EDE: 15' && break; sleep 0.5; done
+# The lists are stored as the fetcher gets them and the filter compiles whenever stored content
+# changes: the first snapshot can hold only some of the lists, and the rest follow in a
+# recompile after the 2 s debounce (slower on a busy host). Ask until it holds, not once.
+OUT=
+blocked() { # name: wait (at most 60 s) until it answers with EDE 15; leaves the last answer in $OUT
+  for _ in $(seq 120); do
+    OUT=$(d "$1" A)
+    grep -q 'EDE: 15' <<<"$OUT" && return 0
+    sleep 0.5
+  done
+  return 1
+}
 names=(listed.example blocked.example)
 [ "$APP" = 1 ] && names+=(app-blocked.example tracker7.example)
 for n in "${names[@]}"; do
-  out=$(d "$n" A)
-  grep -q 'EDE: 15' <<<"$out" || fail "$n isn't blocked"
-  grep -q 'status: NXDOMAIN' <<<"$out" || fail "$n: blocking mode isn't NXDOMAIN"
+  blocked "$n" || fail "$n isn't blocked after 60 s; last answer: $(grep -E 'status:|EDE|ANSWER SECTION' <<<"$OUT" | paste -sd' ' -)"
+  grep -q 'status: NXDOMAIN' <<<"$OUT" || fail "$n: blocking mode isn't NXDOMAIN"
 done
-d also-allowed.example A | grep -q 'EDE: 15' && fail "an allowed name was blocked"
+# An allow list that compiles after the block list would show as a block first: ask until the
+# allowed name passes (it must, once every list is in).
+allowed=0
+for _ in $(seq 60); do
+  d also-allowed.example A | grep -q 'EDE: 15' || { allowed=1; break; }
+  sleep 0.5
+done
+[ "$allowed" = 1 ] || fail "an allowed name stays blocked"
 d games.example A | grep -q 'EDE: 15' && fail "a kids-only name blocked the default group"
 echo PASS
