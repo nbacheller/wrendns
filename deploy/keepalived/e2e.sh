@@ -184,6 +184,16 @@ admin_api() {
   docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" "${args[@]}" "http://$1:8053$3" 2>/dev/null || true
 }
 
+# 0 once node a, back as a replica, has taken in the primary's identities. That first import replaces
+# the admin node a made while it was the primary and ends the sessions it had (REQ: CLU-003, API-003), so
+# a sign-in made before it can be gone by the next call.
+identities_synced_on_a() {
+  local logs
+  logs=$("${COMPOSE[@]}" logs --no-color wrendns-a 2>&1) || return 1
+  case $logs in *"users and tokens synced from the primary"*) return 0 ;; esac
+  return 1
+}
+
 # The HTTP status of an admin_api answer, and its body (the first 300 characters, for a failure message).
 api_status() { tail -n 1 <<<"$1"; }
 api_body() { head -n -1 <<<"$1" | head -c 300; }
@@ -318,6 +328,7 @@ until_ok 90000 metric_is "$SUBNET.11" wrendns_cluster_primary "" 0 \
 pass "both VIPs are back on a; a is a replica, b the primary"
 
 step "e. maintenance on a hands the VIP to b, and ending it brings the VIP back"
+until_ok 60000 identities_synced_on_a || bad "node a did not take in the primary's users within 60 s of coming back"
 admin_login "$SUBNET.11" || bad "the admin can't sign in on node a"
 out=$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":300,"reason":"keepalived e2e"}')
 [ "$(api_status "$out")" = 200 ] || bad "could not start maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
