@@ -14,6 +14,7 @@ variable "OUT" { default = "out" }
 variable "IMAGE" { default = "" }
 variable "PUSH" { default = "false" }
 # "gha" reads and writes the GitHub cache (a speed-up only); anything else uses no cache.
+# leg-build.sh sets "gha" only where the Actions runtime variables exist (see there).
 variable "CACHE" { default = "none" }
 variable "VERSION" { default = "dev" }
 variable "REVISION" { default = "unknown" }
@@ -22,6 +23,9 @@ variable "WRENDNS_BUILD_COMMIT" { default = "" }
 variable "WRENDNS_BUILD_DATE" { default = "" }
 variable "WRENDNS_BUILD_CHANNEL" { default = "dev" }
 variable "SOURCE_DATE_EPOCH" { default = "" }
+# The dependency layer's stamp (T39.4): the commit time of the last change to the dependency
+# inputs, from deploy/image/deps-epoch.sh. Empty: the layer takes SOURCE_DATE_EPOCH.
+variable "DEPS_DATE_EPOCH" { default = "" }
 
 group "default" {
   targets = ["image", "bin"]
@@ -40,6 +44,7 @@ target "base" {
     WRENDNS_BUILD_DATE    = WRENDNS_BUILD_DATE
     WRENDNS_BUILD_CHANNEL = WRENDNS_BUILD_CHANNEL
     SOURCE_DATE_EPOCH     = SOURCE_DATE_EPOCH
+    DEPS_DATE_EPOCH       = DEPS_DATE_EPOCH
   }
   cache-from = CACHE == "gha" ? ["type=gha,scope=image-${ARCH}"] : []
 }

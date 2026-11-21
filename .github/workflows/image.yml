@@ -43,11 +43,18 @@ jobs:
       build_date: ${{ steps.v.outputs.build_date }}
       build_channel: ${{ steps.v.outputs.build_channel }}
       source_date_epoch: ${{ steps.v.outputs.source_date_epoch }}
+      deps_date_epoch: ${{ steps.v.outputs.deps_date_epoch }}
       # `true` on main and on `v*` tags (pushed, or started there by the release workflow, T9.26):
       # the only refs that push images and sign them. Any other ref builds and tests only.
       publish: ${{ steps.v.outputs.publish }}
     steps:
+      # The whole history, not one commit: the dependency layer's stamp below is the time of the
+      # last commit that changed the dependency inputs, which a one-commit checkout cannot find
+      # (it would report the checkout's own commit and the layer would miss on every run). Only
+      # this job needs it; the legs do not check out history.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Version
         id: v
         run: |
@@ -65,6 +72,10 @@ jobs:
             echo "build_version=$bv"; echo "build_channel=$ch"; echo "build_date=$date"
             echo "build_commit=${GITHUB_SHA::7}"
             echo "source_date_epoch=$(git log -1 --format=%ct)"
+            # REQ: NFR-005, NFR-001 (T39.4, ADR-1075) - the dependency layer's own stamp: the time
+            # of the last change to the dependency inputs (deploy/image/deps-epoch.sh), so a commit
+            # that changes only sources leaves the layer's cache key alone. Same commit, same value.
+            echo "deps_date_epoch=$(deploy/image/deps-epoch.sh)"
           } >> "$GITHUB_OUTPUT"
           if [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -102,6 +113,13 @@ jobs:
         if: matrix.arch != 'amd64'
       - uses: docker/setup-buildx-action@v3
 
+      # REQ: OPS-004 (ADR-1075, T39.5) - buildx's `type=gha` cache reads the Actions runtime token
+      # and URLs from the environment, and a step's shell does not have them unless an action
+      # exports them: without this step the cache silently did nothing. The leg's cache scope is
+      # image-<arch> (deploy/image/docker-bake.hcl). This workflow has no pull_request trigger, so
+      # only main, tags and a dispatch by someone with write access reach this step.
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+
       # REQ: OPS-004 - a hosted runner has about 8 GiB of memory and little free disk. The release
       # profile's last compile (fat LTO, one codegen unit) needs more memory than that: rustc was
       # killed on arm/v7 (CI 2026-11-20). Preinstalled toolchains this job never uses are removed to
@@ -129,7 +147,8 @@ jobs:
       # One bake, one compile of this architecture: it writes the OCI layout (size gate), loads the
       # image (smoke test), exports the `bin` stage (release binaries) and, on main and tags, pushes
       # the platform image by digest with no tag. The step fails if the log shows the compile twice.
-      # The cache (scope image-<arch>) only speeds a later run; an empty cache is a full build.
+      # The cache (scope image-<arch>, read and written only with the runtime variables the step above
+      # exports) only speeds a later run; an empty cache is a full build.
       # A leg that fails a gate below leaves an untagged image in the registry and no tag: `merge`
       # runs only when every leg passed.
       - name: Build (one compile)
@@ -142,6 +161,7 @@ jobs:
           WRENDNS_BUILD_DATE: ${{ needs.version.outputs.build_date }}
           WRENDNS_BUILD_CHANNEL: ${{ needs.version.outputs.build_channel }}
           SOURCE_DATE_EPOCH: ${{ needs.version.outputs.source_date_epoch }}
+          DEPS_DATE_EPOCH: ${{ needs.version.outputs.deps_date_epoch }}
         run: deploy/image/leg-build.sh
 
       - name: Size gate (≤ 25 MiB compressed per arch, ADR-916)

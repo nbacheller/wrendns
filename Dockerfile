@@ -23,6 +23,40 @@ COPY ui/ ./
 COPY docs/help/topics.json /docs/help/topics.json
 RUN npm run build
 
+# REQ: NFR-005, NFR-001 (T39.4, ADR-1075) — the dependency layer's input: a copy of the workspace
+# that keeps only what decides how the dependencies build (the manifests, the lock file, the
+# toolchain pin and `.cargo/`) and gives every crate an empty source file in place of its code.
+# Cargo needs the targets a manifest names to exist before it will resolve anything, so the stubs
+# cover what the manifests declare: `src/lib.rs`, `src/main.rs`, `build.rs` and each `[[bench]]`.
+# The `build` stage copies this result, and BuildKit keys that copy on the files it holds, so a
+# change to the workspace's own sources leaves the dependency layer's key alone.
+FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS skeleton
+COPY . /ctx
+# REQ: NFR-005, NFR-001 (T39.4, ADR-1075) - CI passes DEPS_DATE_EPOCH: the commit time of the last
+# change to the dependency inputs (deploy/image/deps-epoch.sh), so the layer's stamp, and with it
+# the layer, stays the same across commits that change only the workspace's sources. Without it
+# (a local build, the nightly reproducible job) the dependency layer takes SOURCE_DATE_EPOCH, and
+# with neither the C code takes the clock, as before.
+ARG DEPS_DATE_EPOCH
+ARG SOURCE_DATE_EPOCH
+RUN set -eu; cd /ctx; mkdir /skel; \
+    cp Cargo.toml Cargo.lock rust-toolchain.toml /skel/; \
+    if [ -d .cargo ]; then cp -r .cargo /skel/.cargo; fi; \
+    for m in crates/*/Cargo.toml; do \
+      d="$(dirname "$m")"; mkdir -p "/skel/$d/src"; cp "$m" "/skel/$m"; \
+      if [ -f "$d/src/lib.rs" ]; then : > "/skel/$d/src/lib.rs"; fi; \
+      if [ -f "$d/src/main.rs" ]; then echo 'fn main() {}' > "/skel/$d/src/main.rs"; fi; \
+      if [ -f "$d/build.rs" ]; then echo 'fn main() {}' > "/skel/$d/build.rs"; fi; \
+      for b in $(awk '/^\[\[bench\]\]/ {f=1; next} /^\[/ {f=0} f && /^name *=/ {gsub(/"/, "", $3); print $3}' "$m"); do \
+        mkdir -p "/skel/$d/benches"; echo 'fn main() {}' > "/skel/$d/benches/$b.rs"; \
+      done; \
+    done; \
+    ls /skel/crates > /skel/crates.list; \
+    # REQ: NFR-005, NFR-001 (T39.4, ADR-1075) - the stamp the dependency layer compiles its C code
+    # with, carried into the layer as a file: BuildKit keys the layer on the files it copies, not
+    # on build arguments, so a stamp that stays the same keeps the layer cached.
+    printf '%s\n' "${DEPS_DATE_EPOCH:-${SOURCE_DATE_EPOCH:-}}" > /skel/deps-epoch
+
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS build
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -94,29 +128,61 @@ RUN set -eu; \
     test "$(find /zoneinfo -type f | wc -l)" -gt 300
 
 WORKDIR /src
+# Cargo features for a test image (deploy/cluster3 builds with `e2e`, which lets its fake source
+# stand in for the category lists' hosts). Empty for every shipped image.
+ARG CARGO_FEATURES=
+# REQ: NFR-005, NFR-001 (T39.4, ADR-1075) — the dependency layer. Everything the crates.io
+# dependencies compile from (the manifests, Cargo.lock, the toolchain pin, `.cargo/`) is in the
+# skeleton; the workspace's own crates are empty stubs. Cargo builds the whole dependency graph
+# with the same profile, target and features as the final step below, and the result stays in this
+# layer (`/deps-target`), so a change to a source file under crates/ reuses it and only the
+# workspace's crates compile afterwards. Nothing here changes the shipped bytes: the dependencies
+# compile with the same flags, from the same paths (`/src/target`, the registry), as they did in
+# the one-step build, and the stubs' own artifacts are deleted before the layer ends, so cargo
+# rebuilds every workspace crate from the real sources. The two `export` lines and the `cargo`
+# command match the final step's; keep them in step.
+COPY --from=skeleton /skel/ /src/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    set -eu; t="$(cat /rust-target)"; \
+    up="$(echo "${PROFILE}" | tr 'a-z-' 'A-Z_')"; \
+    export "CARGO_PROFILE_${up}_STRIP=none" "CARGO_PROFILE_${up}_DEBUG=line-tables-only"; \
+    # The C code in the dependencies (mimalloc, zstd) takes its `__DATE__`/`__TIME__` from here.
+    e="$(cat /src/deps-epoch)"; if [ -n "$e" ]; then export SOURCE_DATE_EPOCH="$e"; fi; \
+    cargo auditable zigbuild --locked --profile "${PROFILE}" -p wrendns --target "$t" ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}; \
+    # Drop what the stubs produced: fingerprints, outputs and build-script results of every
+    # workspace crate (hyphenated and underscored names), and the stub binary itself.
+    for c in $(cat /src/crates.list); do \
+      u="$(echo "$c" | tr - _)"; \
+      find /src/target -mindepth 2 -maxdepth 5 \( -name "$c-*" -o -name "$u-*" -o -name "lib$u-*" -o -name "lib$u.*" \) -prune -exec rm -rf {} +; \
+    done; \
+    rm -f "target/$t/${PROFILE}/wrendns" "target/$t/${PROFILE}/wrendns.d"; \
+    mv /src/target /deps-target
+
 # REQ: OPS-004 (ADR-046) — the build identity CI stamps into every architecture alike.
 # Empty: build.rs stamps the crate version with `-dev` (ADR-948, T21.6).
 ARG WRENDNS_BUILD_VERSION=
 ARG WRENDNS_BUILD_COMMIT=
 ARG WRENDNS_BUILD_DATE=
 ARG WRENDNS_BUILD_CHANNEL=dev
-# Cargo features for a test image (deploy/cluster3 builds with `e2e`, which lets its fake source
-# stand in for the category lists' hosts). Empty for every shipped image.
-ARG CARGO_FEATURES=
-# REQ: NFR-005 (T10.10) — reproducible builds: C code compiled into the binary (mimalloc,
-# zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
-# time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
-ARG SOURCE_DATE_EPOCH
 # The cargo target cache is shared by every build of this architecture on a host, and cargo
 # trusts it by file time; a checkout that must not reuse another checkout's output (a worktree
 # building older code) names its own cache, e.g. --build-arg BUILD_CACHE_SCOPE=-bundle.
 ARG BUILD_CACHE_SCOPE=
+# REQ: NFR-005 (T10.10) — reproducible builds: C code compiled into the binary (mimalloc,
+# zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
+# time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
+# Declared after the dependency layer on purpose (T39.4): an argument declared before a RUN is part
+# of its cache key, and that layer takes its own stamp from /src/deps-epoch (skeleton stage).
+ARG SOURCE_DATE_EPOCH
 COPY . .
 COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=wrendns-target-${TARGETARCH}${TARGETVARIANT}${BUILD_CACHE_SCOPE},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
     mkdir -p /out/usr/local/bin /out/var/lib/wrendns /out/etc/wrendns /out/usr/share /debug; \
+    # REQ: NFR-005, NFR-001 (T39.4, ADR-1075) — a cold target cache (a fresh runner, a new scope)
+    # starts from the compiled dependencies in the layer above; a warm one is used as it is.
+    if [ ! -d "target/$t/${PROFILE}" ]; then cp -a /deps-target/. target/; fi; \
     # REQ: OPS-013 (ADR-164) — link once with symbols and line tables, then split that one output:
     # the shipped binary is the stripped copy (what `strip = true` made before: the symbol table
     # and debug sections are gone, the dependency data stays; the line tables shift the layout by
