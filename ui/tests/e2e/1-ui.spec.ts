@@ -1357,11 +1357,18 @@ test('flt_005 network groups: cards, chart, and query-log filter', async () => {
   await page.goto('/#/');
   // Traffic by group is a view of the chart in the Advanced view.
   const groupsView = page.getByTestId('dashboard-chart').getByRole('button', { name: 'Groups', exact: true });
-  await expect(groupsView).toHaveCount(0);
+  // The view is remembered per user in this browser, so do not rely on what an earlier test left:
+  // choose Simple and wait for the chart before checking the Groups view is not offered. The check
+  // that proves it comes below, after Advanced has shown the view with its data.
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Simple', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('dashboard-chart').getByRole('button', { name: 'Totals', exact: true })).toBeVisible();
+  await expect(groupsView, 'Simple view offers no Groups chart view').toHaveCount(0);
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   await groupsView.click();
   await expect(page.getByRole('figure', { name: 'Traffic by group' })).toBeVisible();
   await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(groupsView, 'Simple view offers no Groups chart view, with group data loaded').toHaveCount(0);
   await page.getByLabel('Group').selectOption('lab');
   await expect(listOf('Top domains')).toContainText('nas.e2e.test');
   await page.goto('/#/queries?group=lab');
