@@ -5,13 +5,14 @@
 #
 #   sh .github/scripts/apt-install.sh dnsperf minisign
 set -u
-# Packages already present (always the case on the self-hosted runners, whose user has no sudo)
-# are skipped; only the missing ones are installed.
+# Packages already present are skipped; only the missing ones are installed. A self-hosted runner
+# whose user has no passwordless sudo cannot install: the package has to be on the runner then. The
+# containerised runners do have it, and are reset after each job, so they install like a hosted one.
 missing=""
 for p in "$@"; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
 [ -z "$missing" ] && exit 0
 set -- $missing
-if [ "${RUNNER_ENVIRONMENT:-github-hosted}" = "self-hosted" ]; then
+if [ "${RUNNER_ENVIRONMENT:-github-hosted}" = "self-hosted" ] && ! sudo -n true 2>/dev/null; then
   echo "::error title=apt::$* missing on the self-hosted runner; install it on the runner host"
   exit 1
 fi
