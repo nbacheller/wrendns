@@ -171,7 +171,9 @@ done
 # allowed name passes (it must, once every list is in).
 allowed=0
 for _ in $(seq 60); do
-  d also-allowed.example A | grep -q 'EDE: 15' || { allowed=1; break; }
+  # Only a real answer that is not a block counts; a query that got no answer proves nothing.
+  OUT=$(d also-allowed.example A || true)
+  if grep -q 'status: ' <<<"$OUT" && ! grep -q 'EDE: 15' <<<"$OUT"; then allowed=1; break; fi
   sleep 0.5
 done
 [ "$allowed" = 1 ] || fail "an allowed name stays blocked"
