@@ -18,7 +18,7 @@ A self-hosted runner executes whatever code a job checks out, and a job can read
 
 - **Fork pull requests and Dependabot pull requests never run on these runners.** They build third-party code. The workflows send them to GitHub-hosted runners.
 - **Trusted events and same-repository pull requests may run on them.** A push to `main`, a manual dispatch and other non-pull-request events are trusted, and so is a pull request opened from a branch of this repository.
-- **The workflows enforce this, not the runners.** The `runs-on` expressions in `.github/workflows/main.yml` and `.github/workflows/pr.yml` name the rule. A pull request uses `vars.WRENDNS_PR_RUNNER` only when `!github.event.pull_request.head.repo.fork` and the author is not `dependabot[bot]`. Every other event uses `vars.WRENDNS_RUNNER`. If the variable is unset, or the pull request is from a fork or Dependabot, the job falls back to `ubuntu-latest`.
+- **The workflows enforce this, not the runners.** The `runs-on` expressions in `.github/workflows/main.yml` and `.github/workflows/pr.yml` name the rule. A pull request uses `vars.WRENDNS_PR_RUNNER` only when `github.event.pull_request.head.repo.full_name == github.repository` and the author is not `dependabot[bot]`. A pull request from a fork fails that comparison, and so does one whose fork was deleted (it has no head repository), so both run on `ubuntu-latest`. Every other event uses `vars.WRENDNS_RUNNER`. If the variable is unset, or the pull request is from a fork or Dependabot, the job falls back to `ubuntu-latest`.
 - **Never route a `pull_request_target` or `workflow_run` job that checks out pull request code** to a self-hosted runner.
 
 If you add a self-hosted job, keep the same guard in its `runs-on`.
