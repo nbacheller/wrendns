@@ -13,7 +13,7 @@
 #
 # CACHE=gha needs the Actions runtime (ACTIONS_RUNTIME_TOKEN and ACTIONS_RESULTS_URL or
 # ACTIONS_CACHE_URL), which a step's environment only has when an action such as
-# crazy-max/ghaction-github-runtime exported it. Without them buildx cannot reach the cache, so the
+# an actions/github-script step exported it. Without them buildx cannot reach the cache, so the
 # leg builds with no cache and says so, as a local build or a runner without the variables does.
 # Writes: $OUT/image.tar, $OUT/bin/{wrendns,wrendns.debug}, the image wrendns:smoke-$ARCH in the
 # local daemon, and (PUSH=true) $OUT/digest holding the pushed platform image's digest.

@@ -118,7 +118,14 @@ jobs:
       # exports them: without this step the cache silently did nothing. The leg's cache scope is
       # image-<arch> (deploy/image/docker-bake.hcl). This workflow has no pull_request trigger, so
       # only main, tags and a dispatch by someone with write access reach this step.
-      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+      # The export is done by GitHub's own script action: the repository only allows GitHub-owned,
+      # verified and listed actions, and a third-party action for three variables is not worth a new entry.
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_URL']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k])
+            }
 
       # REQ: OPS-004 - a hosted runner has about 8 GiB of memory and little free disk. The release
       # profile's last compile (fat LTO, one codegen unit) needs more memory than that: rustc was
