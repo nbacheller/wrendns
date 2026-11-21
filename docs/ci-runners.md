@@ -1,13 +1,13 @@
 # Self-hosted CI runners
 
-Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job and the amd64 `test` job, with more CPU and memory and a warm build cache. Moving heavier jobs to them (the native build, the cluster and high-availability tests, the image build legs) is planned under ADR-1076, one job type at a time, once each runner has its own container. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
+Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job, the amd64 `test` job and the `migration` job, with more CPU and memory and a warm build cache. Since 2026-11-21 every runner is isolated: each one runs in its own container and is reset after every job (ADR-1076). Moving the other heavy jobs (the native build, the ui and oidc jobs, the cluster and high-availability tests, the image build legs) is planned, one job type at a time, each measured before the next moves. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
 
 The repository holds this page, the directory `deploy/ci-runners/` (its README and a read-only inspection script), and the workflow expressions described below. The host-side scripts and the base image recipe are kept by the maintainers on the build host, not in this repository.
 
 ## What they are for
 
-- Running the `clippy` and `test` jobs of `main.yml` and `pr.yml` when the runner variables route them there (the state today).
-- Planned, not done yet: the jobs that bind fixed ports (native, ui, oidc, migration, the cluster tests) and the image build legs (ADR-1075), each moved only after it has passed on an isolated runner.
+- Running the `clippy` and `test` jobs of `main.yml` and `pr.yml`, and the `migration` job of `main.yml`, when the runner variables route them there (the state today). `migration` is the first job that binds fixed ports to move, which is safe because each runner has its own network namespace and its own Docker daemon.
+- Planned, not done yet: the other jobs that bind fixed ports (native, ui, oidc, the cluster tests) and the image build legs (ADR-1075), moved one at a time after each is measured on the isolated runners.
 - Keeping compiled artefacts and package downloads in shared caches, so a job does not start cold.
 
 They are not used for releases. Release builds and signing stay on GitHub-hosted runners (ADR-1076).
