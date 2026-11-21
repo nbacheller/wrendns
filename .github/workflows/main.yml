@@ -371,9 +371,21 @@ jobs:
           - { runner: ubuntu-latest, tool: kind }
           - { runner: ubuntu-24.04-arm, tool: k3d }
     runs-on: ${{ matrix.runner }}
+    # The e2e pulls the published `edge` image; the image package is private while the repository is.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
+      # REQ: OPS-002 - sign in to the registry so `docker pull` of the edge image works while the
+      # package is private (CI 2026-11-21: "error from registry: unauthorized"). On a pull request
+      # from a fork the token cannot read the package; the pull then fails as before.
+      - name: Registry login
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
       - uses: azure/setup-helm@v4
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.12" }
