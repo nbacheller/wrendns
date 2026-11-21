@@ -1181,7 +1181,10 @@ fn obs_903_log_exclusions_keep_queries_out_of_the_log_only() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let logged = seen.lock().unwrap().len();
-    assert!(logged >= 2, "cleared exclusions log again; the sink saw {logged}");
+    assert!(
+        logged >= 2,
+        "cleared exclusions log again; the sink saw {logged}"
+    );
     drop(agg);
 }
 
