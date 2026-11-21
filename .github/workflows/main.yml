@@ -266,18 +266,22 @@ jobs:
   # real binary.
   ui:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
-    # job binds fixed host ports, which concurrent jobs on one host would share).
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    # Each runner has its own network namespace now, so this job's fixed host ports no longer collide.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # On a self-hosted runner this only fetches Node 24 from the network into the runner tool
+      # cache (the image has Node 22); the npm cache is the GitHub-hosted runners' alone.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
       - run: npm ci --no-audit --no-fund
       - name: API types match the OpenAPI document
