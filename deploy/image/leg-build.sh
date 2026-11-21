@@ -8,14 +8,28 @@
 # OUT (output directory), PUSH (true|false), IMAGE (registry name, when PUSH=true), CACHE
 # (gha|none, optional), PROFILE (optional), and the build identity (VERSION, REVISION,
 # WRENDNS_BUILD_VERSION, WRENDNS_BUILD_COMMIT, WRENDNS_BUILD_DATE, WRENDNS_BUILD_CHANNEL,
-# SOURCE_DATE_EPOCH), which bake reads from the environment.
+# SOURCE_DATE_EPOCH, and optionally DEPS_DATE_EPOCH, the dependency layer's stamp from
+# deploy/image/deps-epoch.sh), which bake reads from the environment.
+#
+# CACHE=gha needs the Actions runtime (ACTIONS_RUNTIME_TOKEN and ACTIONS_RESULTS_URL or
+# ACTIONS_CACHE_URL), which a step's environment only has when an action such as
+# crazy-max/ghaction-github-runtime exported it. Without them buildx cannot reach the cache, so the
+# leg builds with no cache and says so, as a local build or a runner without the variables does.
 # Writes: $OUT/image.tar, $OUT/bin/{wrendns,wrendns.debug}, the image wrendns:smoke-$ARCH in the
 # local daemon, and (PUSH=true) $OUT/digest holding the pushed platform image's digest.
 set -euo pipefail
 
 : "${PLATFORM:?}" "${ARCH:?}" "${OUT:?}" "${PUSH:?}"
 if [[ "$PUSH" == true ]]; then : "${IMAGE:?}"; fi
-export PLATFORM ARCH OUT PUSH CACHE="${CACHE:-none}"
+CACHE="${CACHE:-none}"
+if [[ "$CACHE" == gha ]]; then
+    if [[ -z "${ACTIONS_RUNTIME_TOKEN:-}" || ( -z "${ACTIONS_RESULTS_URL:-}" && -z "${ACTIONS_CACHE_URL:-}" ) ]]; then
+        echo "::notice title=no build cache::the Actions runtime variables are not set; $ARCH builds without the GitHub cache"
+        CACHE=none
+    fi
+fi
+export PLATFORM ARCH OUT PUSH CACHE
+echo "image leg $ARCH: cache=$CACHE, SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-unset}, DEPS_DATE_EPOCH=${DEPS_DATE_EPOCH:-unset}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUT"
 log="$OUT/bake.log"

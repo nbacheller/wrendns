@@ -32,6 +32,13 @@ RUN npm run build
 # change to the workspace's own sources leaves the dependency layer's key alone.
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS skeleton
 COPY . /ctx
+# REQ: NFR-005, NFR-001 (T39.4, ADR-1075) - CI passes DEPS_DATE_EPOCH: the commit time of the last
+# change to the dependency inputs (deploy/image/deps-epoch.sh), so the layer's stamp, and with it
+# the layer, stays the same across commits that change only the workspace's sources. Without it
+# (a local build, the nightly reproducible job) the dependency layer takes SOURCE_DATE_EPOCH, and
+# with neither the C code takes the clock, as before.
+ARG DEPS_DATE_EPOCH
+ARG SOURCE_DATE_EPOCH
 RUN set -eu; cd /ctx; mkdir /skel; \
     cp Cargo.toml Cargo.lock rust-toolchain.toml /skel/; \
     if [ -d .cargo ]; then cp -r .cargo /skel/.cargo; fi; \
@@ -44,7 +51,11 @@ RUN set -eu; cd /ctx; mkdir /skel; \
         mkdir -p "/skel/$d/benches"; echo 'fn main() {}' > "/skel/$d/benches/$b.rs"; \
       done; \
     done; \
-    ls /skel/crates > /skel/crates.list
+    ls /skel/crates > /skel/crates.list; \
+    # REQ: NFR-005, NFR-001 (T39.4, ADR-1075) - the stamp the dependency layer compiles its C code
+    # with, carried into the layer as a file: BuildKit keys the layer on the files it copies, not
+    # on build arguments, so a stamp that stays the same keeps the layer cached.
+    printf '%s\n' "${DEPS_DATE_EPOCH:-${SOURCE_DATE_EPOCH:-}}" > /skel/deps-epoch
 
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS build
 ARG TARGETARCH
@@ -120,11 +131,6 @@ WORKDIR /src
 # Cargo features for a test image (deploy/cluster3 builds with `e2e`, which lets its fake source
 # stand in for the category lists' hosts). Empty for every shipped image.
 ARG CARGO_FEATURES=
-# REQ: NFR-005 (T10.10) — reproducible builds: C code compiled into the binary (mimalloc,
-# zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
-# time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
-# Declared before the dependency layer because that layer compiles the C code.
-ARG SOURCE_DATE_EPOCH
 # REQ: NFR-005, NFR-001 (T39.4, ADR-1075) — the dependency layer. Everything the crates.io
 # dependencies compile from (the manifests, Cargo.lock, the toolchain pin, `.cargo/`) is in the
 # skeleton; the workspace's own crates are empty stubs. Cargo builds the whole dependency graph
@@ -140,6 +146,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
     up="$(echo "${PROFILE}" | tr 'a-z-' 'A-Z_')"; \
     export "CARGO_PROFILE_${up}_STRIP=none" "CARGO_PROFILE_${up}_DEBUG=line-tables-only"; \
+    # The C code in the dependencies (mimalloc, zstd) takes its `__DATE__`/`__TIME__` from here.
+    e="$(cat /src/deps-epoch)"; if [ -n "$e" ]; then export SOURCE_DATE_EPOCH="$e"; fi; \
     cargo auditable zigbuild --locked --profile "${PROFILE}" -p wrendns --target "$t" ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}; \
     # Drop what the stubs produced: fingerprints, outputs and build-script results of every
     # workspace crate (hyphenated and underscored names), and the stub binary itself.
@@ -160,6 +168,12 @@ ARG WRENDNS_BUILD_CHANNEL=dev
 # trusts it by file time; a checkout that must not reuse another checkout's output (a worktree
 # building older code) names its own cache, e.g. --build-arg BUILD_CACHE_SCOPE=-bundle.
 ARG BUILD_CACHE_SCOPE=
+# REQ: NFR-005 (T10.10) — reproducible builds: C code compiled into the binary (mimalloc,
+# zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
+# time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
+# Declared after the dependency layer on purpose (T39.4): an argument declared before a RUN is part
+# of its cache key, and that layer takes its own stamp from /src/deps-epoch (skeleton stage).
+ARG SOURCE_DATE_EPOCH
 COPY . .
 COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
