@@ -247,7 +247,7 @@ ST=$(cat "$E/data/setup-token")
 CSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
   -d "{\"setupToken\":\"$ST\",\"username\":\"admin\",\"password\":\"routers-e2e-pass-1\"}" \
   "$API/api/v1/auth/setup" | field 'd["csrfToken"]')
-# REQ: DNS-023 (T22.1) — a lease's dnsName comes from the device-name table, which is rebuilt
+# REQ: DNS-023 (T22.1) â€” a lease's dnsName comes from the device-name table, which is rebuilt
 # off the query path every 10 s from whatever the routers and Home Assistant have been read so far.
 # The wait above is satisfied by the first rebuild with any name, which can run before every source
 # is read (CI, 2026-11-20: names=1, then Home Assistant's name was missing), so wait, bounded, for
