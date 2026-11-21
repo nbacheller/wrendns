@@ -160,6 +160,9 @@ for _ in $(seq 240); do
   sleep 0.25
 done
 [ "$SEEN" = 1 ] || fail "the primary never saw the canary up within 60 s; last wrendns_cluster_peer_up{site=\"canary\"}: '${SEEN:-absent}'"
+# The flag the rollout depends on (the peer takes part in rollouts) arrives with the peer's first
+# heartbeat, right after the link opens, and no API shows it: give that heartbeat a moment.
+sleep 2
 # An old build without staged rollouts is named too: it must still never be sent a canary
 # version. Once the published build has them (edge from T13.2 on), it's simply not named,
 # and it still waits out the bake like any other node.
