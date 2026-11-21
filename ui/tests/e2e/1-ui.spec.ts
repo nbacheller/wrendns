@@ -685,6 +685,8 @@ test('ups_013 upstream source address: suggestions and a lost-address problem', 
   } finally {
     await page.unroute(isUpstreams, upstreams);
     await page.unroute(isInfo, info);
+    // The view is remembered per user: leave it Simple, as the other tests expect to find it.
+    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
   }
 });
 
@@ -1357,7 +1359,13 @@ test('flt_005 network groups: cards, chart, and query-log filter', async () => {
   await page.goto('/#/');
   // Traffic by group is a view of the chart in the Advanced view.
   const groupsView = page.getByTestId('dashboard-chart').getByRole('button', { name: 'Groups', exact: true });
-  await expect(groupsView).toHaveCount(0);
+  // The view is remembered per user in this browser, so do not rely on what an earlier test left:
+  // choose Simple, wait for the chart to be drawn (an absent chart has no Groups button either, so
+  // checking before it loads proves nothing), then check the Groups view is not offered.
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Simple', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('dashboard-chart').getByRole('button', { name: 'Totals', exact: true })).toBeVisible();
+  await expect(groupsView, 'Simple view offers no Groups chart view').toHaveCount(0);
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   await groupsView.click();
   await expect(page.getByRole('figure', { name: 'Traffic by group' })).toBeVisible();
