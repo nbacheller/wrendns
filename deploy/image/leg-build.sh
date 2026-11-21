@@ -25,10 +25,13 @@ docker buildx bake -f "$here/docker-bake.hcl" --progress=plain --metadata-file "
 
 # The guard: the leg's log shows the compile once. (`Compiling wrendns v` is the workspace's own
 # crate, which always compiles when anything does; `wrendns-core v` and the rest do not match.)
+# The Dockerfile's dependency layer builds the dependencies beside an empty stub of that crate
+# (T39.4), so one real compile shows the line twice when that layer ran in this build and once when
+# it came from the cache; a second compile of the workspace would show it more often.
 n="$(grep -c 'Compiling wrendns v' "$log" || true)"
-echo "compile steps in the log for $ARCH: $n"
-if [[ "$n" -gt 1 ]]; then
-    echo "::error::$ARCH compiled $n times in one leg; the image and the binaries must come from one compile"
+echo "compile steps in the log for $ARCH: $n (at most 2: the dependency layer's stub and the real crate)"
+if [[ "$n" -gt 2 ]]; then
+    echo "::error::$ARCH compiled the workspace more than once in one leg; the image and the binaries must come from one compile"
     exit 1
 fi
 

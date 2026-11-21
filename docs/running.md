@@ -357,7 +357,7 @@ The same build identity, and how the node was installed (`native`, `container`, 
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 - **What's inside:** each binary carries its dependency list (`cargo audit bin wrendns` reads it), and every release has a CycloneDX SBOM per binary (`wrendns-<arch>-linux.cdx.json`, listed in the signed `SHA256SUMS`).
-- **Rebuilding:** a release builds the same bytes from the same commit. The build date in `--version` is the commit's time. To compare, build the Dockerfile's `bin` stage with the build arguments `--version` shows (`WRENDNS_BUILD_VERSION`, `WRENDNS_BUILD_COMMIT`, `WRENDNS_BUILD_DATE`, `WRENDNS_BUILD_CHANNEL`) and `SOURCE_DATE_EPOCH` set to the commit's Unix time, then compare checksums. A nightly job builds every commit twice from scratch and fails if the two differ.
+- **Rebuilding:** a release builds the same bytes from the same commit. The build date in `--version` is the commit's time. To compare, build the Dockerfile's `bin` stage with the build arguments `--version` shows (`WRENDNS_BUILD_VERSION`, `WRENDNS_BUILD_COMMIT`, `WRENDNS_BUILD_DATE`, `WRENDNS_BUILD_CHANNEL`) and `SOURCE_DATE_EPOCH` set to the commit's Unix time, then compare checksums. A nightly job builds every commit twice from scratch and fails if the two differ. The Dockerfile compiles the crates.io dependencies in their own layer, which depends only on the manifests, `Cargo.lock` and the toolchain pin, so a change to the workspace's own sources reuses it; the binary's bytes are the same as from a one-step build.
 
 WrenDNS never updates itself from the UI. The panel shows the step for your install:
 - **Native:** `sudo wrendns self-update --restart` (`--channel edge` for edge).
