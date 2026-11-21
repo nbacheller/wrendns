@@ -562,7 +562,7 @@ jobs:
   # The last two steps of the old `native` job. They stay on a GitHub-hosted runner (T39.9,
   # ADR-1076): kind runs a privileged node container with its own systemd and cgroup delegation,
   # which an unprivileged LXD container with nested Docker does not reliably give. The build is
-  # repeated here (the rust cache is warm) so the job needs nothing from `native`.
+  # repeated here (the job keeps its own rust cache, so its first runs are cold) so the job needs nothing from `native`.
   native-helm:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest

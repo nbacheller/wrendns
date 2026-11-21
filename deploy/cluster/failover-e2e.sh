@@ -175,7 +175,19 @@ wait_metric 29101 wrendns_cluster_epoch "$epoch" 30 || fail "the old primary did
 echo "ok"
 
 echo "== 4. a node in maintenance isn't elected (OPS-010)"
-sleep 6   # p just restarted: let its streams to r settle (a heartbeat or so)
+# p just restarted: its streams to r have settled when each side hears the other (peer_up = 1 at
+# p for site r, at r for site p), for up to 60 s; the last values are named on failure.
+peer_up() { # metrics-port site -> the peer_up value ("" if absent)
+  curl -s --max-time 2 "http://127.0.0.1:$1/metrics" |
+    awk -v s="site=\"$2\"" '$1 ~ /^wrendns_cluster_peer_up\{/ && index($1, s) {print $2}' || true
+}
+SEEN=
+for _ in $(seq 240); do
+  SEEN="p sees r: '$(peer_up 29101 r)'; r sees p: '$(peer_up 29102 p)'"
+  [ "$SEEN" = "p sees r: '1'; r sees p: '1'" ] && break
+  sleep 0.25
+done
+[ "$SEEN" = "p sees r: '1'; r sees p: '1'" ] || fail "p and r never saw each other within 60 s after p restarted; last seen: $SEEN"
 RCSRF=$(login 28102 "$E/rjar") || fail "the admin can't sign in on the new primary"
 P_ID=$(node_id p)
 code=$(maint 28102 "$E/rjar" "$RCSRF" POST "$P_ID" '{"forSecs":600,"reason":"e2e: keep p out"}')
@@ -200,7 +212,16 @@ echo "== 5. maintenance on the primary hands over (OPS-010)"
 wait_metric 29102 wrendns_cluster_primary 0 30 || fail "r didn't follow after restarting"
 for _ in $(seq 60); do [ "$(metric 29102 wrendns_cluster_failover_auto)" = 1 ] && break; sleep 0.5; done
 for _ in $(seq 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:29102/readyz)" = 200 ] && break; sleep 0.5; done
-sleep 6   # a heartbeat or two: p sees r connected and eligible
+# p sees r connected and eligible: read from p's cluster view (GET /api/v1/cluster, signed in as
+# the admin), for up to 60 s; the last view is named on failure.
+SEEN=
+for _ in $(seq 240); do
+  SEEN=$(curl -s --max-time 5 -b "$E/pjar" http://127.0.0.1:28101/api/v1/cluster |
+    field 'next(("connected=%s eligible=%s" % (n["connected"], n["eligible"]) for n in d["nodes"] if n["site"] == "r"), "r not listed")' 2>&1) || SEEN="unreadable"
+  [ "$SEEN" = "connected=True eligible=True" ] && break
+  sleep 0.25
+done
+[ "$SEEN" = "connected=True eligible=True" ] || fail "p never saw r connected and eligible within 60 s; last seen: $SEEN"
 python3 "$E/q.py" load 25401 a.fo.test 40 50 > "$E/load2.txt" & LOAD=$!
 sleep 2
 t0=$(date +%s)
