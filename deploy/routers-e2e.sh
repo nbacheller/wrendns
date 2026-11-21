@@ -247,6 +247,22 @@ ST=$(cat "$E/data/setup-token")
 CSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
   -d "{\"setupToken\":\"$ST\",\"username\":\"admin\",\"password\":\"routers-e2e-pass-1\"}" \
   "$API/api/v1/auth/setup" | field 'd["csrfToken"]')
+# REQ: DNS-023 (T22.1) — a lease's dnsName comes from the device-name table, which is rebuilt
+# off the query path every 10 s from whatever the routers and Home Assistant have been read so far.
+# The wait above is satisfied by the first rebuild with any name, which can run before every source
+# is read (CI, 2026-11-20: names=1, then Home Assistant's name was missing), so wait, bounded, for
+# the names this script asserts: two rebuilds' worth of time.
+named=false
+for _ in $(seq 300); do
+  if curl -sf -b "$E/jar" "$API/api/v1/dhcp/leases" | python3 -c '
+import json, sys
+items = {x["ip"]: x for x in json.load(sys.stdin)["items"]}
+ok = items.get("192.168.1.31", {}).get("dnsName") == "living-room-roku.home.arpa" and items.get("127.0.0.1", {}).get("dnsName") == "desk-laptop.home.arpa"
+sys.exit(0 if ok else 1)
+'; then named=true; break; fi
+  sleep 0.1
+done
+$named || fail "the lease rows never carried their DNS names within 30 s (rebuild is every 10 s): $(curl -s -b "$E/jar" "$API/api/v1/dhcp/leases" | head -c 1500; echo; grep 'device names in DNS' "$E/node.log" | tail -3)"
 curl -sf -b "$E/jar" "$API/api/v1/dhcp/leases" | python3 -c '
 import json, sys
 items = {x["ip"]: x for x in json.load(sys.stdin)["items"]}
