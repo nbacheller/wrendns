@@ -313,20 +313,24 @@ jobs:
   # REQ: API-004 — T3.6 AC: sign in through real Keycloak and Authentik (ui/tests/oidc/).
   oidc:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
-    # job binds fixed host ports, which concurrent jobs on one host would share).
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    # Each runner has its own network namespace now, so this job's fixed host ports no longer collide.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start Keycloak and Authentik
-        run: docker compose -f tests/oidc/compose.yml up -d --wait --wait-timeout 300
+        run: docker compose -f tests/oidc/compose.yml up -d --wait --wait-timeout 600
+      # On a self-hosted runner this only fetches Node 24 from the network into the runner tool
+      # cache (the image has Node 22); the npm cache is the GitHub-hosted runners' alone.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run build
@@ -342,14 +346,20 @@ jobs:
         run: |
           # Authentik's startup blueprint run can die on a Postgres deadlock and isn't retried
           # (CI 2026-10-04): after a minute, apply ours explicitly, then every minute after.
+          # The poll is bounded (about five minutes); on failure it says what the last request
+          # returned, so a slow start-up can be told from a missing blueprint.
+          url=http://127.0.0.1:9000/application/o/wrendns/.well-known/openid-configuration
+          code=none
           for i in $(seq 60); do
-            curl -sf -o /dev/null http://127.0.0.1:9000/application/o/wrendns/.well-known/openid-configuration && exit 0
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)
+            [ "$code" = 200 ] && exit 0
             if [ "$i" -ge 12 ] && [ $((i % 12)) -eq 0 ]; then
               docker compose -f tests/oidc/compose.yml exec -T authentik-worker \
                 ak apply_blueprint /blueprints/custom/wrendns.yaml || true
             fi
             sleep 5
           done
+          echo "Authentik did not serve $url within 300 s; the last answer was HTTP $code" >&2
           exit 1
       - run: npm run test:e2e
         env:

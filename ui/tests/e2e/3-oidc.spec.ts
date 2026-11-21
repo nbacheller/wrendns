@@ -53,16 +53,16 @@ for (const id of providers) {
     await page.getByRole('button', { name: 'Sign out' }).click();
     // Keycloak asks "Do you want to log out?" (no id_token_hint is sent; ADR-034).
     const confirm = page.getByRole('button', { name: /^(Logout|Log out)$/i });
-    const asked = await confirm
-      .waitFor({ state: 'visible', timeout: 8000 })
-      .then(() => true)
-      .catch(() => false);
-    if (asked) await confirm.click();
     // Keycloak returns to WrenDNS; Authentik's default flow shows its own "logged out of
     // WrenDNS" page instead. Either way the WrenDNS session is over.
-    await expect(
-      page.getByRole('heading', { name: 'Sign in' }).or(page.getByRole('heading', { name: /logged out of WrenDNS/ })),
-    ).toBeVisible({ timeout: 20_000 });
+    const ended = page
+      .getByRole('heading', { name: 'Sign in' })
+      .or(page.getByRole('heading', { name: /logged out of WrenDNS/ }));
+    // Keycloak always asks, so its question is waited for and clicked (not asked for once with a
+    // short limit: on a busy machine its page can take longer to draw, and the end check would
+    // then run against the question page). Authentik does not ask.
+    if (id === 'keycloak') await confirm.click({ timeout: 30_000 });
+    await expect(ended).toBeVisible({ timeout: 20_000 });
     await page.goto('/#/');
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
     await page.close();
