@@ -357,7 +357,13 @@ echo "== cluster-wide live tail and latency (T9.2)"
 curl -sN --max-time 8 -b "$E/jar" "$API/api/v1/queries/stream?name=tail.r.test" > "$E/tail.txt" &
 TAILP=$!
 sleep 2.5
-for _ in $(seq 3); do q 25302 tail.r.test >/dev/null; sleep 0.3; done
+# The stream may attach later than 2.5 s on a busy machine: keep asking (about 5 s) until a row
+# shows up, instead of three queries at fixed times.
+for _ in $(seq 17); do
+  q 25302 tail.r.test >/dev/null
+  sleep 0.3
+  grep -q 'tail.r.test' "$E/tail.txt" 2>/dev/null && [ "$(grep -c 'tail.r.test' "$E/tail.txt")" -ge 3 ] && break
+done
 wait "$TAILP" 2>/dev/null || true
 grep -q 'tail.r.test' "$E/tail.txt" || fail "the primary's live tail didn't show the replica's query"
 grep -q '"node":"r"' "$E/tail.txt" || fail "the replica's rows in the tail don't name it ($(head -c 300 "$E/tail.txt"))"

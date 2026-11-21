@@ -49,7 +49,15 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
 PY
-start_git() { python3 "$E/githttp.py" 28799 "$E/repo.git" & G_PID=$!; sleep 0.5; }
+start_git() {
+  python3 "$E/githttp.py" 28799 "$E/repo.git" & G_PID=$!
+  # Wait until the server accepts connections (at most 15 s) instead of a fixed half second.
+  for _ in $(seq 30); do
+    python3 -c "import socket; socket.create_connection(('127.0.0.1', 28799), 1)" 2>/dev/null && return 0
+    sleep 0.5
+  done
+  fail "the git server did not accept connections within 15 s"
+}
 start_git
 
 shared() { # value -> a shared configuration with one record

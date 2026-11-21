@@ -448,11 +448,17 @@ jobs:
   # REQ: OPS-004 — the Pi/Linux paths end to end on a disposable runner: the Compose bundle
   # (host network, healthcheck, hardening) and install.sh + the systemd unit (signed fake
   # release, DNS on port 53, upgrade in place, tampered releases refused).
+  # Helm scaled mode on kind is the job `native-helm` below: kind needs a privileged node
+  # container with its own systemd, which an unprivileged container does not give.
   native:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    runs-on: ubuntu-latest
-    # The cluster e2e's maintenance steps (T13.4) add about six minutes.
-    timeout-minutes: 45
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    # Each runner has its own network namespace now, so this job's fixed host ports no longer collide.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    # The cluster e2e's maintenance steps (T13.4) add about six minutes; the moved part took about
+    # 23 minutes on a hosted runner.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
@@ -523,12 +529,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release view edge -R "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+          # The self-hosted image has no `gh` (a missing one would read as "no edge release" and
+          # skip silently), so the API is called with curl and the same token: a 404 is a
+          # repository with no edge release; any other answer is an error.
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY"
+          mkdir -p "$RUNNER_TEMP/edge"
+          code=$(curl -sS -o "$RUNNER_TEMP/edge/release.json" -w '%{http_code}' --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$api/releases/tags/edge") || code=000
+          if [ "$code" = 404 ]; then
             echo "::notice title=rolling upgrade::$GITHUB_REPOSITORY has no edge release yet: the rolling upgrade from the edge build is skipped."
             exit 0
           fi
-          gh release download edge -R "$GITHUB_REPOSITORY" -p wrendns-x86_64-linux -D "$RUNNER_TEMP/edge" --clobber
-          mv "$RUNNER_TEMP/edge/wrendns-x86_64-linux" "$RUNNER_TEMP/wrendns-old"
+          [ "$code" = 200 ] || { echo "::error title=rolling upgrade::the edge release lookup answered HTTP $code"; exit 1; }
+          id=$(jq -r 'first(.assets[] | select(.name == "wrendns-x86_64-linux") | .id) // empty' "$RUNNER_TEMP/edge/release.json")
+          [ -n "$id" ] || { echo "::error title=rolling upgrade::the edge release has no wrendns-x86_64-linux asset"; exit 1; }
+          curl -sSfL --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/octet-stream' \
+            -o "$RUNNER_TEMP/wrendns-old" "$api/releases/assets/$id"
           chmod +x "$RUNNER_TEMP/wrendns-old"
           bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/wrendns-old" target/bench-fast/wrendns
       # REQ: DNS-011 (T6.1) — DNSSEC validation against the real DNS tree (needs internet).
@@ -539,8 +556,24 @@ jobs:
       # refused, outages harmless, a promoted node keeps following.
       - name: Cluster configuration from Git
         run: bash deploy/cluster/git-e2e.sh target/bench-fast/wrendns
-      # REQ: CLU-009 (T5.10 AC) — Helm mode: scaled on kind with this build: resolver pods join
-      # and sync, answer DNS; a node outside Kubernetes joins; a deleted pod expires.
+
+  # REQ: CLU-009 (T5.10 AC) — Helm mode: scaled on kind with this build: resolver pods join
+  # and sync, answer DNS; a node outside Kubernetes joins; a deleted pod expires.
+  # The last two steps of the old `native` job. They stay on a GitHub-hosted runner (T39.9,
+  # ADR-1076): kind runs a privileged node container with its own systemd and cgroup delegation,
+  # which an unprivileged LXD container with nested Docker does not reliably give. The build is
+  # repeated here (the job keeps its own rust cache, so its first runs are cold) so the job needs nothing from `native`.
+  native-helm:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+      # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without WRENDNS_WEDGE_AFTER_SECS.
+      - run: cargo build --profile bench-fast -p wrendns --features wedge-test
       - name: Install kind
         uses: helm/kind-action@v1
         with: { install_only: true }

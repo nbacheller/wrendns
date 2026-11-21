@@ -155,7 +155,19 @@ status() { api GET /cluster/rollout >/dev/null; field "$1" < "$E/out.json"; }
 record() { api PUT "/records/$1" "{\"records\":[{\"type\":\"A\",\"value\":\"$2\"}]}"; }
 wait_answer 25602 a.ro.test 10.0.0.1 20 || fail "the canary replica never synced"
 wait_answer 25603 a.ro.test 10.0.0.1 20 || fail "the plain replica never synced"
-sleep 6   # a heartbeat or so: the primary sees both replicas, and they take part in rollouts
+# The primary sees both replicas connected, and the canary eligible (it takes part in rollouts):
+# read from the primary's own cluster view, for up to 60 s (a busy machine can be slow to heartbeat).
+SEEN=
+for _ in $(seq 240); do
+  api GET /cluster >/dev/null || true
+  SEEN=$(field 'sorted(n["site"] + (":eligible" if n["eligible"] else "") for n in d["nodes"] if n["connected"] and not n["thisNode"])' < "$E/out.json" 2>&1) || SEEN="unreadable: $(head -c 200 "$E/out.json" 2>/dev/null || true)"
+  [ "$SEEN" = "['canary:eligible', 'plain']" ] && break
+  sleep 0.25
+done
+[ "$SEEN" = "['canary:eligible', 'plain']" ] || fail "the primary never saw both replicas connected (canary eligible) within 60 s; last seen: $SEEN"
+# The flag the rollout depends on (the peer takes part in rollouts) arrives with the peer's first
+# heartbeat, right after the link opens, and no API shows it: give that heartbeat a moment.
+sleep 2
 
 echo "== 1. no canaries (the default): a change reaches every node at once"
 [ "$(status 'd["stage"]')" = none ] || fail "a rollout without canaries: $(cat "$E/out.json")"

@@ -151,7 +151,18 @@ T=$("$NEW" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
 "$NEW" cluster join "$T" --site canary -c "$E/c.toml" >/dev/null || fail "the canary couldn't join"
 "$NEW" run -c "$E/c.toml" >> "$E/c.log" 2>&1 & C_PID=$!
 wait_answer 25503 10.0.0.4 15 || fail "the canary never synced"
-sleep 6   # a heartbeat: the primary knows the canary takes part in rollouts
+# The primary knows the canary (it takes part in rollouts): its peer_up metric for site canary is 1.
+# Polled for up to 60 s (a busy machine can be slow to heartbeat), the last value is named on failure.
+SEEN=
+for _ in $(seq 240); do
+  SEEN=$(curl -s --max-time 2 http://127.0.0.1:29201/metrics | awk '$1 ~ /^wrendns_cluster_peer_up\{/ && $1 ~ /site="canary"/ {print $2}') || SEEN=
+  [ "$SEEN" = 1 ] && break
+  sleep 0.25
+done
+[ "$SEEN" = 1 ] || fail "the primary never saw the canary up within 60 s; last wrendns_cluster_peer_up{site=\"canary\"}: '${SEEN:-absent}'"
+# The flag the rollout depends on (the peer takes part in rollouts) arrives with the peer's first
+# heartbeat, right after the link opens, and no API shows it: give that heartbeat a moment.
+sleep 2
 # An old build without staged rollouts is named too: it must still never be sent a canary
 # version. Once the published build has them (edge from T13.2 on), it's simply not named,
 # and it still waits out the bake like any other node.
