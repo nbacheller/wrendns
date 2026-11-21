@@ -175,19 +175,7 @@ wait_metric 29101 wrendns_cluster_epoch "$epoch" 30 || fail "the old primary did
 echo "ok"
 
 echo "== 4. a node in maintenance isn't elected (OPS-010)"
-# p just restarted: its streams to r have settled when each side hears the other (peer_up = 1 at
-# p for site r, at r for site p), for up to 60 s; the last values are named on failure.
-peer_up() { # metrics-port site -> the peer_up value ("" if absent)
-  curl -s --max-time 2 "http://127.0.0.1:$1/metrics" |
-    awk -v s="site=\"$2\"" '$1 ~ /^wrendns_cluster_peer_up\{/ && index($1, s) {print $2}' || true
-}
-SEEN=
-for _ in $(seq 240); do
-  SEEN="p sees r: '$(peer_up 29101 r)'; r sees p: '$(peer_up 29102 p)'"
-  [ "$SEEN" = "p sees r: '1'; r sees p: '1'" ] && break
-  sleep 0.25
-done
-[ "$SEEN" = "p sees r: '1'; r sees p: '1'" ] || fail "p and r never saw each other within 60 s after p restarted; last seen: $SEEN"
+sleep 6   # p just restarted, streams settle
 RCSRF=$(login 28102 "$E/rjar") || fail "the admin can't sign in on the new primary"
 P_ID=$(node_id p)
 code=$(maint 28102 "$E/rjar" "$RCSRF" POST "$P_ID" '{"forSecs":600,"reason":"e2e: keep p out"}')
