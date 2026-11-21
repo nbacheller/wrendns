@@ -1,5 +1,5 @@
 # REQ: OPS-004, NFR-005 (ADR-1073) — the fast tier every pull request gets. `pr-ok` is the one
-# required check; the full tier (ci.yml, to become main.yml) runs on main, on dispatch, and on a
+# required check; the full tier (main.yml) runs on main, on dispatch, and on a
 # pull request that carries the `ci:full` label.
 name: pr
 on:
@@ -74,7 +74,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
@@ -89,7 +89,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0

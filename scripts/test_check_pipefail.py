@@ -65,7 +65,7 @@ class Repo(unittest.TestCase):
 
     def test_ops_004_clean_tree_passes(self):
         self.write("deploy/ok.sh", '#!/usr/bin/env bash\nset -euo pipefail\ngrep -q y <<<"$x" || exit 1\n')
-        self.write(".github/workflows/ci.yml", "jobs:\n  t:\n    steps:\n      - run: echo hi\n")
+        self.write(".github/workflows/main.yml", "jobs:\n  t:\n    steps:\n      - run: echo hi\n")
         res = self.run_check()
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("check-pipefail: ok", res.stdout)

@@ -21,8 +21,26 @@ esac
 
 # Failures become CI annotations with the installer's output and the service's journal (the
 # job log isn't always at hand).
+# REQ: OPS-004 - on any failure, the full journal, the sockets on the service's ports, and
+# whatever else holds port 53 (name, owner, start time, parent), for the log: a bind failure
+# on a CI runner can't be told apart from a slow start without them.
+diagnose() {
+  echo "::group::diagnostics"
+  journalctl -u wrendns --no-pager 2>&1 | tail -n 200 || true
+  systemctl status wrendns --no-pager -l 2>&1 | head -n 30 || true
+  ss -Hlnup 'sport = :53 or sport = :8053 or sport = :9153' 2>&1 || true
+  ss -Hlntp 'sport = :53 or sport = :8053 or sport = :9153' 2>&1 || true
+  for pid in $(ss -Hlnup 'sport = :53' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+    ps -o pid,ppid,user,lstart,args -p "$pid" 2>&1 || true
+    # The systemd unit (or cgroup) says whether the holder is a service the machine ships.
+    ps -o unit= -p "$pid" 2>/dev/null || cat "/proc/$pid/cgroup" 2>/dev/null || true
+  done
+  echo "::endgroup::"
+}
+
 fail() {
   echo "FAIL: $*"
+  diagnose
   local extra=""
   if [ -f "$WORK/guided.out" ]; then
     extra=" | install.sh: $(tail -n 8 "$WORK/guided.out" | tr '\n' ' ' | cut -c1-600)"

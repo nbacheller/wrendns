@@ -1,10 +1,13 @@
 # REQ: 09 §4 — fmt → clippy → test → cargo-deny (image, integration, and bench stages are added by later tasks).
-# This is the full tier (ADR-1073): every push to main, a dispatch, and a pull request only when it
+# This is the main tier (ADR-1073): every push to main, a dispatch, and a pull request only when it
 # carries the `ci:full` label. The fast tier that every pull request gets is pr.yml, whose `pr-ok`
-# job is the one required check. Track branches get no push runs (owner decision 2026-11-17): a run
-# on one is started by hand with `gh workflow run ci.yml --ref <branch>` when it needs the hosted
-# arm64 runner.
-name: ci
+# job is the one required check; the nightly tier is nightly.yml. Track branches get no push runs
+# (owner decision 2026-11-17): a run on one is started by hand with `gh workflow run main.yml
+# --ref <branch>` when it needs the hosted arm64 runner.
+#
+# Three jobs run only when their paths changed (the `changes` job below): three-node, vip-failover
+# and home-assistant. Each calls a reusable workflow that nightly.yml calls too.
+name: main
 on:
   push:
     branches: [main]
@@ -29,6 +32,112 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Which path-gated jobs run. On a push it lists the files changed between the previous and the new
+  # head of main and matches them against each job's paths (the lists the three workflows had as
+  # `paths:` filters before ADR-1073). It fails closed: a dispatch, a labelled pull request, or a
+  # range that cannot be computed (a forced push, a missing commit) turns every output on.
+  changes:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-latest
+    outputs:
+      cluster3: ${{ steps.paths.outputs.cluster3 }}
+      keepalived: ${{ steps.paths.outputs.keepalived }}
+      home-assistant: ${{ steps.paths.outputs.home-assistant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0 }
+      - name: Match the changed files against each job's paths
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+
+          # GitHub's path filter syntax: `**` matches anything, `*` anything but a slash.
+          GLOBS = {
+              "cluster3": [
+                  "crates/wrendns-cluster/**",
+                  "crates/wrendns/src/federated*",
+                  "crates/wrendns/src/replication*",
+                  "crates/wrendns/src/secrets*",
+                  "crates/wrendns/src/routers*",
+                  "crates/wrendns/src/discovery/**",
+                  "crates/wrendns/src/cluster.rs",
+                  "crates/wrendns/src/forward.rs",
+                  "crates/wrendns/src/settings_kinds.rs",
+                  "crates/wrendns/src/managed.rs",
+                  "crates/wrendns/src/api_backend.rs",
+                  "crates/wrendns/src/main.rs",
+                  "crates/wrendns-api/**",
+                  "crates/wrendns-store/**",
+                  "crates/wrendns-config/**",
+                  "Cargo.lock",
+                  "Dockerfile",
+                  "deploy/cluster3/**",
+                  ".github/workflows/_cluster3.yml",
+              ],
+              "keepalived": [
+                  "crates/**",
+                  "Cargo.lock",
+                  "Dockerfile",
+                  "deploy/keepalived/**",
+                  ".github/workflows/_keepalived.yml",
+              ],
+              "home-assistant": [
+                  "integrations/home-assistant/**",
+                  "crates/wrendns/src/routers.rs",
+                  "crates/wrendns/src/device_dns.rs",
+                  "deploy/ha-test/**",
+                  "crates/wrendns-api/src/pihole_api.rs",
+                  ".github/workflows/_home-assistant.yml",
+              ],
+          }
+
+
+          def regex(glob):
+              out, i = "", 0
+              while i < len(glob):
+                  if glob.startswith("**", i):
+                      out, i = out + ".*", i + 2
+                  elif glob[i] == "*":
+                      out, i = out + "[^/]*", i + 1
+                  else:
+                      out, i = out + re.escape(glob[i]), i + 1
+              return re.compile(out + r"\Z")
+
+
+          def decide(files):
+              return {
+                  name: files is None or any(regex(g).match(f) for f in files for g in globs)
+                  for name, globs in GLOBS.items()
+              }
+
+
+          files = None  # None: everything runs
+          before, after = os.environ["BEFORE"], os.environ["AFTER"]
+          if os.environ["EVENT_NAME"] == "push" and before.strip("0") and after:
+              run = subprocess.run(
+                  ["git", "diff", "--name-only", "--no-renames", "-z", before, after],
+                  capture_output=True, text=True,
+              )
+              if run.returncode == 0:
+                  files = [f for f in run.stdout.split("\0") if f]
+              else:
+                  print("::warning::cannot list the files changed in " + before + ".." + after + ": every path-gated job runs")
+          else:
+              print("not a push with a known previous head: every path-gated job runs")
+
+          result = decide(files)
+          for name, value in result.items():
+              print(name + "=" + str(value).lower())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              for name, value in result.items():
+                  out.write(name + "=" + str(value).lower() + "\n")
+          PY
+
   fmt:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
@@ -42,7 +151,7 @@ jobs:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
@@ -58,7 +167,7 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON(github.event_name == 'pull_request' && (!github.event.pull_request.head.repo.fork && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') || matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.99.0
@@ -157,18 +266,22 @@ jobs:
   # real binary.
   ui:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
-    # job binds fixed host ports, which concurrent jobs on one host would share).
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    # Each runner has its own network namespace now, so this job's fixed host ports no longer collide.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # On a self-hosted runner this only fetches Node 24 from the network into the runner tool
+      # cache (the image has Node 22); the npm cache is the GitHub-hosted runners' alone.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
       - run: npm ci --no-audit --no-fund
       - name: API types match the OpenAPI document
@@ -262,10 +375,22 @@ jobs:
           - { runner: ubuntu-latest, tool: kind }
           - { runner: ubuntu-24.04-arm, tool: k3d }
     runs-on: ${{ matrix.runner }}
+    # The e2e pulls the published `edge` image; the image package is private while the repository is.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
-      - uses: azure/setup-helm@v4
+      # REQ: OPS-002 - sign in to the registry so `docker pull` of the edge image works while the
+      # package is private (CI 2026-11-21: "error from registry: unauthorized"). On a pull request
+      # from a fork the token cannot read the package; the pull then fails as before.
+      - name: Registry login
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - uses: azure/setup-helm@v5
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.12" }
       - uses: helm/chart-testing-action@v2.9.0
@@ -304,8 +429,11 @@ jobs:
         timeout-minutes: 12
       - name: DNS through a LoadBalancer; client IP in the query log
         run: KEEP=1 E2E_KUBECONFIG="$RUNNER_TEMP/kubeconfig" TOOL=${{ matrix.tool }} bash deploy/helm/e2e.sh
+      # The ci values ask for `pullPolicy: Always`, which makes the cluster pull the edge image itself;
+      # it cannot while the package is private. The e2e step above loaded that image into this
+      # cluster (KEEP=1), so the install uses it.
       - name: ct install (every ci/*-values.yaml)
-        run: KUBECONFIG="$RUNNER_TEMP/kubeconfig" ct install --config ct.yaml --all
+        run: KUBECONFIG="$RUNNER_TEMP/kubeconfig" ct install --config ct.yaml --all --helm-extra-set-args "--set=image.pullPolicy=IfNotPresent"
 
   # REQ: OPS-004 — the Pi/Linux paths end to end on a disposable runner: the Compose bundle
   # (host network, healthcheck, hardening) and install.sh + the systemd unit (signed fake
@@ -414,9 +542,10 @@ jobs:
   # own: the image pulls and Pi-hole's first gravity run take minutes.
   migration:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
-    # job binds fixed host ports, which concurrent jobs on one host would share).
-    runs-on: ubuntu-latest
+    # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
+    # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
+    # Each runner has its own network namespace now, so this job's fixed host ports no longer collide.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -501,3 +630,29 @@ jobs:
       - name: AES vectors, arm/v7 under QEMU
         run: |
           docker run --rm --platform linux/arm/v7 -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/tmp/t rust:1.99-bookworm cargo test -j 2 -p wrendns-snmp --lib aes_cfb
+
+  # The jobs below run only when the `changes` job says their paths changed (always, for a dispatch
+  # or the `ci:full` label). They call the reusable workflows nightly.yml calls too (ADR-1073).
+  # REQ: CLU-001..005, OPS-007 — the three-node test cluster (deploy/cluster3, T21.5).
+  three-node:
+    needs: changes
+    if: needs.changes.outputs.cluster3 == 'true'
+    uses: ./.github/workflows/_cluster3.yml
+    permissions:
+      contents: read
+
+  # REQ: CLU-004, CLU-005, OPS-001, OPS-010 — the keepalived failover example (deploy/keepalived, T24.4).
+  vip-failover:
+    needs: changes
+    if: needs.changes.outputs.keepalived == 'true'
+    uses: ./.github/workflows/_keepalived.yml
+    permissions:
+      contents: read
+
+  # REQ: T22.4, T24.21 — the Home Assistant integration's tests and the throwaway Home Assistant e2e.
+  home-assistant:
+    needs: changes
+    if: needs.changes.outputs.home-assistant == 'true'
+    uses: ./.github/workflows/_home-assistant.yml
+    permissions:
+      contents: read

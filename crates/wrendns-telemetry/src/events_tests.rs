@@ -1169,15 +1169,22 @@ fn obs_903_log_exclusions_keep_queries_out_of_the_log_only() {
     assert_eq!(hub.excluded_total(), 0, "[exclusions] is another list");
     assert_eq!(seen.lock().unwrap().len(), 1, "one query is logged");
     hub.set_log_exclusions(None);
-    hub.emit_query(
-        &query(ts, ipv4(127, 0, 0, 1), Status::Forwarded, 20),
-        &wire("shop.example"),
-    );
+    // The aggregator reads the exclusions once at the start of a drain (the spec says "from the
+    // next drain on"), so a drain already under way when they were cleared still leaves the
+    // first 127.x query out. Send it until a drain that started after the change logs one.
     let deadline = Instant::now() + Duration::from_secs(5);
     while seen.lock().unwrap().len() < 2 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
+        hub.emit_query(
+            &query(ts, ipv4(127, 0, 0, 1), Status::Forwarded, 20),
+            &wire("shop.example"),
+        );
+        std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(seen.lock().unwrap().len(), 2);
+    let logged = seen.lock().unwrap().len();
+    assert!(
+        logged >= 2,
+        "cleared exclusions log again; the sink saw {logged}"
+    );
     drop(agg);
 }
 

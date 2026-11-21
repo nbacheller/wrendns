@@ -49,7 +49,7 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 
 `deploy/release/preflight.sh X.Y.Z` stops before anything is published unless:
 the version is `X.Y.Z` (no suffix); `Cargo.toml` and `Chart.yaml` say `X.Y.Z`; the tag
-`vX.Y.Z` doesn't exist; `deploy/release/notes/vX.Y.Z.md` exists; and the newest CI run on
+`vX.Y.Z` doesn't exist; `deploy/release/notes/vX.Y.Z.md` exists; and the newest run of the `main` workflow (`main.yml`) on
 `main`'s head passed.
 
 ### What verify checks
@@ -94,7 +94,7 @@ check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
 
 - **A tag or commit pushed with a workflow's own token starts no workflows.** That's why the
   release workflow starts the tag's build, and CI and edge for its version commit, explicitly
-  (`gh workflow run`). `ci.yml` and `image.yml` accept `workflow_dispatch` for this. The
+  (`gh workflow run`). `main.yml` and `image.yml` accept `workflow_dispatch` for this. The
   image workflow's push, sign and publish jobs (`merge`, `chart`, `release`, `verify`) run for
   pushes *and* dispatches on `main` or `v*` tags; a dispatch on a branch only builds and tests.
   Each architecture is one leg (`image`) that compiles once and pushes its image by digest;

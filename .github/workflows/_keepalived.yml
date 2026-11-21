@@ -1,0 +1,25 @@
+# REQ: CLU-004, CLU-005, OPS-001, OPS-010 — the keepalived failover example (deploy/keepalived, T24.4):
+# two WrenDNS nodes with keepalived sidecars, a witness, and a VIP on an internal bridge, checked
+# by deploy/keepalived/e2e.sh (the failover, the cluster promotion, the maintenance hand-over). A
+# reusable workflow (ADR-1073): main.yml calls it when the example, the image's sources or the
+# cluster code changed, nightly.yml calls it every night, and workflow_dispatch runs it by hand. The
+# sidecars need NET_ADMIN (keepalived's VRRP), which Docker on the hosted runner allows by default.
+name: _keepalived
+on:
+  workflow_call:
+  workflow_dispatch:
+
+# Least privilege: the job reads the repository and nothing more.
+permissions:
+  contents: read
+
+jobs:
+  vip-failover:
+    runs-on: ubuntu-latest
+    # The image is built from the Dockerfile on every run (the UI, then the workspace with thin LTO),
+    # which dominates the run; the checks in e2e.sh take about five minutes on top of it.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "Two nodes behind a VIP: failover, witness, maintenance (deploy/keepalived)"
+        run: bash deploy/keepalived/e2e.sh

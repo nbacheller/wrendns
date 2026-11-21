@@ -39,5 +39,5 @@
   "`image.yml`: amd64, arm64, and arm/v7 built FROM scratch, the size gate, and `deploy/image/smoke.sh` on each platform under QEMU",
 ]
 "NFR-004" = [
-  "cargo-fuzz targets in `fuzz/fuzz_targets/`: `parse_query`, `parse_response`, `parse_list`, `cache_response`, `qlog_segment`, `differential`; run by `.github/workflows/fuzz.yml`",
+  "cargo-fuzz targets in `fuzz/fuzz_targets/`: `parse_query`, `parse_response`, `parse_list`, `cache_response`, `qlog_segment`, `differential`; run by the `fuzz` job in `.github/workflows/nightly.yml`",
 ]

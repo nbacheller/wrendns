@@ -321,7 +321,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Package and push
         run: |
           base=$(awk '/^version:/ {print $2}' deploy/helm/wrendns/Chart.yaml)
@@ -419,7 +419,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Verify the release
         run: |
           sh .github/scripts/apt-install.sh minisign

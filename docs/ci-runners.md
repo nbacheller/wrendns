@@ -1,13 +1,13 @@
 # Self-hosted CI runners
 
-Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job and the amd64 `test` job, with more CPU and memory and a warm build cache. Moving heavier jobs to them (the native build, the cluster and high-availability tests, the image build legs) is planned under ADR-1076, one job type at a time, once each runner has its own container. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
+Some WrenDNS CI jobs run on self-hosted runners: machines the project controls, instead of GitHub-hosted ones. Today they run the `clippy` job and the amd64 `test` job, with more CPU and memory and a warm build cache; the `migration` job is routed to them as the first job that binds fixed ports, and is being measured there. Since 2026-11-21 every runner is isolated: each one runs in its own container and is reset after every job (ADR-1076). Moving the other heavy jobs (the native build, the oidc job, the cluster and high-availability tests, the image build legs) is planned, one job type at a time, each measured before the next moves. This page describes what they are for, the rules that decide which jobs may use them, and how a host is set up. The design is decision ADR-1076 in `spec/11-decisions.md`, and the task is T39.9 in `spec/10-roadmap-and-tasks.md`.
 
 The repository holds this page, the directory `deploy/ci-runners/` (its README and a read-only inspection script), and the workflow expressions described below. The host-side scripts and the base image recipe are kept by the maintainers on the build host, not in this repository.
 
 ## What they are for
 
-- Running the `clippy` and `test` jobs of `ci.yml` and `pr.yml` when the runner variables route them there (the state today).
-- Planned, not done yet: the jobs that bind fixed ports (native, ui, oidc, migration, the cluster tests) and the image build legs (ADR-1075), each moved only after it has passed on an isolated runner.
+- Running the `clippy` and `test` jobs of `main.yml` and `pr.yml`, the `migration` job of `main.yml`, and the `ui` job of `main.yml` (routed there and being measured), when the runner variables route them there (the state today). `migration` is the first job that binds fixed ports to move, which is safe because each runner has its own network namespace and its own Docker daemon.
+- Planned, not done yet: the other jobs that bind fixed ports (native, oidc, the cluster tests) and the image build legs (ADR-1075), moved one at a time after each is measured on the isolated runners.
 - Keeping compiled artefacts and package downloads in shared caches, so a job does not start cold.
 
 They are not used for releases. Release builds and signing stay on GitHub-hosted runners (ADR-1076).
@@ -18,7 +18,7 @@ A self-hosted runner executes whatever code a job checks out, and a job can read
 
 - **Fork pull requests and Dependabot pull requests never run on these runners.** They build third-party code. The workflows send them to GitHub-hosted runners.
 - **Trusted events and same-repository pull requests may run on them.** A push to `main`, a manual dispatch and other non-pull-request events are trusted, and so is a pull request opened from a branch of this repository.
-- **The workflows enforce this, not the runners.** The `runs-on` expressions in `.github/workflows/ci.yml` and `.github/workflows/pr.yml` name the rule. A pull request uses `vars.WRENDNS_PR_RUNNER` only when `!github.event.pull_request.head.repo.fork` and the author is not `dependabot[bot]`. Every other event uses `vars.WRENDNS_RUNNER`. If the variable is unset, or the pull request is from a fork or Dependabot, the job falls back to `ubuntu-latest`.
+- **The workflows enforce this, not the runners.** The `runs-on` expressions in `.github/workflows/main.yml` and `.github/workflows/pr.yml` name the rule. A pull request uses `vars.WRENDNS_PR_RUNNER` only when `github.event.pull_request.head.repo.full_name == github.repository` and the author is not `dependabot[bot]`. A pull request from a fork fails that comparison, and so does one whose fork was deleted (it has no head repository), so both run on `ubuntu-latest`. Every other event uses `vars.WRENDNS_RUNNER`. If the variable is unset, or the pull request is from a fork or Dependabot, the job falls back to `ubuntu-latest`.
 - **Never route a `pull_request_target` or `workflow_run` job that checks out pull request code** to a self-hosted runner.
 
 If you add a self-hosted job, keep the same guard in its `runs-on`.
@@ -49,7 +49,7 @@ A new runner is one more container made from the base image, with its own identi
 
 ## Rebuilding the base image
 
-The base is a sealed, stopped container built from Ubuntu 24.04. It holds the Rust toolchain, the compilers and linkers, Docker with the overlay2 driver, and the runner software at the same release as the host runners. Rebuild it when:
+The base is a sealed, stopped container built from Ubuntu 26.04. It holds the Rust toolchain, the compilers and linkers, Docker with the overlay2 driver, and the runner software at the same release as the host runners. Rebuild it when:
 
 - GitHub publishes a newer runner release. Every reset restores the old one, so every job would download the update first. Rebuild with the new tarball and its published checksum, then recreate each runner's container from the new base.
 - The toolchain pin changes. The image records the runner, Rust and base versions in `/etc/wrendns-image`.
@@ -75,7 +75,7 @@ A host is ready for the self-hosted jobs when the maintainer has ticked each of 
 - [ ] **V3, mirrors.** The three mirrors answer on the bridge address, from a container and from a nested container. Docker Hub, ghcr.io and quay.io all serve.
 - [ ] **V4, shared caches.** A write in one container is visible in another and on the host, with the runner user as owner, and root inside a container cannot create a root-owned or setuid file through the mount. Concurrent package-cache builds in two containers both succeed. The compiler cache uses the shared directory.
 - [ ] **V5, arm limits.** arm64 and arm/v7 binaries run in nested Docker through the host's emulators. A buildx build produces both architectures. The container cannot change the emulator registration.
-- [ ] **V6, a real job passes.** The `clippy` and `test (ubuntu-latest)` jobs of `ci.yml` run on the host's container and succeed.
+- [ ] **V6, a real job passes.** The `clippy` and `test (ubuntu-latest)` jobs of `main.yml` run on the host's container and succeed.
 - [ ] **V7, a byte-clean reset.** After a run that leaves deliberate residue, the restored root filesystem matches the snapshot `clean` by checksum. Nothing of the run is visible after the start.
 - [ ] **V8, identity.** The same runner id is used after at least three resets and after a forced stop. GitHub shows exactly one record, online. The identity files' checksums are unchanged. No registration token or GitHub token is stored on the host.
 - [ ] **V9, no job lost.** A job queued while a runner is busy or resetting is picked up after the reset. The gap is measured. Nothing stays queued, and no job ends with a lost-communication error.
