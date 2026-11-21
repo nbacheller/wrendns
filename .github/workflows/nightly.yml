@@ -230,17 +230,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NEEDS_JSON: ${{ toJSON(needs) }}
           TITLE: Nightly run failed
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           set +e
           verdict=$(python3 scripts/pr_ok.py 2>&1)
           status=$?
           set -e
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # The weekly cron skips the nightly jobs, so only the nightly cron's pass can mean
+          # "green again", and only when at least one needed job really succeeded.
+          kind="nightly"
+          [ "$SCHEDULE" = "17 5 * * 1" ] && kind="weekly"
+          succeeded=$(python3 -c 'import json,os; print(sum(1 for j in json.loads(os.environ["NEEDS_JSON"]).values() if j.get("result") == "success"))')
           existing=$(gh issue list --state open --limit 200 --json number,title \
             --jq '[.[] | select(.title == env.TITLE)] | .[0].number // empty')
           if [ "$status" -ne 0 ]; then
             {
-              echo "The scheduled run failed: $run_url"
+              echo "The scheduled $kind run failed: $run_url"
               echo
               echo "Jobs that did not pass (the verdict of scripts/pr_ok.py):"
               echo
@@ -251,8 +258,8 @@ jobs:
             else
               gh issue create --title "$TITLE" --body-file report.md
             fi
-          elif [ -n "$existing" ]; then
+          elif [ -n "$existing" ] && [ "$kind" = "nightly" ] && [ "$succeeded" -gt 0 ]; then
             gh issue comment "$existing" --body "The scheduled run is green again: $run_url. Close this issue when the cause is understood."
           else
-            echo "All jobs passed and no open issue titled \"$TITLE\"; nothing to report."
+            echo "Nothing to report: no failure, and either no open issue titled \"$TITLE\", or a weekly run, or no job succeeded."
           fi

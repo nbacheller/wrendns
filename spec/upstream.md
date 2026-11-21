@@ -45,7 +45,7 @@ Each deviation is an intentional difference from upstream. Each name is the key 
 | device-names-dns | ADR-901, ADR-902 | Device names answer in DNS (AAAA and PTR), built from the names TelltaleDNS already has, one label each; UniFi reservations and networks add naming sources. | `crates/telltale/src/device_dns.rs`, `ui/src/lib/components/DeviceNamesCard.svelte` |
 | support-classify | OPS-011 | The support package classifies the fork's `[discovery]` and secret-reference fields; each new fork section must be classified. | `crates/telltale-support/src/classify.rs`, `crates/telltale/src/support.rs` |
 | break-glass-loopback | ADR-944, ADR-987 | Break-glass local login is loopback-only unless `allowed_admin_networks` is set (an `Option`, so absent differs from `[]`), a proxied request is never break-glass, and `disable_local_login` hides the form and refuses it. Upstream's answer to #63 keeps the private-network default and documents it; the fork's key descriptions, `docs/running.md`, the users guide and `spec/08` say loopback, and upstream's start-up notice is not taken. | `crates/telltale/src/auth*.rs`, `crates/telltale/src/auth_setup*.rs`, `ui/src/pages/Login.svelte`, `site/guide-users.html` |
-| home-assistant | M22, T22.x | The Home Assistant integration (a custom component and its tests), which upstream does not ship. | `integrations/home-assistant/**`, `.github/workflows/home-assistant.yml` |
+| home-assistant | M22, T22.x | The Home Assistant integration (a custom component and its tests), which upstream does not ship. | `integrations/home-assistant/**`, `.github/workflows/_home-assistant.yml` |
 | docker-desktop | M22 (T22.x) | A Docker Desktop bundle for trying the fork. | `deploy/docker-desktop/**` |
 | milestone-renumbering | Sync 2026-11-17, ADR-986 (flagged as `numbering` by the watch, which covers spec/10 and spec/11) | Upstream's M22/M23 are M29/M28 here (2026-11-17), and upstream's M24 (T24.1, T24.2) is M30 (T30.1, T30.2) with upstream's T22.2 as T29.2 (2026-11-18), because the fork's M22 to M24 are its own. Fork tasks and ADRs use the fork's numbers. | `spec/10-roadmap-and-tasks.md`, `spec/11-decisions.md` |
 | settings-kinds | ADR-914, ADR-918 | The shared settings sections (`[special]`, `[local]`, `[clients]` with mdns only): files win field by field, a request may leave out a file-set field, some fields are read-only. Bulk changes are admin-only with a typed confirmation. | `crates/telltale/src/settings_kinds*.rs` |
@@ -103,7 +103,7 @@ Open upstream PRs that touch a fork deviation, and what the fork does with them 
 
 ## Watch
 
-The workflow `upstream-watch.yml` was removed on 2026-11-20 by owner decision (ADR-1073); until then it ran daily at 06:23 UTC and on demand, with the GitHub token only (`contents: read`, `issues: write`). It runs `.github/scripts/upstream_watch.py` from the fork's `feat/ipam-integrations` checkout. The workflow file is read from `main`, but the script and the ledger come from `feat/ipam-integrations`, so both branches need them. If the script is missing from `feat/ipam-integrations`, the job stops at a check step that says so. The checkout is pinned to a commit SHA and does not keep its token, and the script is retried up to three times.
+The workflow `upstream-watch.yml` was removed on 2026-11-20 by owner decision (ADR-1073); until then it ran daily at 06:23 UTC and on demand, with the GitHub token only (`contents: read`, `issues: write`). It ran `.github/scripts/upstream_watch.py` from the fork's `feat/ipam-integrations` checkout. The workflow file was read from `main`, but the script and the ledger came from `feat/ipam-integrations`, so both branches needed them. If the script was missing from `feat/ipam-integrations`, the job stopped at a check step that said so. The checkout was pinned to a commit SHA and did not keep its token, and the script was retried up to three times.
 
 What it does:
 
@@ -155,7 +155,7 @@ offline-clients	crates/telltale/src/devices.rs,crates/telltale/src/routers*.rs
 device-names-dns	crates/telltale/src/device_dns.rs,ui/src/lib/components/DeviceNamesCard.svelte
 support-classify	crates/telltale-support/src/classify.rs,crates/telltale/src/support.rs
 break-glass-loopback	crates/telltale/src/auth*.rs,crates/telltale/src/auth_setup*.rs,ui/src/pages/Login.svelte,site/guide-users.html
-home-assistant	integrations/home-assistant/**,.github/workflows/home-assistant.yml
+home-assistant	integrations/home-assistant/**,.github/workflows/_home-assistant.yml
 docker-desktop	deploy/docker-desktop/**
 settings-kinds	crates/telltale/src/settings_kinds*.rs
 problem-codes	ui/src/lib/api.ts

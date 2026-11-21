@@ -120,7 +120,7 @@ jobs:
           before, after = os.environ["BEFORE"], os.environ["AFTER"]
           if os.environ["EVENT_NAME"] == "push" and before.strip("0") and after:
               run = subprocess.run(
-                  ["git", "diff", "--name-only", "-z", before, after],
+                  ["git", "diff", "--name-only", "--no-renames", "-z", before, after],
                   capture_output=True, text=True,
               )
               if run.returncode == 0:
