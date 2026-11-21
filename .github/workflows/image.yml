@@ -123,8 +123,10 @@ jobs:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_URL']) {
-              if (process.env[k]) core.exportVariable(k, process.env[k])
+            // Every ACTIONS_* variable, not a fixed list: the cache service's version switch
+            // (ACTIONS_CACHE_SERVICE_V2) is one of them, and without it buildx talks to the retired API.
+            for (const [k, v] of Object.entries(process.env)) {
+              if (k.startsWith('ACTIONS_') && v) core.exportVariable(k, v)
             }
 
       # REQ: OPS-004 - a hosted runner has about 8 GiB of memory and little free disk. The release

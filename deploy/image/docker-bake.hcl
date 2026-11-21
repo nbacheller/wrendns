@@ -14,6 +14,7 @@ variable "OUT" { default = "out" }
 variable "IMAGE" { default = "" }
 variable "PUSH" { default = "false" }
 # "gha" reads and writes the GitHub cache (a speed-up only); anything else uses no cache.
+# Writing it never fails a build (ignore-error): the cache service being down is not a build error.
 # leg-build.sh sets "gha" only where the Actions runtime variables exist (see there).
 variable "CACHE" { default = "none" }
 variable "VERSION" { default = "dev" }
@@ -52,7 +53,7 @@ target "base" {
 target "image" {
   inherits = ["base"]
   # Written once, by this target: it holds every stage the other target needs.
-  cache-to = CACHE == "gha" ? ["type=gha,scope=image-${ARCH},mode=max"] : []
+  cache-to = CACHE == "gha" ? ["type=gha,scope=image-${ARCH},mode=max,ignore-error=true"] : []
   output = concat(
     ["type=oci,dest=${OUT}/image.tar", "type=docker,name=wrendns:smoke-${ARCH}"],
     PUSH == "true" ? ["type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true"] : []
