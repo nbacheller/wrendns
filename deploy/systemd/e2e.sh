@@ -32,6 +32,8 @@ diagnose() {
   ss -Hlntp 'sport = :53 or sport = :8053 or sport = :9153' 2>&1 || true
   for pid in $(ss -Hlnup 'sport = :53' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
     ps -o pid,ppid,user,lstart,args -p "$pid" 2>&1 || true
+    # The systemd unit (or cgroup) says whether the holder is a service the machine ships.
+    ps -o unit= -p "$pid" 2>/dev/null || cat "/proc/$pid/cgroup" 2>/dev/null || true
   done
   echo "::endgroup::"
 }
