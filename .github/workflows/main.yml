@@ -386,7 +386,7 @@ jobs:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.12" }
       - uses: helm/chart-testing-action@v2.9.0
