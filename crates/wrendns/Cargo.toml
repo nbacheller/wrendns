@@ -42,7 +42,7 @@ rand = "0.10.3"
 # REQ: API-007 (T6.3) — Pi-hole keeps groups in SQLite (gravity.db) and Teleporter archives
 # are zip / tar.gz. Both crates are already in the tree (wrendns-store, wrendns-git).
 rusqlite = { version = "0.42", features = ["bundled"] }
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 # REQ: API-007 (T6.7) — backups are zstd-compressed tar; zstd is already in the tree
 # (wrendns-store, wrendns-filter).
 zstd = { version = "0.14.0", default-features = false }

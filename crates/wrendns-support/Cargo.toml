@@ -17,7 +17,7 @@ wrendns-config.workspace = true
 # style); the archive is deflate by miniz_oxide (pure Rust, already used for Git packfiles); the
 # known-values pass is one multi-pattern regex-automata search (already used by the filter).
 blake3 = "1.8.7"
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 regex-automata = "0.4.18"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
