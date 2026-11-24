@@ -131,7 +131,7 @@
         "UPS-001",
         "DNS-003"
       ],
-      "summary": "Encrypted upstreams over HTTP/2 with one multiplexed connection per server, and a DoH listener for your devices (HTTP/2 and HTTP/1.1, GET and POST, client IDs in the path, Cache-Control from the answer TTL).",
+      "summary": "Encrypted upstreams over HTTP/2 with one multiplexed connection per server (HTTP/1.1 for servers that only speak it), and a DoH listener for your devices (HTTP/2 and HTTP/1.1, GET and POST, client IDs in the path, Cache-Control from the answer TTL).",
       "diagram": "rfc8484"
     },
     {

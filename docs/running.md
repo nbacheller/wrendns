@@ -928,7 +928,7 @@ tls_server_name = "cloudflare-dns.com"      # name on the certificate
 
 [[upstream]]
 name = "quad9-doh"
-url = "https://dns.quad9.net/dns-query"     # DNS over HTTPS (HTTP/2)
+url = "https://dns.quad9.net/dns-query"     # DNS over HTTPS (HTTP/2, or HTTP/1.1 if that is all the server speaks)
 bootstrap = ["9.9.9.9", "149.112.112.112"]  # how to look up dns.quad9.net itself
 
 [[upstream]]
@@ -943,8 +943,8 @@ tls_server_name = "dns.adguard-dns.com"
 ```
 - Certificates are verified against the built-in Mozilla root set, so no CA files are needed, even in a minimal container. `tls_insecure_skip_verify = true` turns verification off (a warning is logged; don't use it on untrusted networks).
 - **Hostname upstreams** are looked up through `bootstrap` servers, or the system resolvers from `/etc/resolv.conf` when `bootstrap` is empty (never through WrenDNS itself), and the result is cached for its TTL. To skip the lookup, put the IP in the URL and set `tls_server_name`.
-- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection. A new connection finishes its handshake even when the query that started it runs out of time, so the next query finds it ready. A connection that stops answering altogether (queries waiting 3 s with nothing coming back, as when something along the way drops it silently) is closed, and its queries retry at once on a new one. The `wrendns_upstream_connections_*` metrics show how often connections open, why they close, and whether TLS sessions resume. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT; DoH over HTTP/3 does the same with a request per query.
-- `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
+- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection (or, with an HTTP/1.1-only server, uses up to `pool_size` connections, one request at a time on each). A new connection finishes its handshake even when the query that started it runs out of time, so the next query finds it ready. A connection that stops answering altogether (queries waiting 3 s with nothing coming back, as when something along the way drops it silently) is closed, and its queries retry at once on a new one. The `wrendns_upstream_connections_*` metrics show how often connections open, why they close, and whether TLS sessions resume. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT; DoH over HTTP/3 does the same with a request per query.
+- `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"2"` offers HTTP/2 only; `"auto"` (the default) offers HTTP/2 and HTTP/1.1 in the TLS handshake and speaks whichever the server selects, so a DoH server that only speaks HTTP/1.1 (the `CleanBrowsing` presets) works. Over HTTP/1.1 each connection carries one request at a time, kept alive between queries, and up to `pool_size` connections are open at once; the rest of the queries wait for a free one. Certificate checks, `spki_pins`, bootstrap, `source`, proxies, timeouts and health checks are the same on both. Metrics and the query log call both `doh`.
 - `doh_method = "get"` sends DoH queries as `GET /dns-query?dns=…` (RFC 8484 §4.1) instead of POST, for providers or HTTP caches that prefer it. The query ID is 0 either way, so identical questions make identical URLs.
 
 ### DNSCrypt and DNS stamps

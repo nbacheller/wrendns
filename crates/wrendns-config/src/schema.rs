@@ -535,7 +535,7 @@ impl DohMethod {
 /// DoH HTTP version preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum HttpVersion {
-    /// Try HTTP/3 via Alt-Svc and fall back to HTTP/2.
+    /// HTTP/2, or HTTP/1.1 when the server does not offer HTTP/2 (the TLS handshake offers both and the server chooses). `"2"` offers HTTP/2 only; `"3"` uses HTTP/3.
     #[default]
     #[serde(rename = "auto")]
     Auto,
