@@ -23,9 +23,11 @@ pub(crate) trait Io: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Io for T {}
 pub(crate) type BoxIo = Box<dyn Io>;
 
-pub(crate) type ConnectFuture = Pin<Box<dyn Future<Output = io::Result<BoxIo>> + Send>>;
+/// Opens a new `T` (the stream, or the stream with what the handshake chose).
+pub(crate) type Connect<T> =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = io::Result<T>> + Send>> + Send + Sync>;
 /// Opens a new stream to the upstream.
-pub(crate) type Connector = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
+pub(crate) type Connector = Connect<BoxIo>;
 
 /// Queries queued on one connection before a new connection is opened (if the pool allows).
 const BUSY_THRESHOLD: usize = 32;
@@ -137,8 +139,9 @@ impl ConnStats {
     }
 }
 
-/// Counts and times every connection `c` opens.
-pub(crate) fn counted(c: Connector, stats: Arc<ConnStats>) -> Connector {
+/// Counts and times every connection `c` opens (`T` is the stream, or the stream with what the
+/// handshake chose).
+pub(crate) fn counted<T: Send + 'static>(c: Connect<T>, stats: Arc<ConnStats>) -> Connect<T> {
     Arc::new(move || {
         let (c, stats) = (Arc::clone(&c), Arc::clone(&stats));
         Box::pin(async move {

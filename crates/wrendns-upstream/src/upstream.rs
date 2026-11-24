@@ -1,6 +1,6 @@
 //! One upstream server: how to talk to it, and how healthy it is.
 //!
-//! REQ: UPS-001 (UDP, TCP, DoT, DoH/h2), UPS-006 (health per upstream), UPS-008 (pooled,
+//! REQ: UPS-001 (UDP, TCP, DoT, DoH over HTTP/2 or HTTP/1.1), UPS-006 (health per upstream), UPS-008 (pooled,
 //! pipelined connections), UPS-009 (bootstrap for hostnames), `spec/04` §7 (loop detection).
 
 use std::io;
@@ -303,6 +303,9 @@ pub struct UpstreamOptions {
     pub plugin_dir: Option<std::path::PathBuf>,
     /// REQ: UPS-011 (T9.9) — DoH over GET (`?dns=`) instead of POST.
     pub doh_get: bool,
+    /// REQ: UPS-001 — DoH offers HTTP/2 only (`http_version = "2"`); otherwise it also offers
+    /// HTTP/1.1 and speaks whichever the server selects.
+    pub doh_h2_only: bool,
     /// REQ: UPS-013 (T24.31, ADR-997) — the local address (already resolved and checked) that
     /// this upstream's UDP sockets and TCP connections are bound to before they connect.
     pub source: Option<std::net::IpAddr>,
@@ -336,6 +339,7 @@ impl Default for UpstreamOptions {
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
             doh_get: false,
+            doh_h2_only: false,
             source: None,
             source_spec: None,
             self_probe: false,
@@ -531,7 +535,7 @@ enum Transport {
     },
     Tcp(Pool),
     Tls(Pool),
-    Https(Doh),
+    Https(Box<Doh>),
     /// REQ: UPS-002 (T7.7) — DNS over QUIC.
     Quic(Box<Doq>),
     /// REQ: UPS-002 (T7.8) — DoH over HTTP/3.
@@ -681,6 +685,24 @@ fn tls_connector(
     proxy: Option<Arc<crate::proxy::Proxy>>,
     stats: Arc<ConnStats>,
 ) -> Connector {
+    let c = tls_connector_alpn(target, cfg, name, proxy, stats, false);
+    Arc::new(move || {
+        let f = c();
+        Box::pin(async move { f.await.map(|(io, _)| io) })
+    })
+}
+
+/// A TLS connector that also says whether the server selected HTTP/2 (`h2`) in ALPN. A server
+/// that selects nothing is read as HTTP/1.1 when `http11` was offered (RFC 9110 practice), and as
+/// HTTP/2 when it was not (the only protocol offered).
+fn tls_connector_alpn(
+    target: Arc<Target>,
+    cfg: Arc<rustls::ClientConfig>,
+    name: ServerName<'static>,
+    proxy: Option<Arc<crate::proxy::Proxy>>,
+    stats: Arc<ConnStats>,
+    http11: bool,
+) -> crate::doh::DohConnector {
     let tls = tokio_rustls::TlsConnector::from(cfg);
     Arc::new(move || {
         let (target, tls, name, proxy, stats) = (
@@ -698,7 +720,11 @@ fn tls_connector(
                 s.get_ref().1.handshake_kind(),
                 Some(rustls::HandshakeKind::Resumed)
             ));
-            Ok(Box::new(s) as BoxIo)
+            let h2 = match s.get_ref().1.alpn_protocol() {
+                Some(p) => p == b"h2",
+                None => !http11,
+            };
+            Ok((Box::new(s) as BoxIo, h2))
         })
     })
 }
@@ -842,7 +868,15 @@ impl Upstream {
                 )))
             }
             Protocol::Https => {
-                let cfg = client_config(tls, &opts.tls, &[b"h2"], opts.tls_insecure_skip_verify)
+                // REQ: UPS-001 — `h2` first, then `http/1.1` (unless `http_version = "2"`): the
+                // server chooses, and a server that only speaks HTTP/1.1 still works.
+                let http11 = !opts.doh_h2_only;
+                let alpn: &[&[u8]] = if http11 {
+                    &[b"h2", b"http/1.1"]
+                } else {
+                    &[b"h2"]
+                };
+                let cfg = client_config(tls, &opts.tls, alpn, opts.tls_insecure_skip_verify)
                     .map_err(|e| e.to_string())?;
                 let host = match (&opts.tls_server_name, &endpoint.host) {
                     (None, Host::Ip(std::net::IpAddr::V6(ip))) => format!("[{ip}]"),
@@ -854,22 +888,25 @@ impl Upstream {
                     format!("{host}:{}", endpoint.port)
                 };
                 let conn = counted(
-                    tls_connector(
+                    tls_connector_alpn(
                         Arc::clone(&target),
                         cfg,
                         server_name(&tls_name)?,
                         opts.proxy.clone(),
                         Arc::clone(&conns),
+                        http11,
                     ),
                     Arc::clone(&conns),
                 );
-                Transport::Https(Doh::new(
+                Transport::Https(Box::new(Doh::new(
                     conn,
                     &authority,
                     &endpoint.path,
                     &opts.headers,
                     opts.doh_get,
-                )?)
+                    opts.pool_size,
+                    opts.idle_timeout,
+                )?))
             }
             Protocol::H3 => {
                 let cfg = client_config(tls, &opts.tls, &[b"h3"], opts.tls_insecure_skip_verify)

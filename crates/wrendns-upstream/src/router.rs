@@ -359,6 +359,7 @@ fn build_upstreams<'c>(
             tls: up_tls,
             plugin_args: u.args.iter().map(ToString::to_string).collect(),
             doh_get: u.doh_method == wrendns_config::DohMethod::Get,
+            doh_h2_only: u.http_version == HttpVersion::H2,
             source: None,
             // REQ: UPS-013 (ADR-997 §4) — looked up when the upstream is built; an address this
             // node doesn't hold degrades this upstream only, never the start or a reload.
