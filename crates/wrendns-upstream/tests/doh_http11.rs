@@ -12,7 +12,7 @@ use std::time::Duration;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use wrendns_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
+use wrendns_proto::{NameBuf, ResponseBuilder, build_query, parse_query, rcode, rtype, summarize};
 use wrendns_upstream::{Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
 
 struct Cert {
@@ -84,6 +84,9 @@ enum Mode {
     /// `Content-Length`, keep-alive, and the same answer sent a second time 50 ms later: an
     /// extra response nobody asked for.
     Double,
+    /// `Content-Length`, keep-alive; the second request on each connection gets a well-formed
+    /// answer to a different question (same ID), and nothing else is ever sent unasked.
+    Mismatch,
     /// 70,000 bytes of body.
     Oversize,
     /// Not HTTP.
@@ -140,6 +143,7 @@ async fn serve<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     delay: Duration,
 ) {
     let mut buf = Vec::new();
+    let mut nth = 0usize;
     loop {
         // The request head.
         let end = loop {
@@ -168,6 +172,7 @@ async fn serve<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         let body = buf[end..end + len].to_vec();
         buf.drain(..end + len);
         seen.reqs.fetch_add(1, Ordering::SeqCst);
+        nth += 1;
 
         let line = head.lines().next().unwrap();
         let (query, ok) = if let Some(rest) = line.strip_prefix("GET /dns-query?dns=") {
@@ -185,9 +190,26 @@ async fn serve<S: AsyncReadExt + AsyncWriteExt + Unpin>(
             seen.wrong.fetch_add(1, Ordering::SeqCst);
         }
         tokio::time::sleep(delay).await;
+        let query = if mode == Mode::Mismatch && nth == 2 && query.len() >= 2 {
+            // Same ID, a different name: a valid answer, to another question.
+            let mut other = [0u8; 512];
+            let n = build_query(
+                &mut other,
+                u16::from_be_bytes([query[0], query[1]]),
+                &NameBuf::from_presentation("other.example").unwrap(),
+                rtype::A,
+                1,
+                true,
+                None,
+            )
+            .unwrap();
+            other[..n].to_vec()
+        } else {
+            query
+        };
         let msg = if ok { answer(&query) } else { Vec::new() };
         let out: Vec<u8> = match mode {
-            Mode::Length | Mode::Drop | Mode::Close | Mode::Double => {
+            Mode::Length | Mode::Drop | Mode::Close | Mode::Double | Mode::Mismatch => {
                 let conn = if mode == Mode::Close {
                     "Connection: close\r\n"
                 } else {
@@ -468,4 +490,31 @@ async fn ups_001_doh_http11_extra_response_does_not_poison_the_connection() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     assert!(seen.conns.load(Ordering::SeqCst) >= 2);
+}
+
+/// REQ: UPS-001, UPS-008 — a connection goes back to the pool only if the response is the answer
+/// to the query it carried. The server answers the second request on a connection with a
+/// well-formed answer to another question and sends nothing else, so the connection is clean (no
+/// pending byte for the check at reuse to find) and only the check after the answer can refuse
+/// to pool it: that query is an error (never another question's answer), and the next one
+/// succeeds with its own answer on a new connection. No sleep decides anything.
+#[tokio::test]
+async fn ups_001_doh_http11_mismatched_answer_is_refused_and_the_connection_not_reused() {
+    let c = cert();
+    let (addr, seen) = h1_server(&c, &[b"http/1.1"], Mode::Mismatch, Duration::ZERO).await;
+    let up = upstream(&c, addr, |_| {});
+    assert_eq!(ask(&up, "first.example").await, Ok(1));
+    assert_eq!(seen.conns.load(Ordering::SeqCst), 1);
+    assert!(
+        ask(&up, "second.example").await.is_err(),
+        "an answer to another question is refused"
+    );
+    assert_eq!(seen.reqs.load(Ordering::SeqCst), 2);
+    assert_eq!(ask(&up, "third.example").await, Ok(1));
+    assert_eq!(
+        seen.conns.load(Ordering::SeqCst),
+        2,
+        "the connection that carried the mismatched answer was not pooled"
+    );
+    assert_eq!(seen.reqs.load(Ordering::SeqCst), 3);
 }
