@@ -34,14 +34,14 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 ## Upstreams (UPS) — see `04`
 | ID | Pri | Requirement |
 |---|---|---|
-| UPS-001 | P0 | Upstream protocols: UDP, TCP, DoT, DoH (HTTP/2). |
+| UPS-001 | P0 | Upstream protocols: UDP, TCP, DoT, DoH (HTTP/2, or HTTP/1.1 where the server does not offer HTTP/2). |
 | UPS-002 | P1 | Upstream protocols: DoH over HTTP/3 and DoQ. |
 | UPS-003 | P1 | Upstream DNSCrypt v2 (to cover what Pi-hole users run via dnscrypt-proxy). |
 | UPS-004 | P0 | A built-in preset catalog covering every Pi-hole preset (Google, OpenDNS, Level3, Comodo, Quad9 filtered/unfiltered/ECS, Cloudflare) and the common Technitium forwarder presets (Cloudflare, Google, Quad9, AdGuard, NextDNS, Mullvad, ControlD), each in all protocols it offers. |
 | UPS-005 | P0 | Selection strategies: `failover`, `round_robin`, `weighted`, `fastest` (EWMA latency), `parallel` (race N, first valid answer wins). |
 | UPS-006 | P0 | Active and passive health checks; a circuit breaker per upstream; failover within one query (retry next upstream before the client timeout). |
 | UPS-007 | P0 | Upstream groups referenced by name; routing by domain suffix, client group, and qtype. |
-| UPS-008 | P0 | Connection reuse/pipelining for TCP/DoT/DoH (HTTP/2 multiplexing); configurable pool size; idle timeouts. |
+| UPS-008 | P0 | Connection reuse/pipelining for TCP/DoT/DoH (HTTP/2 multiplexing; one request at a time on each kept-alive HTTP/1.1 connection, up to the pool size); configurable pool size; idle timeouts. |
 | UPS-009 | P0 | Bootstrap resolution for hostname upstreams (pinned IPs or dedicated bootstrap servers; never resolve through ourselves). |
 | UPS-010 | P1 | SOCKS5 and HTTP CONNECT proxy per upstream (Tor parity with Technitium). |
 | UPS-011 | P1 | **Custom upstreams:** (a) arbitrary endpoint parameters (custom DoH path/headers/method, SNI override, client certificate mTLS, TLS pinning); (b) an *exec/socket plugin* that speaks DNS wire format over a Unix socket or localhost; (c) a WASM upstream plugin ABI (P2). |
