@@ -7,20 +7,23 @@ on:
   workflow_call:
   workflow_dispatch:
 
-# Least privilege: the job reads the repository and nothing more.
-permissions:
-  contents: read
+# Least privilege (OPS-004, ADR-1080): the job sets its own permissions; it reads the repository and nothing more.
+permissions: {}
 
 jobs:
   three-node:
     # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
     # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # A cold image build on a 4-vCPU runner (the UI, then the workspace with thin LTO, and an empty
     # build cache) takes well over the README's 3 to 6 minutes, which was measured on a warm 24-core
     # host; the checks take about five more. 60 minutes leaves room for both.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: "Three nodes: join, replicate, fail over, restart (deploy/cluster3)"
         run: bash deploy/cluster3/e2e.sh

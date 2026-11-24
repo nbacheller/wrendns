@@ -25,8 +25,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/wrendns
@@ -35,6 +34,8 @@ jobs:
   # One build identity for every architecture of this commit, computed once.
   version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 10
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -54,6 +55,7 @@ jobs:
       # this job needs it; the legs do not check out history.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Version
         id: v
@@ -109,9 +111,11 @@ jobs:
       BUILD_COMMIT: ${{ needs.version.outputs.build_commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: matrix.arch != 'amd64'
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # REQ: OPS-004 (ADR-1075, T39.5) - buildx's `type=gha` cache reads the Actions runtime token
       # and URLs from the environment, and a step's shell does not have them unless an action
@@ -209,12 +213,16 @@ jobs:
   assets:
     needs: [version, image]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 20
     env:
       BUILD_VERSION: ${{ needs.version.outputs.build_version }}
       BUILD_COMMIT: ${{ needs.version.outputs.build_commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: bin-*
@@ -289,11 +297,16 @@ jobs:
       # REQ: NFR-005 (T10.10) — cosign signs the pushed images keylessly with this run's
       # GitHub OIDC identity (Sigstore's Fulcio certificate, Rekor transparency log).
       id-token: write
+      # REQ: NFR-005 (T39.11) — the image's provenance and SBOM attestations, made only while the
+      # repository is public (the steps at the end of this job).
+      attestations: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@v3
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: digest-*
@@ -337,6 +350,44 @@ jobs:
           printf '{"containerimage.digest": "%s"}\n' "$digest" > "$RUNNER_TEMP/image.json"
           sh .github/scripts/cosign-sign.sh "$IMAGE" "$RUNNER_TEMP/image.json"
 
+      # REQ: NFR-005 (T39.11, ADR-1080) — a provenance attestation and an SBOM attestation for the
+      # published image, stored in the registry beside it. GitHub's artifact attestations are not
+      # available to a private repository on this plan, so the four steps below run only while the
+      # repository is public: they switch themselves on at the public flip and are skipped until then
+      # (`private == false` is false when the payload lacks the field, so an unknown visibility skips
+      # too). The SBOM is syft's CycloneDX read from the pushed manifest list's amd64 image, with the
+      # same pinned and checked syft as the release assets.
+      - name: Image digest for the attestations
+        id: subject
+        if: github.event.repository.private == false
+        run: |
+          digest="$(docker buildx imagetools inspect "$IMAGE:$MAIN_TAG" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" == sha256:* ]] || { echo "::error::no manifest list digest for $IMAGE:$MAIN_TAG"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: SBOM of the image
+        if: github.event.repository.private == false
+        env:
+          DIGEST: ${{ steps.subject.outputs.digest }}
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/syft.tgz" https://github.com/anchore/syft/releases/download/v1.54.1/syft_1.54.1_linux_amd64.tar.gz
+          echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  $RUNNER_TEMP/syft.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/syft.tgz" -C "$RUNNER_TEMP" syft
+          "$RUNNER_TEMP/syft" scan "registry:$IMAGE@$DIGEST" --platform linux/amd64 -q -o "cyclonedx-json=$RUNNER_TEMP/image.cdx.json"
+          test -s "$RUNNER_TEMP/image.cdx.json" || { echo "::error::syft wrote no SBOM for $IMAGE@$DIGEST"; exit 1; }
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: github.event.repository.private == false
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        if: github.event.repository.private == false
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/image.cdx.json
+          push-to-registry: true
+
   # REQ: OPS-002 — the Helm chart as an OCI artifact, so others install it without cloning:
   # `helm install wrendns oci://ghcr.io/<owner>/charts/wrendns --version <v>`. Main
   # publishes `<chart version>-edge.<run>` (appVersion edge); a `v*` tag publishes that version.
@@ -350,16 +401,22 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@v5
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
       - name: Package and push
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           base=$(awk '/^version:/ {print $2}' deploy/helm/wrendns/Chart.yaml)
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; app="$v"
           else v="${base}-edge.${GITHUB_RUN_NUMBER}"; app=edge; fi
           helm package deploy/helm/wrendns --version "$v" --app-version "$app" -d out
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm push "out/wrendns-$v.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
-          echo "::notice title=chart published::oci://ghcr.io/${{ github.repository_owner }}/charts/wrendns --version $v"
+          echo "$TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          helm push "out/wrendns-$v.tgz" "oci://ghcr.io/$OWNER/charts"
+          echo "::notice title=chart published::oci://ghcr.io/$OWNER/charts/wrendns --version $v"
 
   # Signs SHA256SUMS with the release key (secret MINISIGN_SECRET_KEY; public half in
   # deploy/release/wrendns-release.pub and built into `wrendns self-update`) and publishes.
@@ -376,6 +433,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The Publish edge step runs `git ls-remote origin refs/heads/main`, which a private repository
+          # answers only with the checkout's credentials: kept on purpose (this job pushes nothing).
+          persist-credentials: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: binaries
@@ -446,9 +507,13 @@ jobs:
     needs: [merge, chart, release]
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@v5
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
       - name: Verify the release
         run: |
           sh .github/scripts/apt-install.sh minisign

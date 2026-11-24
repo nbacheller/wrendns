@@ -1,0 +1,28 @@
+# REQ: NFR-005 (T39.11, ADR-1080) — the findings of `zizmor` (the workflow audit that pr.yml and
+# main.yml run, offline, from a pinned version) that are accepted on purpose. Every entry names the
+# reason; everything else zizmor finds fails the check. Entries are by file, so they do not drift
+# when lines move. Local run: uvx zizmor@1.33.1 --offline --config .github/zizmor.yml .github/workflows
+rules:
+  # cla.yml answers issue_comment and pull_request_target because CLA Assistant Lite has to write to
+  # a fork's pull request (a comment, a status, the signature file on the `cla-signatures` branch),
+  # which the fork's token cannot do. The workflow never checks out or runs the pull request's code
+  # (it has no checkout step), takes its permissions from the job, and acts only on two exact
+  # comment texts; its header comment says the same.
+  dangerous-triggers:
+    ignore:
+      - cla.yml
+  # The CLA action (contributor-assistant/github-action) is archived upstream. It is pinned by
+  # commit SHA, runs with the job's narrow permissions and only on the trigger above, and the
+  # repository's Actions policy lists no replacement. Replacing it is an owner decision (the
+  # signature file's format is the action's).
+  archived-uses:
+    ignore:
+      - cla.yml
+  # `./.github/workflows/_x.yml` is the documented form for a reusable workflow of the same
+  # repository, and works on every runner version; zizmor's suggested `$/...` form is newer and
+  # not used anywhere else in this repository. Not a security finding (the call is local and
+  # pinned by the commit the caller runs from).
+  self-repository:
+    ignore:
+      - main.yml
+      - nightly.yml

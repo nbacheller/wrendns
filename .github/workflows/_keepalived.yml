@@ -9,17 +9,20 @@ on:
   workflow_call:
   workflow_dispatch:
 
-# Least privilege: the job reads the repository and nothing more.
-permissions:
-  contents: read
+# Least privilege (OPS-004, ADR-1080): the job sets its own permissions; it reads the repository and nothing more.
+permissions: {}
 
 jobs:
   vip-failover:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # The image is built from the Dockerfile on every run (the UI, then the workspace with thin LTO),
     # which dominates the run; the checks in e2e.sh take about five minutes on top of it.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: "Two nodes behind a VIP: failover, witness, maintenance (deploy/keepalived)"
         run: bash deploy/keepalived/e2e.sh

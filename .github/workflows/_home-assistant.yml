@@ -6,16 +6,20 @@ on:
   workflow_call:
   workflow_dispatch:
 
-permissions:
-  contents: read
+# Least privilege (OPS-004, ADR-1080): each job sets its own permissions.
+permissions: {}
 jobs:
   test:
     # OPS-004: GitHub-hosted: setup-python's Ubuntu 26.04 builds need x86-64-v3, which the
     # self-hosted runners' CPU lacks.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
@@ -36,11 +40,17 @@ jobs:
     # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
     # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@92e73e19cbfb3981e63ef478a16f95f415e634d3 # 1.99.0
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
       - run: cargo build -p wrendns
       - name: Home Assistant source against a throwaway Home Assistant

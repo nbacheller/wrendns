@@ -116,8 +116,9 @@ updates:
       actions:
         update-types: [minor, patch]
     ignore:
-      # The ref after the @ is the Rust version to install (the workflows pin it, with
-      # rust-toolchain.toml), not the action's own version.
+      # The ref after the @ was the Rust version to install; the workflows now pin a commit of the
+      # branch named after it and pass the version as `toolchain:` (ADR-1080), kept in step with
+      # rust-toolchain.toml by hand, so it is not the action's own version.
       - dependency-name: "dtolnay/rust-toolchain"
 
   # The image's base images.
