@@ -455,7 +455,14 @@ fn obs_024_bounds() {
     });
     let t = run(i).unwrap();
     assert!(t.partial, "the 1 s deadline must cut the replay short");
-    assert!(t.rows < 4000, "rows = {}", t.rows);
+    // Each row costs at least 3 ms (a sleep never returns early) and the scan looks at the
+    // clock every 64 rows, so 1 s is over by row 334 and the scan must stop at row 384 at the
+    // latest. A busy machine only lowers the count.
+    assert!(
+        t.rows <= 384,
+        "the scan overran the deadline: rows = {}",
+        t.rows
+    );
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::Relaxed),
         t.rows,
