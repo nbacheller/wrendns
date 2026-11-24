@@ -104,7 +104,7 @@ bootstrap = ["9.9.9.9", "149.112.112.112"]  # how to look up dns.quad9.net itsel
 name = "google-h3"
 url = "h3://8.8.8.8/dns-query"              # DoH over HTTP/3 (or https:// with http_version = "3")
 tls_server_name = "dns.google"</code></pre>
-      <p>Every query shares one HTTP/2 connection. <code>doh_method = "get"</code> sends <code>GET</code> requests instead of POST, for providers or HTTP caches that prefer it.</p>
+      <p>Every query shares one HTTP/2 connection. A server that only speaks HTTP/1.1 (the TLS handshake offers both, and the server chooses) gets one request at a time per connection, up to <code>pool_size</code> connections. <code>doh_method = "get"</code> sends <code>GET</code> requests instead of POST, for providers or HTTP caches that prefer it.</p>
     </div>
     <div class="panel" id="up-doq"><h3>DNS over QUIC</h3>
 <pre><code>[[upstream]]

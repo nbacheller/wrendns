@@ -2647,7 +2647,7 @@
           ]
         },
         {
-          "description": "Try HTTP/3 via Alt-Svc and fall back to HTTP/2.",
+          "description": "HTTP/2, or HTTP/1.1 when the server does not offer HTTP/2 (the TLS handshake offers both and the server chooses). `\"2\"` offers HTTP/2 only; `\"3\"` uses HTTP/3.",
           "type": "string",
           "const": "auto"
         }
