@@ -6080,7 +6080,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** A wave's gate is faster, and CI stays the complete check. A wave can pass its gate and still fail in CI, so `pr-ok` must be green before a merge. Rejected: the full workspace suite in every wave gate, because CI already runs it and the cost falls on every round.
 
-## ADR-1073 — CI runs as six workflows, with a fast tier on pull requests and one required check, pr-ok (Proposed 2026-11-20; OPS-004, NFR-005; M39, T39.1, T39.12)
+## ADR-1073 — CI runs as six workflows, with a fast tier on pull requests and one required check, pr-ok (Accepted 2026-11-20, implemented by the merges of the pull-request and main tiers; OPS-004, NFR-005; M39, T39.1, T39.12)
 
 **Context:** CI had grown into one large workflow and several separate ones, and the repository ruleset had no required checks. cluster3 and keepalived ran only on pushes to main that touched their paths, and no schedule ran them, so the rule of running them on merge to main and nightly was not met. The owner decided the target shape on 2026-11-19 (the CI redesign plan). This ADR records that decision; it does not propose a new one.
 
@@ -6095,6 +6095,8 @@ Answered by the owner on 2026-11-20 (speed wave round 2), for where the jobs run
 
 **Consequences:** One required check keeps the ruleset stable while jobs change. The cost is that `pr-ok` alone does not name the failing job, so the reader must open the run. cluster3, keepalived and the Home Assistant job are path-gated jobs of `main.yml` that call reusable workflows (`_cluster3.yml`, `_keepalived.yml`, `_home-assistant.yml`), of which `nightly.yml` also calls the first two (owner decisions of 2026-11-19 and 2026-11-20: cluster3 and keepalived nightly, and all three on main only when their paths changed). The three-node job still builds its own image; reusing the main image waits for the build-once task (T39.3). Rejected: image builds on pull requests (the owner's decision above).
 
+*Done 2026-11-20 (merges `eb5eb319`, `bfb97c86`):* `pr.yml` with `changes` and `pr-ok`, `main.yml`, `nightly.yml`, `upstream-watch` deleted and the `feat/ipam-integrations` triggers dropped. Not as written above: the image build is `image.yml` and `release.yml` is the release dispatch (point 1 calls `release.yml` the reusable image and chart); the `bins` job named in the owner's answer does not exist yet (T39.3); `pr-ok` is not yet in the ruleset, which point 3 already says waits for the first green run on main; and which jobs sit in each tier is still the owner's to confirm.
+
 ## ADR-1074 — Each binary is built once per run and shared as an artifact, and tests run as separate processes (Proposed 2026-11-20; OPS-004; M39, T39.3)
 
 **Context:** The same profiles were compiled in several jobs. The ui, oidc, migration, native, worker-image and Home Assistant jobs each built WrenDNS, and the Home Assistant job built the debug binary twice. Compilation is most of the wall time. A debug `dev-e2e` build embeds the path of `ui/dist` it was built at (`crates/wrendns-api/src/ui.rs`, line 15), so a debug binary served from another path finds no UI.
@@ -6108,7 +6110,7 @@ Answered by the owner on 2026-11-20 (speed wave round 2), for where the jobs run
 
 **Consequences:** A failed `bins` job fails `pr-ok`. A consumer's build no longer depends on its own runner's cache. The embedded UI makes the debug artifact larger; its size is measured. Rejected: one combined binary for every job.
 
-## ADR-1075 — The image builds from a dependency layer, with one leg per architecture merged into one manifest, and the release profile unchanged (Proposed 2026-11-20; NFR-005, NFR-001; M39, T39.4, T39.5)
+## ADR-1075 — The image builds from a dependency layer, with one leg per architecture merged into one manifest, and the release profile unchanged (Accepted 2026-11-21, implemented by the dependency-layer and per-architecture leg merges; NFR-005, NFR-001; M39, T39.4, T39.5)
 
 **Context:** The image job took 38 minutes 3 seconds in one buildx run for three platforms. `COPY . .` comes before the build, so every source change rebuilds the dependencies. The cargo registry and target mounts are not exported to the GitHub cache. The baseline image sizes are amd64 16.13 MiB, arm64 15.25 MiB and arm/v7 15.86 MiB, against the 25 MiB per-architecture gate (ADR-916).
 
@@ -6126,7 +6128,9 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the LXD footprint is a
 
 **Consequences:** The layer must keep the `cargo auditable` metadata identical, which is checked before it is accepted. Rejected: a shorter build by changing the release profile, because the owner ranks performance first.
 
-## ADR-1076 — Self-hosted runners run each job in a fresh LXD container reset from a snapshot, with the registry mirrors on the host and fork and Dependabot pull requests kept off the box (Proposed 2026-11-20; OPS-004; M39, T39.6, T39.9)
+*Done 2026-11-21 (merges `cabdb616`, `e0eb11eb`, `1b5a2bca`):* points 1 to 5, 7 and 8 are on main. Point 6 is not yet: the image legs still run on GitHub-hosted runners, and the cutover order of ADR-1076 is open. The byte-identity, `cargo auditable` and wall-time measurements named in T39.4 and T39.5 are not recorded.
+
+## ADR-1076 — Self-hosted runners run each job in a fresh LXD container reset from a snapshot, with the registry mirrors on the host and fork and Dependabot pull requests kept off the box (Accepted 2026-11-21, implemented by the runner and mirror merges; OPS-004; M39, T39.6, T39.9)
 
 **Context:** The self-hosted box runs eight runners. When six cargo jobs shared it, one cargo test took 1223 s on the box against 249 s on a hosted runner, so the box needs isolation and a cap. Its CPU is Ivy Bridge, which supports x86-64-v2 only. The owner rule of 2026-11-19 kept pull requests on GitHub-hosted runners, and the owner widened that rule on 2026-11-20 for same-repository pull requests, as described below.
 
@@ -6145,7 +6149,9 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the LXD footprint is a
 
 **Consequences:** A fresh container starts with cold caches, which is why ADR-1074 saves caches from a hosted job. Rollback is to the hosted runners for every job. Rejected: fork pull requests on the box (they are untrusted code). Rejected: moving the registry mirrors into the containers, because they stay on the host.
 
-## ADR-1077 — The watchdog ends when its runtime is gone: Disconnected means stopping, not a stall (Proposed 2026-11-20; OPS-012, OPS-004, fork red-jobs track)
+*Accepted 2026-11-21 on the record above (merges `9b846f4c`, `4668d605`, and up to `0da4836f` for the later job moves):* the mirrors are reached through the variables `WRENDNS_HUB`, `WRENDNS_GHCR` and `WRENDNS_QUAY`; the `migration`, `ui`, `oidc` and `native` jobs run on the containers. T39.9's measured acceptance criteria are not all met.
+
+## ADR-1077 — The watchdog ends when its runtime is gone: Disconnected means stopping, not a stall (Accepted 2026-11-20, implemented by the merge that fixed the red jobs; OPS-012, OPS-004, fork red-jobs track)
 
 **Context:** The watchdog (ADR-163) asks the runtime to run a task and counts a missing answer as a stall; after `stall_secs` it writes a dump and exits 70. It ends only when the stop signal reads `true`. In-process server tests (`server.rs`) spawn it too, and when a test's runtime is dropped the sender is dropped without sending `true`: the runtime check then fails against the dead runtime (the task is dropped unrun, which the probe read as "no answer"), and a minute later the leaked thread reports a stall and, before the `cfg(test)` backstop (point 3, which now only logs the exit) existed, exited the whole test binary with status 70 (CI 2026-11-20, `cargo test` on arm64 and amd64); this change ends the leaked thread itself. The same reading would apply to any drop of the node's runtime that skips the drain.
 
@@ -6156,7 +6162,7 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the LXD footprint is a
 
 **Consequences:** A wedged runtime is still detected (it times out; `deploy/watchdog/e2e.sh` and `ops_012_the_runtime_check_sees_a_runtime_whose_only_worker_is_blocked` cover it). Only a process whose runtime has been torn down stops being watched, which is correct. Test: `ops_012_watchdog_ends_when_its_runtime_is_gone`. Rejected: raising `stall_secs` in tests (hides the leak), and aborting the thread from the test server (every spawner would have to remember).
 
-## ADR-1078 — Dependabot opens few pull requests, never rebases them, waits five days after a release, and its jobs run on GitHub-hosted runners (Proposed 2026-11-20; NFR-005, OPS-004; M39, T39.7)
+## ADR-1078 — Dependabot opens few pull requests, never rebases them, waits five days after a release, and its jobs run on GitHub-hosted runners (Accepted 2026-11-20, implemented by the Dependabot policy and hosted-runner merges; NFR-005, OPS-004; M39, T39.7)
 
 **Context:** Dependabot opened pull requests weekly for every ecosystem, with a cargo limit of 3 and other limits up to 3, and its rebases re-ran CI on every open pull request after each merge. A Dependabot pull request is not a fork pull request, so until the actor guard lands it runs clippy and test on the self-hosted box. The policy's groups and three ignores (aes 0.9, typescript major, and the dtolnay/rust-toolchain tag) stay as they are.
 
@@ -6170,6 +6176,8 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the LXD footprint is a
 Waits for the owner answer on whether Dependabot runs on the self-hosted box once ADR-1076 is live.
 
 **Consequences:** Dependency updates arrive more slowly and in smaller numbers. A contributor who wants a rebase has to ask for it. Rejected: automatic rebases, because each merge would re-run CI on every open pull request.
+
+*Done 2026-11-20 (merges `10dc0712`, `c49cb665`):* points 1 to 5 are on main (`.github/dependabot.yml`, and the actor guard in the `runs-on` expressions of `pr.yml`). The question above, whether Dependabot may run on the self-hosted box once ADR-1076 is live, is still open.
 
 ## ADR-1079 — The post-quantum TLS scope is a placeholder until the spike numbers exist and the owner decides it (Proposed 2026-11-20; NFR-001; M39, T39.10)
 
@@ -6271,7 +6279,7 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the post-quantum TLS w
 
 **Consequences:** The node gets a standard ACME client as a reviewed crate, and renewals are timed by ARI. The choice stands as a proposal until `cargo-deny` and the measurements exist. Rejected: an own ACME implementation as the first choice (more protocol code on the node that holds the account key, against the crate choice in ADR-1051 point 7); a certbot sidecar (a second process and image on the node, which ADR-1051 point 7 does not choose).
 
-## ADR-1086 — A DoH upstream offers `h2` then `http/1.1` in ALPN and speaks what the server selects; HTTP/1.1 is a hand-written strict client with a bounded connection pool (Proposed 2026-11-24; UPS-001, UPS-008; fork #83)
+## ADR-1086 — A DoH upstream offers `h2` then `http/1.1` in ALPN and speaks what the server selects; HTTP/1.1 is a hand-written strict client with a bounded connection pool (Accepted 2026-11-24, implemented by the DoH HTTP/1.1 merge; UPS-001, UPS-008; fork #83)
 
 **Context:** The three `CleanBrowsing` DoH presets (`https://doh.cleanbrowsing.org/doh/{family,adult,security}-filter/`) failed in four nightly runs in a row: the TLS handshake ended with `received fatal alert: NoApplicationProtocol`, because the DoH client offered only `h2` in ALPN and that server accepts only `http/1.1` (it answers 200 over HTTP/1.1). The owner decided on 2026-11-21: if it persists, add an HTTP/1.1 fallback to the DoH client as a reviewed wave. Any other DoH server that only speaks HTTP/1.1 fails the same way. The workspace links `hyper` and `httparse` through the server crates, but the upstream crate has only `h2` for HTTP.
 
