@@ -278,3 +278,5 @@ Asked by the orchestrator before T24.29 starts; each has a recommended answer.
 8. **The refusal rule for a small node** (refuse when snapshot plus compile peak passes 50 % of the memory limit). Recommended: 50 %.
 9. **One profile per device or several** (UniFi allows one). Recommended: keep the existing union rule, and show the notice in the picker.
 10. **Bon-Appetit as a second adult source** (CC BY-SA, attribution): recommended off by default, offered as an "Extended" tier of Adult.
+
+For lists that WrenDNS itself assembles for the hosted service, `docs/design/curated-category-lists.md` (ADR-1087, Proposed) takes Q4, Q4b and Q10 further: UT1 and Bon-Appetit are candidates for separate attributed lists, held until UT1's licence page and fetch location and Bon-Appetit's inputs are answered and their maintainers say yes, and OISD stays out.
