@@ -584,7 +584,7 @@ secrets_all_held() { # node: 0 when its Secrets list shows every full member hol
 # RB that reply (so a later check reads what was judged). The list is a live read of each member over
 # the cluster channel with a 2 s deadline (federated.rs DEADLINE), and a member that misses one read
 # is listed `unknown` for that reply (secrets_api.rs with_members): the promise is "shown once the
-# members answer" (spec CLU-015), not "never unknown again". So the judged reply is not asked for again.
+# members answer" (the note on `with_members` in secrets_api.rs), not "never unknown again". So the judged reply is not asked for again.
 await_secrets_held() { # node seconds
   local i
   for ((i = 0; i < $2; i++)); do secrets_all_held "$1" && return 0; sleep 1; done
