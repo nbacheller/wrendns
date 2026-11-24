@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use h2::client::SendRequest;
 use http::{HeaderName, HeaderValue, Method, Request};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::conn::{BoxIo, Connect};
@@ -160,12 +160,19 @@ impl Doh {
         // HTTP/1.1: take a permit (at most `pool_size` connections), then an idle connection or
         // a new one.
         let permit = self.h1_permit().await?;
-        if !fresh && let Some(io) = self.h1.pop_idle() {
-            return Ok(Chan::H1(H1Conn {
-                io,
-                reused: true,
-                _permit: permit,
-            }));
+        if !fresh {
+            while let Some(mut io) = self.h1.pop_idle() {
+                // REQ: UPS-001 — an idle connection has nothing to read: a byte (or the end of
+                // the stream) means the server sent something unasked, and the connection is
+                // one answer behind. It is dropped, not reused.
+                if idle_is_quiet(&mut io).await {
+                    return Ok(Chan::H1(H1Conn {
+                        io,
+                        reused: true,
+                        _permit: permit,
+                    }));
+                }
+            }
         }
         let (io, h2) = (self.connector)().await?;
         if h2 {
@@ -233,7 +240,11 @@ impl Doh {
         if resp.status != 200 {
             return Err(SendError::Other(io_err(format!("HTTP {}", resp.status))));
         }
-        Ok((resp.body, resp.keep_alive))
+        // REQ: UPS-001 — the connection goes back to the pool only if this body is the answer to
+        // this query (same ID and question, as every transport checks); anything else means the
+        // server and this connection are out of step, and it is closed.
+        let keep = resp.keep_alive && answers(&resp.body, body);
+        Ok((resp.body, keep))
     }
 
     async fn send(&self, sender: SendRequest<Bytes>, body: Bytes) -> Result<Vec<u8>, SendError> {
@@ -284,6 +295,29 @@ impl Doh {
         }
         Ok(out)
     }
+}
+
+/// Whether `resp` is a DNS message that answers `query`.
+fn answers(resp: &[u8], query: &[u8]) -> bool {
+    let Some(&[hi, lo]) = query.first_chunk::<2>() else {
+        return false;
+    };
+    crate::upstream::matches_query(resp, query, u16::from_be_bytes([hi, lo]))
+}
+
+/// True if nothing can be read from `io` right now: one non-blocking poll (a read attempt that
+/// does not wait), so a pending byte, an end of stream or an error all say the connection is not
+/// clean. Costs one failed `read` system call per reused query.
+async fn idle_is_quiet(io: &mut BoxIo) -> bool {
+    std::future::poll_fn(|cx| {
+        let mut b = [0u8; 1];
+        let mut rb = tokio::io::ReadBuf::new(&mut b);
+        std::task::Poll::Ready(matches!(
+            std::pin::Pin::new(&mut *io).poll_read(cx, &mut rb),
+            std::task::Poll::Pending
+        ))
+    })
+    .await
 }
 
 /// URL-safe base64 without padding (RFC 4648 §5).

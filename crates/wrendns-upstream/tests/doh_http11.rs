@@ -81,6 +81,9 @@ enum Mode {
     Close,
     /// Closes the connection after each answer without saying so.
     Drop,
+    /// `Content-Length`, keep-alive, and the same answer sent a second time 50 ms later: an
+    /// extra response nobody asked for.
+    Double,
     /// 70,000 bytes of body.
     Oversize,
     /// Not HTTP.
@@ -184,7 +187,7 @@ async fn serve<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         tokio::time::sleep(delay).await;
         let msg = if ok { answer(&query) } else { Vec::new() };
         let out: Vec<u8> = match mode {
-            Mode::Length | Mode::Drop | Mode::Close => {
+            Mode::Length | Mode::Drop | Mode::Close | Mode::Double => {
                 let conn = if mode == Mode::Close {
                     "Connection: close\r\n"
                 } else {
@@ -223,6 +226,13 @@ async fn serve<S: AsyncReadExt + AsyncWriteExt + Unpin>(
             return;
         }
         let _ = s.flush().await;
+        if mode == Mode::Double {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if s.write_all(&out).await.is_err() {
+                return;
+            }
+            let _ = s.flush().await;
+        }
         if matches!(mode, Mode::Close | Mode::Drop) {
             let _ = s.shutdown().await;
             return;
@@ -418,4 +428,44 @@ async fn ups_001_doh_http11_verifies_certificates_and_pins() {
         o.tls.pins = vec!["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()];
     });
     assert!(ask(&bad, "wrongpin.example").await.is_err());
+}
+
+/// REQ: UPS-001 — a server that sends two responses to one request leaves nothing behind: the
+/// connection is checked before it is reused (unread bytes) and after the answer (it must match
+/// the query), so a later query is answered by its own response on a new connection, and no query
+/// is ever handed another query's answer (`ask` is `Ok` only for a response that matched).
+#[tokio::test]
+async fn ups_001_doh_http11_extra_response_does_not_poison_the_connection() {
+    let c = cert();
+    // The extra response has arrived by the time the next query starts: the connection is
+    // dropped before use.
+    let (addr, seen) = h1_server(&c, &[b"http/1.1"], Mode::Double, Duration::ZERO).await;
+    let up = upstream(&c, addr, |_| {});
+    assert_eq!(ask(&up, "a.example").await, Ok(1));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ask(&up, "b.example").await, Ok(1));
+    assert_eq!(
+        seen.conns.load(Ordering::SeqCst),
+        2,
+        "the second query used a new connection"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ask(&up, "c.example").await, Ok(1));
+
+    // The next query goes out before the extra response arrives: it is read as the answer to the
+    // wrong question and refused, never returned, and the connection is closed, so the query
+    // after that succeeds on a new one.
+    let (addr, seen) = h1_server(&c, &[b"http/1.1"], Mode::Double, Duration::ZERO).await;
+    let up = upstream(&c, addr, |_| {});
+    assert_eq!(ask(&up, "first.example").await, Ok(1));
+    assert!(
+        ask(&up, "second.example").await.is_err(),
+        "the stale answer is refused"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 0..3 {
+        assert_eq!(ask(&up, &format!("later{i}.example")).await, Ok(1));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert!(seen.conns.load(Ordering::SeqCst) >= 2);
 }

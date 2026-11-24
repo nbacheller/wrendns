@@ -28,6 +28,9 @@ pub(crate) const MAX_HEAD: usize = 16 * 1024;
 pub(crate) const MAX_INPUT: usize = MAX_HEAD + 4 * MAX_BODY;
 /// A chunk-size line: the size and any extension.
 const MAX_CHUNK_LINE: usize = 64;
+/// Hex digits accepted for a chunk size (leading zeros included): at most 32 bits, so the value
+/// fits a `usize` on every target before it is compared with anything.
+const MAX_CHUNK_DIGITS: usize = 8;
 
 /// Why a response could not be read.
 #[derive(Debug)]
@@ -85,7 +88,7 @@ impl<R: AsyncRead + Unpin> Input<'_, R> {
                 Error::Io(io::ErrorKind::UnexpectedEof.into())
             });
         }
-        self.read += n;
+        self.read = self.read.saturating_add(n);
         self.buf.extend_from_slice(&tmp[..n]);
         Ok(())
     }
@@ -110,7 +113,7 @@ impl<R: AsyncRead + Unpin> Input<'_, R> {
                 self.pos += i + 1;
                 return Ok(r);
             }
-            if a.len() > max + 1 {
+            if a.len() > max.saturating_add(1) {
                 return Err(Error::Bad("line too long"));
             }
             self.fill().await?;
@@ -144,6 +147,23 @@ fn trim(mut v: &[u8]) -> &[u8] {
         v = rest;
     }
     v
+}
+
+/// A chunk size: 1 to [`MAX_CHUNK_DIGITS`] hex digits, in checked arithmetic.
+fn chunk_size(hex: &[u8]) -> Option<usize> {
+    if hex.is_empty() || hex.len() > MAX_CHUNK_DIGITS {
+        return None;
+    }
+    hex.iter().try_fold(0usize, |n, d| {
+        let v = usize::try_from(char::from(*d).to_digit(16)?).ok()?;
+        n.checked_mul(16)?.checked_add(v)
+    })
+}
+
+/// Whether a chunk of `size` bytes fits in the room left under [`MAX_BODY`] after `have` bytes.
+/// Compares with the remaining room, so nothing is added to a peer-supplied number.
+fn chunk_fits(have: usize, size: usize) -> bool {
+    size <= MAX_BODY.saturating_sub(have)
 }
 
 fn digits(v: &[u8]) -> Option<usize> {
@@ -186,7 +206,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(rd: &mut R) -> Result<Re
     let mut head = 0usize;
 
     let r = inp.line(MAX_HEAD).await?;
-    head += r.len() + 2;
+    head = head.saturating_add(r.len()).saturating_add(2);
     let (status, http10) = status_line(&inp.buf[r])?;
 
     let (mut length, mut chunked) = (None::<usize>, false);
@@ -194,7 +214,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(rd: &mut R) -> Result<Re
     let mut seen_te = false;
     loop {
         let r = inp.line(MAX_HEAD.saturating_sub(head)).await?;
-        head += r.len() + 2;
+        head = head.saturating_add(r.len()).saturating_add(2);
         if head > MAX_HEAD {
             return Err(Error::Bad("headers too large"));
         }
@@ -256,8 +276,12 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(rd: &mut R) -> Result<Re
         (Some(_), true) => return Err(Error::Bad("Content-Length with Transfer-Encoding")),
         (Some(n), false) => {
             inp.need(n).await?;
-            let body = inp.avail()[..n].to_vec();
-            inp.pos += n;
+            let body = inp
+                .avail()
+                .get(..n)
+                .ok_or(Error::Bad("body too short"))?
+                .to_vec();
+            inp.pos = inp.pos.saturating_add(n);
             body
         }
         (None, true) => read_chunked(&mut inp, &mut head).await?,
@@ -281,34 +305,32 @@ async fn read_chunked<R: AsyncRead + Unpin>(
         let l = &inp.buf[r];
         // The size, then any extension (`;name=value`), which is ignored.
         let size = l.split(|b| *b == b';').next().unwrap_or_default();
-        if size.is_empty() || size.len() > 8 || !size.iter().all(u8::is_ascii_hexdigit) {
+        let Some(size) = chunk_size(size) else {
             return Err(Error::Bad("bad chunk size"));
-        }
-        let size = size.iter().fold(0usize, |n, d| {
-            n * 16
-                + char::from(*d)
-                    .to_digit(16)
-                    .and_then(|v| usize::try_from(v).ok())
-                    .unwrap_or(0)
-        });
+        };
         if size == 0 {
             break;
         }
-        if body.len() + size > MAX_BODY {
+        if !chunk_fits(body.len(), size) {
             return Err(Error::Bad("body too large"));
         }
-        inp.need(size + 2).await?;
+        // `size` is at most MAX_BODY here, so the sum cannot overflow; checked all the same.
+        let end = size.checked_add(2).ok_or(Error::Bad("bad chunk size"))?;
+        inp.need(end).await?;
         let a = inp.avail();
-        if &a[size..size + 2] != b"\r\n" {
+        let (Some(data), Some(crlf)) = (a.get(..size), a.get(size..end)) else {
+            return Err(Error::Bad("chunk truncated"));
+        };
+        if crlf != b"\r\n" {
             return Err(Error::Bad("chunk not followed by CRLF"));
         }
-        body.extend_from_slice(&a[..size]);
-        inp.pos += size + 2;
+        body.extend_from_slice(data);
+        inp.pos = inp.pos.saturating_add(end);
     }
     // Trailers: lines up to the empty one, counted with the headers.
     loop {
         let r = inp.line(MAX_HEAD.saturating_sub(*head)).await?;
-        *head += r.len() + 2;
+        *head = head.saturating_add(r.len()).saturating_add(2);
         if *head > MAX_HEAD {
             return Err(Error::Bad("trailers too large"));
         }
@@ -436,5 +458,109 @@ mod tests {
         }
         // Before any byte: a closed connection, which the caller may retry.
         assert!(matches!(parse(b"").await, Err(Error::Closed)));
+    }
+
+    /// REQ: UPS-001 — the bound check compares with the room left and never adds a peer-supplied
+    /// size to anything, so it holds on a 32-bit `usize` too: `1 + usize::MAX` wraps to 0 and
+    /// would pass an addition-based check.
+    #[test]
+    fn ups_001_chunk_bound_check_cannot_overflow() {
+        assert!(chunk_fits(0, MAX_BODY));
+        assert!(chunk_fits(MAX_BODY, 0));
+        assert!(!chunk_fits(0, MAX_BODY + 1));
+        assert!(!chunk_fits(1, MAX_BODY));
+        for size in [
+            usize::MAX,
+            usize::MAX - 1,
+            u32::MAX as usize,
+            usize::MAX / 2,
+        ] {
+            for have in [0, 1, 2, MAX_BODY, usize::MAX] {
+                assert!(!chunk_fits(have, size), "have {have}, size {size}");
+            }
+        }
+        assert_eq!(chunk_size(b"ffffffff"), Some(u32::MAX as usize));
+        assert_eq!(chunk_size(b"FFFF"), Some(MAX_BODY));
+        assert_eq!(chunk_size(b"0000000a"), Some(10));
+        assert_eq!(chunk_size(b"fffffffff"), None);
+        assert_eq!(chunk_size(b""), None);
+        assert_eq!(chunk_size(b"g"), None);
+    }
+
+    /// REQ: UPS-001 — chunk sizes and `Content-Length` values at and beyond the 32- and 64-bit
+    /// bounds, and very long digit strings: each is refused as an error, none panics.
+    #[tokio::test]
+    async fn ups_001_http1_parser_refuses_huge_lengths_and_chunk_sizes() {
+        let chunked = |size: &str| {
+            format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{size}\r\nx\r\n0\r\n\r\n")
+                .into_bytes()
+        };
+        let length =
+            |n: &str| format!("HTTP/1.1 200 OK\r\nContent-Length: {n}\r\n\r\nx").into_bytes();
+        let mut sizes = vec![
+            format!("{:x}", usize::MAX),
+            format!("{:x}", u32::MAX),
+            format!("{:x}", u64::MAX),
+            format!("{:X}", u64::MAX),
+            format!("{:x}", u64::from(u32::MAX) + 1),
+            format!("{:x}", usize::MAX - 1),
+            "7fffffff".to_owned(),
+            "80000000".to_owned(),
+            "ffffffff".to_owned(),
+            "fffffffe".to_owned(),
+            "10000".to_owned(),
+            "f".repeat(9),
+            "f".repeat(16),
+            "f".repeat(17),
+            "0".repeat(9) + "1",
+            "f".repeat(60),
+            "1".repeat(100_000),
+            "ffffffff;ext=1".to_owned(),
+        ];
+        sizes.push(format!("{:x};{}", u64::MAX, "e".repeat(40)));
+        for size in &sizes {
+            let short: String = size.chars().take(24).collect();
+            assert!(parse(&chunked(size)).await.is_err(), "chunk size {short}");
+        }
+        // A second chunk that would take the body over the cap, with the sum wrapping on 32 bits.
+        let two = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n{:x}\r\n",
+            usize::MAX
+        );
+        assert!(parse(two.as_bytes()).await.is_err());
+        let two = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\nffffffff\r\n";
+        assert!(parse(two.as_bytes()).await.is_err());
+
+        let mut lengths = vec![
+            usize::MAX.to_string(),
+            u32::MAX.to_string(),
+            u64::MAX.to_string(),
+            (u64::from(u32::MAX) + 1).to_string(),
+            i32::MAX.to_string(),
+            (MAX_BODY + 1).to_string(),
+            "999999999".to_owned(),
+            "1000000000".to_owned(),
+            "9".repeat(10),
+            "9".repeat(20),
+            "9".repeat(100_000),
+            "0".repeat(100_000),
+        ];
+        lengths.push(format!("{}", u128::MAX));
+        for n in &lengths {
+            let short: String = n.chars().take(24).collect();
+            assert!(parse(&length(n)).await.is_err(), "Content-Length {short}");
+        }
+        // At the bound: accepted, and the body is what was sent.
+        let ok = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {MAX_BODY}\r\n\r\n{}",
+            "a".repeat(MAX_BODY)
+        );
+        assert_eq!(parse(ok.as_bytes()).await.unwrap().body.len(), MAX_BODY);
+        let ok = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            MAX_BODY,
+            "a".repeat(MAX_BODY)
+        );
+        assert_eq!(parse(ok.as_bytes()).await.unwrap().body.len(), MAX_BODY);
     }
 }
