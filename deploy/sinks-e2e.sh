@@ -208,13 +208,9 @@ grep -q '^<133>1 .* wrendns - query - {.*"name":"ads.sinks.test"' "$E/syslog" ||
 echo "syslog sink: ok"
 
 # REQ: OBS-010 (T9.11) — syslog over TLS: octet-counted RFC 5424 frames.
-# The collector listened before the node started. A blocked query now and then gives the sink a
-# new event to connect with, should its first connection have failed (events are not queued).
-for i in $(seq 50); do
-  grep -q 'ads.sinks.test' "$E/syslog-tls" 2>/dev/null && break
-  [ $((i % 10)) -eq 0 ] && { dig +short +time=1 -p 25994 @127.0.0.1 ads.sinks.test >/dev/null 2>&1 || true; }
-  sleep 0.2
-done
+# The collector listened before the node started, so the first event's connection must succeed:
+# no second event is made here, or a failed first connection would pass unseen.
+for _ in $(seq 50); do grep -q 'ads.sinks.test' "$E/syslog-tls" 2>/dev/null && break; sleep 0.2; done
 grep -Eq '^[0-9]+ <133>1 .* wrendns - query - \{.*"name":"ads.sinks.test"' "$E/syslog-tls" || fail "syslog over TLS: $(head -c 300 "$E/syslog-tls" 2>/dev/null)"
 echo "syslog over TLS: ok"
 
