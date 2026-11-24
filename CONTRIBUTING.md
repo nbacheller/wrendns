@@ -38,6 +38,7 @@ python3 site/build.py --check      # the site builds and its links resolve
 python3 spec/trace.py --check      # requirements and tests stay traced
 python3 scripts/check-spdx.py      # SPDX headers on new files
 python3 scripts/check-pipefail.py  # no echo or printf piped into grep -q in deploy/ and .github/
+python3 scripts/check-workflows.py # workflow rules: SHA-pinned actions, job permissions, no untrusted ${{ }} in scripts
 python3 scripts/check-private.py   # maintainers: with WRENDNS_PRIVACY_DENYLIST set to the private list (CI requires it)
 cd ui && npm ci && npm run check   # the UI type-checks (and npm run test:e2e for Playwright)
 ```
@@ -51,6 +52,8 @@ Every pull request runs the fast tier (`.github/workflows/pr.yml`). A `changes` 
 `pr-ok` is the one check to watch: it passes when every other job passed or was skipped, and it fails when any of them failed or was cancelled. Its log names each job that failed, and the run's job list shows where.
 
 Some jobs run on self-hosted runners, but never for fork or Dependabot pull requests; `docs/ci-runners.md` describes the runners and the trust rule.
+
+The workflows follow a few rules (ADR-1080), and `scripts/check-workflows.py` fails the site job when one is broken. Every action is pinned to a full commit SHA with its version in a comment (`uses: owner/name@<40 hex> # v1.2.3`; Dependabot updates both), so a moved tag cannot change what runs with a secret. `dtolnay/rust-toolchain` and `taiki-e/install-action` choose what to install from the ref, so their pinned form also passes `toolchain:` or `tool:`. Every job sets its own `permissions:` and the workflow level sets none. Every checkout sets `persist-credentials: false`, except a job that pushes or reads the remote with those credentials (the release workflow, and the publish job of the image workflow), which says why in a comment. A value from an event, an input, a matrix or a step output reaches a script only through `env:` and a quoted shell variable, never as `${{ }}` inside `run:`. `zizmor` audits the workflows too (`uvx zizmor@<version> .github/workflows`); the findings that are accepted on purpose are listed with their reasons in `.github/zizmor.yml`.
 
 CI has three tiers.
 

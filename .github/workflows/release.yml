@@ -18,9 +18,7 @@ on:
         description: "Version main moves to afterwards (default: the next minor, X.Y+1.0)"
         required: false
 
-permissions:
-  contents: write
-  actions: write
+permissions: {}
 
 concurrency:
   group: release
@@ -29,6 +27,9 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
@@ -37,6 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The Tag and Move-main steps `git push` with the checkout's credentials (and preflight.sh runs
+          # `git ls-remote origin`, which a private repository answers only with them): kept on purpose.
+          persist-credentials: true
           ref: main
           fetch-depth: 0
 

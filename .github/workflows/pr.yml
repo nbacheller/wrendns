@@ -11,10 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# Least privilege: every job reads the repository and nothing more (the repository's default is
-# read-only already; CodeQL's actions/missing-workflow-permissions asks for it to be explicit).
-permissions:
-  contents: read
+# Least privilege (OPS-004, ADR-1080): no permissions at the workflow level; every job sets its own,
+# `contents: read` unless it says more.
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +26,8 @@ jobs:
   # reaches the shell, through `env:`.
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       code: ${{ steps.diff.outputs.code }}
       ui: ${{ steps.diff.outputs.ui }}
@@ -34,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # Full history, so that the base commit is reachable and the two can be diffed.
-        with: { fetch-depth: 0 }
+        with: { persist-credentials: false, fetch-depth: 0 }
       - name: Which parts changed
         id: diff
         shell: bash
@@ -63,10 +64,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@1.99.0
-        with: { components: rustfmt }
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@92e73e19cbfb3981e63ef478a16f95f415e634d3 # 1.99.0
+        with: { toolchain: "1.99.0", components: rustfmt }
       - run: cargo fmt --all --check
 
   clippy:
@@ -75,11 +80,15 @@ jobs:
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@1.99.0
-        with: { components: clippy }
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@92e73e19cbfb3981e63ef478a16f95f415e634d3 # 1.99.0
+        with: { toolchain: "1.99.0", components: clippy }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -90,10 +99,16 @@ jobs:
     # OPS-004: the self-hosted runners when the repo variable names them (trusted events; pull
     # requests only while WRENDNS_PR_RUNNER is set, never from forks or Dependabot: they build third-party code), else GitHub-hosted.
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && vars.WRENDNS_PR_RUNNER || '"ubuntu-latest"') || vars.WRENDNS_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@92e73e19cbfb3981e63ef478a16f95f415e634d3 # 1.99.0
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
       - name: cargo test --workspace
         shell: bash
@@ -122,18 +137,24 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
 
   # REQ: DOC-004/005 — the site builds, links resolve, and Standards covers ticked tasks. The
   # privacy check is its own job below, so that its result is a check of its own.
   site:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # The SPDX check compares against the permissive-final tag, so it needs the history and tags.
-        with: { fetch-depth: 0, fetch-tags: true }
+        with: { persist-credentials: false, fetch-depth: 0, fetch-tags: true }
       - run: python3 site/build.py --check
       # REQ: ADR-1033, ADR-1035 — every source file added since permissive-final carries the AGPL
       # SPDX header (old files are not mass-edited).
@@ -142,6 +163,23 @@ jobs:
       # REQ: OPS-004 — no echo or printf piped into grep -q (fails under pipefail on large output).
       - run: python3 scripts/test_check_pipefail.py
       - run: python3 scripts/check-pipefail.py
+      # REQ: OPS-004, NFR-005 (ADR-1080) — actions pinned by commit SHA, checkouts without kept credentials,
+      # job-level permissions, no untrusted expression in a script body.
+      - run: python3 scripts/test_check_workflows.py
+      - run: python3 scripts/check-workflows.py
+      # REQ: NFR-005 (ADR-1080) — zizmor audits the workflows. Pinned by version and by hash; offline,
+      # so the result does not depend on a token or on the network after the install. The findings
+      # accepted on purpose, each with its reason, are in .github/zizmor.yml.
+      - name: zizmor (workflow audit)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor-venv"
+          {
+            echo "zizmor==1.33.1 \\"
+            echo "  --hash=sha256:49eb92a95347e7da58c3123e4d5b297dbb6fe8ecc328e9db68df14c08e25e151 \\"
+            echo "  --hash=sha256:0927b0f2f86d67a98444ae7fe2529963e29ffc3acff73e588f479f33361c926c"
+          } > "$RUNNER_TEMP/zizmor-requirements.txt"
+          "$RUNNER_TEMP/zizmor-venv/bin/pip" install --quiet --require-hashes --only-binary :all: -r "$RUNNER_TEMP/zizmor-requirements.txt"
+          "$RUNNER_TEMP/zizmor-venv/bin/zizmor" --offline --no-progress --config .github/zizmor.yml .github/workflows
       # REQ: OPS-004 (ADR-1073) — pr-ok fails on a failed, cancelled or unknown job result and on bad input.
       - run: python3 scripts/test_pr_ok.py
       # REQ: OPS-004 (ADR-1073) — the changes job's classification: unknown paths run the tests.
@@ -164,10 +202,12 @@ jobs:
   # nbacheller/wrendns (a fork's own Actions) skips with a notice.
   privacy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # The scan reads the tracked files; history and tags as the site job has them.
-        with: { fetch-depth: 0, fetch-tags: true }
+        with: { persist-credentials: false, fetch-depth: 0, fetch-tags: true }
       - run: python3 scripts/test_check_private.py
       # The built site is scanned too.
       - run: python3 site/build.py
@@ -185,11 +225,15 @@ jobs:
     # OPS-004: GitHub-hosted until each self-hosted runner has its own network namespace (this
     # job binds fixed host ports, which concurrent jobs on one host would share).
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -206,8 +250,10 @@ jobs:
       - run: npm run check:help
       - name: Build (fails over the size budget)
         run: npm run build
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@92e73e19cbfb3981e63ef478a16f95f415e634d3 # 1.99.0
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
       # REQ: API-902 (T27.13) - the e2e server has the guarded framework's test rows and restart hook
       # (the cargo feature `e2e`, never in a release build).
@@ -229,11 +275,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@92e73e19cbfb3981e63ef478a16f95f415e634d3 # 1.99.0
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
       # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without WRENDNS_WEDGE_AFTER_SECS.
       - run: cargo build --profile bench-fast -p wrendns --features wedge-test
@@ -260,19 +312,43 @@ jobs:
           sh deploy/systemd/tests/migrate-test.sh
           sh deploy/release/tests/legacy-assets-test.sh
 
+  # REQ: NFR-005 (ADR-1080) — a pull request that adds or bumps a dependency with a known
+  # vulnerability fails here. GitHub's dependency review needs the dependency graph and, on a private
+  # repository, GitHub Advanced Security, which this repository does not have: so the job runs only
+  # while the repository is public (it switches itself on at the public flip; until then it is
+  # skipped, and a skipped job passes pr-ok). `private == false` is false when the payload lacks the
+  # field, so an unknown visibility also skips.
+  dependency-review:
+    if: github.event_name == 'pull_request' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+
   # The one required check. It needs every other job in this file, so a failure anywhere is a
   # failure here; it runs even when a needed job failed or was skipped (`if: always()`), and
   # scripts/pr_ok.py passes only when no needed job failed, was cancelled or has an unknown result.
   # A job skipped because its dependency failed is covered because that dependency is itself in
   # `needs`: if `changes` fails, fmt, clippy, test, deny, ui and native-lite are all skipped, and
-  # `changes` still fails pr-ok. Jobs covered: changes, fmt, clippy, test, deny, site, privacy, ui
-  # and native-lite. Add every new job to `needs`.
+  # `changes` still fails pr-ok. Jobs covered: changes, fmt, clippy, test, deny, site, privacy, ui,
+  # native-lite and dependency-review. Add every new job to `needs`.
   pr-ok:
-    needs: [changes, fmt, clippy, test, deny, site, privacy, ui, native-lite]
+    needs: [changes, fmt, clippy, test, deny, site, privacy, ui, native-lite, dependency-review]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Every needed job passed or was skipped
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
