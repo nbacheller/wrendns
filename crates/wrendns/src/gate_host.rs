@@ -134,6 +134,13 @@ pub(crate) fn effective_gate(l: &wrendns_config::Listener) -> bool {
         .unwrap_or_else(|| l.gated(facts_for(l)))
 }
 
+/// REQ: DNS-901 — `true` when the apply recorded `l` as closed: it is configured but nothing is
+/// bound for it (a gate turned on that could not be applied closed the old socket). A listener
+/// without a record (before any apply) is not reported closed.
+pub(crate) fn is_closed(l: &wrendns_config::Listener) -> bool {
+    l.proto.needs_tls() && state_of(l).is_some_and(|s| s.gated.is_none())
+}
+
 /// The listeners whose socket does not match the configuration: `(name, running)`.
 pub(crate) fn mismatched(listen: &[wrendns_config::Listener]) -> Vec<(String, bool)> {
     listen
@@ -149,6 +156,34 @@ pub(crate) fn mismatched(listen: &[wrendns_config::Listener]) -> Vec<(String, bo
 #[cfg(test)]
 pub(crate) fn clear_listeners_for_test() {
     states().clear();
+}
+
+/// Serialises the tests that write the process-wide listener table (the bind's `publish`) or read
+/// it (`effective_gate`, `facts_for`, `mismatched`, so also the probe targets): one lock for all.
+#[cfg(test)]
+static TABLE_TESTS: Mutex<()> = Mutex::new(());
+
+/// The holder of the test lock; the table is emptied when it is taken and when it is dropped, so
+/// a test starts with no foreign entries and leaves none behind (even when it panics).
+#[cfg(test)]
+pub(crate) struct TableGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl Drop for TableGuard {
+    fn drop(&mut self) {
+        states().clear();
+    }
+}
+
+/// Takes the test lock (see [`TableGuard`]). Every test that binds an encrypted listener through
+/// `Listeners::apply`, or reads the table, holds this for its whole length.
+#[cfg(test)]
+pub(crate) fn isolate() -> TableGuard {
+    let g = TABLE_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    states().clear();
+    TableGuard(g)
 }
 
 /// What the bind last recorded, ignoring any test override.

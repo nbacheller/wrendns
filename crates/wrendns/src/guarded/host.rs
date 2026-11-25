@@ -47,6 +47,14 @@ pub(crate) trait Host: Send + Sync + 'static {
     /// Re-reads the files and `state.db` and applies them, as the API does after a change (ADR-040);
     /// answers whether it worked. A failed reload keeps the previous configuration (CLU-004).
     fn reload(&self) -> BoxFuture<bool>;
+    /// REQ: DNS-901 — the encrypted listeners the configuration lists whose socket is closed or
+    /// does not carry the configured settings, as the last apply recorded them (`proto://addr`).
+    /// A change to `listen.require_client_id` is applied only when this is empty: a replica's
+    /// replication path applies the entry before the engine's own reload does, so the reload's
+    /// answer alone cannot tell. Empty by default (a host without listeners).
+    fn listeners_not_applied(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Writes (`Some`) or removes (`None`) the guarded entry for `node`/`id`. On the primary and a
     /// standalone node that is `state.db`; on a replica it goes through the primary (the single
     /// writer, ADR-005), and answers `primary_unreachable` when it can't be reached.

@@ -237,6 +237,13 @@ impl Host for ProdHost {
         })
     }
 
+    fn listeners_not_applied(&self) -> Vec<String> {
+        crate::gate_host::mismatched(&self.src.config.load().listen)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     fn write_entry(
         &self,
         node: &str,

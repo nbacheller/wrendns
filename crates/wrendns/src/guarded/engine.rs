@@ -1127,7 +1127,17 @@ impl Engine {
         }
         // Applied by the same reload the API uses; a failed reload keeps the previous
         // configuration (CLU-004), and the entry goes back to what it was.
-        if !self.host.reload().await {
+        let reloaded = self.host.reload().await;
+        // REQ: DNS-901 — a listen-access change counts as applied only when every configured
+        // encrypted listener is bound as configured, by the listener's recorded state. On a
+        // replica the replication path has already applied the entry (and closed the old socket)
+        // before this reload, so the reload alone cannot report that the gate did not arrive.
+        let unapplied = if reloaded && row.id == wrendns_config::guarded::LISTEN_ACCESS {
+            self.host.listeners_not_applied()
+        } else {
+            Vec::new()
+        };
+        if !reloaded || !unapplied.is_empty() {
             let back = self
                 .host
                 .write_entry(&self.node, row.id, previous, &c.username)
@@ -1141,10 +1151,23 @@ impl Engine {
                 &self.target_name(row.id),
                 &json!({"setting": row.id, "node": self.node, "reason": "commit_failed"}),
             );
-            return Err(Problem::new(
-                Code::InvalidConfig,
-                "the node couldn't apply the change, so it kept the previous configuration",
-            ));
+            // After the rollback: a listener the failed gate-on closed (an unreadable
+            // certificate) stays closed, so "kept the previous configuration" alone is untrue.
+            let still = if row.id == wrendns_config::guarded::LISTEN_ACCESS {
+                self.host.listeners_not_applied()
+            } else {
+                Vec::new()
+            };
+            let msg = if still.is_empty() {
+                "the node couldn't apply the change, so it kept the previous configuration"
+                    .to_owned()
+            } else {
+                format!(
+                    "the node couldn't apply the change; the previous configuration is restored, but {} is closed until its certificate can be read (see the health report, reason listener_not_applied)",
+                    still.join(", ")
+                )
+            };
+            return Err(Problem::new(Code::InvalidConfig, msg));
         }
         self.finish_audit(c, row, req, &before, "applied", pre.weakening);
         info!(setting = row.id, node = %self.node, "guarded setting applied");

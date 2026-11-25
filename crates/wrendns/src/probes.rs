@@ -93,7 +93,11 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
             self_signed: false,
             // REQ: DNS-901 — a gated listener refuses a query without a device key, and the probe
             // has none: probing it would fail every round and count as the node's own traffic.
-            skipped: if l.proxy_protocol {
+            skipped: if crate::gate_host::is_closed(l) {
+                // REQ: DNS-901 — closed by a gate turned on that could not be applied: it is not
+                // answering at all, so it is neither probed nor reported as gated.
+                Some("it is closed: its last change could not be applied (see the health report, listener_not_applied)")
+            } else if l.proxy_protocol {
                 Some("it requires a PROXY protocol header, which probes don't send")
             } else if crate::gate_host::effective_gate(l) {
                 Some("it answers only a known device key, which probes don't have")
@@ -438,6 +442,13 @@ pub(crate) fn spawn(src: Arc<crate::http::Sources>, mut stop: tokio::sync::watch
 mod tests {
     use super::*;
 
+    /// `super::targets` under the listener-table test lock: it reads the process-wide table the
+    /// server tests write, so a foreign entry can never change a target here.
+    fn targets(cfg: &Config) -> Vec<Target> {
+        let _one = crate::gate_host::isolate();
+        super::targets(cfg)
+    }
+
     fn cfg(toml: &str) -> Config {
         wrendns_config::Loader::new()
             .toml_str("t.toml", toml)
@@ -508,6 +519,40 @@ tls = { cert = "/etc/wrendns/cert.pem", key = "/etc/wrendns/key.pem" }
         assert_eq!(t.len(), 2);
         assert!(t.iter().all(|t| t.skipped.is_some()));
         assert_eq!(t[0].cert.as_deref(), Some("/etc/wrendns/cert.pem"));
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a listener the last apply closed is neither probed nor said
+    // to be gated: the target says it is closed and not applied.
+    #[test]
+    fn dns_901_a_closed_listener_is_reported_closed_not_gated() {
+        let c = cfg(r#"
+[[listen]]
+proto = "dot"
+addr = "0.0.0.0:853"
+require_client_id = true
+tls = { cert = "/etc/wrendns/cert.pem", key = "/etc/wrendns/key.pem" }
+"#);
+        let _one = crate::gate_host::isolate();
+        let l = &c.listen[0];
+        crate::gate_host::publish(vec![crate::gate_host::ListenerState {
+            key: crate::gate_host::key(l),
+            gated: None,
+            facts: wrendns_config::HostFacts::UNKNOWN,
+            matches: false,
+        }]);
+        let t = super::targets(&c);
+        let reason = t[0].skipped.expect("a closed listener is not probed");
+        assert!(reason.contains("closed"), "{reason}");
+        assert!(!reason.contains("device key"), "{reason}");
+        // The same listener bound and gated keeps the gate wording.
+        crate::gate_host::publish(vec![crate::gate_host::ListenerState {
+            key: crate::gate_host::key(l),
+            gated: Some(true),
+            facts: wrendns_config::HostFacts::UNKNOWN,
+            matches: true,
+        }]);
+        let t = super::targets(&c);
+        assert!(t[0].skipped.unwrap().contains("device key"));
     }
 
     // REQ: API-003 (ADR-149) — with `[api] tls` the web UI is checked over HTTPS, with its

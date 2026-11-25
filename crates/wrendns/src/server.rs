@@ -2331,7 +2331,6 @@ mod tests {
     }
 
     /// The facts in force are one static: the tests that bind or read it take turns.
-    static FACTS_IN_FORCE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // REQ: DNS-901 (ADR-1090 point 2) — the facts in force are what the listeners were bound with:
     // a load (a reload that fails validation, or a read-only check) never replaces them, and a
@@ -2339,9 +2338,7 @@ mod tests {
     #[test]
     fn dns_901_a_load_leaves_the_facts_in_force_alone() {
         use wrendns_config::HostFacts;
-        let _one = FACTS_IN_FORCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = crate::gate_host::isolate();
         let a = HostFacts {
             public_ipv4: Some(false),
             global_ipv6: false,
@@ -2420,9 +2417,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // the lock only keeps two tests off the one static
     async fn dns_901_gate_on_with_an_unreadable_certificate_closes_the_ungated_listener() {
-        let _one = FACTS_IN_FORCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = crate::gate_host::isolate();
         let (_dir, cert, listen) = gate_fixture();
         let mut listeners = test_listeners();
         let first = listen(Some(false));
@@ -2465,9 +2460,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn dns_901_gate_off_with_an_unreadable_certificate_keeps_the_gated_listener() {
-        let _one = FACTS_IN_FORCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = crate::gate_host::isolate();
         let (_dir, cert, listen) = gate_fixture();
         let mut listeners = test_listeners();
         listeners.apply(&[listen(Some(true))]).await.unwrap();
@@ -2502,9 +2495,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn dns_901_a_failed_listener_does_not_stop_the_rest_of_the_apply() {
-        let _one = FACTS_IN_FORCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = crate::gate_host::isolate();
         let (_dir, cert, listen) = gate_fixture();
         let mut listeners = test_listeners();
         let mut bad = listen(Some(false));
