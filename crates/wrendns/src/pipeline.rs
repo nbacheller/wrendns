@@ -1061,7 +1061,11 @@ impl Pipeline {
             return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
         }
         // REQ: FLT-014 (T7.20) — the group's rewrites (blocks above still win).
+        // REQ: DNS-901 (ADR-1090 point 3) — an address rewrite is an owner-set internal answer
+        // like a local record, so a key sent in clear does not get it (a name rewrite goes on
+        // through `safe_search`, where the route and private-PTR checks apply).
         match st.policy.clients.primary_group(ident).rewrite_for(&q.qname) {
+            Some(RewriteTarget::Addr(_)) if public_only(meta) => {}
             Some(RewriteTarget::Addr(ip)) => {
                 oc.status = Status::Local;
                 return self.rewrite_answer(&q, ip, out, meta);
@@ -6059,6 +6063,8 @@ mod key_gate_tests {
                      [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
                      [[upstream_group]]\nname = \"lan\"\nmembers = [\"u\"]\n\
                      [[route]]\nmatch_suffix = [\"corp.example\"]\nupstream_group = \"lan\"\n\
+                     [[group]]\nname = \"default\"\n\
+                     [[group.rewrite]]\ndomain = \"nas.lan.example\"\nanswer = \"192.168.1.10\"\n\
                      [[client]]\nname = \"phone\"\nmatch = [\"id:{KEY}\"]\n\
                      [[client]]\nname = \"tablet\"\nmatch = [\"id:kids-tablet\"]\n\
                      [[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n"
@@ -6282,6 +6288,36 @@ mod key_gate_tests {
             1,
             "asked upstream once, then cached"
         );
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a group's address rewrite (split-horizon) is internal
+    // data: answered over DoH, never over a gated DoT or DoQ stream.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_does_not_get_a_group_address_rewrite() {
+        let (p, _hits) = node().await;
+        let ask = |m: RequestMeta| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                match Handler(p).handle(&a_query("nas.lan.example"), &m, &mut out) {
+                    Response::Ready(n) => Some(out[..n].to_vec()),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Some(Vec::new())
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let leak = |r: &Option<Vec<u8>>| {
+            r.as_ref()
+                .is_some_and(|r| r.windows(4).any(|w| w == [192, 168, 1, 10]))
+        };
+        let doh = ask(meta(PUBLIC, Transport::Doh, Some(KEY), true)).await;
+        assert!(leak(&doh));
+        for t in [Transport::Dot, Transport::Doq] {
+            assert!(!leak(&ask(meta(PUBLIC, t, Some(KEY), true)).await), "{t:?}");
+        }
     }
 
     // REQ: DNS-901 (ADR-1090 point 3) — a name a `[[route]]` sends to an internal group is not
