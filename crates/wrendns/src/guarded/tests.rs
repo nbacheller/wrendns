@@ -212,10 +212,16 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
             row: *r,
             applier: Arc::clone(&a),
         })
-        .chain([RowDef {
-            row: R_RESTART,
-            applier: Arc::new(NoOp),
-        }])
+        .chain([
+            RowDef {
+                row: R_RESTART,
+                applier: Arc::new(NoOp),
+            },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN_ACCESS).unwrap(),
+                applier: Arc::new(super::appliers::ListenAccess),
+            },
+        ])
         .collect()
 }
 
@@ -3269,4 +3275,181 @@ fn api_003_a_failing_redirect_probe_does_not_block_probation() {
         probe("udp", false),
         probe(redirect, true),
     ]));
+}
+
+// ---- T27.14: the listener access row (DNS-901) -------------------------------------------------
+
+/// A node whose listeners are the ones the `listen-access` tests use (a public DoT listener, a LAN
+/// DoH one, a wildcard DoQ one and plain UDP), with the real row and applier added.
+fn gate_node() -> Node {
+    let n = solo();
+    let c = super::appliers::listen_access_tests::cfg();
+    let mut cfg = (*n.host.running_config()).clone();
+    cfg.listen = c.listen;
+    *n.host.cfg.lock().unwrap() = Arc::new(cfg);
+    n
+}
+
+fn gate_value(dot: Value, doh: Value, doq: Value) -> Value {
+    super::appliers::listen_access_tests::value(dot, doh, doq)
+}
+
+// REQ: DNS-901, API-902 (T27.14; ADR-956 §1, ADR-1090 point 1) — the gate is a guarded `immediate`
+// row: the preview says what each listener's default resolves to and why, an admin's change is
+// written and applied by a reload, the audit record holds the before and after, and a tightening is
+// not marked as weakening.
+#[tokio::test(start_paused = true)]
+async fn dns_901_gate_change_is_guarded_applied_and_audited() {
+    let n = gate_node();
+    let a = admin("alice", 5);
+    let v = gate_value(json!(true), Value::Null, Value::Null);
+    let p = preview(&n.engine, &a, "listen-access", v.clone())
+        .await
+        .unwrap();
+    assert_eq!(p.phrase, "pi-a listen-access");
+    assert_eq!(p.mode, "immediate");
+    assert!(!p.weakening);
+    assert!(
+        p.effect
+            .contains("the default is on, because the address is public")
+    );
+    assert!(p.effect.contains("dot://203.0.113.5:853: default"));
+    // The phrase is the server's to check.
+    let mut bad = apply_req(&p, v.clone());
+    bad.confirm = "pi-a listen".to_owned();
+    assert_eq!(
+        code(n.engine.apply(&a, "listen-access", bad).await),
+        Code::InvalidParameter
+    );
+    let r = n
+        .engine
+        .apply(&a, "listen-access", apply_req(&p, v.clone()))
+        .await
+        .unwrap();
+    assert_eq!(r.status, "applied");
+    assert_eq!(n.host.reloads.load(Ordering::SeqCst), 1);
+    let stored = store::for_node(&n.engine.state, "pi-a");
+    assert_eq!(stored[0].id, "listen-access");
+    assert_eq!(stored[0].state, EntryState::Active);
+    assert_eq!(stored[0].value, v);
+    let rec = &n.audits("settings.guarded")[0];
+    assert_eq!(rec["setting"], "listen-access");
+    assert_eq!(rec["outcome"], "applied");
+    assert_eq!(rec["weakening"], false);
+    assert_eq!(
+        rec["before"]["listeners"][0]["require_client_id"],
+        Value::Null
+    );
+    assert_eq!(
+        rec["after"]["listeners"][0]["require_client_id"],
+        json!(true)
+    );
+}
+
+// REQ: DNS-901 (ADR-1090 point 1, ADR-956 §3) — turning the gate off on a public listener weakens
+// it: a red mark, the open-resolver warning, and a sign-in within the last 10 minutes at apply.
+#[tokio::test(start_paused = true)]
+async fn dns_901_gate_off_on_public_listener_needs_recent_sign_in() {
+    let n = gate_node();
+    let v = gate_value(json!(false), Value::Null, Value::Null);
+    let stale = admin("alice", 3600);
+    let p = preview(&n.engine, &stale, "listen-access", v.clone())
+        .await
+        .unwrap();
+    assert!(p.weakening);
+    assert!(p.warnings.iter().any(|w| w.contains("open resolver")));
+    assert_eq!(
+        code(
+            n.engine
+                .apply(&stale, "listen-access", apply_req(&p, v.clone()))
+                .await
+        ),
+        Code::ReauthRequired
+    );
+    assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
+    let fresh = admin("alice", 5);
+    let p = preview(&n.engine, &fresh, "listen-access", v.clone())
+        .await
+        .unwrap();
+    n.engine
+        .apply(&fresh, "listen-access", apply_req(&p, v))
+        .await
+        .unwrap();
+    assert_eq!(n.audits("settings.guarded")[0]["weakening"], true);
+}
+
+// REQ: DNS-901 (ADR-956 §3) — a value that names a listener this node doesn't run, or a key on a
+// plain transport, is refused at the preview and never written.
+#[tokio::test(start_paused = true)]
+async fn dns_901_gate_validation_errors_are_refused_at_preview() {
+    let n = gate_node();
+    let a = admin("alice", 5);
+    let mut v = gate_value(Value::Null, Value::Null, Value::Null);
+    v["listeners"][3]["require_client_id"] = json!(true);
+    assert_eq!(
+        code(preview(&n.engine, &a, "listen-access", v).await),
+        Code::InvalidConfig
+    );
+    assert_eq!(
+        code(
+            preview(
+                &n.engine,
+                &a,
+                "listen-access",
+                json!({"listeners": [{"proto": "dot", "addr": "203.0.113.9:853"}]})
+            )
+            .await
+        ),
+        Code::InvalidConfig
+    );
+    assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
+}
+
+// REQ: DNS-901, API-902 (ADR-040) — a configuration file that sets `require_client_id` wins: the
+// preview is 409 `set_by_file`, the listing shows the row locked, and the overlay doesn't apply a
+// stored value over it.
+#[tokio::test(start_paused = true)]
+async fn dns_901_gate_file_wins_over_the_stored_value() {
+    let n = gate_node();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.file_set.push("listen.require_client_id".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file.clone());
+    assert_eq!(
+        code(
+            preview(
+                &n.engine,
+                &a,
+                "listen-access",
+                gate_value(json!(true), Value::Null, Value::Null)
+            )
+            .await
+        ),
+        Code::SetByFile
+    );
+    assert!(
+        n.engine
+            .status_local()
+            .settings
+            .iter()
+            .any(|s| s.id == "listen-access" && s.set_by_file)
+    );
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row("listen-access").unwrap(),
+        applier: Arc::new(super::appliers::ListenAccess),
+    }];
+    let e = vec![Stored {
+        node: "pi-a".into(),
+        id: "listen-access".into(),
+        value: gate_value(json!(false), Value::Null, Value::Null),
+        mode: "immediate".into(),
+        state: EntryState::Active,
+        by: "alice".into(),
+        at: 1,
+    }];
+    let mut cfg = super::appliers::listen_access_tests::cfg();
+    super::appliers::overlay_with(&mut cfg, &file, &e, None, &defs, "pi-a", false);
+    assert_eq!(cfg.listen[0].require_client_id, None, "the file wins");
+    super::appliers::overlay_with(&mut cfg, &Config::default(), &e, None, &defs, "pi-a", false);
+    assert_eq!(cfg.listen[0].require_client_id, Some(false));
 }

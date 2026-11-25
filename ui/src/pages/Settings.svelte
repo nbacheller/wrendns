@@ -18,6 +18,7 @@
   // REQ: DNS-011 (T27.11) — DNSSEC mode and negative trust anchors, under Query handling.
   import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
+  import ListenerGate from '../lib/components/ListenerGate.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
@@ -963,7 +964,11 @@
             </tbody>
           </table>
         </div>
-        <p class="muted small">Set in the configuration file: <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), a reload applies it. Unset, it is on for a public address and off otherwise; turning it on for a listener your LAN uses refuses the devices that carry no key.</p>
+        <p class="muted small">Unset, <code>require_client_id</code> is on for a public address and off otherwise; turning it on for a listener your LAN uses refuses the devices that carry no key. In the configuration file it is <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), and a reload applies it.</p>
+        {#if can('admin')}
+          <!-- REQ: DNS-901, API-902 (T27.14) — the gate's three states, changed through the guarded framework. -->
+          <ListenerGate rows={info.listenerAccess} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />
+        {/if}
       </section>
     {/if}
     <section class="card" data-testid="changes-list">

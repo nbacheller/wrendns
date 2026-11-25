@@ -484,7 +484,7 @@ fn api_902_test_row_absent_in_release() {
         .collect();
     assert_eq!(
         ids,
-        ["restart-now", "api-http-redirect"],
+        ["restart-now", "api-http-redirect", "listen-access"],
         "only the real rows have appliers"
     );
     assert!(wrendns_config::guarded::rows().iter().all(|r| !r.test_only));
@@ -654,4 +654,110 @@ async fn api_902_proxy_list_proof_needs_a_real_forwarded_client() {
     let pid = start(json!(["198.51.100.1"])).await;
     let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+}
+
+// REQ: DNS-901, API-902, AGT-004 (T27.14; ADR-914, ADR-956 §3) — the listener gate through the
+// routes: agent tokens, operators, viewers and plain API tokens are refused on the preview and the
+// apply; an admin's session gets a preview, a value the node can't take is refused as 422 before
+// anything is written, a stale sign-in can't apply a weakening, and a fresh one applies it and the
+// audit log records it.
+#[tokio::test]
+async fn dns_901_gate_routes_admin_only_validation_and_audit() {
+    let h = harness("");
+    let _n = install(&h);
+    let listeners = wrendns_config::Config::default().listen;
+    let line = |gate: Value, i: usize| {
+        let l = &listeners[i];
+        json!({"proto": serde_json::to_value(l.proto).unwrap(), "addr": l.addr.to_string(), "require_client_id": gate})
+    };
+    let all_default: Vec<Value> = (0..listeners.len()).map(|i| line(Value::Null, i)).collect();
+    let body = json!({"value": {"listeners": all_default}});
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot", Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive", Role::Operator, None);
+    let viewer = token(&h, "vic", Role::Viewer, None);
+    for uri in [
+        "/api/v1/guarded/listen-access/preview",
+        "/api/v1/guarded/listen-access",
+    ] {
+        let (s, _, v) = call_as(&h, &agent, "POST", uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("agent_not_allowed")),
+            "{uri}: {v}"
+        );
+        for t in [&op, &viewer] {
+            let (s, _, v) = call_as(&h, t, "POST", uri, Some(&body), &[]).await;
+            assert_eq!(
+                (s, v["code"].as_str()),
+                (StatusCode::FORBIDDEN, Some("forbidden")),
+                "{uri}: {v}"
+            );
+        }
+        let (s, _, v) = call_as(&h, &h.bearer, "POST", uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("reauth_required")),
+            "{uri}: {v}"
+        );
+        let (s, _) = json_of(&h, unauthenticated("POST", uri, Some(&body), None)).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+    // An admin's session: a preview that says what the defaults resolve to.
+    let (s, p) = json_of(
+        &h,
+        session_req(
+            &h,
+            5,
+            "POST",
+            "/api/v1/guarded/listen-access/preview",
+            Some(&body),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["phrase"], "pi-a listen-access");
+    assert_eq!(p["mode"], "immediate");
+    assert_eq!(p["weakening"], false);
+    // A key on a plain transport is refused as invalid config, whatever the transport.
+    let mut bad: Vec<Value> = (0..listeners.len()).map(|i| line(Value::Null, i)).collect();
+    bad[0] = line(json!(true), 0);
+    let (s, v) = json_of(
+        &h,
+        session_req(
+            &h,
+            5,
+            "POST",
+            "/api/v1/guarded/listen-access/preview",
+            Some(&json!({"value": {"listeners": bad}})),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["code"], "invalid_config", "{v}");
+    assert!(
+        !v["detail"].as_str().unwrap().contains("require_client_id"),
+        "{v}"
+    );
+    // The apply, with the phrase, is accepted and recorded.
+    let apply = json!({"previewId": p["previewId"], "confirm": p["phrase"], "value": body["value"], "reason": "test"});
+    let (s, v) = json_of(
+        &h,
+        session_req(
+            &h,
+            5,
+            "POST",
+            "/api/v1/guarded/listen-access",
+            Some(&apply),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "applied");
+    let audit = h.audit_text();
+    assert!(audit.contains("settings.guarded"), "{audit}");
+    assert!(audit.contains("listen-access"), "{audit}");
 }
