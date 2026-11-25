@@ -1007,7 +1007,11 @@ impl Pipeline {
             Ok(special) => special,
             Err(early) => return early,
         };
-        if let Some(len) = self.local_answer(&q, &st.policy, ident, out) {
+        // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear (DoT, DoQ) is treated as leaked:
+        // public answers only, so no local, device, zone or CMDB record is answered.
+        if !public_only(meta)
+            && let Some(len) = self.local_answer(&q, &st.policy, ident, out)
+        {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
@@ -1803,7 +1807,7 @@ impl Pipeline {
         // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303);
         // REQ: DNS-019 (ADR-904) — so do single-label names with domain-needed on.
         if matches!(special, Some(Special::PrivatePtr | Special::SingleLabel))
-            && !selection.is_some_and(|s| s.routed)
+            && (public_only(meta) || !selection.is_some_and(|s| s.routed))
         {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
         }
@@ -2850,6 +2854,12 @@ fn response_rcode(msg: &[u8]) -> u16 {
 /// `Arc<Pipeline>` is the handler every listener shares.
 #[derive(Debug, Clone)]
 pub(crate) struct Handler(pub(crate) Arc<Pipeline>);
+
+/// REQ: DNS-901 (ADR-1090 point 3, ADR-1050 point 5) — a gated stream whose key travels in clear
+/// (the server name of DoT and DoQ) gets public answers only. A DoH key is in the path, inside TLS.
+fn public_only(meta: &RequestMeta) -> bool {
+    meta.gated && matches!(meta.transport, Transport::Dot | Transport::Doq)
+}
 
 impl QueryHandler for Handler {
     /// REQ: DNS-901 (T36.2) — DoH and DoH3 ask before reading the body.
@@ -6042,7 +6052,8 @@ mod key_gate_tests {
                     "[[upstream]]\nname = \"u\"\nurl = \"udp://{addr}\"\n\
                      [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
                      [[client]]\nname = \"phone\"\nmatch = [\"id:{KEY}\"]\n\
-                     [[client]]\nname = \"tablet\"\nmatch = [\"id:kids-tablet\"]\n"
+                     [[client]]\nname = \"tablet\"\nmatch = [\"id:kids-tablet\"]\n\
+                     [[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n"
                 ),
             )
             .env(Vec::<(String, String)>::new())
@@ -6055,6 +6066,7 @@ mod key_gate_tests {
             Arc::new(Router::from_config(&cfg).unwrap()),
             Policy {
                 allowed: vec![Cidr::parse("192.168.0.0/16").unwrap()],
+                local: Arc::new(wrendns_policy::LocalData::from_config(&cfg).0),
                 clients: Arc::new(ClientTable::from_config(&cfg)),
                 ..Policy::open()
             },
@@ -6221,6 +6233,47 @@ mod key_gate_tests {
             }
         }
         assert_eq!(answered, 60);
+    }
+
+    /// A key in clear (DoT, DoQ) gets public answers only: a local record is not answered and the
+    /// query goes upstream; a DoH path key gets the local record.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_gets_public_answers_only() {
+        let (p, hits) = node().await;
+        let local = |m: RequestMeta| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                match Handler(p).handle(&a_query("nas.home.arpa"), &m, &mut out) {
+                    Response::Ready(n) => Some(out[..n].to_vec()),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Some(Vec::new())
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let doh = local(meta(PUBLIC, Transport::Doh, Some(KEY), true))
+            .await
+            .expect("local answer");
+        assert_eq!(summarize(&doh).unwrap().rcode, rcode::NOERROR);
+        assert!(doh.windows(4).any(|w| w == [192, 0, 2, 200]));
+        settle().await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "answered locally");
+        for t in [Transport::Dot, Transport::Doq] {
+            let r = local(meta(PUBLIC, t, Some(KEY), true)).await;
+            assert!(
+                r.is_none_or(|r| !r.windows(4).any(|w| w == [192, 0, 2, 200])),
+                "{t:?}: no local record"
+            );
+        }
+        settle().await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "asked upstream once, then cached"
+        );
     }
 
     #[test]

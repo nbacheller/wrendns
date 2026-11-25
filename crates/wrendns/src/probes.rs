@@ -91,9 +91,15 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
                 .filter(|_| l.proto.needs_tls())
                 .map(|t| t.cert.to_string()),
             self_signed: false,
-            skipped: l
-                .proxy_protocol
-                .then_some("it requires a PROXY protocol header, which probes don't send"),
+            // REQ: DNS-901 — a gated listener refuses a query without a device key, and the probe
+            // has none: probing it would fail every round and count as the node's own traffic.
+            skipped: if l.proxy_protocol {
+                Some("it requires a PROXY protocol header, which probes don't send")
+            } else if l.require_client_id {
+                Some("it answers only a known device key, which probes don't have")
+            } else {
+                None
+            },
         });
     }
     // REQ: API-003 (ADR-149) — the web UI and API over HTTPS, and their certificate.
@@ -480,6 +486,28 @@ targets = ["udp://10.50.5.112:53"]
         assert_eq!(t[3].proto, "doh");
         assert_eq!(t[3].cert.as_deref(), Some("/etc/wrendns/cert.pem"));
         assert!(!t[4].listener);
+    }
+
+    // REQ: DNS-901 — a listener that needs a device key is not probed (the probe has none), but its
+    // certificate is still listed for expiry.
+    #[test]
+    fn dns_901_a_gated_listener_is_not_probed() {
+        let c = cfg(r#"
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+require_client_id = true
+tls = { cert = "/etc/wrendns/cert.pem", key = "/etc/wrendns/key.pem" }
+[[listen]]
+proto = "dot"
+addr = "0.0.0.0:853"
+require_client_id = true
+tls = { cert = "/etc/wrendns/cert.pem", key = "/etc/wrendns/key.pem" }
+"#);
+        let t = targets(&c);
+        assert_eq!(t.len(), 2);
+        assert!(t.iter().all(|t| t.skipped.is_some()));
+        assert_eq!(t[0].cert.as_deref(), Some("/etc/wrendns/cert.pem"));
     }
 
     // REQ: API-003 (ADR-149) — with `[api] tls` the web UI is checked over HTTPS, with its

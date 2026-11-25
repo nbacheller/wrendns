@@ -242,7 +242,13 @@ async fn answer<H: QueryHandler + ?Sized>(
         peer,
         local: None,
         transport: Transport::Doh,
-        client_id: path_id.or(sni_id),
+        // REQ: DNS-901 (ADR-1090 point 2) — on a gated listener only the path is a key: the
+        // server name is not inside the request, and a key in clear gets public answers only.
+        client_id: if cfg.require_client_id {
+            path_id
+        } else {
+            path_id.or(sni_id)
+        },
         gated: cfg.require_client_id,
     };
     // REQ: DNS-901 — unknown, revoked and missing keys: 404, before the body is read.

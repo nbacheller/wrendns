@@ -305,7 +305,13 @@ impl<H: QueryHandler> Ctx<H> {
             peer: self.peer,
             local: None,
             transport: Transport::Doh,
-            client_id: path_id.or(self.sni_id),
+            // REQ: DNS-901 (ADR-1090 point 2) — on a gated listener only the path is a key: the
+            // server name is sent in clear, and a key in clear gets public answers only.
+            client_id: if self.cfg.require_client_id {
+                path_id
+            } else {
+                path_id.or(self.sni_id)
+            },
             gated: self.cfg.require_client_id,
         };
         // REQ: DNS-901 — unknown, revoked and missing keys all end here, before the body is read.
