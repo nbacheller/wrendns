@@ -37,7 +37,7 @@
 
   const sinkFields: Field[] = [
     { key: 'type', label: 'Type', type: 'select', options: ['webhook', 'syslog', 'file'], initial: 'webhook',
-      help: 'webhook: batched HTTP POSTs (Loki, Vector, Splunk, a SIEM). syslog: RFC 5424 over UDP, TCP or TLS. file: JSON lines, rotated, on this node.' },
+      help: 'webhook: batched HTTP POSTs (Loki, Vector, Splunk, a SIEM). syslog: RFC 5424 over UDP, TCP or TLS (TCP and TLS keep events in the buffer and retry while the collector is down; drops are counted). file: JSON lines, rotated, on this node.' },
     { key: 'url', label: 'URL', type: 'text', placeholder: 'https://logs.example.net/ingest', showIf: (v) => type(v) === 'webhook',
       help: 'Where batches are posted. A password in the address is set in the configuration file, not here: store a token below instead.' },
     { key: 'format', label: 'Format', type: 'select', options: ['json_lines', 'json_array', 'otlp_logs'], showIf: (v) => type(v) === 'webhook',

@@ -435,7 +435,7 @@ fn start_one(
         .name(format!("sink-{name}"))
         .spawn(move || match ready {
             Ready::File => file_writer(&c, &rx, &ctl_t),
-            Ready::Syslog(tls) => syslog_writer(&c, &rx, &host_t, tls.as_ref(), &ctl_t),
+            Ready::Syslog(tls) => syslog_writer(&c, &rx, &host_t, tls.as_ref(), &ctl_t, &d),
             Ready::Webhook(client) => {
                 webhook_writer(
                     &c,
@@ -822,12 +822,20 @@ fn syslog_connect(
 
 /// Syslog over UDP (one datagram per event) or TCP or TLS (octet-counted frames, RFC 6587
 /// and RFC 5425), reconnecting when the collector goes away.
+///
+/// REQ: OBS-010 (issue 105) — over TCP or TLS an event that can't be sent is kept in hand and
+/// the connection is retried with a growing wait (from `SYSLOG_BACKOFF_MIN` to
+/// `SYSLOG_BACKOFF_MAX`); meanwhile new events queue in the sink's bounded channel
+/// (`max_buffer`), and what doesn't fit there is counted as dropped by the producer. An event
+/// still in hand when the sink is told to stop is counted as dropped. A UDP datagram that
+/// can't be sent is counted as dropped (UDP has no connection to wait for).
 fn syslog_writer(
     c: &SinkConfig,
     rx: &Receiver<String>,
     host: &str,
     tls: Option<&Arc<rustls::ClientConfig>>,
     ctl: &Control,
+    dropped: &AtomicU64,
 ) {
     let addr = c.address.as_ref().map_or("", |a| a.as_str()).to_owned();
     let (udp, target) = match addr.split_once("://") {
@@ -838,6 +846,7 @@ fn syslog_writer(
     let mut sock: Option<UdpSocket> = None;
     let mut tcp: Option<Box<dyn Write + Send>> = None;
     let mut warned = false;
+    let mut wait = SYSLOG_BACKOFF_MIN;
     loop {
         let line = match next_line(rx, ctl) {
             Next::Line(l) => l,
@@ -850,7 +859,7 @@ fn syslog_writer(
             continue;
         };
         let msg = syslog_message(c.facility, blocked == "1", time, host, json);
-        let sent = if udp {
+        if udp {
             if sock.is_none() {
                 sock = UdpSocket::bind(if target.starts_with('[') {
                     "[::]:0"
@@ -859,26 +868,55 @@ fn syslog_writer(
                 })
                 .ok();
             }
-            sock.as_ref()
-                .is_some_and(|s| s.send_to(msg.as_bytes(), target.as_str()).is_ok())
-        } else {
+            let sent = sock
+                .as_ref()
+                .is_some_and(|s| s.send_to(msg.as_bytes(), target.as_str()).is_ok());
+            if !sent {
+                dropped.fetch_add(1, Ordering::Relaxed);
+                if !warned {
+                    warn!(sink = %c.name, address = %addr, "event sink can't reach its syslog collector");
+                }
+            }
+            warned = !sent;
+            continue;
+        }
+        // TCP or TLS: keep the event until it is sent, or the sink is told to stop.
+        loop {
             if tcp.is_none() {
                 tcp = syslog_connect(&target, tls);
             }
             let ok = tcp
                 .as_mut()
                 .is_some_and(|t| write!(t, "{} {msg}", msg.len()).is_ok() && t.flush().is_ok());
-            if !ok {
-                tcp = None;
+            if ok {
+                warned = false;
+                wait = SYSLOG_BACKOFF_MIN;
+                break;
             }
-            ok
-        };
-        if !sent && !warned {
-            warn!(sink = %c.name, address = %addr, "event sink can't reach its syslog collector");
+            tcp = None;
+            if !warned {
+                warn!(sink = %c.name, address = %addr, "event sink can't reach its syslog collector; events wait in its buffer");
+                warned = true;
+            }
+            if ctl.stopping() {
+                // Stopped with the collector away: this event and everything still queued is
+                // counted without touching the network again (one try only, like the webhook
+                // writer), so the stop ends within RETIRE_WAIT whatever the buffer holds.
+                dropped.fetch_add(1, Ordering::Relaxed);
+                while rx.try_recv().is_ok() {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                break;
+            }
+            nap(wait, ctl);
+            wait = (wait * 2).min(SYSLOG_BACKOFF_MAX);
         }
-        warned = !sent;
     }
 }
+
+/// The first wait before a syslog connection is retried, and the longest it grows to.
+const SYSLOG_BACKOFF_MIN: Duration = Duration::from_millis(250);
+const SYSLOG_BACKOFF_MAX: Duration = Duration::from_secs(10);
 
 /// Waits `d`, or until the sink is told to stop.
 fn nap(d: Duration, ctl: &Control) {
@@ -1332,5 +1370,113 @@ mod tests {
         );
         assert!(!dir.join("events.jsonl.3").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// REQ: OBS-010 (issue 105) — a TCP syslog collector that is down when an event is
+    /// ready: the event waits (the connection is retried with backoff) and arrives once the
+    /// collector is back; it is not dropped.
+    #[test]
+    fn obs_010_syslog_tcp_event_waits_for_collector() {
+        use std::io::Read;
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap();
+        drop(free);
+        let c: SinkConfig = toml::from_str(&format!(
+            "name = \"sl\"
+type = \"syslog\"
+address = \"tcp://{addr}\"
+max_buffer = 10
+"
+        ))
+        .unwrap();
+        let (tx, rx) = sync_channel::<String>(10);
+        let ctl = Arc::new(Control::default());
+        let dropped = Arc::new(AtomicU64::new(0));
+        let (c2, ctl2, d2) = (c.clone(), Arc::clone(&ctl), Arc::clone(&dropped));
+        let th = std::thread::spawn(move || syslog_writer(&c2, &rx, "h", None, &ctl2, &d2));
+        tx.send("2026-10-06T10:00:00.000Z	0	{\"a\":1}".to_owned())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+        let l = std::net::TcpListener::bind(addr).unwrap();
+        l.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut got = Vec::new();
+        while Instant::now() < until && got.is_empty() {
+            if let Ok((mut conn, _)) = l.accept() {
+                conn.set_nonblocking(false).unwrap();
+                conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut buf = [0u8; 512];
+                let n = conn.read(&mut buf).unwrap_or(0);
+                got = buf[..n].to_vec();
+            } else {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        ctl.stop_now();
+        drop(tx);
+        th.join().unwrap();
+        assert!(String::from_utf8_lossy(&got).contains("{\"a\":1}"));
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    /// REQ: OBS-010 (issue 105) — an event still waiting for a collector that never came
+    /// back when the sink is told to stop is counted as dropped.
+    #[test]
+    fn obs_010_syslog_tcp_pending_event_counted_when_stopped() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap();
+        drop(free);
+        let c: SinkConfig = toml::from_str(&format!(
+            "name = \"sl\"
+type = \"syslog\"
+address = \"tcp://{addr}\"
+max_buffer = 10
+"
+        ))
+        .unwrap();
+        let (tx, rx) = sync_channel::<String>(10);
+        let ctl = Arc::new(Control::default());
+        let dropped = Arc::new(AtomicU64::new(0));
+        let (c2, ctl2, d2) = (c.clone(), Arc::clone(&ctl), Arc::clone(&dropped));
+        let th = std::thread::spawn(move || syslog_writer(&c2, &rx, "h", None, &ctl2, &d2));
+        tx.send("t	0	{}".to_owned()).unwrap();
+        tx.send("t	0	{}".to_owned()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        ctl.stop_now();
+        th.join().unwrap();
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+    }
+
+    /// REQ: OBS-010 (issue 105) — a full buffer with the collector away: the stop counts every
+    /// queued event as dropped without a connect attempt per event, and ends within
+    /// `RETIRE_WAIT`.
+    #[test]
+    fn obs_010_syslog_tcp_full_buffer_stop_is_bounded() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap();
+        drop(free);
+        let c: SinkConfig = toml::from_str(&format!(
+            "name = \"sl\"
+type = \"syslog\"
+address = \"tcp://{addr}\"
+max_buffer = 10000
+"
+        ))
+        .unwrap();
+        let (tx, rx) = sync_channel::<String>(10_000);
+        let ctl = Arc::new(Control::default());
+        let dropped = Arc::new(AtomicU64::new(0));
+        for _ in 0..10_000 {
+            tx.send("t	0	{}".to_owned()).unwrap();
+        }
+        let (c2, ctl2, d2) = (c.clone(), Arc::clone(&ctl), Arc::clone(&dropped));
+        let th = std::thread::spawn(move || syslog_writer(&c2, &rx, "h", None, &ctl2, &d2));
+        std::thread::sleep(Duration::from_millis(300));
+        let t0 = Instant::now();
+        ctl.stop_now();
+        th.join().unwrap();
+        assert!(t0.elapsed() < RETIRE_WAIT);
+        assert_eq!(dropped.load(Ordering::Relaxed), 10_000);
+        drop(tx);
     }
 }
