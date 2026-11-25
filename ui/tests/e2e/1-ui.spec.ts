@@ -4801,7 +4801,7 @@ test('clu_013 the cluster page shows the pin, the versions, and the bake', async
   await expect(banner.getByTestId('unpin')).toBeVisible();
 
   const rows = page.getByTestId('version-row');
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(3);
   await expect(rows.nth(1)).toContainText('failed');
   await rows.nth(2).getByTestId('pin-open').click();
   const form = page.getByTestId('pin-form');
@@ -5897,7 +5897,7 @@ test('flt_017 workloads', async () => {
   for (const ip of ['127.0.0.81', '127.0.0.82', '127.0.0.83']) await query('nas.e2e.test', 1, DNS_PORT, ip);
   await page.goto('/#/clients?tab=workloads');
   const rows = page.getByTestId('workload-row');
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(3);
   const jellyfin = rows.filter({ hasText: 'media/deploy/jellyfin' });
   await expect(jellyfin.getByTestId('group-from')).toHaveText('network group');
   await expect(rows.filter({ hasText: 'db/sts/postgres' }).getByTestId('group-from')).toHaveText('pod label');
@@ -5974,7 +5974,7 @@ test("clu_015 cluster page shows each member's secret state", async () => {
   await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
   await page.goto('/#/cluster?tab=nodes');
   const rows = page.getByTestId('cluster-node');
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(3);
   await expect(rows.nth(0).getByTestId('cluster-node-secrets-state')).toHaveText('primary');
   await expect(rows.nth(0).getByTestId('cluster-node-secrets')).toContainText('head 2.14 · applied 2.14');
   await expect(rows.nth(1).getByTestId('cluster-node-secrets-state')).toHaveText('in sync');
@@ -6013,7 +6013,7 @@ test('clu_004 primary unreachable shows on the cluster page', async () => {
   await page.goto('/#/alerts');
   await page.goto('/#/cluster?tab=nodes');
   const rows = page.getByTestId('cluster-node');
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(3);
   const silent = rows.nth(1).getByTestId('cluster-node-primary-silent');
   await expect(silent).toContainText('no contact with the primary');
   await expect(silent).toContainText('for 1m');

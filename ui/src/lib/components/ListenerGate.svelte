@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <script lang="ts">
   // REQ: DNS-901, API-902 (T27.14; ADR-1090 point 1, ADR-914, ADR-956) — the known-ID gate of each
   // listener, changed through the guarded framework: three states per DoT, DoH, DoH3 or DoQ listener
