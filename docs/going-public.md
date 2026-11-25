@@ -498,7 +498,10 @@ Part A's step 9 and Parts B and C up to step 25 were carried out on 2026-11-25. 
 - **Step 24, 17:28 to 17:49:** `release.yml` with version `1.0.0` tagged `v1.0.0` on `0a787a28` and printed its next-version notice; the `image` run on the tag was green, `verify` included. The release has 13 files. From the flip to the release: 62 minutes.
 - **Step 25:** pull request #116, `1.1.0` on `main`.
 
-Still open after this record: step 20's fork tests (before step 26), step 24a, and steps 26 to 31.
+- **Step 26, 20:22:** the owner could not run step 20's fork tests for the foreseeable future and gave the yes for step 26 without them; no fork, fork pull request or waiting fork run existed; the eight supervisors were enabled again with `systemctl enable --now wrendns-lxd-runner@NN`, all eight runners read online, and both variables were set again. Consequence: nothing has shown in practice that a fork pull request waits for approval, so no fork run is approved before its whole diff is read.
+- **Step 27:** the site switch went through a pull request (#118).
+
+Still open after this record: step 20's fork tests, step 24a, and steps 28 to 31.
 
 ## Part D: standing procedures
 
