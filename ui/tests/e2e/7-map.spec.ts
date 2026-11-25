@@ -7,6 +7,7 @@ import { expect, test, type Browser, type BrowserContext, type Page, type Route 
 import { readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { hoverRing, rectRing } from './svg-ring';
+import { pick } from './picker';
 import { NO_FILTERS, animatedBudget, filterSnapshot, flowRows, layout, links, pulse, seed, via, type Snapshot } from '../../src/lib/map';
 
 test.describe.configure({ mode: 'serial' });
