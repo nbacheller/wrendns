@@ -25,7 +25,8 @@ fail() {
   echo "FAIL: $*"
   # Annotations are readable without a token (job logs aren't).
   [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=$(basename "$0")::FAIL: $*"
-  for f in "$E"/*.log; do echo "--- $(basename "$f")"; tail -15 "$f"; done
+  if [ -s "$E/lost.txt" ]; then echo "--- lost queries (epoch seconds)"; cat "$E/lost.txt"; fi
+  for f in "$E"/*.log; do echo "--- $(basename "$f")"; tail -40 "$f"; done
   exit 1
 }
 echo "old: $("$OLD" --version)   new: $("$NEW" --version)"
@@ -107,7 +108,7 @@ edit() { # value: change the record on the primary and reload it
   kill -HUP "$P_PID"
 }
 
-echo "== 1. both on N-1"
+echo "== $(date +%s.%3N) 1. both on N-1"
 "$OLD" cluster init --name up --advertise https://127.0.0.1:28641 -c "$E/p.toml" >/dev/null
 start_p "$OLD"
 wait_answer 25501 10.0.0.1 10 || fail "the old primary never answered"
@@ -129,28 +130,28 @@ wait_answer 25502 10.0.0.1 15 || fail "the old replica never followed"
 python3 "$E/q.py" load 25501 25502 "$E/stop" > "$E/load.txt" 2> "$E/lost.txt" & LOAD=$!
 echo ok
 
-echo "== 2. replica on N follows the N-1 primary"
+echo "== $(date +%s.%3N) 2. replica on N follows the N-1 primary"
 stop_r; start_r "$NEW"
 wait_answer 25502 10.0.0.1 10 || fail "the new replica doesn't answer"
 edit 10.0.0.2
 wait_answer 25502 10.0.0.2 15 || fail "an edit on the N-1 primary didn't reach the N replica"
 echo ok
 
-echo "== 3. primary on N"
+echo "== $(date +%s.%3N) 3. primary on N"
 stop_p; start_p "$NEW"
 wait_answer 25501 10.0.0.2 10 || fail "the new primary doesn't answer"
 edit 10.0.0.3
 wait_answer 25502 10.0.0.3 15 || fail "an edit on the N primary didn't reach the N replica"
 echo ok
 
-echo "== 4. replica back on N-1 follows the N primary"
+echo "== $(date +%s.%3N) 4. replica back on N-1 follows the N primary"
 stop_r; start_r "$OLD"
 wait_answer 25502 10.0.0.3 10 || fail "the old replica doesn't answer"
 edit 10.0.0.4
 wait_answer 25502 10.0.0.4 15 || fail "an edit on the N primary didn't reach the N-1 replica"
 echo ok
 
-echo "== 5. a staged rollout: the N-1 replica gets stable versions only (CLU-013)"
+echo "== $(date +%s.%3N) 5. a staged rollout: the N-1 replica gets stable versions only (CLU-013)"
 T=$("$NEW" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
 "$NEW" cluster join "$T" --site canary -c "$E/c.toml" >/dev/null || fail "the canary couldn't join"
 "$NEW" run -c "$E/c.toml" >> "$E/c.log" 2>&1 & C_PID=$!

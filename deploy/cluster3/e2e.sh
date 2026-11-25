@@ -580,6 +580,16 @@ secrets_all_held() { # node: 0 when its Secrets list shows every full member hol
   [ "$(jget 'len({(n["stamp"]["epoch"], n["stamp"]["seq"]) for i in d["items"] if i["name"] == "cluster3-router-key" for n in i["nodes"]}) == 1')" = True ] || return 1
   [ "$(jget 'sorted(m["kind"] + ":" + m["state"] for m in d["members"]) == ["full:answered"] * 3')" = True ]
 }
+# Polls until a node's Secrets list shows every member holding the key; 0 on the reply that did, with
+# RB that reply (so a later check reads what was judged). The list is a live read of each member over
+# the cluster channel with a 2 s deadline (federated.rs DEADLINE), and a member that misses one read
+# is listed `unknown` for that reply (secrets_api.rs with_members): the promise is "shown once the
+# members answer" (the note on `with_members` in secrets_api.rs), not "never unknown again". So the judged reply is not asked for again.
+await_secrets_held() { # node seconds
+  local i
+  for ((i = 0; i < $2; i++)); do secrets_all_held "$1" && return 0; sleep 1; done
+  return 1
+}
 secrets_diag() { # the last Secrets reply: the stored key's node states and the member list, whole
   printf 'status %s; key nodes %s; members %s' "$RS"     "$(jget 'json.dumps([i["nodes"] for i in d["items"] if i["name"] == "cluster3-router-key"])')"     "$(jget 'json.dumps(d["members"])')"
 }
@@ -592,8 +602,7 @@ polled_by() { # node: 0 when the fake source saw a read from that node's address
 for _ in $(seq 90); do polled_by "$killed" && break; sleep 1; done
 polled_by "$killed" || bad "the primary $killed never read the fake UniFi with the stored key: $("${COMPOSE[@]}" logs --no-color fake-source 2>&1 | tail -5)"
 for n in "${NODES[@]}"; do
-  for _ in $(seq 90); do secrets_all_held "$n" && break; sleep 1; done
-  secrets_all_held "$n" || bad "$n's Secrets list doesn't show all three members holding the key: $(secrets_diag)"
+  await_secrets_held "$n" 90 || bad "$n's Secrets list doesn't show all three members holding the key: $(secrets_diag)"
   has "$SECRET" && bad "$n's Secrets list shows the key's value"
 done
 for n in "${survivors[@]}"; do
@@ -661,8 +670,7 @@ for _ in $(seq 60); do call "$killed" GET /api/v1/upstreams; has '"t2437-fo"' ||
 ! has '"t2437-fo"' || bad "the old primary $killed brought the deleted upstream back"
 # T24.42: with the old primary back, every node's Secrets list shows all three members holding the key.
 for n in "${NODES[@]}"; do
-  for _ in $(seq 120); do secrets_all_held "$n" && break; sleep 1; done
-  secrets_all_held "$n" || bad "after the failover $n's Secrets list doesn't show all three members holding the key: $(secrets_diag)"
+  await_secrets_held "$n" 120 || bad "after the failover $n's Secrets list doesn't show all three members holding the key: $(secrets_diag)"
 done
 call "$new" DELETE /api/v1/routers/fake-udm-h
 [ "$RS" = 200 ] || [ "$RS" = 204 ] || bad "removing fake-udm-h on $new answered $RS: $RB"
