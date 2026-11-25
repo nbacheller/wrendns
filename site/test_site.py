@@ -340,9 +340,9 @@ class RepoLinks(unittest.TestCase):
 
     cfg = json.loads(read("data", "site.json"))
 
-    def test_the_committed_setting_is_private(self):
-        self.assertIs(self.cfg.get("repoPublic"), False)
-        self.assertFalse(build.repo_public(self.cfg))
+    def test_the_committed_setting_is_public(self):
+        self.assertIs(self.cfg.get("repoPublic"), True)
+        self.assertTrue(build.repo_public(self.cfg))
         self.assertTrue(build.repo_public({"repoPublic": True}))
         self.assertFalse(build.repo_public({}))
 
