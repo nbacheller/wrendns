@@ -5558,6 +5558,8 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a rolling upgrade works in both directions between the last release before the rename and the first after it; the cost is a duplicate metric set on `/metrics` (about twice the size of one scrape) and a handful of `legacy*` modules for one release.
 
+**Owner decision (2026-11-24), items 8 and 10:** the `telltale-<arch>-linux` copies of the release files were planned to be dropped the release after the rename. The owner dropped them before v1.0.0 instead, because no code path of this project reads them: `self-update` and `install.sh` read the `wrendns-*` files, and a binary of upstream's TelltaleDNS reads upstream's releases and trusts only upstream's key. `deploy/release/legacy-assets.sh`, its step in `image.yml` and its test are removed, and `SHA256SUMS` and `releases.json` list the `wrendns-*` files only. The rest of the window (the migration script, the `install.sh` hooks, the `legacy*` modules and the `rebrand:keep` formats) is unchanged.
+
 ## ADR-1029 — `scripts/rebrand.py`: the rename is a script, and the rule for what is history (Accepted 2026-11-19, T33.2)
 
 **Context:** two branches (the CMDB and the secret-members fix) merge into `feat/ipam-integrations` and then `main` before the rename lands, and more may follow, so a hand rename would conflict on every file. The rename also has to keep some old spellings (the licences, upstream's copyright, the history of the project).
@@ -6212,7 +6214,10 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the post-quantum TLS w
 - **Outside contributions (point 2).** The required privacy check keeps failing closed on fork pull requests. To take a contribution in, a maintainer pushes the contributor's commits, with their authorship kept, to a branch of this repository, where every check runs. That branch is merged through a normal pull request, and the fork pull request is closed with a link to it. No required check is bypassed. This answers the question left open in the consequences above.
 - **No bypass for the release workflow (point 1).** The ruleset has no bypass actor for the GitHub Actions app. After a release, `main` moves to the next version through `deploy/release/bump.sh` and a normal pull request, so the release workflow's own push to `main` is refused (`docs/releasing.md`).
 
-Still open for the owner: whether the ruleset also requires a pull request, and the admin bypass mode (`docs/going-public.md`).
+- **The ruleset (points 1 and 2, answers of 2026-11-24).** The required checks are `privacy`, `site` and `pr-ok`, with the CLA context added when its name is confirmed (point 1). There is no separate rule that requires a pull request. The repository admin role may bypass for pull requests only, not always. There is no bypass for the GitHub Actions app.
+- **Packages.** The image `wrendns` and the chart `charts/wrendns` are deleted just before the flip and re-created by the first image run after it, so no version from the private era becomes public. The `telltale` image and chart become public after their versions are scanned against the denylist, as a separate step after v1.0.0; a version that fails is deleted with the owner's yes (`docs/going-public.md`, step 24a).
+
+Still open for the owner: the runner variables for the window, `sha_pinning_required`, and the issue and pull request text (`docs/going-public.md`).
 
 ## ADR-1081 — Location names: a location is a first-class object with an optional parent domain, and a private location's names are answered only to its own networks (Proposed 2026-11-20; DSC-908 to DSC-914; #40; T36.10a, T36.10c)
 

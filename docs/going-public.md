@@ -12,7 +12,17 @@ The repository that goes public is **the current repository**. Nothing is re-cre
 - **E4, build box.** The eight self-hosted runners are stopped before the flip. After the flip, the owner first sets approval for fork pull request workflows from all outside collaborators, and verifies it with test fork pull requests. Only then are the runners started. There is no runner hook.
 - **E5, fork pull requests.** The required privacy check fails closed on forks. To accept a contribution, a maintainer pushes the contributor's commits, with their authorship kept, to a branch in the repository, where all checks run, merges that, and closes the fork pull request with a link. No required check is bypassed.
 - **E6, ruleset.** There is no bypass for the GitHub Actions app. After a release, the version bump on `main` goes through `deploy/release/bump.sh` and a normal pull request.
-- **E7, TelltaleDNS-era leftovers.** Keep what the documented migration path needs. Nothing is removed without the owner's yes on a list. The TelltaleDNS-era releases are the only ones from before the switch to the AGPL, so they are kept: the `permissive-final` release and tag, and the `telltale` image and chart packages. Whether those two packages stay private or become public is an open question (below).
+- **E7, TelltaleDNS-era leftovers.** Keep what the documented migration path needs. Nothing is removed without the owner's yes on a list. The TelltaleDNS-era releases are the only ones from before the switch to the AGPL, so they are kept: the `permissive-final` release and tag, and the `telltale` image and chart packages. They stay private through the flip and become public after a scan, as a separate step after v1.0.0 (Q2, step 24a).
+
+The owner's answers of 2026-11-24 to the questions at the end of this page (each is binding; the step that acts keeps its own **owner's yes** at the time). Q3, Q6 and Q10 are not answered and stay open there.
+
+- **Q1, packages `wrendns` and `charts/wrendns`.** Both are deleted just before the flip (step 13) and re-created by the first image run after it (step 19). Nothing is made public with the old versions.
+- **Q2, packages `telltale` and `charts/telltale`.** They become public after their versions are scanned against the denylist, as a separate step after v1.0.0 (step 24a). A version that fails the scan is deleted, with the owner's yes. Until then they stay private, so `LICENSING.md` says they "are made public as an archive ... once checked", which is true on the day of the flip.
+- **Q4 and Q5, the ruleset.** Required checks `privacy`, `site` and `pr-ok`. No separate "require a pull request" rule. The repository admin role may bypass for pull requests only. No bypass for the GitHub Actions app (E6). Step 22.
+- **Q7, tags.** `fork-base` and `upstream-sync-last` are deleted (step 9, owner's yes at the time).
+- **Q8, `telltale-*` release files.** They stop being published before v1.0.0: `deploy/release/legacy-assets.sh` and what uses it are removed (task in "Tasks to do before the flip"). The migration path stays.
+- **Q9, branches.** Merged work branches are deleted on GitHub before the final scan (step 9, before step 14). Dependabot's branches are left.
+- **Q11, commits that no ref reaches.** The owner's local clones are scanned for them with the privacy check (option 1), and the remainder is accepted as a known small risk, in writing (option 3). Steps 9 and 14.
 
 ## How to read it
 
@@ -28,20 +38,20 @@ The repository that goes public is **the current repository**. Nothing is re-cre
 
 - **Fork approval cannot be set while private.** `gh api repos/nbacheller/wrendns/actions/permissions/fork-pr-contributor-approval` answers 422, "Fork PR approval is not allowed for private repositories" (read 2026-11-24). It is step 18, straight after the flip.
 - **The `runs-on` guard is not a barrier against a fork.** For a `pull_request` event GitHub runs the workflow file from the pull request's merge commit, so a fork can edit any job's `runs-on`, including the guard `github.event.pull_request.head.repo.full_name == github.repository` in `pr.yml` and `main.yml`. What keeps a fork off the box is the approval gate (step 18) and, until it is tested, stopped runners (E4). **Stopped is not unregistered:** the runners stay registered (step 11 expects `offline` eight times), and a job aimed at registered but offline runners waits in the queue instead of failing. Until step 18 the repository has GitHub's default fork-approval policy, and a run that already started is not held back by a later change of the setting. So a fork pull request opened between step 17 and step 18 can leave a queued job for the self-hosted labels, which a runner would pick up the moment it starts. Steps 18 and 26 therefore list such runs and cancel them (the command is in step 18). Removing the runner variables (step 12) does not close this: with them unset, `runs-on` in `pr.yml` and `main.yml` evaluates to `ubuntu-latest` (`pr.yml` lines 82 and 101; `main.yml` lines 159, 179, 316, 369, 516 and 661), because `vars.WRENDNS_PR_RUNNER` and `vars.WRENDNS_RUNNER` are empty strings and so fall through to `'"ubuntu-latest"'`. But a fork edits `runs-on` itself and writes the labels in, whatever the variables hold. The variables only keep the repository's own jobs off the stopped box.
-- **The release workflow's push to `main` works today and is refused from step 22.** The ruleset `main` (id 27699911) holds only the rules `deletion` and `non_fast_forward`, with one bypass actor, the repository admin role, mode `always` (read 2026-11-24). A fast-forward push therefore passes today. Once step 22 requires checks, `git push origin HEAD:main` in `release.yml` is refused (step 24).
+- **The release workflow no longer pushes to `main`.** The ruleset `main` (id 27699911) holds only the rules `deletion` and `non_fast_forward`, with one bypass actor, the repository admin role, mode `always` (read 2026-11-24). The old "Move main" step ran `git push origin HEAD:main`, which passes today and would be refused once step 22 requires checks, ending every release run red. The task in "Tasks to do before the flip" removes that push: the step ends with a notice to run `deploy/release/bump.sh` and open a pull request (step 25).
 - **What switches itself on at the flip.** The attestation steps in `image.yml`, the `dependency-review` job in `pr.yml` and the `codeql` workflow all test `private == false`. Nothing needs editing for them.
 - **The privacy check requires the list only here.** `WRENDNS_PRIVACY_REQUIRED` is `github.repository == 'nbacheller/wrendns'` in `pr.yml` (and the same test, plus a same-repository head, in `main.yml`). A fork pull request runs in this repository, gets no secret, and fails closed (ADR-1080 point 2). The Dependabot secret `PRIVACY_DENYLIST` exists (read 2026-11-24).
 - **`check-private.py --history` works on a bare mirror, by reading the code.** With `--root` it runs only `git -C <root>` with `log`, `for-each-ref`, `cat-file`, `ls-tree` and `rev-parse --is-shallow-repository`, and needs no work tree. Step 7 runs it on one, which proves it. Its tree mode is different: it runs `git ls-files` in `--root`, and it refuses an `--extra` directory outside `--root` ("an --extra directory must be inside --root"). Step 8 therefore scans files in a throwaway `git init` directory.
 - **What `check-private.py` does not scan** (its docstring): author, committer and tagger names and emails; git notes and reflogs; binary files; anything outside git. Identities are accepted under E1. Built files are step 8. GitHub-side content is steps 4 and 14.
 - **Every non-local `uses:` is pinned to a 40-hex SHA.** `scripts/check-workflows.py` enforces it. The repository's `sha_pinning_required` setting is `false` (audit, 2026-11-24).
 - **Secrets, the release key and the site deploy do not move.** The repository is the same, so `MINISIGN_SECRET_KEY`, `PRIVACY_DENYLIST` and `AZURE_STATIC_WEB_APPS_API_TOKEN` stay as they are, installed nodes keep trusting the same key, and `site.yml` keeps deploying with its token.
-- **Packages are linked to the archive.** The image `wrendns` and the chart `charts/wrendns` are private and linked to `nbacheller/wrendns-archive`, with 333 and 27 versions, the oldest from 2026-11-19 (read 2026-11-24). `telltale` and `charts/telltale` are private and linked there too. The `Dockerfile` sets `org.opencontainers.image.source` to `https://github.com/nbacheller/wrendns`, and `Chart.yaml` lists that address under `sources`. See open question Q1.
+- **Packages are linked to the archive.** The image `wrendns` and the chart `charts/wrendns` are private and linked to `nbacheller/wrendns-archive`, with 333 and 27 versions, the oldest from 2026-11-19 (read 2026-11-24). `telltale` and `charts/telltale` are private and linked there too. The `Dockerfile` sets `org.opencontainers.image.source` to `https://github.com/nbacheller/wrendns`, and `Chart.yaml` lists that address under `sources`. See decision Q1.
 - **Already public and cannot be withdrawn:** the keyless cosign signatures of every edge build are in the public Sigstore transparency log, naming `nbacheller/wrendns` and `image.yml`. They hold no private value.
 - **Commit identities (E1).** Accepted as they are. To see what the history exposes, count it in the step 14 mirror without printing a value: `git -C <outside>/wrendns-final.git log --all --format='%ae%n%ce' | sort -u | grep -vc '@users.noreply.github.com$'` prints the number of distinct addresses that are not GitHub noreply addresses (5 across origin's branches and tags on 2026-11-24). Drop `-c` to see them on your own screen only.
 
 ## The gap in the history scan
 
-`check-private.py --history` reads `git log --all`, so it sees only commits that some ref reaches. A commit that no ref points at can still be fetched from a public repository by anyone who knows its hash (short hashes in the web interface too) until GitHub garbage-collects it. Nothing lists such commits from outside, and a mirror clone does not hold them, so no step here can scan them from GitHub's side. The owner's own clones and reflogs may hold some. This is open question Q11, not decided here.
+`check-private.py --history` reads `git log --all`, so it sees only commits that some ref reaches. A commit that no ref points at can still be fetched from a public repository by anyone who knows its hash (short hashes in the web interface too) until GitHub garbage-collects it. Nothing lists such commits from outside, and a mirror clone does not hold them, so no step here can scan them from GitHub's side. The owner's own clones and reflogs may hold some. The owner's decision on it is Q11 (above, and step 14): scan the owner's clones, accept the remainder.
 
 ## The order in one line each
 
@@ -77,6 +87,7 @@ Part C, after the flip:
 22. The ruleset (ADR-1080 with E5 and E6). **Owner's yes** (ruleset).
 23. Packages: link and visibility. **Owner's yes** (packages).
 24. Cut v1.0.0 and verify it (E2). **Owner's yes** (release).
+    - 24a. Scan and publish the `telltale` packages (Q2), after v1.0.0. **Owner's yes** (packages).
 25. Start 1.1.0 through a pull request (E6).
 26. Start the runners, then test C. **Owner's yes** (build box, variables, approving test C's run).
 27. The site switch. **Owner's yes** (pushes and merges what makes the site's links live).
@@ -95,15 +106,15 @@ Part D, standing procedures:
 ### 1. Land the tasks before the flip
 
 - **Who:** an agent or the owner, each in a normal pull request. Commits use the owner's noreply address.
-- **How:** do every item in "Tasks to do before the flip" at the end of this page. The `release.yml` task matters most: without it every release run ends red (step 24).
+- **How:** do every item in "Tasks to do before the flip" at the end of this page. The `release.yml` task matters most: without it every release run ends red (step 24). Each task is marked when done.
 - **Verify:** each pull request is merged and CI on `main` is green.
 - **Undo:** revert the pull request.
 
 ### 2. Get the owner's answers to the open questions
 
 - **Who:** the owner, asked through the question tool, all questions together.
-- **How:** "Open questions for the owner" at the end of this page, each with a recommendation. Write each answer into this page beside its question.
-- **Verify:** every question has a written answer before step 9.
+- **How:** "Open questions for the owner" at the end of this page, each with a recommendation. Write each answer into this page beside its question. On 2026-11-24 the owner answered all but Q3, Q6 and Q10 (see "The route", above); those three are still to ask, Q10 item by item at step 4.
+- **Verify:** every question has a written answer before step 9 (Q6 before step 21, Q10 before the flip).
 - **Undo:** an answer can be changed until the step that acts on it.
 
 ### 3. Read what GitHub holds today
@@ -169,14 +180,14 @@ This pass covers everything git can serve once the repository is public. GitHub 
 
 ### 8. Scan what the builds published
 
-The `edge` release becomes public at the flip and stays until step 19 replaces it. Its assets are not in git.
+The `edge` release becomes public at the flip and stays until step 19 replaces it. It still holds `telltale-*` binaries until a build from `main` after Q8's change has replaced it; the scan reads whatever it holds. Its assets are not in git.
 
 - **Who:** the owner, or an agent the owner trusts with the list.
 - **How:**
   - `mkdir -p <outside>/asset-scan/assets-text && git -C <outside>/asset-scan init -q`. The scan runs `git ls-files` in its root, so the root must be a git repository, and every `--extra` directory must be inside it.
   - `gh release download edge -R nbacheller/wrendns -D <outside>/asset-scan/assets`. It holds `wrendns-*` and `telltale-*` binaries, the `.cdx.json` SBOMs, the `.debug.zst` debug files, `SHA256SUMS`, `releases.json` and their `.minisig` files (16 assets on 2026-11-24).
   - Debug files and binaries are binary, so extract their printable strings (debug files can hold build paths): for each `assets/*.debug.zst`, `zstd -dc <file> | strings > assets-text/<file name>.txt`; for each `assets/*-linux` binary, `strings <file> > assets-text/<file name>.txt`.
-  - If Q1's answer keeps the existing packages, also save the image configuration and labels: `docker buildx imagetools inspect ghcr.io/nbacheller/wrendns:edge --format '{{json .Image}}' > assets-text/image-edge.json`.
+  - Q1 deletes the existing `wrendns` packages, so their old versions need no scan. The image that step 19 publishes is built from the scanned tree.
   - Scan: `WRENDNS_PRIVACY_DENYLIST=<list> python3 <checkout>/scripts/check-private.py --root <outside>/asset-scan --require --extra assets --extra assets-text`.
   - Read the `edge` and `permissive-final` release notes: `gh release view edge -R nbacheller/wrendns` and the same for `permissive-final`.
 - **Verify:** `check-private: N file(s) clean against M pattern(s)`, exit 0. Exit 2 is not a pass.
@@ -190,10 +201,10 @@ Branches on GitHub on 2026-11-24 (`git ls-remote --heads origin`): `main`, `cla-
 - **Who:** the owner. **Owner's yes** (deletes branches and tags).
 - **How:**
   - Keep `main` and `cla-signatures`.
-  - For each work branch: merge it through a pull request, or delete it: `git push origin --delete <branch>`.
-  - The Dependabot branches: close their pull requests or let them be. Dependabot opens them again on its schedule. Deleting a branch closes its pull request.
-  - Tags, if Q7 says so: `git push origin --delete fork-base upstream-sync-last`. Keep `permissive-final` (E7) and `edge` (`image.yml` re-creates it).
-- **Verify:** `git ls-remote --heads origin` lists only what the owner kept. A deleted branch's commits stay reachable by hash. Those that a `refs/pull/*` ref reaches were scanned in step 7 (the mirror holds every ref). **Commits that no ref reaches were not scanned**: a branch deleted before today that never had a pull request, or a pull request head replaced by a force push (`refs/pull/<N>/head` keeps only the latest). See "The gap in the history scan" and Q11.
+  - Q9: each work branch that is merged into `main` is deleted on GitHub: `git push origin --delete <branch>`. Check first with `git merge-base --is-ancestor origin/<branch> origin/main`. A branch that is not merged goes back to the owner, who merges it through a pull request or says to delete it. All this happens before step 14, so the final scan sees the result.
+  - The Dependabot branches are left (Q9).
+  - Tags (Q7, owner's yes at the time): `git push origin --delete fork-base upstream-sync-last`. Keep `permissive-final` (E7) and `edge` (`image.yml` re-creates it).
+- **Verify:** `git ls-remote --heads origin` lists only what the owner kept. A deleted branch's commits stay reachable by hash. Those that a `refs/pull/*` ref reaches were scanned in step 7 (the mirror holds every ref). **Commits that no ref reaches were not scanned**: a branch deleted before today that never had a pull request, or a pull request head replaced by a force push (`refs/pull/<N>/head` keeps only the latest). See "The gap in the history scan" and Q11 (step 14).
 - **Undo:** push the branch or tag again from a clone that has it.
 
 ## Part B: the window
@@ -224,7 +235,7 @@ Only if the owner's answer to Q3 is yes. With the variables unset, every job fal
 ### 13. Packages: carry out the owner's answer to Q1
 
 - **Who:** the owner. **Owner's yes** (packages).
-- **How**, for the recommended answer (delete `wrendns` and `charts/wrendns`): your profile, Packages, the package, Package settings, "Delete this package", for each of the two. Leave `telltale` and `charts/telltale` alone (E7). For another answer, follow Q1's option.
+- **How** (Q1: delete `wrendns` and `charts/wrendns`): your profile, Packages, the package, Package settings, "Delete this package", for each of the two. Leave `telltale` and `charts/telltale` alone (E7, Q2).
 - **Verify:** `gh api user/packages/container/wrendns` and `gh api user/packages/container/charts%2Fwrendns` answer 404. `gh api user/packages/container/telltale --jq .visibility` still says `private`.
 - **Undo:** a deleted package can be restored from the account's package settings for a limited time. **To confirm at step 13:** how long, and that a restore brings back every version.
 
@@ -239,8 +250,8 @@ Steps 7 to 13 are only as good as the moment they ran. This step repeats them on
   - Step 8 again if `edge` changed since then (`gh release view edge -R nbacheller/wrendns --json name` names the commit).
   - Step 4 again for every issue, pull request and comment since step 4.
   - Step 3's collaborators, invitations, forks and installed apps, again.
-  - Q11's answer, carried out: the unreachable-commit scan of the owner's clones (option 1), or the written acceptance (option 3).
-- **Verify:** every scan is clean, Q11 has its written answer, and the owner writes "pre-flip review done" to the agent, naming anything removed.
+  - Q11, carried out: the unreachable-commit scan of the owner's local clones (in a scratch clone, give each `git rev-list --reflog` commit a temporary ref, then run `check-private.py --history` there), and the owner's written acceptance of what it cannot reach (GitHub's own unreachable objects).
+- **Verify:** every scan is clean, the clone scan of Q11 is clean and the owner has written the acceptance of the remainder, and the owner writes "pre-flip review done" to the agent, naming anything removed.
 - **On a hit:** as in step 7. The flip waits.
 - **Undo:** nothing to undo.
 
@@ -273,7 +284,7 @@ Run logs can hold what no scan has read, and logs of jobs on the build box name 
   - Step 15's three counts print `0`.
   - Step 11's runner check prints `offline` eight times, and `gh variable list -R nbacheller/wrendns` is empty if step 12 ran.
   - `gh api repos/nbacheller/wrendns/forks --jq length` prints `0`.
-  - Packages, by Q1's answer. Under (b): `gh api user/packages/container/wrendns` and `gh api user/packages/container/charts%2Fwrendns` answer 404. Under (a) or (c): `gh api 'user/packages/container/wrendns/versions?per_page=100' --paginate --jq '.[].id' | wc -l` and the same for `charts%2Fwrendns` equal the counts the owner accepted at step 13. `telltale` and `charts/telltale` are unchanged from step 3.
+  - Packages (Q1): `gh api user/packages/container/wrendns` and `gh api user/packages/container/charts%2Fwrendns` answer 404. `telltale` and `charts/telltale` are unchanged from step 3, still private.
 - **Undo:** nothing to undo.
 
 ### 17. Make the repository public
@@ -299,8 +310,8 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
 ### 19. Start the first runs after the flip
 
 - **Who:** a command, with the owner's yes. **Owner's yes** (it publishes the edge image, chart and release).
-- **How:** the image first, because `main.yml`'s `helm` job pulls the published `edge` image, and under Q1's recommended answer the package does not exist yet:
-  - `gh workflow run image.yml --ref main -R nbacheller/wrendns`. It publishes the edge image and chart (creating the packages again under Q1's recommendation) and deletes and re-creates the `edge` release, now with attestations.
+- **How:** the image first, because `main.yml`'s `helm` job pulls the published `edge` image, and under Q1 the package does not exist yet:
+  - `gh workflow run image.yml --ref main -R nbacheller/wrendns`. It publishes the edge image and chart (creating the packages again, Q1) and deletes and re-creates the `edge` release, now with attestations.
   - `gh workflow run main.yml --ref main -R nbacheller/wrendns` at the same time, to save time. If its `helm` jobs fail because the edge image is not there yet, re-run them once the image run's `merge` job is green: `gh run rerun <run id> --failed -R nbacheller/wrendns`.
   - `gh workflow run codeql.yml --ref main -R nbacheller/wrendns` after step 21.
 - **Verify:** `gh run list -R nbacheller/wrendns --limit 5`: the `image` and `main` runs end `completed success`. Every job ran on a GitHub-hosted runner if step 12 ran (step 20 shows how to read a job's runner).
@@ -340,9 +351,9 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
 - **How:** Settings, Rules, Rulesets, `main` (id 27699911). Keep: target the default branch, restrict deletions, block force pushes, enforcement Active. Add:
   - **Require status checks to pass**, with the contexts **`privacy`**, **`site`** and **`pr-ok`**. All three are job ids in `.github/workflows/pr.yml` and none has a `name:`, so the context is the job id. `pr-ok` is the aggregate of the CI jobs (ADR-1073). The CLA context comes in step 31. **To confirm at step 22:** `main.yml` has a job `site` too, which reports on a pull request labelled `ci:full`; check which runs GitHub lists for the `site` context before choosing its source.
   - **No bypass actor for the GitHub Actions app** (E6).
-  - **The pull-request rule and the admin bypass mode:** as the owner answered Q4 and Q5.
+  - **No separate pull-request rule** (Q4), and **the repository admin role bypasses for pull requests only** (Q5: set the bypass mode to "For pull requests only", not "Always"). Direct pushes to `main` are then refused, and the owner's merges go through pull requests (merge commits, the subject typed at merge time). **To confirm at step 22:** that GitHub, with no pull-request rule in the ruleset, indeed refuses a direct push by the admin role under this mode (the required checks refuse a commit that has not passed them on another ref), and what the pull request page shows when the owner bypasses; record both here.
   - Do not target `cla-signatures`: `cla.yml` commits to it with the workflow token. CodeQL is not required (ADR-1080 point 5).
-- **Verify:** `gh api repos/nbacheller/wrendns/rulesets/27699911 --jq '[.rules[].type], .bypass_actors'` lists `required_status_checks` beside `deletion` and `non_fast_forward`, and the bypass actors the owner chose. A pull request from a branch of the repository cannot merge until the three checks are green.
+- **Verify:** `gh api repos/nbacheller/wrendns/rulesets/27699911 --jq '[.rules[].type], .bypass_actors'` lists `required_status_checks` (three contexts) beside `deletion` and `non_fast_forward`, no `pull_request` rule, and one bypass actor, the repository admin role, with `bypass_mode` `pull_request`, and none for the GitHub Actions app. A pull request from a branch of the repository cannot merge until the three checks are green.
 - **Undo:** edit the ruleset back. Its page keeps the history.
 
 ### 23. Packages: link and visibility
@@ -351,7 +362,7 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
 - **How:**
   - After step 19's `merge` and `chart` jobs: `gh api user/packages/container/wrendns --jq '.repository.full_name, .visibility'` and the same for `charts%2Fwrendns`. **To confirm at step 23:** that each re-created package is linked to `nbacheller/wrendns` (through the `Dockerfile` label and the chart's `sources`, or the workflow's repository), and its visibility. If one is not linked, connect it in Package settings.
   - Your profile, Packages: for `wrendns` and `charts/wrendns`, Package settings, Change package visibility, Public.
-  - `telltale` and `charts/telltale`: as the owner answered Q2. The recommendation keeps them private for now.
+  - `telltale` and `charts/telltale` stay private here (Q2). Step 24a makes them public.
 - **Verify:** with no registry login, `docker pull ghcr.io/nbacheller/wrendns:edge` and `helm pull oci://ghcr.io/nbacheller/charts/wrendns --devel` both work. Each package page links `nbacheller/wrendns`.
 - **Undo:** a public package can be set private again, but whatever was pulled stays out.
 
@@ -364,10 +375,26 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
   1. **Preflight** (`deploy/release/preflight.sh 1.0.0`): the version, `Cargo.toml`, `Chart.yaml`, a new tag, the notes, and a green newest `main` run on `main`'s head.
   2. **Tag:** tags `v1.0.0` as `github-actions[bot]` and pushes the tag. The ruleset targets the default branch only, so the tag push is allowed.
   3. **Build and publish the tag:** `gh workflow run image.yml --ref v1.0.0`.
-  4. **Move main to the next version:** today it runs `bump.sh 1.1.0`, commits and runs `git push origin HEAD:main`. Under step 22's ruleset, which requires checks and has no bypass for the GitHub Actions app (E6), **that push is refused**. `run:` steps use bash with `-e`, so the failed `git push` fails the step, the job and the **release** run, which ends red. The two `gh workflow run` lines after it and the closing notice do not run, and the bump commit is lost with the runner. Steps 2 and 3 happened before it, so **the release itself is unaffected**. Once the task "`release.yml`, Move main" below is done, this step only prints what to do next, and the run ends green.
-- **Then wait** for the **image** run on `v1.0.0`, about 30 minutes: `gh run list --workflow image.yml -R nbacheller/wrendns --limit 3`. It publishes the image tagged `1.0.0`, `1.0`, `1` and `latest`, signed with cosign and now with the provenance and SBOM attestations; the chart `1.0.0`; and the release `v1.0.0`, marked latest, with its notes from `deploy/release/notes/v1.0.0.md` above GitHub's generated notes (from pull request titles, reviewed in steps 4 and 14). The assets include the `telltale-*` copies unless Q8's task removed them. Then **verify** runs `deploy/release/verify.sh 1.0.0` anonymously, which works now.
+  4. **Move main to the next version:** today it runs `bump.sh 1.1.0`, commits and runs `git push origin HEAD:main`. Under step 22's ruleset, which requires checks and has no bypass for the GitHub Actions app (E6), **that push is refused**. `run:` steps use bash with `-e`, so the failed `git push` fails the step, the job and the **release** run, which ends red. The two `gh workflow run` lines after it and the closing notice do not run, and the bump commit is lost with the runner. Steps 2 and 3 happened before it, so **the release itself is unaffected**. Once the task "`release.yml`, Move main" below is done (it is, on `chore/pre-flip-tasks`, pending its merge), this step no longer pushes: it prints a notice to run `deploy/release/bump.sh` and open a pull request, and the run ends green.
+- **Then wait** for the **image** run on `v1.0.0`, about 30 minutes: `gh run list --workflow image.yml -R nbacheller/wrendns --limit 3`. It publishes the image tagged `1.0.0`, `1.0`, `1` and `latest`, signed with cosign and now with the provenance and SBOM attestations; the chart `1.0.0`; and the release `v1.0.0`, marked latest, with its notes from `deploy/release/notes/v1.0.0.md` above GitHub's generated notes (from pull request titles, reviewed in steps 4 and 14). The assets are the `wrendns-*` files only, once Q8's change is on `main`. Then **verify** runs `deploy/release/verify.sh 1.0.0` anonymously, which works now.
 - **Verify:** the image run's `verify` job is green, every line `ok`. `curl -fsSIL -o /dev/null -w '%{http_code}\n' https://github.com/nbacheller/wrendns/releases/latest/download/SHA256SUMS` prints `200` (`-L` follows GitHub's redirect to the file). The freeze ends here.
 - **Undo:** none for the tag (`docs/releasing.md`). A failed job is re-run. A code fix becomes `1.0.1`.
+
+### 24a. Scan and publish the `telltale` packages (Q2)
+
+A separate step after v1.0.0. Nothing before it waits on it, and v1.0.0 does not need it. Making a package public publishes every version of it, so each version is scanned first.
+
+- **Who:** the owner, or an agent the owner trusts with the list. **Owner's yes** to make the packages public and, separately, to delete any version that fails. Making a package public cannot be taken back in effect: whatever was pulled stays out.
+- **How:**
+  1. List the versions: `gh api 'user/packages/container/telltale/versions?per_page=100' --paginate --jq '.[] | [.id, .name, ((.metadata.container.tags // []) | join(","))] | @tsv' > <outside>/telltale-versions.tsv`, and the same with `charts%2Ftelltale`. Note the counts.
+  2. A scan root that is a git repository, since `check-private.py` runs `git ls-files` in `--root` and refuses an `--extra` directory outside it: `mkdir -p <outside>/pkg-scan && git -C <outside>/pkg-scan init -q`. Work in one new, empty directory per version, `<outside>/pkg-scan/v<version id>/`.
+  3. Extract each image version so that its content is text the scan can read, because the script skips binary files (a file with a NUL byte near its start). For each version (by its digest, the `name` in the list; for a multi-architecture index, for each platform): `docker pull ghcr.io/nbacheller/telltale@<digest>`, `docker save ghcr.io/nbacheller/telltale@<digest> -o image.tar`, `tar -xf image.tar -C image/`, and extract every layer in it into `rootfs/` (`tar -xf <layer> -C rootfs/`, as an unprivileged user, never from inside an extracted directory). Then write the printable strings of every binary: `find rootfs -type f -exec sh -c 'file -b "$1" | grep -q ELF && strings "$1" > "$1.strings.txt"' _ {} \;`. Keep the image's config and manifest JSON, which hold the labels and the build history. Write the file names too, `find . -type f > paths.txt`, since extra files are scanned by content and not by name.
+  4. For each chart version: `helm pull oci://ghcr.io/nbacheller/charts/telltale --version <v> --untar --untardir <outside>/pkg-scan/v<id>/chart`.
+  5. Scan: `WRENDNS_PRIVACY_DENYLIST=<list> python3 <checkout>/scripts/check-private.py --root <outside>/pkg-scan --require --extra v<id1> --extra v<id2> ...` (each `--extra` path is relative to `--root`, and every directory under it is read recursively). A hit prints a path and `pattern #N`, never the value.
+  6. A version that fails is deleted (Package settings, or `gh api -X DELETE user/packages/container/telltale/versions/<id>`), **with the owner's yes**, and the scan is repeated for the rest.
+  7. When every remaining version is clean: your profile, Packages, `telltale`, Package settings, Change package visibility, Public, and the same for `charts/telltale`.
+- **Verify:** the scan prints `check-private: N file(s) clean against M pattern(s)` and exits 0 (exit 2 is not a pass). `docker pull` of an old tag of `ghcr.io/nbacheller/telltale` and `helm pull oci://ghcr.io/nbacheller/charts/telltale --version <v>` work with no login. `LICENSING.md` is then true as it reads: they are public, as an archive.
+- **Undo:** a public package can be set private again, but whatever was pulled stays out. A deleted version may be restorable for a limited time (**to confirm**).
 
 ### 25. Start 1.1.0 through a pull request (E6)
 
@@ -475,31 +502,31 @@ ADR-1080 point 1 requires four checks; the fourth is the CLA's. `cla.yml` runs `
 
 ## Open questions for the owner
 
-Each is asked through the question tool at step 2. The recommendation is not a decision.
+Each is asked through the question tool at step 2. The recommendation is not a decision. On 2026-11-24 the owner answered Q1, Q2, Q4, Q5, Q7, Q8, Q9 and Q11; the answers are in "The route, and the owner's decisions of 2026-11-24". Still open:
 
-- **Q1. The packages `wrendns` and `charts/wrendns`.** They hold 333 and 27 versions from the private era, back to 2026-11-19, and are linked to `nbacheller/wrendns-archive`. Making a package public publishes every version, unscanned, and the package page names the private archive. Options:
-  - (a) Delete every version but the newest edge before making them public. About 360 deletion calls. The newest edge is several versions (the manifest list, its three platform images, its signature and attestations), so a wrong deletion breaks it. The archive link stays unless the package settings can change it.
-  - (b) **Recommended:** delete both packages before the flip (step 13), and let step 19's first image run create them again from the scanned tree. Nothing public is lost: no stable version exists, and nobody outside could pull the old ones. `main.yml`'s `helm` job fails until edge exists, which step 19 handles.
-  - (c) Keep everything and scan every version's configuration and layers first. The most work, and the archive link stays.
-
-  What cannot be confirmed from here: whether a package's repository link can be changed in its settings; whether a deleted package's name can be used again at once (if not, restore the package and fall back to (a)); and whether a package created by the workflow is linked to `nbacheller/wrendns` and private or public at first (step 23 checks).
-- **Q2. The `telltale` and `charts/telltale` packages: private or public?** `LICENSING.md` says they are "kept public as an archive of the permissive-era builds", which is not true today. **Recommended:** keep them private for the flip and reword that line before it (a task below). Making them public has Q1's problem: every old version goes out unscanned, linked to the private archive. That can be done later after a scan, and cannot be taken back.
 - **Q3. Remove the two runner variables for the window (step 12)?** **Recommended: yes.** Every job then runs on GitHub-hosted runners until step 26, nothing queues for the stopped box, the first public logs name no machine, and step 19's `main` run can make preflight's green run without the box. Without it, step 19's `main` run waits for the runners, so the release waits for steps 20 and 26.
-- **Q4. Add "Require a pull request before merging" to the ruleset?** ADR-1080 does not ask for it. With required checks alone, a pushed commit must already have passed the checks on another ref, so a locally made merge commit is refused anyway. **Recommended: no.**
-- **Q5. The admin bypass: `always`, for pull requests only, or none?** With `always`, the owner's direct pushes skip every required check without notice, so the checks bind only others. With pull requests only, direct pushes to `main` are refused and the owner's local `merge: … into main` pushes end; merges go through pull requests (merge commits only, the subject typed at merge time), and a bypass is visible on the pull request. With none, nothing can merge past a failing check. **Recommended: for pull requests only.**
 - **Q6. Turn on `sha_pinning_required`?** `scripts/check-workflows.py` already enforces the pinning. **Recommended: yes**, at step 21, after step 19's runs are green.
-- **Q7. The tags `fork-base` and `upstream-sync-last`.** Nothing in the repository refers to them, and ADR-1026 ended upstream syncs. Their commits stay in `main`'s history either way. **Recommended: delete them** (step 9).
-- **Q8. The `telltale-*` copies in the releases.** No code path of this project reads a `telltale-*` asset: `updates.rs` and `install.sh` read `wrendns-*` from `nbacheller/wrendns`, and an old TelltaleDNS binary reads upstream's releases and trusts only upstream's key (ADR-1028 point 8, ADR-1034, `docs/running.md`). The copies protect nobody. **Recommended:** remove them before v1.0.0 (a task below), which ADR-1028 point 10 had planned for the release after. Keep the migration path itself: `deploy/systemd/migrate-from-telltale.sh`, the `install.sh` hooks, the `legacy*` modules and the `rebrand:keep` formats.
-- **Q9. The branches** listed in step 9: merge or delete each one? **Recommended:** merge or delete every work branch before step 14; leave Dependabot's.
 - **Q10. The text found in step 4:** edit, delete or keep, item by item.
-- **Q11. Commits that no ref reaches (the gap in the history scan).** Options: (1) scan the owner's local clones for commits that were pushed and are no longer reachable: in a scratch clone give each `git rev-list --reflog` commit a temporary ref, then run `check-private.py --history` there; (2) ask GitHub Support to garbage-collect the repository before the flip; (3) accept the risk in writing. **Recommended: (1), and (3) for what it cannot reach.** It is cheap and covers what the owner's machines can supply. GitHub's own unreachable objects cannot be listed, and (2) is slow and not guaranteed.
+
+Answered 2026-11-24, kept here with the reasoning that was put to the owner:
+
+- **Q1. The packages `wrendns` and `charts/wrendns`: answered, delete both.** They hold 333 and 27 versions from the private era, back to 2026-11-19, and are linked to `nbacheller/wrendns-archive`. Both packages are deleted before the flip (step 13), and step 19's first image run creates them again from the scanned tree. Nothing public is lost: no stable version exists, and nobody outside could pull the old ones. `main.yml`'s `helm` job fails until edge exists, which step 19 handles. Not confirmable from here: whether a deleted package's name can be used again at once (if not, restore the package, delete its versions but the newest edge, and scan before making it public), and whether a package created by the workflow is linked to `nbacheller/wrendns` and private or public at first (step 23 checks).
+- **Q2. The `telltale` and `charts/telltale` packages: answered.** Public after a scan of their versions against the denylist, as a separate step after v1.0.0 (step 24a). `LICENSING.md` says they "are made public as an archive ... once checked".
+- **Q4. "Require a pull request before merging": answered, no.** With required checks alone, a pushed commit must already have passed the checks on another ref.
+- **Q5. The admin bypass: answered, for pull requests only.** Direct pushes to `main` are refused, the owner's local `merge: ... into main` pushes end, merges go through pull requests, and a bypass is visible on the pull request.
+- **Q7. The tags `fork-base` and `upstream-sync-last`: answered, delete** (step 9). Nothing in the repository refers to them, and ADR-1026 ended upstream syncs. Their commits stay in `main`'s history.
+- **Q8. The `telltale-*` copies in the releases: answered, stop publishing them before v1.0.0.** No code path of this project reads a `telltale-*` asset: `updates.rs` and `install.sh` read `wrendns-*` from `nbacheller/wrendns`, and an old TelltaleDNS binary reads upstream's releases and trusts only upstream's key (ADR-1028 point 8, ADR-1034, `docs/running.md`). ADR-1028 point 10 had planned this for the release after. The migration path itself stays: `deploy/systemd/migrate-from-telltale.sh`, the `install.sh` hooks, the `legacy*` modules and the `rebrand:keep` formats.
+- **Q9. The branches: answered, delete the merged work branches before the final scan; Dependabot's are left.**
+- **Q11. Commits that no ref reaches: answered, option 1, and option 3 for the remainder.** Scan the owner's local clones with the privacy check, and accept in writing what that cannot reach: GitHub's own unreachable objects cannot be listed, and asking GitHub Support to garbage-collect (option 2) is slow and not guaranteed.
 
 ## Tasks to do before the flip
 
-- `.github/workflows/release.yml`: in "Move main to the next version", replace the bump, commit, `git push origin HEAD:main` and the two `gh workflow run` lines with one `::notice` that names `deploy/release/bump.sh <next>` and a pull request; then update that step's lines in the header and `docs/releasing.md` ("try to move `main` on", "Moving `main` on fails"). Also: the header's present-tense sentence "The ruleset on main requires checks ... so that push is refused" becomes "once the ruleset requires checks (docs/going-public.md step 22), that push is refused" (today it still succeeds); the bullet in `docs/releasing.md`, "Things that aren't obvious", that says the dispatch "never runs" and then that `main.yml` and `image.yml` accept `workflow_dispatch` for this is reworded to say the dispatch is for the tag build and for people re-running CI; the header of `deploy/release/bump.sh` ("The release workflow runs it after tagging") says it is run by hand or through a pull request; and the comment at `.github/workflows/main.yml` line 17 ("The release workflow starts CI for the commit it pushes to main (T9.26)") says `workflow_dispatch` is for re-running CI by hand.
-- `AGENTS.md` rule 9: "moves `main` to the next version" becomes "`main` then moves on through `deploy/release/bump.sh` and a pull request".
-- `docs/ci-runners.md`, "Trust model": the `runs-on` guard is not a barrier against a fork, which can edit it; the barrier is approval of fork runs (E4), and runners are attached only after it is tested.
-- `CONTRIBUTING.md` (the privacy check paragraph) and the comment above the `privacy` job in `.github/workflows/pr.yml`: replace "a maintainer runs the check on a branch" with the E5 procedure (step 32).
-- `LICENSING.md`: reword the sentence on `ghcr.io/nbacheller/telltale` and `ghcr.io/nbacheller/charts/telltale` to the answer to Q2.
-- If Q8 is yes: remove `deploy/release/legacy-assets.sh`, its use in the Checksums step of `.github/workflows/image.yml`, `deploy/release/tests/legacy-assets-test.sh` and its lines in `.github/workflows/main.yml` and `.github/workflows/pr.yml`, "The rename window" in `docs/releasing.md`, and the release-files row in the rename table of `docs/running.md`. Also a dated owner-decision note in ADR-1028, items 8 and 10, in `spec/11-decisions.md` (item 8 published `telltale-<arch>-linux` copies "for this release"; item 10 closed the window "the release after the rename"; both now end before v1.0.0).
+Marked "done" when the change is on branch `chore/pre-flip-tasks` (2026-11-24); a task counts as landed when that branch is merged.
+
+- **Done.** `.github/workflows/release.yml`, "Move main to the next version": the step no longer bumps, commits or pushes, and no longer dispatches `main.yml` and `image.yml`; it ends with one `::notice` that names `deploy/release/bump.sh <next>` and a pull request. Why the two dispatches went: they existed to start CI and edge for the bump commit, because a push with the workflow's token starts no workflows. With no bump commit, `main`'s head is the commit that was just released, and CI on it was already green (preflight requires it); the tag's own build is started by the "Build and publish the tag" step; the pull request that bumps the version starts CI, and its merge starts CI and edge. The job keeps `contents: write` (the tag push) and `actions: write` (the dispatch of `image.yml` for the tag). The header, `docs/releasing.md`, the header of `deploy/release/bump.sh` and the comment at `.github/workflows/main.yml` line 17 say the same.
+- **Done.** `AGENTS.md` rule 9: `main` then moves on through `deploy/release/bump.sh` and a pull request.
+- **Done.** `docs/ci-runners.md`, "Trust model": the `runs-on` expression is not a barrier against a fork, which can edit it; the barriers are the fork-approval setting, the rule that a maintainer never approves a fork run whose diff touches `.github/` or `runs-on`, and the runners being unprivileged, reset containers.
+- **Done.** `CONTRIBUTING.md` (the privacy check paragraph) and the comment above the `privacy` job in `.github/workflows/pr.yml`: the E5 procedure (step 32) instead of "a maintainer runs the check on a branch".
+- **Done.** `LICENSING.md`: the sentence on `ghcr.io/nbacheller/telltale` and `ghcr.io/nbacheller/charts/telltale` says they are made public as an archive once checked (Q2).
+- **Done (Q8).** `deploy/release/legacy-assets.sh`, its use in the Checksums step of `.github/workflows/image.yml`, `deploy/release/tests/legacy-assets-test.sh` and its lines in `.github/workflows/main.yml` and `.github/workflows/pr.yml`, "The rename window" in `docs/releasing.md`, and the release-files row in the rename table of `docs/running.md` are removed. A dated owner-decision note is in ADR-1028 (items 8 and 10) in `spec/11-decisions.md`.
 - `deploy/release/notes/v1.0.0.md` and the 1.0.0 version (`deploy/release/bump.sh 1.0.0`): step 5.
