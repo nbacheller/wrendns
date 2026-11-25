@@ -7,5 +7,6 @@ export async function pick(scope: Locator | Page, name: string, ...options: Arra
   const box = group.getByRole('combobox');
   await box.click();
   for (const o of options) await group.getByRole('option', { name: o, exact: typeof o === 'string' }).click();
-  await box.press('Escape');
+  // A single-choice picker closes itself on a pick; an Escape then would reach the drawer or dialog around it.
+  if ((await box.getAttribute('aria-expanded')) === 'true') await box.press('Escape');
 }
