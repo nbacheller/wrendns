@@ -8189,6 +8189,14 @@ test('ui_901 a single-choice picker: search, keyboard, help text, clear (Query l
       ? r.fulfill({ json: { items: ['default', 'lab', 'kids', 'guests'].map((name) => ({ name, members: 0 })) } })
       : r.fallback(),
   );
+  // The groups above are made up, and the server answers 400 for a group it does not have; so the
+  // log request is answered here and recorded, which also shows what the picker asks for.
+  const asked: string[] = [];
+  const logRoute = /\/api\/v1\/queries(\?|$)/;
+  await page.route(logRoute, (r) => {
+    asked.push(decodeURIComponent(r.request().url()));
+    return r.fulfill({ json: { items: [], scanned: { blocksRead: 0, blocksTotal: 0, rowsScanned: 0, segments: 0 } } });
+  });
   try {
     await page.goto('/#/queries');
     const group = page.getByTestId('group-picker');
@@ -8201,12 +8209,18 @@ test('ui_901 a single-choice picker: search, keyboard, help text, clear (Query l
     await expect(box).toHaveAttribute('aria-expanded', 'false');
     await expect(group).toContainText('kids');
     await expect(group.getByTestId('picker-chip')).toHaveCount(0);
+    // Only the chosen group is asked for: never the search text, and one request for the choice.
+    await expect.poll(() => asked.at(-1) ?? '').toContain('group=kids');
+    expect(asked.filter((u) => u.includes('group=')).every((u) => u.includes('group=kids'))).toBe(true);
     await group.getByTestId('picker-clear').click();
     await expect(group).not.toContainText('kids');
+    // Cleared: the parameter is left out, not sent empty.
+    await expect.poll(() => asked.at(-1) ?? '').not.toContain('group');
     await box.click();
     await expect(group.getByRole('listbox')).not.toHaveAttribute('aria-multiselectable', 'true');
     await box.press('Escape');
   } finally {
     await page.unroute('**/api/v1/groups');
+    await page.unroute(logRoute);
   }
 });
