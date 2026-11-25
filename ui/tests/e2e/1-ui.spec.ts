@@ -547,6 +547,37 @@ test('obs_020 listener checks', async () => {
   await page.unroute('**/api/v1/system/probes');
 });
 
+// REQ: DNS-901 (T36.2) — Settings → System → Listener access: each listener's device-key gate, and
+// a warning for a listener on a public address that does not require a key (stubbed: the e2e
+// server binds loopback), with the help topic.
+test('dns_901 listener access warns about a public listener without a device key', async () => {
+  await page.route('**/api/v1/system/info', async (route) => {
+    const res = await route.fetch();
+    const info = await res.json();
+    info.listenerAccess = [
+      { listener: 'dot://203.0.113.5:853', requireClientId: false, publicAddress: true },
+      { listener: 'doh://203.0.113.5:443', requireClientId: true, publicAddress: true },
+      { listener: 'udp://192.168.1.2:53', requireClientId: false, publicAddress: false },
+    ];
+    await route.fulfill({ response: res, json: info });
+  });
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('listener-access');
+  await expect(card).toContainText('Listener access');
+  const rows = card.getByTestId('listener-access-row');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText('not required');
+  await expect(rows.nth(0).getByTestId('listener-open-warning')).toContainText('public address');
+  await expect(rows.nth(0)).toContainText('open resolver');
+  await expect(rows.nth(1)).toContainText('required');
+  await expect(rows.nth(1)).toContainText('Answers only a known device key');
+  await expect(rows.nth(1).getByTestId('listener-open-warning')).toHaveCount(0);
+  await expect(rows.nth(2).getByTestId('listener-open-warning')).toHaveCount(0);
+  await card.getByRole('button', { name: /help/i }).first().click();
+  await expect(page.getByText('Device keys on a public listener').first()).toBeVisible();
+  await page.unroute('**/api/v1/system/info');
+});
+
 // REQ: OPS-010 — maintenance from the Cluster page (the e2e server runs on its own): /readyz
 // turns 503 with the reason while DNS keeps answering, the banners and the health note show,
 // and ending it makes the node ready again.

@@ -1761,6 +1761,30 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for tcp, dot, and doh listeners",
             );
         }
+        // REQ: DNS-901 (T36.2) — the known-ID gate needs a place to carry the key.
+        if l.require_client_id && !l.proto.needs_tls() {
+            r.err(
+                format!("{p}.require_client_id"),
+                "only valid for dot, doh, doh3, and doq listeners (a plain udp or tcp query carries no client ID)",
+            );
+        }
+        // REQ: DNS-901 (T36.2, spec/08 §6) — the startup check: a listener bound to a public
+        // address (outside `[access] allowed_networks`, not a wildcard bind) without the gate is
+        // protected only by `allowed_networks`.
+        if !l.require_client_id
+            && !l.addr.ip().is_unspecified()
+            && !cfg
+                .access
+                .allowed_networks
+                .iter()
+                .any(|n| n.contains(l.addr.ip().to_canonical()))
+        {
+            r.warn(format!(
+                "{p}: {:?} listener on public address {} without require_client_id; only [access] allowed_networks keeps it from being an open resolver",
+                l.proto,
+                l.addr.ip()
+            ));
+        }
         if l.proto == crate::ListenProto::Udp {
             if l.max_connections.is_some() {
                 r.err(

@@ -339,3 +339,90 @@ async fn dns_004_doh_advertises_http3() {
     assert_eq!(h["alt-svc"], "h3=\":443\"; ma=86400");
     server.shutdown().await;
 }
+
+/// A handler that admits only the client ID `known` on a gated stream, and counts what it handled.
+struct Gate {
+    known: &'static str,
+    handled: Arc<Mutex<Vec<bool>>>,
+}
+
+impl wrendns_net::QueryHandler for Gate {
+    fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
+        self.handled.lock().unwrap().push(meta.gated);
+        handler(Seen::default())(req, meta, out)
+    }
+
+    fn admit(&self, meta: &RequestMeta) -> bool {
+        !meta.gated || meta.client_id.is_some_and(|c| c.as_str() == self.known)
+    }
+}
+
+/// REQ: DNS-901 (T36.2) — a DoH listener with `require_client_id` answers 404 for a missing, an
+/// unknown and a revoked key alike, whatever else is wrong with the request, before the resolver
+/// is asked; a known key resolves.
+#[tokio::test]
+async fn dns_901_doh_gate_answers_404_for_every_unknown_key() {
+    let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+    let handled = Arc::new(Mutex::new(Vec::new()));
+    let mut cfg = DohConfig::new("127.0.0.1:0".parse().unwrap(), store);
+    cfg.require_client_id = true;
+    let gate = Gate {
+        known: "knownkey",
+        handled: Arc::clone(&handled),
+    };
+    let server = DohServer::bind(cfg, Arc::new(gate)).unwrap();
+    let mut c = h2(server.local_addr(), "dns.test", b"").await;
+    let url = |p: &str| format!("https://dns.test{p}");
+    let post = |p: &str, q: u16| {
+        hyper::Request::post(url(p))
+            .header("content-type", "application/dns-message")
+            .body(Full::new(Bytes::from(query(q))))
+            .unwrap()
+    };
+    for p in ["/dns-query", "/dns-query/", "/dns-query/otherkey"] {
+        assert_eq!(send(&mut c, post(p, 1)).await.0, 404, "{p}");
+    }
+    // Not even a bad method or media type tells the caller more than a 404 does.
+    let put = hyper::Request::put(url("/dns-query/otherkey"))
+        .body(Full::default())
+        .unwrap();
+    assert_eq!(send(&mut c, put).await.0, 404);
+    assert!(
+        handled.lock().unwrap().is_empty(),
+        "never reached the resolver"
+    );
+    // The SNI label carries a key too (a wildcard certificate), the path wins when both are there.
+    let (st, _, body) = send(&mut c, post("/dns-query/knownkey", 7)).await;
+    assert_eq!(st, 200);
+    assert_eq!(&body[..2], &[0, 7]);
+    assert_eq!(
+        *handled.lock().unwrap(),
+        vec![true],
+        "handled in the gated context"
+    );
+    server.shutdown().await;
+}
+
+/// REQ: DNS-901 (T36.2) — a DoT listener with `require_client_id` marks every query gated, so the
+/// resolver can refuse; one without it never does.
+#[tokio::test]
+async fn dns_901_dot_listener_marks_its_queries_gated() {
+    for gated in [true, false] {
+        let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+        let handled = Arc::new(Mutex::new(Vec::new()));
+        let mut cfg = TcpConfig::new("127.0.0.1:0".parse().unwrap());
+        cfg.transport = Transport::Dot;
+        cfg.tls = Some(store);
+        cfg.require_client_id = gated;
+        let gate = Gate {
+            known: "x",
+            handled: Arc::clone(&handled),
+        };
+        let server = TcpServer::bind(cfg, Arc::new(gate)).unwrap();
+        let mut s = connect_tls(server.local_addr(), "phone.dns.test", b"dot", b"").await;
+        let r = dot_exchange(&mut s, 3).await;
+        assert_eq!(&r[..2], &[0, 3]);
+        assert_eq!(*handled.lock().unwrap(), vec![gated]);
+        server.shutdown().await;
+    }
+}

@@ -6,6 +6,18 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+/// REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenerAccess {
+    /// The listener, as `proto://addr`.
+    pub listener: String,
+    /// It answers only a query that carries a known device key (`require_client_id`).
+    pub require_client_id: bool,
+    /// Bound to an address outside `[access] allowed_networks` (a wildcard bind is not public).
+    pub public_address: bool,
+}
+
 /// Node and build information.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +38,9 @@ pub struct SystemInfo {
     pub unclean_starts: u64,
     /// DNS listeners, as `proto://addr`.
     pub listeners: Vec<String>,
+    /// REQ: DNS-901 (T36.2) — each listener's known-ID gate: whether it requires a device key
+    /// and whether it is bound to a public address, so the UI can warn about an open one.
+    pub listener_access: Vec<ListenerAccess>,
     /// Whether the per-query log is being written.
     pub query_log: bool,
     /// Version of the active filter snapshot, if one is loaded.

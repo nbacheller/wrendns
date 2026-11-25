@@ -323,6 +323,7 @@ impl Backend for Fake {
             starts: 1,
             unclean_starts: 0,
             listeners: vec!["udp://0.0.0.0:53".into()],
+            listener_access: Vec::new(),
             query_log: true,
             filter_snapshot: Some(3),
             filter_names: 42,

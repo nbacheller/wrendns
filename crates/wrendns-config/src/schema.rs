@@ -493,6 +493,16 @@ pub struct Listener {
     /// client addresses (no PROXY protocol, source NAT), raise it or set 0. Not for `udp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections_per_address: Option<u32>,
+    /// REQ: DNS-901 (T36.2, ADR-1050) — a public listener is never an open resolver: with this on
+    /// (`dot`, `doh`, `doh3` and `doq` only), a query is answered only when it carries a known
+    /// device key, as the DoH path (`/dns-query/<key>`) or the first label of the DoT, DoH3 or
+    /// DoQ server name. A key is at least 128 random bits (26 base32 characters) and must be
+    /// the `id:` match key of a device in `[[client]]`. Unknown, revoked and missing keys are
+    /// refused the same way (DoH 404; DoT and DoQ REFUSED with an extended error) and counted.
+    /// A known key is let in from any address, outside `[access] allowed_networks` too, so
+    /// turn it on only for a listener meant for devices away from home. Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_client_id: bool,
 }
 
 impl Listener {
@@ -505,6 +515,7 @@ impl Listener {
             proxy_protocol: false,
             max_connections: None,
             max_connections_per_address: None,
+            require_client_id: false,
         }
     }
 }

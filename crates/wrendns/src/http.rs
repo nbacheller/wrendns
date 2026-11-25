@@ -708,6 +708,7 @@ pub(crate) fn render(src: &Sources) -> String {
     render_cache(&mut w, &src.cache);
     render_telemetry(&mut w, &src.pipeline.telemetry);
     render_dnssec(&mut w, &src.pipeline.dnssec_stats);
+    render_key_gate(&mut w, &src.pipeline.keys);
     if let Some(q) = &src.qlog {
         render_qlog(&mut w, q);
     }
@@ -1233,6 +1234,27 @@ fn render_qlog(w: &mut PromWriter, q: &wrendns_store::qlog::Stats) {
         "Query-log segment files on disk.",
     )
     .sample("wrendns_qlog_segments", &[], q.segments.load(Relaxed));
+}
+
+/// REQ: DNS-901 (T36.2) — queries refused by the known-ID gate (an unknown, revoked or missing
+/// device key on a public listener), by transport, and those over the refusal limits.
+fn render_key_gate(w: &mut PromWriter, k: &crate::key_gate::KeyGate) {
+    let (by, limited) = k.counts();
+    let name = "wrendns_client_id_refused_total";
+    let f = w.family(
+        name,
+        "counter",
+        "Queries refused for an unknown, revoked or missing device key on a listener that requires one, by transport.",
+    );
+    for (t, v) in [("doh", by[0]), ("dot", by[1]), ("doq", by[2])] {
+        f.sample(name, &[("transport", t)], v);
+    }
+    w.family(
+        "wrendns_client_id_limited_total",
+        "counter",
+        "Refusals over the per-address or per-key limit, which got no answer on DoT and DoQ.",
+    )
+    .sample("wrendns_client_id_limited_total", &[], limited);
 }
 
 /// REQ: DNS-011 — DNSSEC verdicts on forwarded answers (`spec/06` §5).

@@ -2852,6 +2852,10 @@
           "type": "boolean",
           "default": false
         },
+        "require_client_id": {
+          "description": "REQ: DNS-901 (T36.2, ADR-1050) — a public listener is never an open resolver: with this on\n(`dot`, `doh`, `doh3` and `doq` only), a query is answered only when it carries a known\ndevice key, as the DoH path (`/dns-query/<key>`) or the first label of the DoT, DoH3 or\nDoQ server name. A key is at least 128 random bits (26 base32 characters) and must be\nthe `id:` match key of a device in `[[client]]`. Unknown, revoked and missing keys are\nrefused the same way (DoH 404; DoT and DoQ REFUSED with an extended error) and counted.\nA known key is let in from any address, outside `[access] allowed_networks` too, so\nturn it on only for a listener meant for devices away from home. Off by default.",
+          "type": "boolean"
+        },
         "tls": {
           "description": "Certificate and key (required for dot/doh/doh3/doq; reloaded on change).",
           "anyOf": [

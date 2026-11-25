@@ -32,6 +32,10 @@ pub struct RequestMeta {
     pub transport: Transport,
     /// Client ID from the DoT SNI or the DoH path (FLT-006), if any.
     pub client_id: Option<ClientId>,
+    /// REQ: DNS-901 (T36.2) — this stream is in the known-ID context (a public listener, later a
+    /// relayed stream): the query is refused unless it carries a known device key. Set by the
+    /// listener, never by the client.
+    pub gated: bool,
 }
 
 /// A client ID (one DNS label: letters, digits, `-`, at most 63 bytes), stored inline so
@@ -108,6 +112,14 @@ impl std::fmt::Debug for Response {
 /// block; put waiting work in a [`Response::Deferred`] future.
 pub trait QueryHandler: Send + Sync + 'static {
     fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response;
+
+    /// REQ: DNS-901 (T36.2) — asked by DoH and DoH3 before the body is read: `false` is a 404,
+    /// the same answer as for a missing or invalid client ID (ADR-039). Anything not in the
+    /// known-ID context, and every other transport, is admitted here (those are refused in
+    /// `handle`, with REFUSED and an extended error).
+    fn admit(&self, _meta: &RequestMeta) -> bool {
+        true
+    }
 
     /// REQ: DNS-007, DNS-008 — called on a UDP worker thread once the answers `handle` gave
     /// it are sent (after each batch). Background work `handle` queued on this thread (a cache

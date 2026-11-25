@@ -46,6 +46,7 @@ mod http;
 mod http_redirect;
 mod identify;
 mod import;
+mod key_gate;
 mod kubernetes;
 mod legacy;
 mod lists;

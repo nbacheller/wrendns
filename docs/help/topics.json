@@ -1031,6 +1031,15 @@
       "docs": "listener-checks"
     },
     {
+      "id": "listener-keys",
+      "title": "Device keys on a public listener",
+      "term": "require_client_id",
+      "summary": "A listener with require_client_id = true answers only a query that carries a known device key: the last part of the DoH path (/dns-query/<key>) or the first label of the DoT, DoH3 or DoQ server name. A key is at least 128 random bits written as 26 or more characters of a to z and 2 to 7, and it is the id: match key of a device under Clients. A missing, an unknown and a removed key are refused the same way (DoH 404, DoT and DoQ REFUSED) and counted, and a source that keeps trying is not answered at all. A known key is answered from any address, even outside the allowed networks.",
+      "when": "You expose a DoT, DoH or DoQ listener on a public address so your own devices can use it away from home. Without the gate, only [access] allowed_networks keeps that listener from being an open resolver, and a listener on a public address without it is shown with a warning here.",
+      "example": "[[listen]] proto = \"dot\", addr = \"203.0.113.5:853\", require_client_id = true, with a device whose match key is id:mfrggzdfmztwq2lknnwg23tpoa; the phone's Private DNS name is mfrggzdfmztwq2lknnwg23tpoa.dns.example.net.",
+      "caution": "Make a key from 16 random bytes (for example head -c 16 /dev/urandom | base32 | tr A-Z a-z | head -c 26) and treat it as a password: the DoT name is sent in clear, so anyone on the path sees it. A readable ID such as kids-tablet is never accepted on a gated listener. Turning it on for a listener your LAN uses refuses the LAN devices that have no key. Until listeners can be edited here, set it in the configuration file ([[listen]]) and restart; the Listener access panel shows what is set."
+    },
+    {
       "id": "maintenance",
       "title": "Maintenance mode",
       "term": "Node maintenance",

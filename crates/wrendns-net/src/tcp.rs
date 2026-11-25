@@ -52,6 +52,8 @@ pub struct TcpConfig {
     pub tls: Option<Arc<CertStore>>,
     /// Every connection starts with a PROXY protocol v2 header (DNS-020).
     pub proxy_protocol: bool,
+    /// REQ: DNS-901 (T36.2) — every query needs a known client ID (a public DoT listener).
+    pub require_client_id: bool,
 }
 
 impl TcpConfig {
@@ -65,6 +67,7 @@ impl TcpConfig {
             transport: Transport::Tcp,
             tls: None,
             proxy_protocol: false,
+            require_client_id: false,
         }
     }
 }
@@ -314,6 +317,7 @@ async fn serve_conn<S, H>(
         local: None,
         transport: cfg.transport,
         client_id,
+        gated: cfg.require_client_id,
     };
     // REQ: DNS-001 (RFC 7766 §6.2.3) — a client that stops reading its answers must not hold
     // the connection (and its slot) forever: a write that stalls for the idle timeout closes

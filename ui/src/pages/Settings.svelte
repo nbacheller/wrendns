@@ -926,6 +926,34 @@
       {/if}
       <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would. With HTTPS on the web UI (<code>[api] tls</code>), it's checked too: compare its SHA-256 fingerprint with the one your browser shows before trusting a self-signed certificate.</p>
     </section>
+    <!-- REQ: DNS-901 (T36.2, ADR-1090) — which listeners need a device key, and a warning for a public one that does not. -->
+    {#if info && info.listenerAccess?.length}
+      <section class="card" data-testid="listener-access">
+        <h2>Listener access<HelpButton id="listener-keys" /></h2>
+        <div class="table-wrap">
+          <table class="compact">
+            <thead><tr><th>Listener</th><th>Device key</th><th>Notes</th></tr></thead>
+            <tbody>
+              {#each info.listenerAccess as l (l.listener)}
+                <tr data-testid="listener-access-row">
+                  <td class="mono">{l.listener}</td>
+                  <td>{#if l.requireClientId}<span class="badge ok">required</span>{:else}<span class="badge">not required</span>{/if}</td>
+                  <td class="small">
+                    {#if l.publicAddress && !l.requireClientId}
+                      <span class="badge warn" data-testid="listener-open-warning">public address</span>
+                      Only the allowed networks keep this listener from being an open resolver. For devices away from home, set <code>require_client_id = true</code> and give each device a key.
+                    {:else if l.requireClientId}
+                      Answers only a known device key, from any address.
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="muted small">Set in the configuration file: <code>require_client_id = true</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), then restart. Turning it on for a listener your LAN uses refuses the devices that carry no key.</p>
+      </section>
+    {/if}
     <section class="card" data-testid="changes-list">
       <h2>Changes<HelpButton id="change-markers" /></h2>
       <div class="change-filters">

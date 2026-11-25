@@ -538,6 +538,7 @@ impl Listeners {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
                 cfg.proxy_protocol = l.proxy_protocol;
+                cfg.require_client_id = l.require_client_id;
                 cfg.alt_svc = alt_svc.map(str::to_owned);
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
@@ -551,6 +552,7 @@ impl Listeners {
             }
             (ListenProto::Doh3, Some(store)) => {
                 let mut cfg = wrendns_net::Doh3Config::new(l.addr, Arc::clone(&store));
+                cfg.require_client_id = l.require_client_id;
                 if let Some(p) = &l.path {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
@@ -566,6 +568,7 @@ impl Listeners {
             }
             (ListenProto::Doq, Some(store)) => {
                 let mut cfg = wrendns_net::DoqConfig::new(l.addr, Arc::clone(&store));
+                cfg.require_client_id = l.require_client_id;
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
                 }
@@ -579,6 +582,7 @@ impl Listeners {
             (proto, store) => {
                 let mut cfg = TcpConfig::new(l.addr);
                 cfg.proxy_protocol = l.proxy_protocol;
+                cfg.require_client_id = l.require_client_id;
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
                 }
@@ -2339,6 +2343,7 @@ own_lookups = true
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         let Response::Ready(n) = Handler(p).handle(&q[..len], &meta, &mut out) else {

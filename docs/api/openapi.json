@@ -27376,6 +27376,29 @@
           }
         }
       },
+      "ListenerAccess": {
+        "type": "object",
+        "description": "REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate.",
+        "required": [
+          "listener",
+          "requireClientId",
+          "publicAddress"
+        ],
+        "properties": {
+          "listener": {
+            "type": "string",
+            "description": "The listener, as `proto://addr`."
+          },
+          "publicAddress": {
+            "type": "boolean",
+            "description": "Bound to an address outside `[access] allowed_networks` (a wildcard bind is not public)."
+          },
+          "requireClientId": {
+            "type": "boolean",
+            "description": "It answers only a query that carries a known device key (`require_client_id`)."
+          }
+        }
+      },
       "ListsPruneRequest": {
         "type": "object",
         "description": "REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.",
@@ -32680,6 +32703,7 @@
           "starts",
           "uncleanStarts",
           "listeners",
+          "listenerAccess",
           "queryLog",
           "filterNames",
           "build",
@@ -32734,6 +32758,13 @@
             "format": "int64",
             "description": "Version of the active filter snapshot, if one is loaded.",
             "minimum": 0
+          },
+          "listenerAccess": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListenerAccess"
+            },
+            "description": "REQ: DNS-901 (T36.2) — each listener's known-ID gate: whether it requires a device key\nand whether it is bound to a public address, so the UI can warn about an open one."
           },
           "listeners": {
             "type": "array",

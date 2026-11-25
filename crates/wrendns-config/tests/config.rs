@@ -2240,3 +2240,59 @@ fn api_003_http_redirect_needs_tls() {
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// REQ: DNS-901 (T36.2) — `require_client_id` is only for listeners that can carry a key.
+#[test]
+fn dns_901_require_client_id_needs_an_encrypted_listener() {
+    let errs = load_str(
+        "[[listen]]\nproto = \"udp\"\naddr = \"127.0.0.1:5353\"\nrequire_client_id = true\n",
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), vec!["listen[0].require_client_id"]);
+    let errs = load_str(
+        "[[listen]]\nproto = \"tcp\"\naddr = \"127.0.0.1:5353\"\nrequire_client_id = true\n",
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), vec!["listen[0].require_client_id"]);
+    let tls = "tls = { cert = \"c.pem\", key = \"k.pem\" }";
+    for proto in ["dot", "doh", "doh3", "doq"] {
+        let l = load_str(&format!(
+            "[[listen]]\nproto = \"{proto}\"\naddr = \"203.0.113.5:853\"\nrequire_client_id = true\n{tls}\n"
+        ))
+        .unwrap();
+        assert!(l.config.listen[0].require_client_id, "{proto}");
+        assert!(
+            !l.warnings.iter().any(|w| w.contains("require_client_id")),
+            "gated: no warning ({proto})"
+        );
+    }
+}
+
+/// REQ: DNS-901 (T36.2, spec/08 §6) — the startup check: a listener on a public address without
+/// the gate is warned about; LAN, loopback and wildcard binds are not.
+#[test]
+fn dns_901_public_listener_without_the_gate_warns_at_startup() {
+    let warns = |addr: &str, extra: &str| {
+        load_str(&format!(
+            "[[listen]]\nproto = \"udp\"\naddr = \"{addr}\"\n{extra}\n"
+        ))
+        .unwrap()
+        .warnings
+        .into_iter()
+        .filter(|w| w.contains("require_client_id"))
+        .count()
+    };
+    assert_eq!(warns("203.0.113.5:53", ""), 1);
+    assert_eq!(warns("[2001:db8::5]:53", ""), 1);
+    assert_eq!(warns("192.168.1.2:53", ""), 0);
+    assert_eq!(warns("127.0.0.1:5353", ""), 0);
+    assert_eq!(warns("0.0.0.0:5353", ""), 0);
+    assert_eq!(
+        warns(
+            "203.0.113.5:53",
+            "[access]\nallowed_networks = [\"203.0.113.0/24\"]"
+        ),
+        0,
+        "inside allowed_networks it is not public"
+    );
+}

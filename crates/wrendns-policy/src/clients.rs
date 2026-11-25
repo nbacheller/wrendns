@@ -773,6 +773,12 @@ impl ClientTable {
         self.router_names.addresses(label)
     }
 
+    /// REQ: DNS-901 (T36.2) — whether a device is configured with the match key `id:<id>`
+    /// (`id` lowercase). Two hash lookups, no allocation; a revoked key is simply gone.
+    pub fn has_client_id(&self, id: &str) -> bool {
+        self.by_id.contains_key(id)
+    }
+
     /// Identifies the sender of a query.
     pub fn identify(
         &self,

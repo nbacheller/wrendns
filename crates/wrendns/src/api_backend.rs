@@ -839,6 +839,21 @@ impl Backend for ApiBackend {
                 .iter()
                 .map(|l| format!("{}://{}", label(&l.proto), l.addr))
                 .collect(),
+            // REQ: DNS-901 (T36.2) — the known-ID gate of each listener.
+            listener_access: cfg
+                .listen
+                .iter()
+                .map(|l| wrendns_api::model::ListenerAccess {
+                    listener: format!("{}://{}", label(&l.proto), l.addr),
+                    require_client_id: l.require_client_id,
+                    public_address: !l.addr.ip().is_unspecified()
+                        && !cfg
+                            .access
+                            .allowed_networks
+                            .iter()
+                            .any(|n| n.contains(l.addr.ip())),
+                })
+                .collect(),
             query_log: self.src.qlog.is_some(),
             filter_snapshot: snap.as_ref().map(|s| s.manifest.version),
             filter_names: snap.as_ref().map_or(0, |s| {

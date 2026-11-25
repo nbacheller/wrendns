@@ -93,6 +93,7 @@ async fn dns_001_tcp_deferred_answers_are_written_out_of_order() {
                 local: None,
                 transport: wrendns_net::Transport::Tcp,
                 client_id: None,
+                gated: false,
             },
             out,
         )

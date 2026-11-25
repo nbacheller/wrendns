@@ -9997,6 +9997,15 @@ export interface components {
                 username: string;
             }[];
         };
+        /** @description REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate. */
+        ListenerAccess: {
+            /** @description The listener, as `proto://addr`. */
+            listener: string;
+            /** @description Bound to an address outside `[access] allowed_networks` (a wildcard bind is not public). */
+            publicAddress: boolean;
+            /** @description It answers only a query that carries a known device key (`require_client_id`). */
+            requireClientId: boolean;
+        };
         /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */
         ListsPruneRequest: {
             /**
@@ -12254,6 +12263,11 @@ export interface components {
              * @description Version of the active filter snapshot, if one is loaded.
              */
             filterSnapshot?: number | null;
+            /**
+             * @description REQ: DNS-901 (T36.2) — each listener's known-ID gate: whether it requires a device key
+             *     and whether it is bound to a public address, so the UI can warn about an open one.
+             */
+            listenerAccess: components["schemas"]["ListenerAccess"][];
             /** @description DNS listeners, as `proto://addr`. */
             listeners: string[];
             maintenance?: components["schemas"]["NodeMaintenance"] | null;

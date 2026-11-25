@@ -49,6 +49,8 @@ pub struct DohConfig {
     /// REQ: DNS-004 (T7.8) — `Alt-Svc` to send (`h3=":443"`) when an HTTP/3 DoH listener serves the
     /// same name.
     pub alt_svc: Option<String>,
+    /// REQ: DNS-901 (T36.2) — every request needs a known client ID (the listener is public).
+    pub require_client_id: bool,
 }
 
 impl DohConfig {
@@ -62,6 +64,7 @@ impl DohConfig {
             max_connections: 1024,
             max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
             alt_svc: None,
+            require_client_id: false,
         }
     }
 }
@@ -298,6 +301,17 @@ impl<H: QueryHandler> Ctx<H> {
             Ok(id) => id,
             Err(code) => return status(code),
         };
+        let meta = RequestMeta {
+            peer: self.peer,
+            local: None,
+            transport: Transport::Doh,
+            client_id: path_id.or(self.sni_id),
+            gated: self.cfg.require_client_id,
+        };
+        // REQ: DNS-901 — unknown, revoked and missing keys all end here, before the body is read.
+        if !self.handler.admit(&meta) {
+            return status(StatusCode::NOT_FOUND);
+        }
         let msg = match *req.method() {
             Method::GET => match get_message(req.uri().query()) {
                 Ok(m) => m,
@@ -322,12 +336,6 @@ impl<H: QueryHandler> Ctx<H> {
                     .insert(ALLOW, HeaderValue::from_static("GET, POST"));
                 return r;
             }
-        };
-        let meta = RequestMeta {
-            peer: self.peer,
-            local: None,
-            transport: Transport::Doh,
-            client_id: path_id.or(self.sni_id),
         };
         let (answer, max_age) = match resolve(self.handler.as_ref(), &msg, &meta).await {
             Ok(a) => a,
