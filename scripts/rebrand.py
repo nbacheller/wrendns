@@ -127,8 +127,6 @@ KEEP_PATHS = [
     "deploy/cluster3/compose-prerename.yaml",
     "deploy/systemd/migrate-from-telltale.sh",
     "deploy/systemd/tests/*",
-    "deploy/release/legacy-assets.sh",
-    "deploy/release/tests/*",
 ]
 
 # (path glob, first line regex, regex of the line that ends the kept section, exclusive)

@@ -384,7 +384,6 @@ TelltaleDNS is now **WrenDNS** (T33.2, ADR-1026, ADR-1028). The command, the pat
 | header `X-Telltale-Reason`, `X-Telltale-Client`; cookie `telltale_session` | `X-Wrendns-Reason`, `X-Wrendns-Client`; `wrendns_session` | both are read, so open sessions stay signed in and agent scripts keep working; responses carry both backup headers |
 | Kubernetes label `telltaledns.io/group` | `wrendns.com/group` | read as well while `[kubernetes] label` is the default |
 | `probe.telltale.invalid` | `probe.wrendns.invalid` | both are recognised as the node's own probe |
-| release files `telltale-<arch>-linux` | `wrendns-<arch>-linux` | published under both names (an upstream TelltaleDNS binary's `self-update` finds its file; this project's old binaries don't use these releases, see the native install steps) |
 | container image `ghcr.io/paimonsoror/telltale` (upstream's) | `ghcr.io/nbacheller/wrendns` | none: pull the new name |
 
 **A cluster can be upgraded node by node.** The nodes of both versions talk to each other: the cluster certificates keep their names while any node may still be old (and each version accepts the other's), and nothing on the wire between nodes changed spelling. Upgrade replicas first and the primary last, as before. `deploy/cluster3/e2e.sh` checks this with an image from before the rename (check **l**): DNS answers on at least two nodes throughout, and no one signs in again.

@@ -5,8 +5,11 @@
 #   2. tags main's head vX.Y.Z and starts the image workflow on the tag (a tag pushed with
 #      this workflow's token starts no workflows by itself). That run builds, signs, and
 #      publishes the binaries, images, chart, and GitHub release, then verifies them;
-#   3. moves main to the next version (`deploy/release/bump.sh`), so edge builds become
-#      `<next>-edge.N`, newer than the release, and starts CI and edge for that commit.
+#   3. does not touch main. Once the ruleset requires checks and has no bypass for this workflow
+#      (docs/going-public.md step 22; ADR-1080, owner decision 2026-11-24), a push to main would be
+#      refused, so the workflow ends with a notice: the maintainer runs `deploy/release/bump.sh
+#      <next>` on a branch and merges it through a pull request (docs/releasing.md, step 5). That
+#      merge starts CI and edge, which is why this workflow dispatches neither for main.
 name: release
 on:
   workflow_dispatch:
@@ -15,7 +18,7 @@ on:
         description: "Version to release, X.Y.Z (must match Cargo.toml on main)"
         required: true
       next:
-        description: "Version main moves to afterwards (default: the next minor, X.Y+1.0)"
+        description: "Version the closing notice proposes for main's next bump, X.Y.Z (default: the next minor, X.Y+1.0)"
         required: false
 
 permissions: {}
@@ -38,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The Tag and Move-main steps `git push` with the checkout's credentials (and preflight.sh runs
+          # The Tag step `git push`es with the checkout's credentials (and preflight.sh runs
           # `git ls-remote origin`, which a private repository answers only with them): kept on purpose.
           persist-credentials: true
           ref: main
@@ -60,13 +63,13 @@ jobs:
           gh workflow run image.yml --ref "v$VERSION"
           echo "::notice title=building::the image workflow publishes and verifies v$VERSION (Actions → image, ref v$VERSION)"
 
-      - name: Move main to the next version
+      - name: Next version
         run: |
+          # No push to main: the ruleset requires checks (ADR-1080), so the bump goes through a pull request.
           next=${NEXT:-$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')}
-          sh deploy/release/bump.sh "$next"
-          git commit -am "chore: start $next development (after v$VERSION) [OPS-004]"
-          git push origin HEAD:main
-          # A push with this workflow's token starts no workflows: start CI and edge.
-          gh workflow run main.yml --ref main
-          gh workflow run image.yml --ref main
-          echo "::notice title=main moved on::$next (edge builds are now $next-edge.N)"
+          # The same test as deploy/release/bump.sh: X.Y.Z, digits and two dots.
+          case $next in
+            *[!0-9.]* | *..* | .* | *.) echo "::error::next must be X.Y.Z"; exit 1 ;;
+          esac
+          [ "$(echo "$next" | tr -cd . | wc -c)" -eq 2 ] || { echo "::error::next must be X.Y.Z"; exit 1; }
+          echo "::notice title=next version::v$VERSION is tagged and its build has started. Move main on: on a branch run 'sh deploy/release/bump.sh $next', commit it as 'chore: start $next development (after v$VERSION) [OPS-004]', and merge it through a pull request (docs/releasing.md, step 5). Until then edge builds read $VERSION-edge.N, which sorts below the release."

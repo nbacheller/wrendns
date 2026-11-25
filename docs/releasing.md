@@ -14,9 +14,10 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 - `X.Y.Z` on `main` is the version being worked toward: `[workspace.package] version` in
   `Cargo.toml` and `version` in `deploy/helm/wrendns/Chart.yaml` (always equal). `N` is the
   image workflow's run number.
-- Semver sorts `X.Y.Z-edge.N` **below** `X.Y.Z`. So the moment `X.Y.Z` is released, `main`
-  moves to the next version (`X.Y+1.0` by default). Otherwise edge builds would look older than
-  the release, and `helm --devel` and update checks would never offer them.
+- Semver sorts `X.Y.Z-edge.N` **below** `X.Y.Z`. So as soon as `X.Y.Z` is released, `main`
+  moves to the next version (`X.Y+1.0` by default), through a pull request (step 5 below).
+  Until then edge builds look older than the release, and `helm --devel` and update checks
+  don't offer them.
 - `install.sh` and `wrendns self-update` take the **latest release** for `stable` (GitHub's
   `releases/latest`, which skips prereleases) and the `edge` prerelease for `--edge` /
   `--channel edge`. Both verify `SHA256SUMS` against the release key; an unsigned release
@@ -26,11 +27,12 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 
 ## Cutting a release
 
-1. **Write the notes** on `main`: `deploy/release/notes/vX.Y.Z.md`, a short Markdown summary
-   for people upgrading (highlights, anything to do when upgrading, known issues). GitHub
-   appends its generated changelog below it. Commit and push; wait for CI to pass on that
-   commit. Tasks may start the file early, with upgrade items, under a first line beginning
-   `_Draft`: preflight refuses the notes until that line is gone.
+1. **Write the notes** in a pull request: `deploy/release/notes/vX.Y.Z.md`, a short Markdown
+   summary for people upgrading (highlights, anything to do when upgrading, known issues).
+   GitHub appends its generated changelog below it. Merge the pull request once its required
+   checks pass, then wait for CI (`main.yml`) to pass on `main`'s new head. Tasks may start the
+   file early, with upgrade items, under a first line beginning `_Draft`: preflight refuses
+   the notes until that line is gone.
 2. **Re-check DB-IP's terms** (ADR-959 section 1): open the DB-IP.com IP to Country Lite page,
    confirm the licence is still CC BY 4.0 with free redistribution of the derived file and the
    attribution wording in `docs/third-party-notices.md` is still what they ask for. If it
@@ -38,11 +40,18 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 3. **Run the workflow:** GitHub → Actions → **release** → Run workflow, version `X.Y.Z`
    (`next` is optional; the default is `X.Y+1.0`).
 4. **Watch two runs:**
-   - **release** (about a minute): preflight, tag, start the tag's build, move `main` on.
+   - **release** (about a minute): preflight, tag, start the tag's build, then print a notice
+     that `main` is to be moved on (step 5). The workflow never pushes to `main`: the ruleset
+     requires checks and has no bypass for it (ADR-1080, owner decision 2026-11-24; it is set
+     when the repository goes public, `docs/going-public.md`), so a push would be refused.
    - **image** on ref `vX.Y.Z` (about 30 minutes): build and test every architecture, push
      the image tags, publish the chart, sign and publish the GitHub release, then
      **verify**. The release is done when `verify` is green.
-5. **After:** the README's release badge updates itself. Deployments that follow edge pin
+5. **Move `main` on** through a pull request: on a branch, run `deploy/release/bump.sh <next>`
+   (`X.Y+1.0` unless you chose another), commit
+   (`chore: start <next> development (after vX.Y.Z) [OPS-004]`), open a pull request and merge
+   it once the required checks pass. The merge starts CI and edge by itself.
+6. **After:** the README's release badge updates itself. Deployments that follow edge pin
    the next edge chart as usual.
 
 ### What preflight checks
@@ -62,24 +71,19 @@ are listed with their SBOM and their debug file (`wrendns-<arch>-linux.debug.zst
 that make a stack from the stripped binary readable); `releases/latest` points at `vX.Y.Z`; `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` are
 the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `X.Y.Z`.
 
-## The rename window (T33.2)
-
-<!-- rebrand:keep-start -->
-For the first release after the rename, `deploy/release/legacy-assets.sh` also copies each binary to its pre-rename name (`telltale-<arch>-linux`, the same bytes) before the checksums are made, so `SHA256SUMS` and the release carry both names. A node still running the old `self-update` looks for the old name and would otherwise find nothing. The release after that drops the script and the step in `.github/workflows/image.yml` (ADR-1028 lists everything that goes), and `deploy/release/tests/legacy-assets-test.sh` with them.
-<!-- rebrand:keep-end -->
-
 ## When something fails
 
 - **Preflight fails:** nothing was published. Fix what it names (often: CI hasn't finished,
   or the notes file is missing) and run the workflow again.
 - **The tag's image run fails** (a flaky test, a registry hiccup): re-run the failed jobs on
   that run. Nothing is re-tagged.
-- **The tag needs a code fix:** never move or reuse a published tag. Fix on `main`, set the
-  version to the patch release (`deploy/release/bump.sh X.Y.Z+1`, commit, push, wait for CI),
-  write `notes/vX.Y.Z+1.md`, and release `X.Y.Z+1`. The workflow moves `main` on again.
-- **Moving `main` on fails** (for example, branch protection refuses the workflow's push):
-  the release itself is fine. Run `deploy/release/bump.sh <next>` locally, commit
-  (`chore: start <next> development (after vX.Y.Z)`), and push.
+- **The tag needs a code fix:** never move or reuse a published tag. Fix it through a pull
+  request, set the version to the patch release in a pull request
+  (`deploy/release/bump.sh X.Y.Z+1`, wait for CI on `main`), write `notes/vX.Y.Z+1.md`, and
+  release `X.Y.Z+1`. Then move `main` on through a pull request again (step 5).
+- **`main` is still on the released version:** the release workflow does not move it (it
+  would be a push the ruleset refuses, ADR-1080). Do step 5. Until then edge builds read
+  `X.Y.Z-edge.N`, which sorts below the release.
 - **Verify fails:** it prints each check as `ok` or `FAIL`. Registry or "latest" lag gets
   three tries; anything else is a real problem: fix it, then re-run the `verify` job.
 
@@ -87,14 +91,16 @@ For the first release after the rename, `deploy/release/legacy-assets.sh` also c
 
 From a machine with push access: `git tag -a vX.Y.Z -m "WrenDNS X.Y.Z"` on a commit
 whose CI passed, then `git push origin vX.Y.Z`. A tag pushed by a person starts the image
-workflow by itself. Then run `deploy/release/bump.sh <next>` on `main`, commit, push, and
-check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
+workflow by itself. Then move `main` on through a pull request (step 5 above), and check with
+`deploy/release/verify.sh X.Y.Z` once the tag's build is green.
 
 ## Things that aren't obvious
 
 - **A tag or commit pushed with a workflow's own token starts no workflows.** That's why the
-  release workflow starts the tag's build, and CI and edge for its version commit, explicitly
-  (`gh workflow run`). `main.yml` and `image.yml` accept `workflow_dispatch` for this. The
+  release workflow starts the tag's build explicitly (`gh workflow run`). It starts nothing for
+  `main`: it makes no commit there, and the pull request of step 5 starts CI, and its merge
+  starts CI and edge. `main.yml` and `image.yml` accept `workflow_dispatch` for the tag's build
+  and for people re-running CI by hand. The
   image workflow's push, sign and publish jobs (`merge`, `chart`, `release`, `verify`) run for
   pushes *and* dispatches on `main` or `v*` tags; a dispatch on a branch only builds and tests.
   Each architecture is one leg (`image`) that compiles once and pushes its image by digest;
