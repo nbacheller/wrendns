@@ -14,7 +14,7 @@ The repository that goes public is **the current repository**. Nothing is re-cre
 - **E6, ruleset.** There is no bypass for the GitHub Actions app. After a release, the version bump on `main` goes through `deploy/release/bump.sh` and a normal pull request.
 - **E7, TelltaleDNS-era leftovers.** Keep what the documented migration path needs. Nothing is removed without the owner's yes on a list. The TelltaleDNS-era releases are the only ones from before the switch to the AGPL, so they are kept: the `permissive-final` release and tag, and the `telltale` image and chart packages. They stay private through the flip and become public after a scan, as a separate step after v1.0.0 (Q2, step 24a).
 
-The owner's answers of 2026-11-24 to the questions at the end of this page (each is binding; the step that acts keeps its own **owner's yes** at the time). Q3, Q6 and Q10 are not answered and stay open there.
+The owner's answers of 2026-11-24 to the questions at the end of this page (each is binding; the step that acts keeps its own **owner's yes** at the time). Q3, Q6 and Q10 were answered on 2026-11-25; those answers are beside the questions at the end of this page.
 
 - **Q1, packages `wrendns` and `charts/wrendns`.** Both are deleted just before the flip (step 13) and re-created by the first image run after it (step 19). Nothing is made public with the old versions.
 - **Q2, packages `telltale` and `charts/telltale`.** They become public after their versions are scanned against the denylist, as a separate step after v1.0.0 (step 24a). A version that fails the scan is deleted, with the owner's yes. Until then they stay private, so `LICENSING.md` says they "are made public as an archive ... once checked", which is true on the day of the flip.
@@ -113,7 +113,7 @@ Part D, standing procedures:
 ### 2. Get the owner's answers to the open questions
 
 - **Who:** the owner, asked through the question tool, all questions together.
-- **How:** "Open questions for the owner" at the end of this page, each with a recommendation. Write each answer into this page beside its question. On 2026-11-24 the owner answered all but Q3, Q6 and Q10 (see "The route", above); those three are still to ask, Q10 item by item at step 4.
+- **How:** "Open questions for the owner" at the end of this page, each with a recommendation. Write each answer into this page beside its question. The owner answered all but Q3, Q6 and Q10 on 2026-11-24 (see "The route", above) and those three on 2026-11-25 (at the end of this page). Q10's answer sets how step 4 is done; the item-by-item marks are still to come.
 - **Verify:** every question has a written answer before step 9.
 - **Undo:** an answer can be changed until the step that acts on it.
 
@@ -225,7 +225,7 @@ Branches on GitHub on 2026-11-24 (`git ls-remote --heads origin`): `main`, `cla-
 
 ### 12. Remove the runner variables (Q3)
 
-Only if the owner's answer to Q3 is yes. With the variables unset, every job falls back to `ubuntu-latest` (`docs/ci-runners.md`), so nothing of the repository's own waits for the stopped box, and every log made before step 26 comes from GitHub-hosted runners. (Unset, `runs-on` evaluates to `ubuntu-latest` in every job that reads the variables. A fork can still write the self-hosted labels into its own copy of a workflow, so this does not replace step 18.)
+The owner's answer to Q3 is yes (2026-11-25). With the variables unset, every job falls back to `ubuntu-latest` (`docs/ci-runners.md`), so nothing of the repository's own waits for the stopped box, and every log made before step 26 comes from GitHub-hosted runners. (Unset, `runs-on` evaluates to `ubuntu-latest` in every job that reads the variables. A fork can still write the self-hosted labels into its own copy of a workflow, so this does not replace step 18.)
 
 - **Who:** the owner. **Owner's yes** (variables).
 - **How:** `gh variable delete WRENDNS_RUNNER -R nbacheller/wrendns` and `gh variable delete WRENDNS_PR_RUNNER -R nbacheller/wrendns`. Their values (`["self-hosted","wrendns"]`) are set again in step 26.
@@ -340,7 +340,7 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
   - **Secret scanning** and **Push protection:** enable.
   - **Dependabot alerts:** enable. Version updates keep coming from `.github/dependabot.yml`.
   - **CodeQL default setup must be off:** `gh api repos/nbacheller/wrendns/code-scanning/default-setup --jq .state` prints `not-configured`. If it is on, switch it off: `codeql.yml` is the advanced setup, and GitHub refuses its results while the default setup is on. CodeQL reports only (ADR-1080 point 5). Then step 19's `codeql` dispatch.
-  - If Q6 says so: Settings, Actions, General, "Require actions to be pinned to a full-length commit SHA" (`sha_pinning_required`).
+  - Q6 is yes (2026-11-25), once step 19's runs are green: Settings, Actions, General, "Require actions to be pinned to a full-length commit SHA" (`sha_pinning_required`).
   - Discussions stay on: `CONTRIBUTING.md` and `README.md` link to them.
 - **Verify:** `gh api repos/nbacheller/wrendns --jq .security_and_analysis` shows secret scanning and push protection `enabled` (it was `null` while private). `gh api -i repos/nbacheller/wrendns/vulnerability-alerts` answers `204` when Dependabot alerts are on and 404 when off (GitHub's documented REST endpoint; **to confirm at step 21**). `gh api repos/nbacheller/wrendns/private-vulnerability-reporting --jq .enabled` prints `true` (GitHub's documented REST endpoint; **to confirm at step 21**). The advisory form opens in a private window. The `codeql` run uploads results.
 - **Undo:** each can be switched off again.
@@ -507,11 +507,17 @@ ADR-1080 point 1 requires four checks; the fourth is the CLA's. `cla.yml` runs `
 
 ## Open questions for the owner
 
-Each is asked through the question tool at step 2. The recommendation is not a decision. On 2026-11-24 the owner answered Q1, Q2, Q4, Q5, Q7, Q8, Q9 and Q11; the answers are in "The route, and the owner's decisions of 2026-11-24". Still open:
+Each is asked through the question tool at step 2. The recommendation is not a decision. On 2026-11-24 the owner answered Q1, Q2, Q4, Q5, Q7, Q8, Q9 and Q11; the answers are in "The route, and the owner's decisions of 2026-11-24". Q3, Q6 and Q10 were answered on 2026-11-25:
 
 - **Q3. Remove the two runner variables for the window (step 12)?** **Recommended: yes.** Every job then runs on GitHub-hosted runners until step 26, nothing queues for the stopped box, the first public logs name no machine, and step 19's `main` run can make preflight's green run without the box. Without it, step 19's `main` run waits for the runners, so the release waits for steps 20 and 26.
 - **Q6. Turn on `sha_pinning_required`?** `scripts/check-workflows.py` already enforces the pinning. **Recommended: yes**, at step 21, after step 19's runs are green.
 - **Q10. The text found in step 4:** edit, delete or keep, item by item.
+
+The owner's answers of 2026-11-25:
+
+- **Q3: yes.** The two variables are removed for the window and put back at step 26.
+- **Q6: yes, after the first public runs.** `sha_pinning_required` is turned on at step 21, once step 19's runs are green.
+- **Q10: a page to mark up.** An agent prepares a private page that lists each item of step 4 with its flagged text and a suggested action (keep, edit or delete). The owner marks each one. Nothing on GitHub changes before those marks, and each change keeps its own yes.
 
 Answered 2026-11-24, kept here with the reasoning that was put to the owner:
 
