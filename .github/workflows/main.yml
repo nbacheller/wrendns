@@ -441,7 +441,7 @@ jobs:
           - { runner: ubuntu-latest, tool: kind }
           - { runner: ubuntu-24.04-arm, tool: k3d }
     runs-on: ${{ matrix.runner }}
-    # The e2e pulls the published `edge` image; the image package is private while the repository is.
+    # The e2e pulls the published `edge` image; the login below also covers a package that is still private.
     permissions:
       contents: read
       packages: read
@@ -585,7 +585,7 @@ jobs:
       # REQ: CLU-010 (T5.11 AC) — rolling upgrade: the published edge build (N-1) and this
       # build (N) in one cluster, both ways round, with a two-server client never failing.
       # REQ: OPS-004 - the edge build comes through the API with the job's token (an anonymous
-      # download of a private repository's release is a 404), and a repository with no edge
+      # download of a release is a 404 while the repository is private), and a repository with no edge
       # release yet (a fresh one) skips the step with a notice instead of failing.
       - name: Cluster rolling upgrade (edge build and this build)
         env:
