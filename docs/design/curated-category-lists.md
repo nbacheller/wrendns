@@ -1,6 +1,6 @@
 # Curated category lists: design notes
 
-**Status:** design only, for the owner's review. **ADR:** ADR-1087 (Proposed 2026-11-24). **Milestone:** M36 (WrenDNS Cloud, fork #41, `docs/design/hosted.md`), tasks T36.28 to T36.34 in `spec/10`, all after the public 1.0 release. **Requirements:** builds on FLT-901, FLT-902, FLT-004, FLT-013, OBS-023, NFR-004, NFR-005 and NFR-006; reserves **FLT-905** (the node's side) and **CLD-918** (the service's side), whose rows are added to `spec/01` when the build starts (section 11, open question 14). No code is written by this change.
+**Status:** design only, for the owner's review. **ADR:** ADR-1087 (Proposed 2026-11-24). **Milestone:** M36 (WrenDNS Cloud, cloud #3, `docs/design/hosted.md`), tasks T36.28 to T36.34 in `spec/10`, all after the public 1.0 release. **Requirements:** builds on FLT-901, FLT-902, FLT-004, FLT-013, OBS-023, NFR-004, NFR-005 and NFR-006; reserves **FLT-905** (the node's side) and **CLD-918** (the service's side), whose rows are added to `spec/01` when the build starts (section 11, open question 14). No code is written by this change.
 
 **This document is not legal advice.** It records what the research of 2026-11-24 found, what the owner decided, and the questions a lawyer must answer before anything here is offered for money. Where it says a source is "allowed", that is the research's reading of the source's own licence text, not a legal opinion.
 
@@ -10,7 +10,7 @@
 
 1. **Sources.** Merge only permissive sources (MIT, Apache-2.0, CC0, Unlicense, CC BY) into lists WrenDNS owns. Keep GPL and CC BY-SA sources (HaGeZi, AdGuard DNS filter, EasyList/EasyPrivacy, UT1, Bon-Appetit) as separate, unmerged, attributed lists under their own licence, and write to their maintainers for a clear yes for hosted commercial use.
 2. **Delivery** (applied only inside the hosted resolver, or also published as downloadable files for self-hosted nodes) is decided after a legal review. This design keeps both open and says what each requires (section 7).
-3. **Now:** a design document and an ADR for the owner's review. The build belongs with the hosted-service milestone (fork #41, `docs/design/hosted.md`), after the public 1.0 release.
+3. **Now:** a design document and an ADR for the owner's review. The build belongs with the hosted-service milestone (cloud #3, `docs/design/hosted.md`), after the public 1.0 release.
 
 **Owner decisions, 2026-11-24, second batch (binding):**
 
