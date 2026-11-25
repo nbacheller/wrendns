@@ -40,11 +40,10 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 3. **Run the workflow:** GitHub → Actions → **release** → Run workflow, version `X.Y.Z`
    (`next` is optional; the default is `X.Y+1.0`).
 4. **Watch two runs:**
-   - **release** (about a minute): preflight, tag, start the tag's build, then try to move
-     `main` on. The ruleset on `main` requires checks and has no bypass for the workflow
-     (ADR-1080, owner decision 2026-11-24; it is set when the repository goes public,
-     `docs/going-public.md`), so that last push is refused. The step fails and the run ends red, but the
-     release itself is not affected: the tag and its build were started before it.
+   - **release** (about a minute): preflight, tag, start the tag's build, then print a notice
+     that `main` is to be moved on (step 5). The workflow never pushes to `main`: the ruleset
+     requires checks and has no bypass for it (ADR-1080, owner decision 2026-11-24; it is set
+     when the repository goes public, `docs/going-public.md`), so a push would be refused.
    - **image** on ref `vX.Y.Z` (about 30 minutes): build and test every architecture, push
      the image tags, publish the chart, sign and publish the GitHub release, then
      **verify**. The release is done when `verify` is green.
@@ -72,12 +71,6 @@ are listed with their SBOM and their debug file (`wrendns-<arch>-linux.debug.zst
 that make a stack from the stripped binary readable); `releases/latest` points at `vX.Y.Z`; `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` are
 the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `X.Y.Z`.
 
-## The rename window (T33.2)
-
-<!-- rebrand:keep-start -->
-For the first release after the rename, `deploy/release/legacy-assets.sh` also copies each binary to its pre-rename name (`telltale-<arch>-linux`, the same bytes) before the checksums are made, so `SHA256SUMS` and the release carry both names. A node still running the old `self-update` looks for the old name and would otherwise find nothing. The release after that drops the script and the step in `.github/workflows/image.yml` (ADR-1028 lists everything that goes), and `deploy/release/tests/legacy-assets-test.sh` with them.
-<!-- rebrand:keep-end -->
-
 ## When something fails
 
 - **Preflight fails:** nothing was published. Fix what it names (often: CI hasn't finished,
@@ -88,10 +81,9 @@ For the first release after the rename, `deploy/release/legacy-assets.sh` also c
   request, set the version to the patch release in a pull request
   (`deploy/release/bump.sh X.Y.Z+1`, wait for CI on `main`), write `notes/vX.Y.Z+1.md`, and
   release `X.Y.Z+1`. Then move `main` on through a pull request again (step 5).
-- **Moving `main` on fails in the release run:** this is expected. The ruleset refuses the
-  workflow's push to `main` (ADR-1080, owner decision 2026-11-24), and the CI and edge
-  dispatches after that push do not run. The release itself is fine. Move `main` on as step 5
-  says.
+- **`main` is still on the released version:** the release workflow does not move it (it
+  would be a push the ruleset refuses, ADR-1080). Do step 5. Until then edge builds read
+  `X.Y.Z-edge.N`, which sorts below the release.
 - **Verify fails:** it prints each check as `ok` or `FAIL`. Registry or "latest" lag gets
   three tries; anything else is a real problem: fix it, then re-run the `verify` job.
 
@@ -105,8 +97,10 @@ workflow by itself. Then move `main` on through a pull request (step 5 above), a
 ## Things that aren't obvious
 
 - **A tag or commit pushed with a workflow's own token starts no workflows.** That's why the
-  release workflow starts the tag's build explicitly (`gh workflow run`). Its dispatch of CI
-  and edge for a version commit never runs while the ruleset refuses that commit's push. `main.yml` and `image.yml` accept `workflow_dispatch` for this. The
+  release workflow starts the tag's build explicitly (`gh workflow run`). It starts nothing for
+  `main`: it makes no commit there, and the pull request of step 5 starts CI, and its merge
+  starts CI and edge. `main.yml` and `image.yml` accept `workflow_dispatch` for the tag's build
+  and for people re-running CI by hand. The
   image workflow's push, sign and publish jobs (`merge`, `chart`, `release`, `verify`) run for
   pushes *and* dispatches on `main` or `v*` tags; a dispatch on a branch only builds and tests.
   Each architecture is one leg (`image`) that compiles once and pushes its image by digest;

@@ -1,8 +1,9 @@
 #!/bin/sh
 # REQ: OPS-004 (T9.26, ADR-097) — set the version everywhere it's written: the workspace
 # version, the workspace crates' requirements on each other, the chart version, the OpenAPI
-# document's version, and Cargo.lock. The release workflow runs it after tagging (main moves on to the next version,
-# so `<next>-edge.N` sorts above the release); it also works by hand.
+# document's version, and Cargo.lock. Run it by hand on a branch, then merge that branch through a pull
+# request: after a release, main moves on to the next version this way (the release workflow does not push
+# to main), so `<next>-edge.N` sorts above the release.
 #
 #   deploy/release/bump.sh 0.2.0
 set -eu

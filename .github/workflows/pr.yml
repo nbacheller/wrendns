@@ -194,8 +194,9 @@ jobs:
   # maintainers' own repository (nbacheller/wrendns) the list is required and a missing secret fails
   # the job. That includes a pull request from a fork: it gets no secret, so the script exits 2 and
   # the check fails closed (owner decision, 2026-11-20; ADR-1080). A contributor who sees that
-  # failure has done nothing wrong: a maintainer runs the check on a branch of this repository, and
-  # the result of that run decides. Dependabot's pull requests are scanned like any other: they get
+  # failure has done nothing wrong: a maintainer reviews the change, pushes the commits (authorship
+  # kept) to a branch of this repository, where every check runs, merges that, and closes the fork
+  # pull request with a link. No check is bypassed (docs/going-public.md step 32). Dependabot's pull requests are scanned like any other: they get
   # Dependabot secrets only, so the list is also stored as the Dependabot secret of the same name
   # (owner decision, 2026-11-20), and a missing one fails the job.
   # Hits name file:line and the pattern's number, never the pattern. A repository other than

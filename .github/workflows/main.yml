@@ -14,7 +14,7 @@ on:
   pull_request:
     # `labeled` starts the full tier when the `ci:full` label is added to an open pull request.
     types: [opened, synchronize, reopened, labeled]
-  # The release workflow starts CI for the commit it pushes to main (T9.26).
+  # For re-running CI by hand (`gh workflow run main.yml --ref main`); the release workflow no longer starts it (T9.26).
   workflow_dispatch:
 # A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
 # the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
