@@ -1,5 +1,5 @@
 # The nightly tier (ADR-1073): the online checks, the three-node cluster, the keepalived failover,
-# fuzzing and the advisory check every night; coverage, reproducible builds and the catalog check
+# fuzzing, the advisory check and the full privacy scan every night; coverage, reproducible builds and the catalog check
 # once a week (the second cron below). Scheduled workflows run only from main. The `report` job at
 # the end opens one issue, "Nightly run failed", when a scheduled run fails, and comments on it
 # while it stays open.
@@ -246,13 +246,68 @@ jobs:
             gh issue create --title "Content-category catalog: a source needs attention" --label catalog --body-file catalog-report.md
           fi
 
+  # REQ: DOC-006 — the privacy check over everything the repository serves, not only the tree the
+  # pull request job reads: the history of every ref (branches, tags and the `refs/pull/*` refs
+  # GitHub keeps for every pull request), the tree with the built site, and the files of the `edge`
+  # release with the printable strings of its binaries and debug files. The list is a repository
+  # secret that nobody needs to hold: a hit is printed as `path:line: pattern #N`, never as the
+  # pattern or the matched text (scripts/check-private.py). Only on the project's own repository:
+  # a fork has no list.
+  privacy-full:
+    if: github.event.schedule != '17 5 * * 1' && github.repository == 'nbacheller/wrendns'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - name: Fetch every ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --quiet --no-tags --prune "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            '+refs/heads/*:refs/remotes/origin/*' '+refs/pull/*:refs/remotes/origin/pull/*' '+refs/tags/*:refs/tags/*'
+          echo "refs: $(git for-each-ref | wc -l), of them pull request refs: $(git for-each-ref refs/remotes/origin/pull | wc -l)"
+          echo "commits: $(git rev-list --all --count)"
+      - name: The history of every ref
+        env:
+          WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
+        run: python3 scripts/check-private.py --history --require
+      - name: The tree, with the built site
+        env:
+          WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
+        run: |
+          python3 site/build.py
+          python3 scripts/check-private.py --require
+      - name: The edge release's files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WRENDNS_PRIVACY_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
+        run: |
+          set -o pipefail
+          scan="$RUNNER_TEMP/asset-scan"
+          mkdir -p "$scan/assets-text"
+          # The scan lists files with `git ls-files`, so its root is a repository.
+          git -C "$scan" init -q
+          gh release download edge -R "$GITHUB_REPOSITORY" -D "$scan/assets"
+          ls -l "$scan/assets"
+          # Binaries and debug files are not text: scan their printable strings (build paths).
+          for f in "$scan"/assets/*.debug.zst; do
+            zstd -dc "$f" | strings > "$scan/assets-text/$(basename "$f").txt"
+          done
+          for f in "$scan"/assets/*-linux; do
+            strings "$f" > "$scan/assets-text/$(basename "$f").txt"
+          done
+          python3 scripts/check-private.py --root "$scan" --require --extra assets --extra assets-text
+
   # One issue for a failed nightly or weekly run. When a scheduled run fails, an open issue titled
   # "Nightly run failed" gets a comment with the run and the failed jobs, or the issue is created if
   # none is open. When a run is green and such an issue is open, it gets a comment saying so; it is
   # closed by hand. The verdict is scripts/pr_ok.py's: a job that failed, was cancelled or has no
   # readable result counts as failed, and a skipped job (the weekly jobs on a nightly run) as passed.
   report:
-    needs: [presets-online, lists-online, coverage, reproducible, three-node, vip-failover, fuzz, advisories, catalog-check]
+    needs: [presets-online, lists-online, coverage, reproducible, three-node, vip-failover, fuzz, advisories, catalog-check, privacy-full]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
