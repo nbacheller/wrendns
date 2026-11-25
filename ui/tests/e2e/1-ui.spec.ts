@@ -554,13 +554,13 @@ test('dns_901 listener access warns about a public listener without a device key
   await page.route('**/api/v1/system/info', async (route) => {
     const res = await route.fetch();
     const info = await res.json();
-    const base = { gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'unset' };
+    const base = { gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'unset', defaultOn: false, defaultReason: 'off, because the address is not public', publicExposure: false };
     info.listenerAccess = [
-      { ...base, listener: 'dot://203.0.113.5:853', requireClientId: false, publicAddress: true, setting: 'false' },
+      { ...base, listener: 'dot://203.0.113.5:853', requireClientId: false, publicAddress: true, publicExposure: true, setting: 'false' },
       { ...base, listener: 'doh://203.0.113.5:443', requireClientId: true, publicAddress: true, setting: 'true' },
       { ...base, listener: 'udp://192.168.1.2:53', requireClientId: false, publicAddress: false, canCarryKey: false },
-      { ...base, listener: 'doq://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: true },
-      { ...base, listener: 'dot://0.0.0.0:853', requireClientId: false, publicAddress: false, wildcardBind: true },
+      { ...base, listener: 'doq://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: true, defaultOn: true, defaultReason: 'on, because the address is public', publicExposure: true },
+      { ...base, listener: 'dot://0.0.0.0:853', requireClientId: false, publicAddress: false, wildcardBind: true, defaultReason: 'off, because it binds every address and this host has no public IPv4 address' },
     ];
     await route.fulfill({ response: res, json: info });
   });
@@ -579,6 +579,7 @@ test('dns_901 listener access warns about a public listener without a device key
   await expect(rows.nth(3).getByTestId('listener-default-notice')).toContainText('on by default');
   await expect(rows.nth(3)).toContainText('require_client_id');
   await expect(rows.nth(4).getByTestId('listener-wildcard-notice')).toContainText('every address');
+  await expect(rows.nth(4)).toContainText('this host has no public IPv4 address');
   await card.getByRole('button', { name: /help/i }).first().click();
   await expect(page.getByText('Device keys on a public listener').first()).toBeVisible();
   await page.unroute('**/api/v1/system/info');
@@ -593,11 +594,12 @@ test('dns_901 listener gate is changed through the guarded review', async () => 
   await page.route('**/api/v1/system/info', async (route) => {
     const res = await route.fetch();
     const info = await res.json();
-    const base = { gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'unset', publicAddress: false, requireClientId: false };
+    const base = { gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'unset', publicAddress: false, requireClientId: false, defaultOn: false, defaultReason: 'off, because the address is not public', publicExposure: false };
     info.listenerAccess = [
-      { ...base, listener: 'dot://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: true },
+      { ...base, listener: 'dot://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: true, defaultOn: true, defaultReason: 'on, because the address is public', publicExposure: true },
       { ...base, listener: 'doh://192.168.1.2:443' },
       { ...base, listener: 'udp://192.168.1.2:53', canCarryKey: false },
+      { ...base, listener: 'doq://0.0.0.0:853', wildcardBind: true, requireClientId: true, gatedByDefault: true, defaultOn: true, defaultReason: 'on, because it binds every address and this host has a public IPv4 address', publicExposure: true },
     ];
     await route.fulfill({ response: res, json: info });
   });
@@ -626,7 +628,8 @@ test('dns_901 listener gate is changed through the guarded review', async () => 
   const gate = page.getByTestId('listener-gate');
   await expect(gate).toBeVisible();
   const rows = gate.getByTestId('listener-gate-row');
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(4);
+  await expect(rows.nth(3).getByTestId('listener-gate-default')).toContainText('binds every address and this host has a public IPv4 address');
   await expect(rows.nth(0).getByTestId('listener-gate-default')).toContainText('on, because the address is public');
   await expect(rows.nth(1).getByTestId('listener-gate-default')).toContainText('off, because the address is not public');
   await expect(rows.nth(2).getByTestId('listener-gate-plain')).toContainText('not available');
@@ -644,6 +647,7 @@ test('dns_901 listener gate is changed through the guarded review', async () => 
     { proto: 'dot', addr: '203.0.113.5:853', require_client_id: false },
     { proto: 'doh', addr: '192.168.1.2:443', require_client_id: null },
     { proto: 'udp', addr: '192.168.1.2:53', require_client_id: null },
+    { proto: 'doq', addr: '0.0.0.0:853', require_client_id: null },
   ]);
   await page.unroute('**/api/v1/guarded/listen-access/preview');
   await page.unroute('**/api/v1/system/info');

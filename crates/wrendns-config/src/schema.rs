@@ -502,9 +502,11 @@ pub struct Listener {
     /// A known key is let in from any address, outside `[access] allowed_networks` too.
     ///
     /// REQ: DNS-901 (ADR-1090 point 1, owner decision 2026-11-25) — three states: unset means on
-    /// for a listener bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a wildcard bind is not public) and off otherwise;
-    /// `true` forces it on; `false` turns it off, which is allowed on a public address but logs
-    /// a startup warning and is shown in the web UI.
+    /// on for a listener bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local) and off otherwise;
+    /// a wildcard bind (`0.0.0.0`, `[::]`, `[::ffff:0.0.0.0]`) is on only when the host holds a public IPv4 address
+    /// on an interface (or the interface list cannot be read), and off when it has only private IPv4 addresses or a global IPv6 address
+    /// alone (a warning is logged then). `true` forces it on; `false` turns it off, which is allowed
+    /// but logs a warning at start and at every reload on a public or public-resolving wildcard listener, whether the file or the web UI set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_client_id: Option<bool>,
 }
@@ -515,10 +517,9 @@ pub struct Listener {
 /// public; every other address is, including documentation ranges, multicast and 0.0.0.0/8.
 /// An IPv4-mapped IPv6 address is judged as its IPv4 address.
 ///
-/// An unspecified bind (`0.0.0.0`, `::`) is NOT public here: ADR-1050 point 5 and spec/08 §6
-/// speak of a bind "on a public IP", and ADR-1090 point 1 does not warn about a wildcard bind,
-/// so the records do not make it public. It cannot be known to be private either, so a wildcard
-/// encrypted listener gets its own startup and web UI warning instead of the gate.
+/// An unspecified bind (`0.0.0.0`, `::`, `::ffff:0.0.0.0`) is NOT public here: it is not one
+/// address. Whether it is gated by default depends on the host's addresses (ADR-1090 point 2),
+/// which `crate::default_gate` decides with the facts the node passes in.
 #[must_use]
 pub fn is_public_address(ip: IpAddr) -> bool {
     match ip.to_canonical() {
@@ -543,24 +544,6 @@ pub fn is_public_address(ip: IpAddr) -> bool {
 }
 
 impl Listener {
-    /// REQ: DNS-901 — whether this listener answers only a known device key: only `dot`, `doh`,
-    /// `doh3` and `doq` can carry one; an explicit setting wins, and unset means on for a public
-    /// bind address.
-    #[must_use]
-    pub fn gated(&self) -> bool {
-        self.proto.needs_tls()
-            && self
-                .require_client_id
-                .unwrap_or_else(|| is_public_address(self.addr.ip()))
-    }
-
-    /// REQ: DNS-901 — gated only because the setting is unset and the address is public (what an
-    /// upgrade changes for an existing configuration).
-    #[must_use]
-    pub fn gated_by_default(&self) -> bool {
-        self.require_client_id.is_none() && self.gated()
-    }
-
     fn plain(proto: ListenProto, addr: SocketAddr) -> Self {
         Self {
             proto,

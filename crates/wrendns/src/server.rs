@@ -37,7 +37,24 @@ pub(crate) fn trim_code_pages(after: &'static str) {
 }
 
 pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
-    load_files(files).map(|c| crate::replication::effective(&c))
+    load_files(files).map(|c| {
+        let eff = crate::replication::effective(&c);
+        warn_ui_gates(&c, &eff);
+        eff
+    })
+}
+
+/// REQ: DNS-901 (ADR-1090 points 1 and 2) — the gate warnings the files' own check cannot see: an
+/// explicit `require_client_id = false` that the web UI set (the effective settings have it, the
+/// files do not). The files' warnings were logged when they were loaded.
+fn warn_ui_gates(file: &Config, effective: &Config) {
+    let host = crate::gate_host::facts();
+    let in_file = wrendns_config::gate_warnings(file, host);
+    for w in wrendns_config::gate_warnings(effective, host) {
+        if !in_file.contains(&w) {
+            warn!("config: {w} (set through the web UI)");
+        }
+    }
 }
 
 /// Loads and validates `files` + environment only (without what the UI/API stored).
@@ -53,10 +70,14 @@ pub(crate) fn load_files_quiet(files: &[PathBuf]) -> Option<Config> {
 }
 
 fn load_files_logging(files: &[PathBuf], warnings: bool) -> Option<Config> {
+    // REQ: DNS-901 (ADR-1090 point 2) — the host's addresses are read at every load (start and
+    // each reload), before the listeners are bound with them.
+    let host = crate::gate_host::refresh();
     match files
         .iter()
         .fold(Loader::new(), Loader::file)
         .process_env()
+        .host_facts(host)
         .load()
     {
         Ok(l) => {
@@ -455,11 +476,23 @@ pub(crate) fn watch_cert(store: Arc<CertStore>) -> JoinHandle<()> {
     })
 }
 
+/// REQ: DNS-901 — a stream listener as it is bound: its effective gate written into the setting, so
+/// a reload that leaves the file alone but changes what the default resolves to (the host gained or
+/// lost a public IPv4 address) rebinds the listener with the new gate.
+fn bound_form(l: &Listener, host: wrendns_config::HostFacts) -> Listener {
+    let mut b = l.clone();
+    if l.proto.needs_tls() {
+        b.require_client_id = Some(l.gated(host));
+    }
+    b
+}
+
 impl Listeners {
     /// Makes the running set match `listen`: binds additions first, then closes removals, so a
     /// changed address never leaves a gap (`spec/08` §5). A stream listener whose settings
     /// changed on the same address is closed just before its replacement binds.
     async fn apply(&mut self, listen: &[Listener]) -> io::Result<()> {
+        let host = crate::gate_host::facts();
         for l in listen {
             let ctx =
                 |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
@@ -479,7 +512,7 @@ impl Listeners {
                 | ListenProto::Doh
                 | ListenProto::Doq
                 | ListenProto::Doh3
-                    if !self.streams.iter().any(|(c, _)| c == l) =>
+                    if !self.streams.iter().any(|(c, _)| *c == bound_form(l, host)) =>
                 {
                     // Same protocol and address with other settings: replace it.
                     if let Some(i) = self
@@ -493,7 +526,7 @@ impl Listeners {
                     let stream = self
                         .bind_stream(l, alt_svc(listen).as_deref())
                         .map_err(ctx)?;
-                    self.streams.push((l.clone(), stream));
+                    self.streams.push((bound_form(l, host), stream));
                 }
                 ListenProto::Udp
                 | ListenProto::Tcp
@@ -516,7 +549,7 @@ impl Listeners {
         let (kept, gone): (Vec<_>, Vec<_>) = self
             .streams
             .drain(..)
-            .partition(|(c, _)| listen.contains(c));
+            .partition(|(c, _)| listen.iter().any(|l| bound_form(l, host) == *c));
         self.streams = kept;
         for (c, s) in gone {
             info!(addr = %c.addr, proto = ?c.proto, "closing listener");
@@ -531,22 +564,16 @@ impl Listeners {
             None => None,
         };
         let handler = Arc::clone(&self.handler);
-        // REQ: DNS-901 (ADR-1090 point 1) — an upgrade can turn the gate on for a listener whose
-        // file never set it: say so, naming the listener and the setting.
-        if l.gated_by_default() {
+        // REQ: DNS-901 (ADR-1090 points 1 and 2) — an upgrade can turn the gate on for a listener
+        // whose file never set it: say so, naming the listener, the setting and the rule.
+        let host = crate::gate_host::facts();
+        let gated = l.gated(host);
+        if l.gated_by_default(host) {
             warn!(
                 listener = %format!("{:?}://{}", l.proto, l.addr),
                 setting = "require_client_id",
-                "this listener is on a public address and require_client_id is not set, so it is on: queries without a known device key are refused (counted in wrendns_client_id_refused_total); set require_client_id = true to keep it, or false to open the listener"
-            );
-        }
-        // A wildcard bind is not public and cannot be known to be private: the gate stays off
-        // unless the file sets it, so name it.
-        if l.proto.needs_tls() && l.addr.ip().is_unspecified() && l.require_client_id.is_none() {
-            warn!(
-                listener = %format!("{:?}://{}", l.proto, l.addr),
-                setting = "require_client_id",
-                "this listener binds every address, so it cannot be known to be private and require_client_id is not on by default; set require_client_id = true if it is reachable from the internet"
+                "require_client_id is not set, so the default applies and it is {}: queries without a known device key are refused (counted in wrendns_client_id_refused_total); set require_client_id = true to keep it, or false to open the listener",
+                l.default_gate(host).describe()
             );
         }
         match (l.proto, store) {
@@ -556,7 +583,7 @@ impl Listeners {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
                 cfg.proxy_protocol = l.proxy_protocol;
-                cfg.require_client_id = l.gated();
+                cfg.require_client_id = gated;
                 cfg.alt_svc = alt_svc.map(str::to_owned);
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
@@ -570,7 +597,7 @@ impl Listeners {
             }
             (ListenProto::Doh3, Some(store)) => {
                 let mut cfg = wrendns_net::Doh3Config::new(l.addr, Arc::clone(&store));
-                cfg.require_client_id = l.gated();
+                cfg.require_client_id = gated;
                 if let Some(p) = &l.path {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
@@ -586,7 +613,7 @@ impl Listeners {
             }
             (ListenProto::Doq, Some(store)) => {
                 let mut cfg = wrendns_net::DoqConfig::new(l.addr, Arc::clone(&store));
-                cfg.require_client_id = l.gated();
+                cfg.require_client_id = gated;
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
                 }
@@ -600,7 +627,7 @@ impl Listeners {
             (proto, store) => {
                 let mut cfg = TcpConfig::new(l.addr);
                 cfg.proxy_protocol = l.proxy_protocol;
-                cfg.require_client_id = l.gated();
+                cfg.require_client_id = gated;
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
                 }
@@ -1778,6 +1805,7 @@ async fn reload(
         return false;
     };
     let new = crate::replication::effective(&file);
+    warn_ui_gates(&file, &new);
     // Unchanged upstream config keeps the running router: its health state, pooled
     // connections, and bootstrap cache survive the reload (T2.7).
     let same_upstreams = current.upstream == new.upstream
@@ -2141,6 +2169,52 @@ mod tests {
 
     use super::*;
     use crate::pipeline::{Handler, Policy};
+
+    // REQ: DNS-901 (ADR-1090 point 2) — a reload that leaves the file alone but changes what the
+    // wildcard default resolves to must rebind the listener: the bound form carries the effective
+    // gate, so it differs between a host with and without a public IPv4 address, and never for a
+    // listener the host cannot change (explicit setting, public or private address, plain udp).
+    #[test]
+    fn dns_901_bound_form_follows_the_host_for_a_wildcard_listener() {
+        use wrendns_config::HostFacts;
+        let l = |proto: ListenProto, addr: &str, gate: Option<bool>| Listener {
+            proto,
+            addr: addr.parse().unwrap(),
+            path: None,
+            tls: None,
+            proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
+            require_client_id: gate,
+        };
+        let yes = HostFacts {
+            public_ipv4: Some(true),
+            global_ipv6: false,
+        };
+        let no = HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: false,
+        };
+        for addr in ["0.0.0.0:853", "[::]:853", "[::ffff:0.0.0.0]:853"] {
+            let w = l(ListenProto::Dot, addr, None);
+            assert_ne!(bound_form(&w, yes), bound_form(&w, no), "{addr}");
+            assert_eq!(bound_form(&w, yes).require_client_id, Some(true));
+            assert_eq!(bound_form(&w, no).require_client_id, Some(false));
+        }
+        for fixed in [
+            l(ListenProto::Dot, "0.0.0.0:853", Some(false)),
+            l(ListenProto::Dot, "192.168.1.2:853", None),
+            l(ListenProto::Dot, "203.0.113.5:853", None),
+            l(ListenProto::Tcp, "0.0.0.0:53", None),
+        ] {
+            assert_eq!(
+                bound_form(&fixed, yes),
+                bound_form(&fixed, no),
+                "{:?}",
+                fixed.addr
+            );
+        }
+    }
 
     // REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — a device behind a router has no neighbor entry of
     // its own, so its MAC comes from the router's lease; the kernel's entry wins where both exist;

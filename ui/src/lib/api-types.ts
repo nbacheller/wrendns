@@ -10002,7 +10002,21 @@ export interface components {
         ListenerAccess: {
             /** @description The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`). */
             canCarryKey: boolean;
-            /** @description On only because the setting is unset and the address is public. */
+            /**
+             * @description What the unset setting resolves to for this listener on this host: on for a public address,
+             *     and for a wildcard bind when the host holds a public IPv4 address (or its interface list
+             *     could not be read); off otherwise.
+             */
+            defaultOn: boolean;
+            /**
+             * @description The default and why, as a sentence ("on, because it binds every address and this host has a
+             *     public IPv4 address"); names the wildcard rule when it applies.
+             */
+            defaultReason: string;
+            /**
+             * @description On only because the setting is unset and the default is on (a public address, or a wildcard bind
+             *     on a host with a public IPv4 address).
+             */
             gatedByDefault: boolean;
             /** @description The listener, as `proto://addr`. */
             listener: string;
@@ -10011,11 +10025,16 @@ export interface components {
              *     wildcard bind is not public).
              */
             publicAddress: boolean;
+            /**
+             * @description A public address reaches this listener (or might: fail closed), so turning the device key off
+             *     opens it to the internet.
+             */
+            publicExposure: boolean;
             /** @description It answers only a query that carries a known device key (the effective `require_client_id`). */
             requireClientId: boolean;
             /** @description What the file says: `unset`, `true` or `false`. */
             setting: string;
-            /** @description Bound to every address (`0.0.0.0` or `::`): not known to be private. */
+            /** @description Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`). */
             wildcardBind: boolean;
         };
         /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */

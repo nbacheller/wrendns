@@ -17,13 +17,24 @@ pub struct ListenerAccess {
     pub require_client_id: bool,
     /// What the file says: `unset`, `true` or `false`.
     pub setting: String,
-    /// On only because the setting is unset and the address is public.
+    /// On only because the setting is unset and the default is on (a public address, or a wildcard bind
+    /// on a host with a public IPv4 address).
     pub gated_by_default: bool,
     /// Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
     /// wildcard bind is not public).
     pub public_address: bool,
-    /// Bound to every address (`0.0.0.0` or `::`): not known to be private.
+    /// Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`).
     pub wildcard_bind: bool,
+    /// What the unset setting resolves to for this listener on this host: on for a public address,
+    /// and for a wildcard bind when the host holds a public IPv4 address (or its interface list
+    /// could not be read); off otherwise.
+    pub default_on: bool,
+    /// The default and why, as a sentence ("on, because it binds every address and this host has a
+    /// public IPv4 address"); names the wildcard rule when it applies.
+    pub default_reason: String,
+    /// A public address reaches this listener (or might: fail closed), so turning the device key off
+    /// opens it to the internet.
+    pub public_exposure: bool,
     /// The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`).
     pub can_carry_key: bool,
 }

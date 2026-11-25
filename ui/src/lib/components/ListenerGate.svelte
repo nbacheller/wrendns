@@ -45,13 +45,9 @@
   });
   const changed = $derived(rows.some((l) => l.canCarryKey && (choice[l.listener] ?? 'default') !== fromSetting(l.setting)));
 
-  /** What the default is for this listener, and why. */
-  function defaultText(l: S['ListenerAccess']): string {
-    if (l.publicAddress) return 'on, because the address is public';
-    if (l.wildcardBind) return 'off: it binds every address, which cannot be known to be private';
-    return 'off, because the address is not public';
-  }
-  const defaultOn = (l: S['ListenerAccess']) => l.publicAddress;
+  /** What the default is for this listener, and why (the node's sentence: it names the wildcard rule). */
+  const defaultText = (l: S['ListenerAccess']): string => l.defaultReason;
+  const defaultOn = (l: S['ListenerAccess']) => l.defaultOn;
   /** What the choice makes of this listener once applied. */
   const resulting = (l: S['ListenerAccess']): boolean => {
     const c = choice[l.listener] ?? 'default';
@@ -68,7 +64,7 @@
     </div>
   {/if}
   <p class="small muted">
-    <strong>Default</strong> follows the address: on for a public one, off otherwise. <strong>On</strong> answers a query only when it carries a
+    <strong>Default</strong> follows the address: on for a public one, off otherwise. A listener that binds every address is on when this host has a public IPv4 address, and off when it has only private IPv4 addresses (a global IPv6 address alone does not turn it on). <strong>On</strong> answers a query only when it carries a
     known device key, from any address. <strong>Off</strong> leaves the listener to the allowed networks alone.
   </p>
   <div class="table-wrap">
@@ -95,9 +91,9 @@
                     becomes {resulting(l) ? 'on' : 'off'}
                   </span>
                 {/if}
-                {#if choice[l.listener] === 'off' && l.publicAddress}
+                {#if choice[l.listener] === 'off' && l.publicExposure}
                   <div class="notice warn small" data-testid="listener-gate-open-warning">
-                    This listener is on a public address. With the device key off, only the allowed networks keep it from being an open resolver for the whole internet.
+                    This listener is on a public address, or binds every address on a host with a public IPv4 address. With the device key off, only the allowed networks keep it from being an open resolver for the whole internet.
                   </div>
                 {/if}
               {:else}

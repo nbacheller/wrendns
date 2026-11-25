@@ -35,13 +35,17 @@ impl Report<'_> {
 }
 
 /// Returns warnings; pushes errors.
-pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<String> {
+pub(crate) fn validate(
+    cfg: &Config,
+    host: crate::gate::HostFacts,
+    errors: &mut Vec<ConfigError>,
+) -> Vec<String> {
     let mut r = Report {
         errors,
         warnings: Vec::new(),
     };
     node(cfg, &mut r);
-    listeners(cfg, &mut r);
+    listeners(cfg, host, &mut r);
     let upstreams = upstreams(cfg, &mut r);
     let groups = groups(cfg, &upstreams, &mut r);
     routes(cfg, &groups, &mut r);
@@ -1723,7 +1727,7 @@ fn node(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
-fn listeners(cfg: &Config, r: &mut Report<'_>) {
+fn listeners(cfg: &Config, host: crate::gate::HostFacts, r: &mut Report<'_>) {
     if cfg.listen.is_empty() {
         r.err("listen", "at least one listener is required");
     }
@@ -1769,37 +1773,10 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for dot, doh, doh3, and doq listeners (a plain udp or tcp query carries no client ID)",
             );
         }
-        // REQ: DNS-901 (T36.2, ADR-1090 point 1, spec/08 §6) — the startup check: a listener
-        // that is not gated and is bound outside `[access] allowed_networks` is protected only
-        // by `allowed_networks`. A wildcard bind is not warned about here (ADR-1090 point 1; the
-        // node logs a line for an encrypted one at bind). udp and tcp cannot be gated: their text names no flag.
-        if !l.gated() {
-            let outside = !l.addr.ip().is_unspecified()
-                && !cfg
-                    .access
-                    .allowed_networks
-                    .iter()
-                    .any(|n| n.contains(l.addr.ip().to_canonical()));
-            if !l.proto.needs_tls() {
-                if outside {
-                    r.warn(format!(
-                        "{p}: {:?} listener on address {} outside [access] allowed_networks; only allowed_networks keeps it from being an open resolver (udp and tcp cannot carry a device key)",
-                        l.proto,
-                        l.addr.ip()
-                    ));
-                }
-            } else if outside {
-                r.warn(format!(
-                    "{p}: {:?} listener on address {} with require_client_id = {}; only [access] allowed_networks keeps it from being an open resolver",
-                    l.proto,
-                    l.addr.ip(),
-                    if l.require_client_id == Some(false) {
-                        "false"
-                    } else {
-                        "unset"
-                    }
-                ));
-            }
+        // REQ: DNS-901 (T36.2, ADR-1090 points 1 and 2, spec/08 §6) — the startup check: see
+        // `gate::listener_warnings` (the node runs the same function on the effective settings).
+        for w in crate::gate::listener_warnings(cfg, l, host, &p) {
+            r.warn(w);
         }
         if l.proto == crate::ListenProto::Udp {
             if l.max_connections.is_some() {
@@ -3053,7 +3030,10 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
 /// other).
 #[must_use]
 pub fn addrs_clash(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
-    a.port() == b.port() && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
+    a.port() == b.port()
+        && (a.ip() == b.ip()
+            || crate::gate::is_wildcard(a.ip())
+            || crate::gate::is_wildcard(b.ip()))
 }
 
 #[cfg(test)]

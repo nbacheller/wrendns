@@ -84,10 +84,13 @@ pub(crate) fn discovery_reasons(
 /// REQ: DNS-901 (ADR-1090 point 1) — listeners that are gated only because `require_client_id` is
 /// unset on a public address: degraded (DNS answers, but clients without a key are refused)
 /// until the configuration sets the flag, to `true` to keep it or `false` to open the listener.
-pub(crate) fn gate_default_reasons(listen: &[wrendns_config::Listener]) -> Vec<HealthReason> {
+pub(crate) fn gate_default_reasons(
+    listen: &[wrendns_config::Listener],
+    host: wrendns_config::HostFacts,
+) -> Vec<HealthReason> {
     let names: Vec<String> = listen
         .iter()
-        .filter(|l| l.gated_by_default())
+        .filter(|l| l.gated_by_default(host))
         .map(|l| format!("{:?}://{}", l.proto, l.addr).to_lowercase())
         .collect();
     if names.is_empty() {
@@ -97,9 +100,48 @@ pub(crate) fn gate_default_reasons(listen: &[wrendns_config::Listener]) -> Vec<H
         DEGRADED,
         "listener_gate_default",
         format!(
-            "{} refuse{} queries without a known device key, because require_client_id is not set and the address is public. Set it to true to keep this, or false to open the listener",
+            "{} refuse{} queries without a known device key, because require_client_id is not set and the default is on (a public address, or a wildcard bind on a host with a public IPv4 address). Set it to true to keep this, or false to open the listener",
             names.join(", "),
             if names.len() == 1 { "s" } else { "" }
+        ),
+        "#/settings?tab=system",
+    )]
+}
+
+/// REQ: DNS-901 (ADR-1090 point 2) — the host gained or lost a public IPv4 address since the
+/// listeners were bound, and a wildcard encrypted listener with no setting would now resolve its
+/// default the other way. Degraded until the next reload (or restart) applies it. `changed` is
+/// `(facts the listeners were bound with, facts now)`.
+pub(crate) fn gate_stale_reasons(
+    listen: &[wrendns_config::Listener],
+    changed: Option<(wrendns_config::HostFacts, wrendns_config::HostFacts)>,
+) -> Vec<HealthReason> {
+    let Some((bound, now)) = changed else {
+        return Vec::new();
+    };
+    let names: Vec<String> = listen
+        .iter()
+        .filter(|l| l.require_client_id.is_none() && l.proto.needs_tls())
+        .filter(|l| l.default_gate(bound).on() != l.default_gate(now).on())
+        .map(|l| format!("{:?}://{}", l.proto, l.addr).to_lowercase())
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    vec![reason(
+        DEGRADED,
+        "listener_gate_stale",
+        format!(
+            "this host's addresses changed since the listeners were bound, so the default device key setting of {} would now be {}. Reload the configuration (SIGHUP) to apply it, or set require_client_id to true or false",
+            names.join(", "),
+            if listen
+                .iter()
+                .any(|l| l.require_client_id.is_none() && l.default_gate(now).on())
+            {
+                "on"
+            } else {
+                "off"
+            }
         ),
         "#/settings?tab=system",
     )]
@@ -742,6 +784,46 @@ mod tests {
     use super::*;
     use wrendns_api::model::FailureKinds;
 
+    /// REQ: DNS-901 (ADR-1090 point 2) — a change of the host's public IPv4 address since bind
+    /// raises a reason only for a wildcard listener whose default would flip.
+    #[test]
+    fn dns_901_gate_stale_reason_when_the_host_addresses_changed() {
+        let l = |addr: &str, flag: Option<bool>| wrendns_config::Listener {
+            proto: wrendns_config::ListenProto::Dot,
+            addr: addr.parse().unwrap(),
+            path: None,
+            tls: None,
+            proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
+            require_client_id: flag,
+        };
+        let no = wrendns_config::HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: false,
+        };
+        let yes = wrendns_config::HostFacts {
+            public_ipv4: Some(true),
+            global_ipv6: false,
+        };
+        assert!(gate_stale_reasons(&[l("0.0.0.0:853", None)], None).is_empty());
+        let r = gate_stale_reasons(&[l("0.0.0.0:853", None)], Some((no, yes)));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "listener_gate_stale");
+        // An explicit setting, a private address and a public address do not flip.
+        assert!(
+            gate_stale_reasons(
+                &[
+                    l("0.0.0.0:853", Some(false)),
+                    l("192.168.1.2:853", None),
+                    l("203.0.113.5:853", None)
+                ],
+                Some((no, yes))
+            )
+            .is_empty()
+        );
+    }
+
     /// REQ: DNS-901 — only a listener gated by the default (unset, public) raises the notice;
     /// an explicit setting acknowledges it.
     #[test]
@@ -756,17 +838,39 @@ mod tests {
             max_connections_per_address: None,
             require_client_id: flag,
         };
+        let private = wrendns_config::HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: false,
+        };
+        let public = wrendns_config::HostFacts {
+            public_ipv4: Some(true),
+            global_ipv6: false,
+        };
         assert!(
-            gate_default_reasons(&[l("192.168.1.2:853", None), l("0.0.0.0:853", None)]).is_empty()
-        );
-        assert!(
-            gate_default_reasons(&[
-                l("203.0.113.5:853", Some(true)),
-                l("203.0.113.5:854", Some(false))
-            ])
+            gate_default_reasons(
+                &[l("192.168.1.2:853", None), l("0.0.0.0:853", None)],
+                private
+            )
             .is_empty()
         );
-        let r = gate_default_reasons(&[l("203.0.113.5:853", None)]);
+        // A wildcard bind on a host with a public IPv4 address is gated by default: a notice.
+        let w = gate_default_reasons(&[l("0.0.0.0:853", None)], public);
+        assert_eq!(w.len(), 1, "wildcard with a public IPv4 address");
+        assert!(
+            gate_default_reasons(&[l("[::ffff:0.0.0.0]:853", None)], public).len() == 1,
+            "mapped wildcard"
+        );
+        assert!(
+            gate_default_reasons(
+                &[
+                    l("203.0.113.5:853", Some(true)),
+                    l("203.0.113.5:854", Some(false))
+                ],
+                private
+            )
+            .is_empty()
+        );
+        let r = gate_default_reasons(&[l("203.0.113.5:853", None)], private);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].code, "listener_gate_default");
         assert!(

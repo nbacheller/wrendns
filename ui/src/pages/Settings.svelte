@@ -945,10 +945,10 @@
                   </td>
                   <td class="small">
                     {#if l.gatedByDefault}
-                      Refuses queries without a known device key because <code>require_client_id</code> is not set and the address is public (new in 1.1.0). Set it to <code>true</code> to keep this, or <code>false</code> to open the listener.
+                      Refuses queries without a known device key because <code>require_client_id</code> is not set and the default is {l.defaultReason} (new in 1.1.0). Set it to <code>true</code> to keep this, or <code>false</code> to open the listener.
                     {:else if l.requireClientId}
                       Answers only a known device key, from any address.
-                    {:else if l.publicAddress && l.canCarryKey}
+                    {:else if l.publicExposure && l.canCarryKey}
                       <span class="badge warn" data-testid="listener-open-warning">public address</span>
                       <code>require_client_id</code> is off here, so only the allowed networks keep this listener from being an open resolver.
                     {:else if l.publicAddress}
@@ -956,7 +956,7 @@
                       Only the allowed networks keep this listener from being an open resolver. A plain UDP or TCP query carries no device key, so use DoT, DoH, DoH3 or DoQ for devices away from home.
                     {:else if l.wildcardBind && l.canCarryKey && l.setting === 'unset'}
                       <span class="badge warn" data-testid="listener-wildcard-notice">every address</span>
-                      Binds every address, so it cannot be known to be private and the device key is not on by default. If it is reachable from the internet, set <code>require_client_id = true</code>.
+                      The device key is {l.defaultReason}. If it is reachable from the internet (an address added later, IPv6, a forwarded port), set <code>require_client_id = true</code>.
                     {/if}
                   </td>
                 </tr>
@@ -964,7 +964,7 @@
             </tbody>
           </table>
         </div>
-        <p class="muted small">Unset, <code>require_client_id</code> is on for a public address and off otherwise; turning it on for a listener your LAN uses refuses the devices that carry no key. In the configuration file it is <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), and a reload applies it.</p>
+        <p class="muted small">Unset, <code>require_client_id</code> is on for a public address and off otherwise, and for a listener that binds every address it is on when this host has a public IPv4 address (a change of the host's addresses is picked up at the next reload); turning it on for a listener your LAN uses refuses the devices that carry no key. In the configuration file it is <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), and a reload applies it.</p>
         {#if can('admin')}
           <!-- REQ: DNS-901, API-902 (T27.14) — the gate's three states, changed through the guarded framework. -->
           <ListenerGate rows={info.listenerAccess} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />

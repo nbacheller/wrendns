@@ -816,6 +816,7 @@ impl Backend for ApiBackend {
             .as_ref()
             .and_then(|f| f.matcher.snapshot().cloned());
         let node = crate::http::node_name(&cfg);
+        let host = crate::gate_host::facts();
         let started_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_micros())
@@ -845,16 +846,19 @@ impl Backend for ApiBackend {
                 .iter()
                 .map(|l| wrendns_api::model::ListenerAccess {
                     listener: format!("{}://{}", label(&l.proto), l.addr),
-                    require_client_id: l.gated(),
+                    require_client_id: l.gated(host),
                     setting: match l.require_client_id {
                         None => "unset",
                         Some(true) => "true",
                         Some(false) => "false",
                     }
                     .to_owned(),
-                    gated_by_default: l.gated_by_default(),
+                    gated_by_default: l.gated_by_default(host),
                     public_address: wrendns_config::is_public_address(l.addr.ip()),
-                    wildcard_bind: l.addr.ip().is_unspecified(),
+                    wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
+                    default_on: l.default_gate(host).on(),
+                    default_reason: l.default_gate(host).describe().to_owned(),
+                    public_exposure: l.default_gate(host).public_exposure(),
                     can_carry_key: l.proto.needs_tls(),
                 })
                 .collect(),
@@ -2885,6 +2889,13 @@ impl Backend for ApiBackend {
         // without a key after an upgrade: shown until the file sets the flag (true or false).
         reasons.extend(crate::health::gate_default_reasons(
             &self.src.config.load().listen,
+            crate::gate_host::facts(),
+        ));
+        // REQ: DNS-901 (ADR-1090 point 2) — the host's addresses changed since the listeners were
+        // bound: a wildcard listener's default would now resolve differently.
+        reasons.extend(crate::health::gate_stale_reasons(
+            &self.src.config.load().listen,
+            crate::gate_host::changed_since_bind(),
         ));
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).

@@ -36,6 +36,7 @@ mod federated;
 #[cfg(test)]
 mod federated_wedge_tests;
 mod forward;
+mod gate_host;
 mod geoip;
 mod gitsource;
 mod group_sources;
@@ -2072,7 +2073,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             if !no_env {
                 loader = loader.process_env();
             }
-            match loader.load() {
+            match loader.host_facts(gate_host::read()).load() {
                 Ok(cfg) => {
                     for w in &cfg.warnings {
                         eprintln!("warning: {w}");

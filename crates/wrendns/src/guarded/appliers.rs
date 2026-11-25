@@ -139,6 +139,9 @@ impl Applier for HttpRedirect {
 /// `null` (the default: on for a public address, off otherwise), `true` or `false`. The value names
 /// every listener this node runs and no other; a plain UDP or TCP listener can't carry a key, so its
 /// setting is always `null`. `immediate`: it binds nothing and moves no address.
+///
+/// What the default resolves to is `wrendns_config::default_gate`, with the host's address facts
+/// (`crate::gate_host`): the same function the bind, the probes, the API and the health report use.
 pub(crate) struct ListenAccess;
 
 /// One listener's line in a `listen-access` value.
@@ -231,17 +234,6 @@ impl ListenAccess {
         }
         Ok(out)
     }
-
-    /// What the default resolves to for this listener, and why.
-    fn default_word(l: &wrendns_config::Listener) -> &'static str {
-        if wrendns_config::is_public_address(l.addr.ip()) {
-            "on, because the address is public"
-        } else if l.addr.ip().is_unspecified() {
-            "off: the listener binds every address, which can't be known to be private"
-        } else {
-            "off, because the address is not public"
-        }
-    }
 }
 
 impl Applier for ListenAccess {
@@ -256,6 +248,7 @@ impl Applier for ListenAccess {
     #[allow(clippy::too_many_lines)] // one ordered list of checks
     fn check(&self, cx: &CheckCx<'_>) -> Result<Checked, Problem> {
         let lines = Self::lines(cx.value)?;
+        let host = crate::gate_host::facts();
         let bad = |why: String| Problem::new(Code::InvalidConfig, format!("`listeners`: {why}"));
         // Exactly the listeners this node runs: the setting is per listener, nothing is added or
         // removed here (the listeners themselves are the `listen` setting's).
@@ -303,8 +296,14 @@ impl Applier for ListenAccess {
             if line.setting == l.require_client_id {
                 continue;
             }
-            let (now, public) = (l.gated(), wrendns_config::is_public_address(l.addr.ip()));
-            let after = l.proto.needs_tls() && line.setting.unwrap_or(public);
+            let d = l.default_gate(host);
+            let (now, public) = (l.gated(host), d.public_exposure());
+            let after = wrendns_config::gate::effective_gate(
+                l.proto.needs_tls(),
+                line.setting,
+                l.addr.ip(),
+                host,
+            );
             changes.push(format!(
                 "{}: {} ({}) becomes {} ({})",
                 line.name(),
@@ -330,9 +329,9 @@ impl Applier for ListenAccess {
                     line.name()
                 ));
             }
-            if line.setting.is_none() && l.addr.ip().is_unspecified() {
+            if line.setting.is_none() && wrendns_config::is_wildcard(l.addr.ip()) && !d.on() {
                 warnings.push(format!(
-                    "{} binds every address, so the default is off. If it is reachable from the internet, set it on.",
+                    "{} binds every address and this host has no public IPv4 address, so the default is off. If it is reachable from the internet (an address added later, IPv6, a forwarded port), set it on.",
                     line.name()
                 ));
             }
@@ -347,7 +346,7 @@ impl Applier for ListenAccess {
                     "{}://{}: the default is {}",
                     proto_word(l.proto),
                     l.addr,
-                    Self::default_word(l)
+                    l.default_gate(host).describe()
                 )
             })
             .collect();
@@ -365,9 +364,14 @@ impl Applier for ListenAccess {
             effect.push_str(&defaults.join("; "));
             effect.push('.');
         }
+        // REQ: DNS-901 — a gate that was on and is off afterwards, judged with the host's facts (the
+        // row's own `weakens` cannot see them).
+        let weakening =
+            wrendns_config::guarded::listen_gate_weakened(&self.current(cx.cfg), cx.value, host);
         Ok(Checked {
             effect,
             warnings,
+            weakening,
             ..Checked::default()
         })
     }
@@ -737,14 +741,32 @@ pub(crate) mod listen_access_tests {
         ]})
     }
 
+    /// A host with private IPv4 addresses only, unless a test says otherwise.
     fn check(cfg: &Config, v: &Value) -> Result<Checked, Problem> {
-        let (options, c) = (Value::Null, caller());
-        ListenAccess.check(&CheckCx {
+        check_on(
+            wrendns_config::HostFacts {
+                public_ipv4: Some(false),
+                global_ipv6: false,
+            },
             cfg,
-            node: "pi-a",
-            value: v,
-            options: &options,
-            caller: &c,
+            v,
+        )
+    }
+
+    fn check_on(
+        host: wrendns_config::HostFacts,
+        cfg: &Config,
+        v: &Value,
+    ) -> Result<Checked, Problem> {
+        let (options, c) = (Value::Null, caller());
+        crate::gate_host::with_facts(host, || {
+            ListenAccess.check(&CheckCx {
+                cfg,
+                node: "pi-a",
+                value: v,
+                options: &options,
+                caller: &c,
+            })
         })
     }
 
@@ -763,7 +785,12 @@ pub(crate) mod listen_access_tests {
         assert!(ok.effect.contains("Changes no listener"), "{}", ok.effect);
         assert!(ok.effect.contains("because the address is public"));
         assert!(ok.effect.contains("because the address is not public"));
-        assert!(ok.effect.contains("binds every address"));
+        assert!(
+            ok.effect
+                .contains("binds every address and this host has no public IPv4 address"),
+            "{}",
+            ok.effect
+        );
         assert_eq!(ok.warnings, Vec::<String>::new());
     }
 
@@ -772,8 +799,6 @@ pub(crate) mod listen_access_tests {
     #[test]
     fn dns_901_listen_access_off_on_public_warns_and_weakens() {
         let c = cfg();
-        let cur = ListenAccess.current(&c);
-        let weakens = guarded::row(guarded::LISTEN_ACCESS).unwrap().weakens;
         let off = value(json!(false), Value::Null, Value::Null);
         let r = check(&c, &off).unwrap();
         assert!(
@@ -782,18 +807,68 @@ pub(crate) mod listen_access_tests {
             r.warnings
         );
         assert!(r.effect.contains("dot://203.0.113.5:853"));
-        assert!(weakens(&cur, &off));
+        assert!(r.weakening);
         // On for a LAN listener: not a weakening, but a warning that keyless devices are refused.
         let on = value(Value::Null, json!(true), Value::Null);
         let r = check(&c, &on).unwrap();
         assert!(r.warnings.iter().any(|w| w.contains("refuse every query")));
-        assert!(!weakens(&cur, &on));
+        assert!(!r.weakening);
         // A wildcard bind put back to the default says why that is off.
         let mut c2 = cfg();
         c2.listen[2].require_client_id = Some(true);
         let back = value(Value::Null, Value::Null, Value::Null);
         let r = check(&c2, &back).unwrap();
         assert!(r.warnings.iter().any(|w| w.contains("binds every address")));
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 2) — the wildcard listener's default follows the host: on with
+    // a public IPv4 address (or an unreadable interface list), off with private IPv4 only; the
+    // review says why, and turning the gate off then is a weakening with the open-resolver warning.
+    #[test]
+    fn dns_901_listen_access_wildcard_follows_the_host() {
+        use wrendns_config::HostFacts;
+        let public = HostFacts {
+            public_ipv4: Some(true),
+            global_ipv6: false,
+        };
+        let c = cfg();
+        let cur = ListenAccess.current(&c);
+        let off = value(Value::Null, Value::Null, json!(false));
+        let r = check_on(public, &c, &off).unwrap();
+        assert!(r.weakening, "wildcard gated by the default, then off");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("open resolver")),
+            "{:?}",
+            r.warnings
+        );
+        let same = check_on(public, &c, &cur).unwrap();
+        assert!(
+            same.effect.contains("this host has a public IPv4 address"),
+            "{}",
+            same.effect
+        );
+        for facts in [
+            HostFacts::UNKNOWN,
+            HostFacts {
+                public_ipv4: Some(true),
+                global_ipv6: true,
+            },
+        ] {
+            assert!(check_on(facts, &c, &off).unwrap().weakening);
+        }
+        let private = HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: true,
+        };
+        let r = check_on(private, &c, &off).unwrap();
+        assert!(!r.weakening, "a wildcard that was never gated");
+        let none = check_on(private, &c, &cur).unwrap();
+        assert!(
+            none.effect
+                .contains("global IPv6 address, which does not turn the default on"),
+            "{}",
+            none.effect
+        );
     }
 
     // REQ: DNS-901 — what is refused: a listener the node doesn't run, a missing one, a key on a
@@ -863,7 +938,7 @@ pub(crate) mod listen_access_tests {
         assert_eq!(c.listen[1].require_client_id, Some(true));
         assert_eq!(c.listen[2].require_client_id, None);
         assert!(
-            !c.listen[0].gated(),
+            !c.listen[0].gated(wrendns_config::HostFacts::UNKNOWN),
             "an explicit false opens a public listener"
         );
         let mut udp = value(Value::Null, Value::Null, Value::Null);

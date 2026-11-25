@@ -27386,6 +27386,9 @@
           "gatedByDefault",
           "publicAddress",
           "wildcardBind",
+          "defaultOn",
+          "defaultReason",
+          "publicExposure",
           "canCarryKey"
         ],
         "properties": {
@@ -27393,9 +27396,17 @@
             "type": "boolean",
             "description": "The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`)."
           },
+          "defaultOn": {
+            "type": "boolean",
+            "description": "What the unset setting resolves to for this listener on this host: on for a public address,\nand for a wildcard bind when the host holds a public IPv4 address (or its interface list\ncould not be read); off otherwise."
+          },
+          "defaultReason": {
+            "type": "string",
+            "description": "The default and why, as a sentence (\"on, because it binds every address and this host has a\npublic IPv4 address\"); names the wildcard rule when it applies."
+          },
           "gatedByDefault": {
             "type": "boolean",
-            "description": "On only because the setting is unset and the address is public."
+            "description": "On only because the setting is unset and the default is on (a public address, or a wildcard bind\non a host with a public IPv4 address)."
           },
           "listener": {
             "type": "string",
@@ -27404,6 +27415,10 @@
           "publicAddress": {
             "type": "boolean",
             "description": "Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a\nwildcard bind is not public)."
+          },
+          "publicExposure": {
+            "type": "boolean",
+            "description": "A public address reaches this listener (or might: fail closed), so turning the device key off\nopens it to the internet."
           },
           "requireClientId": {
             "type": "boolean",
@@ -27415,7 +27430,7 @@
           },
           "wildcardBind": {
             "type": "boolean",
-            "description": "Bound to every address (`0.0.0.0` or `::`): not known to be private."
+            "description": "Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`)."
           }
         }
       },
