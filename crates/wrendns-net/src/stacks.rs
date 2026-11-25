@@ -260,7 +260,16 @@ mod tests {
         let start =
             blocked_in_known_function as fn(&mpsc::Sender<()>, &mpsc::Receiver<()>) as usize;
         for round in 0..2 {
-            let stacks = capture(Duration::from_secs(3));
+            // The kernel's listing of `/proc/self/task` can miss a thread while other threads
+            // of the test binary start and exit: ask again, a few times, before failing.
+            let mut stacks = capture(Duration::from_secs(3));
+            for _ in 0..5 {
+                if stacks.iter().any(|s| s.name == "stack-test") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                stacks = capture(Duration::from_secs(3));
+            }
             let mine = stacks
                 .iter()
                 .find(|s| s.name == "stack-test")
