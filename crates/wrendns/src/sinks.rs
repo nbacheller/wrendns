@@ -899,16 +899,18 @@ fn syslog_writer(
                 warned = true;
             }
             if ctl.stopping() {
+                // Stopped with the collector away: this event and everything still queued is
+                // counted without touching the network again (one try only, like the webhook
+                // writer), so the stop ends within RETIRE_WAIT whatever the buffer holds.
                 dropped.fetch_add(1, Ordering::Relaxed);
+                while rx.try_recv().is_ok() {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                }
                 break;
             }
             nap(wait, ctl);
             wait = (wait * 2).min(SYSLOG_BACKOFF_MAX);
         }
-    }
-    // Told to stop with the collector away: what is still queued can't be sent.
-    while rx.try_recv().is_ok() {
-        dropped.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1443,5 +1445,38 @@ max_buffer = 10
         ctl.stop_now();
         th.join().unwrap();
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
+    }
+
+    /// REQ: OBS-010 (issue 105) — a full buffer with the collector away: the stop counts every
+    /// queued event as dropped without a connect attempt per event, and ends within
+    /// `RETIRE_WAIT`.
+    #[test]
+    fn obs_010_syslog_tcp_full_buffer_stop_is_bounded() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap();
+        drop(free);
+        let c: SinkConfig = toml::from_str(&format!(
+            "name = \"sl\"
+type = \"syslog\"
+address = \"tcp://{addr}\"
+max_buffer = 10000
+"
+        ))
+        .unwrap();
+        let (tx, rx) = sync_channel::<String>(10_000);
+        let ctl = Arc::new(Control::default());
+        let dropped = Arc::new(AtomicU64::new(0));
+        for _ in 0..10_000 {
+            tx.send("t	0	{}".to_owned()).unwrap();
+        }
+        let (c2, ctl2, d2) = (c.clone(), Arc::clone(&ctl), Arc::clone(&dropped));
+        let th = std::thread::spawn(move || syslog_writer(&c2, &rx, "h", None, &ctl2, &d2));
+        std::thread::sleep(Duration::from_millis(300));
+        let t0 = Instant::now();
+        ctl.stop_now();
+        th.join().unwrap();
+        assert!(t0.elapsed() < RETIRE_WAIT);
+        assert_eq!(dropped.load(Ordering::Relaxed), 10_000);
+        drop(tx);
     }
 }
