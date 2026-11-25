@@ -72,6 +72,7 @@ All performance gates are measured with the harness in `09`.
 | `08-deployment-config-security.md` | Kubernetes/Helm, Pi/Linux, config model, security |
 | `13-agent-api-and-mcp.md` | Agent-ready API, MCP server, agent auth/guardrails, plan/apply |
 | `12-clustering-and-ha.md` | Cluster membership, config replication, failover/fencing, federated telemetry, single management plane |
+| `14-cloud-protocol.md` | Draft for the owner's review: the tunnel protocol between a node and WrenDNS Cloud (transport, hello, heartbeats, streams, limits, security, open questions) |
 | `09-testing-and-benchmarks.md` | Test strategy, conformance, comparative benchmark harness |
 | `10-roadmap-and-tasks.md` | Milestones and ordered task list with acceptance criteria |
 | `11-decisions.md` | Architecture Decision Records |
