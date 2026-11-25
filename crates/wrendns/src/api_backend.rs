@@ -845,13 +845,17 @@ impl Backend for ApiBackend {
                 .iter()
                 .map(|l| wrendns_api::model::ListenerAccess {
                     listener: format!("{}://{}", label(&l.proto), l.addr),
-                    require_client_id: l.require_client_id,
-                    public_address: !l.addr.ip().is_unspecified()
-                        && !cfg
-                            .access
-                            .allowed_networks
-                            .iter()
-                            .any(|n| n.contains(l.addr.ip())),
+                    require_client_id: l.gated(),
+                    setting: match l.require_client_id {
+                        None => "unset",
+                        Some(true) => "true",
+                        Some(false) => "false",
+                    }
+                    .to_owned(),
+                    gated_by_default: l.gated_by_default(),
+                    public_address: wrendns_config::is_public_address(l.addr.ip()),
+                    wildcard_bind: l.addr.ip().is_unspecified(),
+                    can_carry_key: l.proto.needs_tls(),
                 })
                 .collect(),
             query_log: self.src.qlog.is_some(),
@@ -2877,6 +2881,11 @@ impl Backend for ApiBackend {
         reasons.extend(crate::guarded::health_reasons());
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
+        // REQ: DNS-901 (ADR-1090 point 1) — a listener gated only by the default refuses clients
+        // without a key after an upgrade: shown until the file sets the flag (true or false).
+        reasons.extend(crate::health::gate_default_reasons(
+            &self.src.config.load().listen,
+        ));
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
         let mut maintenance = Vec::new();

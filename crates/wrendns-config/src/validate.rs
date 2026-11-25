@@ -1761,29 +1761,45 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for tcp, dot, and doh listeners",
             );
         }
-        // REQ: DNS-901 (T36.2) — the known-ID gate needs a place to carry the key.
-        if l.require_client_id && !l.proto.needs_tls() {
+        // REQ: DNS-901 (T36.2) — the known-ID gate needs a place to carry the key. Only `true` is
+        // an error there: `false` and unset leave a udp or tcp listener as it is.
+        if l.require_client_id == Some(true) && !l.proto.needs_tls() {
             r.err(
                 format!("{p}.require_client_id"),
                 "only valid for dot, doh, doh3, and doq listeners (a plain udp or tcp query carries no client ID)",
             );
         }
-        // REQ: DNS-901 (T36.2, spec/08 §6) — the startup check: a listener bound to a public
-        // address (outside `[access] allowed_networks`, not a wildcard bind) without the gate is
-        // protected only by `allowed_networks`.
-        if !l.require_client_id
-            && !l.addr.ip().is_unspecified()
-            && !cfg
-                .access
-                .allowed_networks
-                .iter()
-                .any(|n| n.contains(l.addr.ip().to_canonical()))
-        {
-            r.warn(format!(
-                "{p}: {:?} listener on public address {} without require_client_id; only [access] allowed_networks keeps it from being an open resolver",
-                l.proto,
-                l.addr.ip()
-            ));
+        // REQ: DNS-901 (T36.2, ADR-1090 point 1, spec/08 §6) — the startup check: a listener
+        // that is not gated and is bound outside `[access] allowed_networks` is protected only
+        // by `allowed_networks`. A wildcard bind is not warned about here (ADR-1090 point 1; the
+        // node logs a line for an encrypted one at bind). udp and tcp cannot be gated: their text names no flag.
+        if !l.gated() {
+            let outside = !l.addr.ip().is_unspecified()
+                && !cfg
+                    .access
+                    .allowed_networks
+                    .iter()
+                    .any(|n| n.contains(l.addr.ip().to_canonical()));
+            if !l.proto.needs_tls() {
+                if outside {
+                    r.warn(format!(
+                        "{p}: {:?} listener on address {} outside [access] allowed_networks; only allowed_networks keeps it from being an open resolver (udp and tcp cannot carry a device key)",
+                        l.proto,
+                        l.addr.ip()
+                    ));
+                }
+            } else if outside {
+                r.warn(format!(
+                    "{p}: {:?} listener on address {} with require_client_id = {}; only [access] allowed_networks keeps it from being an open resolver",
+                    l.proto,
+                    l.addr.ip(),
+                    if l.require_client_id == Some(false) {
+                        "false"
+                    } else {
+                        "unset"
+                    }
+                ));
+            }
         }
         if l.proto == crate::ListenProto::Udp {
             if l.max_connections.is_some() {

@@ -554,10 +554,13 @@ test('dns_901 listener access warns about a public listener without a device key
   await page.route('**/api/v1/system/info', async (route) => {
     const res = await route.fetch();
     const info = await res.json();
+    const base = { gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'unset' };
     info.listenerAccess = [
-      { listener: 'dot://203.0.113.5:853', requireClientId: false, publicAddress: true },
-      { listener: 'doh://203.0.113.5:443', requireClientId: true, publicAddress: true },
-      { listener: 'udp://192.168.1.2:53', requireClientId: false, publicAddress: false },
+      { ...base, listener: 'dot://203.0.113.5:853', requireClientId: false, publicAddress: true, setting: 'false' },
+      { ...base, listener: 'doh://203.0.113.5:443', requireClientId: true, publicAddress: true, setting: 'true' },
+      { ...base, listener: 'udp://192.168.1.2:53', requireClientId: false, publicAddress: false, canCarryKey: false },
+      { ...base, listener: 'doq://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: true },
+      { ...base, listener: 'dot://0.0.0.0:853', requireClientId: false, publicAddress: false, wildcardBind: true },
     ];
     await route.fulfill({ response: res, json: info });
   });
@@ -565,7 +568,7 @@ test('dns_901 listener access warns about a public listener without a device key
   const card = page.getByTestId('listener-access');
   await expect(card).toContainText('Listener access');
   const rows = card.getByTestId('listener-access-row');
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(5);
   await expect(rows.nth(0)).toContainText('not required');
   await expect(rows.nth(0).getByTestId('listener-open-warning')).toContainText('public address');
   await expect(rows.nth(0)).toContainText('open resolver');
@@ -573,6 +576,9 @@ test('dns_901 listener access warns about a public listener without a device key
   await expect(rows.nth(1)).toContainText('Answers only a known device key');
   await expect(rows.nth(1).getByTestId('listener-open-warning')).toHaveCount(0);
   await expect(rows.nth(2).getByTestId('listener-open-warning')).toHaveCount(0);
+  await expect(rows.nth(3).getByTestId('listener-default-notice')).toContainText('on by default');
+  await expect(rows.nth(3)).toContainText('require_client_id');
+  await expect(rows.nth(4).getByTestId('listener-wildcard-notice')).toContainText('every address');
   await card.getByRole('button', { name: /help/i }).first().click();
   await expect(page.getByText('Device keys on a public listener').first()).toBeVisible();
   await page.unroute('**/api/v1/system/info');
@@ -4726,7 +4732,7 @@ test('clu_013 the cluster page shows the pin, the versions, and the bake', async
   await expect(banner.getByTestId('unpin')).toBeVisible();
 
   const rows = page.getByTestId('version-row');
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(5);
   await expect(rows.nth(1)).toContainText('failed');
   await rows.nth(2).getByTestId('pin-open').click();
   const form = page.getByTestId('pin-form');
@@ -5822,7 +5828,7 @@ test('flt_017 workloads', async () => {
   for (const ip of ['127.0.0.81', '127.0.0.82', '127.0.0.83']) await query('nas.e2e.test', 1, DNS_PORT, ip);
   await page.goto('/#/clients?tab=workloads');
   const rows = page.getByTestId('workload-row');
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(5);
   const jellyfin = rows.filter({ hasText: 'media/deploy/jellyfin' });
   await expect(jellyfin.getByTestId('group-from')).toHaveText('network group');
   await expect(rows.filter({ hasText: 'db/sts/postgres' }).getByTestId('group-from')).toHaveText('pod label');
@@ -5899,7 +5905,7 @@ test("clu_015 cluster page shows each member's secret state", async () => {
   await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
   await page.goto('/#/cluster?tab=nodes');
   const rows = page.getByTestId('cluster-node');
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(5);
   await expect(rows.nth(0).getByTestId('cluster-node-secrets-state')).toHaveText('primary');
   await expect(rows.nth(0).getByTestId('cluster-node-secrets')).toContainText('head 2.14 · applied 2.14');
   await expect(rows.nth(1).getByTestId('cluster-node-secrets-state')).toHaveText('in sync');
@@ -5938,7 +5944,7 @@ test('clu_004 primary unreachable shows on the cluster page', async () => {
   await page.goto('/#/alerts');
   await page.goto('/#/cluster?tab=nodes');
   const rows = page.getByTestId('cluster-node');
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(5);
   const silent = rows.nth(1).getByTestId('cluster-node-primary-silent');
   await expect(silent).toContainText('no contact with the primary');
   await expect(silent).toContainText('for 1m');

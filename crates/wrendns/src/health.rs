@@ -81,6 +81,30 @@ pub(crate) fn discovery_reasons(
     out
 }
 
+/// REQ: DNS-901 (ADR-1090 point 1) — listeners that are gated only because `require_client_id` is
+/// unset on a public address: degraded (DNS answers, but clients without a key are refused)
+/// until the configuration sets the flag, to `true` to keep it or `false` to open the listener.
+pub(crate) fn gate_default_reasons(listen: &[wrendns_config::Listener]) -> Vec<HealthReason> {
+    let names: Vec<String> = listen
+        .iter()
+        .filter(|l| l.gated_by_default())
+        .map(|l| format!("{:?}://{}", l.proto, l.addr).to_lowercase())
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    vec![reason(
+        DEGRADED,
+        "listener_gate_default",
+        format!(
+            "{} refuse{} queries without a known device key, because require_client_id is not set and the address is public. Set it to true to keep this, or false to open the listener",
+            names.join(", "),
+            if names.len() == 1 { "s" } else { "" }
+        ),
+        "#/settings?tab=system",
+    )]
+}
+
 /// REQ: DSC-906 (T31.2, ADR-1005 section 13) — the CMDB dropping things at a cap, or failing to write, is
 /// degraded. It never makes DNS unhealthy: the CMDB is not on the query path (CLU-004).
 pub(crate) fn cmdb_reasons(s: &wrendns_api::cmdb_api::CmdbStatus) -> Vec<HealthReason> {
@@ -717,6 +741,40 @@ pub(crate) fn exclude_maintenance(
 mod tests {
     use super::*;
     use wrendns_api::model::FailureKinds;
+
+    /// REQ: DNS-901 — only a listener gated by the default (unset, public) raises the notice;
+    /// an explicit setting acknowledges it.
+    #[test]
+    fn dns_901_gate_default_is_a_health_reason_until_the_flag_is_set() {
+        let l = |addr: &str, flag: Option<bool>| wrendns_config::Listener {
+            proto: wrendns_config::ListenProto::Dot,
+            addr: addr.parse().unwrap(),
+            path: None,
+            tls: None,
+            proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
+            require_client_id: flag,
+        };
+        assert!(
+            gate_default_reasons(&[l("192.168.1.2:853", None), l("0.0.0.0:853", None)]).is_empty()
+        );
+        assert!(
+            gate_default_reasons(&[
+                l("203.0.113.5:853", Some(true)),
+                l("203.0.113.5:854", Some(false))
+            ])
+            .is_empty()
+        );
+        let r = gate_default_reasons(&[l("203.0.113.5:853", None)]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "listener_gate_default");
+        assert!(
+            r[0].summary.contains("dot://203.0.113.5:853"),
+            "{}",
+            r[0].summary
+        );
+    }
 
     fn up(name: &str, groups: &[&str], breaker: &str) -> UpstreamInfo {
         UpstreamInfo {

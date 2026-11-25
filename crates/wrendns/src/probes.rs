@@ -95,7 +95,7 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
             // has none: probing it would fail every round and count as the node's own traffic.
             skipped: if l.proxy_protocol {
                 Some("it requires a PROXY protocol header, which probes don't send")
-            } else if l.require_client_id {
+            } else if l.gated() {
                 Some("it answers only a known device key, which probes don't have")
             } else {
                 None

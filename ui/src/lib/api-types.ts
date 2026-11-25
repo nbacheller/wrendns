@@ -8330,7 +8330,8 @@ export interface components {
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
              *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
              *     `discovery_agent_failing`,
-             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
+             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,
+             *     `listener_gate_default`.
              * @example upstream_down
              */
             code: string;
@@ -9999,12 +10000,23 @@ export interface components {
         };
         /** @description REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate. */
         ListenerAccess: {
+            /** @description The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`). */
+            canCarryKey: boolean;
+            /** @description On only because the setting is unset and the address is public. */
+            gatedByDefault: boolean;
             /** @description The listener, as `proto://addr`. */
             listener: string;
-            /** @description Bound to an address outside `[access] allowed_networks` (a wildcard bind is not public). */
+            /**
+             * @description Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
+             *     wildcard bind is not public).
+             */
             publicAddress: boolean;
-            /** @description It answers only a query that carries a known device key (`require_client_id`). */
+            /** @description It answers only a query that carries a known device key (the effective `require_client_id`). */
             requireClientId: boolean;
+            /** @description What the file says: `unset`, `true` or `false`. */
+            setting: string;
+            /** @description Bound to every address (`0.0.0.0` or `::`): not known to be private. */
+            wildcardBind: boolean;
         };
         /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */
         ListsPruneRequest: {

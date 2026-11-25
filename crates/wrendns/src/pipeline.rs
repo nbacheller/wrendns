@@ -1008,7 +1008,7 @@ impl Pipeline {
             Err(early) => return early,
         };
         // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear (DoT, DoQ) is treated as leaked:
-        // public answers only, so no local, device, zone or CMDB record is answered.
+        // public answers only, so no local, device, zone or inventory record is answered.
         if !public_only(meta)
             && let Some(len) = self.local_answer(&q, &st.policy, ident, out)
         {

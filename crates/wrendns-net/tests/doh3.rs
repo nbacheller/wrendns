@@ -186,3 +186,68 @@ async fn dns_004_doh3_get_post_client_ids_and_errors() {
     );
     server.shutdown().await;
 }
+
+/// A handler that admits only the client ID `known` on a gated stream, and records `gated`.
+struct Gate {
+    known: &'static str,
+    handled: Arc<Mutex<Vec<bool>>>,
+}
+
+impl wrendns_net::QueryHandler for Gate {
+    fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
+        self.handled.lock().unwrap().push(meta.gated);
+        handler(Arc::default())(req, meta, out)
+    }
+
+    fn admit(&self, meta: &RequestMeta) -> bool {
+        !meta.gated || meta.client_id.is_some_and(|c| c.as_str() == self.known)
+    }
+}
+
+/// REQ: DNS-901 (T36.2) — a DoH3 listener built with `require_client_id` marks its requests gated
+/// and answers 404 for an unknown key before the resolver; one without it never marks them gated.
+#[tokio::test]
+async fn dns_901_doh3_listener_marks_its_requests_gated() {
+    for gated in [true, false] {
+        let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+        let handled = Arc::new(Mutex::new(Vec::new()));
+        let mut cfg = Doh3Config::new("127.0.0.1:0".parse().unwrap(), store);
+        cfg.require_client_id = gated;
+        let server = Doh3Server::bind(
+            &cfg,
+            Arc::new(Gate {
+                known: "knownkey",
+                handled: Arc::clone(&handled),
+            }),
+        )
+        .unwrap();
+        let mut send = connect(server.local_addr(), "dns.test").await;
+        let (st, _) = request(
+            &mut send,
+            "POST",
+            "/dns-query/knownkey",
+            Some("application/dns-message"),
+            Some(query()),
+        )
+        .await;
+        assert_eq!(st, 200);
+        assert_eq!(*handled.lock().unwrap(), vec![gated]);
+        if gated {
+            let (st, _) = request(
+                &mut send,
+                "POST",
+                "/dns-query/otherkey",
+                Some("application/dns-message"),
+                Some(query()),
+            )
+            .await;
+            assert_eq!(st, 404);
+            assert_eq!(
+                handled.lock().unwrap().len(),
+                1,
+                "never reached the resolver"
+            );
+        }
+        server.shutdown().await;
+    }
+}

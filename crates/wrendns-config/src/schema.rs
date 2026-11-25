@@ -499,13 +499,68 @@ pub struct Listener {
     /// DoQ server name. A key is at least 128 random bits (26 base32 characters) and must be
     /// the `id:` match key of a device in `[[client]]`. Unknown, revoked and missing keys are
     /// refused the same way (DoH 404; DoT and DoQ REFUSED with an extended error) and counted.
-    /// A known key is let in from any address, outside `[access] allowed_networks` too, so
-    /// turn it on only for a listener meant for devices away from home. Off by default.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub require_client_id: bool,
+    /// A known key is let in from any address, outside `[access] allowed_networks` too.
+    ///
+    /// REQ: DNS-901 (ADR-1090 point 1, owner decision 2026-11-25) — three states: unset means on
+    /// for a listener bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a wildcard bind is not public) and off otherwise;
+    /// `true` forces it on; `false` turns it off, which is allowed on a public address but logs
+    /// a startup warning and is shown in the web UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_client_id: Option<bool>,
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — whether a bind address is public, deliberately
+/// conservative: only an address known to be private is not. Loopback, RFC 1918, CGNAT
+/// (100.64.0.0/10), link-local (169.254.0.0/16, `fe80::/10`) and unique-local (`fc00::/7`) are not
+/// public; every other address is, including documentation ranges, multicast and 0.0.0.0/8.
+/// An IPv4-mapped IPv6 address is judged as its IPv4 address.
+///
+/// An unspecified bind (`0.0.0.0`, `::`) is NOT public here: ADR-1050 point 5 and spec/08 §6
+/// speak of a bind "on a public IP", and ADR-1090 point 1 does not warn about a wildcard bind,
+/// so the records do not make it public. It cannot be known to be private either, so a wildcard
+/// encrypted listener gets its own startup and web UI warning instead of the gate.
+#[must_use]
+pub fn is_public_address(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            if v4.is_unspecified() {
+                return false;
+            }
+            let o = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || (o[0] == 100 && (o[1] & 0xc0) == 0x40))
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_unspecified() {
+                return false;
+            }
+            let s = v6.segments()[0];
+            !(v6.is_loopback() || (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80)
+        }
+    }
 }
 
 impl Listener {
+    /// REQ: DNS-901 — whether this listener answers only a known device key: only `dot`, `doh`,
+    /// `doh3` and `doq` can carry one; an explicit setting wins, and unset means on for a public
+    /// bind address.
+    #[must_use]
+    pub fn gated(&self) -> bool {
+        self.proto.needs_tls()
+            && self
+                .require_client_id
+                .unwrap_or_else(|| is_public_address(self.addr.ip()))
+    }
+
+    /// REQ: DNS-901 — gated only because the setting is unset and the address is public (what an
+    /// upgrade changes for an existing configuration).
+    #[must_use]
+    pub fn gated_by_default(&self) -> bool {
+        self.require_client_id.is_none() && self.gated()
+    }
+
     fn plain(proto: ListenProto, addr: SocketAddr) -> Self {
         Self {
             proto,
@@ -515,7 +570,7 @@ impl Listener {
             proxy_protocol: false,
             max_connections: None,
             max_connections_per_address: None,
-            require_client_id: false,
+            require_client_id: None,
         }
     }
 }

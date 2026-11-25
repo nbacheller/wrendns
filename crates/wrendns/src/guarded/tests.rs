@@ -1613,7 +1613,7 @@ async fn api_902_failed_start_leaves_no_udp_workers_behind() {
         proxy_protocol: false,
         max_connections: None,
         max_connections_per_address: None,
-        require_client_id: false,
+        require_client_id: None,
     }];
     let r = Box::pin(crate::server::serve(Vec::new(), cfg)).await;
     let e = r.expect_err("the metrics listener can't bind");
@@ -1655,7 +1655,7 @@ async fn api_902_restart_exits_75_after_drain() {
         proxy_protocol: false,
         max_connections: None,
         max_connections_per_address: None,
-        require_client_id: false,
+        require_client_id: None,
     };
     cfg.listen = vec![plain(ListenProto::Udp), plain(ListenProto::Tcp)];
 

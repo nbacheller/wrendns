@@ -208,3 +208,43 @@ async fn dns_004_doq_nonzero_id_closes_the_connection() {
     );
     s.shutdown().await;
 }
+
+/// A handler that records the `gated` flag of every query it is asked.
+struct Gate {
+    handled: Arc<Mutex<Vec<bool>>>,
+}
+
+impl wrendns_net::QueryHandler for Gate {
+    fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
+        self.handled.lock().unwrap().push(meta.gated);
+        handler(Arc::default())(req, meta, out)
+    }
+}
+
+/// REQ: DNS-901 (T36.2) — a DoQ listener built with `require_client_id` marks every stream gated
+/// (the resolver then refuses an unknown key); one without it never marks a stream gated.
+#[tokio::test]
+async fn dns_901_doq_listener_marks_its_streams_gated() {
+    for gated in [true, false] {
+        let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+        let handled = Arc::new(Mutex::new(Vec::new()));
+        let mut cfg = DoqConfig::new("127.0.0.1:0".parse().unwrap(), store);
+        cfg.require_client_id = gated;
+        let s = DoqServer::bind(
+            &cfg,
+            Arc::new(Gate {
+                handled: Arc::clone(&handled),
+            }),
+        )
+        .unwrap();
+        let ep = client();
+        let conn = ep
+            .connect(s.local_addr(), "knownkey.dns.test")
+            .unwrap()
+            .await
+            .unwrap();
+        assert!(ask(&conn, 0).await.is_ok());
+        assert_eq!(*handled.lock().unwrap(), vec![gated]);
+        s.shutdown().await;
+    }
+}

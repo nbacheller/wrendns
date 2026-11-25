@@ -9,13 +9,23 @@ use utoipa::{IntoParams, ToSchema};
 /// REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // one flag per fact the UI shows
 pub struct ListenerAccess {
     /// The listener, as `proto://addr`.
     pub listener: String,
-    /// It answers only a query that carries a known device key (`require_client_id`).
+    /// It answers only a query that carries a known device key (the effective `require_client_id`).
     pub require_client_id: bool,
-    /// Bound to an address outside `[access] allowed_networks` (a wildcard bind is not public).
+    /// What the file says: `unset`, `true` or `false`.
+    pub setting: String,
+    /// On only because the setting is unset and the address is public.
+    pub gated_by_default: bool,
+    /// Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
+    /// wildcard bind is not public).
     pub public_address: bool,
+    /// Bound to every address (`0.0.0.0` or `::`): not known to be private.
+    pub wildcard_bind: bool,
+    /// The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`).
+    pub can_carry_key: bool,
 }
 
 /// Node and build information.
@@ -3481,7 +3491,8 @@ pub struct HealthReason {
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
     /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
     /// `discovery_agent_failing`,
-    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
+    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,
+    /// `listener_gate_default`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

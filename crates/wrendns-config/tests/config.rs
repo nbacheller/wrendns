@@ -2260,7 +2260,7 @@ fn dns_901_require_client_id_needs_an_encrypted_listener() {
             "[[listen]]\nproto = \"{proto}\"\naddr = \"203.0.113.5:853\"\nrequire_client_id = true\n{tls}\n"
         ))
         .unwrap();
-        assert!(l.config.listen[0].require_client_id, "{proto}");
+        assert_eq!(l.config.listen[0].require_client_id, Some(true), "{proto}");
         assert!(
             !l.warnings.iter().any(|w| w.contains("require_client_id")),
             "gated: no warning ({proto})"
@@ -2268,31 +2268,176 @@ fn dns_901_require_client_id_needs_an_encrypted_listener() {
     }
 }
 
-/// REQ: DNS-901 (T36.2, spec/08 §6) — the startup check: a listener on a public address without
-/// the gate is warned about; LAN, loopback and wildcard binds are not.
+/// REQ: DNS-901 (ADR-1090 point 1) — the startup check: an encrypted listener on a public
+/// address with the gate explicitly off is warned about; a gated one, a LAN, loopback or
+/// wildcard bind without a setting, and anything inside `allowed_networks` are not.
 #[test]
 fn dns_901_public_listener_without_the_gate_warns_at_startup() {
+    let tls = "tls = { cert = \"c.pem\", key = \"k.pem\" }";
     let warns = |addr: &str, extra: &str| {
         load_str(&format!(
-            "[[listen]]\nproto = \"udp\"\naddr = \"{addr}\"\n{extra}\n"
+            "[[listen]]
+proto = \"dot\"
+addr = \"{addr}\"
+{tls}
+{extra}
+"
         ))
         .unwrap()
         .warnings
         .into_iter()
-        .filter(|w| w.contains("require_client_id"))
+        .filter(|w| w.contains("open resolver"))
         .count()
     };
-    assert_eq!(warns("203.0.113.5:53", ""), 1);
-    assert_eq!(warns("[2001:db8::5]:53", ""), 1);
-    assert_eq!(warns("192.168.1.2:53", ""), 0);
-    assert_eq!(warns("127.0.0.1:5353", ""), 0);
-    assert_eq!(warns("0.0.0.0:5353", ""), 0);
+    assert_eq!(warns("203.0.113.5:853", "require_client_id = false"), 1);
+    assert_eq!(warns("[2001:db8::5]:853", "require_client_id = false"), 1);
+    assert_eq!(warns("203.0.113.5:853", ""), 0, "gated by default");
+    assert_eq!(warns("203.0.113.5:853", "require_client_id = true"), 0);
+    assert_eq!(warns("192.168.1.2:853", ""), 0);
+    assert_eq!(warns("127.0.0.1:853", ""), 0);
     assert_eq!(
         warns(
-            "203.0.113.5:53",
-            "[access]\nallowed_networks = [\"203.0.113.0/24\"]"
+            "203.0.113.5:853",
+            "require_client_id = false
+[access]
+allowed_networks = [\"203.0.113.0/24\"]"
         ),
         0,
-        "inside allowed_networks it is not public"
+        "inside allowed_networks it is not open"
     );
+    // A wildcard bind is not public and is not a config warning (the node logs a line at bind).
+    assert_eq!(warns("0.0.0.0:853", ""), 0);
+    assert_eq!(warns("[::]:853", ""), 0);
+}
+
+/// REQ: DNS-901 — a udp or tcp listener cannot be gated, so its warning never tells the
+/// operator to set the flag (which is a configuration error there); `false` is accepted.
+#[test]
+fn dns_901_plain_listener_warning_names_no_flag() {
+    for proto in ["udp", "tcp"] {
+        let l = load_str(&format!(
+            "[[listen]]
+proto = \"{proto}\"
+addr = \"203.0.113.5:53\"
+require_client_id = false
+"
+        ))
+        .unwrap();
+        assert!(!l.config.listen[0].gated());
+        let w: Vec<_> = l
+            .warnings
+            .iter()
+            .filter(|w| w.contains("open resolver"))
+            .collect();
+        assert_eq!(w.len(), 1, "{proto}: {:?}", l.warnings);
+        assert!(!w[0].contains("require_client_id"), "{}", w[0]);
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — the public address test is conservative: only loopback,
+/// RFC 1918, CGNAT, link-local and unique-local are private; a wildcard is not public.
+#[test]
+fn dns_901_is_public_address() {
+    use std::net::IpAddr;
+    let public = |s: &str| wrendns_config::is_public_address(s.parse::<IpAddr>().unwrap());
+    for ip in [
+        "203.0.113.5",
+        "8.8.8.8",
+        "1.1.1.1",
+        "100.63.255.255",
+        "100.128.0.0",
+        "172.15.0.1",
+        "172.32.0.1",
+        "11.0.0.1",
+        "192.169.0.1",
+        "169.255.0.1",
+        "2001:db8::5",
+        "2606:4700::1",
+        "fe00::1",
+        "fec0::1",
+        "::ffff:8.8.8.8",
+    ] {
+        assert!(public(ip), "{ip} is public");
+    }
+    for ip in [
+        "127.0.0.1",
+        "127.9.9.9",
+        "10.1.2.3",
+        "172.16.0.1",
+        "172.31.255.255",
+        "192.168.1.1",
+        "100.64.0.1",
+        "100.127.255.255",
+        "169.254.1.1",
+        "::1",
+        "fc00::1",
+        "fd12:3456::1",
+        "fe80::1",
+        "febf::1",
+        "::ffff:192.168.1.1",
+        "::ffff:127.0.0.1",
+        "0.0.0.0",
+        "::",
+    ] {
+        assert!(!public(ip), "{ip} is not public");
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — unset: on for a public bind, off for private, loopback and
+/// wildcard; explicit false is honoured on a public bind; explicit true is honoured anywhere
+/// that can carry a key; udp and tcp are never gated.
+#[test]
+fn dns_901_gate_default_explicit_and_transport() {
+    let tls = "tls = { cert = \"c.pem\", key = \"k.pem\" }";
+    let gate = |proto: &str, addr: &str, extra: &str| {
+        let t = if proto == "udp" || proto == "tcp" {
+            ""
+        } else {
+            tls
+        };
+        let l = load_str(&format!(
+            "[[listen]]
+proto = \"{proto}\"
+addr = \"{addr}\"
+{t}
+{extra}
+"
+        ))
+        .unwrap();
+        let l = &l.config.listen[0];
+        (l.gated(), l.gated_by_default())
+    };
+    for proto in ["dot", "doh", "doh3", "doq"] {
+        assert_eq!(gate(proto, "203.0.113.5:853", ""), (true, true), "{proto}");
+        assert_eq!(
+            gate(proto, "[2001:db8::5]:853", ""),
+            (true, true),
+            "{proto}"
+        );
+        assert_eq!(
+            gate(proto, "192.168.1.2:853", ""),
+            (false, false),
+            "{proto}"
+        );
+        assert_eq!(gate(proto, "127.0.0.1:853", ""), (false, false), "{proto}");
+        assert_eq!(gate(proto, "0.0.0.0:853", ""), (false, false), "{proto}");
+        assert_eq!(
+            gate(proto, "203.0.113.5:853", "require_client_id = false"),
+            (false, false),
+            "{proto}: explicit false honoured"
+        );
+        assert_eq!(
+            gate(proto, "203.0.113.5:853", "require_client_id = true"),
+            (true, false),
+            "{proto}: explicit true is not by default"
+        );
+        assert_eq!(
+            gate(proto, "192.168.1.2:853", "require_client_id = true"),
+            (true, false),
+            "{proto}: explicit true honoured on a private bind"
+        );
+    }
+    for proto in ["udp", "tcp"] {
+        assert_eq!(gate(proto, "203.0.113.5:53", ""), (false, false), "{proto}");
+    }
 }

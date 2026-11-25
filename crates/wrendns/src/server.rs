@@ -531,6 +531,24 @@ impl Listeners {
             None => None,
         };
         let handler = Arc::clone(&self.handler);
+        // REQ: DNS-901 (ADR-1090 point 1) — an upgrade can turn the gate on for a listener whose
+        // file never set it: say so, naming the listener and the setting.
+        if l.gated_by_default() {
+            warn!(
+                listener = %format!("{:?}://{}", l.proto, l.addr),
+                setting = "require_client_id",
+                "this listener is on a public address and require_client_id is not set, so it is on: queries without a known device key are refused (counted in wrendns_client_id_refused_total); set require_client_id = true to keep it, or false to open the listener"
+            );
+        }
+        // A wildcard bind is not public and cannot be known to be private: the gate stays off
+        // unless the file sets it, so name it.
+        if l.proto.needs_tls() && l.addr.ip().is_unspecified() && l.require_client_id.is_none() {
+            warn!(
+                listener = %format!("{:?}://{}", l.proto, l.addr),
+                setting = "require_client_id",
+                "this listener binds every address, so it cannot be known to be private and require_client_id is not on by default; set require_client_id = true if it is reachable from the internet"
+            );
+        }
         match (l.proto, store) {
             (ListenProto::Doh, Some(store)) => {
                 let mut cfg = DohConfig::new(l.addr, Arc::clone(&store));
@@ -538,7 +556,7 @@ impl Listeners {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
                 cfg.proxy_protocol = l.proxy_protocol;
-                cfg.require_client_id = l.require_client_id;
+                cfg.require_client_id = l.gated();
                 cfg.alt_svc = alt_svc.map(str::to_owned);
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
@@ -552,7 +570,7 @@ impl Listeners {
             }
             (ListenProto::Doh3, Some(store)) => {
                 let mut cfg = wrendns_net::Doh3Config::new(l.addr, Arc::clone(&store));
-                cfg.require_client_id = l.require_client_id;
+                cfg.require_client_id = l.gated();
                 if let Some(p) = &l.path {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
@@ -568,7 +586,7 @@ impl Listeners {
             }
             (ListenProto::Doq, Some(store)) => {
                 let mut cfg = wrendns_net::DoqConfig::new(l.addr, Arc::clone(&store));
-                cfg.require_client_id = l.require_client_id;
+                cfg.require_client_id = l.gated();
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
                 }
@@ -582,7 +600,7 @@ impl Listeners {
             (proto, store) => {
                 let mut cfg = TcpConfig::new(l.addr);
                 cfg.proxy_protocol = l.proxy_protocol;
-                cfg.require_client_id = l.require_client_id;
+                cfg.require_client_id = l.gated();
                 if let Some(n) = l.max_connections {
                     cfg.max_connections = n as usize;
                 }

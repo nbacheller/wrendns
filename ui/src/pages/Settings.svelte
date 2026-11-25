@@ -937,13 +937,25 @@
               {#each info.listenerAccess as l (l.listener)}
                 <tr data-testid="listener-access-row">
                   <td class="mono">{l.listener}</td>
-                  <td>{#if l.requireClientId}<span class="badge ok">required</span>{:else}<span class="badge">not required</span>{/if}</td>
+                  <td>
+                    {#if l.requireClientId}<span class="badge ok">required</span>{#if l.gatedByDefault} <span class="badge warn" data-testid="listener-default-notice">on by default</span>{/if}
+                    {:else if l.canCarryKey}<span class="badge">not required</span>
+                    {:else}<span class="badge">not available</span>{/if}
+                  </td>
                   <td class="small">
-                    {#if l.publicAddress && !l.requireClientId}
-                      <span class="badge warn" data-testid="listener-open-warning">public address</span>
-                      Only the allowed networks keep this listener from being an open resolver. For devices away from home, set <code>require_client_id = true</code> and give each device a key.
+                    {#if l.gatedByDefault}
+                      Refuses queries without a known device key because <code>require_client_id</code> is not set and the address is public (new in 1.1.0). Set it to <code>true</code> to keep this, or <code>false</code> to open the listener.
                     {:else if l.requireClientId}
                       Answers only a known device key, from any address.
+                    {:else if l.publicAddress && l.canCarryKey}
+                      <span class="badge warn" data-testid="listener-open-warning">public address</span>
+                      <code>require_client_id</code> is off here, so only the allowed networks keep this listener from being an open resolver.
+                    {:else if l.publicAddress}
+                      <span class="badge warn" data-testid="listener-open-warning">public address</span>
+                      Only the allowed networks keep this listener from being an open resolver. A plain UDP or TCP query carries no device key, so use DoT, DoH, DoH3 or DoQ for devices away from home.
+                    {:else if l.wildcardBind && l.canCarryKey && l.setting === 'unset'}
+                      <span class="badge warn" data-testid="listener-wildcard-notice">every address</span>
+                      Binds every address, so it cannot be known to be private and the device key is not on by default. If it is reachable from the internet, set <code>require_client_id = true</code>.
                     {/if}
                   </td>
                 </tr>
@@ -951,7 +963,7 @@
             </tbody>
           </table>
         </div>
-        <p class="muted small">Set in the configuration file: <code>require_client_id = true</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), then restart. Turning it on for a listener your LAN uses refuses the devices that carry no key.</p>
+        <p class="muted small">Set in the configuration file: <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), a reload applies it. Unset, it is on for a public address and off otherwise; turning it on for a listener your LAN uses refuses the devices that carry no key.</p>
       </section>
     {/if}
     <section class="card" data-testid="changes-list">
