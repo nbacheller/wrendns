@@ -6332,7 +6332,7 @@ Still open for the owner: the runner variables for the window, `sha_pinning_requ
 
 **Requirements:** FLT-901 and FLT-902 (the catalog and profiles it extends), FLT-001 and FLT-003 (formats and the snapshot), FLT-004 and OBS-023 (last good list, stale lists), FLT-013 (attribution in Explain), NFR-004 (fuzzed parsers), NFR-005 (supply chain), NFR-006 and ADR-1033 (licences); reserved FLT-905 (the node's side) and CLD-918 (the service's side), whose rows are added to `spec/01` when T36.29 starts.
 
-## ADR-1090 — The known-ID gate: a per-listener flag, a device key is 26 or more base32 characters of a configured `id:` match key, a known key is let in from any address, refusals are counted and rate limited (Proposed 2026-11-25; decisions left open by T36.2; implements ADR-1050 point 5; DNS-901)
+## ADR-1090 — The known-ID gate: a per-listener flag, a device key is 26 or more base32 characters of a configured `id:` match key, a known key is let in from any address, refusals are counted and rate limited (Accepted 2026-11-25: the owner decided its open points through the question tool, and the independent recheck passed; decisions left open by T36.2; implements ADR-1050 point 5; DNS-901)
 
 **Context:** T36.2 and ADR-1050 point 5 require every query on a public or relayed stream to carry a known device key, refused identically for an unknown, revoked and missing key, counted and rate limited, without allocation on the hot path. They leave open how a listener is marked public, what a "known" key is before T36.8 creates device keys, what a known key may do to `allowed_networks`, what "rate limited" means for a refusal, and what the default is. AGENTS rule 3 asks for the most conservative option and a record.
 
