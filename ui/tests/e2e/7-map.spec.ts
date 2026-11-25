@@ -7,6 +7,7 @@ import { expect, test, type Browser, type BrowserContext, type Page, type Route 
 import { readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { hoverRing, rectRing } from './svg-ring';
+import { pick } from './picker';
 import { NO_FILTERS, animatedBudget, filterSnapshot, flowRows, layout, links, pulse, seed, via, type Snapshot } from '../../src/lib/map';
 
 test.describe.configure({ mode: 'serial' });
@@ -327,7 +328,7 @@ test('obs_901 filters narrow the map', async ({ browser }) => {
   await go(o);
   await expect(o.page.locator('[data-node][data-kind="device"]')).toHaveCount(4);
   // A network: sent to the server, kept in the URL, and only its devices are drawn.
-  await o.page.getByTestId('filter-network').selectOption('iot');
+  await pick(o.page, 'Network', 'iot');
   await expect(o.page).toHaveURL(/#\/map\?network=iot/);
   await expect(o.page.locator('[data-node="dev:10.20.2.5"]')).toBeVisible();
   await expect(o.page.locator('[data-node="dev:192.168.1.10"]')).toHaveCount(0);
@@ -336,10 +337,10 @@ test('obs_901 filters narrow the map', async ({ browser }) => {
   // The map polls while a server filter is set: the stream carries everything.
   await expect(o.page.getByTestId('map-state')).toHaveAttribute('data-stream', 'polling');
   // A group, then a device's name.
-  await o.page.getByTestId('filter-group').selectOption('iot');
+  await pick(o.page, 'Group', 'iot');
   await expect(o.page).toHaveURL(/group=iot/);
-  await o.page.getByTestId('filter-network').selectOption('');
-  await o.page.getByTestId('filter-group').selectOption('');
+  await o.page.getByTestId('filter-network').getByTestId('picker-clear').click();
+  await o.page.getByTestId('filter-group').getByTestId('picker-clear').click();
   await o.page.getByTestId('filter-device').fill('cam');
   await expect(o.page).toHaveURL(/device=cam/);
   await expect(o.page.locator('[data-node][data-kind="device"]')).toHaveCount(1);
@@ -364,7 +365,7 @@ test('obs_901 filters narrow the map', async ({ browser }) => {
   await go(o, '#/map?network=lan');
   await expect(o.page.locator('[data-node="dev:192.168.1.11"]')).toBeVisible();
   await expect(o.page.locator('[data-node="dev:10.20.2.5"]')).toHaveCount(0);
-  await expect(o.page.getByTestId('filter-network')).toHaveValue('lan');
+  await expect(o.page.getByTestId('filter-network')).toContainText('lan');
   expect(o.problems).toEqual([]);
   await o.ctx.close();
 });

@@ -7,6 +7,7 @@
   import { href } from '../lib/router.svelte';
   import { poll } from '../lib/poll';
   import { clock, ms, num, pct, short } from '../lib/format';
+  import Picker from '../lib/components/Picker.svelte';
   import Kpi from '../lib/components/Kpi.svelte';
   import Chart from '../lib/components/Chart.svelte';
   import Tip from '../lib/components/Tip.svelte';
@@ -324,13 +325,11 @@
         </label>
       {/if}
       {#if groups.length > 1}
-        <label class="pill-field">
+        <div class="pill-field">
           Top lists for
-          <select bind:value={group} aria-label="Group">
-            <option value="">every device</option>
-            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
-          </select>
-        </label>
+          <Picker label="Group" multiple={false} clearable placeholder="Every device" hint="Type to search; empty means every device."
+            items={groups.map((g) => ({ value: g.name, label: g.name, kind: 'groups' }))} selected={group ? [group] : []} onchange={(n) => (group = n[0] ?? '')} />
+        </div>
       {/if}
       <div class="seg" role="group" aria-label="Time range">
         {#each ranges as r (r.id)}

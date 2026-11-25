@@ -9,6 +9,7 @@
   import { untrack } from 'svelte';
   import { api, ApiError } from '../lib/api';
   import { route, navigate, href } from '../lib/router.svelte';
+  import Picker from '../lib/components/Picker.svelte';
   import PolicyPanel from '../lib/components/PolicyPanel.svelte';
   import { poll } from '../lib/poll';
   import { num, pct } from '../lib/format';
@@ -271,22 +272,18 @@
   </div>
 
   <form class="row filters" onsubmit={(e) => e.preventDefault()} aria-label="Map filters">
-    <label class="pill-field">
+    <div class="pill-field">
       Network
-      <select value={filters.network} onchange={(e) => setParams({ network: e.currentTarget.value || undefined })} data-testid="filter-network">
-        <option value="">all</option>
-        {#each networks as n (n.value)}<option value={n.value}>{n.label}</option>{/each}
-        {#if filters.network && !networks.some((n) => n.value === filters.network)}<option value={filters.network}>{filters.network}</option>{/if}
-      </select>
-    </label>
-    <label class="pill-field">
+      <Picker label="Network" testid="filter-network" multiple={false} clearable placeholder="All networks" hint="Type to search; empty shows all networks."
+        items={[...networks.map((n) => ({ value: n.value, label: n.label, kind: 'networks' })), ...(filters.network && !networks.some((n) => n.value === filters.network) ? [{ value: filters.network, label: filters.network, kind: 'networks' }] : [])]}
+        selected={filters.network ? [filters.network] : []} onchange={(n) => setParams({ network: n[0] || undefined })} />
+    </div>
+    <div class="pill-field">
       Group
-      <select value={filters.group} onchange={(e) => setParams({ group: e.currentTarget.value || undefined })} data-testid="filter-group">
-        <option value="">all</option>
-        {#each groupNames as g (g)}<option value={g}>{g}</option>{/each}
-        {#if filters.group && !groupNames.includes(filters.group)}<option value={filters.group}>{filters.group}</option>{/if}
-      </select>
-    </label>
+      <Picker label="Group" testid="filter-group" multiple={false} clearable placeholder="All groups" hint="Type to search; empty shows all groups."
+        items={[...groupNames, ...(filters.group && !groupNames.includes(filters.group) ? [filters.group] : [])].map((g) => ({ value: g, label: g, kind: 'groups' }))}
+        selected={filters.group ? [filters.group] : []} onchange={(n) => setParams({ group: n[0] || undefined })} />
+    </div>
     <label class="pill-field">
       Node
       <select value={filters.node} onchange={(e) => setParams({ node: e.currentTarget.value || undefined })} data-testid="filter-node">

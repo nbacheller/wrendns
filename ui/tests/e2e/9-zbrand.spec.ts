@@ -314,7 +314,7 @@ for (const theme of ['light', 'dark'] as const) {
         ['a segmented button', page.getByRole('group', { name: 'Detail level', exact: true }).getByRole('button', { name: 'Simple' })],
         ['an icon button', page.getByTestId('theme-toggle')],
         ['a switch', page.locator('input[role="switch"]').first()],
-        ['a select', page.locator('main select').first()],
+        ['a picker', page.getByRole('group', { name: 'Group', exact: true }).getByRole('combobox'), '.box'],
         ['the search box', page.getByLabel('Search names or clients'), '.search'],
       ];
       for (const [what, loc, ringOn] of controls) {
@@ -324,6 +324,14 @@ for (const theme of ['light', 'dark'] as const) {
         expect([r.style, r.width, r.offset, r.color], `${what}'s ring`).toEqual(['solid', '2px', '2px', want]);
         expect(contrast(r.color, r.around), `${what}'s ring against what is around it`).toBeGreaterThanOrEqual(3);
       }
+      // A native select (the Queries page's Match; the dashboard's own are pickers now).
+      await page.goto('/#/queries');
+      const select = page.locator('main select[name="match"]');
+      await expect(select, 'a select').toBeVisible();
+      const sr = await ringOf(select);
+      expect(sr.visible, 'a select matches :focus-visible').toBe(true);
+      expect([sr.style, sr.width, sr.offset, sr.color], "a select's ring").toEqual(['solid', '2px', '2px', want]);
+      expect(contrast(sr.color, sr.around), "a select's ring against what is around it").toBeGreaterThanOrEqual(3);
       // A tab (the Clients page) and a primary button (Names on your network).
       await page.goto('/#/clients');
       const tab = page.getByRole('tab').first();

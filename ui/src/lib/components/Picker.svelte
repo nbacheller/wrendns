@@ -29,6 +29,8 @@
     emptyText = 'Nothing matches',
     testid,
     disabled = false,
+    clearable = false,
+    hint,
     custom,
     onchange,
   }: {
@@ -43,6 +45,10 @@
     emptyText?: string;
     testid?: string;
     disabled?: boolean;
+    /** Single mode: show a button that clears the choice (for a filter whose empty value means "all"). */
+    clearable?: boolean;
+    /** Help text under the box; read out with the field (aria-describedby). */
+    hint?: string;
     /** Turns what was typed into an item that isn't in the list (an address typed in full); null when it isn't one. */
     custom?: (typed: string) => PickItem | null;
     onchange?: (selected: string[]) => void;
@@ -216,6 +222,7 @@
       {#if rest}<span class="chip more" data-testid="picker-more" title={selected.slice(maxChips).map(labelOf).join(', ')}>+{rest}</span>{/if}
     {:else if selected[0] && !open}
       <span class="single">{labelOf(selected[0])}</span>
+      {#if clearable}<button type="button" class="x" aria-label={`Clear ${label}`} data-testid="picker-clear" {disabled} onclick={(e) => { e.stopPropagation(); set([]); }}><Icon name="x" size={14} /></button>{/if}
     {/if}
     <input
       bind:this={input}
@@ -225,6 +232,7 @@
       aria-expanded={open}
       aria-controls={open ? `${uid}-list` : undefined}
       aria-autocomplete="list"
+      aria-describedby={hint ? `${uid}-hint` : undefined}
       aria-haspopup="listbox"
       aria-activedescendant={open && filtered.length ? optId(active) : undefined}
       autocomplete="off"
@@ -235,6 +243,7 @@
       onkeydown={key}
     />
   </div>
+  {#if hint}<p class="muted small hint" id={`${uid}-hint`}>{hint}</p>{/if}
   {#if open}
     <div class="pop">
       {#if multiple}
@@ -433,6 +442,9 @@
     text-overflow: ellipsis;
     flex: 1 1 0;
     min-width: 0;
+  }
+  .hint {
+    margin: 2px 0 0;
   }
   .empty {
     padding: 10px;

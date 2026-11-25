@@ -327,12 +327,9 @@
         <input name="minLatency" type="number" min="0" bind:value={minLatency} />
       </label>
       {#if groups.length > 1}
-        <label class="field">Group
-          <select name="group" bind:value={group} onchange={() => search()}>
-            <option value="">any</option>
-            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
-          </select>
-        </label>
+        <div class="field">Group
+          <Picker label="Group" testid="group-picker" multiple={false} clearable placeholder="Any group" hint="Type to search; empty means any group." items={groups.map((g) => ({ value: g.name, label: g.name, kind: 'groups' }))} selected={group ? [group] : []} onchange={(n) => { group = n[0] ?? ''; search(); }} />
+        </div>
       {/if}
       <label class="field">Since
         <select name="from" bind:value={from} onchange={() => search()}>

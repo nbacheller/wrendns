@@ -4,6 +4,7 @@
   import { RANGES, type DashData } from './data.svelte';
   import type { S } from '../api';
   import ChangesControls from '../components/ChangesControls.svelte';
+  import Picker from '../components/Picker.svelte';
 
   let { d, part = 'all' }: { d: DashData; part?: 'all' | 'range' | 'filters' } = $props();
 
@@ -27,13 +28,11 @@
       </label>
     {/if}
     {#if d.groups.length > 1}
-      <label class="pill-field">
+      <div class="pill-field">
         Top lists for
-        <select bind:value={d.group} aria-label="Group">
-          <option value="">every device</option>
-          {#each d.groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
-        </select>
-      </label>
+        <Picker label="Group" multiple={false} clearable placeholder="Every device" hint="Type to search; empty means every device."
+          items={d.groups.map((g) => ({ value: g.name, label: g.name, kind: 'groups' }))} selected={d.group ? [d.group] : []} onchange={(n) => (d.group = n[0] ?? '')} />
+      </div>
     {/if}
   {/if}
   {#if part !== 'filters'}
