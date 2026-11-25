@@ -396,10 +396,10 @@ test('obs_004 top clients split by status; the top lists follow the range', asyn
   await page.getByRole('button', { name: '15 min', exact: true }).click();
   await expect(listOf('Top domains')).toContainText(/since \d/);
   const groupOnly = page.waitForRequest((r) => /stats\/top\?/.test(r.url()) && r.url().includes('kind=blocked') && r.url().includes('group=lab') && !r.url().includes('from='));
-  await page.getByLabel('Group').selectOption('lab');
+  await pick(page, 'Group', 'lab');
   await groupOnly;
   await expect(listOf('Top domains')).toContainText('this hour');
-  await page.getByLabel('Group').selectOption('');
+  await page.getByRole('group', { name: 'Group', exact: true }).getByTestId('picker-clear').click();
   await page.unroute('**/api/v1/stats/top?*');
 });
 
@@ -1369,7 +1369,7 @@ test('flt_005 network groups: cards, chart, and query-log filter', async () => {
   await expect(page.getByRole('figure', { name: 'Traffic by group' })).toBeVisible();
   await page.getByRole('button', { name: 'Simple', exact: true }).click();
   await expect(groupsView, 'Simple view offers no Groups chart view, with group data loaded').toHaveCount(0);
-  await page.getByLabel('Group').selectOption('lab');
+  await pick(page, 'Group', 'lab');
   await expect(listOf('Top domains')).toContainText('nas.e2e.test');
   await page.goto('/#/queries?group=lab');
   await expect(page.locator('table.log tbody tr').first().locator('.group-chip')).toHaveText('lab');
@@ -5812,7 +5812,7 @@ test('flt_017 workloads', async () => {
   await expect(page.getByRole('menuitem', { name: /Name this device/ })).toBeDisabled();
   await page.getByRole('menuitem', { name: 'Add to group…' }).click();
   const form = page.getByTestId('workload-group-form');
-  await form.getByLabel('Group').selectOption('ipv6only');
+  await pick(form, 'Group', 'ipv6only');
   await expect(form.getByRole('button', { name: 'Save' })).toHaveCount(0);
   await form.getByRole('button', { name: 'Preview' }).click();
   await expect(form.getByTestId('workload-dry-run')).toContainText('next query');
@@ -6026,7 +6026,8 @@ test('clu_014 drill', async () => {
   const form = page.getByTestId('drill-form');
   await form.getByRole('radio', { name: '15 s' }).check();
   await form.getByRole('radio', { name: 'a group' }).check();
-  await form.getByTestId('drill-group').selectOption({ index: 1 });
+  await form.getByTestId('drill-group').getByRole('combobox').click();
+  await form.getByTestId('drill-group').getByRole('option').first().click();
   await form.getByTestId('drill-reason').fill('e2e');
   await expect(form.getByTestId('drill-start')).toHaveCount(0);
   await form.getByTestId('drill-preview-button').click();
@@ -8177,5 +8178,35 @@ test('clu_005 lease lapse and renewal events have labels', async () => {
     await page.unroute('**/api/v1/cluster');
     await page.unroute('**/api/v1/cluster/rollout');
     await page.unroute('**/api/v1/cluster/versions');
+  }
+});
+
+// REQ: UI-901 (T24.34, fork #26) - the single-choice mode of the one picker: the Query log's Group filter
+// searches by typing, picks with the keyboard, has help text for assistive tech, and clears.
+test('ui_901 a single-choice picker: search, keyboard, help text, clear (Query log group)', async () => {
+  await page.route('**/api/v1/groups', (r) =>
+    r.request().method() === 'GET'
+      ? r.fulfill({ json: { items: ['default', 'lab', 'kids', 'guests'].map((name) => ({ name, members: 0 })) } })
+      : r.fallback(),
+  );
+  try {
+    await page.goto('/#/queries');
+    const group = page.getByTestId('group-picker');
+    const box = group.getByRole('combobox');
+    await expect(box).toHaveAccessibleDescription(/Type to search/);
+    await box.click();
+    await box.fill('ki');
+    await expect(group.getByRole('option')).toHaveCount(1);
+    await box.press('Enter');
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
+    await expect(group).toContainText('kids');
+    await expect(group.getByTestId('picker-chip')).toHaveCount(0);
+    await group.getByTestId('picker-clear').click();
+    await expect(group).not.toContainText('kids');
+    await box.click();
+    await expect(group.getByRole('listbox')).not.toHaveAttribute('aria-multiselectable', 'true');
+    await box.press('Escape');
+  } finally {
+    await page.unroute('**/api/v1/groups');
   }
 });

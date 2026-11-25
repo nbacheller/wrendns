@@ -6,6 +6,7 @@
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
+  import Picker from './Picker.svelte';
 
   let {
     node,
@@ -98,13 +99,10 @@
       <span class="muted small">Addresses, device names, or Kubernetes workloads. Start with your own device.</span></label
     >
   {:else if who === 'group'}
-    <label class="field"
-      >Group
-      <select bind:value={group} data-testid="drill-group">
-        <option value="">Choose…</option>
-        {#each groups as g (g)}<option value={g}>{g}</option>{/each}
-      </select></label
-    >
+    <div class="field">Group
+      <Picker label="Group" testid="drill-group" multiple={false} placeholder="Choose a group" hint="Type to search the groups."
+        items={groups.map((g) => ({ value: g, label: g, kind: 'groups' }))} selected={group ? [group] : []} onchange={(n) => (group = n[0] ?? '')} />
+    </div>
   {/if}
   <label class="field">Why <input bind:value={reason} maxlength="200" placeholder="does the second server work?" data-testid="drill-reason" /></label>
   <label class="check"

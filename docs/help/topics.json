@@ -1598,7 +1598,7 @@
       "id": "picker",
       "title": "Choosing from a long list",
       "term": "Search and multi-select",
-      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick.",
+      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick. Filters that take one choice (a group or a network) use the same box and have a clear button.",
       "when": "A setting offers many devices, groups, lists or networks.",
       "example": "In a group's networks, type \"10.20.2\" and Select all.",
       "caution": "Escape closes the list without changing the choice.",

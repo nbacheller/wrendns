@@ -9,6 +9,7 @@
   import { api, type S } from '../api';
   import { endsAt } from '../format';
   import ErrorNote from './ErrorNote.svelte';
+  import Picker from './Picker.svelte';
   import SimulationCard from './SimulationCard.svelte';
   import { isRouterKey, routerKey, routerLabel, routerLabelOf } from '../router-name';
 
@@ -167,9 +168,8 @@
         <datalist id={listId}>{#each devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
       {/if}
     {:else if scope === 'group'}
-      <select aria-label="Group" bind:value={whichGroup} required>
-        {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
-      </select>
+      <Picker label="Group" testid="quick-group" multiple={false} placeholder="Choose a group" hint="Type to search the groups."
+        items={groups.map((g) => ({ value: g.name, label: g.name, kind: 'groups' }))} selected={whichGroup ? [whichGroup] : []} onchange={(n) => (whichGroup = n[0] ?? '')} />
     {/if}
     <label class="small">for
       <select aria-label="Duration" bind:value={duration}>
@@ -179,7 +179,7 @@
   </div>
   <div class="row">
     <input class="grow" aria-label="Note" placeholder="Note (optional), e.g. Mom's game" bind:value={note} />
-    <button class="primary" disabled={saving || !name.trim()}>{saving ? 'Saving…' : rule ? 'Save changes' : 'Save rule'}</button>
+    <button class="primary" disabled={saving || !name.trim() || (scope === 'group' && !whichGroup)}>{saving ? 'Saving…' : rule ? 'Save changes' : 'Save rule'}</button>
     {#if rule}<button type="button" class="link" onclick={oncancel}>Cancel</button>{/if}
   </div>
   <p class="muted small">

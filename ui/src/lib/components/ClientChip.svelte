@@ -262,13 +262,11 @@
             group of its own now: its network's group applies.{/if} This adds a rule for exactly this workload; a <code>wrendns.com/group</code> label on its pods or namespace still
           wins, and is the way to do it from Git.<HelpButton id="kubernetes-workloads" />
         </p>
-        <label>
+        <div>
           Group
-          <select bind:value={wGroup} onchange={() => (preview = null)} aria-label="Group">
-            <option value="" disabled>Choose a group</option>
-            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
-          </select>
-        </label>
+          <Picker label="Group" testid="workload-group" multiple={false} placeholder="Choose a group" hint="Type to search the groups."
+            items={groups.map((g) => ({ value: g.name, label: g.name, kind: 'groups' }))} selected={wGroup ? [wGroup] : []} onchange={(n) => { wGroup = n[0] ?? ''; preview = null; }} />
+        </div>
         {#if preview}
           <div class="notice" data-testid="workload-dry-run">
             <p class="impact">{preview.impact}</p>
