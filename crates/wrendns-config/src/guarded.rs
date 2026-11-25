@@ -172,15 +172,17 @@ pub fn gate_map(v: &Value) -> std::collections::BTreeMap<String, bool> {
         ) else {
             continue;
         };
-        let Ok(ip) = addr.parse::<std::net::SocketAddr>().map(|a| a.ip()) else {
+        let Ok(sa) = addr.parse::<std::net::SocketAddr>() else {
             continue;
         };
+        let ip = sa.ip();
         let carries = matches!(proto, "dot" | "doh" | "doh3" | "doq");
         let on = carries
             && l.get("require_client_id")
                 .and_then(Value::as_bool)
                 .unwrap_or_else(|| crate::is_public_address(ip));
-        out.insert(format!("{proto}://{addr}"), on);
+        // Keyed by the parsed address, so `[2001:db8:0::5]:853` and `[2001:db8::5]:853` are one listener.
+        out.insert(format!("{proto}://{sa}"), on);
     }
     out
 }
@@ -730,6 +732,18 @@ addr = \"127.0.0.1:5\"
         // Nothing to compare: not weakening.
         assert!(!listen_gate_weakened(&Value::Null, &off));
         assert!(!listen_gate_weakened(&base, &Value::Null));
+    }
+
+    // REQ: DNS-901 — a non-canonical spelling of the same address is the same listener, so turning
+    // its gate off still counts as a weakening.
+    #[test]
+    fn dns_901_non_canonical_address_still_weakens() {
+        let l =
+            |addr: &str, g: Value| json!({"proto": "dot", "addr": addr, "require_client_id": g});
+        let base = json!({"listeners": [l("[2001:db8::5]:853", Value::Null)]});
+        let off = json!({"listeners": [l("[2001:db8:0::5]:853", json!(false))]});
+        assert!(gate_map(&base)["dot://[2001:db8::5]:853"]);
+        assert!(listen_gate_weakened(&base, &off));
     }
 
     // REQ: API-902 (ADR-956 §1(a)) — `node.data_dir` is guarded, and staged.

@@ -1811,6 +1811,12 @@ impl Pipeline {
         {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
         }
+        // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear gets public answers only, and a
+        // `[[route]]` is how internal zones are reached (a corporate or router domain), so a name
+        // a route sends elsewhere is not answered to a leaked key either.
+        if public_only(meta) && selection.is_some_and(|s| s.routed) {
+            return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
+        }
         let Some(sel) = selection else {
             // No upstream group applies (none configured): we can't resolve this.
             oc.status = Status::Refused;
@@ -6051,6 +6057,8 @@ mod key_gate_tests {
                 format!(
                     "[[upstream]]\nname = \"u\"\nurl = \"udp://{addr}\"\n\
                      [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
+                     [[upstream_group]]\nname = \"lan\"\nmembers = [\"u\"]\n\
+                     [[route]]\nmatch_suffix = [\"corp.example\"]\nupstream_group = \"lan\"\n\
                      [[client]]\nname = \"phone\"\nmatch = [\"id:{KEY}\"]\n\
                      [[client]]\nname = \"tablet\"\nmatch = [\"id:kids-tablet\"]\n\
                      [[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n"
@@ -6274,6 +6282,43 @@ mod key_gate_tests {
             1,
             "asked upstream once, then cached"
         );
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a name a `[[route]]` sends to an internal group is not
+    // answered over a gated DoT or DoQ stream (the key is in clear), but still is over DoH.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_does_not_reach_routed_names() {
+        let (p, hits) = node().await;
+        let ask_corp = |m: RequestMeta| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                match Handler(p).handle(&a_query("db.corp.example"), &m, &mut out) {
+                    Response::Ready(n) => Some(out[..n].to_vec()),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Some(Vec::new())
+                    }
+                    _ => None,
+                }
+            }
+        };
+        for t in [Transport::Dot, Transport::Doq] {
+            let r = ask_corp(meta(PUBLIC, t, Some(KEY), true)).await;
+            if let Some(r) = r.filter(|r| !r.is_empty()) {
+                assert_eq!(summarize(&r).unwrap().rcode, rcode::NXDOMAIN, "{t:?}");
+            }
+        }
+        settle().await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "no routed query went upstream"
+        );
+        let doh = ask_corp(meta(PUBLIC, Transport::Doh, Some(KEY), true)).await;
+        assert!(doh.is_some());
+        settle().await;
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "DoH keeps its routes");
     }
 
     #[test]
