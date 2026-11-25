@@ -3393,7 +3393,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "allocation-counter",
  "arc-swap",
@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-api"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-cache"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "allocation-counter",
  "criterion",
@@ -3485,7 +3485,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-cluster"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -3512,7 +3512,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-config"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "jiff",
  "rustls-pki-types",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-filter"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-git"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64",
  "miniz_oxide",
@@ -3572,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-net"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "h3",
@@ -3596,7 +3596,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-policy"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "allocation-counter",
  "arc-swap",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-proto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "criterion",
  "hickory-proto",
@@ -3620,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-recursor"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "parking_lot 0.13.0",
  "rand",
@@ -3632,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-snmp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aes",
  "libc",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-store"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "memchr",
@@ -3660,7 +3660,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-support"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "miniz_oxide",
@@ -3673,7 +3673,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-telemetry"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -3685,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "wrendns-upstream"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "crypto_box",

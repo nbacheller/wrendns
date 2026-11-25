@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-wrendns-proto = { version = "1.0.0", path = "../wrendns-proto" }
+wrendns-proto = { version = "1.1.0", path = "../wrendns-proto" }
 parking_lot = "0.13.0"
 rand = "0.10.3"
 thiserror = "2.0.21"
