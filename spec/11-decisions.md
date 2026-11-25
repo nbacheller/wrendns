@@ -3969,6 +3969,8 @@ Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under th
 - Releases are one button with the same checks every time; `docs/releasing.md` is the procedure for maintainers and agents.
 - The workflow pushes one commit to `main` per release. If branch protection is added later, the bump step needs an exception or becomes a pull request.
 
+**Owner decision (2026-11-24, ADR-1080):** the workflow no longer pushes the bump or dispatches CI and edge for `main`; it ends with a notice, and `main` moves on through `deploy/release/bump.sh` and a pull request (`docs/releasing.md`, step 5).
+
 ## ADR-096 — A client group's own upstream group (Accepted)
 **Context:** T9.25 (UPS-007, owner request 2026-10-06). UPS-007 already routes by client group (`[[route]] match_group`), but that lives in routing, not on the group, and the UI had no way to set it. The spec doesn't say how it ranks against domain routes, which group wins for a device in several, or what removing an upstream group a group uses does.
 
@@ -6212,8 +6214,7 @@ Answered by the owner on 2026-11-20 (speed wave round 2): the post-quantum TLS w
 - **Order.** The repository goes public first, and v1.0.0 is cut through the release workflow within the hour after. The provenance and SBOM attestation steps of `image.yml` and the release's `verify` job work only on a public repository.
 - **The build box (point 6).** The eight self-hosted runners are stopped before the flip. After the flip, approval of workflow runs for all outside collaborators is set first and tested with fork pull requests, and only then are the runners started. There is no runner hook. The `runs-on` guard alone does not keep a fork off the box, because a fork can edit it; the approval gate does.
 - **Outside contributions (point 2).** The required privacy check keeps failing closed on fork pull requests. To take a contribution in, a maintainer pushes the contributor's commits, with their authorship kept, to a branch of this repository, where every check runs. That branch is merged through a normal pull request, and the fork pull request is closed with a link to it. No required check is bypassed. This answers the question left open in the consequences above.
-- **No bypass for the release workflow (point 1).** The ruleset has no bypass actor for the GitHub Actions app. After a release, `main` moves to the next version through `deploy/release/bump.sh` and a normal pull request, so the release workflow's own push to `main` is refused (`docs/releasing.md`).
-
+- **No bypass for the release workflow (point 1).** The ruleset has no bypass actor for the GitHub Actions app. After a release, `main` moves to the next version through `deploy/release/bump.sh` and a normal pull request, so the release workflow does not push to `main`; it ends with a notice to run `bump.sh` (`docs/releasing.md`).
 - **The ruleset (points 1 and 2, answers of 2026-11-24).** The required checks are `privacy`, `site` and `pr-ok`, with the CLA context added when its name is confirmed (point 1). There is no separate rule that requires a pull request. The repository admin role may bypass for pull requests only, not always. There is no bypass for the GitHub Actions app.
 - **Packages.** The image `wrendns` and the chart `charts/wrendns` are deleted just before the flip and re-created by the first image run after it, so no version from the private era becomes public. The `telltale` image and chart become public after their versions are scanned against the denylist, as a separate step after v1.0.0; a version that fails is deleted with the owner's yes (`docs/going-public.md`, step 24a).
 

@@ -114,7 +114,7 @@ Part D, standing procedures:
 
 - **Who:** the owner, asked through the question tool, all questions together.
 - **How:** "Open questions for the owner" at the end of this page, each with a recommendation. Write each answer into this page beside its question. On 2026-11-24 the owner answered all but Q3, Q6 and Q10 (see "The route", above); those three are still to ask, Q10 item by item at step 4.
-- **Verify:** every question has a written answer before step 9 (Q6 before step 21, Q10 before the flip).
+- **Verify:** every question has a written answer before step 9.
 - **Undo:** an answer can be changed until the step that acts on it.
 
 ### 3. Read what GitHub holds today
@@ -251,7 +251,7 @@ Steps 7 to 13 are only as good as the moment they ran. This step repeats them on
   - Step 4 again for every issue, pull request and comment since step 4.
   - Step 3's collaborators, invitations, forks and installed apps, again.
   - Q11, carried out: the unreachable-commit scan of the owner's local clones (in a scratch clone, give each `git rev-list --reflog` commit a temporary ref, then run `check-private.py --history` there), and the owner's written acceptance of what it cannot reach (GitHub's own unreachable objects).
-- **Verify:** every scan is clean, the clone scan of Q11 is clean and the owner has written the acceptance of the remainder, and the owner writes "pre-flip review done" to the agent, naming anything removed.
+- **Verify:** every scan is clean, the clone scan of Q11 is clean (the remainder is accepted: Q11, 2026-11-24), and the owner writes "pre-flip review done" to the agent, naming anything removed.
 - **On a hit:** as in step 7. The flip waits.
 - **Undo:** nothing to undo.
 
@@ -375,7 +375,7 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
   1. **Preflight** (`deploy/release/preflight.sh 1.0.0`): the version, `Cargo.toml`, `Chart.yaml`, a new tag, the notes, and a green newest `main` run on `main`'s head.
   2. **Tag:** tags `v1.0.0` as `github-actions[bot]` and pushes the tag. The ruleset targets the default branch only, so the tag push is allowed.
   3. **Build and publish the tag:** `gh workflow run image.yml --ref v1.0.0`.
-  4. **Move main to the next version:** today it runs `bump.sh 1.1.0`, commits and runs `git push origin HEAD:main`. Under step 22's ruleset, which requires checks and has no bypass for the GitHub Actions app (E6), **that push is refused**. `run:` steps use bash with `-e`, so the failed `git push` fails the step, the job and the **release** run, which ends red. The two `gh workflow run` lines after it and the closing notice do not run, and the bump commit is lost with the runner. Steps 2 and 3 happened before it, so **the release itself is unaffected**. Once the task "`release.yml`, Move main" below is done (it is, on `chore/pre-flip-tasks`, pending its merge), this step no longer pushes: it prints a notice to run `deploy/release/bump.sh` and open a pull request, and the run ends green.
+  4. **Next version:** prints a `::notice` that names `deploy/release/bump.sh 1.1.0` and a pull request (step 25). It does not push to `main` and dispatches nothing for `main`, so the run ends green.
 - **Then wait** for the **image** run on `v1.0.0`, about 30 minutes: `gh run list --workflow image.yml -R nbacheller/wrendns --limit 3`. It publishes the image tagged `1.0.0`, `1.0`, `1` and `latest`, signed with cosign and now with the provenance and SBOM attestations; the chart `1.0.0`; and the release `v1.0.0`, marked latest, with its notes from `deploy/release/notes/v1.0.0.md` above GitHub's generated notes (from pull request titles, reviewed in steps 4 and 14). The assets are the `wrendns-*` files only, once Q8's change is on `main`. Then **verify** runs `deploy/release/verify.sh 1.0.0` anonymously, which works now.
 - **Verify:** the image run's `verify` job is green, every line `ok`. `curl -fsSIL -o /dev/null -w '%{http_code}\n' https://github.com/nbacheller/wrendns/releases/latest/download/SHA256SUMS` prints `200` (`-L` follows GitHub's redirect to the file). The freeze ends here.
 - **Undo:** none for the tag (`docs/releasing.md`). A failed job is re-run. A code fix becomes `1.0.1`.
@@ -388,7 +388,12 @@ A separate step after v1.0.0. Nothing before it waits on it, and v1.0.0 does not
 - **How:**
   1. List the versions: `gh api 'user/packages/container/telltale/versions?per_page=100' --paginate --jq '.[] | [.id, .name, ((.metadata.container.tags // []) | join(","))] | @tsv' > <outside>/telltale-versions.tsv`, and the same with `charts%2Ftelltale`. Note the counts.
   2. A scan root that is a git repository, since `check-private.py` runs `git ls-files` in `--root` and refuses an `--extra` directory outside it: `mkdir -p <outside>/pkg-scan && git -C <outside>/pkg-scan init -q`. Work in one new, empty directory per version, `<outside>/pkg-scan/v<version id>/`.
-  3. Extract each image version so that its content is text the scan can read, because the script skips binary files (a file with a NUL byte near its start). For each version (by its digest, the `name` in the list; for a multi-architecture index, for each platform): `docker pull ghcr.io/nbacheller/telltale@<digest>`, `docker save ghcr.io/nbacheller/telltale@<digest> -o image.tar`, `tar -xf image.tar -C image/`, and extract every layer in it into `rootfs/` (`tar -xf <layer> -C rootfs/`, as an unprivileged user, never from inside an extracted directory). Then write the printable strings of every binary: `find rootfs -type f -exec sh -c 'file -b "$1" | grep -q ELF && strings "$1" > "$1.strings.txt"' _ {} \;`. Keep the image's config and manifest JSON, which hold the labels and the build history. Write the file names too, `find . -type f > paths.txt`, since extra files are scanned by content and not by name.
+  3. Fetch every version with a tool that does not depend on its format, because the package also holds the cosign signature versions (images have been signed since 2026-10-17) and per-platform images, which `docker pull` by digest does not cover. Use `skopeo copy --all docker://ghcr.io/nbacheller/telltale@<digest> oci:<outside>/pkg-scan/v<id>/oci` or `crane pull --format=oci ghcr.io/nbacheller/telltale@<digest> <outside>/pkg-scan/v<id>/oci`. **To confirm at step 24a:** which of `skopeo` and `crane` is installed on the owner's machine (neither is confirmed here); install one. Then make the content text the scan can read, because the script skips binary files (a file with a NUL byte near its start):
+     - Signature and attestation versions are scanned by their manifest and payload JSON, kept as text.
+     - For an image manifest, keep its config and manifest JSON (labels, build history) and extract every filesystem layer into `rootfs/` (`tar -xf <layer> -C rootfs/`, as an unprivileged user, never from inside an extracted directory), for each platform.
+     - Record the symlinks, then delete them, because the scan follows a link and an absolute one would read a file of the scanning host: `find rootfs -type l -printf '%p -> %l\n' >> paths.txt`, then `find rootfs -type l -delete`.
+     - Write the printable strings of every binary: `find rootfs -type f -exec sh -c 'file -b "$1" | grep -q ELF && strings "$1" > "$1.strings.txt"' _ {} \;`.
+     - Write the file names too, `find . -type f >> paths.txt`, since extra files are scanned by content and not by name.
   4. For each chart version: `helm pull oci://ghcr.io/nbacheller/charts/telltale --version <v> --untar --untardir <outside>/pkg-scan/v<id>/chart`.
   5. Scan: `WRENDNS_PRIVACY_DENYLIST=<list> python3 <checkout>/scripts/check-private.py --root <outside>/pkg-scan --require --extra v<id1> --extra v<id2> ...` (each `--extra` path is relative to `--root`, and every directory under it is read recursively). A hit prints a path and `pattern #N`, never the value.
   6. A version that fails is deleted (Package settings, or `gh api -X DELETE user/packages/container/telltale/versions/<id>`), **with the owner's yes**, and the scan is repeated for the rest.
@@ -410,7 +415,7 @@ A separate step after v1.0.0. Nothing before it waits on it, and v1.0.0 does not
   0. **Before any runner starts**, repeat step 18's four listings (`queued`, `waiting`, `pending`, `action_required`, `event=pull_request`). Cancel every run whose head repository is not `nbacheller/wrendns` (`gh run cancel <id> -R nbacheller/wrendns`), then list again. **Condition of the owner's yes:** no such run is left. Test B stays awaiting approval with no job started; if it shows up as `queued` or `waiting`, cancel it and open it again later. A run from a branch of this repository may stay.
   1. Start each runner's supervisor ("Adding a runner", point 4, in `docs/ci-runners.md`). The runners keep their registration: the identity was copied, not re-registered. **To confirm at step 26:** the exact command on the build box, recorded here.
   2. If step 12 ran: `gh variable set WRENDNS_RUNNER -R nbacheller/wrendns --body '["self-hosted","wrendns"]'` and the same for `WRENDNS_PR_RUNNER`.
-  3. **Test C:** push one more commit to test A's fork branch. Approve the new run after reading its diff, and check with step 20's jobs command that every job is still GitHub-hosted, now that the variables are set and runners are attached.
+  3. **Test C:** push one more commit to test A's fork branch. The commit touches nothing under `.github/` and no `runs-on`; approve the new run after reading its diff, and check with step 20's jobs command that every job is still GitHub-hosted, now that the variables are set and runners are attached.
 - **Verify:** the listings of point 0 held no fork run when the runners started. `gh api repos/nbacheller/wrendns/actions/runners --jq '.runners[].status'` prints `online` eight times. A pull request from a branch of this repository runs `clippy` on the box. Test B is still awaiting approval with no job started. Then close tests A and B, with a comment that follows E5.
 - **Undo:** stop the supervisors and delete the variables. Every job then falls back to `ubuntu-latest`.
 
@@ -478,7 +483,7 @@ ADR-1080 point 1 requires four checks; the fourth is the CLA's. `cla.yml` runs `
   5. Merge it once the required checks are green.
   6. `gh pr close <N> -R nbacheller/wrendns --comment 'Merged in #<M>, with your authorship kept. Thank you.'`
 
-  No required check is bypassed. Approve a fork run only after reading its `.github/` diff, and never approve one that changes `runs-on`.
+  No required check is bypassed. A maintainer never approves a fork run whose diff touches `.github/` or changes a `runs-on`.
 - **Verify:** the merged commits show the contributor as author.
 - **Undo:** revert the merge.
 
