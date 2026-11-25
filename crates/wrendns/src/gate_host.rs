@@ -85,10 +85,70 @@ pub(crate) fn facts() -> HostFacts {
     })
 }
 
-/// The facts as they are now, when they would change a gate default from what is in force.
-pub(crate) fn changed_since_bind() -> Option<(HostFacts, HostFacts)> {
-    let (bound, now) = (facts(), read());
-    (bound.public_ipv4 != now.public_ipv4).then_some((bound, now))
+/// One encrypted listener as its socket is, recorded by the apply (never by the config).
+#[derive(Debug, Clone)]
+pub(crate) struct ListenerState {
+    /// `proto://addr`, lower case ([`key`]).
+    pub key: String,
+    /// The gate of the running socket; `None` when nothing is bound for it.
+    pub gated: Option<bool>,
+    /// The host facts this listener was bound with.
+    pub facts: HostFacts,
+    /// Whether the running socket carries the settings the configuration asks for.
+    pub matches: bool,
+}
+
+static LISTENERS: Mutex<Vec<ListenerState>> = Mutex::new(Vec::new());
+
+fn states() -> std::sync::MutexGuard<'static, Vec<ListenerState>> {
+    LISTENERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The name a listener goes by in health reasons and in this table.
+pub(crate) fn key(l: &wrendns_config::Listener) -> String {
+    format!("{:?}://{}", l.proto, l.addr).to_lowercase()
+}
+
+/// Records how the encrypted listeners are after an apply (also a partial one).
+pub(crate) fn publish(v: Vec<ListenerState>) {
+    *states() = v;
+}
+
+fn state_of(l: &wrendns_config::Listener) -> Option<ListenerState> {
+    let k = key(l);
+    states().iter().find(|s| s.key == k).cloned()
+}
+
+/// The host facts `l` was bound with (the facts in force when nothing is recorded for it).
+pub(crate) fn facts_for(l: &wrendns_config::Listener) -> HostFacts {
+    state_of(l).map_or_else(facts, |s| s.facts)
+}
+
+/// The gate `l` really has: the running socket's, not the configuration's. Without a socket (or
+/// before any apply) it is what the configuration resolves to.
+pub(crate) fn effective_gate(l: &wrendns_config::Listener) -> bool {
+    state_of(l)
+        .and_then(|s| s.gated)
+        .unwrap_or_else(|| l.gated(facts_for(l)))
+}
+
+/// The listeners whose socket does not match the configuration: `(name, running)`.
+pub(crate) fn mismatched(listen: &[wrendns_config::Listener]) -> Vec<(String, bool)> {
+    listen
+        .iter()
+        .filter(|l| l.proto.needs_tls())
+        .filter_map(|l| {
+            let s = state_of(l)?;
+            (!s.matches).then_some((s.key, s.gated.is_some()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn clear_listeners_for_test() {
+    states().clear();
 }
 
 /// What the bind last recorded, ignoring any test override.

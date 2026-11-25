@@ -379,6 +379,11 @@ struct Listeners {
     workers: usize,
     handler: Arc<Handler>,
     rt: tokio::runtime::Handle,
+    /// The host facts each encrypted listener was bound with, by `proto://addr`.
+    bound_facts: std::collections::HashMap<String, wrendns_config::HostFacts>,
+    /// Set by the last apply: a listener that was to get its device key gate could not, so its
+    /// old ungated socket was closed (REQ: DNS-901).
+    gate_failed: bool,
 }
 
 /// A TCP-based listener, and the certificate watcher of a TLS one.
@@ -492,57 +497,22 @@ impl Listeners {
     /// Makes the running set match `listen`: binds additions first, then closes removals, so a
     /// changed address never leaves a gap (`spec/08` §5). A stream listener whose settings
     /// changed on the same address is closed just before its replacement binds.
+    ///
+    /// REQ: DNS-901 — a listener that fails to apply never stops the others. A change that turns
+    /// the device key gate ON for a listener whose new socket cannot be made (an unreadable
+    /// certificate, a bind that fails) closes the old, ungated socket: it never keeps answering
+    /// without the gate. A change that turns the gate off keeps the old gated socket. The result
+    /// of every encrypted listener is published ([`crate::gate_host::publish`]) whatever happened.
     async fn apply(&mut self, listen: &[Listener]) -> io::Result<()> {
         // One reading of the host for the whole apply: every listener is bound, compared and
         // recorded with the same facts.
         let host = crate::gate_host::read();
+        self.gate_failed = false;
+        let mut first_err: Option<io::Error> = None;
         for l in listen {
-            let ctx =
-                |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
-            match l.proto {
-                ListenProto::Udp if !self.udp.iter().any(|(a, _)| *a == l.addr) => {
-                    let listener = UdpListener::spawn(
-                        &UdpConfig::new(l.addr, self.workers),
-                        &self.handler,
-                        &self.rt,
-                    )
-                    .map_err(ctx)?;
-                    info!(addr = %listener.local_addr(), workers = self.workers, "listening (udp)");
-                    self.udp.push((l.addr, listener));
-                }
-                ListenProto::Tcp
-                | ListenProto::Dot
-                | ListenProto::Doh
-                | ListenProto::Doq
-                | ListenProto::Doh3
-                    if !self.streams.iter().any(|(c, _)| *c == bound_form(l, host)) =>
-                {
-                    // The certificate is loaded before the old socket is closed: a file that
-                    // cannot be read leaves the running listener (and its in-memory certificate)
-                    // as it was, rather than dropping it.
-                    if let Some(t) = &l.tls {
-                        CertStore::load(t.cert.as_str(), t.key.as_str()).map_err(ctx)?;
-                    }
-                    // Same protocol and address with other settings: replace it.
-                    if let Some(i) = self
-                        .streams
-                        .iter()
-                        .position(|(c, _)| c.proto == l.proto && c.addr == l.addr)
-                    {
-                        let (_, old) = self.streams.remove(i);
-                        old.shutdown().await;
-                    }
-                    let stream = self
-                        .bind_stream(l, host, alt_svc(listen).as_deref())
-                        .map_err(ctx)?;
-                    self.streams.push((bound_form(l, host), stream));
-                }
-                ListenProto::Udp
-                | ListenProto::Tcp
-                | ListenProto::Dot
-                | ListenProto::Doh
-                | ListenProto::Doq
-                | ListenProto::Doh3 => {}
+            if let Err(e) = self.apply_one(l, listen, host).await {
+                error!(listener = %crate::gate_host::key(l), "{e}");
+                first_err.get_or_insert(e);
             }
         }
         let (kept, gone): (Vec<_>, Vec<_>) = self.udp.drain(..).partition(|(a, _)| {
@@ -555,18 +525,136 @@ impl Listeners {
             info!(%addr, "closing udp listener");
             l.shutdown();
         }
-        let (kept, gone): (Vec<_>, Vec<_>) = self
-            .streams
-            .drain(..)
-            .partition(|(c, _)| listen.iter().any(|l| bound_form(l, host) == *c));
+        // A stream whose address is still listed stays: a replacement that failed was handled
+        // above (closed when it would have left the gate off), and is reported below.
+        let (kept, gone): (Vec<_>, Vec<_>) = self.streams.drain(..).partition(|(c, _)| {
+            listen
+                .iter()
+                .any(|l| l.proto == c.proto && l.addr == c.addr)
+        });
         self.streams = kept;
         for (c, s) in gone {
             info!(addr = %c.addr, proto = ?c.proto, "closing listener");
             tokio::spawn(s.shutdown()); // drains its connections in the background
         }
-        // REQ: DNS-901 — only now, with every listener bound, are these the facts in force.
-        crate::gate_host::set_bound(host);
+        self.publish(listen, host);
+        match first_err {
+            None => {
+                // REQ: DNS-901 — only now, with every listener bound, are these the facts in force.
+                crate::gate_host::set_bound(host);
+                Ok(())
+            }
+            Some(e) => Err(e),
+        }
+    }
+
+    /// Applies one listener entry (see [`Listeners::apply`]).
+    async fn apply_one(
+        &mut self,
+        l: &Listener,
+        listen: &[Listener],
+        host: wrendns_config::HostFacts,
+    ) -> io::Result<()> {
+        let ctx = |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
+        match l.proto {
+            ListenProto::Udp if !self.udp.iter().any(|(a, _)| *a == l.addr) => {
+                let listener = UdpListener::spawn(
+                    &UdpConfig::new(l.addr, self.workers),
+                    &self.handler,
+                    &self.rt,
+                )
+                .map_err(ctx)?;
+                info!(addr = %listener.local_addr(), workers = self.workers, "listening (udp)");
+                self.udp.push((l.addr, listener));
+            }
+            ListenProto::Tcp
+            | ListenProto::Dot
+            | ListenProto::Doh
+            | ListenProto::Doq
+            | ListenProto::Doh3
+                if !self.streams.iter().any(|(c, _)| *c == bound_form(l, host)) =>
+            {
+                let old = self
+                    .streams
+                    .iter()
+                    .position(|(c, _)| c.proto == l.proto && c.addr == l.addr);
+                // The old socket answers without a device key and the new one would not: if the
+                // new one cannot be made, the old one must not survive.
+                let fail_closed = l.proto.needs_tls()
+                    && l.gated(host)
+                    && old.is_some_and(|i| self.streams[i].0.require_client_id != Some(true));
+                // The certificate is loaded before the old socket is closed: a file that
+                // cannot be read leaves the running listener (and its in-memory certificate)
+                // as it was, rather than dropping it, unless that listener is ungated and this
+                // change gates it.
+                if let Some(t) = &l.tls
+                    && let Err(e) = CertStore::load(t.cert.as_str(), t.key.as_str())
+                {
+                    if fail_closed && let Some(i) = old {
+                        let (_, s) = self.streams.remove(i);
+                        warn!(
+                            listener = %crate::gate_host::key(l),
+                            "closing the listener: its device key gate was turned on and its certificate cannot be loaded, so it must not keep answering without the gate"
+                        );
+                        s.shutdown().await;
+                        self.gate_failed = true;
+                    }
+                    return Err(ctx(e));
+                }
+                // Same protocol and address with other settings: replace it.
+                if let Some(i) = old {
+                    let (_, s) = self.streams.remove(i);
+                    s.shutdown().await;
+                }
+                match self.bind_stream(l, host, alt_svc(listen).as_deref()) {
+                    Ok(stream) => self.streams.push((bound_form(l, host), stream)),
+                    Err(e) => {
+                        // The old socket is already closed; say that the gate did not arrive.
+                        self.gate_failed |= fail_closed;
+                        return Err(ctx(e));
+                    }
+                }
+            }
+            ListenProto::Udp
+            | ListenProto::Tcp
+            | ListenProto::Dot
+            | ListenProto::Doh
+            | ListenProto::Doq
+            | ListenProto::Doh3 => {}
+        }
         Ok(())
+    }
+
+    /// REQ: DNS-901 — records what each encrypted listener is after the apply: the gate of its
+    /// socket (`None`: nothing bound), the host facts it was bound with and whether it matches
+    /// the configuration. The API, the probes and the health report read this, not the config.
+    fn publish(&mut self, listen: &[Listener], host: wrendns_config::HostFacts) {
+        let mut states = Vec::new();
+        let mut facts = std::collections::HashMap::new();
+        for l in listen.iter().filter(|l| l.proto.needs_tls()) {
+            let key = crate::gate_host::key(l);
+            let running = self
+                .streams
+                .iter()
+                .find(|(c, _)| c.proto == l.proto && c.addr == l.addr);
+            let matches = running.is_some_and(|(c, _)| *c == bound_form(l, host));
+            // A socket that was replaced (or is unchanged) is recorded with this apply's facts;
+            // one that failed to be replaced keeps the facts it was bound with.
+            let bound = if matches {
+                host
+            } else {
+                self.bound_facts.get(&key).copied().unwrap_or(host)
+            };
+            states.push(crate::gate_host::ListenerState {
+                gated: running.map(|(c, _)| c.require_client_id == Some(true)),
+                key: key.clone(),
+                facts: bound,
+                matches,
+            });
+            facts.insert(key, bound);
+        }
+        self.bound_facts = facts;
+        crate::gate_host::publish(states);
     }
 
     fn bind_stream(
@@ -1274,6 +1362,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         workers,
         handler: Arc::new(Handler(Arc::clone(&pipeline))),
         rt: tokio::runtime::Handle::current(),
+        bound_facts: std::collections::HashMap::new(),
+        gate_failed: false,
     };
     listeners.apply(&cfg.listen).await?;
 
@@ -1842,6 +1932,9 @@ async fn reload(
     if let Err(e) = listeners.apply(&new.listen).await {
         error!("reload: {e}; listeners unchanged where binding failed");
     }
+    // REQ: DNS-901 — a gate turned on that could not be applied closed the old listener: the
+    // change is reported as failed (a guarded entry is rolled back, not recorded as applied).
+    let gate_failed = listeners.gate_failed;
     if !same_upstreams {
         health.abort();
         *health = spawn_health_checks(&router);
@@ -1921,6 +2014,12 @@ async fn reload(
     // before the next query, not on the watcher's next tick.
     sources.pipeline.kube.reconfigured.notify_one();
     info!("configuration reloaded");
+    if gate_failed {
+        error!(
+            "the device key gate could not be applied to a listener, which is now closed (see the health reason listener_not_applied)"
+        );
+        return false;
+    }
     true
 }
 
@@ -2263,14 +2362,12 @@ mod tests {
         assert_eq!(crate::gate_host::bound_for_test(), Some(b));
     }
 
-    // REQ: DNS-901 — rebinding a listener whose gate changed loads its certificate first: when the
-    // files cannot be read the running listener stays, instead of being closed and not replaced.
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // the lock only keeps two tests off the one static
-    async fn dns_901_a_changed_gate_with_an_unreadable_certificate_keeps_the_listener() {
-        let _one = FACTS_IN_FORCE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// A DoT listener on a free port with a fresh certificate, and the pieces a gate test needs.
+    fn gate_fixture() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        impl Fn(Option<bool>) -> Listener,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let (cert, key) = (dir.path().join("c.pem"), dir.path().join("k.pem"));
         let pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
@@ -2280,12 +2377,13 @@ mod tests {
             .unwrap();
         std::fs::write(&cert, c.pem()).unwrap();
         std::fs::write(&key, pair.serialize_pem()).unwrap();
-        let listen = |gate: Option<bool>| Listener {
+        let cert2 = cert.clone();
+        let listen = move |gate: Option<bool>| Listener {
             proto: ListenProto::Dot,
             addr: "127.0.0.1:0".parse().unwrap(),
             path: None,
             tls: Some(wrendns_config::TlsFiles {
-                cert: wrendns_config::SafeString::new(cert.to_string_lossy()).unwrap(),
+                cert: wrendns_config::SafeString::new(cert2.to_string_lossy()).unwrap(),
                 key: wrendns_config::SafeString::new(key.to_string_lossy()).unwrap(),
             }),
             proxy_protocol: false,
@@ -2293,23 +2391,137 @@ mod tests {
             max_connections_per_address: None,
             require_client_id: gate,
         };
+        (dir, cert, listen)
+    }
+
+    fn test_listeners() -> Listeners {
         let pipeline = crate::pipeline::tests_support::pipeline_from(&Config::default());
-        let mut listeners = Listeners {
+        Listeners {
             udp: Vec::new(),
             streams: Vec::new(),
             workers: 1,
             handler: Arc::new(Handler(pipeline)),
             rt: tokio::runtime::Handle::current(),
-        };
+            bound_facts: std::collections::HashMap::new(),
+            gate_failed: false,
+        }
+    }
+
+    fn dot_port(l: &Listeners) -> u16 {
+        match &l.streams[0].1 {
+            Stream::Tcp(s, _) => s.local_addr().port(),
+            _ => unreachable!("a DoT listener is a TCP stream"),
+        }
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a change that turns the gate ON for a listener whose
+    // certificate cannot be loaded fails closed: the old ungated socket is closed, never left
+    // answering, and the state says so (health reason, API, probes).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the lock only keeps two tests off the one static
+    async fn dns_901_gate_on_with_an_unreadable_certificate_closes_the_ungated_listener() {
+        let _one = FACTS_IN_FORCE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_dir, cert, listen) = gate_fixture();
+        let mut listeners = test_listeners();
         let first = listen(Some(false));
         listeners.apply(std::slice::from_ref(&first)).await.unwrap();
         assert_eq!(listeners.streams.len(), 1);
-        // The files go bad; the gate changes: the apply fails and the old listener runs on.
+        let port = dot_port(&listeners);
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+        );
+        assert!(!crate::gate_host::effective_gate(&first));
+        // The files go bad; the gate is turned on: the apply fails and nothing ungated is left.
         std::fs::write(&cert, "not a certificate").unwrap();
         let second = listen(Some(true));
-        assert!(listeners.apply(&[second]).await.is_err());
+        assert!(
+            listeners
+                .apply(std::slice::from_ref(&second))
+                .await
+                .is_err()
+        );
+        assert!(listeners.gate_failed, "the reload reports a failed change");
+        assert!(listeners.streams.is_empty(), "the old socket is closed");
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err(),
+            "no answers without the gate"
+        );
+        // Health and the API tell the truth: closed, not as configured.
+        let off = crate::gate_host::mismatched(std::slice::from_ref(&second));
+        assert_eq!(off, vec![("dot://127.0.0.1:0".to_owned(), false)]);
+        let r = crate::health::listener_not_applied_reasons(&off);
+        assert!(r[0].summary.contains("dot://127.0.0.1:0 (closed)"));
+        crate::gate_host::clear_listeners_for_test();
+    }
+
+    // REQ: DNS-901 — a change that turns the gate OFF and fails keeps the old gated listener, and
+    // the state reports the socket as it is (still gated), not the configuration.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dns_901_gate_off_with_an_unreadable_certificate_keeps_the_gated_listener() {
+        let _one = FACTS_IN_FORCE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_dir, cert, listen) = gate_fixture();
+        let mut listeners = test_listeners();
+        listeners.apply(&[listen(Some(true))]).await.unwrap();
+        let port = dot_port(&listeners);
+        std::fs::write(&cert, "not a certificate").unwrap();
+        let second = listen(Some(false));
+        assert!(
+            listeners
+                .apply(std::slice::from_ref(&second))
+                .await
+                .is_err()
+        );
+        assert!(!listeners.gate_failed);
         assert_eq!(listeners.streams.len(), 1);
-        assert_eq!(listeners.streams[0].0.require_client_id, Some(false));
+        assert_eq!(listeners.streams[0].0.require_client_id, Some(true));
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+        );
+        // The API and the probes read the socket (gated), the configuration says off.
+        assert!(crate::gate_host::effective_gate(&second));
+        assert_eq!(
+            crate::gate_host::mismatched(std::slice::from_ref(&second)),
+            vec![("dot://127.0.0.1:0".to_owned(), true)]
+        );
+        crate::gate_host::clear_listeners_for_test();
+    }
+
+    // REQ: DNS-901 — one listener failing does not stop the others from applying, and a stream
+    // that is no longer configured is still closed.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dns_901_a_failed_listener_does_not_stop_the_rest_of_the_apply() {
+        let _one = FACTS_IN_FORCE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_dir, cert, listen) = gate_fixture();
+        let mut listeners = test_listeners();
+        let mut bad = listen(Some(false));
+        bad.addr = "127.0.0.1:0".parse().unwrap();
+        listeners.apply(std::slice::from_ref(&bad)).await.unwrap();
+        std::fs::write(&cert, "not a certificate").unwrap();
+        // The listener fails; the plain TCP one after it is still bound.
+        let tcp = Listener {
+            proto: ListenProto::Tcp,
+            tls: None,
+            ..listen(None)
+        };
+        let gated = listen(Some(true));
+        assert!(listeners.apply(&[gated, tcp]).await.is_err());
+        assert_eq!(listeners.streams.len(), 1, "the tcp listener was bound");
+        assert_eq!(listeners.streams[0].0.proto, ListenProto::Tcp);
+        crate::gate_host::clear_listeners_for_test();
     }
 
     // REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — a device behind a router has no neighbor entry of

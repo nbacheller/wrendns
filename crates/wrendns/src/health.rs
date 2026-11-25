@@ -108,40 +108,73 @@ pub(crate) fn gate_default_reasons(
     )]
 }
 
-/// REQ: DNS-901 (ADR-1090 point 2) — the host gained or lost a public IPv4 address since the
-/// listeners were bound, and a wildcard encrypted listener with no setting would now resolve its
-/// default the other way. Degraded until the next reload (or restart) applies it. `changed` is
-/// `(facts the listeners were bound with, facts now)`.
+/// REQ: DNS-901 (ADR-1090 point 2) — the host gained or lost a public IPv4 address since a
+/// listener was bound, and an encrypted listener with no setting would now resolve its default the
+/// other way. Degraded until the next reload (or restart) applies it. `bound` gives the host facts
+/// each listener was bound with, `now` the facts now.
 pub(crate) fn gate_stale_reasons(
     listen: &[wrendns_config::Listener],
-    changed: Option<(wrendns_config::HostFacts, wrendns_config::HostFacts)>,
+    bound: &dyn Fn(&wrendns_config::Listener) -> wrendns_config::HostFacts,
+    now: wrendns_config::HostFacts,
 ) -> Vec<HealthReason> {
-    let Some((bound, now)) = changed else {
-        return Vec::new();
-    };
-    let names: Vec<String> = listen
+    let flipping: Vec<&wrendns_config::Listener> = listen
         .iter()
         .filter(|l| l.require_client_id.is_none() && l.proto.needs_tls())
-        .filter(|l| l.default_gate(bound).on() != l.default_gate(now).on())
-        .map(|l| format!("{:?}://{}", l.proto, l.addr).to_lowercase())
+        .filter(|l| l.default_gate(bound(l)).on() != l.default_gate(now).on())
         .collect();
-    if names.is_empty() {
+    if flipping.is_empty() {
         return Vec::new();
     }
+    let names: Vec<String> = flipping
+        .iter()
+        .map(|l| format!("{:?}://{}", l.proto, l.addr).to_lowercase())
+        .collect();
+    // The word is the new default of the listeners named, and of no other.
+    let word = if flipping.iter().all(|l| l.default_gate(now).on()) {
+        "on"
+    } else if flipping.iter().all(|l| !l.default_gate(now).on()) {
+        "off"
+    } else {
+        "on or off, each as the host now implies"
+    };
     vec![reason(
         DEGRADED,
         "listener_gate_stale",
         format!(
-            "this host's addresses changed since the listeners were bound, so the default device key setting of {} would now be {}. Reload the configuration (SIGHUP) to apply it, or set require_client_id to true or false",
+            "this host's addresses changed since the listeners were bound, so the default device key setting of {} would now be {word}. Reload the configuration (SIGHUP) to apply it, or set require_client_id to true or false",
             names.join(", "),
-            if listen
-                .iter()
-                .any(|l| l.require_client_id.is_none() && l.default_gate(now).on())
-            {
-                "on"
-            } else {
-                "off"
-            }
+        ),
+        "#/settings?tab=system",
+    )]
+}
+
+/// REQ: DNS-901 (ADR-1090 point 3) — an encrypted listener whose socket is not what the
+/// configuration asks for after an apply (its certificate could not be read, or the bind failed);
+/// `listeners` is `(name, running)`. A change that turns the gate on closes the old ungated socket
+/// (`running` false); one that turns it off keeps the old gated one.
+pub(crate) fn listener_not_applied_reasons(listeners: &[(String, bool)]) -> Vec<HealthReason> {
+    if listeners.is_empty() {
+        return Vec::new();
+    }
+    let names: Vec<String> = listeners
+        .iter()
+        .map(|(n, running)| {
+            format!(
+                "{n} ({})",
+                if *running {
+                    "still running with its previous settings"
+                } else {
+                    "closed"
+                }
+            )
+        })
+        .collect();
+    vec![reason(
+        DEGRADED,
+        "listener_not_applied",
+        format!(
+            "the listener(s) {} do not match the configuration, because the last apply could not load the certificate or bind. A listener whose device key gate was turned on is closed rather than left open; fix the certificate or the address and reload (SIGHUP)",
+            names.join(", ")
         ),
         "#/settings?tab=system",
     )]
@@ -806,10 +839,12 @@ mod tests {
             public_ipv4: Some(true),
             global_ipv6: false,
         };
-        assert!(gate_stale_reasons(&[l("0.0.0.0:853", None)], None).is_empty());
-        let r = gate_stale_reasons(&[l("0.0.0.0:853", None)], Some((no, yes)));
+        let bound = |_: &wrendns_config::Listener| no;
+        assert!(gate_stale_reasons(&[l("0.0.0.0:853", None)], &bound, no).is_empty());
+        let r = gate_stale_reasons(&[l("0.0.0.0:853", None)], &bound, yes);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].code, "listener_gate_stale");
+        assert!(r[0].summary.contains("would now be on"), "{}", r[0].summary);
         // An explicit setting, a private address and a public address do not flip.
         assert!(
             gate_stale_reasons(
@@ -818,10 +853,40 @@ mod tests {
                     l("192.168.1.2:853", None),
                     l("203.0.113.5:853", None)
                 ],
-                Some((no, yes))
+                &bound,
+                yes
             )
             .is_empty()
         );
+        // The word follows the listeners that flip: the wildcard goes off, the public address
+        // (on in both) is not named.
+        let on_bound = |_: &wrendns_config::Listener| yes;
+        let r = gate_stale_reasons(
+            &[l("0.0.0.0:853", None), l("203.0.113.5:853", None)],
+            &on_bound,
+            no,
+        );
+        assert!(
+            r[0].summary.contains("would now be off"),
+            "{}",
+            r[0].summary
+        );
+        assert!(!r[0].summary.contains("203.0.113.5"), "{}", r[0].summary);
+    }
+
+    /// REQ: DNS-901 — a listener that does not match the configuration is named, with whether it
+    /// still runs.
+    #[test]
+    fn dns_901_listener_not_applied_reason_names_the_listener() {
+        assert!(listener_not_applied_reasons(&[]).is_empty());
+        let r = listener_not_applied_reasons(&[
+            ("dot://0.0.0.0:853".to_owned(), false),
+            ("doh://0.0.0.0:443".to_owned(), true),
+        ]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "listener_not_applied");
+        assert!(r[0].summary.contains("dot://0.0.0.0:853 (closed)"));
+        assert!(r[0].summary.contains("doh://0.0.0.0:443 (still running"));
     }
 
     /// REQ: DNS-901 — only a listener gated by the default (unset, public) raises the notice;

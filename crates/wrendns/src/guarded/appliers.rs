@@ -356,7 +356,7 @@ impl Applier for ListenAccess {
             format!("Changes no listener's device key setting on {}.", cx.node)
         } else {
             format!(
-                "Changes the device key setting on {} (a reload applies it; a DoT, DoH, DoH3 or DoQ listener whose effective gate changes is closed and bound again, ending its open connections, and stays as it was if its certificate cannot be loaded): {}.",
+                "Changes the device key setting on {} (a reload applies it; a DoT, DoH, DoH3 or DoQ listener whose effective gate changes is closed and bound again, ending its open connections, and, if its certificate cannot be loaded, is closed when the gate was turned on and keeps its gate when it was turned off): {}.",
                 cx.node,
                 changes.join("; ")
             )

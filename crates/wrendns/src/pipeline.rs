@@ -1036,7 +1036,13 @@ impl Pipeline {
                     return ready(Some(self.finish(&q, out, len, meta.transport)));
                 }
                 // REQ: FLT-014 (T9.20) — list rewrites (`$dnsrewrite`) win over blocking.
-                if let Some(r) = self.list_rewrite(&q, who) {
+                // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear does not get one that points
+                // at a private address: that answer is an inside fact (the name goes on to the
+                // filter and the upstream like any other).
+                if let Some(r) = self
+                    .list_rewrite(&q, who)
+                    .filter(|(rw, _)| !(public_only(meta) && rewrite_is_private(rw)))
+                {
                     let groups = st.policy.clients.group_names(ident);
                     return self.list_rewrite_answer(req, &q, r, groups, who, meta, out, start, oc);
                 }
@@ -2871,6 +2877,18 @@ fn public_only(meta: &RequestMeta) -> bool {
     meta.gated && matches!(meta.transport, Transport::Dot | Transport::Doq)
 }
 
+/// REQ: DNS-901 (ADR-1090 point 3) — a list rewrite to an address that is not public. A rewrite
+/// to a public address or to a name is not an inside fact and stays.
+fn rewrite_is_private(rw: &wrendns_filter::rewrite::ListRewrite) -> bool {
+    match rw {
+        wrendns_filter::rewrite::ListRewrite::Addrs(ips) => {
+            ips.iter().any(|ip| !wrendns_config::is_public_address(*ip))
+        }
+        wrendns_filter::rewrite::ListRewrite::Rcode(_)
+        | wrendns_filter::rewrite::ListRewrite::Cname(_) => false,
+    }
+}
+
 impl QueryHandler for Handler {
     /// REQ: DNS-901 (T36.2) — DoH and DoH3 ask before reading the body.
     fn admit(&self, meta: &RequestMeta) -> bool {
@@ -3034,7 +3052,11 @@ mod tests {
     }
 
     /// Compiles `rules` into a snapshot and installs it as the pipeline's filter.
-    fn install_filter(p: &Pipeline, rules: &str, lookup: wrendns_filter::matcher::Lookup) {
+    pub(super) fn install_filter(
+        p: &Pipeline,
+        rules: &str,
+        lookup: wrendns_filter::matcher::Lookup,
+    ) {
         use wrendns_filter::compile::{CompileOptions, ListData, ListInput, compile};
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("snap");
@@ -6317,6 +6339,49 @@ mod key_gate_tests {
         assert!(leak(&doh));
         for t in [Transport::Dot, Transport::Doq] {
             assert!(!leak(&ask(meta(PUBLIC, t, Some(KEY), true)).await), "{t:?}");
+        }
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a list `$dnsrewrite` to a private address is an inside
+    // fact: a key sent in clear (DoT, DoQ) does not get it, a DoH path key does; a rewrite to a
+    // public address stays for both.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_does_not_get_a_list_rewrite_to_a_private_address() {
+        let (p, _hits) = node().await;
+        super::tests::install_filter(
+            &p,
+            "||inside.example^$dnsrewrite=10.9.8.7
+||outside.example^$dnsrewrite=192.0.2.55
+",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        let ask = |name: &'static str, t: Transport| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                let m = meta(PUBLIC, t, Some(KEY), true);
+                match Handler(p).handle(&a_query(name), &m, &mut out) {
+                    Response::Ready(n) => out[..n].to_vec(),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                }
+            }
+        };
+        let has = |r: &[u8], ip: [u8; 4]| r.windows(4).any(|w| w == ip);
+        assert!(has(
+            &ask("inside.example", Transport::Doh).await,
+            [10, 9, 8, 7]
+        ));
+        for t in [Transport::Dot, Transport::Doq] {
+            let r = ask("inside.example", t).await;
+            assert!(!has(&r, [10, 9, 8, 7]), "{t:?}: no private rewrite");
+        }
+        for t in [Transport::Doh, Transport::Dot, Transport::Doq] {
+            let r = ask("outside.example", t).await;
+            assert!(has(&r, [192, 0, 2, 55]), "{t:?}: a public rewrite stays");
         }
     }
 

@@ -816,7 +816,6 @@ impl Backend for ApiBackend {
             .as_ref()
             .and_then(|f| f.matcher.snapshot().cloned());
         let node = crate::http::node_name(&cfg);
-        let host = crate::gate_host::facts();
         let started_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_micros())
@@ -844,22 +843,26 @@ impl Backend for ApiBackend {
             listener_access: cfg
                 .listen
                 .iter()
-                .map(|l| wrendns_api::model::ListenerAccess {
-                    listener: format!("{}://{}", label(&l.proto), l.addr),
-                    require_client_id: l.gated(host),
-                    setting: match l.require_client_id {
-                        None => "unset",
-                        Some(true) => "true",
-                        Some(false) => "false",
+                .map(|l| {
+                    // REQ: DNS-901 — what the socket does, and the facts it was bound with.
+                    let host = crate::gate_host::facts_for(l);
+                    wrendns_api::model::ListenerAccess {
+                        listener: format!("{}://{}", label(&l.proto), l.addr),
+                        require_client_id: crate::gate_host::effective_gate(l),
+                        setting: match l.require_client_id {
+                            None => "unset",
+                            Some(true) => "true",
+                            Some(false) => "false",
+                        }
+                        .to_owned(),
+                        gated_by_default: l.gated_by_default(host),
+                        public_address: wrendns_config::is_public_address(l.addr.ip()),
+                        wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
+                        default_on: l.default_gate(host).on(),
+                        default_reason: l.default_gate(host).describe().to_owned(),
+                        public_exposure: l.default_gate(host).public_exposure(),
+                        can_carry_key: l.proto.needs_tls(),
                     }
-                    .to_owned(),
-                    gated_by_default: l.gated_by_default(host),
-                    public_address: wrendns_config::is_public_address(l.addr.ip()),
-                    wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
-                    default_on: l.default_gate(host).on(),
-                    default_reason: l.default_gate(host).describe().to_owned(),
-                    public_exposure: l.default_gate(host).public_exposure(),
-                    can_carry_key: l.proto.needs_tls(),
                 })
                 .collect(),
             query_log: self.src.qlog.is_some(),
@@ -2895,7 +2898,13 @@ impl Backend for ApiBackend {
         // bound: a wildcard listener's default would now resolve differently.
         reasons.extend(crate::health::gate_stale_reasons(
             &self.src.config.load().listen,
-            crate::gate_host::changed_since_bind(),
+            &crate::gate_host::facts_for,
+            crate::gate_host::read(),
+        ));
+        // REQ: DNS-901 (ADR-1090 point 3) — a listener whose socket is not what the configuration
+        // asks for after an apply.
+        reasons.extend(crate::health::listener_not_applied_reasons(
+            &crate::gate_host::mismatched(&self.src.config.load().listen),
         ));
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
