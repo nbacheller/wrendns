@@ -27,7 +27,7 @@ The repository that goes public is **the current repository**. Nothing is re-cre
 ## What the repository already answers
 
 - **Fork approval cannot be set while private.** `gh api repos/nbacheller/wrendns/actions/permissions/fork-pr-contributor-approval` answers 422, "Fork PR approval is not allowed for private repositories" (read 2026-11-24). It is step 18, straight after the flip.
-- **The `runs-on` guard is not a barrier against a fork.** For a `pull_request` event GitHub runs the workflow file from the pull request's merge commit, so a fork can edit any job's `runs-on`, including the guard `github.event.pull_request.head.repo.full_name == github.repository` in `pr.yml` and `main.yml`. What keeps a fork off the box is the approval gate (step 18) and, until it is tested, stopped runners (E4).
+- **The `runs-on` guard is not a barrier against a fork.** For a `pull_request` event GitHub runs the workflow file from the pull request's merge commit, so a fork can edit any job's `runs-on`, including the guard `github.event.pull_request.head.repo.full_name == github.repository` in `pr.yml` and `main.yml`. What keeps a fork off the box is the approval gate (step 18) and, until it is tested, stopped runners (E4). **Stopped is not unregistered:** the runners stay registered (step 11 expects `offline` eight times), and a job aimed at registered but offline runners waits in the queue instead of failing. Until step 18 the repository has GitHub's default fork-approval policy, and a run that already started is not held back by a later change of the setting. So a fork pull request opened between step 17 and step 18 can leave a queued job for the self-hosted labels, which a runner would pick up the moment it starts. Steps 18 and 26 therefore list such runs and cancel them (the command is in step 18). Removing the runner variables (step 12) does not close this: with them unset, `runs-on` in `pr.yml` and `main.yml` evaluates to `ubuntu-latest` (`pr.yml` lines 82 and 101; `main.yml` lines 159, 179, 316, 369, 516 and 661), because `vars.WRENDNS_PR_RUNNER` and `vars.WRENDNS_RUNNER` are empty strings and so fall through to `'"ubuntu-latest"'`. But a fork edits `runs-on` itself and writes the labels in, whatever the variables hold. The variables only keep the repository's own jobs off the stopped box.
 - **The release workflow's push to `main` works today and is refused from step 22.** The ruleset `main` (id 27699911) holds only the rules `deletion` and `non_fast_forward`, with one bypass actor, the repository admin role, mode `always` (read 2026-11-24). A fast-forward push therefore passes today. Once step 22 requires checks, `git push origin HEAD:main` in `release.yml` is refused (step 24).
 - **What switches itself on at the flip.** The attestation steps in `image.yml`, the `dependency-review` job in `pr.yml` and the `codeql` workflow all test `private == false`. Nothing needs editing for them.
 - **The privacy check requires the list only here.** `WRENDNS_PRIVACY_REQUIRED` is `github.repository == 'nbacheller/wrendns'` in `pr.yml` (and the same test, plus a same-repository head, in `main.yml`). A fork pull request runs in this repository, gets no secret, and fails closed (ADR-1080 point 2). The Dependabot secret `PRIVACY_DENYLIST` exists (read 2026-11-24).
@@ -38,6 +38,10 @@ The repository that goes public is **the current repository**. Nothing is re-cre
 - **Packages are linked to the archive.** The image `wrendns` and the chart `charts/wrendns` are private and linked to `nbacheller/wrendns-archive`, with 333 and 27 versions, the oldest from 2026-11-19 (read 2026-11-24). `telltale` and `charts/telltale` are private and linked there too. The `Dockerfile` sets `org.opencontainers.image.source` to `https://github.com/nbacheller/wrendns`, and `Chart.yaml` lists that address under `sources`. See open question Q1.
 - **Already public and cannot be withdrawn:** the keyless cosign signatures of every edge build are in the public Sigstore transparency log, naming `nbacheller/wrendns` and `image.yml`. They hold no private value.
 - **Commit identities (E1).** Accepted as they are. To see what the history exposes, count it in the step 14 mirror without printing a value: `git -C <outside>/wrendns-final.git log --all --format='%ae%n%ce' | sort -u | grep -vc '@users.noreply.github.com$'` prints the number of distinct addresses that are not GitHub noreply addresses (5 across origin's branches and tags on 2026-11-24). Drop `-c` to see them on your own screen only.
+
+## The gap in the history scan
+
+`check-private.py --history` reads `git log --all`, so it sees only commits that some ref reaches. A commit that no ref points at can still be fetched from a public repository by anyone who knows its hash (short hashes in the web interface too) until GitHub garbage-collects it. Nothing lists such commits from outside, and a mirror clone does not hold them, so no step here can scan them from GitHub's side. The owner's own clones and reflogs may hold some. This is open question Q11, not decided here.
 
 ## The order in one line each
 
@@ -53,7 +57,7 @@ Part A, prepare. The repository stays private.
 8. Scan what the builds published: release assets, SBOMs, debug files.
 9. Delete the leftover branches, and the tags on the owner's list. **Owner's yes.**
 
-Part B, the window. From step 10 to the tag in step 24, nothing lands on any ref.
+Part B, the window. From step 10 to the tag in step 24, nothing lands on `main` or the tags (step 10 says what is expected besides).
 
 10. Freeze every ref.
 11. Stop the eight runners (E4). **Owner's yes** (build box).
@@ -189,7 +193,7 @@ Branches on GitHub on 2026-11-24 (`git ls-remote --heads origin`): `main`, `cla-
   - For each work branch: merge it through a pull request, or delete it: `git push origin --delete <branch>`.
   - The Dependabot branches: close their pull requests or let them be. Dependabot opens them again on its schedule. Deleting a branch closes its pull request.
   - Tags, if Q7 says so: `git push origin --delete fork-base upstream-sync-last`. Keep `permissive-final` (E7) and `edge` (`image.yml` re-creates it).
-- **Verify:** `git ls-remote --heads origin` lists only what the owner kept. A deleted branch's commits stay reachable by hash, and through `refs/pull/*` when it had a pull request, which is why step 7 scanned them first.
+- **Verify:** `git ls-remote --heads origin` lists only what the owner kept. A deleted branch's commits stay reachable by hash. Those that a `refs/pull/*` ref reaches were scanned in step 7 (the mirror holds every ref). **Commits that no ref reaches were not scanned**: a branch deleted before today that never had a pull request, or a pull request head replaced by a force push (`refs/pull/<N>/head` keeps only the latest). See "The gap in the history scan" and Q11.
 - **Undo:** push the branch or tag again from a clone that has it.
 
 ## Part B: the window
@@ -197,7 +201,7 @@ Branches on GitHub on 2026-11-24 (`git ls-remote --heads origin`): `main`, `cla-
 ### 10. Freeze every ref
 
 - **Who:** the owner announces it to every session and agent.
-- **How:** from now until the tag in step 24: no merge, no push and no tag on any ref, and no new pull request, issue or comment. Dependabot cannot be paused this way, which step 16 checks. Plan the window away from the scheduled runs: `nightly.yml` runs at 04:41 UTC daily and 05:17 UTC on Mondays, and Dependabot at 02:00 America/New_York (ADR-1078 point 4).
+- **How:** from now until the tag in step 24: no merge, no push and no tag on `main` or any branch, and no new issue or comment. After the flip (step 17) the freeze covers `main` and the tags; the refs that the fork tests create (`refs/pull/*`, step 20) and the CLA signature that `cla.yml` may write to `cla-signatures` are expected. Dependabot cannot be paused this way, which step 16 checks. Plan the window away from the scheduled runs: `nightly.yml` runs at 04:41 UTC daily and 05:17 UTC on Mondays, `codeql.yml` on Mondays at 04:23 UTC, and Dependabot at 02:00 America/New_York (ADR-1078 point 4).
 - **Verify:** step 16.
 - **Undo:** lift the freeze.
 
@@ -210,7 +214,7 @@ Branches on GitHub on 2026-11-24 (`git ls-remote --heads origin`): `main`, `cla-
 
 ### 12. Remove the runner variables (Q3)
 
-Only if the owner's answer to Q3 is yes. With the variables unset, every job falls back to `ubuntu-latest` (`docs/ci-runners.md`), so nothing waits for the stopped box, and every log made before step 26 comes from GitHub-hosted runners.
+Only if the owner's answer to Q3 is yes. With the variables unset, every job falls back to `ubuntu-latest` (`docs/ci-runners.md`), so nothing of the repository's own waits for the stopped box, and every log made before step 26 comes from GitHub-hosted runners. (Unset, `runs-on` evaluates to `ubuntu-latest` in every job that reads the variables. A fork can still write the self-hosted labels into its own copy of a workflow, so this does not replace step 18.)
 
 - **Who:** the owner. **Owner's yes** (variables).
 - **How:** `gh variable delete WRENDNS_RUNNER -R nbacheller/wrendns` and `gh variable delete WRENDNS_PR_RUNNER -R nbacheller/wrendns`. Their values (`["self-hosted","wrendns"]`) are set again in step 26.
@@ -235,7 +239,8 @@ Steps 7 to 13 are only as good as the moment they ran. This step repeats them on
   - Step 8 again if `edge` changed since then (`gh release view edge -R nbacheller/wrendns --json name` names the commit).
   - Step 4 again for every issue, pull request and comment since step 4.
   - Step 3's collaborators, invitations, forks and installed apps, again.
-- **Verify:** every scan is clean, and the owner writes "pre-flip review done" to the agent, naming anything removed.
+  - Q11's answer, carried out: the unreachable-commit scan of the owner's clones (option 1), or the written acceptance (option 3).
+- **Verify:** every scan is clean, Q11 has its written answer, and the owner writes "pre-flip review done" to the agent, naming anything removed.
 - **On a hit:** as in step 7. The flip waits.
 - **Undo:** nothing to undo.
 
@@ -268,12 +273,13 @@ Run logs can hold what no scan has read, and logs of jobs on the build box name 
   - Step 15's three counts print `0`.
   - Step 11's runner check prints `offline` eight times, and `gh variable list -R nbacheller/wrendns` is empty if step 12 ran.
   - `gh api repos/nbacheller/wrendns/forks --jq length` prints `0`.
+  - Packages, by Q1's answer. Under (b): `gh api user/packages/container/wrendns` and `gh api user/packages/container/charts%2Fwrendns` answer 404. Under (a) or (c): `gh api 'user/packages/container/wrendns/versions?per_page=100' --paginate --jq '.[].id' | wc -l` and the same for `charts%2Fwrendns` equal the counts the owner accepted at step 13. `telltale` and `charts/telltale` are unchanged from step 3.
 - **Undo:** nothing to undo.
 
 ### 17. Make the repository public
 
 - **Who:** the owner. **Owner's explicit yes, given now, after a clean step 14 and step 16.**
-- **How:** Settings, General, Danger Zone, Change repository visibility, Public, and the typed confirmation. Steps 18 to 24 follow at once: E2 puts v1.0.0 within the hour.
+- **How:** Settings, General, Danger Zone, Change repository visibility, Public, and the typed confirmation. **Step 18 is the very next action, in the same minute**, before anything else: it closes the window in which a fork pull request can leave a queued job for the self-hosted labels (see "What the repository already answers"). Steps 19 to 24 follow at once: E2 puts v1.0.0 within the hour.
 - **Verify:** `gh repo view nbacheller/wrendns --json visibility` shows `PUBLIC`, and from a machine with no GitHub login `curl -fsSIL -o /dev/null -w '%{http_code}\n' https://github.com/nbacheller/wrendns` prints `200`.
 - **Undo:** **cannot be undone.** Setting it private again stops new readers, but whatever was cloned, forked, fetched or cached meanwhile stays out (step 33).
 
@@ -285,7 +291,9 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
 
 - **Who:** the owner. **Owner's yes.**
 - **How:** Settings, Actions, General, the fork pull request workflow approval setting: **Require approval for all outside collaborators**. GitHub may word the choice as "all external contributors". Save.
-- **Verify:** `gh api repos/nbacheller/wrendns/actions/permissions/fork-pr-contributor-approval` now answers with the policy instead of the 422. **To confirm at step 18:** the value it shows for this choice, recorded here.
+- **Verify:**
+  - `gh api repos/nbacheller/wrendns/actions/permissions/fork-pr-contributor-approval` now answers with the policy instead of the 422. **To confirm at step 18:** the value it shows for this choice, recorded here.
+  - **No queued fork run.** List every pull request run that is waiting, queued, pending or awaiting approval, with its head repository: for each of `queued`, `waiting`, `pending` and `action_required`, `gh api "repos/nbacheller/wrendns/actions/runs?event=pull_request&status=$status&per_page=100" --jq '.workflow_runs[] | [.id, .status, .head_repository.full_name] | @tsv'`. **The rule:** every run whose head repository is not `nbacheller/wrendns` is cancelled at once, before any runner starts: `gh run cancel <id> -R nbacheller/wrendns` (a run still awaiting approval is no threat, but cancel it too and let the contributor push again). Then list again: no fork run remains. Step 26 repeats this and makes zero such runs a condition.
 - **Undo:** none wanted. Never relax it while runners are attached.
 
 ### 19. Start the first runs after the flip
@@ -299,6 +307,8 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
 - **Undo:** none for what was published. Edge is replaced by the next push to `main`.
 
 ### 20. The test fork pull requests A and B
+
+**Order:** steps 20 to 22 do not feed the release. If time is short they may follow step 24, with two conditions: step 20 before step 26, and step 22 before step 25. E2's "within the hour" is measured from step 17 to the `v1.0.0` tag push in step 24; what can spend it is the cold first builds of step 19 and step 23's package visibility, not a second GitHub account (below).
 
 - **Who:** the owner, from a second GitHub account that is not a collaborator. **To confirm at step 20:** that such an account exists. **Owner's yes** to approve test A's run.
 - **How and verify:**
@@ -321,7 +331,7 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
   - **CodeQL default setup must be off:** `gh api repos/nbacheller/wrendns/code-scanning/default-setup --jq .state` prints `not-configured`. If it is on, switch it off: `codeql.yml` is the advanced setup, and GitHub refuses its results while the default setup is on. CodeQL reports only (ADR-1080 point 5). Then step 19's `codeql` dispatch.
   - If Q6 says so: Settings, Actions, General, "Require actions to be pinned to a full-length commit SHA" (`sha_pinning_required`).
   - Discussions stay on: `CONTRIBUTING.md` and `README.md` link to them.
-- **Verify:** `gh api repos/nbacheller/wrendns --jq .security_and_analysis` shows secret scanning and push protection `enabled` (it was `null` while private). The advisory form opens in a private window. The `codeql` run uploads results.
+- **Verify:** `gh api repos/nbacheller/wrendns --jq .security_and_analysis` shows secret scanning and push protection `enabled` (it was `null` while private). `gh api -i repos/nbacheller/wrendns/vulnerability-alerts` answers `204` when Dependabot alerts are on and 404 when off (GitHub's documented REST endpoint; **to confirm at step 21**). `gh api repos/nbacheller/wrendns/private-vulnerability-reporting --jq .enabled` prints `true` (GitHub's documented REST endpoint; **to confirm at step 21**). The advisory form opens in a private window. The `codeql` run uploads results.
 - **Undo:** each can be switched off again.
 
 ### 22. The ruleset
@@ -368,12 +378,13 @@ From this minute anyone can fork and open a pull request. The runners are stoppe
 
 ### 26. Start the runners, then test C
 
-- **Who:** the owner, on the build box. **Owner's yes** (build box, variables, and approving test C's run). Only after step 18 is verified and step 20's tests behaved as stated.
+- **Who:** the owner, on the build box. **Owner's yes** (build box, variables, and approving test C's run). Only after step 18 is verified and step 20's tests behaved as stated, **and only with zero fork runs waiting** (point 0).
 - **How:**
+  0. **Before any runner starts**, repeat step 18's four listings (`queued`, `waiting`, `pending`, `action_required`, `event=pull_request`). Cancel every run whose head repository is not `nbacheller/wrendns` (`gh run cancel <id> -R nbacheller/wrendns`), then list again. **Condition of the owner's yes:** no such run is left. Test B stays awaiting approval with no job started; if it shows up as `queued` or `waiting`, cancel it and open it again later. A run from a branch of this repository may stay.
   1. Start each runner's supervisor ("Adding a runner", point 4, in `docs/ci-runners.md`). The runners keep their registration: the identity was copied, not re-registered. **To confirm at step 26:** the exact command on the build box, recorded here.
   2. If step 12 ran: `gh variable set WRENDNS_RUNNER -R nbacheller/wrendns --body '["self-hosted","wrendns"]'` and the same for `WRENDNS_PR_RUNNER`.
   3. **Test C:** push one more commit to test A's fork branch. Approve the new run after reading its diff, and check with step 20's jobs command that every job is still GitHub-hosted, now that the variables are set and runners are attached.
-- **Verify:** `gh api repos/nbacheller/wrendns/actions/runners --jq '.runners[].status'` prints `online` eight times. A pull request from a branch of this repository runs `clippy` on the box. Test B is still awaiting approval with no job started. Then close tests A and B, with a comment that follows E5.
+- **Verify:** the listings of point 0 held no fork run when the runners started. `gh api repos/nbacheller/wrendns/actions/runners --jq '.runners[].status'` prints `online` eight times. A pull request from a branch of this repository runs `clippy` on the box. Test B is still awaiting approval with no job started. Then close tests A and B, with a comment that follows E5.
 - **Undo:** stop the supervisors and delete the variables. Every job then falls back to `ubuntu-latest`.
 
 ### 27. The site switch
@@ -481,13 +492,14 @@ Each is asked through the question tool at step 2. The recommendation is not a d
 - **Q8. The `telltale-*` copies in the releases.** No code path of this project reads a `telltale-*` asset: `updates.rs` and `install.sh` read `wrendns-*` from `nbacheller/wrendns`, and an old TelltaleDNS binary reads upstream's releases and trusts only upstream's key (ADR-1028 point 8, ADR-1034, `docs/running.md`). The copies protect nobody. **Recommended:** remove them before v1.0.0 (a task below), which ADR-1028 point 10 had planned for the release after. Keep the migration path itself: `deploy/systemd/migrate-from-telltale.sh`, the `install.sh` hooks, the `legacy*` modules and the `rebrand:keep` formats.
 - **Q9. The branches** listed in step 9: merge or delete each one? **Recommended:** merge or delete every work branch before step 14; leave Dependabot's.
 - **Q10. The text found in step 4:** edit, delete or keep, item by item.
+- **Q11. Commits that no ref reaches (the gap in the history scan).** Options: (1) scan the owner's local clones for commits that were pushed and are no longer reachable: in a scratch clone give each `git rev-list --reflog` commit a temporary ref, then run `check-private.py --history` there; (2) ask GitHub Support to garbage-collect the repository before the flip; (3) accept the risk in writing. **Recommended: (1), and (3) for what it cannot reach.** It is cheap and covers what the owner's machines can supply. GitHub's own unreachable objects cannot be listed, and (2) is slow and not guaranteed.
 
 ## Tasks to do before the flip
 
-- `.github/workflows/release.yml`: in "Move main to the next version", replace the bump, commit, `git push origin HEAD:main` and the two `gh workflow run` lines with one `::notice` that names `deploy/release/bump.sh <next>` and a pull request; then update that step's lines in the header and `docs/releasing.md` ("try to move `main` on", "Moving `main` on fails").
+- `.github/workflows/release.yml`: in "Move main to the next version", replace the bump, commit, `git push origin HEAD:main` and the two `gh workflow run` lines with one `::notice` that names `deploy/release/bump.sh <next>` and a pull request; then update that step's lines in the header and `docs/releasing.md` ("try to move `main` on", "Moving `main` on fails"). Also: the header's present-tense sentence "The ruleset on main requires checks ... so that push is refused" becomes "once the ruleset requires checks (docs/going-public.md step 22), that push is refused" (today it still succeeds); the bullet in `docs/releasing.md`, "Things that aren't obvious", that says the dispatch "never runs" and then that `main.yml` and `image.yml` accept `workflow_dispatch` for this is reworded to say the dispatch is for the tag build and for people re-running CI; the header of `deploy/release/bump.sh` ("The release workflow runs it after tagging") says it is run by hand or through a pull request; and the comment at `.github/workflows/main.yml` line 17 ("The release workflow starts CI for the commit it pushes to main (T9.26)") says `workflow_dispatch` is for re-running CI by hand.
 - `AGENTS.md` rule 9: "moves `main` to the next version" becomes "`main` then moves on through `deploy/release/bump.sh` and a pull request".
 - `docs/ci-runners.md`, "Trust model": the `runs-on` guard is not a barrier against a fork, which can edit it; the barrier is approval of fork runs (E4), and runners are attached only after it is tested.
 - `CONTRIBUTING.md` (the privacy check paragraph) and the comment above the `privacy` job in `.github/workflows/pr.yml`: replace "a maintainer runs the check on a branch" with the E5 procedure (step 32).
 - `LICENSING.md`: reword the sentence on `ghcr.io/nbacheller/telltale` and `ghcr.io/nbacheller/charts/telltale` to the answer to Q2.
-- If Q8 is yes: remove `deploy/release/legacy-assets.sh`, its use in the Checksums step of `.github/workflows/image.yml`, `deploy/release/tests/legacy-assets-test.sh` and its lines in `.github/workflows/main.yml` and `.github/workflows/pr.yml`, "The rename window" in `docs/releasing.md`, and the release-files row in the rename table of `docs/running.md`.
+- If Q8 is yes: remove `deploy/release/legacy-assets.sh`, its use in the Checksums step of `.github/workflows/image.yml`, `deploy/release/tests/legacy-assets-test.sh` and its lines in `.github/workflows/main.yml` and `.github/workflows/pr.yml`, "The rename window" in `docs/releasing.md`, and the release-files row in the rename table of `docs/running.md`. Also a dated owner-decision note in ADR-1028, items 8 and 10, in `spec/11-decisions.md` (item 8 published `telltale-<arch>-linux` copies "for this release"; item 10 closed the window "the release after the rename"; both now end before v1.0.0).
 - `deploy/release/notes/v1.0.0.md` and the 1.0.0 version (`deploy/release/bump.sh 1.0.0`): step 5.
