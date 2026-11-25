@@ -477,6 +477,29 @@ ADR-1080 point 1 requires four checks; the fourth is the CLA's. `cla.yml` runs `
 - **Verify:** step 22's `gh api` call lists four contexts. A maintainer pull request still merges.
 - **Undo:** remove the context from the ruleset.
 
+## The record of 2026-11-25
+
+Part A's step 9 and Parts B and C up to step 25 were carried out on 2026-11-25. Times are UTC. Each step had the owner's yes at the time, through the question tool.
+
+- **Step 9:** the leftover branches and tags were deleted; the list is kept with the owner.
+- **Step 10, 14:58:** the freeze began. No scheduled run fell inside the window.
+- **Step 11:** the eight supervisors (`wrendns-lxd-runner@01` to `08`) were disabled and each container's runner service stopped, then the container powered off: the first two points of `rollback-runner.sh`, without its third. Each service stop took its full five-minute timeout. All eight runners read `offline` at 15:15. To start them again (step 26): `systemctl enable --now wrendns-lxd-runner@NN` for each.
+- **Step 12:** both variables deleted.
+- **Step 13:** `wrendns` (417 versions) and `charts/wrendns` (34) deleted through the API. Both were still linked to the earlier repository.
+- **Step 14:** the `privacy-full` job of `nightly.yml`, dispatched on `main`'s head: the history of 1,532 commits, the tree of 1,414 files and the 19 files of the `edge` release, each clean against 61 patterns. Items #109 to #115 were read. One collaborator; no invitation, fork, webhook or deploy key. Not done, and accepted by the owner: a secret scanner over the mirror, and Q11's scan of local clones (nobody holds the list outside the repository secret).
+- **Step 15:** 854 runs, 402 artifacts and about 217 caches deleted. GitHub answered many of the deletions with HTTP 500, and `gh cache delete --all` stops at the first failure; deleting each run, artifact and cache by id, in repeated passes, brought all three counts to 0 in about 45 minutes. The `cache/usage` figure lagged behind the empty cache list.
+- **Step 16:** refs unchanged since the scan, and every other check as written.
+- **Step 17, 16:47:27:** the owner made the repository public.
+- **Step 18, 16:47:28:** set through the API: `PUT repos/nbacheller/wrendns/actions/permissions/fork-pr-contributor-approval` with `{"approval_policy":"all_external_contributors"}`. The read-back showed the old value for a few seconds, then `all_external_contributors`. No fork and no waiting fork run.
+- **Step 19:** `image`, `main` and `codeql` on `main`'s head, all on GitHub-hosted runners with cold caches: `image` took about 30 minutes. `main`'s two `helm` jobs failed once because the edge image did not exist yet, and passed on the re-run.
+- **Step 21:** private vulnerability reporting, secret scanning and push protection enabled through the API; Dependabot alerts answered 204; CodeQL default setup was `not-configured`. `sha_pinning_required` set to `true` after the green runs.
+- **Step 22:** the ruleset updated through the API: `required_status_checks` with `privacy`, `site` and `pr-ok` (the GitHub Actions app as their source) beside `deletion` and `non_fast_forward`; one bypass actor, the repository admin role, in `pull_request` mode. Pull request #116 merged with the three checks green. Whether a direct push by the admin role is refused was not tried.
+- **Step 23:** the image run re-created both packages already public and linked to `nbacheller/wrendns`; nothing had to be changed. Both pull with no login.
+- **Step 24, 17:28 to 17:49:** `release.yml` with version `1.0.0` tagged `v1.0.0` on `0a787a28` and printed its next-version notice; the `image` run on the tag was green, `verify` included. The release has 13 files. From the flip to the release: 62 minutes.
+- **Step 25:** pull request #116, `1.1.0` on `main`.
+
+Still open after this record: step 20's fork tests (before step 26), step 24a, and steps 26 to 31.
+
 ## Part D: standing procedures
 
 ### 32. Accepting a contribution (E5)
