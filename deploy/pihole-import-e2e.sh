@@ -33,7 +33,11 @@ command -v dig >/dev/null || { echo "needs dig"; exit 2; }
 command -v docker >/dev/null || { echo "needs docker"; exit 2; }
 
 # The same group setup for both versions, through Pi-hole's documented gravity.db schema.
+# Pi-hole writes gravity.db itself while it starts (its first gravity run): wait for its lock,
+# up to 30 s, and stop at the first error, so a locked database cannot leave half the rows.
 SQL="
+.timeout 30000
+.bail on
 INSERT INTO \"group\"(name,enabled,description) VALUES('Kids',1,'children''s devices'),('IoT',0,'switched off');
 INSERT INTO adlist(address,enabled,comment) VALUES('https://lists.example/kids.txt',1,'kids list'),('https://lists.example/off.txt',0,'disabled list');
 DELETE FROM adlist_by_group WHERE adlist_id=(SELECT id FROM adlist WHERE address='https://lists.example/kids.txt');

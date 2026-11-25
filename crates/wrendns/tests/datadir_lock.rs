@@ -3,17 +3,21 @@
 
 #![allow(clippy::expect_used)] // test helpers
 
-use std::net::UdpSocket;
+use std::net::{TcpListener, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
-    let s = UdpSocket::bind("127.0.0.1:0").expect("bind");
-    s.local_addr().expect("addr").port()
+/// Distinct free ports: every listener is held until all are bound, so the kernel cannot hand
+/// the same port out twice (it can when each is bound and dropped in turn).
+fn free_ports<const N: usize>() -> [u16; N] {
+    let held: Vec<TcpListener> = (0..N)
+        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bind"))
+        .collect();
+    std::array::from_fn(|i| held[i].local_addr().expect("addr").port())
 }
 
 fn config(dir: &std::path::Path, data: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let (dns, api, metrics) = (free_port(), free_port(), free_port());
+    let [dns, api, metrics] = free_ports();
     let path = dir.join(format!("{name}.toml"));
     std::fs::write(
         &path,

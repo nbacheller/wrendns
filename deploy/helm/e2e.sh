@@ -41,6 +41,21 @@ else
     --k3s-arg "--cluster-cidr=10.142.0.0/16@server:0" --k3s-arg "--service-cidr=10.143.0.0/16@server:0"
 fi
 k() { kubectl --context "$ctx" "$@"; }
+# REQ: OPS-004 - when a wait fails, say why: the pods (state, events, last log), the cluster's
+# recent events, and whether the image is on the node (CI 2026-11-21, k3d on arm64: "StatefulSet
+# not ready, Ready: 0/1" after 300 s, with nothing in the log to tell a pull from a crash).
+diagnose() {
+  echo "::group::diagnostics"
+  k get nodes,pods -A -o wide 2>&1 | tail -n 60 || true
+  k -n "$ns" describe pods 2>&1 | tail -n 150 || true
+  k get events -A --sort-by=.lastTimestamp 2>&1 | tail -n 60 || true
+  for pod in $(k -n "$ns" get pods -o name 2>/dev/null); do
+    k -n "$ns" logs "$pod" --all-containers --tail=40 --prefix 2>&1 | tail -n 60 || true
+  done
+  local node="$name-control-plane"; [[ "$tool" == k3d ]] && node="k3d-$name-server-0"
+  docker exec "$node" crictl images 2>&1 | grep -iE 'IMAGE|wrendns' || true
+  echo "::endgroup::"
+}
 # A single control-plane node is skipped for LoadBalancer announcements by default.
 k label nodes --all node.kubernetes.io/exclude-from-external-load-balancers- >/dev/null 2>&1 || true
 
@@ -67,7 +82,17 @@ EOF
 # whole multi-platform index while pulling one platform, and loading it whole then fails
 # ("content digest … not found"), so load a one-platform archive (`docker save --platform`
 # needs Docker 28; older ones save the one platform they have anyway).
-docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
+# The registry is outside the product: a bounded retry with backoff, so a slow or failed pull
+# does not fail the run before the cluster is asked for anything.
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  pulled=""
+  for delay in 0 5 15 30; do
+    sleep "$delay"
+    docker pull -q "$image" >/dev/null && { pulled=1; break; }
+    echo "docker pull $image failed; retrying"
+  done
+  [[ -n "$pulled" ]] || { echo "FAIL: could not pull $image"; exit 1; }
+fi
 archive="$(mktemp -d)/image.tar"
 docker save --platform "linux/$(docker version -f '{{.Server.Arch}}')" -o "$archive" "$image" 2>/dev/null \
   || docker save -o "$archive" "$image"
@@ -81,7 +106,7 @@ helm --kube-context "$ctx" install wrendns deploy/helm/wrendns -n "$ns" --create
 name = "e2e.home.arpa"
 type = "A"
 value = "192.0.2.53"' \
-  --wait --timeout 300s
+  --wait --timeout 300s || { diagnose; exit 1; }
 
 lb=""
 for _ in $(seq 60); do
@@ -151,8 +176,8 @@ url = "udp://9.9.9.9"
 [[upstream_group]]
 name = "default"
 members = ["quad9"]' \
-  --wait --timeout 300s
-k -n "$ns" rollout status sts/wrendns --timeout=180s >/dev/null
+  --wait --timeout 300s || { diagnose; exit 1; }
+k -n "$ns" rollout status sts/wrendns --timeout=180s >/dev/null || { diagnose; exit 1; }
 [[ "$(k -n "$ns" get pod wrendns-0 -o jsonpath='{.spec.automountServiceAccountToken}')" == true ]] \
   || { echo "FAIL: the controller pod has no service-account token"; exit 1; }
 rules=$(k get clusterrole wrendns-workloads -o json | python3 -c 'import json,sys
@@ -164,7 +189,8 @@ echo "RBAC: OK (token on the controller only; $rules)"
 dnsip=$(k -n "$ns" get svc wrendns-dns -o jsonpath='{.spec.clusterIP}')
 k -n default delete pod busybox --ignore-not-found --wait >/dev/null
 k -n default run busybox --image=busybox:1.36 --restart=Never --overrides="{\"spec\":{\"dnsPolicy\":\"None\",\"dnsConfig\":{\"nameservers\":[\"$dnsip\"],\"searches\":[\"default.svc.cluster.local\",\"svc.cluster.local\",\"cluster.local\"],\"options\":[{\"name\":\"ndots\",\"value\":\"5\"}]}}}" -- sleep 3600 >/dev/null
-k -n default wait --for=condition=Ready pod/busybox --timeout=180s >/dev/null
+k -n default wait --for=condition=Ready pod/busybox --timeout=180s >/dev/null \
+  || { diagnose; k -n default describe pod busybox 2>&1 | tail -n 40; exit 1; }
 podip=$(k -n default get pod busybox -o jsonpath='{.status.podIP}')
 
 # The API, for names at read time.

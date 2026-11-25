@@ -82,6 +82,19 @@ echo "== install"
 # REQ: OPS-004 - what holds port 53 before the install, for a failed bind's log.
 ss -Hlnup 'sport = :53' || true
 ss -Hlntp 'sport = :53' || true
+# REQ: OPS-004 - DNS listens on 127.0.0.1:53, an address this test owns, not on 0.0.0.0:53. A
+# GitHub-hosted runner image runs its own resolver, `dns-resolver`, on 127.0.0.100:53 (CI
+# 2026-11-21, native-lite: "Udp 0.0.0.0:53: Address already in use" with systemd-resolved's stub
+# already off; `ss` named dns-resolver on 127.0.0.100:53). A wildcard bind cannot coexist with a
+# listener on any one address of the machine, and the stub switch-off cannot free a port the
+# image's own service holds. The starter config is the shipped one plus the [[listen]] pair; an
+# existing config is never overwritten, so install.sh keeps it. Port 53 is still what is tested.
+install -d -m 0755 /etc/wrendns
+{
+  cat "$HERE/../compose/wrendns.toml"
+  printf '\n[[listen]]\nproto = "udp"\naddr = "127.0.0.1:53"\n\n[[listen]]\nproto = "tcp"\naddr = "127.0.0.1:53"\n'
+} > /etc/wrendns/wrendns.toml
+chmod 0644 /etc/wrendns/wrendns.toml
 sh "$HERE/install.sh" --disable-resolved-stub
 
 echo "== DNS on port 53"
@@ -112,7 +125,8 @@ systemctl is-active --quiet wrendns
 echo "== guided install, admin made now"
 systemctl stop wrendns
 rm -rf /etc/wrendns /var/lib/wrendns/*
-printf '2\n\n\n0\n\n\n2\nalice\ne2e-guided-pass-1\ne2e-guided-pass-1\n3\n\ny\n' \
+# The listen answer is `2` (one address) and 127.0.0.1, for the reason given at the first install.
+printf '2\n\n\n0\n2\n127.0.0.1\n\n2\nalice\ne2e-guided-pass-1\ne2e-guided-pass-1\n3\n\ny\n' \
   | sh "$HERE/install.sh" --interactive > "$WORK/guided.out" 2>&1 \
   || { cat "$WORK/guided.out"; journalctl -u wrendns --no-pager | tail -30; fail "guided install"; }
 grep -q 'retention_days = 3' /etc/wrendns/wrendns.toml || { cat /etc/wrendns/wrendns.toml; fail "answers not in the config"; }

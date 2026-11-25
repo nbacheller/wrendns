@@ -27,6 +27,8 @@ fail() {
   echo "FAIL: $*"
   [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=$(basename "$0")::FAIL: $*"
   [ -f "$E/node.log" ] && tail -15 "$E/node.log"
+  # The TLS collector's own log (when it listened, each connection and handshake, with times).
+  [ -f "$E/tls.log" ] && { echo "--- syslog TLS collector log"; tail -15 "$E/tls.log"; }
   exit 1
 }
 trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
@@ -67,26 +69,43 @@ printf 'subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nextendedKeyUsag
 openssl x509 -req -in "$E/req.pem" -CA "$E/ca.pem" -CAkey "$E/ca.key" -CAcreateserial -days 1 \
   -extfile "$E/ext.cnf" -out "$E/cert.pem" 2>/dev/null
 cat > "$E/tls_syslog.py" <<'EOF'
-import socket, ssl, sys, threading
+import socket, ssl, sys, threading, time
 out = sys.argv[1]
+def log(m):
+    with open(out + "/tls.log", "a") as f:
+        f.write(f"{time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d} {m}\n")
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(out + "/cert.pem", out + "/key.pem")
 l = socket.socket()
 l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 l.bind(("127.0.0.1", 25516))
 l.listen()
+log("listening")
+open(out + "/tls.ready", "w").close()
 def serve(c):
-    with ctx.wrap_socket(c, server_side=True) as t, open(out + "/syslog-tls", "ab", buffering=0) as f:
-        while True:
-            d = t.recv(65535)
-            if not d:
-                return
-            f.write(d)
+    try:
+        with ctx.wrap_socket(c, server_side=True) as t, open(out + "/syslog-tls", "ab", buffering=0) as f:
+            log("handshake done")
+            while True:
+                d = t.recv(65535)
+                if not d:
+                    log("closed by the node")
+                    return
+                f.write(d)
+    except Exception as e:
+        log(f"connection failed: {e!r}")
 while True:
     c, _ = l.accept()
+    log("accepted")
     threading.Thread(target=serve, args=(c,), daemon=True).start()
 EOF
 python3 "$E/tls_syslog.py" "$E" & T=$!
+# A syslog sink over TCP or TLS connects when its first event arrives and does not queue: an
+# event sent while the collector is not listening is dropped, and the next event reconnects
+# (ADR-072; docs/running.md, "Syslog over TLS"). So the node must not start, and no event be
+# made, before this collector listens. A busy runner can take over a second to start python.
+for _ in $(seq 100); do [ -e "$E/tls.ready" ] && break; sleep 0.1; done
+[ -e "$E/tls.ready" ] || fail "the syslog TLS collector did not start listening in 10 s"
 
 cat > "$E/wrendns.toml" <<EOF
 [node]
@@ -189,6 +208,8 @@ grep -q '^<133>1 .* wrendns - query - {.*"name":"ads.sinks.test"' "$E/syslog" ||
 echo "syslog sink: ok"
 
 # REQ: OBS-010 (T9.11) — syslog over TLS: octet-counted RFC 5424 frames.
+# The collector listened before the node started, so the first event's connection must succeed:
+# no second event is made here, or a failed first connection would pass unseen.
 for _ in $(seq 50); do grep -q 'ads.sinks.test' "$E/syslog-tls" 2>/dev/null && break; sleep 0.2; done
 grep -Eq '^[0-9]+ <133>1 .* wrendns - query - \{.*"name":"ads.sinks.test"' "$E/syslog-tls" || fail "syslog over TLS: $(head -c 300 "$E/syslog-tls" 2>/dev/null)"
 echo "syslog over TLS: ok"
