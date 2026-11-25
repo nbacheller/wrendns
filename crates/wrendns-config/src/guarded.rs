@@ -134,9 +134,10 @@ static REAL: &[Row] = &[
         test_only: false,
     },
     // REQ: DNS-901, API-902 (T27.14, ADR-1090 point 1) — the known-ID gate of each DoT, DoH, DoH3
-    // and DoQ listener: unset (the default), `true` or `false`. `immediate`: it binds nothing, moves
-    // no address and touches neither the API nor any DNS socket, so it cannot lock an admin out; a
-    // reload applies it and a failed reload puts the previous value back. Turning a listener's gate
+    // and DoQ listener: unset (the default), `true` or `false`. `immediate`: it moves no
+    // address and touches no API socket, so it cannot lock an admin out; a reload applies it (a
+    // listener whose effective gate changes is closed and bound again, and stays as it was when its
+    // certificate cannot be loaded) and a failed reload puts the previous value back. Turning a listener's gate
     // off weakens it (a red mark and a sign-in within 10 minutes). The listeners themselves (address,
     // port, protocol, TLS) are the `listen` row's, still to come.
     Row {

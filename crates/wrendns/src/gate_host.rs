@@ -2,8 +2,7 @@
 //! The host's address facts for the known-ID gate (REQ: DNS-901, ADR-1090 point 2).
 //!
 //! The config crate makes no system call: it takes a [`HostFacts`]. This module reads the
-//! interface list (the `getifaddrs` wrapper of `wrendns-net`), keeps the facts that were in force at
-//! the last bind or reload, and tells whether the host's addresses have changed since.
+//! interface list (the `getifaddrs` wrapper of `wrendns-net`), keeps the facts the listeners were bound with, and tells whether the host's addresses have changed since.
 //!
 //! Evaluated: at start, and at every reload (a file reload, a SIGHUP, an API or replicated change).
 //! An address that appears later is picked up at the next reload; until then the health report
@@ -60,33 +59,42 @@ fn lock() -> std::sync::MutexGuard<'static, Option<HostFacts>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Reads the interface list and makes it the facts in force (call at start and at every reload,
-/// before the listeners are applied).
-pub(crate) fn refresh() -> HostFacts {
-    let f = read();
+/// Records the facts the listeners were just bound with (called by the bind only, after it
+/// succeeded). A load, a failed reload or a read-only check never calls this, so the facts in
+/// force always describe the sockets.
+pub(crate) fn set_bound(f: HostFacts) {
     *lock() = Some(f);
     if f.public_ipv4.is_none() {
         warn!(
             "the host's interface list is unreadable or empty: failing closed for the gate default"
         );
     }
-    f
 }
 
-/// The facts in force (read once if nothing has refreshed them yet).
+/// The facts the listeners were bound with (read once if nothing has bound yet).
 pub(crate) fn facts() -> HostFacts {
     #[cfg(test)]
     if let Some(f) = OVERRIDE.with(std::cell::Cell::get) {
         return f;
     }
     let held = *lock();
-    held.unwrap_or_else(refresh)
+    held.unwrap_or_else(|| {
+        let f = read();
+        *lock() = Some(f);
+        f
+    })
 }
 
 /// The facts as they are now, when they would change a gate default from what is in force.
 pub(crate) fn changed_since_bind() -> Option<(HostFacts, HostFacts)> {
     let (bound, now) = (facts(), read());
     (bound.public_ipv4 != now.public_ipv4).then_some((bound, now))
+}
+
+/// What the bind last recorded, ignoring any test override.
+#[cfg(test)]
+pub(crate) fn bound_for_test() -> Option<HostFacts> {
+    *lock()
 }
 
 #[cfg(test)]

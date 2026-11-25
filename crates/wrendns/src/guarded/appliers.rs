@@ -138,7 +138,7 @@ impl Applier for HttpRedirect {
 /// listener, `{"listeners": [{"proto", "addr", "require_client_id"}]}` with `require_client_id`
 /// `null` (the default: on for a public address, off otherwise), `true` or `false`. The value names
 /// every listener this node runs and no other; a plain UDP or TCP listener can't carry a key, so its
-/// setting is always `null`. `immediate`: it binds nothing and moves no address.
+/// setting is always `null`. `immediate`: it moves no address and leaves the API alone; the reload rebinds a listener whose effective gate changes.
 ///
 /// What the default resolves to is `wrendns_config::default_gate`, with the host's address facts
 /// (`crate::gate_host`): the same function the bind, the probes, the API and the health report use.
@@ -248,7 +248,9 @@ impl Applier for ListenAccess {
     #[allow(clippy::too_many_lines)] // one ordered list of checks
     fn check(&self, cx: &CheckCx<'_>) -> Result<Checked, Problem> {
         let lines = Self::lines(cx.value)?;
-        let host = crate::gate_host::facts();
+        // The facts the reload that applies this will use, not the ones from the last bind: when
+        // the host's addresses changed in between, the weakening is judged on what will happen.
+        let host = crate::gate_host::read();
         let bad = |why: String| Problem::new(Code::InvalidConfig, format!("`listeners`: {why}"));
         // Exactly the listeners this node runs: the setting is per listener, nothing is added or
         // removed here (the listeners themselves are the `listen` setting's).
@@ -354,7 +356,7 @@ impl Applier for ListenAccess {
             format!("Changes no listener's device key setting on {}.", cx.node)
         } else {
             format!(
-                "Changes the device key setting on {} (a reload applies it; no socket is rebound): {}.",
+                "Changes the device key setting on {} (a reload applies it; a DoT, DoH, DoH3 or DoQ listener whose effective gate changes is closed and bound again, ending its open connections, and stays as it was if its certificate cannot be loaded): {}.",
                 cx.node,
                 changes.join("; ")
             )

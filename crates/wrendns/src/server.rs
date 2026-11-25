@@ -48,7 +48,7 @@ pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
 /// explicit `require_client_id = false` that the web UI set (the effective settings have it, the
 /// files do not). The files' warnings were logged when they were loaded.
 fn warn_ui_gates(file: &Config, effective: &Config) {
-    let host = crate::gate_host::facts();
+    let host = crate::gate_host::read();
     let in_file = wrendns_config::gate_warnings(file, host);
     for w in wrendns_config::gate_warnings(effective, host) {
         if !in_file.contains(&w) {
@@ -70,9 +70,10 @@ pub(crate) fn load_files_quiet(files: &[PathBuf]) -> Option<Config> {
 }
 
 fn load_files_logging(files: &[PathBuf], warnings: bool) -> Option<Config> {
-    // REQ: DNS-901 (ADR-1090 point 2) — the host's addresses are read at every load (start and
-    // each reload), before the listeners are bound with them.
-    let host = crate::gate_host::refresh();
+    // REQ: DNS-901 (ADR-1090 point 2) — the host's addresses are read at every load, for the
+    // check and its warnings only. What the listeners were bound with is recorded by the bind
+    // (`Listeners::apply`), so a failed or read-only load never changes it.
+    let host = crate::gate_host::read();
     match files
         .iter()
         .fold(Loader::new(), Loader::file)
@@ -492,7 +493,9 @@ impl Listeners {
     /// changed address never leaves a gap (`spec/08` §5). A stream listener whose settings
     /// changed on the same address is closed just before its replacement binds.
     async fn apply(&mut self, listen: &[Listener]) -> io::Result<()> {
-        let host = crate::gate_host::facts();
+        // One reading of the host for the whole apply: every listener is bound, compared and
+        // recorded with the same facts.
+        let host = crate::gate_host::read();
         for l in listen {
             let ctx =
                 |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
@@ -514,6 +517,12 @@ impl Listeners {
                 | ListenProto::Doh3
                     if !self.streams.iter().any(|(c, _)| *c == bound_form(l, host)) =>
                 {
+                    // The certificate is loaded before the old socket is closed: a file that
+                    // cannot be read leaves the running listener (and its in-memory certificate)
+                    // as it was, rather than dropping it.
+                    if let Some(t) = &l.tls {
+                        CertStore::load(t.cert.as_str(), t.key.as_str()).map_err(ctx)?;
+                    }
                     // Same protocol and address with other settings: replace it.
                     if let Some(i) = self
                         .streams
@@ -524,7 +533,7 @@ impl Listeners {
                         old.shutdown().await;
                     }
                     let stream = self
-                        .bind_stream(l, alt_svc(listen).as_deref())
+                        .bind_stream(l, host, alt_svc(listen).as_deref())
                         .map_err(ctx)?;
                     self.streams.push((bound_form(l, host), stream));
                 }
@@ -555,10 +564,17 @@ impl Listeners {
             info!(addr = %c.addr, proto = ?c.proto, "closing listener");
             tokio::spawn(s.shutdown()); // drains its connections in the background
         }
+        // REQ: DNS-901 — only now, with every listener bound, are these the facts in force.
+        crate::gate_host::set_bound(host);
         Ok(())
     }
 
-    fn bind_stream(&self, l: &Listener, alt_svc: Option<&str>) -> io::Result<Stream> {
+    fn bind_stream(
+        &self,
+        l: &Listener,
+        host: wrendns_config::HostFacts,
+        alt_svc: Option<&str>,
+    ) -> io::Result<Stream> {
         let store = match &l.tls {
             Some(t) => Some(CertStore::load(t.cert.as_str(), t.key.as_str())?),
             None => None,
@@ -566,7 +582,6 @@ impl Listeners {
         let handler = Arc::clone(&self.handler);
         // REQ: DNS-901 (ADR-1090 points 1 and 2) — an upgrade can turn the gate on for a listener
         // whose file never set it: say so, naming the listener, the setting and the rule.
-        let host = crate::gate_host::facts();
         let gated = l.gated(host);
         if l.gated_by_default(host) {
             warn!(
@@ -2214,6 +2229,87 @@ mod tests {
                 fixed.addr
             );
         }
+    }
+
+    /// The facts in force are one static: the tests that bind or read it take turns.
+    static FACTS_IN_FORCE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // REQ: DNS-901 (ADR-1090 point 2) — the facts in force are what the listeners were bound with:
+    // a load (a reload that fails validation, or a read-only check) never replaces them, and a
+    // bind that succeeds does.
+    #[test]
+    fn dns_901_a_load_leaves_the_facts_in_force_alone() {
+        use wrendns_config::HostFacts;
+        let _one = FACTS_IN_FORCE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let a = HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: false,
+        };
+        let b = HostFacts {
+            public_ipv4: Some(true),
+            global_ipv6: false,
+        };
+        crate::gate_host::set_bound(a);
+        // A file that does not exist fails to load, as a typo would.
+        let missing = std::path::PathBuf::from("no-such-file-for-dns-901.toml");
+        crate::gate_host::with_facts(b, || {
+            assert!(load_files_quiet(std::slice::from_ref(&missing)).is_none());
+            assert!(load_files(&[missing]).is_none());
+        });
+        assert_eq!(crate::gate_host::bound_for_test(), Some(a));
+        crate::gate_host::set_bound(b);
+        assert_eq!(crate::gate_host::bound_for_test(), Some(b));
+    }
+
+    // REQ: DNS-901 — rebinding a listener whose gate changed loads its certificate first: when the
+    // files cannot be read the running listener stays, instead of being closed and not replaced.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the lock only keeps two tests off the one static
+    async fn dns_901_a_changed_gate_with_an_unreadable_certificate_keeps_the_listener() {
+        let _one = FACTS_IN_FORCE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = (dir.path().join("c.pem"), dir.path().join("k.pem"));
+        let pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let c = rcgen::CertificateParams::new(vec!["dot.example".to_owned()])
+            .unwrap()
+            .self_signed(&pair)
+            .unwrap();
+        std::fs::write(&cert, c.pem()).unwrap();
+        std::fs::write(&key, pair.serialize_pem()).unwrap();
+        let listen = |gate: Option<bool>| Listener {
+            proto: ListenProto::Dot,
+            addr: "127.0.0.1:0".parse().unwrap(),
+            path: None,
+            tls: Some(wrendns_config::TlsFiles {
+                cert: wrendns_config::SafeString::new(cert.to_string_lossy()).unwrap(),
+                key: wrendns_config::SafeString::new(key.to_string_lossy()).unwrap(),
+            }),
+            proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
+            require_client_id: gate,
+        };
+        let pipeline = crate::pipeline::tests_support::pipeline_from(&Config::default());
+        let mut listeners = Listeners {
+            udp: Vec::new(),
+            streams: Vec::new(),
+            workers: 1,
+            handler: Arc::new(Handler(pipeline)),
+            rt: tokio::runtime::Handle::current(),
+        };
+        let first = listen(Some(false));
+        listeners.apply(std::slice::from_ref(&first)).await.unwrap();
+        assert_eq!(listeners.streams.len(), 1);
+        // The files go bad; the gate changes: the apply fails and the old listener runs on.
+        std::fs::write(&cert, "not a certificate").unwrap();
+        let second = listen(Some(true));
+        assert!(listeners.apply(&[second]).await.is_err());
+        assert_eq!(listeners.streams.len(), 1);
+        assert_eq!(listeners.streams[0].0.require_client_id, Some(false));
     }
 
     // REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — a device behind a router has no neighbor entry of
