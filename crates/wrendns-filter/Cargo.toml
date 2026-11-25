@@ -31,8 +31,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 wrendns-config.workspace = true
-wrendns-net = { version = "0.8.0", path = "../wrendns-net" }
-wrendns-proto = { version = "0.8.0", path = "../wrendns-proto" }
+wrendns-net = { version = "1.0.0", path = "../wrendns-net" }
+wrendns-proto = { version = "1.0.0", path = "../wrendns-proto" }
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync", "fs"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }

@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 parking_lot = "0.13.0"
-wrendns-proto = { version = "0.8.0", path = "../wrendns-proto" }
+wrendns-proto = { version = "1.0.0", path = "../wrendns-proto" }
 tokio = { version = "1.53.1", features = ["sync"] }
 
 [dev-dependencies]
