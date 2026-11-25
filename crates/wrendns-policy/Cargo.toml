@@ -14,8 +14,8 @@ workspace = true
 [dependencies]
 arc-swap = "1.9.2"
 parking_lot = "0.13.0"
-wrendns-config = { version = "0.8.0", path = "../wrendns-config" }
-wrendns-proto = { version = "0.8.0", path = "../wrendns-proto" }
+wrendns-config = { version = "1.0.0", path = "../wrendns-config" }
+wrendns-proto = { version = "1.0.0", path = "../wrendns-proto" }
 # T6.12: hashes quick-rule domains (already in the binary via wrendns-proto and -filter).
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 

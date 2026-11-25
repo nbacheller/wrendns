@@ -20,7 +20,7 @@ workspace = true
 socket2 = { version = "0.6.5", features = ["all"] }
 http = "1.5.0"
 base64 = "0.23.1"
-wrendns-git = { version = "0.8.0", path = "../wrendns-git" }
+wrendns-git = { version = "1.0.0", path = "../wrendns-git" }
 blake3 = "1.8.7"
 arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }
@@ -66,20 +66,20 @@ x509-parser = "0.18.1"
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 bytes = "1.12.1"
-wrendns-api = { version = "0.8.0", path = "../wrendns-api" }
-wrendns-cache = { version = "0.8.0", path = "../wrendns-cache" }
-wrendns-cluster = { version = "0.8.0", path = "../wrendns-cluster" }
+wrendns-api = { version = "1.0.0", path = "../wrendns-api" }
+wrendns-cache = { version = "1.0.0", path = "../wrendns-cache" }
+wrendns-cluster = { version = "1.0.0", path = "../wrendns-cluster" }
 wrendns-config.workspace = true
 wrendns-support = { path = "../wrendns-support" }
-wrendns-filter = { version = "0.8.0", path = "../wrendns-filter" }
-wrendns-store = { version = "0.8.0", path = "../wrendns-store" }
-wrendns-net = { version = "0.8.0", path = "../wrendns-net" }
-wrendns-policy = { version = "0.8.0", path = "../wrendns-policy" }
-wrendns-proto = { version = "0.8.0", path = "../wrendns-proto" }
+wrendns-filter = { version = "1.0.0", path = "../wrendns-filter" }
+wrendns-store = { version = "1.0.0", path = "../wrendns-store" }
+wrendns-net = { version = "1.0.0", path = "../wrendns-net" }
+wrendns-policy = { version = "1.0.0", path = "../wrendns-policy" }
+wrendns-proto = { version = "1.0.0", path = "../wrendns-proto" }
 # REQ: DSC-003 (T25.4) — `wrendns snmp walk`; the poller (T25.6) uses it in the discovery worker.
-wrendns-snmp = { version = "0.8.0", path = "../wrendns-snmp" }
-wrendns-telemetry = { version = "0.8.0", path = "../wrendns-telemetry" }
-wrendns-upstream = { version = "0.8.0", path = "../wrendns-upstream" }
+wrendns-snmp = { version = "1.0.0", path = "../wrendns-snmp" }
+wrendns-telemetry = { version = "1.0.0", path = "../wrendns-telemetry" }
+wrendns-upstream = { version = "1.0.0", path = "../wrendns-upstream" }
 # io-std/io-util: `wrendns mcp --stdio` (AGT-006).
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util", "process"] }
 toml = "1.1.6"

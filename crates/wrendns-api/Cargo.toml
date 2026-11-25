@@ -31,10 +31,10 @@ rust-embed = { version = "8.12.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # REQ: API-014 (ADR-903 §4) — the credential table, to show plans' write bodies redacted.
-wrendns-config = { version = "0.8.0", path = "../wrendns-config" }
-wrendns-store = { version = "0.8.0", path = "../wrendns-store" }
+wrendns-config = { version = "1.0.0", path = "../wrendns-config" }
+wrendns-store = { version = "1.0.0", path = "../wrendns-store" }
 # REQ: OBS-017 — trace IDs (already a dependency of wrendns-store).
-wrendns-telemetry = { version = "0.8.0", path = "../wrendns-telemetry" }
+wrendns-telemetry = { version = "1.0.0", path = "../wrendns-telemetry" }
 tokio = { version = "1.53.2", features = ["rt", "sync", "time"] }
 tracing = "0.1"
 totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
