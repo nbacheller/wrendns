@@ -400,6 +400,7 @@ The image gate and the memory gates are hard: CI fails a change that crosses the
 | [`docs/recovery.md`](docs/recovery.md) | Recovering a node or a cluster |
 | [`docs/snmp-setup.md`](docs/snmp-setup.md) | SNMP for the network inventory |
 | [`docs/releasing.md`](docs/releasing.md) | How releases are made and signed |
+| [`docs/going-public.md`](docs/going-public.md) | The maintainer checklist for making the repository public |
 | [`docs/analysis.md`](docs/analysis.md) | What WrenDNS learned from Pi-hole and Technitium |
 | [`EXECUTIVE-SUMMARY.md`](EXECUTIVE-SUMMARY.md) | What WrenDNS is built around |
 | [`spec/`](spec/00-overview.md) | The specification: [requirements](spec/01-requirements.md), [architecture](spec/02-architecture.md), [decisions](spec/11-decisions.md), [roadmap](spec/10-roadmap-and-tasks.md) |
