@@ -3,13 +3,17 @@
 
 #![allow(clippy::expect_used)] // test helpers
 
-use std::net::UdpSocket;
+use std::net::{TcpListener, UdpSocket};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
-    let s = UdpSocket::bind("127.0.0.1:0").expect("bind");
-    s.local_addr().expect("addr").port()
+/// Distinct free ports: every listener is held until all are bound, so the kernel cannot hand
+/// the same port out twice (it can when each is bound and dropped in turn).
+fn free_ports<const N: usize>() -> [u16; N] {
+    let held: Vec<TcpListener> = (0..N)
+        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bind"))
+        .collect();
+    std::array::from_fn(|i| held[i].local_addr().expect("addr").port())
 }
 
 /// An A query for nas.drain.test; true when an answer comes back.
@@ -34,7 +38,7 @@ fn answers(port: u16) -> bool {
 #[test]
 fn ops_007_drain_delay_keeps_answering_after_sigterm() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (dns, api, metrics) = (free_port(), free_port(), free_port());
+    let [dns, api, metrics] = free_ports();
     let cfg = tmp.path().join("t.toml");
     std::fs::write(
         &cfg,

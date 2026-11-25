@@ -10,12 +10,13 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port()
+/// Distinct free ports: every listener is held until all are bound, so the kernel cannot hand
+/// the same port out twice (it can when each is bound and dropped in turn).
+fn free_ports<const N: usize>() -> [u16; N] {
+    let held: Vec<TcpListener> = (0..N)
+        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bind"))
+        .collect();
+    std::array::from_fn(|i| held[i].local_addr().expect("addr").port())
 }
 
 /// One raw request, tried up to three times (a busy host can stall one); the response's head
@@ -44,8 +45,7 @@ impl Drop for Node {
     }
 }
 
-fn start(tmp: &std::path::Path, redirect: u16, api: u16, dns: u16) -> Node {
-    let metrics = free_port();
+fn start(tmp: &std::path::Path, redirect: u16, api: u16, dns: u16, metrics: u16) -> Node {
     let cfg = tmp.join("t.toml");
     std::fs::write(
         &cfg,
@@ -92,8 +92,8 @@ http_redirect = "127.0.0.1:{redirect}"
 #[test]
 fn api_003_http_redirect_sends_browsers_to_https_and_answers_health() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (redirect, api, dns) = (free_port(), free_port(), free_port());
-    let _node = start(tmp.path(), redirect, api, dns);
+    let [redirect, api, dns, metrics] = free_ports();
+    let _node = start(tmp.path(), redirect, api, dns, metrics);
     let log = || std::fs::read_to_string(tmp.path().join("node.log")).unwrap_or_default();
     let begin = Instant::now();
     let livez = loop {
@@ -152,8 +152,8 @@ fn api_003_a_failed_redirect_bind_leaves_the_api_and_dns_alone() {
     // The redirect address is already taken: the bind fails, and the node carries on.
     let taken = TcpListener::bind("127.0.0.1:0").expect("bind");
     let redirect = taken.local_addr().expect("addr").port();
-    let (api, dns) = (free_port(), free_port());
-    let _node = start(tmp.path(), redirect, api, dns);
+    let [api, dns, metrics] = free_ports();
+    let _node = start(tmp.path(), redirect, api, dns, metrics);
     let log = || std::fs::read_to_string(tmp.path().join("node.log")).unwrap_or_default();
     let begin = Instant::now();
     loop {

@@ -82,10 +82,14 @@ else:  # load primary-port replica-port stop-file: like a client with two DNS se
     while not os.path.exists(stop):
         sent += 1
         first, second = (p, r) if sent % 2 else (r, p)
-        a = query(first, 'up.test', 0.4)
+        a = first_a = query(first, 'up.test', 0.4)
         if not a:
             a = query(second, 'up.test', 0.4)
         ok += bool(a)
+        if not a:  # say when, and what each node did, so a lost query can be placed in the steps
+            show = lambda v: 'timeout' if v is None else 'empty answer'
+            print('%.3f lost query %d: port %d %s, port %d %s' % (
+                time.time(), sent, first, show(first_a), second, show(a)), file=sys.stderr, flush=True)
         time.sleep(0.02)
     print(ok, sent)
 PY
@@ -122,7 +126,7 @@ done
 [ -n "$joined" ] || fail "the replica couldn't join the old primary"
 start_r "$OLD"
 wait_answer 25502 10.0.0.1 15 || fail "the old replica never followed"
-python3 "$E/q.py" load 25501 25502 "$E/stop" > "$E/load.txt" & LOAD=$!
+python3 "$E/q.py" load 25501 25502 "$E/stop" > "$E/load.txt" 2> "$E/lost.txt" & LOAD=$!
 echo ok
 
 echo "== 2. replica on N follows the N-1 primary"

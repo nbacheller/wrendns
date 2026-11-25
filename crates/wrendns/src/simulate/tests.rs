@@ -442,18 +442,31 @@ fn obs_024_bounds() {
     let block_x = "[[rule]]\nid = \"x\"\naction = \"block\"\ndomain = \"x.example\"\n";
     let mut i = lab2.inputs(lab2.candidate(block_x), Vec::new());
     i.window.max_secs = 1;
-    i.label = Box::new(|_| {
+    // The deadline is asserted on the work done, not on elapsed time (a busy shared runner
+    // stretches wall time): a full replay would label 4,000 devices, so a replay that stopped
+    // early with `partial` set can only have done so because the deadline fired, and no label
+    // work happens for rows the scan did not take.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let seen = calls.clone();
+    i.label = Box::new(move |_| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(3));
         None
     });
-    let started = Instant::now();
     let t = run(i).unwrap();
-    assert!(t.partial);
-    assert!(t.rows < 4000);
+    assert!(t.partial, "the 1 s deadline must cut the replay short");
+    // Each row costs at least 3 ms (a sleep never returns early) and the scan looks at the
+    // clock every 64 rows, so 1 s is over by row 334 and the scan must stop at row 384 at the
+    // latest. A busy machine only lowers the count.
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
+        t.rows <= 384,
+        "the scan overran the deadline: rows = {}",
+        t.rows
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        t.rows,
+        "one label per replayed row, none after the cut"
     );
 
     let w = window(&lab.current.simulate, Some("8d"), None, t0_s() * 1_000).unwrap_err();
