@@ -1,11 +1,25 @@
 # The v1.0 release gate
 
-Where WrenDNS stands against the v1.0 release gate (`spec/10` M6, `spec/00` §5). 0.1.0 is
-the first stable release; 1.0 waits until every row below passes on the reference hardware.
-This page records each target, the latest measurement, how it was taken, and the status.
+Where WrenDNS stands against the v1.0 release gate (`spec/10` M6, `spec/00` §5). This page
+records each target, the latest measurement, how it was taken, and the status.
+
+**1.0.0 is released with two rows open** (the owner's decision of 2026-11-20: the first public
+release is 1.0.0): cache-hit throughput on a Raspberry Pi 4 has not been measured, and the p95
+of configuration propagation needs more published versions. Both are listed under Known issues
+in the release notes (`deploy/release/notes/v1.0.0.md`). The throughput and latency rows carry
+dev-host or homelab figures, not figures from the reference hardware; each says so.
 
 **Last run:** 2026-10-07, `python3 bench/gate.py` at 60a2c30 (0.2.0 development), results in
 `bench/results/20261007T140130Z-gate.json` (not committed; reproduce with the same command).
+
+**Partial re-run:** 2026-11-25, the memory rows only, with `python3 bench/memprobe.py --bin` on
+the shipped x86-64 musl binary of edge build 88, in the development container. The rows that
+need an upstream (cache-hit throughput and latency, telemetry loss, the 100,000 cache entries)
+were not re-run there: one UDP `bind()` takes about 10 ms on that host, so upstream lookups top
+out near 98 a second and the harness itself warns that such results are the host's, not the
+server's (`bench/README.md`). Those rows keep their earlier figures, with their dates. The list
+snapshot of 2026-10-07 was not kept; the re-run used the lists downloaded that day (the first
+1,000,000 unique names of HaGeZi Pro and TIF, OISD big and StevenBlack).
 
 ## How it was measured
 
@@ -28,9 +42,9 @@ This page records each target, the latest measurement, how it was taken, and the
 | Cache-hit throughput, Raspberry Pi 4 | ≥ 25k qps | not measured | ⏳ needs a Pi 4 that isn't serving the home network |
 | Added latency, cache hit (p99 at 50 % load) | ≤ 250 µs | T10.5 (2026-10-18): load from the build VM against a temporary pod on the homelab node (4 CPUs, 1M names; `bench/remote.py`), 56.8k qps (half of the 113.7k it sustained), 0 lost: **99.999 % of queries answered within 250 µs by the server** (`wrendns_query_duration_seconds`; p99 in the ≤ 50 µs bucket). End to end, through the network between the machines (0.7 ms RTT), dnsperf's p50 was 199 µs and p99 4.9 ms | ✅ pass |
 | Added latency, blocked answer (p99 at 50 % load) | ≤ 250 µs | same setup, 52.4k qps (half of 104.8k), 0 lost: **99.999 % within 250 µs** (p99 ≤ 50 µs); end to end p50 187 µs, p99 455 µs | ✅ pass |
-| Idle RSS, no lists | ≤ 32 MiB (≤ 20 MiB before ADR-1031) | 13.7 MiB 40 s after start, 16.1 MiB after 3 min (the shipped musl build, T10.2, `bench/memprobe.py`; 22.7 MiB before) | ✅ pass |
-| RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 128 MiB (≤ 64 MiB before ADR-1031) | 60.0 MiB 40 s after the fill, 60.9 MiB after 3 min; peak 97.5 MiB during the compile (the shipped musl build; 71.4 MiB and a 170 MiB peak before T10.2's last step, 130.4 MiB at its start) | ✅ pass |
-| Compressed container image | ≤ 15 MiB per arch | amd64 11.1, arm64 10.6, arm/v7 11.0 MiB (`:latest` = 0.1.0) | ✅ pass |
+| Idle RSS, no lists | ≤ 32 MiB (≤ 20 MiB before ADR-1031) | 2026-11-25, edge build 88: 17.6 MiB 40 s after start, 29.6 MiB at its highest (during start). 2026-10: 13.7 MiB 40 s after start, 16.1 MiB after 3 min (the shipped musl build, T10.2, `bench/memprobe.py`; 22.7 MiB before) | ✅ pass |
+| RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 128 MiB (≤ 64 MiB before ADR-1031) | 2026-11-25, edge build 88, 1M names and telemetry but only about 540 cache entries (see the partial re-run): 42.0 MiB 40 s after the fill, peak 110.5 MiB during the compile. 2026-10, with the 100k entries: 60.0 MiB 40 s after the fill, 60.9 MiB after 3 min; peak 97.5 MiB during the compile (the shipped musl build; 71.4 MiB and a 170 MiB peak before T10.2's last step, 130.4 MiB at its start) | ✅ pass |
+| Compressed container image | ≤ 25 MiB per arch (ADR-916; ≤ 15 MiB before) | checked on every build of `main` and of a release tag by the image workflow, which fails over the gate; 0.1.0 measured amd64 11.1, arm64 10.6, arm/v7 11.0 MiB | ✅ pass (CI) |
 | List recompile, 2M names, Pi 4 | ≤ 8 s, p99 regression ≤ 10 % during the compile | Pi 4 (2026-10-17, the gate's 2M names, `compile_bench`, bench build): **11.8 s on 1 thread** (the recompile default; 14.2 s before T10.3's parser fast path), 9.7 s on 2 threads; building the FST alone takes 8.1 s on one Pi core. p99 under a recompile on 4 cores (VM, `bench.py swap --server-cpus 0-3`): 44 → 49.5 µs on 1 thread, 40.5 → 54 µs on 2 . Since ADR-145 a recompile's rules answer before the FSTs are written: 1.98 s into a 4.55 s one-thread compile of 2.74M real names on the VM ; on the Pi 4 (2026-10-17, the gate's 2M names, one thread): **the new rules answer at 4.7 s** (4.77 and 4.71 s), the compile finishes at 12.8 s in the background | ✅ pass |
 | Cold start to serving, snapshot on disk | ≤ 500 ms | 52 ms until a blocked name is answered blocked over DNS, 1M names (median of 5, the shipped build, `bench/coldstart.py`); the lookup index follows at about 0.5 s, blocking through the FST walk until then. A cluster replica in CI: ≤ 500 ms | ✅ pass |
 | Query-log search, 30 days / 50M rows, Pi 4 | ≤ 2 s | every query in the suite under 2 s (T3.2, 2026-10-03) | ✅ pass (re-run before 1.0) |

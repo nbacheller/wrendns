@@ -299,7 +299,7 @@ def report(r):
          bl["p99_at_50_us"] <= 250),
         ("Idle RSS, no lists", "≤ 32 MiB", f"{r['idle_rss_mib']} MiB", r["idle_rss_mib"] <= 32),  # ADR-1031
         ("RSS, 1M blocked names + 100k cache entries + telemetry", "≤ 128 MiB",  # ADR-1031
-         f"{rss['rss_mib']} MiB ({rss['cache_entries']:.0f} entries; compile peak {rss['peak_mib']} MiB)",
+         f"{rss['rss_mib']} MiB ({rss['cache_entries'] or 0:.0f} entries; compile peak {rss['peak_mib']} MiB)",
          rss["rss_mib"] <= 128),
         ("Cold start to serving, snapshot on disk", "≤ 500 ms",
          f"{cold['filter_ms']} ms to blocking ({cold['ready_ms']} ms to ready)", cold["filter_ms"] <= 500),

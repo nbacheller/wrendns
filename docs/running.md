@@ -392,7 +392,7 @@ What stays as it was, because it is stored in files you already have: backup fil
 
 ### Native install (systemd)
 
-Run the installer again (`sudo sh install.sh`). It installs the new binary and then migrates the old install. **Don't use the old `telltale self-update` for this upgrade**: it looks at upstream's TelltaleDNS releases, not this project's, and would install that over your data. Use `install.sh` (or, once the release signing key is settled, `wrendns self-update --base-url` pointing at this project's releases). To do the migration alone, or to see what it would change first:
+Run the installer again (`sudo sh install.sh`). It installs the new binary and then migrates the old install. **Don't use the old `telltale self-update` for this upgrade**: it looks at upstream's TelltaleDNS releases, not this project's, and would install that over your data. Use `install.sh`. To do the migration alone, or to see what it would change first:
 
 ```sh
 sudo sh deploy/systemd/migrate-from-telltale.sh --dry-run    # says what it would do, changes nothing

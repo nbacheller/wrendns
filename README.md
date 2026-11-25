@@ -62,7 +62,7 @@ Every connection on your network starts with a DNS lookup, so the resolver is th
 
 WrenDNS is developed spec first: the requirements, the architecture and every decision are in [`spec/`](spec/00-overview.md), and each feature traces to a numbered requirement and its tests. Since it became its own project in November 2026 it has added, in milestones M22 to M35 of the [roadmap](spec/10-roadmap-and-tasks.md): names and networks from UniFi and Home Assistant, secrets and integrations managed in the UI, a full replacement for a Pi-hole pair (with an importer and a VIP failover), a read-only network inventory over SNMP, a live network map, a UI control for every setting, a leaner image, domain icons, a CMDB that reconciles every source into one record per device, and the WrenDNS name and brand. Planned next: a cloud-hosted resolver for devices away from home (M32) and public authoritative DNS (M34).
 
-**Status:** pre-1.0. Tagged [releases](https://github.com/nbacheller/wrendns/releases) are the stable channel and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs; their notes call out every such change.
+**Status:** 1.0. Tagged [releases](https://github.com/nbacheller/wrendns/releases) are the stable channel and `edge` is built from every commit on `main`. A release that changes a configuration key or an API says so in its notes.
 
 ## Features
 
@@ -159,8 +159,6 @@ The pictures come from a demo network of made-up devices on loopback addresses: 
 ## Install
 
 WrenDNS runs on Linux on x86-64, arm64 and 32-bit ARM (Raspberry Pi 3, 4, 5 and Zero 2 W), in a container, and in Kubernetes. Every download is free; the [download page](https://www.wrendns.com/download.html) lists them all.
-
-> **Before the first WrenDNS release:** the commands below install the latest release. Until the first WrenDNS release is published, use the `edge` builds of `main`: `WRENDNS_TAG=edge` for Compose, `--edge` for `install.sh`, the image tag `:edge`, and a chart version `0.8.0-edge.<n>`.
 
 ### Docker and Docker Compose
 
