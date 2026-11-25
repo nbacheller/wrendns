@@ -130,11 +130,7 @@ What to do with the report:
 - A **warning** that the ledger SHA is not an ancestor: upstream's history was rewritten. Check the upstream history by hand, then set `upstream-synced:` to the SHA the fork really merged.
 - After a sync or a triage, update the ledger in the same branch, so the next report is quiet.
 
-Run it locally, read-only:
-
-```bash
-python .github/scripts/upstream_watch.py --dry-run
-```
+The script `.github/scripts/upstream_watch.py` was removed on 2026-11-25 by owner decision: no workflow ran it after 2026-11-20, and the issue it kept up to date was deleted the same day. It is in the history before that date.
 
 `--dry-run` prints the report and the intended issue action. It fetches upstream into the local object store, adds a temporary worktree for the trial merge (removed afterwards), and reads the fork issue. It writes nothing to GitHub and does not change the branch.
 

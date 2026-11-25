@@ -144,6 +144,12 @@ Issues, pull requests, comments and their edit history all become public. Every 
 - **Who:** the owner reads; an agent may prepare the list. **Owner's yes** for each change.
 - **How:** an edit changes the text but keeps its edit history visible, so use an edit only for non-sensitive fixes. For a sensitive value: delete the comment, or delete the issue (`gh issue delete <N> -R nbacheller/wrendns --yes`, admin only). A pull request cannot be deleted by the owner, only by GitHub Support. A value in a pull request's text or edit history means asking GitHub Support before the flip.
 - **Verify:** the owner writes "text review done" and the numbers changed.
+- **Done 2026-11-25, for items up to #108** (the owner's answers through the question tool; all 108 items were read, and none held a private address, host name, email or token):
+  - Issues #28, #40, #41 and #42 (the hosted service and its paid offerings) were transferred to the WrenDNS Cloud tracker, where they are cloud #1 to #4. The node-side part of #40 is issue #110 here.
+  - Issue #9 and pull request #56 were reworded (a mention of local tooling). Pull requests #66 and #96 had sentences about paid offerings and legal review trimmed, and #66 lost the old issue number in its title. The old wording of all four stays in their edit history.
+  - Issue #18 (upstream watch) was deleted. The script that wrote it and the export of issues #1 to #29 in `.github/issues-archive/` were removed from the tree; both stay in the history.
+  - Everything else stays as it is, issue #29 included.
+  - Step 14 still repeats the review for items newer than #108.
 - **Undo:** a deleted issue or comment cannot be restored.
 
 ### 5. Set the version to 1.0.0 and write the notes, through a pull request

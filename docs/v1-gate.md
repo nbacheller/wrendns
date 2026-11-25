@@ -12,6 +12,8 @@ dev-host or homelab figures, not figures from the reference hardware; each says 
 **Last run:** 2026-10-07, `python3 bench/gate.py` at 60a2c30 (0.2.0 development), results in
 `bench/results/20261007T140130Z-gate.json` (not committed; reproduce with the same command).
 
+**A full re-run is a task for after the release** (the owner's decision of 2026-11-25): it needs a Linux host where upstream lookups are not slowed, and 1.0.0 ships with the figures below, each with its date.
+
 **Partial re-run:** 2026-11-25, the memory rows only, with `python3 bench/memprobe.py --bin` on
 the shipped x86-64 musl binary of edge build 88, in the development container. The rows that
 need an upstream (cache-hit throughput and latency, telemetry loss, the 100,000 cache entries)
