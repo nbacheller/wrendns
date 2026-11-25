@@ -271,10 +271,10 @@ jobs:
           python3 deploy/release/sbom_check.py dist/wrendns-*-linux.cdx.json
 
       - name: Checksums
-        # ADR-1028: the pre-rename asset names too, for one release (deploy/release/legacy-assets.sh).
+        # Every wrendns-* file: the binaries, their SBOMs and their debug files. No copies under
+        # the pre-rename names are published (ADR-1028, owner decision 2026-11-24).
         run: |
-          legacy="$(sh deploy/release/legacy-assets.sh dist)"
-          (cd dist && sha256sum wrendns-* $legacy > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && sha256sum wrendns-* > SHA256SUMS && cat SHA256SUMS)
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

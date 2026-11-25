@@ -306,12 +306,10 @@ jobs:
         run: bash deploy/systemd/guided-e2e.sh target/bench-fast/wrendns
       - name: install.sh + systemd unit
         run: sudo bash deploy/systemd/e2e.sh target/bench-fast/wrendns
-      # REQ: OPS-004 (ADR-1028, T33.2) — the migration of a pre-rename native install, and the
-      # release's pre-rename asset names (a fake root; no root or systemd needed).
-      - name: pre-rename install migration and asset names
-        run: |
-          sh deploy/systemd/tests/migrate-test.sh
-          sh deploy/release/tests/legacy-assets-test.sh
+      # REQ: OPS-004 (ADR-1028, T33.2) — the migration of a pre-rename native install (a fake root;
+      # no root or systemd needed).
+      - name: pre-rename install migration
+        run: sh deploy/systemd/tests/migrate-test.sh
 
   # REQ: NFR-005 (ADR-1080) — a pull request that adds or bumps a dependency with a known
   # vulnerability fails here. GitHub's dependency review needs the dependency graph and, on a private
