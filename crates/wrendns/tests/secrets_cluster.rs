@@ -245,6 +245,22 @@ fn call(s: &Session, method: &str, path: &str, body: Option<&Value>) -> (u16, St
     (status, text)
 }
 
+/// A call on a node that has just joined. Its sessions end once, when the primary's accounts
+/// arrive and replace the local admin, so a 401 signs in again and asks once more.
+fn call_joined(s: &mut Session, method: &str, path: &str, body: Option<&Value>) -> (u16, String) {
+    let (status, text) = call(s, method, path, body);
+    if status != 401 {
+        return (status, text);
+    }
+    match sign_in(s.port) {
+        Some(again) => {
+            *s = again;
+            call(s, method, path, body)
+        }
+        None => (status, text),
+    }
+}
+
 fn get_json(s: &Session, path: &str) -> Option<Value> {
     let (status, text) = call(s, "GET", path, None);
     if status != 200 {
@@ -305,7 +321,7 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
         &["cluster", "join", &token, "--site", "pi", "--eligible"],
     );
     let mut rr = start(&r);
-    let rs = wait_for(60, "the replica's sign-in", || sign_in(r.api));
+    let mut rs = wait_for(60, "the replica's sign-in", || sign_in(r.api));
     wait_for(90, "the replica to join and be seen", || {
         let v = get_json(&ps, "/api/v1/cluster")?;
         let up = v["nodes"]
@@ -316,8 +332,8 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
         (up >= 2).then_some(())
     });
     // Set on the replica: the primary stores it.
-    let (s, body) = call(
-        &rs,
+    let (s, body) = call_joined(
+        &mut rs,
         "PUT",
         "/api/v1/secrets/unifi",
         Some(&serde_json::json!({ "value": VALUE, "kind": "text" })),
@@ -330,7 +346,10 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     });
     // Replicated back to the replica, under its own key.
     let meta = wait_for(90, "the replica to hold it", || {
-        let v = get_json(&rs, "/api/v1/secrets/unifi")?;
+        let (status, text) = call_joined(&mut rs, "GET", "/api/v1/secrets/unifi", None);
+        let v: Value = (status == 200)
+            .then(|| serde_json::from_str(&text).ok())
+            .flatten()?;
         (v["set"] == true && v["origin"] == "cluster").then_some(v)
     });
     assert!(!meta.to_string().contains(VALUE), "metadata only");
