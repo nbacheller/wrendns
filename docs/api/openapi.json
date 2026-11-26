@@ -23658,7 +23658,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,\n`listener_gate_default`, `listener_gate_stale`, `listener_not_applied`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,\n`listener_gate_default`, `listener_gate_stale`, `listener_not_applied`, `upgrade_gate_holding`,\n`locations_held`.",
             "example": "upstream_down"
           },
           "level": {

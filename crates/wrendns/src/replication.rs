@@ -52,6 +52,12 @@ pub(crate) fn last_applied(cfg: &Config) -> Option<ClusterManifest> {
     serde_json::from_slice(&std::fs::read(dir.join(APPLIED)).ok()?).ok()
 }
 
+/// REQ: DSC-908 (ADR-1104 point 5) - whether this node is a cluster's primary by its identity
+/// (a standalone node has none): the nodes whose locations wait for the members at start-up.
+pub(crate) fn is_clustered_primary(cfg: &Config) -> bool {
+    identity(cfg).is_some_and(|i| matches!(i.meta.role, Some(node::Role::Primary)))
+}
+
 /// The manifest this node follows: a synced replica's, or an emergency primary's (ADR-048: it
 /// keeps the last authoritative version). `None` for a standalone node or a regular primary.
 pub(crate) fn applied(cfg: &Config) -> Option<ClusterManifest> {

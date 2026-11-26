@@ -1294,7 +1294,15 @@ fn start_guarded(
 /// Runs until SIGTERM/SIGINT. SIGHUP reloads config from `files`.
 // The startup sequence and the main loop read best in one place.
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
+pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()> {
+    // REQ: DSC-908 (T36.10a, ADR-1104 point 5) - a primary that starts with locations holds them
+    // out of what it serves and publishes until the members have been heard and all know them.
+    let primary = crate::replication::is_clustered_primary(&cfg);
+    if crate::upgrade_gate::HOLD.at_start(&mut cfg, primary) {
+        warn!(
+            "locations: held until every cluster member is heard from and knows them; DNS is served without them"
+        );
+    }
     // REQ: OPS-007 — before any listener binds: a SIGTERM that comes once the node answers is
     // held until the loop below and drained, instead of ending the process at once.
     let mut term = signal(SignalKind::terminate())?;
@@ -1679,6 +1687,13 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cfg.clients.mdns,
         http_stopped.clone(),
     ));
+    // REQ: DSC-908 (ADR-1104 point 5) - the start-up hold ends without a restart once the gate passes.
+    if crate::upgrade_gate::HOLD.active() {
+        tokio::spawn(crate::upgrade_gate::release_loop(
+            Arc::clone(&sources),
+            http_stopped.clone(),
+        ));
+    }
     // REQ: T8.3 — device names from mDNS announcements (read at startup).
     if cfg.clients.mdns {
         tokio::spawn(crate::mdns::run(
@@ -1976,7 +1991,9 @@ async fn reload(
         error!("reload failed: configuration invalid; still serving the previous configuration");
         return false;
     };
-    let new = crate::replication::effective(&file);
+    let mut new = crate::replication::effective(&file);
+    // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the locations stay out.
+    crate::upgrade_gate::HOLD.apply(&mut new);
     // REQ: DSC-908 (T36.10a, ADR-1096 point 5) - the first location is held while a cluster member's
     // build does not know the table: a reload that adds one is refused, the previous configuration
     // keeps serving, and the refusal names the member. Every cause is judged here (SIGHUP, an API

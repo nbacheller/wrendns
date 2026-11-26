@@ -317,6 +317,7 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
         reasons: [
           { level: 'severe', code: 'upstream_group_down', summary: 'no upstream in group default is answering (quad9, cloudflare)', node: 'home-pi', link: '#/upstreams' },
           { level: 'degraded', code: 'rate_limited', summary: '12 queries were rate-limited in the last 5 minutes', link: '#/queries?status=rate_limited' },
+          { level: 'degraded', code: 'locations_held', summary: 'locations and device pins are held out until the members are checked: waiting to hear from the members. DNS answers as without locations', link: '#/cluster' },
         ],
       },
     }),
@@ -328,6 +329,9 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   await expect(panel).toContainText('Severe');
   await expect(panel).toContainText('home-pi');
   await expect(panel).toContainText('rate-limited');
+  // REQ: DSC-908 (ADR-1104 point 5) - locations held out at start-up: the reason and its help.
+  await expect(panel).toContainText('waiting to hear from the members');
+  await expect(panel.getByTestId('health-help-locations_held')).toContainText('applied without a restart');
   await panel.getByRole('link', { name: 'Look' }).first().click();
   await expect(page).toHaveURL(/#\/upstreams/);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1774,6 +1778,17 @@ test('dsc_910 editing a pinned device keeps its location pin', async () => {
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByRole('status')).toContainText('Saved');
     expect(sent).toMatchObject({ name: 'Test laptop', location: 'home' });
+    await page.keyboard.press('Escape');
+    // A rename and a kind change keep the pin too (the same whole-entry write).
+    sent = null;
+    await listOf('Top clients').getByRole('button', { name: 'Test laptop', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+    await page.getByLabel('Name', { exact: true }).fill('Test laptop renamed');
+    await page.getByLabel('What it is').selectOption({ index: 1 });
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status')).toContainText('Saved');
+    expect(sent).toMatchObject({ name: 'Test laptop renamed', location: 'home' });
+    expect((sent as { kind?: string }).kind).toBeTruthy();
     await page.keyboard.press('Escape');
   } finally {
     await page.unroute(/\/api\/v1\/clients$/);

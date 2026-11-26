@@ -2903,6 +2903,12 @@ impl Backend for ApiBackend {
         reasons.extend(crate::health::upgrade_gate_reasons(
             &crate::upgrade_gate::standing(self.src.cluster.as_deref()),
         ));
+        // REQ: DSC-908 (ADR-1104 point 5) - locations held out since start-up until the members are checked.
+        reasons.extend(crate::health::locations_held_reasons(
+            crate::upgrade_gate::HOLD
+                .reason(self.src.cluster.as_deref())
+                .as_deref(),
+        ));
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
         // REQ: DNS-901 (ADR-1090 point 1) — a listener gated only by the default refuses clients

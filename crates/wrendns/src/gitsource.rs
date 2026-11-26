@@ -303,6 +303,47 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// Applies the commit in use (a reload). Returns whether the compatibility gate refused it, so the
+/// poll applies it again once the members allow it.
+async fn apply_commit(sources: &crate::http::Sources, cluster: &Cluster, cfg: &Config) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if sources.reload.send(tx).await.is_ok() && !rx.await.unwrap_or(false) {
+        warn!("cluster: the new Git commit's configuration didn't apply; see the log");
+        // REQ: DSC-908 (ADR-1096 point 5) - a commit the compatibility gate holds back is shown
+        // as the commit's refusal; the previous configuration serves.
+        if let Some(why) = crate::upgrade_gate::standing(Some(cluster)).first() {
+            let mut st = status(cfg).unwrap_or_default();
+            mark_gate_refusal(&mut st, why);
+            save_status(cfg, &st);
+            cluster.event("git_refused", &cluster.identity.meta.node_id, why.clone());
+            return true;
+        }
+    }
+    false
+}
+
+/// A poll that found no new commit: a commit the gate refused earlier is applied again once no
+/// refusal stands (a member was upgraded); while one does, the refusal stays on show (the poll
+/// clears the status each time).
+pub(crate) async fn retry_pending(
+    sources: &crate::http::Sources,
+    cluster: &Cluster,
+    cfg: &Config,
+    retry: &mut bool,
+) {
+    if !*retry {
+        return;
+    }
+    let holds = crate::upgrade_gate::standing(Some(cluster));
+    if let Some(why) = holds.first() {
+        let mut st = status(cfg).unwrap_or_default();
+        mark_gate_refusal(&mut st, why);
+        save_status(cfg, &st);
+        return;
+    }
+    *retry = apply_commit(sources, cluster, cfg).await;
+}
+
 /// The poll loop: on the primary only; `poke` (the webhook) checks at once.
 pub(crate) async fn run(
     cluster: Arc<Cluster>,
@@ -311,6 +352,7 @@ pub(crate) async fn run(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut first = true;
+    let mut retry = false;
     loop {
         let cfg = sources.config.load_full();
         let Some(g) = cfg.cluster.git.clone() else {
@@ -356,20 +398,11 @@ pub(crate) async fn run(
                     });
                 }
                 // Apply: the effective configuration now uses the new commit's file.
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                if sources.reload.send(tx).await.is_ok() && !rx.await.unwrap_or(false) {
-                    warn!("cluster: the new Git commit's configuration didn't apply; see the log");
-                    // REQ: DSC-908 (ADR-1096 point 5) - a commit the compatibility gate holds
-                    // back is shown as the commit's refusal; the previous configuration serves.
-                    if let Some(why) = crate::upgrade_gate::standing(Some(&cluster)).first() {
-                        let mut st = status(&cfg).unwrap_or_default();
-                        mark_gate_refusal(&mut st, why);
-                        save_status(&cfg, &st);
-                        cluster.event("git_refused", &cluster.identity.meta.node_id, why.clone());
-                    }
-                }
+                retry = apply_commit(&sources, &cluster, &cfg).await;
             }
-            Ok(false) => {}
+            // REQ: DSC-908 (ADR-1104 point 5) - a commit the gate refused is applied again at
+            // this poll once the members allow it, without a manual reload.
+            Ok(false) => retry_pending(&sources, &cluster, &cfg, &mut retry).await,
             Err((e, refused)) => {
                 let mut st = status(&cfg).unwrap_or_default();
                 let fresh = st.error.as_deref() != Some(e.as_str());

@@ -239,6 +239,24 @@ pub(crate) fn upgrade_gate_reasons(holds: &[String]) -> Vec<HealthReason> {
         .collect()
 }
 
+/// REQ: DSC-908 (ADR-1104 point 5) - a primary that started with locations and holds them out
+/// until every member is heard from and knows them: degraded, DNS unaffected (it answers as
+/// without locations). `held` is the words naming the member, or that the members are awaited.
+pub(crate) fn locations_held_reasons(held: Option<&str>) -> Vec<HealthReason> {
+    held.map(|h| {
+        reason(
+            DEGRADED,
+            "locations_held",
+            format!(
+                "locations and device pins are held out until the members are checked: {h}. DNS answers as without locations"
+            ),
+            "#/cluster",
+        )
+    })
+    .into_iter()
+    .collect()
+}
+
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
         level: level.to_owned(),

@@ -115,7 +115,9 @@ Validation runs when the files load and on every API write; a refused table name
 
 ### 2.6 Replication and rolling upgrades
 
-- `[[location]]` is a shared section. Because an older replica refuses unknown shared sections (§1, finding 1), the API and the file loader refuse the first location while any member's heartbeat reports a build that does not know the section, with "node X runs version Y, which does not know locations; upgrade it first". The same gate applies to the first `[[dns_provider]]` and the first secret of the `pem` kind. Decided (decision 5); DSC-908 is reworded.
+- `[[location]]` is a shared section. Because an older replica refuses unknown shared sections (§1, finding 1), the API and the file loader refuse the first location while any member's heartbeat reports a build that does not know the section (a reload is refused and the previous configuration keeps serving; start-up holds the locations instead, below), with "node X runs version Y, which does not know locations; upgrade it first". The same gate applies to the first `[[dns_provider]]` and the first secret of the `pem` kind. Decided (decision 5); DSC-908 is reworded.
+- **Start-up.** Owner decision, 2026-11-26 (through the question tool): a primary that starts with a location (or a client `location`) in its file while the gate cannot yet pass (members not heard, or one does not announce the feature) holds the entries out of what it serves and publishes, and starts. Health names the member or says it is waiting to hear from the members. When the gate passes the entries are applied without a restart. A standalone node is never held (ADR-1104 point 5).
+- **Node names under a location** wait for T36.10d. Owner decision, 2026-11-26 (through the question tool): this is the decided order (ADR-1104 point 2).
 - Locations are not node-local; `nodes` says which nodes serve a location, and each node reads its own membership from the shared table.
 
 ## 3. Certificates

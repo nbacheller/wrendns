@@ -3915,4 +3915,47 @@ mod dsc_910_merge_tests {
         fill_from_device(&mut b, &d);
         assert!(!b.contains_key("location"));
     }
+
+    // REQ: DSC-910 - the three device plans (rename, regroup, pin) are merged with the device as
+    // it is now: rename and regroup keep the pin and the kind, and the pin plan keeps the kind.
+    #[test]
+    fn dsc_910_the_device_plans_merge_with_the_current_entry() {
+        let d = json!({"name": "tv", "match": ["192.0.2.9"], "groups": ["iot"], "kind": "tv",
+            "location": "lab", "locationPinned": true});
+        let plan = |tool: &str, args: Value| {
+            let t = write_tools().into_iter().find(|t| t.name == tool).unwrap();
+            (t.write)(&args).unwrap()
+        };
+        for w in [
+            plan(
+                "plan_rename_client",
+                json!({"client": "tv", "newName": "tv2", "reason": "r"}),
+            ),
+            plan(
+                "plan_assign_client",
+                json!({"client": "tv", "groups": ["kids"], "reason": "r"}),
+            ),
+            plan(
+                "plan_set_device_location",
+                json!({"device": "tv", "location": "home", "reason": "r"}),
+            ),
+        ] {
+            assert_eq!(
+                w.merge.as_ref().map(|m| m.0),
+                Some("client"),
+                "{}",
+                w.summary
+            );
+            let mut b = w.body.clone().unwrap().as_object().unwrap().clone();
+            fill_from_device(&mut b, &d);
+            assert_eq!(b["kind"], "tv", "{}", w.summary);
+            assert_eq!(b["match"], json!(["192.0.2.9"]), "{}", w.summary);
+            let want = if w.summary.contains("Pin the device") {
+                "home"
+            } else {
+                "lab"
+            };
+            assert_eq!(b["location"], want, "{}", w.summary);
+        }
+    }
 }

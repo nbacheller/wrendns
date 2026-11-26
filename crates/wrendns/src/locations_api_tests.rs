@@ -395,3 +395,143 @@ fn dsc_913_the_mcp_catalog_has_the_location_tools() {
         "a plan names its reason"
     );
 }
+
+const HELD: &str = "[local]\ndevice_domain = \"home.arpa\"\n\
+    [[location]]\nslug = \"home\"\nnetworks = [\"192.0.2.0/24\"]\n\
+    [[client]]\nname = \"x\"\nmatch = [\"192.0.2.9\"]\nlocation = \"home\"\n";
+
+/// REQ: DSC-908 (T36.10a; ADR-1104 point 5, the owner's decision of 2026-11-26) - a primary that
+/// starts with locations while a member's build does not announce them holds the entries out of
+/// what it serves and publishes, says why in health, and applies them (the hold ends) once the
+/// member announces the feature, with no restart; a node with no cluster is never held.
+#[tokio::test]
+async fn dsc_908_held_at_start_with_an_older_member_released_when_it_announces() {
+    let _turn = GATE.lock().await;
+    let file = crate::credential_tests::config(HELD);
+    assert!(crate::upgrade_gate::uses_locations(&file));
+
+    // Standalone (not a clustered primary): never held.
+    let standalone = crate::upgrade_gate::Hold::new();
+    let mut c = file.clone();
+    assert!(!standalone.at_start(&mut c, false));
+    assert!(!standalone.active() && uses_both(&c));
+
+    // Held: the entries and the pin are out of what the node serves and publishes.
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let mut stripped = file.clone();
+    let hold = crate::upgrade_gate::Hold::new();
+    assert!(hold.at_start(&mut stripped, true));
+    assert!(stripped.location.is_empty() && stripped.client.iter().all(|c| c.location.is_none()));
+    assert_eq!(stripped.client.len(), 1, "the device itself stays");
+    // Later builds of the configuration (a reload) keep them out while the hold stands.
+    let mut again = file.clone();
+    hold.apply(&mut again);
+    assert_eq!(again.location.len(), 0);
+    // Published: the shared part (what members receive) has no location and no pin; a member
+    // merging it sees none.
+    let published = wrendns_config::shared::shared_part(&stripped);
+    assert!(!published.to_string().contains("\"home\""), "{published}");
+    let member_file = crate::credential_tests::config(DOMAIN);
+    let seen = wrendns_config::shared::with_shared(&member_file, &published).unwrap();
+    assert!(seen.location.is_empty() && seen.client.iter().all(|c| c.location.is_none()));
+    assert!(
+        wrendns_config::shared::shared_part(&file)
+            .to_string()
+            .contains("\"home\""),
+        "without the hold the same file publishes its location"
+    );
+    // Health says why, naming the member.
+    let why = hold.reason(Some(&old.primary)).unwrap();
+    assert!(why.contains("version 1.1.0-edge.40"), "{why}");
+    let reasons = crate::health::locations_held_reasons(Some(&why));
+    assert_eq!(reasons[0].code, "locations_held");
+    assert!(
+        reasons[0]
+            .summary
+            .contains("DNS answers as without locations")
+    );
+    // The older member keeps the hold.
+    assert!(!hold.release(Some(&old.primary)) && hold.active());
+    let _ = old.stop.send(true);
+
+    // The member announces the feature: the hold ends, the reason clears, and a reload applies.
+    let new = pair("1.1.0", "1.1.0").await;
+    assert!(hold.release(Some(&new.primary)));
+    assert!(!hold.active() && hold.reason(Some(&new.primary)).is_none());
+    assert!(crate::health::locations_held_reasons(None).is_empty());
+    let mut released = file.clone();
+    hold.apply(&mut released);
+    assert!(!released.location.is_empty(), "applied without a restart");
+    let ph = harness_in(DOMAIN, Some(Arc::clone(&new.primary)));
+    assert!(crate::server::reload_gate(&ph.src, &stripped, &released).is_ok());
+    let _ = new.stop.send(true);
+}
+
+fn uses_both(c: &wrendns_config::Config) -> bool {
+    !c.location.is_empty() && c.client.iter().all(|c| c.location.is_some())
+}
+
+/// REQ: DSC-908 - a member not heard from yet is "waiting to hear from the members"; one that is
+/// heard and does not know the feature is named with its version.
+#[test]
+fn dsc_908_the_hold_names_the_member_or_the_wait() {
+    use wrendns_cluster::gate::{Blocker, Feature, Refusal};
+    let unheard = Refusal {
+        feature: Feature::Locations,
+        blockers: vec![Blocker {
+            node: "n1".into(),
+            version: String::new(),
+        }],
+    };
+    assert_eq!(
+        crate::upgrade_gate::hold_words(&unheard),
+        "waiting to hear from the members"
+    );
+    let old = Refusal {
+        feature: Feature::Locations,
+        blockers: vec![Blocker {
+            node: "n1".into(),
+            version: "1.0.0".into(),
+        }],
+    };
+    assert!(crate::upgrade_gate::hold_words(&old).contains("node n1 runs version 1.0.0"));
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - a Git commit the gate refused is applied again at a later poll
+/// once the members allow it, without a manual reload; while one still refuses, no reload is sent.
+#[tokio::test]
+async fn dsc_908_a_refused_git_commit_is_retried_when_the_members_allow_it() {
+    let _turn = GATE.lock().await;
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = crate::credential_tests::config(DOMAIN);
+    cfg.node.data_dir = wrendns_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+    let (reload, mut reloads) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(4);
+    let src = Arc::new(crate::http::Sources {
+        reload,
+        ..crate::http::tests::sources_in(dir.path())
+    });
+    let none = crate::credential_tests::config(DOMAIN);
+    let with = crate::credential_tests::config(HELD);
+    // The reload that refused the commit left the refusal standing.
+    assert!(crate::upgrade_gate::enforce_locations(Some(&old.primary), &none, &with).is_err());
+    let counted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c2 = Arc::clone(&counted);
+    tokio::spawn(async move {
+        while let Some(done) = reloads.recv().await {
+            c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = done.send(true);
+        }
+    });
+    let mut retry = true;
+    crate::gitsource::retry_pending(&src, &old.primary, &cfg, &mut retry).await;
+    assert!(retry, "still refused: kept for the next poll");
+    assert_eq!(counted.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let _ = old.stop.send(true);
+
+    let new = pair("1.1.0", "1.1.0").await;
+    crate::gitsource::retry_pending(&src, &new.primary, &cfg, &mut retry).await;
+    assert!(!retry, "applied: nothing left to retry");
+    assert_eq!(counted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let _ = new.stop.send(true);
+}

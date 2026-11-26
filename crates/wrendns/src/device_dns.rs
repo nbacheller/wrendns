@@ -1013,10 +1013,17 @@ match = [\"192.0.2.5\"]
         [[location]]\nslug = \"lab\"\nnetworks = [\"10.2.2.0/24\"]\n";
 
     fn located(toml: &str, routers: &Leases, mdns: &Leases) -> (Composed, crate::locations::Plan) {
-        let c = cfg(toml);
-        let plan = crate::locations::Plan::from_config(&c);
+        located_cfg(&cfg(toml), routers, mdns)
+    }
+
+    fn located_cfg(
+        c: &wrendns_config::Config,
+        routers: &Leases,
+        mdns: &Leases,
+    ) -> (Composed, crate::locations::Plan) {
+        let plan = crate::locations::Plan::from_config(c);
         let resolved = crate::locations::Resolved::resolve(&plan, &[], &[]);
-        let clients = ClientTable::from_config(&c);
+        let clients = ClientTable::from_config(c);
         let empty = Leases::new();
         let inputs = Inputs {
             clients: &clients,
@@ -1213,5 +1220,36 @@ match = [\"192.0.2.5\"]
                 ("work-mac.lab.home.arpa", true)
             ]
         );
+    }
+
+    // REQ: DSC-908 (ADR-1104 point 5) - a primary that holds its locations out at start-up answers
+    // as it did without them: the device keeps its flat name only, a pinned device too, and the
+    // subtree has no table.
+    #[test]
+    fn dsc_908_held_locations_are_not_served() {
+        let empty = Leases::new();
+        let routers: Leases = [lease([10, 1, 1, 20], "aa:bb:cc:00:00:20", Some("phone"))].into();
+        let toml = format!(
+            "{LOCS}[[client]]
+name = \"phone\"
+match = [\"10.1.1.20\"]
+location = \"lab\"
+"
+        );
+        let (with, _) = located(&toml, &routers, &empty);
+        assert_eq!(with.named[0].name, "phone.lab.home.arpa");
+        let mut stripped = cfg(&toml);
+        let hold = crate::upgrade_gate::Hold::new();
+        assert!(hold.at_start(&mut stripped, true));
+        let (without, plan) = located_cfg(&stripped, &routers, &empty);
+        assert_eq!(
+            name_list(&without),
+            vec![(
+                "phone.home.arpa".to_owned(),
+                Ipv4Addr::new(10, 1, 1, 20),
+                None
+            )]
+        );
+        assert_eq!(plan.locs.len(), 0);
     }
 }

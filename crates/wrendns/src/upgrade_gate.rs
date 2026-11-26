@@ -6,6 +6,7 @@
 //! The rule itself is `wrendns_cluster::gate`; nothing here is on the query path.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use wrendns_cluster::gate::{self, Feature};
@@ -89,4 +90,112 @@ pub(crate) fn enforce_locations(
         return Ok(());
     }
     enforce(cluster, Feature::Locations)
+}
+
+/// REQ: DSC-908 (T36.10a; ADR-1104 point 5, the owner's decision of 2026-11-26) - the locations a
+/// primary holds out until the gate can pass. A primary (or a standalone node made a primary)
+/// that starts with a file holding a location, or a client pin, does not know yet whether every
+/// member announces the feature: it starts and serves DNS, but leaves the location entries and
+/// the device pins out of the configuration it serves and publishes, and says why in health. When
+/// the members have been heard and all announce the feature the entries are applied without a
+/// restart. A node with no cluster is never held.
+pub(crate) struct Hold(AtomicBool);
+
+/// The hold of this process.
+pub(crate) static HOLD: Hold = Hold::new();
+
+impl Hold {
+    pub(crate) const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Whether the locations are being held out now.
+    pub(crate) fn active(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// At start-up: when `clustered_primary` and `cfg` uses locations, takes them out of `cfg`
+    /// and starts holding. Returns whether it did.
+    pub(crate) fn at_start(
+        &self,
+        cfg: &mut wrendns_config::Config,
+        clustered_primary: bool,
+    ) -> bool {
+        if !clustered_primary || !uses_locations(cfg) {
+            return false;
+        }
+        strip_locations(cfg);
+        self.0.store(true, Ordering::Relaxed);
+        true
+    }
+
+    /// For every later configuration the node builds while the hold stands.
+    pub(crate) fn apply(&self, cfg: &mut wrendns_config::Config) {
+        if self.active() {
+            strip_locations(cfg);
+        }
+    }
+
+    /// The words for health while the hold stands: the member that does not know the feature, or
+    /// that the members have not been heard from yet.
+    pub(crate) fn reason(&self, cluster: Option<&Cluster>) -> Option<String> {
+        if !self.active() {
+            return None;
+        }
+        judge(cluster, Feature::Locations)
+            .err()
+            .map(|r| hold_words(&r))
+    }
+
+    /// Ends the hold when the gate passes now (or this node is no longer the primary): `true`
+    /// when it ended, and the caller reloads so the entries are applied.
+    pub(crate) fn release(&self, cluster: Option<&Cluster>) -> bool {
+        if !self.active() {
+            return false;
+        }
+        let follows = cluster.is_some_and(|c| !c.is_primary());
+        if follows || judge(cluster, Feature::Locations).is_ok() {
+            self.0.store(false, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
+}
+
+/// Takes the `[[location]]` entries and the clients' `location` pins out of `cfg`.
+pub(crate) fn strip_locations(cfg: &mut wrendns_config::Config) {
+    cfg.location.clear();
+    for c in &mut cfg.client {
+        c.location = None;
+    }
+}
+
+/// The hold's words: names the member (and its build) or says the members are not heard yet.
+pub(crate) fn hold_words(r: &gate::Refusal) -> String {
+    if r.blockers.iter().all(|b| b.version.is_empty()) {
+        return "waiting to hear from the members".to_owned();
+    }
+    r.to_string()
+}
+
+/// REQ: DSC-908 - the hold, polled until it ends: every couple of seconds the gate is judged
+/// again (members arrive, announce, or are upgraded), and when it passes the locations are applied
+/// by a reload.
+pub(crate) async fn release_loop(
+    sources: std::sync::Arc<crate::http::Sources>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    while HOLD.active() {
+        tokio::select! {
+            _ = stop.changed() => return,
+            () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+        }
+        if HOLD.release(sources.cluster.as_deref()) {
+            tracing::info!("locations: every member knows them; applying the held entries");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if sources.reload.send(tx).await.is_ok() {
+                let _ = rx.await;
+            }
+        }
+    }
 }
