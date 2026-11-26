@@ -1,6 +1,6 @@
 # Locations and DNS-provider integrations (T36.10) — design
 
-Status: design only, for #110 and T36.10 (sub-tasks T36.10a to T36.10e in `spec/10`). It covers the self-hosted node only. The hosted service's side (managed names, the broker-seen address, the cloud zone) is in `docs/design/hosted.md` and is not designed here. The decisions already taken are ADR-1081 (locations), ADR-1082 (certificates), ADR-1083 (dynamic DNS), ADR-1084 (the provider table) and ADR-1085 (the ACME crate), with requirements DSC-908 to DSC-915, CLD-903 and CLD-904. This note grounds them in the code as it is on `main`, names the places where the code and those records disagree, and proposes the rest. Points that need the owner are listed at the end as open questions; nothing below that depends on them is final until they are answered.
+Status: design only, for #110 and T36.10 (sub-tasks T36.10a0 to T36.10f in `spec/10`). It covers the self-hosted node only. The hosted service's side (managed names, the broker-seen address, the cloud zone) is in `docs/design/hosted.md` and is not designed here. The decisions already taken are ADR-1081 (locations), ADR-1082 (certificates), ADR-1083 (dynamic DNS), ADR-1084 (the provider table) and ADR-1085 (the ACME crate), with requirements DSC-908 to DSC-915, CLD-903 and CLD-904. This note grounds them in the code as it is on `main`, names the places where the code and those records disagree, and proposes the rest. The owner decided the eight questions this note raised on 2026-11-26; they are listed in the decisions section at the end and recorded in ADR-1096 (location names; amends ADR-1081), ADR-1097 (what a location's integrations never hand out; amends ADR-1082 and ADR-1083) and a dated amendment to ADR-1084 (the provider set). Points the owner has not decided are listed there as still open.
 
 ## 1. What exists today
 
@@ -47,14 +47,14 @@ Status: design only, for #110 and T36.10 (sub-tasks T36.10a to T36.10e in `spec/
 
 ### Where the code and the records disagree
 
-These are the findings that change the design. Each is either resolved below or listed as an open question.
+These are the findings that change the design. Each is resolved below, decided by the owner (decision N in the decisions section), or listed there as still open.
 
-1. **DSC-908 says a node that predates `[[location]]` reads it as absent.** It cannot: a released replica refuses an unknown shared section and holds its last version (`shared.rs`). The design below gates the first location on every member's build instead (§2.6, question 5).
-2. **ADR-1081 point 3 and DSC-910 put the location and its manual override on the CMDB record**, but DSC-901 forbids CMDB data reaching device names. The location can come from the address and the configured networks without the CMDB (§2.3); the override needs a home (question 1).
-3. **ADR-1081 point 4 (neither colliding name answers) differs from ADR-901 (the best-ranked device keeps it).** Two rules on one node would be confusing, and switching to ADR-1081's rule could drop names that answer today (question 3).
-4. **ADR-1083 assumes the router read stores a WAN address in the CMDB.** It does not; WAN networks are skipped. T36.10e must add a WAN read (§4.6).
-5. **DSC-912 asks for the answer to be keyed by location in the cache.** Local answers are not cached (they are answered before the cache), so no cache change is needed; the location test sits in the local-answer step.
-6. **The secret store takes only one-line text up to 8 KiB.** A certificate chain and key need the reserved `pem` kind (§3.4).
+1. **DSC-908 said a node that predates `[[location]]` reads it as absent.** It cannot: a released replica refuses an unknown shared section and holds its last version (`shared.rs`). Decided (decision 5): the first location is gated on every member's build (§2.6), and DSC-908 is reworded.
+2. **ADR-1081 point 3 and DSC-910 put the location and its manual override on the CMDB record**, but DSC-901 forbids CMDB data reaching device names. The location comes from the address and the configured networks without the CMDB (§2.3). Decided (decision 1): the override is a `location` field on `[[client]]`, DSC-901 stays, and DSC-910 is reworded.
+3. **ADR-1081 point 4 (neither colliding name answers) differed from ADR-901 (the best-ranked device keeps it).** Decided (decision 3): ADR-901's ranking everywhere, every collision listed on the Locations page; this replaces ADR-1081 point 4.
+4. **ADR-1083 assumes the router read stores a WAN address in the CMDB.** It does not; WAN networks are skipped. T36.10e must add a WAN read (§4.6). Still open: the amendment of ADR-1083 and the rewording of DSC-915.
+5. **DSC-912 asks for the answer to be keyed by location in the cache.** Local answers are not cached (they are answered before the cache), so no cache change is needed; the location test sits in the local-answer step. Still open: the rewording of DSC-912 and ADR-1081 point 6.
+6. **The secret store takes only one-line text up to 8 KiB.** A certificate chain and key need the reserved `pem` kind (§3.4). Decision 5 gates the first `pem` secret like the first location.
 
 ## 2. Locations
 
@@ -71,10 +71,10 @@ A `[[location]]` table, shared (replicated with the cluster configuration), also
 | `domain` | string, optional | The parent domain. Defaults to `[local] device_domain`. Lowercase, no trailing dot, at most 200 octets so composed names stay under 253. |
 | `visibility` | `shared` or `private` | Default `shared` (today's behaviour: every client sees device names). |
 | `certificate` | bool | Opt in to the `*.<slug>.<domain>` wildcard (§3). Default false. |
-| `flat_names` | bool | Keep answering the old `<device>.<device_domain>` names for devices in this location (§2.5). Default per question 2. |
+| `flat_names` | bool | Keep answering the old `<device>.<device_domain>` names for devices in this location (§2.5). Default true (decision 2). |
 | `public_name` | table, optional | Dynamic DNS for the location's WAN address (§4.6): `name`, `provider`, `ttl`. |
 
-Validation runs when the files load and on every API write; a refused table names the bad field and the last good configuration stays in force (DSC-908). A location with no `domain` while `device_domain` is unset is refused ("set `[local] device_domain` or the location's `domain`").
+Validation runs when the files load and on every API write; a refused table names the bad field and the last good configuration stays in force (DSC-908). The first location is also refused while a cluster member runs a build that does not know locations (§2.6, decision 5). A location with no `domain` while `device_domain` is unset is refused ("set `[local] device_domain` or the location's `domain`").
 
 ### 2.2 Networks and VLANs
 
@@ -88,7 +88,7 @@ Validation runs when the files load and on every API write; a refused table name
 - **Derivation.** A device's location is the location whose networks contain its current IPv4 address (the address the device table already names it by). Its IPv6 addresses follow the IPv4 address's location, as AAAA records follow it today (ADR-983).
 - **No CMDB read.** The derivation uses the configuration and the router reads only. The CMDB shows the location (a badge, grouping) and keeps the identity, but does not decide the name (DSC-901 stays as written).
 - **Moves (DSC-910).** When a router reports the device at an address in another location, the next rebuild (within 10 s of the router read) composes the new name; the old name stops answering at the same moment. The CMDB keeps one CI because reconciliation keys on the MAC and the source's stable device key (DSC-903), not on the address. A move is shown as a MACD "move" record the CMDB already raises (DSC-905); nothing new is needed there.
-- **Manual override.** A device can be pinned to a location regardless of its address (a laptop that docks on a lab VLAN but belongs to Home). Where it lives is question 1; the recommendation is a `location` field on `[[client]]`, which the device table already reads.
+- **Manual override (decision 1).** A device can be pinned to a location regardless of its address (a laptop that docks on a lab VLAN but belongs to Home). The override is a `location` field on the device's `[[client]]` entry, which the device table already reads; it names a location's slug, wins over the address until it is removed, and is an ordinary audited configuration write (through the API, with a reason). A `location` that names no configured location is a validation error. The CMDB shows the override but never sets it (DSC-901 stays).
 - **Names stay labels.** The device label is the same label as today (`device_label`, the ranking of ADR-901). Only the suffix changes.
 
 ### 2.4 Naming and answering rules
@@ -98,24 +98,24 @@ Validation runs when the files load and on every API write; a refused table name
 - **Reverse.** Each address has one PTR, the forward name (DSC-909). A device with a flat alias (§2.5) still has only one PTR, the location name.
 - **Shared.** A shared location's names answer to every client `[access]` allows, from one table.
 - **Private (DSC-911, owner answer in ADR-1081).** A private location's names, and their PTRs, answer only to a client whose source address is in one of that location's networks. Built as one `LocalData` per private location plus one shared table; the query path matches the qname suffix against the private suffixes (a small sorted list in the snapshot), and only then looks up the client's address in the prefix table. No allocation, lock or I/O (DSC-912); `make bench-smoke` covers it.
-- **What a non-member gets.** Question 4. The recommendation: the node owns each location's subtree `<slug>.<domain>` and answers NXDOMAIN locally (with the same SOA it uses for a zone's NXDOMAIN) for any name in it that is not a device, a node, or a published record of that location, whether the name is private or simply unknown. That way device names never reach an upstream resolver, and a private name looks exactly like an unknown one to an outsider.
+- **What a non-member gets (decision 4).** The node owns each location's subtree `<slug>.<domain>` and answers NXDOMAIN locally (with the same SOA it uses for a zone's NXDOMAIN) for any name in it that is not a device, a node, or a published record of that location, whether the name is private or simply unknown. That way device names never reach an upstream resolver, and a private name looks exactly like an unknown one to an outsider.
 - **Precedence.** Unchanged: `[[record]]`, hosts files and zones win over device names; a location name never overrides a configured record.
 - **Not policy.** Locations decide which names exist and who sees them; they never change whether a query is blocked (ADR-1081 point 6). `explain` and the trace name the location whose table answered (DSC-912).
 
 ### 2.5 Conflicts and migration from one `device_domain`
 
-- **Conflicts inside a location.** Question 3. The recommendation is ADR-901's ranking everywhere, with every collision listed on the Locations page and in the CMDB, so turning locations on never drops a name that answers today.
+- **Conflicts inside a location (decision 3).** ADR-901's ranking everywhere: a named device, then the router's (or Home Assistant's) name, then mDNS, then the lowest address keeps the name, and the others get no A and no PTR for it. Every collision is listed on the Locations page, so turning locations on never drops a name that answers today without showing it. This replaces ADR-1081 point 4.
 - **Name clashes across forms.** A location slug equal to a device label under the same parent domain (`home` as a device and `home` as a location under `example.net`) is refused at validation; a device that later takes that label is a collision the location wins, reported.
-- **Migration.** Today a NAS is `nas.home.arpa`. With a `home` location and the default parent, it becomes `nas.home.home.arpa`. To avoid breaking bookmarks, scripts and SSH known-hosts:
-  1. With `flat_names = true`, the old name keeps answering (A and AAAA, no PTR) for devices in the location. The Locations page counts how many queries still use flat names per location over 7 days, so the operator can see when nobody does.
-  2. A flat name answers only when no other location's device composes the same flat label (two locations' `nas` cannot both own `nas.home.arpa`); such a label is reported and answers for neither as a flat name.
+- **Migration (decision 2).** Today a NAS is `nas.home.arpa`. With a `home` location and the default parent, it becomes `nas.home.home.arpa`. To avoid breaking bookmarks, scripts and SSH known-hosts:
+  1. With `flat_names = true`, which is the default, the old name keeps answering (A and AAAA, no PTR) for devices in the location. The Locations page counts how many queries still use flat names per location over 7 days, so the operator can see when nobody does.
+  2. When devices in two locations compose the same flat label (two locations' `nas` cannot both own `nas.home.arpa`), the flat name follows the same ADR-901 ranking as every other collision (decision 3 applies everywhere), and the collision is listed on the Locations page.
   3. A private location's flat names follow the private rule too, so they do not leak to other networks.
   4. Turning `flat_names` off is an ordinary audited write.
 - An operator who wants `nas.home.example.net` without a middle label sets the location's `domain` to `example.net` and slug `home`; there is no slug-less form, which keeps one rule.
 
 ### 2.6 Replication and rolling upgrades
 
-- `[[location]]` is a shared section. Because an older replica refuses unknown shared sections (§1, finding 1), the API and the file loader refuse the first location while any member's heartbeat reports a build that does not know the section, with "node X runs version Y, which does not know locations; upgrade it first". The same gate applies to `[[dns_provider]]` and the `pem` secret kind. Question 5 asks to confirm this and to reword DSC-908.
+- `[[location]]` is a shared section. Because an older replica refuses unknown shared sections (§1, finding 1), the API and the file loader refuse the first location while any member's heartbeat reports a build that does not know the section, with "node X runs version Y, which does not know locations; upgrade it first". The same gate applies to the first `[[dns_provider]]` and the first secret of the `pem` kind. Decided (decision 5); DSC-908 is reworded.
 - Locations are not node-local; `nodes` says which nodes serve a location, and each node reads its own membership from the shared table.
 
 ## 3. Certificates
@@ -141,12 +141,12 @@ A certificate for `nas.home.example.net` would put `nas` in the public certifica
 
 ### 3.4 Storage and distribution
 
-- The ACME account key, each shared certificate's key and its chain are stored secrets of a new kind `pem` (the kind `value.rs` reserves). Names are system-reserved: `acme.account`, `cert.<slug>.key`, `cert.<slug>.chain`, `cert.cluster.key`, `cert.cluster.chain`. An admin cannot create or overwrite a name with the `acme.` or `cert.` prefix through the secrets API; they are written only by the issuer.
+- The ACME account key, each shared certificate's key and its chain are stored secrets of a new kind `pem` (the kind `value.rs` reserves). Proposed, not decided: system-reserved names (`acme.account`, `cert.<slug>.key`, `cert.<slug>.chain`, `cert.cluster.key`, `cert.cluster.chain`), which an admin could not create or overwrite through the secrets API, written only by the issuer. The owner has not decided this; it is in the open list below.
 - Sizes: an ECDSA chain with two intermediates is about 3 to 4 KiB, under the 8 KiB value limit. Each location certificate uses two of the 128 secrets; a cluster with 10 certificate locations uses 23. The issuer refuses `certificate = true` when the store would pass 100 secrets, leaving room for credentials.
 - Distribution is the existing secret sync (CLU-015): every full member gets them. A member in the location's `nodes` writes the key and chain to `<data_dir>/acme/<slug>/` (0600, written to a temporary file and renamed), and the existing reload in `tls.rs` and `api_tls.rs` picks them up with no restart. Members not serving the location hold the secret but do not write the files.
 - **Using the certificate.** A listener or the API uses it when its `tls` names `acme = "<slug>"` instead of `cert`/`key` paths. Changing the API listener to it goes through the existing `api-tls` guarded row; a DoT or DoH listener through the `listen` row.
 - **SNI client IDs.** Because a wildcard certificate makes the SNI label a client ID (`tls.rs`, FLT-006), a DoT or DoH listener given the location wildcard reads `dns.home.example.net` as client `dns`. That only matters if an `id:` match key is `dns`; the UI warns when a location wildcard is set on a DNS listener and a client uses a location slug or node name as its `id:` key.
-- **Local services.** Exporting the wildcard key to another device (a NAS) lets that device impersonate every name in the location, including the WrenDNS UI. Question 7.
+- **Local services (decision 7).** Exporting the wildcard key to another device (a NAS) would let that device impersonate every name in the location, including the WrenDNS UI. So the key is not exportable at first: only WrenDNS's own listeners use it. No API route, UI control, MCP tool or `ctl` command returns or downloads it, and a support package never contains it. A guarded, audited download is a later opt-in task, not part of T36.10d.
 
 ### 3.5 Failure behaviour
 
@@ -201,15 +201,18 @@ trait DnsProvider: Send + Sync {
 - **Ownership.** The node only changes record sets it created or that the operator listed. It keeps a ledger in `state.db` (name, type, provider, the value it last wrote, when) and refuses to overwrite a record set it did not create unless the operator adopts it in the UI (an audited write). This stops a mistyped name from replacing a record someone else manages.
 - **Errors** carry the provider's status and a short reason, never the request headers or the credential; a `ProviderError` is formatted through the same redaction as `SecretValue`.
 
-### 4.3 The first providers, and why
+### 4.3 The first providers, and why (decision 6)
 
 | Kind | Why | Narrowest scope | Signing |
 |---|---|---|---|
-| `azure_dns` | The owner's own zones are there; AC (1) of T36.10 renews through it. | Azure RBAC on one record set: a role assignment on the `_acme-challenge.<slug>` TXT record set (and the dynamic DNS A/AAAA record set), not on the zone. The record set must exist first; the helper shows the `az` command. | OAuth2 client credentials to Entra ID, then the Azure DNS REST API. |
+| `azure_dns` | The owner's own zones are there; AC (1) of T36.10 renews through it. | Azure RBAC on one record set: a role assignment on the `_acme-challenge.<slug>` TXT record set (and the dynamic DNS A/AAAA record set), not on the zone. Microsoft documents record-set-level role assignment (https://learn.microsoft.com/azure/dns/dns-protect-zones-recordsets, "Record set level Azure RBAC": the scope is `.../dnszones/<zone>/<type>/<name>`). The record set must exist first; the helper shows the `az role assignment create --scope` command. The credential is scoped to that single record set (decision 6). | OAuth2 client credentials to Entra ID, then the Azure DNS REST API. |
 | `cloudflare` | A very common DNS host for self-hosters, with a documented API. | An API token limited to one zone with DNS edit. Cloudflare cannot limit a token to one record, so the helper recommends delegation (§4.4) when the zone holds anything else of value. | Bearer token. |
 | `route53` | Widely used; IAM can limit `ChangeResourceRecordSets` to named records and types. | An IAM policy on one hosted zone with the `route53:ChangeResourceRecordSetsNormalizedRecordNames` and `RecordTypes` conditions. The helper shows the policy JSON. | A small hand-rolled Signature Version 4 on `ring`, checked against AWS's published test vectors (ADR-1084 point 6). |
-| `godaddy` | Named in ADR-1084; a common registrar. | None: a key acts on the whole account. | Key and secret header. Question 6 asks whether to keep it as an API provider. |
-| `delegated` | Any provider without a usable API (Network Solutions and others, ADR-1084). | Nothing at the provider: the operator creates one CNAME by hand, once. | — |
+| `rfc2136` | Dynamic update (RFC 2136) signed with TSIG (RFC 8945) serves any self-run authoritative server (BIND, Knot, PowerDNS and others) with no vendor API. | A TSIG key that the server's update policy limits to the one name and type (for example a BIND `update-policy` grant on `_acme-challenge.<slug>.<domain>` TXT). The server does not report a key's scope, so "test and show scope" reports that the key is accepted for the configured name, and the helper shows the server-side policy to set. | TSIG HMAC-SHA256 on `ring`; the key is the stored secret. |
+| GoDaddy (no kind) | Named in ADR-1084; a common registrar. | A GoDaddy key acts on the whole account, so no GoDaddy key is stored. GoDaddy zones are served by delegation of the challenge name only (§4.4): the operator creates one CNAME at GoDaddy by hand, once. | — |
+| `delegated` | Any provider without a usable API (GoDaddy, Network Solutions and others, ADR-1084). | Nothing at the provider: the operator creates one CNAME by hand, once. | — |
+
+Delegation covers the `_acme-challenge` name only. With no stored GoDaddy key the node cannot write an A or AAAA record in a GoDaddy zone, so dynamic DNS (§4.6) and public names (§5) for such a zone are not available directly; whether they are offered through a CNAME into a zone at an API provider is not decided (see the decisions section).
 
 The helper for every kind shows, before any secret is entered, exactly which permission to grant and where, and the "test and show scope" action (CLD-904) then reports what the credential can actually change. A credential broader than needed (a zone-wide Azure role, a Cloudflare token for several zones) is accepted with a warning shown on the provider card until it is narrowed.
 
@@ -249,7 +252,7 @@ Nothing leaves the node to a public DNS host unless an operator configured that 
 - no certificate names a device (§3.2);
 - the public listener answers only known device keys (DNS-901, ADR-1090), and the hosted relay never carries local records, CMDB or location names (`docs/design/hosted.md`).
 
-**Publishing a chosen local name publicly** (#110's third use) is a separate opt-in per name, off by default, admin only, audited, with dry run, built after dynamic DNS (reserved DSC-917 below). Whether a private address may be published is question 8; the recommendation is no.
+**Publishing a chosen local name publicly** (#110's third use) is a separate opt-in per name, off by default, admin only, audited, with dry run, built after dynamic DNS (DSC-917, T36.10f). A publicly published local name may not point at a private, CGNAT, link-local or reserved address (decision 8): the same ranges dynamic DNS refuses (§4.6), checked when the name is saved and again before every write, with the reason shown.
 
 ## 6. API, MCP and UI
 
@@ -283,25 +286,23 @@ Help topics `locations`, `location-private-names`, `dns-providers`, `dns-provide
 
 ### Requirement IDs
 
-Already in `spec/01`: DSC-908 to DSC-915, CLD-903, CLD-904. Proposed reservations (the next free numbers on `main` today; re-check at write time):
+Already in `spec/01`: DSC-908 to DSC-915, CLD-903, CLD-904. Rows added with the owner decisions of 2026-11-26:
 
-| ID | For |
-|---|---|
-| DSC-916 | Flat-name migration: `flat_names`, its per-location switch and the 7-day use count (§2.5). |
-| DSC-917 | Publishing a chosen local name publicly: per-name opt-in, off by default, audited (ADR-1083 point 7 asked for its own row). |
-| CLD-919 | Provider writes: ownership ledger and adopt, dry run, per-entry rate limits, the propagation check (§4.2, §4.5, §3.3). |
-| CLD-920 | Certificate storage: the `pem` secret kind, system-reserved names, the file install for serving nodes, the 100-secret ceiling (§3.4). |
+| ID | For | State |
+|---|---|---|
+| DSC-916 | Flat-name migration: `flat_names`, its per-location switch (on by default) and the 7-day use count (§2.5). | Row in `spec/01` (decision 2). |
+| DSC-917 | Publishing a chosen local name publicly: per-name opt-in, off by default, audited, never to a private, CGNAT, link-local or reserved address (ADR-1083 point 7 asked for its own row). | Row in `spec/01` (decision 8). |
+| CLD-919 | Provider writes: ownership ledger and adopt, dry run, per-entry rate limits, the propagation check (§4.2, §4.5, §3.3). | Reserved; the row is written when these design points are decided (still open). |
+| CLD-920 | Certificate storage: the `pem` secret kind, the file install for serving nodes, the key not exportable (§3.4). | Row in `spec/01` (decisions 5 and 7; the reserved names are not in the row); the 100-secret ceiling is not in the row (still open). |
 
-Wording changes to existing rows, made with the ADR that decides them: DSC-908 (rolling upgrade, question 5), DSC-909 (collision rule, question 3), DSC-910 (where the override lives, question 1), DSC-911 (subtree answer, question 4), DSC-912 (drop the cache sentence, finding 5), DSC-915 (the new WAN read, finding 4).
+Wording changes to existing rows: DSC-908 (rolling upgrade, decision 5), DSC-909 (collision rule, decision 3; the location from configuration and router reads, not the CMDB, decision 1), DSC-910 (where the override lives, decision 1), DSC-911 (subtree answer, decision 4) and CLD-904 (the provider set, decision 6) are made. DSC-912 (drop the cache sentence, finding 5) and DSC-915 (the new WAN read, finding 4) are still open.
 
-### ADRs needed
+### ADRs
 
-Numbers are taken at write time, after ADR-1090.
-1. **Location names amended**: the override's home, the collision rule, the subtree answer, flat names, the upgrade gate. Amends ADR-1081.
-2. **Certificate storage and use**: the `pem` kind, reserved names, the per-location file install, the order builder's wildcard-only rule, the local-service export answer (question 7). Amends ADR-1082.
-3. **Provider table additions**: the ledger and adopt, dry run, rate limits, the GoDaddy answer and any RFC 2136 provider (question 6). Amends ADR-1084.
-4. **Dynamic DNS's WAN read**: the new router read. Amends ADR-1083.
-5. **Public publishing of local names**: when DSC-917 is built.
+1. **ADR-1096, location names** (Accepted 2026-11-26): the override's home, the collision rule, the subtree answer, flat names, the upgrade gate (decisions 1 to 5). Amends ADR-1081.
+2. **ADR-1097, what a location's integrations never hand out** (Accepted 2026-11-26): the wildcard key is not exportable (decision 7) and a public local name never points at a non-public address (decision 8). Amends ADR-1082 and ADR-1083.
+3. **The provider set** (decision 6) is a dated amendment to ADR-1084. The rest of the provider-table additions (the ledger and adopt, dry run, rate limits) is still open, with CLD-919.
+4. **Still to write:** certificate storage and use beyond decision 7 (the reserved names, the per-location file install, the order builder's wildcard-only rule; amends ADR-1082); dynamic DNS's WAN read (amends ADR-1083); the rest of public publishing, when T36.10f starts.
 
 ### Build tasks, sizes and order
 
@@ -309,9 +310,9 @@ Sizes: S about a day, M two to four days, L a week or more, for one agent with r
 
 | Order | Task | Size | Depends on |
 |---|---|---|---|
-| 1 | **T36.10a0** The upgrade gate for new shared sections and the `pem` secret kind with reserved names (CLD-920 in part). | S | — |
+| 1 | **T36.10a0** The upgrade gate for new shared sections and the `pem` secret kind with reserved names (DSC-908, CLD-920 in part). | S | — |
 | 2 | **T36.10a** Locations core as `spec/10` says, with the amendments above (DSC-908 to DSC-913, DSC-916). | L | a0 |
-| 3 | **T36.10b** Provider table, the first providers, delegation, ledger, dry run, rate limits (CLD-904, CLD-919). | L | a0 |
+| 3 | **T36.10b** Provider table, the first providers (Azure DNS, Cloudflare, Route 53, RFC 2136 with TSIG), delegation (GoDaddy and others), ledger, dry run, rate limits (CLD-904, reserved CLD-919). | L | a0 |
 | 4 | **T36.10c** Locations page, badges, filters, help (DSC-914). | M | a |
 | 5 | **T36.10d** ACME DNS-01 with hot reload (CLD-903, CLD-920). | L | b, a |
 | 6 | **T36.10e** WAN read and dynamic DNS (DSC-915). | M | b, a |
@@ -326,7 +327,7 @@ a and b can run in parallel after a0 (they touch different modules; both touch `
 - `cld_919_*`: dry run makes no write call and writes a dry-run audit entry; the bucket refuses the 31st write in an hour; a 429 backs off by `Retry-After`; an unowned record set is not overwritten until adopted.
 - An agent token gets 403 on every provider write route, and the MCP catalog has no provider write tool.
 
-**Recorded provider APIs.** Each first provider's create, update and delete run against a local HTTP server that replays recorded or hand-written answers taken from the provider's public documentation, with no live credential in CI (CLD-904 AC). Route 53's signer is checked against AWS's published Signature Version 4 test vectors.
+**Recorded provider APIs.** Each first provider's create, update and delete run against a local HTTP server that replays recorded or hand-written answers taken from the provider's public documentation, with no live credential in CI (CLD-904 AC). Route 53's signer is checked against AWS's published Signature Version 4 test vectors. The `rfc2136` provider runs against an in-process DNS server that checks the TSIG signature and refuses an update outside the key's allowed name and type; TSIG signing is checked against messages signed by an independent implementation and recorded in the test tree.
 
 **The fake ACME server.** An in-process RFC 8555 server for tests (directory, nonce, account, order, authorization, `dns-01` challenge, finalize, certificate, ARI `renewalInfo`), signing with `rcgen` and checking the TXT by reading the fake provider's zone. With it, `cld_903_*`: issue a wildcard; renew when ARI says so; the listener's next handshake presents the new certificate with no restart and no dropped query (a query loop across the reload); a renewal failure raises the 30-day warning and the 7-day severe reason on a fake clock and leaves answers unchanged; the order builder refuses a device name. An optional nightly job runs the same flow against Pebble in a container.
 
@@ -335,8 +336,10 @@ a and b can run in parallel after a0 (they touch different modules; both touch `
 - validation: bad slug, overlap, reserved label, slug equal to a device label, missing domain;
 - a device on a location's network answers `<label>.<slug>.<domain>` with a matching PTR; moved to another location's address (a fake router read), it answers the new name within one rebuild and the CMDB still has one CI;
 - private: a client in the location gets the answer, a client outside gets the same NXDOMAIN and SOA as an unknown name, for A, AAAA and PTR; nothing is forwarded upstream for a name in the subtree (a counting fake upstream);
-- flat names on and off; a flat label two locations compose answers for neither;
-- the override wins over the address and clears;
+- flat names on (the default) and off; a flat label two locations compose goes to the ADR-901 winner and is listed; a collision inside a location keeps the ADR-901 winner and lists the others;
+- a name in a location's subtree that is not a device, node or published record gets NXDOMAIN locally and is not forwarded;
+- the `[[client]] location` override wins over the address and clears when removed; an unknown slug is refused;
+- the wildcard key is in no API response, MCP result, `ctl` output or support package;
 - the upgrade gate refuses the first location while a fake member reports an older build;
 - `make bench-smoke` for `wrendns-policy` and `wrendns-cache`, and an allocation-counter test on the private-name path.
 
@@ -346,15 +349,27 @@ a and b can run in parallel after a0 (they touch different modules; both touch `
 
 **Gates.** Image delta of `instant-acme` (with the `ring` backend, not `aws-lc-rs`, if its features allow) and of the provider modules against 25 MiB per architecture; RSS against 32 and 128 MiB (ADR-1031); `cargo-deny` before merge (ADR-1085).
 
-## Open questions for the owner
+## Decisions
 
-Asked through the question tool; listed here so the note stands alone.
+Owner decision, 2026-11-26, on the eight questions this note asked through the question tool. Records: ADR-1096 (decisions 1 to 5), the dated amendment to ADR-1084 (decision 6), ADR-1097 (decisions 7 and 8); requirement rows DSC-908 to DSC-911, DSC-916, DSC-917, CLD-904 and CLD-920 in `spec/01`; tasks T36.10a0 to T36.10f in `spec/10`.
 
-1. Where a device's manual location override lives, given that CMDB data never reaches device names (DSC-901).
-2. Whether the old `<device>.<device_domain>` names keep answering once a device's location gives it a new name.
-3. Which collision rule applies inside a location: ADR-901's ranking or ADR-1081's "neither answers".
-4. Whether the node owns each location's subtree and answers NXDOMAIN locally for unknown names in it, rather than forwarding them.
-5. Confirming the upgrade gate in place of DSC-908's "an older node reads it as absent".
-6. Whether GoDaddy stays a first API provider.
-7. Whether a location's wildcard key may be exported to other local services.
-8. Whether publishing a chosen local name publicly may publish a private address.
+1. **The manual override.** A device's manual location override is a `location` field on its `[[client]]` entry. The rule that CMDB data never reaches device names (DSC-901) stays; DSC-910 is reworded (§2.3).
+2. **Flat names.** The old names `<device>.<device_domain>` keep answering for devices in a location, with a per-location switch (`flat_names`) that is on by default and a 7-day use count on the Locations page (§2.5, DSC-916).
+3. **Collisions.** Name collisions inside a location follow ADR-901's ranking everywhere (a named device, then the router's name, then mDNS, then the lowest address), with every collision listed on the Locations page. This replaces ADR-1081 point 4 (§2.5, DSC-909).
+4. **The subtree.** The node owns each location's subtree and answers NXDOMAIN locally for names in it that are not devices, nodes or published records (§2.4, DSC-911).
+5. **The upgrade gate.** The API and the loader refuse the first location (and the first DNS provider and the first secret of the `pem` kind) while any cluster member runs a build that does not know them, naming the member. DSC-908 is reworded (§2.6).
+6. **The first providers.** Azure DNS, Cloudflare, Route 53 and RFC 2136 dynamic update with TSIG. GoDaddy is supported by delegation of the challenge name only, with no stored GoDaddy key. Azure DNS credentials are scoped to a single record set (Microsoft documents record-set-level role assignment: https://learn.microsoft.com/azure/dns/dns-protect-zones-recordsets). This amends ADR-1084 (§4.3, CLD-904).
+7. **The wildcard key.** A location's wildcard certificate key is not exportable at first: WrenDNS's own listeners only. A guarded, audited download is a later opt-in task (§3.4, CLD-920).
+8. **Public names.** A publicly published local name may not point at a private, CGNAT, link-local or reserved address (§5, DSC-917).
+
+Reading of decision 5: "its secret kind" is read as the new `pem` secret kind, which this note gated together with `[[dns_provider]]` (§2.6); the provider's own credential is an ordinary `text` secret, which every build already knows.
+
+### Still open
+
+Not decided by the owner; the body above states them as proposals:
+- DSC-912's cache sentence and ADR-1081 point 6 (finding 5), and DSC-915's WAN read with its ADR-1083 amendment (finding 4).
+- The provider-write details: the ownership ledger and adopt, dry run by default on new entries, the per-entry rate limits and the propagation check (reserved CLD-919, §3.3, §4.2, §4.5).
+- Certificate storage details beyond decision 7: the system-reserved names, the per-location file install, the 100-secret ceiling and the order builder's wildcard-only rule (§3.2, §3.4).
+- Dynamic DNS and public names for a zone whose provider has no stored key (GoDaddy, Network Solutions): whether a CNAME into a zone at an API provider is offered (§4.3).
+- The later guarded, audited download of a wildcard key (decision 7): its own task, design and record when it is wanted.
+- What the Locations page and the CMDB show for collisions beyond the list decision 3 requires (the CMDB listing this note first proposed).
