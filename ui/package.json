@@ -12,6 +12,7 @@
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
     "check:html": "node scripts/check-no-html.mjs",
     "check:help": "node scripts/check-help.mjs",
+    "measure:compression": "node scripts/measure-compression.mjs",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
