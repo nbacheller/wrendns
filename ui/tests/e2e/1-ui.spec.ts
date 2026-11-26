@@ -46,6 +46,20 @@ async function signIn(user: string, pass: string) {
   await page.getByRole('button', { name: 'Sign in' }).click();
 }
 
+// REQ: API-003 — signIn, saying which part was lost when a sign-in does nothing under load: a field that
+// does not hold what was typed (the form was replaced after the fill), or a click that sent no request.
+async function signInSent(user: string, pass: string) {
+  const name = page.getByLabel('Username', { exact: true });
+  const word = page.getByLabel('Password', { exact: true });
+  await name.fill(user);
+  await word.fill(pass);
+  await expect(name, 'the username field holds what was typed').toHaveValue(user);
+  await expect(word, 'the password field holds what was typed').toHaveValue(pass);
+  const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/auth/login'), { timeout: 15_000 });
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await sent;
+}
+
 // REQ: API-005 (ADR-157) — the dashboard's top lists are plain sections, found by their heading.
 const listOf = (title: string) => page.locator('section').filter({ has: page.getByRole('heading', { name: new RegExp(`^${title}`) }) });
 
@@ -1397,9 +1411,9 @@ test('admins add users; viewers see less', async () => {
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   // The form is ready before its first submit (a click that lands while it mounts does nothing).
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeEnabled();
-  await signIn(VIEWER.user, 'wrong password!!');
+  await signInSent(VIEWER.user, 'wrong password!!');
   await expect(page.getByRole('alert')).toContainText('wrong username or password');
-  await signIn(VIEWER.user, VIEWER.pass);
+  await signInSent(VIEWER.user, VIEWER.pass);
   // Signing in keeps the page; a viewer asking for the users tab gets their account instead.
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Account' })).toHaveAttribute('aria-selected', 'true');
