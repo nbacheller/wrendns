@@ -125,6 +125,10 @@ pub struct Settings {
     pub allow_local_servers: bool,
     /// REQ: DNS-902 — also ask private-range addresses outside stub zones (off by default).
     pub allow_private_servers: bool,
+    /// REQ: DNS-902 — with stub zones set, `allow_local_servers` covers only the names at or
+    /// under a stub zone, not a CNAME target or a server-name lookup outside it (on by
+    /// default; only tests whose whole fixture tree is on loopback turn it off).
+    pub scope_local_to_stubs: bool,
 }
 
 /// REQ: DNS-022 — a stub zone: questions at or under `zone` are asked of `servers`
@@ -150,6 +154,7 @@ impl Default for Settings {
             stubs: Vec::new(),
             allow_local_servers: false,
             allow_private_servers: false,
+            scope_local_to_stubs: true,
         }
     }
 }
@@ -641,18 +646,22 @@ impl Recursor {
     }
 
     /// REQ: DNS-902 — whether `ip` may be asked for `zone`: not a local address unless
-    /// allowed, and a private one only inside a stub zone unless allowed.
+    /// allowed (and, with stub zones, only for a zone at or under one: a name outside them
+    /// that delegates to loopback is still refused), and a private one only inside a stub
+    /// zone unless allowed.
     fn may_ask(&self, ip: IpAddr, zone: &NameBuf) -> bool {
         // The root hints are the resolver's own (built in; only tests replace them).
         if self.settings.roots.contains(&ip) {
             return true;
         }
+        let in_stub = self.stub_for(zone, false).is_some();
         if is_local_address(ip) {
-            return self.settings.allow_local_servers;
+            return self.settings.allow_local_servers
+                && (in_stub
+                    || self.settings.stubs.is_empty()
+                    || !self.settings.scope_local_to_stubs);
         }
-        !is_private_address(ip)
-            || self.settings.allow_private_servers
-            || self.stub_for(zone, false).is_some()
+        !is_private_address(ip) || self.settings.allow_private_servers || in_stub
     }
 
     /// `addrs` that may be asked for `zone` (REQ: DNS-902). When that leaves nothing of a
@@ -666,6 +675,10 @@ impl Recursor {
         if ok.is_empty() && !addrs.is_empty() {
             debug!(zone = %zone.display(), "every server address refused");
             work.refused = true;
+            // The memory of refusals is bounded (REFUSALS_KEPT, oldest dropped first). An
+            // eviction only means a later "Why?" omits its address-rule note for that zone,
+            // never a different answer: the refusal itself (`work.refused`) is per lookup,
+            // and the note is advice, so a rare missed one is acceptable.
             let mut r = self.refusals.lock();
             r.retain(|(z, _)| z != zone);
             if r.len() >= REFUSALS_KEPT {

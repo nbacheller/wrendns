@@ -679,6 +679,8 @@ fn corp_stub() -> Vec<wrendns_recursor::Stub> {
 async fn dns_022_stub_zone_follows_its_own_delegations() {
     let (mut s, log) = tree(corp).await;
     s.stubs = corp_stub();
+    // The whole fixture tree is on loopback: this test is about the stub, not the scope.
+    s.scope_local_to_stubs = false;
     let r = Recursor::new(s);
     assert_eq!(r.stub_zone(), Some(&name("corp.example.com")));
     r.resolve(name("www.example.com"), rtype::A, false)
@@ -714,6 +716,8 @@ async fn dns_022_stub_zone_follows_its_own_delegations() {
 async fn dns_022_stub_zone_cname_leaves_the_zone() {
     let (mut s, log) = tree(corp).await;
     s.stubs = corp_stub();
+    // The whole fixture tree is on loopback: this test is about the stub, not the scope.
+    s.scope_local_to_stubs = false;
     s.prime = true;
     let r = Recursor::new(s);
     r.resolve(name("www.corp.example.com"), rtype::A, false)
@@ -736,6 +740,40 @@ async fn dns_022_stub_zone_cname_leaves_the_zone() {
         seen.iter()
             .all(|(ip, n)| *ip == 8 || !n.to_ascii_lowercase().contains("corp")),
         "the zone's names stayed with its servers: {seen:?}"
+    );
+}
+
+/// REQ: DNS-902 — the local-address allowance of a stub zone covers that zone only: its own
+/// server (and what it delegates) is asked, but a CNAME out of the zone to a name whose zone
+/// delegates to loopback is refused, with nothing sent there.
+#[tokio::test]
+async fn dns_902_local_allowance_stays_inside_the_stub_zone() {
+    let (mut s, log) = tree(corp).await;
+    s.stubs = corp_stub();
+    assert!(s.scope_local_to_stubs, "the default");
+    let r = Recursor::new(s);
+    let own = r
+        .resolve(name("host.sub.corp.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(addrs(&own), vec![IpAddr::from([10, 1, 1, 1])]);
+    assert!(log.lock().unwrap().iter().any(|(ip, _)| *ip == 8));
+    log.lock().unwrap().clear();
+    // alias.corp.example.com -> www.other.net: com and other.net delegate to loopback.
+    let out = r
+        .resolve(name("alias.corp.example.com"), rtype::A, false)
+        .await;
+    assert!(
+        out.as_ref().map_or(true, |x| addrs(x).is_empty()),
+        "the out-of-zone target is not resolved: {out:?}"
+    );
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .all(|(ip, _)| *ip == 8 || *ip == 2),
+        "nothing outside the stub's servers (and the root hint) was asked: {:?}",
+        log.lock().unwrap()
     );
 }
 

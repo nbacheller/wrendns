@@ -48,6 +48,7 @@ pub use upstream::{
     client_subnet, encode_query, is_own_loop_tag, matches_query, route_to, set_exchange_observer,
     set_node_tag,
 };
+pub use wrendns_recursor::{is_local_address, is_private_address};
 
 /// Total time budget per client query (`spec/02` §8.3).
 pub const DEFAULT_BUDGET: Duration = Duration::from_secs(2);

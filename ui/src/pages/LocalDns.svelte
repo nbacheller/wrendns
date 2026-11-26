@@ -192,8 +192,10 @@
       await api.putForward(fw.domain.trim().toLowerCase(), {
         servers,
         stub: fw.stub,
-        // REQ: DNS-902 — sent for a stub zone only (the API refuses them on a plain forward).
-        ...(fw.stub ? { allowLocalServers: fw.allowLocal, allowPrivateServers: fw.allowPrivate } : {}),
+        // REQ: DNS-902 — sent for a stub zone only (the API refuses them on a plain forward), and
+        // each only while a matching server is listed: the box is hidden otherwise, so a stored
+        // allowance the user can no longer see is sent as off (the API clears it).
+        ...(fw.stub ? { allowLocalServers: fw.allowLocal && fwHasLocal, allowPrivateServers: fw.allowPrivate && fwHasPrivate } : {}),
         matchGroup: splitList(fw.groups),
         matchQtype: splitList(fw.qtypes).map((t) => t.toUpperCase()),
         dnssecNta: fw.dnssec,

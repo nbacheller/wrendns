@@ -932,9 +932,27 @@ test('dns_902 stub forward allowances in the forward form', async () => {
     // A re-save through the API that does not mention the flags keeps them; a plain forward is refused them.
     const put = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['127.0.0.1'], stub: true } });
     expect(put.status()).toBe(200);
-    expect(await forward()).toMatchObject({ allowLocalServers: true, allowPrivateServers: true });
+    // ...but a flag that no listed server needs (here the private one, with only 127.0.0.1 left) is dropped.
+    expect(await forward()).toMatchObject({ allowLocalServers: true, allowPrivateServers: false });
     const bad = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['10.9.9.9'], allowLocalServers: true } });
     expect(bad.status()).toBeGreaterThanOrEqual(400);
+    // Asking for an allowance with no matching server is refused, not stored hidden.
+    const hidden = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['203.0.113.5'], stub: true, allowLocalServers: true } });
+    expect(hidden.status()).toBeGreaterThanOrEqual(400);
+    expect(hidden.status()).toBeLessThan(500);
+    // In the form: the server changes to a non-local address; the hidden box must not keep the allowance stored.
+    await page.goto('/#/local-dns');
+    await page.reload();
+    await page.locator('tr').filter({ hasText: 'stub902.example' }).getByRole('button', { name: 'Edit stub902.example' }).click();
+    const moved = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+    await expect(moved.locator('input[name="allow-local-servers"]')).toBeChecked();
+    await moved.getByLabel('Server address', { exact: true }).fill('203.0.113.5');
+    await expect(moved.locator('input[name="allow-local-servers"]')).toHaveCount(0);
+    await expect(moved.locator('input[name="allow-private-servers"]')).toHaveCount(0);
+    await moved.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'stub902.example' })).toBeVisible();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+    expect(await forward()).toMatchObject({ stub: true, allowLocalServers: false, allowPrivateServers: false });
   } finally {
     await r.delete('/api/v1/forwards/stub902.example', { headers: h });
   }

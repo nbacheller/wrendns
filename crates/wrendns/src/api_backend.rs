@@ -5558,6 +5558,39 @@ fn forward_of(
     let allow_private_servers = input
         .allow_private_servers
         .unwrap_or_else(|| before.is_some_and(|b| b.stub && input.stub && b.allow_private_servers));
+    // REQ: DNS-902 — an allowance needs a server it is for: a loopback or link-local one for
+    // the local allowance, a private one for the private allowance. A request that asks for one
+    // with none listed is refused (as for a plain forward); an allowance only kept from the
+    // stored entry, after a re-save changed the servers, is dropped, so none stays stored
+    // with no control showing it.
+    let listed = |f: fn(std::net::IpAddr) -> bool| {
+        servers
+            .iter()
+            .filter_map(|s| crate::managed::stub_addr(s))
+            .any(f)
+    };
+    let (has_local, has_private) = (
+        listed(wrendns_upstream::is_local_address),
+        listed(wrendns_upstream::is_private_address),
+    );
+    if input.stub && input.allow_local_servers == Some(true) && !has_local {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            format!(
+                "`{name}`: `allowLocalServers` needs a server at a loopback or link-local address"
+            ),
+        )
+        .hint("Leave it off, or list the server on this machine (127.0.0.1, say)."));
+    }
+    if input.stub && input.allow_private_servers == Some(true) && !has_private {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            format!("`{name}`: `allowPrivateServers` needs a server at a private-network address"),
+        )
+        .hint("Leave it off, or list a server on your private network (10.0.0.53, say)."));
+    }
+    let allow_local_servers = allow_local_servers && (!input.stub || has_local);
+    let allow_private_servers = allow_private_servers && (!input.stub || has_private);
     if !input.stub && (allow_local_servers || allow_private_servers) {
         return Err(Problem::new(
             Code::InvalidConfig,
@@ -7503,8 +7536,10 @@ impl ApiBackend {
                 .unwrap_or_default();
             let stub = !members.is_empty() && members.iter().all(|(_, s)| s.is_some());
             // REQ: DNS-902 — the stub zone's allowances (REQ: DNS-022).
-            let allow_local = members.iter().any(|(_, s)| s.is_some_and(|a| a.0));
-            let allow_private = members.iter().any(|(_, s)| s.is_some_and(|a| a.1));
+            // Shown only when every stub member has it (a hand-written group whose members
+            // differ is never shown wider than its narrowest member).
+            let allow_local = stub && members.iter().all(|(_, s)| s.is_some_and(|a| a.0));
+            let allow_private = stub && members.iter().all(|(_, s)| s.is_some_and(|a| a.1));
             let servers: Vec<String> = members.into_iter().flat_map(|(v, _)| v).collect();
             for d in &r.match_suffix {
                 out.push(ForwardInfo {
@@ -7926,10 +7961,12 @@ fn keep_in_git(
                 .get("stub")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
-            // The request's value, or (left out) the stored one it keeps.
+            // The stored entry's value (`after`, snake_case): it already holds what the request
+            // said, or the stored one a re-save keeps. The request body is camelCase and is
+            // not read for these.
             let flag = |k: &str| {
-                body.get(k)
-                    .or_else(|| after.and_then(|a| a.get(k)))
+                after
+                    .and_then(|a| a.get(k))
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false)
             };
@@ -8329,6 +8366,67 @@ mod keep_in_git_tests {
         assert!(gone.starts_with("# Remove the [[list]] `ads`"), "{gone}");
         let back = keep_in_git(ManagedKind::List, "ads", None, Some(&serde_json::json!({})));
         assert!(back.contains("Nothing to change in Git"), "{back}");
+    }
+
+    /// REQ: DNS-902 — an allowance needs a matching server: asking for one with none listed is
+    /// refused, and a stored one a re-save leaves unmentioned is dropped when the servers no
+    /// longer include one, so no hidden allowance stays stored.
+    #[test]
+    fn dns_902_forward_allowance_needs_a_matching_server() {
+        let set = forward_of(
+            &serde_json::json!({ "servers": ["127.0.0.1"], "stub": true,
+                "allowLocalServers": true }),
+            "corp.example",
+            None,
+        )
+        .unwrap();
+        assert!(set.allow_local_servers);
+        // The server changes to a public-range one; the request does not mention the flag.
+        let moved = forward_of(
+            &serde_json::json!({ "servers": ["203.0.113.5"], "stub": true }),
+            "corp.example",
+            Some(&set),
+        )
+        .unwrap();
+        assert!(
+            !moved.allow_local_servers,
+            "dropped with no loopback server"
+        );
+        // Asking for it outright with none listed is refused, for both allowances.
+        for (key, server) in [
+            ("allowLocalServers", "10.0.0.53"),
+            ("allowPrivateServers", "203.0.113.5"),
+            ("allowLocalServers", "203.0.113.5"),
+        ] {
+            let body = serde_json::json!({ "servers": [server], "stub": true, key: true });
+            let e = forward_of(&body, "corp.example", None).unwrap_err();
+            assert!(format!("{e:?}").contains(key), "{key} {server}: {e:?}");
+        }
+        // A private one is accepted with a private server, and dropped when it goes.
+        let private = forward_of(
+            &serde_json::json!({ "servers": ["10.0.0.53"], "stub": true,
+                "allowPrivateServers": true }),
+            "corp.example",
+            None,
+        )
+        .unwrap();
+        assert!(private.allow_private_servers && !private.allow_local_servers);
+        let gone = forward_of(
+            &serde_json::json!({ "servers": ["203.0.113.5"], "stub": true }),
+            "corp.example",
+            Some(&private),
+        )
+        .unwrap();
+        assert!(!gone.allow_private_servers);
+        // The Git text reads the stored entry's flag (the request's keys are camelCase).
+        let git = keep_in_git(
+            ManagedKind::Forward,
+            "corp.example",
+            Some(&serde_json::json!({ "servers": ["127.0.0.1"], "stub": true,
+                "allowLocalServers": true })),
+            Some(&forward_json("corp.example", &set)),
+        );
+        assert!(git.contains("allow_local_servers = true"), "{git}");
     }
 
     /// REQ: DNS-902 — a stub forward's allowances default off, are stored when given, are kept by
