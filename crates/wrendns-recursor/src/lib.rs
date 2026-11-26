@@ -253,6 +253,9 @@ pub enum Error {
     Refused(String),
     #[error("malformed question")]
     Question,
+    /// REQ: DNS-904 — a traced lookup ran out of its time budget.
+    #[error("timed out")]
+    Timeout,
 }
 
 /// The work one client question may cause.
@@ -579,25 +582,30 @@ impl Recursor {
 
     /// REQ: DNS-904 — like [`Recursor::resolve`], and the steps taken: where the lookup began,
     /// then every query to every server with its outcome and time (the trace is built only
-    /// here). The lookup is real: it fills the caches like any other.
+    /// here). The lookup is real: it fills the caches like any other. It stops after `budget`
+    /// with [`Error::Timeout`] and the steps gathered so far.
     pub async fn resolve_traced(
         &self,
         name: NameBuf,
         qtype: u16,
         dnssec_ok: bool,
+        budget: Duration,
     ) -> (Result<Resolved, Error>, Vec<TraceStep>) {
         let log: TraceLog = TraceLog::default();
         let mut work = Work {
             trace: Some(std::sync::Arc::clone(&log)),
             ..Work::default()
         };
-        if self.stub_for(&name, false).is_none() {
-            self.prime(&mut work).await;
-        }
-        let r = self
-            .lookup(name, qtype, dnssec_ok, &mut work, 0)
-            .await
-            .map_err(|e| work.explain(e));
+        let walk = async {
+            if self.stub_for(&name, false).is_none() {
+                self.prime(&mut work).await;
+            }
+            self.lookup(name, qtype, dnssec_ok, &mut work, 0).await
+        };
+        let r = match tokio::time::timeout(budget, walk).await {
+            Ok(r) => r.map_err(|e| work.explain(e)),
+            Err(_) => Err(Error::Timeout),
+        };
         let steps = std::mem::take(&mut *log.lock());
         (r, steps)
     }
@@ -1030,6 +1038,7 @@ impl Recursor {
             micros: u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX),
         };
         let mut res = self.exchange(addr, qn, qt, how, timeout).await;
+        let mut t1 = t0;
         if res == Err(NetError::Timeout) && !how.tcp {
             self.stats.timeout();
             if trace.is_some() {
@@ -1043,8 +1052,10 @@ impl Recursor {
                 return None;
             }
             how.tcp = true;
+            t1 = Instant::now();
             res = self.exchange(addr, qn, qt, how, timeout).await;
-            // The retry's own time (the step above has the first leg's).
+            // The step below is timed from `t1`: the retry's own time (the step above has the
+            // first leg's).
         }
         let mut parsed = res.as_ref().ok().and_then(|r| msg::parse(r));
         // REQ: DNS-903 — FORMERR or NOTIMP to a query with EDNS: once more without it; a
@@ -1073,7 +1084,7 @@ impl Recursor {
         self.count(res.as_ref().err().copied(), outcome.as_ref());
         if trace.is_some() {
             let (what, detail) = describe(res.as_ref().err().copied(), outcome.as_ref());
-            observe::push(trace.as_ref(), step(what, detail, how.tcp, t0));
+            observe::push(trace.as_ref(), step(what, detail, how.tcp, t1));
         }
         // REQ: DNS-902 — a lame answer (or one that can't be read) is a failure of the server,
         // however fast it came: counting its RTT as a success kept a quick lame server first.

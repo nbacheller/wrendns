@@ -1683,7 +1683,7 @@ async fn dns_904_the_trace_shows_three_referral_steps_with_the_servers() {
     let (s, _log) = tree(three_levels).await;
     let r = Recursor::new(s);
     let (res, steps) = r
-        .resolve_traced(name("www.sub.example.com"), rtype::A, false)
+        .resolve_traced(name("www.sub.example.com"), rtype::A, false, TRACE_BUDGET)
         .await;
     assert_eq!(addrs(&res.unwrap()), vec![IpAddr::from([10, 0, 0, 8])]);
     assert_eq!(steps[0].kind, "start");
@@ -1714,10 +1714,82 @@ async fn dns_904_the_trace_shows_three_referral_steps_with_the_servers() {
     );
     // The second lookup starts from the cached cut: no referrals.
     let (_, again) = r
-        .resolve_traced(name("www.sub.example.com"), rtype::A, false)
+        .resolve_traced(name("www.sub.example.com"), rtype::A, false, TRACE_BUDGET)
         .await;
     assert_eq!(again[0].outcome, "cache");
     assert!(again.iter().all(|st| st.outcome != "referral"), "{again:?}");
+}
+
+const TRACE_BUDGET: Duration = Duration::from_secs(10);
+
+/// REQ: DNS-904 — a trace has a time budget: servers that never answer end it with `Timeout`
+/// and the steps so far, long before the lookup's own limits would.
+#[tokio::test]
+async fn dns_904_a_trace_stops_at_its_budget_with_the_steps_so_far() {
+    let drop_udp = Arc::new(AtomicBool::new(true));
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.drop_udp = Some(drop_udp);
+    })
+    .await;
+    s.hedge = false;
+    s.server_timeout = Duration::from_secs(5);
+    let r = Recursor::new(s);
+    let t0 = std::time::Instant::now();
+    let (res, steps) = r
+        .resolve_traced(
+            name("www.example.com"),
+            rtype::A,
+            false,
+            Duration::from_millis(200),
+        )
+        .await;
+    assert!(
+        t0.elapsed() < Duration::from_secs(3),
+        "took {:?}",
+        t0.elapsed()
+    );
+    assert!(
+        matches!(res, Err(wrendns_recursor::Error::Timeout)),
+        "{res:?}"
+    );
+    assert_eq!(steps[0].kind, "start", "{steps:?}");
+}
+
+/// REQ: DNS-904 — the step for a TCP retry after a UDP timeout is timed from the retry, not
+/// from the first query: it does not count the timeout a second time.
+#[tokio::test]
+async fn dns_904_the_tcp_retry_step_does_not_include_the_udp_timeout() {
+    let drop_udp = Arc::new(AtomicBool::new(false));
+    let drop2 = Arc::clone(&drop_udp);
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.tcp = true;
+        zones[2].1.drop_udp = Some(drop2);
+    })
+    .await;
+    s.hedge = false;
+    let timeout = s.server_timeout;
+    let r = Recursor::new(s);
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    drop_udp.store(true, Ordering::Relaxed);
+    let mut tcp_step = None;
+    for _ in 0..3 {
+        let (_, steps) = r
+            .resolve_traced(name("www.example.com"), rtype::A, false, TRACE_BUDGET)
+            .await;
+        if let Some(st) = steps.into_iter().find(|st| st.transport == "tcp") {
+            tcp_step = Some(st);
+            break;
+        }
+    }
+    let st = tcp_step.expect("no TCP step");
+    assert_eq!(st.outcome, "answer");
+    assert!(
+        Duration::from_micros(st.micros) < timeout,
+        "{} us includes the {timeout:?} timeout",
+        st.micros
+    );
 }
 
 /// REQ: DNS-904 — a reply with the wrong ID raises the unwanted-reply counter by one, and

@@ -422,6 +422,73 @@ fn dns_904_recursor_metrics_are_low_cardinality() {
     }
 }
 
+/// The node's `/metrics` text for a router built from `toml`'s upstreams.
+fn recursor_metrics_for(toml: &str) -> String {
+    let src = sources();
+    let cfg = wrendns_config::Loader::new()
+        .toml_str("t.toml", toml)
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    let (local, _) = wrendns_policy::LocalData::from_config(&cfg);
+    let router = wrendns_upstream::Router::from_config(&cfg).unwrap();
+    src.pipeline.reload(
+        Arc::new(router),
+        crate::pipeline::Policy::from_config(&cfg, local),
+    );
+    render(&src)
+}
+
+// REQ: DNS-904, OBS-005 — `/metrics` sums the recursor series over every `recursive://`
+// upstream (each series once, not once per upstream), and the forwarder adds none.
+#[test]
+fn dns_904_metrics_sum_over_the_recursive_upstreams() {
+    let text = recursor_metrics_for(
+        r#"[[upstream]]
+name = "fwd"
+url = "udp://127.0.0.1:9"
+[[upstream]]
+name = "r1"
+url = "recursive://"
+[[upstream]]
+name = "r2"
+url = "recursive://"
+[[upstream_group]]
+name = "default"
+members = ["fwd", "r1", "r2"]
+"#,
+    );
+    let series = |name: &str| {
+        text.lines()
+            .filter(|l| l.starts_with(name) && !l.starts_with('#'))
+            .count()
+    };
+    assert_eq!(series("wrendns_recursor_queries_total"), 7, "{text}");
+    assert_eq!(series("wrendns_recursor_case_mismatch_total"), 1, "{text}");
+    assert_eq!(
+        series("wrendns_recursor_unwanted_replies_total"),
+        1,
+        "{text}"
+    );
+    assert_eq!(series("wrendns_recursor_zone_cuts_cached"), 1, "{text}");
+}
+
+// REQ: DNS-904 — a node with no `recursive://` upstream exports no recursor series.
+#[test]
+fn dns_904_no_recursive_upstream_no_recursor_metrics() {
+    let text = recursor_metrics_for(
+        r#"[[upstream]]
+name = "fwd"
+url = "udp://127.0.0.1:9"
+[[upstream_group]]
+name = "default"
+members = ["fwd"]
+"#,
+    );
+    assert!(!text.contains("wrendns_recursor_"), "{text}");
+}
+
 // REQ: FLT-004 — an inline list is never fetched, so it reports no last-success time (it would
 // trip the "> 48 h" list alert two days after every config edit); its other gauges remain.
 #[test]

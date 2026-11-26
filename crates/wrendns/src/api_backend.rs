@@ -25,9 +25,12 @@ use wrendns_upstream::health::Breaker;
 
 use crate::http::Sources;
 
-/// REQ: FLT-017, API-010 — the name of the device at `ip` (v4-mapped) when a query-log row from
-/// `ts_s` was made: a reused pod address is named by the workload that held it then. Every
-/// other address (and a pod address the history doesn't cover) is named as [`device_name`].
+/// REQ: DNS-904 — how many recursor traces one node runs at once.
+static RECURSOR_TRACES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// REQ: DNS-904 — the time one recursor trace may take before it stops with what it has.
+const RECURSOR_TRACE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// REQ: DNS-904 — a response code as the trace words it.
 fn recursor_rcode(rc: u16) -> String {
     match rc {
@@ -56,6 +59,9 @@ fn recursor_qtype(t: u16) -> String {
     }
 }
 
+/// REQ: FLT-017, API-010 — the name of the device at `ip` (v4-mapped) when a query-log row from
+/// `ts_s` was made: a reused pod address is named by the workload that held it then. Every
+/// other address (and a pod address the history doesn't cover) is named as [`device_name`].
 pub(crate) fn device_name_at(src: &Sources, ip: [u8; 16], ts_s: u64) -> Option<String> {
     let t = src.pipeline.workloads.load();
     if t.has_any() {
@@ -1867,9 +1873,19 @@ impl Backend for ApiBackend {
                         .hint("A trace shows the built-in resolver's walk; add a recursive:// upstream first.")
                 })?,
             };
+            // REQ: DNS-904 — a trace sends real queries and sits outside the DNS rate limits, so
+            // few run at once and each has a fixed time budget.
+            let Ok(_permit) = RECURSOR_TRACES.try_acquire() else {
+                return Err(Problem::new(
+                    Code::RateLimited,
+                    "too many traces are running on this node",
+                )
+                .hint("Wait for a running trace to finish.")
+                .retry_after(RECURSOR_TRACE_BUDGET.as_secs()));
+            };
             let t0 = std::time::Instant::now();
             let (result, steps) = up
-                .trace_lookup(name, qtype, false)
+                .trace_lookup(name, qtype, false, RECURSOR_TRACE_BUDGET)
                 .await
                 .ok_or_else(|| Problem::internal("the upstream is not a resolver"))?;
             let total_micros = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -9540,7 +9556,7 @@ mod dhcp_lease_tests {
 /// REQ: API-007 (ADR-965 §8) — the 429 a backup with a passphrase gets while another derives.
 fn busy_problem() -> Problem {
     Problem::new(
-        wrendns_api::problem::Code::RateLimited,
+        Code::RateLimited,
         "another backup with a passphrase is running on this node",
     )
     .retry_after(2)
@@ -9792,6 +9808,47 @@ groups = ["iot"]
             "{}",
             e.detail
         );
+    }
+
+    /// REQ: DNS-904 — traces are capped per node: with every slot taken, another is refused
+    /// with "rate limited" and a retry hint, and runs again once a slot is free.
+    #[test]
+    fn dns_904_traces_are_capped_per_node() {
+        use wrendns_api::model::RecursorTraceParams;
+        let api = api();
+        let cfg = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[upstream]]
+name = \"r\"
+url = \"recursive://\"
+[[upstream_group]]
+name = \"default\"
+members = [\"r\"]
+",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = wrendns_policy::LocalData::from_config(&cfg);
+        api.src.pipeline.reload(
+            Arc::new(wrendns_upstream::Router::from_config(&cfg).unwrap()),
+            crate::pipeline::Policy::from_config(&cfg, local),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let p = RecursorTraceParams {
+            name: "www.example.com".into(),
+            qtype: None,
+            upstream: None,
+        };
+        let held = RECURSOR_TRACES.try_acquire_many(2).unwrap();
+        let e = rt.block_on(api.recursor_trace(&p)).unwrap_err();
+        assert_eq!(e.code, Code::RateLimited, "{}", e.detail);
+        drop(held);
     }
 
     fn api() -> ApiBackend {

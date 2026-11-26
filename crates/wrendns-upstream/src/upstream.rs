@@ -1124,12 +1124,13 @@ impl Upstream {
         name: NameBuf,
         qtype: u16,
         dnssec_ok: bool,
+        budget: Duration,
     ) -> Option<(
         Result<wrendns_recursor::Resolved, wrendns_recursor::Error>,
         Vec<wrendns_recursor::TraceStep>,
     )> {
         match &self.transport {
-            Transport::Recursive(r) => Some(r.resolve_traced(name, qtype, dnssec_ok).await),
+            Transport::Recursive(r) => Some(r.resolve_traced(name, qtype, dnssec_ok, budget).await),
             _ => None,
         }
     }
