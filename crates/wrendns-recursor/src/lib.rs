@@ -470,6 +470,14 @@ impl Recursor {
         n
     }
 
+    /// A server's smoothed round-trip estimate, for tests.
+    #[doc(hidden)]
+    pub fn server_srtt(&self, ip: IpAddr) -> Option<Duration> {
+        self.caches
+            .srtt_us(ip)
+            .map(|u| Duration::from_micros(u64::from(u)))
+    }
+
     /// Zone cuts cached (metrics, tests).
     pub fn cached_zones(&self) -> usize {
         self.caches.zones()
@@ -1079,7 +1087,9 @@ impl Recursor {
                 parsed = Some(p2);
             }
         }
-        let rtt = t0.elapsed();
+        // The estimate is the time of the exchange that answered: a TCP retry after a UDP
+        // timeout is timed from the retry, as its trace step is.
+        let rtt = t1.elapsed();
         let outcome = parsed.map(|p| msg::classify(&p, qn, qt, zone));
         self.count(res.as_ref().err().copied(), outcome.as_ref());
         if trace.is_some() {

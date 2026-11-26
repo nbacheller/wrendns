@@ -1795,6 +1795,12 @@ async fn dns_904_the_tcp_retry_step_does_not_include_the_udp_timeout() {
         "{} us includes the {timeout:?} timeout",
         st.micros
     );
+    // The server's recorded estimate is the retry's time too, not timeout plus retry.
+    let srtt = r.server_srtt(st.server.unwrap()).expect("an estimate");
+    assert!(
+        srtt < Duration::from_millis(200),
+        "estimate {srtt:?} includes the UDP timeout"
+    );
 }
 
 /// REQ: DNS-904 — a reply with the wrong ID raises the unwanted-reply counter by one, and
