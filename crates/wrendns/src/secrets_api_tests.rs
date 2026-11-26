@@ -2084,3 +2084,101 @@ async fn clu_015_fetch_never_gates_readiness() {
     assert_eq!(rh.src.readiness.ready(), before, "readiness is unchanged");
     let _ = p.stop.send(true);
 }
+
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1) - the issuer-only rule is enforced where a write is
+/// applied: an older replica forwards a PUT or DELETE of a reserved name as kind `text` (only the
+/// entry node's handler judged it before), and the primary refuses both with 409, storing and
+/// deleting nothing. The issuer's own path still writes the name.
+#[tokio::test]
+async fn cld_920_forwarded_write_of_an_issuer_name_is_refused_on_the_primary() {
+    use wrendns_api::secrets_api::{SecretOp, SecretText, SecretWrite};
+    let _turn = GATE.lock().await;
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let w = |name: &str, op| SecretWrite {
+        name: name.to_owned(),
+        op,
+        dry_run: false,
+        expect: None,
+        by: "admin".into(),
+        role: Some(auth::Role::Admin),
+        agent: None,
+    };
+    for name in ["cert.cluster.key", "acme.account", " cert.home.chain "] {
+        let put = SecretOp::Put {
+            kind: "text".into(),
+            value: SecretText::new("planted-forwarded-value".to_owned()),
+        };
+        let e = crate::secrets_api::forward(Arc::clone(&p.replica), w(name, put))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code_status(), StatusCode::CONFLICT, "{name}: {e:?}");
+        assert!(
+            !serde_json::to_string(&e)
+                .unwrap()
+                .contains("planted-forwarded")
+        );
+        assert!(!ph.src.secrets.exists(name.trim()), "{name}");
+    }
+    // A row that is there (the issuer wrote it) cannot be deleted by a forwarded write either.
+    issuer_put(&ph.src, "cert.cluster.key", false)
+        .await
+        .unwrap();
+    let e = crate::secrets_api::forward(
+        Arc::clone(&p.replica),
+        w("cert.cluster.key", SecretOp::Delete { force: true }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code_status(), StatusCode::CONFLICT, "{e:?}");
+    assert!(ph.src.secrets.exists("cert.cluster.key"));
+    // An ordinary name still goes through the same path.
+    let ok = crate::secrets_api::forward(
+        Arc::clone(&p.replica),
+        w(
+            "plain",
+            SecretOp::Put {
+                kind: "text".into(),
+                value: SecretText::new(VALUE.to_owned()),
+            },
+        ),
+    )
+    .await;
+    assert!(ok.is_ok(), "{ok:?}");
+    let _ = p.stop.send(true);
+}
+
+/// REQ: DSC-908, CLD-920 - `PUT /api/v1/secrets/{name}` with kind `pem`, through the public
+/// route, is refused with the gate's 409 `upgrade_required` while a member does not announce
+/// `pem_secrets`, naming it; a text secret on the same cluster is not held.
+#[tokio::test]
+async fn dsc_908_public_pem_put_is_refused_while_a_member_lacks_the_kind() {
+    let _turn = GATE.lock().await;
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let ph = harness_in("", Some(Arc::clone(&old.primary)));
+    crate::http::serve_peers(&ph.src);
+    let body = json!({"value": PEM_VALUE, "kind": "pem"});
+    for path in [
+        "/api/v1/secrets/loc.key",
+        "/api/v1/secrets/loc.key?dryRun=true",
+    ] {
+        let (s, _, v) = ph.call("PUT", path, Some(&body)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{path}: {v}");
+        assert_eq!(v["code"], "upgrade_required", "{v}");
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("version 1.1.0-edge.40"),
+            "{v}"
+        );
+        assert!(!v.to_string().contains("plantedPemKeyBytes"), "{v}");
+    }
+    assert!(!ph.src.secrets.exists("loc.key"));
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/plain", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let _ = old.stop.send(true);
+}

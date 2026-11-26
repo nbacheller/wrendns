@@ -989,6 +989,7 @@ impl Backend for ApiBackend {
                     rows,
                     unreadable,
                     pem_kept,
+                    reserved_kept,
                 } = self.src.secrets.export_rows().map_err(|why| {
                         Problem::new(wrendns_api::problem::Code::SecretsLocked, format!("the stored secrets can't be read, so none can be backed up: {why}"))
                             .hint("Fix the node's secrets key (docs/secrets.md), or make the backup without a passphrase.")
@@ -998,6 +999,7 @@ impl Backend for ApiBackend {
                     rows,
                     unreadable,
                     pem_kept,
+                    reserved_kept,
                 })
             }
             None => None,
@@ -4213,7 +4215,7 @@ impl Backend for ApiBackend {
         &self,
         w: wrendns_api::secrets_api::SecretWrite,
     ) -> BoxFuture<Result<wrendns_api::secrets_api::SecretChange, Problem>> {
-        Box::pin(crate::secrets_api::write_here(Arc::clone(&self.src), w))
+        Box::pin(crate::secrets_api::write_external(Arc::clone(&self.src), w))
     }
 
     fn secret_idempotency(

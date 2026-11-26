@@ -547,14 +547,22 @@ fn write_into(
                     x.pem_kept
                 ));
             }
+            if x.reserved_kept > 0 {
+                warnings.push(format!(
+                    "{} stored secret(s) under a name the certificate issuer keeps for itself (`acme.account`, `cert.<name>.key`, `cert.<name>.chain`) are not put in a backup: a restore never applies them",
+                    x.reserved_kept
+                ));
+            }
             info
         }
         Some(x) => SecretsInfo::omitted(
             x.unreadable,
             if x.unreadable > 0 {
                 "none of the stored secrets could be read on this node"
-            } else if x.pem_kept > 0 {
+            } else if x.pem_kept > 0 && x.reserved_kept == 0 {
                 "only certificate keys are stored, and they never leave the node"
+            } else if x.pem_kept + x.reserved_kept > 0 {
+                "only certificate keys and the certificate issuer's own names are stored, and a backup leaves them out"
             } else {
                 "none stored"
             },
@@ -778,6 +786,33 @@ pub(crate) struct RestoredSecrets {
     /// Where the node's key came from (never the key).
     pub key_source: String,
     pub key_id: String,
+    /// REQ: CLD-920 - rows of the archive left out of the restore on purpose: `pem` ones and ones
+    /// under a name the certificate issuer keeps for itself (never applied, so a planted archive
+    /// cannot plant a key).
+    pub skipped: passphrase::StoreSkipped,
+}
+
+impl RestoredSecrets {
+    /// The plain-words account of the rows a restore did not apply, if there were any.
+    pub(crate) fn skipped_warning(&self) -> Option<String> {
+        let passphrase::StoreSkipped { pem, reserved } = self.skipped;
+        if pem + reserved == 0 {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if pem > 0 {
+            parts.push(format!("{pem} PEM secret(s) (a key stays on its node)"));
+        }
+        if reserved > 0 {
+            parts.push(format!(
+                "{reserved} secret(s) under a name the certificate issuer keeps for itself"
+            ));
+        }
+        Some(format!(
+            "{} in the backup were not restored; everything else was. Upload a PEM secret again in Settings; the issuer makes its own again.",
+            parts.join(" and ")
+        ))
+    }
 }
 
 /// Where `restore` put things.
@@ -1055,12 +1090,13 @@ fn restore_staged(
         if let Some(parent) = db.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        passphrase::store_rows(&db, &rows, &keys)?;
+        let skipped = passphrase::store_rows(&db, &rows, &keys)?;
         if !staged.iter().any(|p| p == "data/state.db") {
             staged.push("data/state.db".to_owned());
         }
         restored = Some(RestoredSecrets {
-            count: rows.len(),
+            count: rows.len() - skipped.pem - skipped.reserved,
+            skipped,
             key_source: keys.current.source().to_string(),
             key_id: crate::secrets::hex(&keys.current.key_id()),
         });

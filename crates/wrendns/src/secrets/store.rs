@@ -1213,7 +1213,7 @@ impl SecretStore {
     /// REQ: API-007 (T23.9, ADR-903 §8) — every live secret this node can read, decrypted, for a
     /// backup that carries them under a passphrase; how many live ones were left out because this
     /// node could not read them (stored under another key, damaged, or orphaned by a failover);
-    /// and how many `pem` ones were left out on purpose (a key never leaves the node). Refused
+    /// how many `pem` ones were left out on purpose (a key never leaves the node), and how many rows under an issuer-only name. Refused
     /// while the store is locked.
     pub(crate) fn export_rows(&self) -> Result<crate::backup::Exported, String> {
         let g = self.ready();
@@ -1227,7 +1227,7 @@ impl SecretStore {
         let Some(keys) = g.keys.clone() else {
             return Err(g.key_error.clone().unwrap_or_else(|| "no key".to_owned()));
         };
-        let (mut out, mut skipped, mut pem_kept) = (Vec::new(), 0, 0);
+        let (mut out, mut skipped, mut pem_kept, mut reserved_kept) = (Vec::new(), 0, 0, 0);
         for c in g.rows.values() {
             let r = &c.row;
             if r.deleted {
@@ -1237,6 +1237,13 @@ impl SecretStore {
             // from the rows that could not be read.
             if r.kind == "pem" {
                 pem_kept += 1;
+                continue;
+            }
+            // REQ: CLD-920 (ADR-1097) - a row under a name the certificate issuer keeps for itself
+            // (a text row from a build before the rule, or one forwarded by an older replica)
+            // is not exported either: a restore never applies one, so it would only be noise.
+            if wrendns_api::secrets_api::is_reserved_name(r.name.trim()) {
+                reserved_kept += 1;
                 continue;
             }
             if r.orphaned || c.health != RowHealth::Readable {
@@ -1260,6 +1267,7 @@ impl SecretStore {
             rows: out,
             unreadable: skipped,
             pem_kept,
+            reserved_kept,
         })
     }
 

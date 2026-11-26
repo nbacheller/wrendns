@@ -690,7 +690,7 @@ pub fn is_reserved_name(name: &str) -> bool {
 
 /// What the public API refuses before any gate or store: a reserved name (either write). The
 /// `pem` kind itself is allowed for an admin (the gate and the PEM check are in the backend).
-fn public_refusal(name: &str) -> Option<Problem> {
+pub fn public_refusal(name: &str) -> Option<Problem> {
     if is_reserved_name(name) {
         return Some(
             Problem::new(

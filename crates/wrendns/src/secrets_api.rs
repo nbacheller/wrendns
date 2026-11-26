@@ -846,6 +846,21 @@ fn meta_of_existing(
     }
 }
 
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1) — a write that came from outside the node's own code,
+/// applied here: the public route's, or one a replica forwarded (an older replica forwards a
+/// reserved name as kind `text`, since only the entry node's handler judged it). The issuer's
+/// names are refused here, where the write is applied, on the trimmed name as the store keeps it.
+/// The certificate issuer's own path calls [`write_here`] directly and stays allowed.
+pub(crate) async fn write_external(
+    src: Arc<Sources>,
+    w: SecretWrite,
+) -> Result<SecretChange, Problem> {
+    if let Some(p) = wrendns_api::secrets_api::public_refusal(w.name.trim()) {
+        return Err(p);
+    }
+    write_here(src, w).await
+}
+
 /// REQ: API-015 — a write applied here: the other members' references read first (a delete in a
 /// cluster), then the rules and the change on a blocking thread.
 pub(crate) async fn write_here(src: Arc<Sources>, w: SecretWrite) -> Result<SecretChange, Problem> {

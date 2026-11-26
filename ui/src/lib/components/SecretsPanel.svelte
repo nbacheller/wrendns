@@ -35,13 +35,21 @@
   let pemText = $state('');
   let pemBusy = $state(false);
   let pemError = $state<unknown>(null);
+  let pemFile = $state<HTMLInputElement | undefined>();
   // The names the certificate issuer keeps for itself: the API refuses them, so no control is offered.
   const issuerName = (n: string) => n === 'acme.account' || /^cert\..+\.(key|chain)$/.test(n);
   async function pickPem(e: Event) {
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
     if (!f) return;
-    pemError = f.size > 8192 ? new Error('A PEM secret is at most 8 KiB; that file is larger.') : null;
-    if (!pemError) pemText = await f.text();
+    if (f.size > 8192) {
+      // Nothing from an earlier pick stays, and the same file can be chosen again.
+      pemError = new Error('A PEM secret is at most 8 KiB; that file is larger.');
+      pemText = '';
+      if (pemFile) pemFile.value = '';
+      return;
+    }
+    pemError = null;
+    pemText = await f.text();
   }
   async function savePem() {
     if (pemBusy || !pemText.trim() || !pemName.trim()) return;
@@ -61,6 +69,8 @@
     } finally {
       // The key is never kept in the page after a try, saved or not.
       pemText = '';
+      // A refused save too: choosing the same file again fires a change event.
+      if (pemFile) pemFile.value = '';
       pemBusy = false;
     }
   }
@@ -276,7 +286,7 @@
             </label>
             <label>
               <span class="muted small">or a .pem file</span>
-              <input type="file" accept=".pem,.crt,.cer,.key,text/plain" aria-label="PEM file" onchange={pickPem} />
+              <input type="file" accept=".pem,.crt,.cer,.key,text/plain" aria-label="PEM file" bind:this={pemFile} onchange={pickPem} />
             </label>
             <p class="small muted">Only WrenDNS's own listeners use it. No page, API call, backup or support package ever returns it.</p>
             <div><button class="primary small" disabled={pemBusy || !pemText.trim() || !pemName.trim()} onclick={savePem}>Save PEM secret</button></div>
