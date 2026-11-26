@@ -216,23 +216,55 @@ struct Session {
 
 /// Signs the bootstrap admin in; `None` until the node answers.
 fn sign_in(port: u16) -> Option<Session> {
+    try_sign_in(port).ok()
+}
+
+/// Signs the bootstrap admin in, or says what the node answered: the HTTP status, 0 when nothing
+/// listens yet (the process is still starting), 1 for a 200 without a cookie or a token.
+fn try_sign_in(port: u16) -> Result<Session, u16> {
     let body = serde_json::json!({ "username": "admin", "password": ADMIN_PASSWORD });
     let (s, head, text) = request(port, "POST", "/api/v1/auth/login", &[], Some(&body));
     if s != 200 {
-        return None;
+        return Err(s);
     }
     let cookie = head
         .lines()
         .find_map(|l| {
             l.strip_prefix("set-cookie: ")
                 .or_else(|| l.strip_prefix("Set-Cookie: "))
-        })?
-        .split(';')
-        .next()?
+        })
+        .and_then(|c| c.split(';').next())
+        .ok_or(1_u16)?
         .to_owned();
-    let json: Value = serde_json::from_str(&text).ok()?;
-    let csrf = json["csrfToken"].as_str()?.to_owned();
-    Some(Session { port, cookie, csrf })
+    let json: Value = serde_json::from_str(&text).map_err(|_| 1_u16)?;
+    let csrf = json["csrfToken"].as_str().ok_or(1_u16)?.to_owned();
+    Ok(Session { port, cookie, csrf })
+}
+
+/// Waits for a node's sign-in. A timeout names what the node last answered (0: nothing listened,
+/// so the process was still starting; any other status: it was up and refused) and whether the
+/// process was still running, which tells a slow start from a refusal or a crash; a process that
+/// has exited fails at once instead of after the whole wait.
+fn wait_sign_in(secs: u64, who: &str, node: &mut Running, port: u16) -> Session {
+    let until = Instant::now() + Duration::from_secs(secs);
+    let mut tries = 0_u32;
+    loop {
+        let last = match try_sign_in(port) {
+            Ok(s) => return s,
+            Err(status) => status,
+        };
+        tries += 1;
+        let exited = node.0.try_wait().ok().flatten();
+        assert!(
+            exited.is_none(),
+            "{who} exited ({exited:?}) after {tries} sign-in tries; last answer {last}"
+        );
+        assert!(
+            Instant::now() < until,
+            "timed out waiting for {who}'s sign-in: {tries} tries in {secs} s, last answer {last}              (0 = nothing listening), the process still running"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// A call with the session: writes carry the CSRF token.
@@ -305,8 +337,8 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     let p = node(root.path(), "primary", "k8s", true);
     let r = node(root.path(), "replica", "pi", false);
     // The primary creates the cluster on its first start; a token then brings the replica in.
-    let _pr = start(&p);
-    let ps = wait_for(60, "the primary's sign-in", || sign_in(p.api));
+    let mut pr = start(&p);
+    let ps = wait_sign_in(60, "the primary", &mut pr, p.api);
     let text = run_cli(
         &p,
         &["cluster", "token", "create", "--eligible", "--ttl", "30m"],
@@ -321,7 +353,7 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
         &["cluster", "join", &token, "--site", "pi", "--eligible"],
     );
     let mut rr = start(&r);
-    let mut rs = wait_for(60, "the replica's sign-in", || sign_in(r.api));
+    let mut rs = wait_sign_in(60, "the replica", &mut rr, r.api);
     wait_for(90, "the replica to join and be seen", || {
         let v = get_json(&ps, "/api/v1/cluster")?;
         let up = v["nodes"]
@@ -372,7 +404,7 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     // The replica still has it after a restart (its own key, its own table).
     drop(rr);
     rr = start(&r);
-    let rs = wait_for(60, "the replica back up", || sign_in(r.api));
+    let rs = wait_sign_in(60, "the restarted replica", &mut rr, r.api);
     let again = wait_for(60, "the secret after a restart", || {
         let v = get_json(&rs, "/api/v1/secrets/unifi")?;
         (v["set"] == true).then_some(v)
