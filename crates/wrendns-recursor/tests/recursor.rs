@@ -1492,7 +1492,7 @@ async fn dns_903_queries_leave_from_the_source_address() {
 }
 
 /// REQ: DNS-903 — with a healthy sibling and hedging on (the default), a server that stopped
-/// answering is still noticed: it is marked down, sorts last, and lookups stop waiting for it.
+/// answering is still noticed: it is marked down, sorts after every server that is up, and lookups stop waiting for it.
 #[tokio::test]
 async fn dns_903_a_down_server_with_a_sibling_is_noticed_while_hedging() {
     let down = Arc::new(AtomicBool::new(false));

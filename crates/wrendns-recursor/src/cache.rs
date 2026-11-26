@@ -115,13 +115,17 @@ struct Note {
     /// Consecutive UDP queries it didn't answer in time.
     udp_timeouts: u8,
     /// Consecutive queries (any transport) it didn't answer in time: a server with any is down,
-    /// sorts last, and is asked now and then (`Infra::probe`) to see whether it is back; one
-    /// that is sorted last and never asked would never be found to have recovered.
+    /// sorts after every server that is not down, and is asked now and then (`Infra::probe`) to see whether it is back; one
+    /// that is sorted behind the others and never asked would never be found to have recovered.
     timeouts: u8,
     /// Until then its queries go over TCP first (its UDP went unanswered, its TCP didn't).
     tcp_until: Option<Instant>,
     /// When a down server is next asked ahead of the others.
     probe_at: Instant,
+    /// What this zone's timeouts and lame answers have cost it, in microseconds (twice the
+    /// timeout, smoothed), added to its RTT when this zone's servers are sorted; the address's
+    /// shared RTT never sees it. A usable answer for this zone clears it.
+    penalty_us: u32,
     expires: Instant,
 }
 
@@ -134,6 +138,7 @@ impl Note {
             timeouts: 0,
             tcp_until: None,
             probe_at: now,
+            penalty_us: 0,
             expires: now + infra.ttl,
         }
     }
@@ -261,46 +266,47 @@ impl Caches {
     /// never asked; those sort as a small random RTT, so each gets tried).
     ///
     /// REQ: DNS-903 — an entry past its lifetime is forgotten (the server is a stranger again),
-    /// and a server that has been timing out for `zone` sorts last but is put first once per
-    /// `Infra::probe`, so it is noticed when it is back.
+    /// and a server that has been timing out for `zone` sorts after every server that is not
+    /// down but is put first once per `Infra::probe`, so it is noticed when it is back.
     pub(crate) fn order(&self, servers: &[IpAddr], zone: &NameBuf) -> Vec<Server> {
         let now = Instant::now();
         let r = self.rtt.lock();
         let mut n = self.notes.lock();
-        let mut v: Vec<(Server, u32)> = servers
+        let mut v: Vec<(Server, (u8, u32))> = servers
             .iter()
-            .map(|&ip| match r.get(&ip).filter(|x| x.expires > now) {
-                Some(x) => {
-                    let note = n.get_mut(&(ip, *zone)).filter(|y| y.expires > now);
-                    let probe = note.as_ref().is_some_and(|y| y.down() && y.probe_at <= now);
-                    let (no_edns, tcp) = note.as_ref().map_or((false, false), |y| {
-                        (
-                            y.no_edns_until.is_some_and(|t| t > now),
-                            y.tcp_until.is_some_and(|t| t > now),
-                        )
-                    });
-                    if probe && let Some(y) = note {
-                        y.probe_at = now + self.infra.probe;
-                    }
-                    let s = Server {
-                        ip,
-                        srtt_us: (!probe).then_some(x.srtt_us),
-                        no_case: x.no_case,
-                        no_edns,
-                        tcp,
-                    };
-                    (s, if probe { 0 } else { x.srtt_us })
+            .map(|&ip| {
+                let x = r.get(&ip).filter(|x| x.expires > now);
+                let note = n.get_mut(&(ip, *zone)).filter(|y| y.expires > now);
+                let down = note.as_ref().is_some_and(|y| y.down());
+                let probe = down && note.as_ref().is_some_and(|y| y.probe_at <= now);
+                let penalty = note.as_ref().map_or(0, |y| y.penalty_us);
+                let (no_edns, tcp) = note.as_ref().map_or((false, false), |y| {
+                    (
+                        y.no_edns_until.is_some_and(|t| t > now),
+                        y.tcp_until.is_some_and(|t| t > now),
+                    )
+                });
+                if probe && let Some(y) = note {
+                    y.probe_at = now + self.infra.probe;
                 }
-                None => (
-                    Server {
-                        ip,
-                        srtt_us: None,
-                        no_case: false,
-                        no_edns: false,
-                        tcp: false,
-                    },
-                    rand::random::<u32>() % 20_000,
-                ),
+                let s = Server {
+                    ip,
+                    srtt_us: x.filter(|_| !probe).map(|x| x.srtt_us),
+                    no_case: x.is_some_and(|x| x.no_case),
+                    no_edns,
+                    tcp,
+                };
+                // Class 0 before class 1: a down server not due for a probe goes after every
+                // server that is not down, then by what its timeouts cost it for this zone.
+                let key = if probe {
+                    (0, 0)
+                } else if down {
+                    (1, x.map_or(0, |x| x.srtt_us).saturating_add(penalty))
+                } else {
+                    let base = x.map_or_else(|| rand::random::<u32>() % 20_000, |x| x.srtt_us);
+                    (0, base.saturating_add(penalty))
+                };
+                (s, key)
             })
             .collect();
         v.sort_by_key(|x| x.1);
@@ -368,6 +374,7 @@ impl Caches {
         let y = self.note(&mut n, ip, zone);
         let was_down = y.timeouts > 0;
         y.timeouts = 0;
+        y.penalty_us = 0;
         if !tcp {
             y.udp_timeouts = 0;
             y.tcp_until = None;
@@ -381,16 +388,20 @@ impl Caches {
         x.answered = true;
     }
 
-    /// Folds in a failure about `zone`: it counts as twice the timeout in the estimate.
+    /// Folds in a failure about `zone`. It touches only this (address, zone) note: a timeout
+    /// counts as twice the timeout in the note's penalty, and the address's shared RTT is
+    /// moved by real answers alone, so one zone cannot push a server back for the others.
     pub(crate) fn record_fail(&self, ip: IpAddr, zone: &NameBuf, why: Failure, timeout: Duration) {
         let sample = u32::try_from((timeout * 2).as_micros()).unwrap_or(u32::MAX);
-        let mut r = self.rtt.lock();
         let mut n = self.notes.lock();
-        let x = self.slot(&mut r, ip, sample);
-        x.srtt_us = ewma(x.srtt_us, sample);
         let y = self.note(&mut n, ip, zone);
         match why {
             Failure::Timeout { tcp } => {
+                y.penalty_us = if y.penalty_us == 0 {
+                    sample
+                } else {
+                    ewma(y.penalty_us, sample)
+                };
                 y.timeouts = y.timeouts.saturating_add(1);
                 if tcp {
                     // TCP didn't help: back to UDP, and two fresh timeouts before TCP again.
@@ -401,7 +412,14 @@ impl Caches {
                 }
             }
             // It spoke: it is up, if no use.
-            Failure::Lame => y.timeouts = 0,
+            Failure::Lame => {
+                y.timeouts = 0;
+                y.penalty_us = if y.penalty_us == 0 {
+                    sample
+                } else {
+                    ewma(y.penalty_us, sample)
+                };
+            }
         }
     }
 
@@ -599,8 +617,8 @@ mod tests {
         assert_eq!(c.servers(), 1, "the expired entries went first");
     }
 
-    /// REQ: DNS-903 — two timeouts mark a server down; it sorts last, is put first once per
-    /// probe interval, and one answer brings it back to first place.
+    /// REQ: DNS-903 — one timeout marks a server down; it sorts after every server that is not
+    /// down, is put first once per probe interval, and one answer brings it back to first place.
     #[test]
     fn dns_903_a_down_server_is_probed_and_recovers() {
         let c = Caches::new(Infra {
@@ -755,5 +773,58 @@ mod tests {
         c.record_ok(a, &z(), Duration::from_micros(500), false);
         assert_eq!(c.order(&[a, b], &z())[0].ip, a);
         assert_eq!(c.order(&[a, b], &z())[0].srtt_us, Some(500));
+    }
+
+    /// REQ: DNS-903 (ADR-1100 point 1) — timeouts provoked through one zone change nothing for
+    /// the other zones on the same address: the address's smoothed RTT moves by answers alone.
+    #[test]
+    fn dns_903_timeouts_for_one_zone_leave_the_order_for_another_zone_alone() {
+        let c = Caches::new(Infra::default());
+        let za = NameBuf::from_presentation("a.example").expect("name");
+        let zb = NameBuf::from_presentation("b.example").expect("name");
+        let (fast, slow) = (ip(1), ip(2));
+        c.record_ok(fast, &zb, Duration::from_millis(2), false);
+        c.record_ok(slow, &zb, Duration::from_millis(20), false);
+        for _ in 0..10 {
+            c.record_fail(
+                fast,
+                &za,
+                Failure::Timeout { tcp: false },
+                Duration::from_secs(1),
+            );
+        }
+        let for_b = c.order(&[slow, fast], &zb);
+        assert_eq!(for_b[0].ip, fast, "still first for b");
+        assert_eq!(for_b[0].srtt_us, Some(2_000), "its RTT was not touched");
+        let for_a = c.order(&[slow, fast], &za);
+        assert_eq!(for_a[0].ip, fast, "down for a: probed first once");
+        assert_eq!(
+            c.order(&[slow, fast], &za)[0].ip,
+            slow,
+            "then after the other"
+        );
+    }
+
+    /// REQ: DNS-903 — a down server not due for a probe sorts after every server that is not
+    /// down, even a slower one.
+    #[test]
+    fn dns_903_a_down_server_sorts_after_every_server_that_is_up() {
+        let c = Caches::new(Infra::default());
+        let (a, b) = (ip(1), ip(2));
+        c.record_ok(a, &z(), Duration::from_millis(2), false);
+        c.record_ok(b, &z(), Duration::from_millis(900), false);
+        c.record_fail(
+            a,
+            &z(),
+            Failure::Timeout { tcp: false },
+            Duration::from_micros(500),
+        );
+        assert_eq!(c.order(&[a, b], &z())[0].ip, a, "probe due once");
+        assert_eq!(
+            c.order(&[a, b], &z())[0].ip,
+            b,
+            "then behind the slower one"
+        );
+        assert_eq!(c.order(&[b, a], &z())[0].ip, b);
     }
 }
