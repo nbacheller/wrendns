@@ -5978,6 +5978,10 @@ export interface components {
             categories: components["schemas"]["CategoryView"][];
             id: string;
             name: string;
+            /** @description A notice for the group's heading (an aggregate of other maintainers' lists says so). */
+            note?: string | null;
+            /** @description The page the notice points to. */
+            noteUrl?: string | null;
         };
         /** @description One category. */
         CategoryView: {

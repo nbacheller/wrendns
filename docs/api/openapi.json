@@ -17677,6 +17677,20 @@
           },
           "name": {
             "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A notice for the group's heading (an aggregate of other maintainers' lists says so)."
+          },
+          "noteUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The page the notice points to."
           }
         }
       },

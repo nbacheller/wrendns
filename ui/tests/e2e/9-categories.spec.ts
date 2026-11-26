@@ -100,7 +100,7 @@ test('flt_901 the Categories tab: groups with "n of m", the info popover, source
   // Sources and licences: every source with its licence link, and the CC BY-SA attribution.
   await page.getByTestId('cat-licences-open').click();
   const lic = page.getByTestId('cat-licences');
-  await expect(lic.getByTestId('cat-attribution')).toContainText('Licensed CC BY-SA 4.0, (c) Bon-Appetit contributors');
+  await expect(lic.getByTestId('cat-attribution').filter({ hasText: 'Bon-Appetit' })).toContainText('Licensed CC BY-SA 4.0, (c) Bon-Appetit contributors');
   const ba = lic.locator('[data-testid="cat-licence-row"][data-source="bonappetit-porn"]');
   await expect(ba).toContainText('CC-BY-SA-4.0');
   await expect(ba.getByRole('link', { name: 'CC-BY-SA-4.0' })).toHaveAttribute('href', /Bon-Appetit\/porn-domains/);
@@ -116,6 +116,50 @@ test('flt_901 the Categories tab: groups with "n of m", the info popover, source
   await page.locator('[data-help="categories"]').first().click();
   await expect(page.getByTestId('help-panel')).toContainText('DNS block');
   await page.keyboard.press('Escape');
+});
+
+test('flt_901 the blocklist.packettale.com aggregate group: its notice and source-table link, five categories off by default, upstream licences', async () => {
+  // The previous test ended on this same hash, so reload for a fresh render of the view.
+  await page.goto('/#/lists?tab=categories');
+  await page.reload();
+  await expect(page.getByTestId('categories-view')).toBeVisible();
+  const pt = group('packettale');
+  await expect(pt.getByText('Aggregate lists from blocklist.packettale.com')).toBeVisible();
+  // The notice says it is an aggregate with mixed upstream licences, and links the publisher's source table.
+  const note = pt.getByTestId('cat-group-note');
+  await expect(note).toContainText("An aggregate of other maintainers' lists");
+  await expect(note).toContainText('mixed licences');
+  await expect(note).toContainText('WrenDNS ships nothing');
+  await expect(note.getByRole('link', { name: 'Sources and their terms' })).toHaveAttribute('href', 'https://blocklist.packettale.com/sources.md');
+  // Five categories, none selected on a new install.
+  await expect(pt.getByTestId('cat-group-count')).toHaveText('0 of 5');
+  await expect(pt.getByTestId('cat-row')).toHaveCount(5);
+  for (const id of ['stalkerware', 'typosquatting', 'violence', 'remote-access', 'push-notifications']) {
+    await expect(row(id).getByTestId('cat-check')).not.toBeChecked();
+  }
+  // Each row names its aggregated source and the upstream's licence; the info icon names the publisher and warns where it should.
+  await expect(row('stalkerware').getByTestId('cat-source')).toContainText('CC-BY-4.0');
+  await expect(row('typosquatting').getByTestId('cat-source')).toContainText('Unlicense');
+  await row('remote-access').getByTestId('cat-info').click();
+  const pop = row('remote-access').getByTestId('cat-popover');
+  await expect(pop).toContainText('blocklist.packettale.com');
+  await expect(pop).toContainText('AnyDesk');
+  // Sources and licences: the aggregate's table, the upstream's licence link, and the CC BY attribution.
+  await page.getByTestId('cat-licences-open').click();
+  const lic = page.getByTestId('cat-licences');
+  const sw = lic.locator('[data-testid="cat-licence-row"][data-source="packettale-stalkerware"]');
+  await expect(sw).toContainText('AssoEchap');
+  await expect(sw.getByRole('link', { name: 'CC-BY-4.0' })).toHaveAttribute('href', /AssoEchap\/stalkerware-indicators/);
+  await expect(sw.getByRole('link', { name: /packettale Stalkerware/ })).toHaveAttribute('href', 'https://blocklist.packettale.com/sources.md');
+  await expect(lic.getByTestId('cat-attribution').filter({ hasText: 'AssoEchap' })).toContainText('licensed CC BY 4.0');
+  await expect(lic.locator('[data-source="packettale-push-notifications"]').getByRole('link', { name: 'LicenseRef-Dandelicence-1.4' })).toBeVisible();
+  await expect(lic.getByTestId('cat-attribution').filter({ hasText: 'Ryan Brown' })).toContainText('GPL-3.0');
+  await page.keyboard.press('Escape');
+  // The two rows the aggregate fills are no longer under Not available.
+  const na = page.getByTestId('cat-not-available');
+  await na.locator('summary').click();
+  await expect(na).not.toContainText('Violence and gore');
+  await expect(na).not.toContainText('Remote-access tools');
 });
 
 /** Opens the profile editor for a new profile named `name`. */
