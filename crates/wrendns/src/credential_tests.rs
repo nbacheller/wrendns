@@ -152,7 +152,7 @@ pub(crate) fn harness_toml(
     cfg.node.data_dir = wrendns_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
     let (reload, mut reloads) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(4);
     let src = Arc::new(Sources {
-        allowed,
+        allowed: arc_swap::ArcSwap::from_pointee(allowed),
         cluster,
         reload,
         ..crate::http::tests::sources_in(dir.path())

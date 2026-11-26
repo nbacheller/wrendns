@@ -3979,6 +3979,8 @@ impl Backend for ApiBackend {
             (ManagedKind::Dnssec, "dnssec", e.dnssec.is_some()),
             (ManagedKind::Filter, "filter", e.filter.is_some()),
             (ManagedKind::Drill, "drill", e.drill.is_some()),
+            // REQ: DNS-014 (T27.14h) - `[access]`.
+            (ManagedKind::Access, "access", e.access.is_some()),
             // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007).
             (ManagedKind::Slo, "slo", e.slo.is_some()),
             (ManagedKind::Probe, "probe", e.probe.is_some()),
@@ -5126,6 +5128,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => crate::managed::DNSSEC,
         ManagedKind::Filter => crate::managed::FILTER,
         ManagedKind::Drill => crate::managed::DRILL,
+        ManagedKind::Access => crate::managed::ACCESS,
         ManagedKind::Slo => crate::managed::SLO,
         ManagedKind::Probe => crate::managed::PROBE,
         ManagedKind::UpstreamCheck => crate::managed::UPSTREAM_CHECK,
@@ -5713,7 +5716,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             "Names under `{name}` go back to the upstreams (or the zone file, if the files define one); {recent_queries} queries for them in the last two hours (at least)."
         ),
         // The plans of the kinds added by T27.2 and T27.11 (ADR-1006) write their own impact.
-        (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill, _) => String::new(), // rule_impact says it better
+        (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill | ManagedKind::Access, _) => String::new(), // rule_impact says it better
         (ManagedKind::Sink, _) => {
             "Started, changed or stopped on every node within seconds, without a restart: a removed sink sends what it holds and ends, and the batches it kept on disk go.".into()
         }
@@ -6230,6 +6233,11 @@ fn plan_settings(
     if w.kind == ManagedKind::Filter {
         warnings.extend(filter_budget_check(src, &before_cfg, &merged)?);
     }
+    // REQ: DNS-014 (T27.14h, ADR-1090 point 1) - a public range added to the allowed networks makes
+    // plain DNS answer that range from the internet, with no device key.
+    if w.kind == ManagedKind::Access {
+        warnings.extend(public_range_warnings(&before_cfg, &merged));
+    }
     // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
     // says so here, as the dry run's answer does.
     if w.kind == ManagedKind::Clients && before != after {
@@ -6250,6 +6258,25 @@ fn plan_settings(
         candidate: merged,
         redirect: None,
     })
+}
+
+/// REQ: DNS-014 (T27.14h, ADR-1098 point 4) - one warning for each public range the change adds to
+/// `[access] allowed_networks` (a range with any address `is_public_address` calls public).
+fn public_range_warnings(
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> Vec<String> {
+    after
+        .access
+        .allowed_networks
+        .iter()
+        .filter(|n| n.includes_public() && !before.access.allowed_networks.contains(n))
+        .map(|n| {
+            format!(
+                "This lets every address in {n} use this resolver, from the internet too. Plain DNS (UDP and TCP) carries no device key, so this makes the resolver open to that range."
+            )
+        })
+        .collect()
 }
 
 /// REQ: FLT-901 (T24.29, ADR-994 item 5) — the budget check a change to `[filter] ads_tier` or
@@ -7929,6 +7956,7 @@ fn keep_in_git(
         ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
         ManagedKind::Drill => "drill",
+        ManagedKind::Access => "access",
         ManagedKind::Slo => "slo",
         ManagedKind::Probe => "probe",
         ManagedKind::UpstreamCheck => "upstream_check",

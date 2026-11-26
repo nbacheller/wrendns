@@ -45,6 +45,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
         ManagedKind::Drill => "drill",
+        ManagedKind::Access => "access",
         ManagedKind::Slo => "slo",
         ManagedKind::Probe => "probe",
         ManagedKind::UpstreamCheck => "upstream_check",

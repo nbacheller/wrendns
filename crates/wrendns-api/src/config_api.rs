@@ -3284,6 +3284,70 @@ pub(crate) async fn delete_drill_settings(
     .await
 }
 
+/// REQ: DNS-014, API-901 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, the one list for
+/// the whole cluster. Admins only; no agent token changes it.
+///
+/// Who may use this resolver, and reach the web UI and the API. The list applies on every node within
+/// seconds; a file that sets it wins. A list that leaves out the requester's own address is refused
+/// (409 `would_disconnect_you`).
+#[utoipa::path(put, path = "/api/v1/access-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change; `warnings` names a public range)."),
+        (status = 403, body = Problem, description = "Only an admin can change the allowed networks; agents are refused."),
+        (status = 409, body = Problem, description = "`set_by_file`, or the list leaves out your own address (`would_disconnect_you`)."),
+        (status = 422, body = Problem, description = "A network is wrong."),
+    ))]
+pub(crate) async fn put_access_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Access,
+        "/access-settings/default",
+    )
+    .await
+}
+
+/// Removes the allowed networks the API set (the files' list, or the defaults, apply again).
+///
+/// The list the configuration files give, or the built-in defaults (private ranges, CGNAT, link-local
+/// and loopback), applies again on every node within seconds.
+#[utoipa::path(delete, path = "/api/v1/access-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change the allowed networks."),
+        (status = 404, body = Problem, description = "The API sets no allowed networks."),
+    ))]
+pub(crate) async fn delete_access_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Access,
+        "DELETE /access-settings/default",
+    )
+    .await
+}
+
 /// REQ: DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2, T27.11, ADR-1006) — the
 /// per-node sections and the shared singletons added for the cache and the small settings. The
 /// operator role is required on the router (`lib.rs`); the plans check the rest (admins only for
@@ -3315,6 +3379,10 @@ pub(crate) fn node_settings_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -
         .route(
             "/api/v1/drill-settings/default",
             axum::routing::put(put_drill_settings).delete(delete_drill_settings),
+        )
+        .route(
+            "/api/v1/access-settings/default",
+            axum::routing::put(put_access_settings).delete(delete_access_settings),
         )
         .with_state((backend, auth))
 }
@@ -3474,6 +3542,7 @@ impl Op {
             Self::Managed(ManagedKind::Dnssec, _) => "dnssec",
             Self::Managed(ManagedKind::Filter, _) => "filter",
             Self::Managed(ManagedKind::Drill, _) => "drill",
+            Self::Managed(ManagedKind::Access, _) => "access",
             Self::Managed(ManagedKind::Slo, _) => "slo",
             Self::Managed(ManagedKind::Probe, _) => "probe",
             Self::Managed(ManagedKind::UpstreamCheck, _) => "upstream_check",
@@ -3909,6 +3978,36 @@ pub(crate) async fn delete_rule(
     .await
 }
 
+/// REQ: DNS-014, API-901 (T27.14h, owner question open: taken as the conservative option) — refuses an
+/// `allowed_networks` list, sent in `body`, that does not hold `client`, the requester's address (the
+/// forwarded one on a replica's behalf). A body without the list, one with an entry that does not
+/// parse (the backend says which), and an unknown address (no connection information) pass.
+pub fn lockout_guard(body: &serde_json::Value, client: std::net::IpAddr) -> Result<(), Problem> {
+    let Some(list) = body.get("allowed_networks").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    if client.is_unspecified() {
+        return Ok(());
+    }
+    let mut nets = Vec::new();
+    for v in list {
+        match v.as_str().map(wrendns_config::Cidr::parse) {
+            Some(Ok(c)) => nets.push(c),
+            _ => return Ok(()),
+        }
+    }
+    if nets.iter().any(|n| n.contains(client)) {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::WouldDisconnectYou,
+        format!(
+            "this list leaves out your own address, {client}: once it applies, this web UI and API would refuse you"
+        ),
+    )
+    .hint("Add a network that holds your address, then save again. If you need the list without it, change it in the configuration file."))
+}
+
 /// REQ: API-002, API-010 (ADR-040) - a configuration write runs to its end (the audit record
 /// included) even when the client hangs up first, as a browser does when the page reloads right
 /// after Apply: stored but not applied is not a state a change may end in.
@@ -4025,6 +4124,13 @@ async fn write_inner(
         op.audit_kind(),
         if op.deleting() { "delete" } else { "put" }
     );
+    // REQ: DNS-014, API-901 (T27.14h) — the list also limits the web UI and the API (ADR-029): a list
+    // that leaves out the address this request came from is refused, a dry run included.
+    if let Op::Managed(ManagedKind::Access, Some(b)) = &op
+        && let Err(e) = lockout_guard(b, remote(&auth, &ext, &headers))
+    {
+        return e.into_response();
+    }
     let result: Result<serde_json::Value, Problem> = match op {
         Op::Client(input) => backend
             .write_client(ClientWrite {

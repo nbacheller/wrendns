@@ -19,6 +19,7 @@
   import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
   import ListenerGate from '../lib/components/ListenerGate.svelte';
+  import AllowedNetworks from '../lib/components/AllowedNetworks.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
@@ -965,12 +966,16 @@
           </table>
         </div>
         <p class="muted small">Unset, <code>require_client_id</code> is on for a public address and off otherwise, and for a listener that binds every address it is on when this host has a public IPv4 address (a change of the host's addresses is picked up at the next reload); turning it on for a listener your LAN uses refuses the devices that carry no key. In the configuration file it is <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), and a reload applies it.</p>
+        <!-- REQ: DNS-014 (T27.14h) — the cluster-wide allowed networks, read-only here, linked to their card. -->
+        <AllowedNetworks summary />
         {#if can('admin')}
           <!-- REQ: DNS-901, API-902 (T27.14) — the gate's three states, changed through the guarded framework. -->
           <ListenerGate rows={info.listenerAccess} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />
         {/if}
       </section>
     {/if}
+    <!-- REQ: DNS-014, API-901 (T27.14h) — the one cluster-wide list of allowed networks (admins change it). -->
+    <AllowedNetworks />
     <section class="card" data-testid="changes-list">
       <h2>Changes<HelpButton id="change-markers" /></h2>
       <div class="change-filters">

@@ -89,7 +89,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: tokio::sync::mpsc::channel(1).0,
         config_writes: tokio::sync::Mutex::new(()),
-        allowed: Vec::new(),
+        allowed: ArcSwap::from_pointee(Vec::new()),
         probes: Arc::default(),
         shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         traces: Arc::default(),
@@ -116,7 +116,8 @@ async fn ops_006_health_endpoints() {
     let mut src = sources();
     src.readiness = Arc::new(crate::readiness::Readiness::new(true));
     // The listener answers only `allowed_networks`; the test asks from loopback.
-    src.allowed = vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()];
+    src.allowed =
+        arc_swap::ArcSwap::from_pointee(vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()]);
     let src = Arc::new(src);
     let get = |path: &'static str| {
         let app = router(Arc::clone(&src));
@@ -523,7 +524,8 @@ async fn ops_901_readyz_asks_the_listener() {
 async fn obs_005_metrics_endpoint_exports_both_names() {
     use tower::ServiceExt as _;
     let mut src = sources();
-    src.allowed = vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()];
+    src.allowed =
+        arc_swap::ArcSwap::from_pointee(vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()]);
     let app = router(Arc::new(src));
     let req = axum::http::Request::builder()
         .uri("/metrics")

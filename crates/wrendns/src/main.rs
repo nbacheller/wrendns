@@ -3,6 +3,8 @@
 // REQ: NFR-003 — no unsafe outside wrendns-net.
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod access_settings_tests;
 mod alerts;
 mod annotations;
 mod anomaly;

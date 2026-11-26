@@ -268,6 +268,166 @@
         ]
       }
     },
+    "/api/v1/access-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: DNS-014, API-901 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, the one list for\nthe whole cluster. Admins only; no agent token changes it.",
+        "description": "Who may use this resolver, and reach the web UI and the API. The list applies on every node within\nseconds; a file that sets it wins. A list that leaves out the requester's own address is refused\n(409 `would_disconnect_you`).",
+        "operationId": "put_access_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change; `warnings` names a public range).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the allowed networks; agents are refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`, or the list leaves out your own address (`would_disconnect_you`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A network is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the allowed networks the API set (the files' list, or the defaults, apply again).",
+        "description": "The list the configuration files give, or the built-in defaults (private ranges, CGNAT, link-local\nand loopback), applies again on every node within seconds.",
+        "operationId": "delete_access_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the allowed networks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no allowed networks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/alerts": {
       "get": {
         "tags": [

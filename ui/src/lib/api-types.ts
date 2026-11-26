@@ -203,6 +203,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/access-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: DNS-014, API-901 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, the one list for
+         *     the whole cluster. Admins only; no agent token changes it.
+         * @description Who may use this resolver, and reach the web UI and the API. The list applies on every node within
+         *     seconds; a file that sets it wins. A list that leaves out the requester's own address is refused
+         *     (409 `would_disconnect_you`).
+         */
+        put: operations["put_access_settings"];
+        post?: never;
+        /**
+         * Removes the allowed networks the API set (the files' list, or the defaults, apply again).
+         * @description The list the configuration files give, or the built-in defaults (private ranges, CGNAT, link-local
+         *     and loopback), applies again on every node within seconds.
+         */
+        delete: operations["delete_access_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts": {
         parameters: {
             query?: never;
@@ -13345,6 +13373,125 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    put_access_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change; `warnings` names a public range). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the allowed networks; agents are refused. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, or the list leaves out your own address (`would_disconnect_you`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A network is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_access_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the allowed networks. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no allowed networks. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
             };
         };
     };
