@@ -289,6 +289,41 @@ pub struct GuardedConfirmRequest {
     pub confirm_token: Option<String>,
 }
 
+/// One staged socket of a pending change, as `GET /api/v1/guarded/pending/{id}` shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardedProbeLine {
+    /// The socket, as `proto://address`.
+    pub listener: String,
+    /// `waiting` (no probe has finished yet), `answered`, `refused_by_gate` (the gate's own
+    /// refusal, the expected answer on a gated listener) or `no_answer`.
+    pub state: String,
+    /// Why there was no answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// When the last probe finished (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    /// Distinct other hosts whose queries reached this socket during the window (at most 64; IPv6
+    /// by /64; this node's own addresses left out). Shown, never required to confirm.
+    pub other_hosts: u32,
+}
+
+/// The answer of `GET /api/v1/guarded/pending/{id}`: the window's seconds left and, for a change that
+/// binds DNS sockets, the node's own probe of each. It names the staged addresses, so it is for the
+/// admin who made the change (the confirm token or that admin's session), unlike the status listing.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardedPendingView {
+    pub id: String,
+    pub setting: String,
+    pub node: String,
+    /// Seconds left, measured on the node's monotonic clock.
+    pub deadline_secs: u64,
+    /// One line per staged socket; empty for a change that has no probes.
+    pub probes: Vec<GuardedProbeLine>,
+}
+
 /// The answer of a confirmation or a cancellation.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

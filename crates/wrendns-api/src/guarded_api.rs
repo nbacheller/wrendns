@@ -29,7 +29,7 @@ use crate::auth::routes::{principal, reason, remote, remote_under_proven};
 use crate::auth::{Auth, Principal, Role, Via};
 use crate::guarded::{
     ArrivedOn, GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedConfirmRequest,
-    GuardedPreview, GuardedPreviewRequest, GuardedResult, GuardedStatus,
+    GuardedPendingView, GuardedPreview, GuardedPreviewRequest, GuardedResult, GuardedStatus,
 };
 use crate::problem::{Code, Problem};
 use crate::{Backend, blocking};
@@ -60,6 +60,7 @@ pub(crate) fn confirm_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Rout
             "/api/v1/guarded/pending/{id}/confirm",
             post(guarded_confirm),
         )
+        .route("/api/v1/guarded/pending/{id}", get(guarded_pending))
         .with_state((backend, auth))
 }
 
@@ -250,41 +251,85 @@ pub(crate) async fn guarded_confirm(
         Err(JsonRejection::MissingJsonContentType(_)) => GuardedConfirmRequest::default(),
         Err(e) => return Err(rejection(&e)),
     };
-    let c = if let Some(p) = ext.get::<Principal>() {
-        let p = p.clone();
-        caller(&backend, &auth, &p, &ext, &headers).await?
-    } else {
-        // No session: only a token can confirm, and the node then knows the admin from the
-        // pending change it is bound to.
-        if req.confirm_token.is_none() {
-            return Err(Problem::new(
-                Code::Unauthorized,
-                "sign in, or send the confirmToken the change answered with",
-            ));
-        }
-        let ip = remote(&auth, &ext, &headers);
-        GuardedCaller {
-            actor: crate::auth::Actor {
-                name: String::new(),
-                kind: "token",
-                remote: Some(ip.to_string()),
-                reason: reason(&headers),
-            },
-            username: String::new(),
-            session: None,
-            signed_in_at: None,
-            arrived_on: ext.get::<ArrivedOn>().map(|a| a.0),
-            remote: Some(ip),
-            remote_under_pending: backend
-                .guarded_pending_proxies()
-                .and_then(|list| remote_under_proven(&auth, &ext, &headers, &list)),
-            tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
-        }
-    };
+    let c = confirm_caller(&backend, &auth, &headers, &ext, req.confirm_token.is_some()).await?;
     backend
         .guarded_confirm(c, id, req.confirm_token)
         .await
         .map(Json)
+}
+
+/// The caller of the confirm route and of the pending read: the admin's session, or, with no
+/// session, only a request carrying the single-use token (the node then knows the admin from the
+/// pending change it is bound to).
+async fn confirm_caller(
+    backend: &Arc<dyn Backend>,
+    auth: &Arc<Auth>,
+    headers: &HeaderMap,
+    ext: &axum::http::Extensions,
+    has_token: bool,
+) -> Result<GuardedCaller, Problem> {
+    if let Some(p) = ext.get::<Principal>() {
+        let p = p.clone();
+        return caller(backend, auth, &p, ext, headers).await;
+    }
+    if !has_token {
+        return Err(Problem::new(
+            Code::Unauthorized,
+            "sign in, or send the confirmToken the change answered with",
+        ));
+    }
+    let ip = remote(auth, ext, headers);
+    Ok(GuardedCaller {
+        actor: crate::auth::Actor {
+            name: String::new(),
+            kind: "token",
+            remote: Some(ip.to_string()),
+            reason: reason(headers),
+        },
+        username: String::new(),
+        session: None,
+        signed_in_at: None,
+        arrived_on: ext.get::<ArrivedOn>().map(|a| a.0),
+        remote: Some(ip),
+        remote_under_pending: backend
+            .guarded_pending_proxies()
+            .and_then(|list| remote_under_proven(auth, ext, headers, &list)),
+        tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
+    })
+}
+
+/// The header that carries the single-use confirm token on the pending read (a GET has no body,
+/// and a token never goes in a URL).
+pub const CONFIRM_TOKEN_HEADER: &str = "x-confirm-token";
+
+/// Reads a pending window change: the seconds left and, for a change that binds DNS sockets, the
+/// node's own probe of each (the last result and the time) and how many other hosts' queries have
+/// reached it.
+///
+/// The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the
+/// same admin's session; another admin's session, a wrong token and an agent token are 403. It
+/// names the staged addresses, which `GET /api/v1/guarded` never does. Reading it does not count
+/// toward the failed-confirmation block, and the evidence is shown, never required to confirm.
+#[utoipa::path(get, path = "/api/v1/guarded/pending/{id}", tag = "config",
+    params(("id" = String, Path, description = "The pending change's ID.")),
+    responses(
+        (status = 200, body = GuardedPendingView, description = "The pending change."),
+        (status = 401, body = Problem, description = "Neither a session nor a token."),
+        (status = 403, body = Problem, description = "The token is wrong, or another admin made the change."),
+        (status = 404, body = Problem, description = "Nothing is pending under that ID on this node."),
+    ))]
+pub(crate) async fn guarded_pending(
+    State((backend, auth)): State<Ctx>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Result<Json<GuardedPendingView>, Problem> {
+    let token = headers
+        .get(CONFIRM_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let c = confirm_caller(&backend, &auth, &headers, &ext, token.is_some()).await?;
+    backend.guarded_pending(c, id, token).await.map(Json)
 }
 
 /// Cancels a pending window change.

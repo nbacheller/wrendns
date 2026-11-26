@@ -7134,6 +7134,69 @@
         }
       }
     },
+    "/api/v1/guarded/pending/{id}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Reads a pending window change: the seconds left and, for a change that binds DNS sockets, the\nnode's own probe of each (the last result and the time) and how many other hosts' queries have\nreached it.",
+        "description": "The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the\nsame admin's session; another admin's session, a wrong token and an agent token are 403. It\nnames the staged addresses, which `GET /api/v1/guarded` never does. Reading it does not count\ntoward the failed-confirmation block, and the evidence is shown, never required to confirm.",
+        "operationId": "guarded_pending",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The pending change's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pending change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedPendingView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Neither a session nor a token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is wrong, or another admin made the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing is pending under that ID on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/guarded/pending/{id}/cancel": {
       "post": {
         "tags": [
@@ -23012,6 +23075,41 @@
           }
         }
       },
+      "GuardedPendingView": {
+        "type": "object",
+        "description": "The answer of `GET /api/v1/guarded/pending/{id}`: the window's seconds left and, for a change that\nbinds DNS sockets, the node's own probe of each. It names the staged addresses, so it is for the\nadmin who made the change (the confirm token or that admin's session), unlike the status listing.",
+        "required": [
+          "id",
+          "setting",
+          "node",
+          "deadlineSecs",
+          "probes"
+        ],
+        "properties": {
+          "deadlineSecs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds left, measured on the node's monotonic clock.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "probes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedProbeLine"
+            },
+            "description": "One line per staged socket; empty for a change that has no probes."
+          },
+          "setting": {
+            "type": "string"
+          }
+        }
+      },
       "GuardedPreview": {
         "type": "object",
         "description": "The dry run's answer. Nothing was changed.",
@@ -23137,6 +23235,47 @@
           }
         },
         "additionalProperties": false
+      },
+      "GuardedProbeLine": {
+        "type": "object",
+        "description": "One staged socket of a pending change, as `GET /api/v1/guarded/pending/{id}` shows it.",
+        "required": [
+          "listener",
+          "state",
+          "otherHosts"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the last probe finished (Unix seconds).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there was no answer."
+          },
+          "listener": {
+            "type": "string",
+            "description": "The socket, as `proto://address`."
+          },
+          "otherHosts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Distinct other hosts whose queries reached this socket during the window (at most 64; IPv6\nby /64; this node's own addresses left out). Shown, never required to confirm.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`waiting` (no probe has finished yet), `answered`, `refused_by_gate` (the gate's own\nrefusal, the expected answer on a gated listener) or `no_answer`."
+          }
+        }
       },
       "GuardedResult": {
         "type": "object",

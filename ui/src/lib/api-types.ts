@@ -2589,6 +2589,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/guarded/pending/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads a pending window change: the seconds left and, for a change that binds DNS sockets, the
+         *     node's own probe of each (the last result and the time) and how many other hosts' queries have
+         *     reached it.
+         * @description The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the
+         *     same admin's session; another admin's session, a wrong token and an agent token are 403. It
+         *     names the staged addresses, which `GET /api/v1/guarded` never does. Reading it does not count
+         *     toward the failed-confirmation block, and the evidence is shown, never required to confirm.
+         */
+        get: operations["guarded_pending"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/guarded/pending/{id}/cancel": {
         parameters: {
             query?: never;
@@ -8245,6 +8270,23 @@ export interface components {
             node: string;
             setting: string;
         };
+        /**
+         * @description The answer of `GET /api/v1/guarded/pending/{id}`: the window's seconds left and, for a change that
+         *     binds DNS sockets, the node's own probe of each. It names the staged addresses, so it is for the
+         *     admin who made the change (the confirm token or that admin's session), unlike the status listing.
+         */
+        GuardedPendingView: {
+            /**
+             * Format: int64
+             * @description Seconds left, measured on the node's monotonic clock.
+             */
+            deadlineSecs: number;
+            id: string;
+            node: string;
+            /** @description One line per staged socket; empty for a change that has no probes. */
+            probes: components["schemas"]["GuardedProbeLine"][];
+            setting: string;
+        };
         /** @description The dry run's answer. Nothing was changed. */
         GuardedPreview: {
             /** @description A second acknowledgement the change needs (`acknowledgeNoAdmins`, ...), when it does. */
@@ -8305,6 +8347,29 @@ export interface components {
              *     action such as `restart-now`.
              */
             value?: Record<string, never>;
+        };
+        /** @description One staged socket of a pending change, as `GET /api/v1/guarded/pending/{id}` shows it. */
+        GuardedProbeLine: {
+            /**
+             * Format: int64
+             * @description When the last probe finished (Unix seconds).
+             */
+            at?: number | null;
+            /** @description Why there was no answer. */
+            error?: string | null;
+            /** @description The socket, as `proto://address`. */
+            listener: string;
+            /**
+             * Format: int32
+             * @description Distinct other hosts whose queries reached this socket during the window (at most 64; IPv6
+             *     by /64; this node's own addresses left out). Shown, never required to confirm.
+             */
+            otherHosts: number;
+            /**
+             * @description `waiting` (no probe has finished yet), `answered`, `refused_by_gate` (the gate's own
+             *     refusal, the expected answer on a gated listener) or `no_answer`.
+             */
+            state: string;
         };
         /** @description The answer of a confirmation or a cancellation. */
         GuardedResult: {
@@ -18395,6 +18460,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GuardedStatus"];
+                };
+            };
+        };
+    };
+    guarded_pending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pending change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedPendingView"];
+                };
+            };
+            /** @description Neither a session nor a token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The token is wrong, or another admin made the change. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing is pending under that ID on this node. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

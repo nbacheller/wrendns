@@ -118,10 +118,15 @@ pub(crate) trait Host: Send + Sync + 'static {
         let _ = tls;
         self.proof_socket(addr)
     }
-    /// The node's own probe of a DNS listener answers (what a `listen` confirmation also needs).
-    fn probe_dns(&self, addr: SocketAddr) -> BoxFuture<bool> {
-        let _ = addr;
-        Box::pin(std::future::ready(true))
+    /// REQ: API-902, OBS-020 (T27.14b) — the node's own probe of a DNS socket (ADR-107's client,
+    /// one query), judged for a gated listener by the gate's refusal. A host without listeners
+    /// answers as if the socket did.
+    fn probe_dns(
+        &self,
+        probe: &super::dns_proof::DnsProbe,
+    ) -> BoxFuture<Result<super::dns_proof::Kind, String>> {
+        let _ = probe;
+        Box::pin(std::future::ready(Ok(super::dns_proof::Kind::Answered)))
     }
     /// REQ: API-902, CLU-004 (T27.14a) — binds what `list` adds next to the running DNS listeners,
     /// and on proof ports what it changes (`docs/design/listener-editor.md` section 2.3). A failed
