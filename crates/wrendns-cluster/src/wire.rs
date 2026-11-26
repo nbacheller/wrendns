@@ -52,6 +52,10 @@ pub struct Hello {
     /// Empty from a peer older than this field (prost skips unknown tags, so older peers ignore it).
     #[prost(string, tag = "13")]
     pub instance: String,
+    /// REQ: DSC-908 (ADR-1096 point 5) - the gated shared sections and secret kinds this build
+    /// knows (`gate::own_features`). Empty from a build older than this field: it knows none.
+    #[prost(string, repeated, tag = "14")]
+    pub features: Vec<String>,
 }
 
 /// A federated read (CLU-002, T5.6): `kind` names the call, `body` carries its arguments
@@ -404,6 +408,23 @@ mod tests {
         assert!(!protocol_compatible(PROTOCOL + 2));
     }
 
+    // REQ: DSC-908 - the announced features round-trip, and a Hello from a build older than the
+    // field decodes with none (it knows no gated feature).
+    #[test]
+    fn dsc_908_hello_features_round_trip_and_default_to_none() {
+        let h = Hello {
+            features: vec!["pem_secrets".into()],
+            ..Hello::default()
+        };
+        assert_eq!(Hello::decode(&h.encode_to_vec()[..]).unwrap(), h);
+        let old = Hello {
+            version: "1.1.0-edge.40".into(),
+            ..Hello::default()
+        };
+        let back = Hello::decode(&old.encode_to_vec()[..]).unwrap();
+        assert_eq!(back.features, Vec::<String>::new());
+    }
+
     #[test]
     fn clu_010_frames_round_trip_in_pieces() {
         let hello = Frame {
@@ -421,6 +442,7 @@ mod tests {
                 primary: false,
                 config_source: String::new(),
                 instance: "0123456789abcdef".into(),
+                features: Vec::new(),
             })),
         };
         let hb = Frame {

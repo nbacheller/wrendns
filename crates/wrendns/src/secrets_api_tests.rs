@@ -480,6 +480,15 @@ struct Pair {
 }
 
 async fn pair(version: &str, replica_version: &str) -> Pair {
+    pair_features(version, replica_version, None).await
+}
+
+/// [`pair`], the replica announcing `features` (`None`: every feature this build knows).
+async fn pair_features(
+    version: &str,
+    replica_version: &str,
+    features: Option<Vec<String>>,
+) -> Pair {
     use wrendns_cluster::net::{dial, join, serve};
     use wrendns_cluster::node::{Identity, JoinRequest, TokenGrants};
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -524,6 +533,9 @@ async fn pair(version: &str, replica_version: &str) -> Pair {
     };
     let rid = Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
     let replica = Cluster::new(rid, replica_version);
+    if let Some(f) = features {
+        replica.set_features(f);
+    }
     tokio::spawn(dial(Arc::clone(&replica), stop));
     for _ in 0..400 {
         if replica.reachable_primary().is_some() && !primary.reachable_peers().is_empty() {
@@ -654,6 +666,319 @@ async fn api_015_n_minus_1_primary_refuses_by_kind() {
     no_value(&v.to_string());
     assert_eq!(audit(&rh), "");
     let _ = p.stop.send(true);
+}
+
+const PEM_VALUE: &str =
+    "-----BEGIN PRIVATE KEY-----\nplantedPemKeyBytes61f0\n-----END PRIVATE KEY-----";
+
+/// The upgrade gate keeps one process-wide record for health; the tests that read it take turns.
+static GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// What the issuer's own path does: a write that does not go through the public routes.
+async fn issuer_put(
+    src: &Arc<crate::http::Sources>,
+    name: &str,
+    dry_run: bool,
+) -> Result<wrendns_api::secrets_api::SecretChange, wrendns_api::problem::Problem> {
+    use wrendns_api::secrets_api::{SecretOp, SecretText, SecretWrite};
+    crate::secrets_api::write_here(
+        Arc::clone(src),
+        SecretWrite {
+            name: name.to_owned(),
+            op: SecretOp::Put {
+                kind: "pem".into(),
+                value: SecretText::new(PEM_VALUE.to_owned()),
+            },
+            dry_run,
+            expect: None,
+            by: "issuer".into(),
+            role: Some(auth::Role::Admin),
+            agent: None,
+        },
+    )
+    .await
+}
+
+/// REQ: DSC-908, CLD-920 (ADR-1096 point 5) - the first `pem` secret is refused while a member's
+/// build does not announce the kind, naming the member and its version (dry runs too), even when
+/// that build carries the same version number as this one (a development build of 1.1.0); a text
+/// secret is not held; health says the gate is holding a change back; and once the member's build
+/// announces the kind the write goes through and nothing returned holds the key.
+#[tokio::test]
+async fn dsc_908_pem_secret_waits_for_every_members_build() {
+    let _turn = GATE.lock().await;
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let ph = harness_in("", Some(Arc::clone(&old.primary)));
+    crate::http::serve_peers(&ph.src);
+    for dry in [true, false] {
+        let e = issuer_put(&ph.src, "cert.cluster.key", dry)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code_status(), StatusCode::CONFLICT, "{e:?}");
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "upgrade_required", "{v}");
+        let d = v["detail"].as_str().unwrap();
+        assert!(
+            d.contains("version 1.1.0-edge.40") && d.contains("`pem`"),
+            "{v}"
+        );
+        assert!(!v.to_string().contains("plantedPemKeyBytes"), "{v}");
+    }
+    assert!(!ph.src.secrets.exists("cert.cluster.key"));
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/plain", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let holds = crate::upgrade_gate::standing(Some(&old.primary));
+    assert_eq!(holds.len(), 1, "{holds:?}");
+    let reasons = crate::health::upgrade_gate_reasons(&holds);
+    assert_eq!(reasons[0].code, "upgrade_gate_holding");
+    assert!(
+        reasons[0].summary.contains("version 1.1.0-edge.40"),
+        "{reasons:?}"
+    );
+    let _ = old.stop.send(true);
+
+    let new = pair("1.1.0", "1.1.0").await;
+    let ph = harness_in("", Some(Arc::clone(&new.primary)));
+    crate::http::serve_peers(&ph.src);
+    let c = issuer_put(&ph.src, "cert.cluster.key", false)
+        .await
+        .unwrap();
+    assert_eq!(c.secret.kind, "pem");
+    assert!(
+        !serde_json::to_string(&c)
+            .unwrap()
+            .contains("plantedPemKeyBytes")
+    );
+    assert_eq!(
+        crate::upgrade_gate::standing(Some(&new.primary)),
+        Vec::<String>::new()
+    );
+    let (_, _, list) = ph.call("GET", "/api/v1/secrets", None).await;
+    assert!(!list.to_string().contains("plantedPemKeyBytes"), "{list}");
+    let _ = new.stop.send(true);
+}
+
+/// REQ: DSC-908 - a full member in the registry that has not connected since this process started
+/// has not reported its build: the gate counts it as not knowing the kind (the primary has just
+/// restarted, or the member is offline), and a removed member no longer counts.
+#[tokio::test]
+async fn dsc_908_a_registered_member_never_heard_from_holds_the_gate() {
+    let _turn = GATE.lock().await;
+    let (c, dir) = lone_primary("api");
+    let h = harness_in("", Some(Arc::clone(&c)));
+    assert!(issuer_put(&h.src, "cert.cluster.key", true).await.is_ok());
+    let nodes = json!([
+        {"node_id": c.identity.meta.node_id, "site": "home", "eligible": true, "advertise": [], "joined": 0},
+        {"node_id": "pi-c", "site": "home", "eligible": true, "advertise": [], "joined": 1},
+    ]);
+    std::fs::write(c.identity.dir.join("nodes.json"), nodes.to_string()).unwrap();
+    let e = issuer_put(&h.src, "cert.cluster.key", false)
+        .await
+        .unwrap_err();
+    let v = serde_json::to_value(&e).unwrap();
+    assert_eq!(v["code"], "upgrade_required", "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().starts_with("node pi-c "),
+        "{v}"
+    );
+    assert!(!h.src.secrets.exists("cert.cluster.key"));
+    c.identity.add_removed("pi-c").unwrap();
+    assert!(issuer_put(&h.src, "cert.cluster.key", false).await.is_ok());
+    drop(dir);
+}
+
+/// REQ: CLD-920, DSC-908 (owner decision 2026-11-26) - the public secrets API neither writes nor
+/// deletes the five names the issuer keeps (no admin or stolen admin token can plant a key a
+/// listener would load), whatever the kind; a name that only looks similar is an ordinary secret.
+#[tokio::test]
+async fn cld_920_public_api_refuses_the_issuers_names() {
+    let h = harness("");
+    let pem_body = json!({"value": PEM_VALUE, "kind": "pem"});
+    for name in [
+        "acme.account",
+        "cert.cluster.key",
+        "cert.cluster.chain",
+        "cert.home.key",
+        "cert.home.chain",
+    ] {
+        for body in [put_body(VALUE), pem_body.clone()] {
+            let (s, _, v) = h
+                .call("PUT", &format!("/api/v1/secrets/{name}"), Some(&body))
+                .await;
+            assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
+            no_value(&v.to_string());
+            assert!(!v.to_string().contains("plantedPemKeyBytes"), "{v}");
+        }
+        let (s, _, v) = h
+            .call("DELETE", &format!("/api/v1/secrets/{name}"), None)
+            .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
+        assert!(!h.src.secrets.exists(name));
+    }
+    // The store trims a name; a padded spelling of a reserved name is the reserved name.
+    for name in [
+        "%20cert.cluster.key",
+        "cert.cluster.key%09",
+        "%20acme.account",
+    ] {
+        for body in [put_body(VALUE), pem_body.clone()] {
+            let (s, _, v) = h
+                .call("PUT", &format!("/api/v1/secrets/{name}"), Some(&body))
+                .await;
+            assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
+        }
+        let (s, _, v) = h
+            .call("DELETE", &format!("/api/v1/secrets/{name}"), None)
+            .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
+    }
+    assert!(!h.src.secrets.exists("cert.cluster.key"));
+    assert!(!h.src.secrets.exists("acme.account"));
+    for name in [
+        "acme.accounts",
+        "cert.key",
+        "cert.home.keys",
+        "my.cert.home.key",
+    ] {
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                &format!("/api/v1/secrets/{name}"),
+                Some(&put_body(VALUE)),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{name}: {v}");
+    }
+}
+
+/// REQ: CLD-920 (owner decision 2026-11-26) - an admin uploads a `pem` secret through the public
+/// API under a name the issuer does not keep: stored as kind `pem`, audited like another secret
+/// write, and the value is in neither the answer, the dry run, the list nor the audit log. The
+/// value is checked as PEM (400 otherwise), an operator and a viewer are refused (403), an agent
+/// token is refused even with an admin owner and every scope, and a credential field cannot name
+/// it.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one path, every actor
+async fn cld_920_admin_uploads_a_pem_secret_and_nobody_reads_it_back() {
+    let h = harness("");
+    let body = json!({"value": PEM_VALUE, "kind": "pem"});
+    let gone = |t: &str| assert!(!t.contains("plantedPemKeyBytes"), "a key came back: {t}");
+    let (s, _, v) = h
+        .call("PUT", "/api/v1/secrets/loc.key?dryRun=true", Some(&body))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    gone(&v.to_string());
+    assert!(!h.src.secrets.exists("loc.key"), "a dry run stores nothing");
+    let (s, _, v) = h.call("PUT", "/api/v1/secrets/loc.key", Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["secret"]["kind"], "pem", "{v}");
+    gone(&v.to_string());
+    assert!(h.src.secrets.exists("loc.key"));
+    let (s, _, list) = h.call("GET", "/api/v1/secrets", None).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    assert!(list.to_string().contains("loc.key"), "{list}");
+    gone(&list.to_string());
+    let log = audit(&h);
+    assert!(
+        log.contains("secret.put") && log.contains("loc.key"),
+        "{log}"
+    );
+    gone(&log);
+    // The value is not a credential: a `*_ref` field cannot name it, and `get` agrees.
+    assert!(h.src.secrets.get("loc.key").is_err());
+    assert!(h.src.secrets.readable("loc.key").is_err());
+    // Not PEM: refused with the reason, nothing stored.
+    for bad in ["just a token", "-----BEGIN CERTIFICATE-----\nAAAA"] {
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                "/api/v1/secrets/other.key",
+                Some(&json!({"value": bad, "kind": "pem"})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("PEM"), "{v}");
+    }
+    assert!(!h.src.secrets.exists("other.key"));
+    // Operator, viewer and an agent token (admin owner, every scope): refused, nothing stored.
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot-pem", auth::Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive-pem", auth::Role::Operator, None);
+    let viewer = token(&h, "vic-pem", auth::Role::Viewer, None);
+    for (who, bearer, status, code) in [
+        ("operator", &op, StatusCode::FORBIDDEN, "forbidden"),
+        ("viewer", &viewer, StatusCode::FORBIDDEN, "forbidden"),
+        ("agent", &agent, StatusCode::FORBIDDEN, "agent_not_allowed"),
+    ] {
+        let (s, _, v) = json_of(
+            &h,
+            req_from(
+                bearer,
+                [127, 0, 0, 1],
+                "PUT",
+                "/api/v1/secrets/by-other.key",
+                Some(&body),
+            ),
+        )
+        .await;
+        assert_eq!((s, v["code"].clone()), (status, json!(code)), "{who}: {v}");
+        gone(&v.to_string());
+    }
+    assert!(!h.src.secrets.exists("by-other.key"));
+}
+
+/// REQ: CLD-920 (AC 4) - a `pem` value stored through the issuer's path appears in no log line,
+/// no API answer or list, and no support package.
+#[tokio::test]
+async fn cld_920_pem_value_in_no_log_answer_or_support_package() {
+    let out = Captured::default();
+    let w = out.clone();
+    let sub = tracing_subscriber::fmt()
+        .with_writer(move || w.clone())
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    let guard = tracing::subscriber::set_default(sub);
+    let h = harness("");
+    let mut log = String::new();
+    for _ in 0..5 {
+        tracing::callsite::rebuild_interest_cache();
+        out.0.lock().unwrap().clear();
+        let c = issuer_put(&h.src, "cert.cluster.key", false).await.unwrap();
+        assert!(
+            !serde_json::to_string(&c)
+                .unwrap()
+                .contains("plantedPemKeyBytes")
+        );
+        log = String::from_utf8_lossy(&out.0.lock().unwrap()).into_owned();
+        if log.contains("stored secret set") {
+            break;
+        }
+    }
+    drop(guard);
+    assert!(log.contains("stored secret set"), "{log}");
+    assert!(!log.contains("plantedPemKeyBytes"), "{log}");
+    assert!(h.src.secrets.exists("cert.cluster.key"));
+    let (_, _, list) = h.call("GET", "/api/v1/secrets", None).await;
+    assert!(!list.to_string().contains("plantedPemKeyBytes"), "{list}");
+    let req = wrendns_api::model::SupportPackageRequest {
+        level: Some("none".into()),
+        reveal: Vec::new(),
+        query_sample: 0,
+        keep_map: false,
+        cluster: false,
+    };
+    let (pkg, _) = crate::support::offline(&h.src.config.load(), &req).unwrap();
+    let files = wrendns_support::archive::read_tar_gz(&pkg.archive).unwrap();
+    assert_ne!(files.len(), 0);
+    for f in files {
+        assert!(
+            !String::from_utf8_lossy(&f.data).contains("plantedPemKeyBytes"),
+            "{}",
+            f.path
+        );
+    }
 }
 
 /// A primary of its own cluster (no peers), its identity's authority `authority`.
@@ -1078,7 +1403,7 @@ async fn api_015_csrf_enforced() {
 }
 
 /// REQ: API-015, OPS-014 (AC15, ADR-903 §2) — the value rules through the API: empty, over
-/// 8 KiB, a control character, `<redacted>`, the reserved kind `pem` or an unknown kind, a bad
+/// 8 KiB, a control character, `<redacted>`, a `pem` value that is not PEM or an unknown kind, a bad
 /// name, a 129th secret, and a webhook secret under 16 characters are refused (with the reason,
 /// never the value); 8 KiB exactly and surrounding space are fine. A credential the files set
 /// can't get the secret the UI would name for it (409 `set_by_file`).
@@ -1095,8 +1420,8 @@ async fn api_015_value_limits() {
         ("a", json!({"value": "one\ttwo"}), "control"),
         ("a", json!({"value": "one\ntwo"}), "control"),
         ("a", json!({"value": "<redacted>"}), "<redacted>"),
-        ("a", json!({"value": VALUE, "kind": "pem"}), "pem"),
         ("a", json!({"value": VALUE, "kind": "blob"}), "kind"),
+        ("a", json!({"value": VALUE, "kind": "pem"}), "PEM"),
         ("Bad.Name", json!({"value": VALUE}), "name"),
         ("-lead", json!({"value": VALUE}), "name"),
         (&"n".repeat(64), json!({"value": VALUE}), "name"),
@@ -1559,6 +1884,52 @@ async fn clu_015_adopt_audited_and_tombstones_conflict() {
     let _ = p.stop.send(true);
 }
 
+/// REQ: DSC-908, CLD-920 (ADR-1096 point 5) - a joining node's `pem` row is not taken while a
+/// member's build does not announce the kind (a conflict: the joiner keeps it), and is taken once
+/// every member announces it; a text row from the same offer is taken either way.
+#[tokio::test]
+async fn dsc_908_adopt_holds_a_pem_row_until_every_member_knows_the_kind() {
+    let _turn = GATE.lock().await;
+    let body = json!({ "secrets": [
+        { "name": "joined.text", "kind": "text", "value": "joined-value-7741" },
+        { "name": "cert.cluster.key", "kind": "pem", "value": PEM_VALUE },
+    ]});
+    for (features, pem_taken) in [(Some(Vec::new()), false), (None, true)] {
+        let p = pair_features("1.1.0", "1.1.0-edge.40", features).await;
+        let ph = harness_in("", Some(Arc::clone(&p.primary)));
+        crate::http::serve_peers(&ph.src);
+        let peer = p.replica.identity.meta.node_id.clone();
+        let raw = crate::secrets::sync::answer_adopt(
+            Arc::clone(&ph.src),
+            Arc::clone(&p.primary),
+            peer,
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await
+        .unwrap();
+        let ans: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(ph.src.secrets.exists("joined.text"), "{ans}");
+        assert_eq!(
+            ph.src.secrets.exists("cert.cluster.key"),
+            pem_taken,
+            "{ans}"
+        );
+        if pem_taken {
+            assert_eq!(ans["conflicts"], json!([]), "{ans}");
+            assert_eq!(
+                crate::upgrade_gate::standing(Some(&p.primary)),
+                Vec::<String>::new()
+            );
+        } else {
+            assert_eq!(ans["conflicts"], json!(["cert.cluster.key"]), "{ans}");
+            let holds = crate::upgrade_gate::standing(Some(&p.primary));
+            assert_eq!(holds.len(), 1, "{holds:?}");
+            assert!(holds[0].contains("1.1.0-edge.40"), "{holds:?}");
+        }
+        let _ = p.stop.send(true);
+    }
+}
+
 /// REQ: CLU-015 (AC9; M5) — over the real channel: a primary whose data-directory key is lost
 /// (its store is locked, and every row is the cluster's) refills from a replica holding every row
 /// at its stamp, and its reads work again.
@@ -1712,4 +2083,102 @@ async fn clu_015_fetch_never_gates_readiness() {
     );
     assert_eq!(rh.src.readiness.ready(), before, "readiness is unchanged");
     let _ = p.stop.send(true);
+}
+
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1) - the issuer-only rule is enforced where a write is
+/// applied: an older replica forwards a PUT or DELETE of a reserved name as kind `text` (only the
+/// entry node's handler judged it before), and the primary refuses both with 409, storing and
+/// deleting nothing. The issuer's own path still writes the name.
+#[tokio::test]
+async fn cld_920_forwarded_write_of_an_issuer_name_is_refused_on_the_primary() {
+    use wrendns_api::secrets_api::{SecretOp, SecretText, SecretWrite};
+    let _turn = GATE.lock().await;
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let w = |name: &str, op| SecretWrite {
+        name: name.to_owned(),
+        op,
+        dry_run: false,
+        expect: None,
+        by: "admin".into(),
+        role: Some(auth::Role::Admin),
+        agent: None,
+    };
+    for name in ["cert.cluster.key", "acme.account", " cert.home.chain "] {
+        let put = SecretOp::Put {
+            kind: "text".into(),
+            value: SecretText::new("planted-forwarded-value".to_owned()),
+        };
+        let e = crate::secrets_api::forward(Arc::clone(&p.replica), w(name, put))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code_status(), StatusCode::CONFLICT, "{name}: {e:?}");
+        assert!(
+            !serde_json::to_string(&e)
+                .unwrap()
+                .contains("planted-forwarded")
+        );
+        assert!(!ph.src.secrets.exists(name.trim()), "{name}");
+    }
+    // A row that is there (the issuer wrote it) cannot be deleted by a forwarded write either.
+    issuer_put(&ph.src, "cert.cluster.key", false)
+        .await
+        .unwrap();
+    let e = crate::secrets_api::forward(
+        Arc::clone(&p.replica),
+        w("cert.cluster.key", SecretOp::Delete { force: true }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code_status(), StatusCode::CONFLICT, "{e:?}");
+    assert!(ph.src.secrets.exists("cert.cluster.key"));
+    // An ordinary name still goes through the same path.
+    let ok = crate::secrets_api::forward(
+        Arc::clone(&p.replica),
+        w(
+            "plain",
+            SecretOp::Put {
+                kind: "text".into(),
+                value: SecretText::new(VALUE.to_owned()),
+            },
+        ),
+    )
+    .await;
+    assert!(ok.is_ok(), "{ok:?}");
+    let _ = p.stop.send(true);
+}
+
+/// REQ: DSC-908, CLD-920 - `PUT /api/v1/secrets/{name}` with kind `pem`, through the public
+/// route, is refused with the gate's 409 `upgrade_required` while a member does not announce
+/// `pem_secrets`, naming it; a text secret on the same cluster is not held.
+#[tokio::test]
+async fn dsc_908_public_pem_put_is_refused_while_a_member_lacks_the_kind() {
+    let _turn = GATE.lock().await;
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let ph = harness_in("", Some(Arc::clone(&old.primary)));
+    crate::http::serve_peers(&ph.src);
+    let body = json!({"value": PEM_VALUE, "kind": "pem"});
+    for path in [
+        "/api/v1/secrets/loc.key",
+        "/api/v1/secrets/loc.key?dryRun=true",
+    ] {
+        let (s, _, v) = ph.call("PUT", path, Some(&body)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{path}: {v}");
+        assert_eq!(v["code"], "upgrade_required", "{v}");
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("version 1.1.0-edge.40"),
+            "{v}"
+        );
+        assert!(!v.to_string().contains("plantedPemKeyBytes"), "{v}");
+    }
+    assert!(!ph.src.secrets.exists("loc.key"));
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/plain", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let _ = old.stop.send(true);
 }

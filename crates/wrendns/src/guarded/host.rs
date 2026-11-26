@@ -123,6 +123,29 @@ pub(crate) trait Host: Send + Sync + 'static {
         let _ = addr;
         Box::pin(std::future::ready(true))
     }
+    /// REQ: API-902, CLU-004 (T27.14a) — binds what `list` adds next to the running DNS listeners,
+    /// and on proof ports what it changes (`docs/design/listener-editor.md` section 2.3). A failed
+    /// bind closes everything staged and answers `bind_failed` with the address and the OS error.
+    /// A host without listeners answers with an error.
+    fn stage_listeners(
+        &self,
+        list: Vec<wrendns_config::Listener>,
+    ) -> BoxFuture<Result<Vec<crate::server::StagedListener>, crate::server::WindowError>> {
+        let _ = list;
+        Box::pin(std::future::ready(Err(crate::server::WindowError {
+            reason: "bind_failed",
+            detail: "this node has no listeners to stage".to_owned(),
+        })))
+    }
+    /// After the write and the reload: closes the proof ports; an error when a staged socket was
+    /// not adopted (`commit_failed`) or the file took the listeners over (`cancelled`).
+    fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    /// Closes every staged and proof-port socket and nothing else.
+    fn abort_listeners(&self) -> BoxFuture<()> {
+        Box::pin(std::future::ready(()))
+    }
     /// A signed assertion for a request the primary forwards: only the primary makes one.
     fn assertion(&self, a: &super::assertion::Assertion) -> Option<Signed> {
         let bytes = a.canonical();

@@ -4043,6 +4043,94 @@ test('api_015 the secrets form keeps its name and replaces a stored one', async 
   }
 });
 
+// REQ: CLD-920, DSC-908 (owner decision 2026-11-26) — an admin stores a PEM secret from the secrets
+// page, pasted or read from a file: kept as kind `pem`, never shown or returned again, the form is
+// cleared on a save and on a refusal; a gate refusal is said in plain words naming the node; a name
+// the certificate issuer keeps is refused by the server and the page says so.
+test('cld_920 an admin stores a PEM secret and the key is never shown again', async () => {
+  const KEY = 'MC4CAQAwBQYDK2VwBCIEIuiPlantedPemKeyBytes7731abcdef';
+  const PEM = `-----BEGIN PRIVATE KEY-----\n${KEY}\n-----END PRIVATE KEY-----`;
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  try {
+    // The page must read the secrets head fresh (a same-hash goto does not reload).
+    await page.goto('/#/settings?tab=secrets');
+    await page.reload();
+    await expect(page.getByTestId('secrets-store')).toBeVisible();
+    await page.getByTestId('secret-kind').selectOption('pem');
+    const form = page.getByTestId('pem-form');
+    // Pasted.
+    await form.getByLabel('PEM secret name').fill('ui-pem-pasted');
+    await form.getByLabel('PEM text').fill(PEM);
+    await noAnswerCarries(KEY, async () => {
+      await form.getByRole('button', { name: 'Save PEM secret' }).click();
+      await expect(page.getByTestId('secret-row').filter({ hasText: 'ui-pem-pasted' })).toContainText('pem');
+    });
+    await expect(form.getByLabel('PEM text')).toHaveValue('');
+    expect(await page.content()).not.toContain(KEY);
+    expect(await (await r.get('/api/v1/secrets')).text()).not.toContain(KEY);
+    // Read from a file.
+    await form.getByLabel('PEM secret name').fill('ui-pem-file');
+    await form.getByLabel('PEM file').setInputFiles({ name: 'key.pem', mimeType: 'text/plain', buffer: Buffer.from(PEM) });
+    await expect(form.getByLabel('PEM text')).toHaveValue(PEM);
+    await form.getByRole('button', { name: 'Save PEM secret' }).click();
+    await expect(page.getByTestId('secret-row').filter({ hasText: 'ui-pem-file' })).toBeVisible();
+    // Not PEM: the server's reason, and the field is cleared.
+    await form.getByLabel('PEM secret name').fill('ui-pem-bad');
+    await form.getByLabel('PEM text').fill('just a token');
+    await form.getByRole('button', { name: 'Save PEM secret' }).click();
+    await expect(form.getByRole('alert')).toContainText('PEM blocks only');
+    await expect(form.getByLabel('PEM text')).toHaveValue('');
+    // A name the issuer keeps: refused (409), and said.
+    await form.getByLabel('PEM secret name').fill('cert.home.key');
+    await form.getByLabel('PEM text').fill(PEM);
+    await form.getByRole('button', { name: 'Save PEM secret' }).click();
+    await expect(form.getByRole('alert')).toContainText('certificate issuer keeps for itself');
+    expect((await r.get('/api/v1/secrets')).status()).toBe(200);
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of (400|409)/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    // The page keeps its state across a same-hash goto: leave the form on the text kind the next tests expect.
+    await page.getByTestId('secret-kind').selectOption('text');
+    for (const n of ['ui-pem-pasted', 'ui-pem-file']) await r.delete(`/api/v1/secrets/${n}`, { headers: h });
+  }
+});
+
+// REQ: DSC-908 — the compatibility gate's refusal (a member's build does not know PEM secrets) reads in
+// plain words and names the node. The refusal is stubbed (the e2e node is alone); the server's own
+// answer is covered by `dsc_908_pem_secret_waits_for_every_members_build`.
+test('dsc_908 a PEM secret held back by the gate says which node to upgrade', async () => {
+  await page.route('**/api/v1/secrets/ui-pem-gated', (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: 'application/problem+json',
+      json: {
+        type: 'https://wrendns.com/problems/upgrade_required',
+        title: 'Upgrade required',
+        status: 409,
+        code: 'upgrade_required',
+        detail: 'node pi-b runs version 1.0.0, which does not know secrets of the `pem` kind; upgrade it first',
+      },
+    }),
+  );
+  try {
+    // Same-hash navigation does not reload: go elsewhere first, then reload with the stub in place.
+    await page.goto('/#/settings?tab=secrets');
+    await page.reload();
+    await expect(page.getByTestId('secrets-store')).toBeVisible();
+    await page.getByTestId('secret-kind').selectOption('pem');
+    const form = page.getByTestId('pem-form');
+    await form.getByLabel('PEM secret name').fill('ui-pem-gated');
+    await form.getByLabel('PEM text').fill('-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----');
+    await form.getByRole('button', { name: 'Save PEM secret' }).click();
+    await expect(form.getByRole('alert')).toContainText('node pi-b does not know PEM secrets yet; upgrade it first');
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute('**/api/v1/secrets/ui-pem-gated');
+    // The page keeps its state across a same-hash goto: leave the form on the text kind the next tests expect.
+    await page.getByTestId('secret-kind').selectOption('text');
+  }
+});
+
 // REQ: API-015 (ADR-903 §2) — a write carries the secrets head the page read (If-Match); a head that
 // moved is refused, and the page says so and shows the list again.
 test('api_015 a secret write sends the head it read, and a moved head is refused', async () => {
@@ -4102,6 +4190,9 @@ test('api_015 operator sees stored secrets, not the controls', async () => {
     await expect(p.getByRole('button', { name: 'Delete' })).toHaveCount(0);
     await expect(p.getByRole('button', { name: 'Replace' })).toHaveCount(0);
     await expect(p.getByTestId('secret-form')).toHaveCount(0);
+    // REQ: CLD-920 — no PEM upload control either: it is an admin's.
+    await expect(p.getByTestId('secret-kind')).toHaveCount(0);
+    await expect(p.getByTestId('pem-form')).toHaveCount(0);
     expect(await p.content()).not.toContain('operator-must-not-see-1');
     const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
     const put = await op.request.put('/api/v1/secrets/ui-visible', {

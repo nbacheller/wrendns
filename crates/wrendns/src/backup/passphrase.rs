@@ -143,6 +143,27 @@ pub(crate) struct SecretsExport {
     pub(crate) rows: Vec<ExportRow>,
     /// Live secrets this node holds but couldn't read (another key, damaged): left out.
     pub(crate) unreadable: usize,
+    /// REQ: CLD-920 - `pem` secrets left out on purpose: a key never leaves the node.
+    pub(crate) pem_kept: usize,
+    /// REQ: CLD-920 - rows under a name the certificate issuer keeps for itself, left out on
+    /// purpose (counted apart from `pem_kept` and from unreadable rows).
+    pub(crate) reserved_kept: usize,
+}
+
+/// What [`crate::secrets::SecretStore::export_rows`] found.
+#[derive(Debug, Default)]
+pub(crate) struct Exported {
+    pub(crate) rows: Vec<ExportRow>,
+    pub(crate) unreadable: usize,
+    pub(crate) pem_kept: usize,
+    pub(crate) reserved_kept: usize,
+}
+
+/// What [`store_rows`] left out of a restore, on purpose.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StoreSkipped {
+    pub(crate) pem: usize,
+    pub(crate) reserved: usize,
 }
 
 impl fmt::Debug for SecretsExport {
@@ -151,6 +172,8 @@ impl fmt::Debug for SecretsExport {
             .field("passphrase", &"<redacted>")
             .field("rows", &self.rows.len())
             .field("unreadable", &self.unreadable)
+            .field("pem_kept", &self.pem_kept)
+            .field("reserved_kept", &self.reserved_kept)
             .finish()
     }
 }
@@ -464,7 +487,7 @@ pub(crate) fn store_rows(
     db: &Path,
     rows: &[PlainRow],
     keys: &crate::secrets::Keys,
-) -> Result<(), String> {
+) -> Result<StoreSkipped, String> {
     if rows.len() > MAX_SECRETS {
         return Err(format!(
             "the backup holds {} secrets; at most {MAX_SECRETS} can be stored",
@@ -474,8 +497,23 @@ pub(crate) fn store_rows(
     // Check every one before the first is written.
     let mut staged = Vec::with_capacity(rows.len());
     let mut names = std::collections::BTreeSet::new();
+    let mut skipped = StoreSkipped::default();
     for r in rows {
         let kind = Kind::parse(&r.kind).map_err(|e| format!("secret `{}`: {e}", r.name))?;
+        // REQ: CLD-920, DSC-908 (ADR-1097 point 1) - a backup never carries a `pem` secret (a key
+        // stays on its node) and the issuer's names are written only by the issuer, so neither is
+        // taken from a restore: the restoring node is standalone and cannot judge the cluster's
+        // gate, and a planted archive must not become a key a listener loads. Such a row is
+        // skipped and counted (never applied); the rest of the archive is restored, so a backup
+        // an older build made (it kept such a text row) still restores.
+        if kind == Kind::Pem {
+            skipped.pem += 1;
+            continue;
+        }
+        if wrendns_api::secrets_api::is_reserved_name(r.name.trim()) {
+            skipped.reserved += 1;
+            continue;
+        }
         if !wrendns_config::secret_refs::valid_name(&r.name) || !names.insert(r.name.clone()) {
             return Err(format!(
                 "the backup holds a secret with an invalid or repeated name (`{}`)",
@@ -515,5 +553,5 @@ pub(crate) fn store_rows(
     let c = rusqlite::Connection::open(db).map_err(|e| e.to_string())?;
     c.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
         .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(skipped)
 }
