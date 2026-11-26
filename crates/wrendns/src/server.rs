@@ -1298,11 +1298,14 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
     // REQ: DSC-908 (T36.10a, ADR-1104 point 5) - a primary that starts with locations holds them
     // out of what it serves and publishes until the members have been heard and all know them.
     let primary = crate::replication::is_clustered_primary(&cfg);
-    if crate::upgrade_gate::HOLD.at_start(&mut cfg, primary) {
+    let before_hold = cfg.clone();
+    let already = crate::replication::published_uses_locations(&cfg);
+    if crate::upgrade_gate::HOLD.at_start(&mut cfg, primary, already) {
         warn!(
             "locations: held until every cluster member is heard from and knows them; DNS is served without them"
         );
     }
+    let unheld_at_start = crate::upgrade_gate::HOLD.active().then_some(before_hold);
     // REQ: OPS-007 — before any listener binds: a SIGTERM that comes once the node answers is
     // held until the loop below and drained, instead of ending the process at once.
     let mut term = signal(SignalKind::terminate())?;
@@ -1476,6 +1479,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
+        unheld: ArcSwapOption::new(unheld_at_start.map(Arc::new)),
         file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| {
             // The origin labels (file / API) are only as good as this; say so loudly.
             warn!(
@@ -1689,10 +1693,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
     ));
     // REQ: DSC-908 (ADR-1104 point 5) - the start-up hold ends without a restart once the gate passes.
     if crate::upgrade_gate::HOLD.active() {
-        tokio::spawn(crate::upgrade_gate::release_loop(
-            Arc::clone(&sources),
-            http_stopped.clone(),
-        ));
+        crate::upgrade_gate::ensure_release_loop(&sources, &http_stopped);
     }
     // REQ: T8.3 — device names from mDNS announcements (read at startup).
     if cfg.clients.mdns {
@@ -1992,7 +1993,13 @@ async fn reload(
         return false;
     };
     let mut new = crate::replication::effective(&file);
-    // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the locations stay out.
+    // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the locations stay out;
+    // the build with them is kept for the API's read paths.
+    sources.unheld.store(
+        crate::upgrade_gate::HOLD
+            .active()
+            .then(|| Arc::new(new.clone())),
+    );
     crate::upgrade_gate::HOLD.apply(&mut new);
     // REQ: DSC-908 (T36.10a, ADR-1096 point 5) - the first location is held while a cluster member's
     // build does not know the table: a reload that adds one is refused, the previous configuration
@@ -2902,6 +2909,10 @@ device_domain = \"home.arpa\"
             "{base}[[location]]
 slug = \"home\"
 networks = [\"192.0.2.0/24\"]
+[[client]]
+name = \"tv\"
+match = [\"192.0.2.9\"]
+location = \"home\"
 "
         );
         let mut current = load_files(&files).unwrap();
@@ -2941,7 +2952,7 @@ networks = [\"192.0.2.0/24\"]
         let src = sources(&new.primary);
         let mut c = current.clone();
         c.location = load_files(&files).unwrap().location;
-        assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true));
+        assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
         let ok = reload(
             &files,
             &mut current,
@@ -2954,6 +2965,18 @@ networks = [\"192.0.2.0/24\"]
         )
         .await;
         assert!(ok && current.location.is_empty(), "held out: {ok}");
+        assert!(
+            current.client.iter().all(|c| c.location.is_none()),
+            "no pin is served while held: {:?}",
+            current.client
+        );
+        assert!(
+            src.unheld
+                .load()
+                .as_ref()
+                .is_some_and(|c| !c.location.is_empty()),
+            "the build with the entries is kept for the API"
+        );
         // The hold ends: the next reload applies them.
         crate::upgrade_gate::HOLD.clear();
         let ok = reload(
@@ -2968,6 +2991,11 @@ networks = [\"192.0.2.0/24\"]
         )
         .await;
         assert!(ok && current.location.len() == 1, "applied: {ok}");
+        assert!(
+            current.client.iter().any(|c| c.location.is_some()),
+            "the pin is back once the hold ends"
+        );
+        assert!(src.unheld.load().is_none());
         let _ = new.stop.send(true);
     }
 }

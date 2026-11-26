@@ -10385,6 +10385,13 @@ export interface components {
             collisions: components["schemas"]["LocationCollision"][];
             /** @description Networks two locations claim at once (neither applies until it is fixed), as sentences. */
             conflicts: string[];
+            /** @description True while the start-up hold keeps the locations out of the answers this node serves
+             *     (a cluster member's build does not know them yet): the list is what is configured, and
+             *     the devices and collisions are not resolved until the hold ends. */
+            held: boolean;
+            /** @description Why they are held (the member that does not know them, or that the members are not heard
+             *     from yet); set with `held`. */
+            heldReason?: string | null;
             items: components["schemas"]["LocationInfo"][];
         };
         /** @description REQ: DSC-909 (T36.10a) - one entry of a location's `networks`, with what it resolved to. */

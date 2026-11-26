@@ -595,13 +595,13 @@ pub fn tools() -> Vec<Tool> {
         // REQ: DSC-913 (T36.10a, ADR-1081, ADR-1096)
         Tool {
             name: "list_locations",
-            description: "Read-only. The locations (parts of the network with a device-name subtree of their own): each one's slug, label, networks as resolved now (a VLAN to the subnets the routers report, or \"no network reported\"), serving nodes, parent domain, visibility (shared, or private: answered only to clients in its networks), whether the old flat names still answer, how many queries those flat names answered over the last 7 days, the devices that answer under it with the names they answer as (and whether a device is pinned there by its own setting), and every name collision with the device that kept it. A device's location comes from the configured networks and its own `location` setting, never from the CMDB. Set one with plan_set_location. Needs config:read.",
+            description: "Read-only. The locations (parts of the network with a device-name subtree of their own): each one's slug, label, networks as resolved now (a VLAN to the subnets the routers report, or \"no network reported\"), serving nodes, parent domain, visibility (shared, or private: answered only to clients in its networks), whether the old flat names still answer, how many queries those flat names answered over the last 7 days, the devices that answer under it with the names they answer as (and whether a device is pinned there by its own setting), and every name collision with the device that kept it. A device's location comes from the configured networks and its own `location` setting, never from the CMDB. Set one with plan_set_location. While `held` is true a cluster member's build does not know locations yet: the list is what is configured (do not recreate a location that shows here), `heldReason` says why, and DNS answers as without locations until the hold ends. Needs config:read.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("locations".into(), "/api/v1/locations".into())]),
         },
         Tool {
             name: "get_location",
-            description: "Read-only. One location by slug, with its resolved networks, the devices that answer under it (name, address, flat name, pinned) and its collisions. For a device's location, find the device in list_locations or read `location` in list_devices. Needs config:read.",
+            description: "Read-only. One location by slug, with its resolved networks, the devices that answer under it (name, address, flat name, pinned) and its collisions. For a device's location, find the device in list_locations or read `location` in list_devices. During the start-up hold (`held` in list_locations) a configured location is read from the configuration, not served yet. Needs config:read.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "slug": {"type": "string", "description": "The location's slug (list_locations)."}

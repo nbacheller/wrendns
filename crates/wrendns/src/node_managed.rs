@@ -184,6 +184,24 @@ fn rows_of(state: &State) -> Vec<(String, String, String)> {
     rows
 }
 
+/// REQ: DSC-908 (ADR-1104 point 5) - `blob` as published while the start-up hold stands: no
+/// `location` entries and no `location` on a `client` row (the stored rows are not touched), so
+/// a member that does not know them never receives them.
+pub(crate) fn strip_held(blob: &[u8]) -> Vec<u8> {
+    let Ok(mut doc) = serde_json::from_slice::<Doc>(blob) else {
+        return blob.to_vec();
+    };
+    doc.entries.retain(|e| e.kind != crate::managed::LOCATION);
+    for e in &mut doc.entries {
+        if e.kind == crate::managed::CLIENT
+            && let Some(o) = e.body.as_object_mut()
+        {
+            o.remove("location");
+        }
+    }
+    serde_json::to_vec(&doc).unwrap_or_else(|_| blob.to_vec())
+}
+
 /// The blob to publish from `state`'s rows.
 pub(crate) fn export(state: &State) -> Vec<u8> {
     encode(&rows_of(state))
@@ -617,6 +635,40 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DSC-908 (ADR-1104 point 5) - the blob published during the start-up hold has no
+    /// `location` entry and no pin on a `client` row, and a build without the `location` kind
+    /// reads every device from it.
+    #[test]
+    fn dsc_908_strip_held_takes_locations_and_pins_out_of_the_blob() {
+        let rows = vec![
+            (
+                crate::managed::LOCATION.to_owned(),
+                "lab".to_owned(),
+                r#"{"networks":["192.0.2.0/24"]}"#.to_owned(),
+            ),
+            (
+                crate::managed::CLIENT.to_owned(),
+                "laptop".to_owned(),
+                r#"{"match":["192.0.2.9"],"location":"lab"}"#.to_owned(),
+            ),
+        ];
+        let full = encode(&rows);
+        let held = strip_held(&full);
+        let got = parse_shared(&held).unwrap().unwrap();
+        assert!(
+            got.iter().all(|e| e.kind != crate::managed::LOCATION),
+            "{got:?}"
+        );
+        let dev = got.iter().find(|e| e.name == "laptop").unwrap();
+        assert!(dev.body.get("location").is_none(), "{dev:?}");
+        assert!(dev.body.get("match").is_some(), "the device itself stays");
+        // The full blob still has them (the stored rows are untouched).
+        let all = parse_shared(&full).unwrap().unwrap();
+        assert!(all.iter().any(|e| e.kind == crate::managed::LOCATION));
+        // A blob that is not a document is returned as it was.
+        assert_eq!(strip_held(b"nope"), b"nope".to_vec());
+    }
 
     fn provider_body(secret_ref: Option<&str>) -> String {
         let mut v = serde_json::json!({

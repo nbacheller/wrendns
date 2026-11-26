@@ -208,7 +208,8 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
         } else if !slugs.insert(slug) {
             err(format!("{p}.slug"), format!("`{slug}` is used twice"));
         } else if client_labels.contains(slug)
-            && l.parent_domain(cfg).is_some_and(|d| Some(&d) == device_domain.as_ref())
+            && l.parent_domain(cfg)
+                .is_some_and(|d| Some(&d) == device_domain.as_ref())
         {
             err(
                 format!("{p}.slug"),

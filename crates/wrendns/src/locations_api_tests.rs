@@ -263,7 +263,8 @@ async fn dsc_908_the_first_location_waits_for_every_members_build() {
         );
     }
     assert_eq!(ph.src.config.load().location.len(), 0);
-    // A device pin is the same shared change (an older replica refuses the field).
+    // A pin is judged through its location: no `home` exists here, so validation refuses it
+    // (the gate itself is shown for a pin by `uses_locations` below).
     let (s, _, v) = ph
         .call(
             "PUT",
@@ -272,6 +273,7 @@ async fn dsc_908_the_first_location_waits_for_every_members_build() {
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{s} {v}");
+    assert!(v.to_string().contains("no location `home`"), "{v}");
     // An ordinary device is not held.
     let (s, _, v) = ph
         .call(
@@ -360,6 +362,17 @@ async fn dsc_908_the_file_loader_holds_the_first_location_too() {
     ));
     assert!(crate::upgrade_gate::uses_locations(&pinned));
     assert!(!crate::upgrade_gate::uses_locations(&none));
+    // Only the pin (built in code, no table): the pin branch alone makes it true.
+    let mut only_pin = pinned.clone();
+    only_pin.location.clear();
+    assert!(only_pin.client.iter().any(|c| c.location.is_some()));
+    assert!(crate::upgrade_gate::uses_locations(&only_pin));
+    // Only the table: the table branch alone.
+    let mut only_table = pinned.clone();
+    for c in &mut only_table.client {
+        c.location = None;
+    }
+    assert!(crate::upgrade_gate::uses_locations(&only_table));
 }
 
 /// REQ: DSC-913, DSC-910 (AGT-001..005) - the read tools and the plan tools: the listings and the
@@ -413,14 +426,14 @@ async fn dsc_908_held_at_start_with_an_older_member_released_when_it_announces()
     // Standalone (not a clustered primary): never held.
     let standalone = crate::upgrade_gate::Hold::new();
     let mut c = file.clone();
-    assert!(!standalone.at_start(&mut c, false));
+    assert!(!standalone.at_start(&mut c, false, false));
     assert!(!standalone.active() && uses_both(&c));
 
     // Held: the entries and the pin are out of what the node serves and publishes.
     let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
     let mut stripped = file.clone();
     let hold = crate::upgrade_gate::Hold::new();
-    assert!(hold.at_start(&mut stripped, true));
+    assert!(hold.at_start(&mut stripped, true, false));
     assert!(stripped.location.is_empty() && stripped.client.iter().all(|c| c.location.is_none()));
     assert_eq!(stripped.client.len(), 1, "the device itself stays");
     // Later builds of the configuration (a reload) keep them out while the hold stands.
@@ -464,6 +477,67 @@ async fn dsc_908_held_at_start_with_an_older_member_released_when_it_announces()
     assert!(!released.location.is_empty(), "applied without a restart");
     let ph = harness_in(DOMAIN, Some(Arc::clone(&new.primary)));
     assert!(crate::server::reload_gate(&ph.src, &stripped, &released).is_ok());
+    let _ = new.stop.send(true);
+}
+
+/// REQ: DSC-908 (ADR-1096 point 5, ADR-1104 point 5) - a restart of a primary whose cluster already
+/// runs locations holds nothing, even with a registered member not yet heard from (or an older
+/// one): the last published version carried them, so every member knew the table when let in.
+#[tokio::test]
+async fn dsc_908_a_restart_of_an_established_cluster_does_not_hold() {
+    let _turn = GATE.lock().await;
+    let file = crate::credential_tests::config(HELD);
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let hold = crate::upgrade_gate::Hold::new();
+    let mut c = file.clone();
+    assert!(
+        !hold.at_start(&mut c, true, true),
+        "already published: no hold"
+    );
+    assert!(!hold.active() && uses_both(&c), "the entries stay");
+    assert!(hold.reason(Some(&old.primary)).is_none());
+    // The first use is still held.
+    let mut c = file.clone();
+    assert!(hold.at_start(&mut c, true, false));
+    let _ = old.stop.send(true);
+
+    // What the node reads of its last published version.
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = crate::credential_tests::config(DOMAIN);
+    cfg.node.data_dir = wrendns_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+    assert!(!crate::replication::published_uses_locations(&cfg));
+    std::fs::create_dir_all(dir.path().join("cluster")).unwrap();
+    let put = |v: &Value| {
+        std::fs::write(
+            dir.path().join("cluster/published-config.json"),
+            v.to_string(),
+        )
+        .unwrap();
+    };
+    put(&json!({"upstream": []}));
+    assert!(!crate::replication::published_uses_locations(&cfg));
+    put(&wrendns_config::shared::shared_part(&file));
+    assert!(crate::replication::published_uses_locations(&cfg));
+    put(&json!({"client": [{"name": "x", "location": "home"}]}));
+    assert!(crate::replication::published_uses_locations(&cfg));
+}
+
+/// REQ: DSC-908 - when the gate passes but the reload that applies the held entries failed, the
+/// hold is back and health still says so (no silent `locations_held` gap).
+#[tokio::test]
+async fn dsc_908_a_failed_release_reload_still_shows_in_health() {
+    let _turn = GATE.lock().await;
+    let new = pair("1.1.0", "1.1.0").await;
+    let hold = crate::upgrade_gate::Hold::new();
+    let mut c = crate::credential_tests::config(HELD);
+    assert!(hold.at_start(&mut c, true, false));
+    assert!(hold.release(Some(&new.primary)));
+    assert!(hold.reason(Some(&new.primary)).is_none());
+    hold.resume();
+    assert_eq!(
+        hold.reason(Some(&new.primary)).as_deref(),
+        Some(crate::upgrade_gate::RELOAD_FAILED)
+    );
     let _ = new.stop.send(true);
 }
 
@@ -555,11 +629,20 @@ async fn within(secs: u64, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
-/// What the server's reload does to each build while the hold stands.
-fn strip_running(h: &crate::credential_tests::Harness) {
-    let mut c = (*h.src.config.load_full()).clone();
-    crate::upgrade_gate::HOLD.apply(&mut c);
-    h.src.config.store(Arc::new(c));
+/// After a write during the hold (the harness reload applies the hold as the server's does): the
+/// configuration the node serves has no pin and no location table.
+fn served_has_no_pin(h: &crate::credential_tests::Harness) {
+    let c = h.src.config.load_full();
+    assert!(
+        c.location.is_empty(),
+        "the table stays out: {:?}",
+        c.location
+    );
+    assert!(
+        c.client.iter().all(|c| c.location.is_none()),
+        "no pin is served: {:?}",
+        c.client
+    );
 }
 
 fn rpc(id: u64, name: &str, args: &Value) -> Value {
@@ -590,7 +673,8 @@ async fn dsc_910_a_device_edited_during_the_hold_keeps_its_pin() {
     assert_eq!(s, StatusCode::OK, "{v}");
     // The hold starts: what the node serves has no pin (the server's reload strips each build).
     let mut c = (*h.src.config.load_full()).clone();
-    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true));
+    h.src.unheld.store(Some(Arc::new(c.clone())));
+    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
     h.src.config.store(Arc::new(c));
     assert!(
         h.src
@@ -623,7 +707,7 @@ async fn dsc_910_a_device_edited_during_the_hold_keeps_its_pin() {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    strip_running(&h);
+    served_has_no_pin(&h);
     // The MCP plans: rename, regroup, then a pin to the other location (validated against the
     // table the hold keeps out of service).
     for (i, (tool, args)) in [
@@ -659,7 +743,7 @@ async fn dsc_910_a_device_edited_during_the_hold_keeps_its_pin() {
             )
             .await;
         assert_ne!(v["result"]["isError"], true, "{tool} apply: {v}");
-        strip_running(&h);
+        served_has_no_pin(&h);
     }
     // The hold ends and a reload applies: the pin and the kind are in the device.
     crate::upgrade_gate::HOLD.clear();
@@ -678,6 +762,95 @@ async fn dsc_910_a_device_edited_during_the_hold_keeps_its_pin() {
         Some(wrendns_config::DeviceClass::Tv),
         "the kind is kept"
     );
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - while the hold stands the locations read through the API
+/// are the configured ones, marked `held` with the reason (not an empty list a caller would
+/// recreate from); without a hold the marker is absent.
+#[tokio::test]
+async fn dsc_908_the_location_list_shows_held_locations_during_the_hold() {
+    let _turn = GATE.lock().await;
+    let _end = ClearHold;
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let h = harness_in(HELD, Some(Arc::clone(&old.primary)));
+    let (_, _, v) = h.call("GET", "/api/v1/locations", None).await;
+    assert!(v.get("held").is_none(), "no hold: {v}");
+    let mut c = (*h.src.config.load_full()).clone();
+    h.src.unheld.store(Some(Arc::new(c.clone())));
+    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
+    h.src.config.store(Arc::new(c));
+    let (s, _, v) = h.call("GET", "/api/v1/locations", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["held"], true, "{v}");
+    assert!(
+        v["heldReason"].as_str().unwrap().contains("1.1.0-edge.40"),
+        "{v}"
+    );
+    assert_eq!(v["items"][0]["slug"], "home", "{v}");
+    let (s, _, v) = h.call("GET", "/api/v1/locations/home", None).await;
+    assert_eq!(s, StatusCode::OK, "a held slug is not a 404: {v}");
+    let _ = old.stop.send(true);
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - a replica promoted during the hold adopted entries an older
+/// member cannot read: the refused reload leaves the refusal standing, which starts the hold on
+/// this node, and the release loop applies the entries once the member is upgraded.
+#[tokio::test]
+async fn dsc_908_a_promotion_during_the_hold_holds_then_releases() {
+    let _turn = GATE.lock().await;
+    let _end = ClearHold;
+    // Nothing refused: no hold starts.
+    let new = pair("1.1.0", "1.1.0").await;
+    let none = crate::credential_tests::config(DOMAIN);
+    let with = crate::credential_tests::config(HELD);
+    assert!(crate::upgrade_gate::enforce_locations(Some(&new.primary), &none, &with).is_ok());
+    assert!(!crate::upgrade_gate::hold_after_refusal());
+    assert!(!crate::upgrade_gate::HOLD.active());
+    // An older member refuses the promotion reload: the hold begins.
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    assert!(crate::upgrade_gate::enforce_locations(Some(&old.primary), &none, &with).is_err());
+    assert!(crate::upgrade_gate::hold_after_refusal());
+    assert!(crate::upgrade_gate::HOLD.active());
+    let _ = old.stop.send(true);
+    // The member is upgraded: the loop applies the entries (one reload) and the hold ends.
+    let dir = tempfile::tempdir().unwrap();
+    let (reload, mut reloads) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(4);
+    let src = Arc::new(crate::http::Sources {
+        reload,
+        cluster: Some(Arc::clone(&new.primary)),
+        ..crate::http::tests::sources_in(dir.path())
+    });
+    let reloaded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&reloaded);
+    tokio::spawn(async move {
+        while let Some(done) = reloads.recv().await {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = done.send(true);
+        }
+    });
+    let (_stop_tx, stop) = tokio::sync::watch::channel(false);
+    crate::upgrade_gate::ensure_release_loop(&src, &stop);
+    assert!(
+        within(8, || !crate::upgrade_gate::HOLD.active()).await,
+        "the hold ends"
+    );
+    assert_eq!(reloaded.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let _ = new.stop.send(true);
+}
+
+/// The retry pace of the release loop: 2 s, doubling to 60 s while the reload fails, back to 2 s
+/// once it applies.
+#[test]
+fn dsc_908_the_release_retry_backs_off() {
+    use crate::upgrade_gate::next_wait;
+    let mut w = 2;
+    let mut seen = Vec::new();
+    for _ in 0..7 {
+        w = next_wait(w, false);
+        seen.push(w);
+    }
+    assert_eq!(seen, [4, 8, 16, 32, 60, 60, 60]);
+    assert_eq!(next_wait(60, true), 2);
 }
 
 /// How many `locations_held` reasons the node's health lists.
@@ -702,7 +875,7 @@ async fn dsc_908_the_process_hold_shows_in_health_and_is_released_by_the_loop() 
     let _turn = GATE.lock().await;
     let _end = ClearHold;
     let mut c = crate::credential_tests::config(HELD);
-    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true));
+    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
     // An older member: the reason names it, and the loop sends no reload.
     let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
     let h = harness_in(DOMAIN, Some(Arc::clone(&old.primary)));

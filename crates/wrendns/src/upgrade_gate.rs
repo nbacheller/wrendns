@@ -115,13 +115,16 @@ impl Hold {
     }
 
     /// At start-up: when `clustered_primary` and `cfg` uses locations, takes them out of `cfg`
-    /// and starts holding. Returns whether it did.
+    /// and starts holding. Returns whether it did. `already_published`: the version the cluster
+    /// last got already carried locations, so every member knew them when it was let in and a
+    /// restart holds nothing (ADR-1096 point 5; ADR-1104 point 5).
     pub(crate) fn at_start(
         &self,
         cfg: &mut wrendns_config::Config,
         clustered_primary: bool,
+        already_published: bool,
     ) -> bool {
-        if !clustered_primary || !uses_locations(cfg) {
+        if !clustered_primary || !uses_locations(cfg) || already_published {
             return false;
         }
         strip_locations(cfg);
@@ -153,9 +156,11 @@ impl Hold {
         if !self.active() {
             return None;
         }
-        judge(cluster, Feature::Locations)
-            .err()
-            .map(|r| hold_words(&r))
+        Some(
+            judge(cluster, Feature::Locations)
+                .err()
+                .map_or_else(|| RELOAD_FAILED.to_owned(), |r| hold_words(&r)),
+        )
     }
 
     /// Ends the hold when the gate passes now (or this node is no longer the primary): `true`
@@ -172,6 +177,9 @@ impl Hold {
         false
     }
 }
+
+/// Health's words when the gate passes but the reload that applies the held entries failed.
+pub(crate) const RELOAD_FAILED: &str = "the reload that applies them failed; see the log";
 
 /// Takes the `[[location]]` entries and the clients' `location` pins out of `cfg`.
 pub(crate) fn strip_locations(cfg: &mut wrendns_config::Config) {
@@ -196,22 +204,64 @@ pub(crate) fn hold_words(r: &gate::Refusal) -> String {
 /// so the entries are never dropped silently.
 pub(crate) async fn release_loop(
     sources: std::sync::Arc<crate::http::Sources>,
+    stop: tokio::sync::watch::Receiver<bool>,
+) {
+    release_loop_inner(sources, stop).await;
+    LOOPING.store(false, Ordering::SeqCst);
+}
+
+/// Whether a [`release_loop`] runs (one per process).
+static LOOPING: AtomicBool = AtomicBool::new(false);
+
+/// Starts the release loop unless one runs.
+pub(crate) fn ensure_release_loop(
+    sources: &std::sync::Arc<crate::http::Sources>,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) {
+    if !LOOPING.swap(true, Ordering::SeqCst) {
+        tokio::spawn(release_loop(std::sync::Arc::clone(sources), stop.clone()));
+    }
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - after a role change to primary: whether the reload was
+/// refused by the locations gate (a promoted replica adopted entries an older member cannot
+/// read). Then the hold begins on this node as well, the entries stay out of what it serves, and
+/// the release loop applies them once the gate passes.
+pub(crate) fn hold_after_refusal() -> bool {
+    if !held().contains(&Feature::Locations) {
+        return false;
+    }
+    HOLD.resume();
+    true
+}
+
+/// The pause before the next release attempt: 2 s after a success, else doubling up to 60 s.
+pub(crate) fn next_wait(wait: u64, applied: bool) -> u64 {
+    if applied { 2 } else { (wait * 2).min(60) }
+}
+
+async fn release_loop_inner(
+    sources: std::sync::Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
+    let mut wait = 2u64;
     while HOLD.active() {
         tokio::select! {
             _ = stop.changed() => return,
-            () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            () = tokio::time::sleep(std::time::Duration::from_secs(wait)) => {}
         }
         if HOLD.release(sources.cluster.as_deref()) {
             tracing::info!("locations: every member knows them; applying the held entries");
             let (tx, rx) = tokio::sync::oneshot::channel();
             let applied = sources.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
-            if !applied {
+            if applied {
+                wait = next_wait(wait, true);
+            } else {
                 tracing::warn!(
                     "locations: the reload did not apply the held entries; holding them and trying again"
                 );
                 HOLD.resume();
+                wait = next_wait(wait, false);
             }
         }
     }

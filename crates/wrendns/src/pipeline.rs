@@ -6000,6 +6000,13 @@ members = [\"u\"]
     /// A pipeline with `toml` (plus an unreachable upstream) whose device table is composed from
     /// `leases` the way the 10-second task does.
     fn located_pipeline(toml: &str, leases: &[([u8; 4], &str)]) -> Arc<Pipeline> {
+        pipeline_by(toml, leases, true)
+    }
+
+    /// The pipeline as `device_dns::run` builds it: with a plan that has locations, the located
+    /// table; with `located` false, `compose(.., None)` and `build`, the path every deployment
+    /// without `[[location]]` takes.
+    fn pipeline_by(toml: &str, leases: &[([u8; 4], &str)], located: bool) -> Arc<Pipeline> {
         let cfg: wrendns_config::Config = wrendns_config::Loader::new()
             .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
             .env(Vec::<(String, String)>::new())
@@ -6018,17 +6025,22 @@ members = [\"u\"]
         let settings = policy.device_dns.clone().unwrap();
         let plan = (*policy.locations).clone();
         let resolved = crate::locations::Resolved::resolve(&plan, &[], &[]);
-        let composed = crate::device_dns::compose(
-            &inputs,
-            &settings.domain,
-            Some(crate::device_dns::Located {
-                plan: &plan,
-                resolved: &resolved,
-            }),
-        );
-        let uses: Vec<Arc<crate::locations::FlatUse>> =
-            plan.locs.iter().map(|_| Arc::default()).collect();
-        let names = crate::device_dns::build_located(composed, 60, &plan, &resolved, &uses);
+        let names = if located {
+            let composed = crate::device_dns::compose(
+                &inputs,
+                &settings.domain,
+                Some(crate::device_dns::Located {
+                    plan: &plan,
+                    resolved: &resolved,
+                }),
+            );
+            let uses: Vec<Arc<crate::locations::FlatUse>> =
+                plan.locs.iter().map(|_| Arc::default()).collect();
+            crate::device_dns::build_located(composed, 60, &plan, &resolved, &uses)
+        } else {
+            let composed = crate::device_dns::compose(&inputs, &settings.domain, None);
+            crate::device_dns::build(&composed.named, 60)
+        };
         let p = Pipeline::new(
             Settings::default(),
             Arc::new(Cache::new(CachePolicy::default())),
@@ -6258,6 +6270,8 @@ members = [\"u\"]
     fn dsc_908_no_locations_answer_as_before() {
         let toml = "[local]\ndevice_domain = \"home.arpa\"\n[[client]]\nname = \"NAS\"\nmatch = [\"10.1.1.5\"]\n";
         let p = located_pipeline(toml, LEASES);
+        // What production runs when the plan is empty (no `[[location]]`).
+        let production = pipeline_by(toml, LEASES, false);
         let plain = Pipeline::new(
             Settings::default(),
             Arc::new(Cache::new(CachePolicy::default())),
@@ -6307,7 +6321,9 @@ members = [\"u\"]
         ] {
             let a = ask_from(&p, "192.168.9.5", name, qtype);
             let b = ask_from(&plain, "192.168.9.5", name, qtype);
+            let c = ask_from(&production, "192.168.9.5", name, qtype);
             assert_eq!(a, b, "{name} {qtype}");
+            assert_eq!(c, b, "production path: {name} {qtype}");
         }
     }
 }

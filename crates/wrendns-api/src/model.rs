@@ -1241,6 +1241,15 @@ pub struct LocationList {
     pub conflicts: Vec<String>,
     /// Collisions of devices on no location's network.
     pub collisions: Vec<LocationCollision>,
+    /// True while the start-up hold keeps the locations out of the answers this node serves
+    /// (a cluster member's build does not know them yet): the list is what is configured, and
+    /// the devices and collisions are not resolved until the hold ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    /// Why they are held (the member that does not know them, or that the members are not heard
+    /// from yet); set with `held`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_reason: Option<String>,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.

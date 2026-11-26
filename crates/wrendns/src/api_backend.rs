@@ -3699,10 +3699,22 @@ impl Backend for ApiBackend {
 
     // REQ: DSC-913 (T36.10a) — the locations, with this node's device names.
     fn locations(&self) -> wrendns_api::model::LocationList {
-        let cfg = self.src.config.load();
+        // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the list is the
+        // configured table (not the stripped running one), marked held.
+        let held = crate::upgrade_gate::HOLD.active();
+        let cfg = if held {
+            unheld_config(&self.src)
+        } else {
+            self.src.config.load_full()
+        };
         let file = self.src.file_config.load();
         let names = self.src.pipeline.device_names.load();
-        crate::locations::list(&cfg, &file, &names, crate::pipeline::unix_now())
+        let mut list = crate::locations::list(&cfg, &file, &names, crate::pipeline::unix_now());
+        if held {
+            list.held = true;
+            list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+        }
+        list
     }
 
     // REQ: DNS-018 (T8.6) — the zones as loaded.
@@ -5042,10 +5054,12 @@ fn client_impact(
 }
 
 /// The configuration with the start-up hold's entries in it: the running one, except while the
-/// hold stands, when it is built again from the files and the stored rows without stripping.
+/// hold stands, when it is the build kept before the strip (never rebuilt on the request path).
 fn unheld_config(src: &Sources) -> Arc<wrendns_config::Config> {
-    if crate::upgrade_gate::HOLD.active() {
-        Arc::new(crate::replication::effective(&src.file_config.load()))
+    if crate::upgrade_gate::HOLD.active()
+        && let Some(c) = src.unheld.load_full()
+    {
+        c
     } else {
         src.config.load_full()
     }

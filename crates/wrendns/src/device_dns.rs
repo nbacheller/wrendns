@@ -1240,7 +1240,7 @@ location = \"lab\"
         assert_eq!(with.named[0].name, "phone.lab.home.arpa");
         let mut stripped = cfg(&toml);
         let hold = crate::upgrade_gate::Hold::new();
-        assert!(hold.at_start(&mut stripped, true));
+        assert!(hold.at_start(&mut stripped, true, false));
         let (without, plan) = located_cfg(&stripped, &routers, &empty);
         assert_eq!(
             name_list(&without),

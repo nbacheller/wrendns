@@ -356,6 +356,8 @@ pub(crate) fn list(
         })
         .collect();
     LocationList {
+        held: false,
+        held_reason: None,
         items,
         conflicts: resolved
             .conflicts

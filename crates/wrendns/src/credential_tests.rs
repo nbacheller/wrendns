@@ -190,7 +190,15 @@ pub(crate) fn harness_toml(
             let ok = s2.auth.get().is_some_and(|a| {
                 let e = crate::managed::entries(a.state());
                 crate::managed::merge(&s2.file_config.load(), &e)
-                    .map(|c| s2.config.store(Arc::new(c)))
+                    .map(|mut c| {
+                        // As the server's reload does while the start-up hold stands (a test
+                        // opts in by setting `unheld`): keep the build, strip the served one.
+                        if s2.unheld.load().is_some() {
+                            s2.unheld.store(Some(Arc::new(c.clone())));
+                            crate::upgrade_gate::HOLD.apply(&mut c);
+                        }
+                        s2.config.store(Arc::new(c));
+                    })
                     .is_ok()
             });
             // REQ: API-016 (T23.7) — the router loop reads the new list, as the server's reload does.
