@@ -516,3 +516,17 @@ async fn dns_014_put_without_the_list_is_judged_on_the_defaults() {
     let (s, _, v) = call_as(&h, &admin, "DELETE", URL, None, &out).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
 }
+
+/// REQ: DNS-014, API-901 (T27.14h, final check) - a file that sets the list answers `set_by_file`
+/// even for a body that leaves out the requester: the lockout word is for a list the backend cannot
+/// take, not for every refusal.
+#[tokio::test]
+async fn dns_014_set_by_file_is_not_answered_as_a_lockout() {
+    let h = with_toml("[access]\nallowed_networks = [\"127.0.0.0/8\", \"10.0.0.0/8\"]\n");
+    let body = json!({ "allowed_networks": ["192.168.0.0/16"] });
+    for url in [URL.to_owned(), format!("{URL}?dryRun=true")] {
+        let (s, _, v) = h.call("PUT", &url, Some(&body)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "set_by_file", "{v}");
+    }
+}

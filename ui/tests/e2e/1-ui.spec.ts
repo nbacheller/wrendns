@@ -8785,6 +8785,51 @@ test('dns_014 allowed networks removes one of two equal rows', async () => {
   }
 });
 
+// REQ: DNS-014, API-901 (T27.14h, final check) — the refusals keep the server's words on this card: an
+// older member is named (not the credential sentence), a refused Revert says it leaves out your own
+// address (not the listener sentence), and Apply saves and reloads. Stubbed: nothing persists.
+test('dns_014 allowed networks refusals name the member and the address, and Apply saves', async () => {
+  const stored = { items: [{ name: 'default', source: 'override', setByFile: [], definition: { allowed_networks: ['10.0.0.0/8'] } }] };
+  const problem = (code: string, detail: string) => ({ type: 'about:blank', title: 'Conflict', status: 409, detail, code });
+  let mode: 'old' | 'ok' = 'old';
+  await page.route('**/api/v1/config/entries?kind=access', (route) => route.fulfill({ json: stored }));
+  await page.route('**/api/v1/access-settings/default**', (route) => {
+    const m = route.request().method();
+    if (m === 'DELETE') {
+      return route.fulfill({ status: 409, json: problem('would_disconnect_you', 'the list that would apply leaves out your own address, 127.0.0.1') });
+    }
+    if (mode === 'old') {
+      return route.fulfill({ status: 409, json: problem('upgrade_required', 'node edge-b runs version 1.1.0, which does not know the allowed networks yet; upgrade it first') });
+    }
+    return route.fulfill({ json: { applied: !route.request().url().includes('dryRun=true'), impact: 'Changes the list as shown.', warnings: [], before: {}, after: {}, configVersion: 'x' } });
+  });
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const card = page.getByTestId('allowed-networks-card');
+    // Revert refused: the address sentence, not the listener one.
+    await card.getByTestId('allowed-networks-revert').click();
+    await expect(card).toContainText('leaves out your own address');
+    await expect(card).not.toContainText('no API or DNS listener');
+    // Check refused by an older member: its name shows.
+    await card.getByTestId('allowed-networks-edit').click();
+    await card.getByTestId('allowed-networks-input').fill('10.20.0.0/24');
+    await card.getByTestId('allowed-networks-check').click();
+    await expect(card.getByTestId('allowed-networks-form')).toContainText('edge-b');
+    await expect(card).not.toContainText('too old to send it to the primary');
+    // Checked and applied: the notice shows.
+    mode = 'ok';
+    await card.getByTestId('allowed-networks-check').click();
+    await expect(card.getByTestId('allowed-networks-preview')).toBeVisible();
+    await card.getByTestId('allowed-networks-apply').click();
+    await expect(card).toContainText('Saved. Every node applies it');
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=access');
+    await page.unroute('**/api/v1/access-settings/default**');
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  }
+});
+
 // REQ: DNS-014, API-901 (T27.14h) — an operator and a viewer see the list and no control, and the API
 // refuses their write.
 test('dns_014 operator sees allowed networks read only', async () => {

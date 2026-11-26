@@ -40,9 +40,12 @@
     void load();
   });
 
-  /** The shared "would cut you off" sentence is about listeners; this refusal says what it means here. */
+  /**
+   * The shared "would cut you off" and "too old to send it to the primary" sentences are about
+   * listeners and credentials; these refusals keep the server's own words here (the list, the member).
+   */
   const readable = (err: unknown): unknown =>
-    err instanceof ApiError && err.code === 'would_disconnect_you'
+    err instanceof ApiError && (err.code === 'would_disconnect_you' || err.code === 'upgrade_required')
       ? new ApiError({ status: err.status, code: 'invalid_config', detail: err.detail, hint: err.hint })
       : err;
 
@@ -104,7 +107,7 @@
       notice = 'Back to the configuration file, or the built-in defaults.';
       await load();
     } catch (err) {
-      error = err;
+      error = readable(err);
     } finally {
       busy = false;
     }

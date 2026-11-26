@@ -4175,8 +4175,10 @@ async fn write_inner(
             }
             Err(e) => {
                 // A list the backend cannot take (an empty one) that also cuts the requester off
-                // is answered as the lockout, the more useful word.
-                if let Some(b) = body
+                // is answered as the lockout, the more useful word. Any other failure (a file that
+                // sets the list, a member that is too old) is its own answer, not the lockout.
+                if matches!(e.code, Code::InvalidConfig)
+                    && let Some(b) = body
                     && let Err(lock) = lockout_guard(b, client, peer)
                 {
                     return lock.into_response();
