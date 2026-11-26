@@ -4046,6 +4046,8 @@ test('cld_920 an admin stores a PEM secret and the key is never shown again', as
     expect((await r.get('/api/v1/secrets')).status()).toBe(200);
     for (let i = problems.length - 1; i >= 0; i--) if (/status of (400|409)/.test(problems[i])) problems.splice(i, 1);
   } finally {
+    // The page keeps its state across a same-hash goto: leave the form on the text kind the next tests expect.
+    await page.getByTestId('secret-kind').selectOption('text');
     for (const n of ['ui-pem-pasted', 'ui-pem-file']) await r.delete(`/api/v1/secrets/${n}`, { headers: h });
   }
 });
@@ -4081,6 +4083,8 @@ test('dsc_908 a PEM secret held back by the gate says which node to upgrade', as
     for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
   } finally {
     await page.unroute('**/api/v1/secrets/ui-pem-gated');
+    // The page keeps its state across a same-hash goto: leave the form on the text kind the next tests expect.
+    await page.getByTestId('secret-kind').selectOption('text');
   }
 });
 
