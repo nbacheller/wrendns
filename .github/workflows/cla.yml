@@ -4,8 +4,9 @@
 # CLA Assistant Lite: a contributor signs by commenting the sentence below on their pull request; the
 # signature (GitHub login and id, the PR, the time) is committed to signatures/cla.json on the branch
 # `cla-signatures`, which keeps it out of main's history. No GitHub App is installed: the workflow's own
-# GITHUB_TOKEN does it. The owner makes the check required in branch protection, and leaves the
-# `cla-signatures` branch unprotected (the action commits to it).
+# GITHUB_TOKEN does it. The check is required by the `main` ruleset under the context `cla` (this file's
+# job id, reported by the GitHub Actions app; added 2026-11-26), and the `cla-signatures` branch is left
+# out of the ruleset (the action commits to it).
 #
 # pull_request_target runs with this repository's token on a fork's PR, so this workflow never checks out
 # or runs the PR's code: it only reads comments and writes the signature file and a status.
