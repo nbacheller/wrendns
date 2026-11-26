@@ -180,7 +180,7 @@ A `listen` change is confirmed when both of these hold:
 
 **What the probe cannot see.** It proves that the socket is bound, that TLS, HTTP/2 or QUIC works, that
 the pipeline answers, and that the gate is in the promised state. It cannot see a firewall, a router's
-DHCP option, or a container's published ports. The preview says so in words (2.6), and the confirm
+DHCP option, or a container's published ports. On a gated DoH or DoH3 listener the refusal is an HTTP 404, which a path the listener does not serve also answers; the probe asks the path the bound server serves (no trailing slash), so a mismatch between the two is not seen. The preview says so in words (2.6), and the confirm
 step shows **evidence from other hosts**: the number of distinct client addresses, other than the
 node's own, whose queries arrived on each new socket during the window. Collecting it is described in
 2.4. **The evidence is shown, never required** (owner decision, 2026-11-26): the proof before Confirm

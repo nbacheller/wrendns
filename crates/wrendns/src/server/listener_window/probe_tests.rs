@@ -134,6 +134,85 @@ async fn api_902_gated_doh_proved_by_its_404() {
     crate::gate_host::clear_listeners_for_test();
 }
 
+// A gated DoH3 listener is proved by HTTP 404 too: the client reports the status, as for DoH.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_gated_doh3_proved_by_its_404() {
+    let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
+    let mut l = test_listeners();
+    let gated = Listener {
+        proto: ListenProto::Doh3,
+        ..listen(Some(true))
+    };
+    let staged = l.stage(std::slice::from_ref(&gated)).await.unwrap();
+    let probes = probes_for(
+        &staged,
+        std::slice::from_ref(&gated),
+        crate::gate_host::read(),
+    );
+    assert!(probes[0].gated);
+    assert!(probes[0].url().starts_with("h3://"));
+    assert_eq!(
+        ask_proof(&probes[0].url(), true, WAIT).await.unwrap(),
+        Kind::RefusedByGate
+    );
+    l.abort_staged().await;
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// A gated DoQ listener is proved by REFUSED with extended error 18.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_gated_doq_proved_by_its_refusal() {
+    let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
+    let mut l = test_listeners();
+    let gated = Listener {
+        proto: ListenProto::Doq,
+        ..listen(Some(true))
+    };
+    let staged = l.stage(std::slice::from_ref(&gated)).await.unwrap();
+    let probes = probes_for(
+        &staged,
+        std::slice::from_ref(&gated),
+        crate::gate_host::read(),
+    );
+    assert!(probes[0].gated);
+    assert!(probes[0].url().starts_with("quic://"));
+    assert_eq!(
+        ask_proof(&probes[0].url(), true, WAIT).await.unwrap(),
+        Kind::RefusedByGate
+    );
+    l.abort_staged().await;
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// The probe asks the path the bound server serves: a trailing slash in the listener's `path` is
+// dropped by the server, so it is dropped in the probe too (else the gate's 404 would prove a path
+// that is not served).
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_probe_uses_the_path_the_server_serves() {
+    let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
+    let mut l = test_listeners();
+    let gated = Listener {
+        proto: ListenProto::Doh,
+        path: Some(wrendns_config::SafeString::new("/q/").unwrap()),
+        ..listen(Some(true))
+    };
+    let staged = l.stage(std::slice::from_ref(&gated)).await.unwrap();
+    let probes = probes_for(
+        &staged,
+        std::slice::from_ref(&gated),
+        crate::gate_host::read(),
+    );
+    assert!(probes[0].url().ends_with("/q"), "{}", probes[0].url());
+    l.abort_staged().await;
+    crate::gate_host::clear_listeners_for_test();
+}
+
 // A port nothing listens on gives no answer, with a reason.
 #[tokio::test]
 async fn api_902_probe_of_a_closed_port_gets_no_answer() {

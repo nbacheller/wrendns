@@ -308,8 +308,9 @@ pub const CONFIRM_TOKEN_HEADER: &str = "x-confirm-token";
 ///
 /// The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the
 /// same admin's session; another admin's session, a wrong token and an agent token are 403. It
-/// names the staged addresses, which `GET /api/v1/guarded` never does. Reading it does not count
-/// toward the failed-confirmation block, and the evidence is shown, never required to confirm.
+/// names the staged addresses, which `GET /api/v1/guarded` never does. A wrong token or another
+/// admin's session counts toward the failed-confirmation block like a wrong confirm; reading it
+/// is not rate-limited. The evidence is shown, never required to confirm.
 #[utoipa::path(get, path = "/api/v1/guarded/pending/{id}", tag = "config",
     params(("id" = String, Path, description = "The pending change's ID.")),
     responses(

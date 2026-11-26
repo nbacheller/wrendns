@@ -52,6 +52,10 @@ async fn api_902_listener_proof_is_the_nodes_own_probe() {
         n.engine.status_local().pending.is_some(),
         "the window runs on"
     );
+    assert!(
+        n.audits("settings.guarded_refused").is_empty(),
+        "a probe failure at confirm is not audited (design 5)"
+    );
     assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
     // It answers now: the same confirm is accepted.
     n.host.probe_answers.lock().unwrap().clear();

@@ -7140,7 +7140,7 @@
           "config"
         ],
         "summary": "Reads a pending window change: the seconds left and, for a change that binds DNS sockets, the\nnode's own probe of each (the last result and the time) and how many other hosts' queries have\nreached it.",
-        "description": "The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the\nsame admin's session; another admin's session, a wrong token and an agent token are 403. It\nnames the staged addresses, which `GET /api/v1/guarded` never does. Reading it does not count\ntoward the failed-confirmation block, and the evidence is shown, never required to confirm.",
+        "description": "The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the\nsame admin's session; another admin's session, a wrong token and an agent token are 403. It\nnames the staged addresses, which `GET /api/v1/guarded` never does. A wrong token or another\nadmin's session counts toward the failed-confirmation block like a wrong confirm; reading it\nis not rate-limited. The evidence is shown, never required to confirm.",
         "operationId": "guarded_pending",
         "parameters": [
           {

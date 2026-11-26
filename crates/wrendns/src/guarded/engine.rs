@@ -1475,15 +1475,12 @@ impl Engine {
         if let Some(set) = &probes {
             let failures = set.run(&self.host).await;
             if !failures.is_empty() {
-                return Err(self.refuse(
-                    c,
-                    &setting,
-                    Problem::new(
-                        Code::Forbidden,
-                        format!("the node's own query to {}", failures.join("; ")),
-                    )
-                    .hint("The change is still pending; it rolls back when the window ends. Check the address and the certificate, then confirm again."),
-                ));
+                info!(setting = %setting, failures = ?failures, "guarded confirm refused: the node's own probe got no answer");
+                return Err(Problem::new(
+                    Code::Forbidden,
+                    format!("the node's own query to {}", failures.join("; ")),
+                )
+                .hint("The change is still pending; it rolls back when the window ends. Check the address and the certificate, then confirm again."));
             }
         }
         // Commit: write the entry (through the primary on a replica), then keep the new sockets.
