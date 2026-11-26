@@ -5,11 +5,12 @@
 #![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UdpSocket};
 use wrendns_proto::{HEADER_LEN, NameBuf, rcode, read_name, rtype};
 use wrendns_recursor::{Recursor, Settings};
 
@@ -38,6 +39,70 @@ struct Zone {
     ent_nxdomain: bool,
     /// Milliseconds to wait before answering (changeable while running).
     delay_ms: Option<Arc<AtomicU64>>,
+    /// REQ: DNS-903 — answers FORMERR to any query that carries an EDNS OPT record.
+    formerr_edns: bool,
+    /// REQ: DNS-903 — while set, answers nothing at all (changeable while running).
+    down: Option<Arc<AtomicBool>>,
+    /// REQ: DNS-903 — while set, answers nothing over UDP (TCP still answers).
+    drop_udp: Option<Arc<AtomicBool>>,
+    /// REQ: DNS-903 — while set, answers nothing over UDP to names at or under this one (TCP
+    /// still answers): one server that fails for one zone only.
+    drop_udp_under: Option<(Arc<AtomicBool>, &'static str)>,
+    /// REQ: DNS-903 — echoes an OPT record in answers to queries that carry one (a server
+    /// that does EDNS).
+    edns: bool,
+    /// REQ: DNS-903 — while set, answers FORMERR to the next EDNS query only, then clears.
+    formerr_once: Option<Arc<AtomicBool>>,
+    /// REQ: DNS-903 — answers with this rcode (and the data of the zone) to every query.
+    rcode_all: Option<u16>,
+    /// REQ: DNS-903 — also listens on TCP.
+    tcp: bool,
+    /// REQ: DNS-903 — UDP answers carry the TC bit, so every query is repeated over TCP.
+    truncate_udp: bool,
+    /// REQ: DNS-903 — what this server has seen.
+    seen: Option<Arc<Seen>>,
+}
+
+/// REQ: DNS-903 — what a fixture server saw: queries with and without an OPT record, by
+/// transport, and the addresses they came from.
+#[derive(Default)]
+struct Seen {
+    edns: AtomicU64,
+    plain: AtomicU64,
+    udp: AtomicU64,
+    tcp: AtomicU64,
+    from: Mutex<Vec<IpAddr>>,
+    /// The addresses TCP queries came from.
+    tcp_from: Mutex<Vec<IpAddr>>,
+}
+
+impl Seen {
+    fn note(&self, q: &[u8], tcp: bool, from: IpAddr) {
+        let opt = u16::from_be_bytes([q[10], q[11]]) > 0;
+        let c = if opt { &self.edns } else { &self.plain };
+        c.fetch_add(1, Ordering::Relaxed);
+        let t = if tcp { &self.tcp } else { &self.udp };
+        t.fetch_add(1, Ordering::Relaxed);
+        self.from.lock().unwrap().push(from);
+        if tcp {
+            self.tcp_from.lock().unwrap().push(from);
+        }
+    }
+}
+
+/// A FORMERR answer to `q`: its question only.
+fn formerr(q: &[u8]) -> Vec<u8> {
+    let mut end = HEADER_LEN;
+    let mut n = NameBuf::default();
+    if let Ok(e) = read_name(q, HEADER_LEN, &mut n) {
+        end = e + 4;
+    }
+    let mut out = q[..2].to_vec();
+    out.extend((0x8000u16 | rcode::FORMERR).to_be_bytes());
+    out.extend(1u16.to_be_bytes());
+    out.extend([0u8; 6]);
+    out.extend(&q[HEADER_LEN..end]);
+    out
 }
 
 fn wire(name: &str) -> Vec<u8> {
@@ -166,7 +231,49 @@ fn respond(z: &Zone, query: &[u8]) -> Vec<u8> {
 
 type Log = Arc<Mutex<Vec<(u8, String)>>>;
 
+/// REQ: DNS-903 — the TCP side of a fixture server (`Zone::tcp`).
+async fn serve_tcp(ip: u8, port: u16, zone: Zone) {
+    let listener = TcpListener::bind(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, ip)),
+        port,
+    ))
+    .await
+    .unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut conn, from)) = listener.accept().await else {
+                return;
+            };
+            let z = zone.clone();
+            tokio::spawn(async move {
+                let mut lb = [0u8; 2];
+                if conn.read_exact(&mut lb).await.is_err() {
+                    return;
+                }
+                let mut query = vec![0u8; usize::from(u16::from_be_bytes(lb))];
+                if conn.read_exact(&mut query).await.is_err() || query.len() < HEADER_LEN {
+                    return;
+                }
+                if let Some(s) = &z.seen {
+                    s.note(&query, true, from.ip());
+                }
+                if z.down.as_ref().is_some_and(|d| d.load(Ordering::Relaxed)) {
+                    return;
+                }
+                let reply = respond(&z, &query);
+                let _ = conn
+                    .write_all(&u16::try_from(reply.len()).unwrap().to_be_bytes())
+                    .await;
+                let _ = conn.write_all(&reply).await;
+            });
+        }
+    });
+}
+
 async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
+    if z.tcp {
+        serve_tcp(ip, port, z.clone()).await;
+    }
     let s = UdpSocket::bind(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, ip)),
         port,
@@ -180,6 +287,9 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                 return;
             };
             let q = &buf[..n];
+            if let Some(s) = &z.seen {
+                s.note(q, false, from.ip());
+            }
             let mut name = NameBuf::default();
             if let Ok(end) = read_name(q, HEADER_LEN, &mut name) {
                 // Raw bytes, case as asked.
@@ -201,6 +311,31 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                     tokio::time::sleep(Duration::from_millis(ms)).await;
                 }
             }
+            let dropped_name = z.drop_udp_under.as_ref().is_some_and(|(d, zone)| {
+                let q = name.display().to_string().to_ascii_lowercase();
+                d.load(Ordering::Relaxed) && under(q.trim_end_matches('.'), zone)
+            });
+            if dropped_name
+                || z.down.as_ref().is_some_and(|d| d.load(Ordering::Relaxed))
+                || z.drop_udp
+                    .as_ref()
+                    .is_some_and(|d| d.load(Ordering::Relaxed))
+            {
+                continue;
+            }
+            let has_opt = u16::from_be_bytes([q[10], q[11]]) > 0;
+            if has_opt
+                && z.formerr_once
+                    .as_ref()
+                    .is_some_and(|f| f.swap(false, Ordering::Relaxed))
+            {
+                let _ = s.send_to(&formerr(q), from).await;
+                continue;
+            }
+            if z.formerr_edns && has_opt {
+                let _ = s.send_to(&formerr(q), from).await;
+                continue;
+            }
             if z.spoof {
                 let mut fake = z.clone();
                 fake.lowercase = true;
@@ -211,7 +346,20 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                 }
                 let _ = s.send_to(&respond(&fake, q), from).await;
             }
-            let _ = s.send_to(&respond(&z, q), from).await;
+            let mut reply = respond(&z, q);
+            if let Some(rc) = z.rcode_all {
+                reply[3] = (reply[3] & 0xf0) | u8::try_from(rc).unwrap();
+            }
+            if z.truncate_udp {
+                reply[2] |= 0x02;
+            }
+            if z.edns && has_opt {
+                // An OPT record (root name, type 41, 1232 bytes), counted in ARCOUNT.
+                reply.extend([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]);
+                let ar = u16::from_be_bytes([reply[10], reply[11]]) + 1;
+                reply[10..12].copy_from_slice(&ar.to_be_bytes());
+            }
+            let _ = s.send_to(&reply, from).await;
         }
     });
 }
@@ -220,12 +368,28 @@ fn a(ip: [u8; 4]) -> Vec<u8> {
     ip.to_vec()
 }
 
+/// A port that is free for UDP and TCP on 127.0.0.2 and was not handed to another test of
+/// this process. It is below the ephemeral range (the resolver's own sockets bind port 0, so a
+/// port from that range could collide with one of them) and the tests run in parallel: asking
+/// the system for a free port and releasing it let two tests get the same one, and a TCP
+/// listener was not covered by a UDP probe at all.
+fn free_port() -> u16 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port = u16::try_from(20_000 + (std::process::id() * 37 + n) % 10_000).unwrap();
+        let udp = std::net::UdpSocket::bind(("127.0.0.2", port));
+        let tcp = std::net::TcpListener::bind(("127.0.0.2", port));
+        if udp.is_ok() && tcp.is_ok() {
+            return port;
+        }
+    }
+}
+
 /// Starts the tree; returns the resolver's settings and the query log.
 async fn tree(mutate: impl FnOnce(&mut Vec<(u8, Zone)>)) -> (Settings, Log) {
     // A free port on 127.0.0.2, used on every address.
-    let probe = std::net::UdpSocket::bind("127.0.0.2:0").unwrap();
-    let port = probe.local_addr().unwrap().port();
-    drop(probe);
+    let port = free_port();
     let mut zones = vec![
         (
             2,
@@ -1029,4 +1193,460 @@ async fn dns_905_flushing_cuts_restarts_from_the_root() {
         .filter(|(ip, _)| *ip == 2)
         .count();
     assert_eq!(roots, 1, "{:?}", log.lock().unwrap());
+}
+
+/// What a test's example.com server shows: the fixture's `Seen`, counted from a mark.
+fn count(c: &AtomicU64) -> u64 {
+    c.load(Ordering::Relaxed)
+}
+
+/// REQ: DNS-903 — a server that timed out for a while and then recovers is asked again within
+/// the lifetime of its entry (not after it) and comes back to first place.
+#[tokio::test]
+async fn dns_903_a_server_that_was_down_is_probed_and_returns_to_first_place() {
+    let down = Arc::new(AtomicBool::new(false));
+    // The sibling is slow enough that scheduling noise cannot put it ahead of a server that
+    // answers at once (a stall of 150 ms or more would be needed).
+    let slow = Arc::new(AtomicU64::new(150));
+    let (down2, slow2) = (Arc::clone(&down), Arc::clone(&slow));
+    let (mut s, log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        // .10 is a slower copy, so .4 is first while it is well.
+        let mut copy = zones[2].1.clone();
+        copy.delay_ms = Some(slow2);
+        zones.push((10, copy));
+        zones[2].1.down = Some(down2);
+    })
+    .await;
+    s.hedge = false;
+    s.infra_ttl = Duration::from_secs(30);
+    s.infra_probe = Duration::from_secs(1);
+    // So .10 (150 ms) never times out, and a probe of the silent .4 (which waits out this
+    // timeout) ends before the next one is due: only .4 can be down.
+    s.server_timeout = Duration::from_millis(600);
+    let r = Recursor::new(s);
+    let ask = || async {
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+    };
+    // Both are learned: .4 answers at once, .10 after 150 ms.
+    for _ in 0..12 {
+        ask().await;
+    }
+    // .4 stops answering: its lookups fall to .10, and it is marked down.
+    down.store(true, Ordering::Relaxed);
+    log.lock().unwrap().clear();
+    let mut tried = 0;
+    for _ in 0..20 {
+        ask().await;
+        tried = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(ip, _)| *ip == 4)
+            .count();
+        if tried >= 2 {
+            break;
+        }
+    }
+    // The precondition: .4 was asked, did not answer, was asked again (so it is down), and
+    // its last probe has only just gone (else the check below counts nothing, or a probe).
+    assert!(
+        tried >= 2,
+        "the down server was asked and timed out: {tried}"
+    );
+    // While it is down and not due, it is not asked.
+    log.lock().unwrap().clear();
+    ask().await;
+    ask().await;
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter().filter(|(ip, _)| *ip == 4).count() <= 1,
+        "a down server is probed, not asked every time: {seen:?}"
+    );
+    // It recovers; a probe within its lifetime finds that out.
+    down.store(false, Ordering::Relaxed);
+    // A bounded wait for the probe (due every second), well inside the lifetime of 30 s.
+    let begun = Instant::now();
+    let mut probed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        log.lock().unwrap().clear();
+        ask().await;
+        if log.lock().unwrap().iter().any(|(ip, _)| *ip == 4) {
+            probed = true;
+            break;
+        }
+    }
+    assert!(probed, "a probe reached the recovered server");
+    assert!(begun.elapsed() < Duration::from_secs(20));
+    log.lock().unwrap().clear();
+    for _ in 0..3 {
+        ask().await;
+    }
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .filter(|(ip, _)| *ip == 4 || *ip == 10)
+            .all(|(ip, _)| *ip == 4),
+        "the recovered server is first again and answers: {seen:?}"
+    );
+    assert!(seen.iter().any(|(ip, _)| *ip == 4), "{seen:?}");
+}
+
+/// REQ: DNS-903 — a server that answers FORMERR to any EDNS query and answers one without
+/// resolves, and the next lookup sends it no EDNS query.
+#[tokio::test]
+async fn dns_903_formerr_to_edns_is_retried_plain_and_remembered() {
+    let seen = Arc::new(Seen::default());
+    let seen2 = Arc::clone(&seen);
+    let (s, _log) = tree(move |zones| {
+        zones[2].1.formerr_edns = true;
+        zones[2].1.seen = Some(seen2);
+    })
+    .await;
+    let r = Recursor::new(s);
+    let res = r
+        .resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+    assert_eq!(
+        count(&seen.edns),
+        1,
+        "one query with EDNS, which it refused"
+    );
+    assert!(count(&seen.plain) >= 1);
+    let (edns, plain) = (count(&seen.edns), count(&seen.plain));
+    let res = r
+        .resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 9])]);
+    assert_eq!(count(&seen.edns), edns, "no EDNS query the second time");
+    assert!(count(&seen.plain) > plain);
+}
+
+/// REQ: DNS-903 — a server that answered before and now drops UDP is asked over TCP after two
+/// timeouts, and from then on TCP goes first.
+#[tokio::test]
+async fn dns_903_tcp_after_repeated_udp_timeouts() {
+    let seen = Arc::new(Seen::default());
+    let drop_udp = Arc::new(AtomicBool::new(false));
+    let (seen2, drop2) = (Arc::clone(&seen), Arc::clone(&drop_udp));
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.tcp = true;
+        zones[2].1.seen = Some(seen2);
+        zones[2].1.drop_udp = Some(drop2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(count(&seen.tcp), 0);
+    drop_udp.store(true, Ordering::Relaxed);
+    // The first timeouts fail the lookup; the second UDP timeout turns to TCP.
+    let mut ok = false;
+    for _ in 0..3 {
+        if let Ok(res) = r.resolve(name("www.example.com"), rtype::A, false).await {
+            assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "never resolved");
+    assert!(count(&seen.tcp) >= 1);
+    // Now TCP goes first: no further UDP query.
+    let udp = count(&seen.udp);
+    r.resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(count(&seen.udp), udp, "UDP was not tried again");
+}
+
+/// REQ: DNS-903 — the TCP note is kept per zone: one server that drops UDP for zone A is still
+/// asked over UDP for zone B.
+#[tokio::test]
+async fn dns_903_one_zones_timeouts_do_not_move_another_zone_to_tcp() {
+    let seen = Arc::new(Seen::default());
+    let drop_a = Arc::new(AtomicBool::new(false));
+    let (seen2, drop2) = (Arc::clone(&seen), Arc::clone(&drop_a));
+    let (mut s, _log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("zoneb.com", "ns1.example.com", Some([127, 0, 0, 4])));
+        let z = &mut zones[2].1;
+        z.tcp = true;
+        z.seen = Some(seen2);
+        z.drop_udp_under = Some((drop2, "example.com"));
+        z.records
+            .push(("www.zoneb.com", rtype::A, a([10, 0, 0, 7])));
+        z.records
+            .push(("one.example.com", rtype::A, a([10, 0, 0, 1])));
+        z.records
+            .push(("two.example.com", rtype::A, a([10, 0, 0, 1])));
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    // The server answers for both zones.
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    // Zone A goes silent over UDP: the second timeout turns that zone to TCP.
+    drop_a.store(true, Ordering::Relaxed);
+    let mut ok = false;
+    for n in ["one.example.com", "two.example.com", "one.example.com"] {
+        ok |= r.resolve(name(n), rtype::A, false).await.is_ok();
+    }
+    assert!(ok && count(&seen.tcp) >= 1, "zone A was moved to TCP");
+    // Zone B on the same address is asked over UDP, as ever.
+    let (tcp, udp) = (count(&seen.tcp), count(&seen.udp));
+    let res = r
+        .resolve(name("www.zoneb.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 7])]);
+    assert_eq!(count(&seen.tcp), tcp, "zone B was not asked over TCP");
+    assert!(count(&seen.udp) > udp, "zone B was asked over UDP");
+}
+
+/// REQ: DNS-903 — without an earlier answer a timeout is not a reason for TCP.
+#[tokio::test]
+async fn dns_903_no_tcp_for_a_server_that_never_answered() {
+    let seen = Arc::new(Seen::default());
+    let drop_udp = Arc::new(AtomicBool::new(true));
+    let (seen2, drop2) = (Arc::clone(&seen), drop_udp);
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.tcp = true;
+        zones[2].1.seen = Some(seen2);
+        zones[2].1.drop_udp = Some(drop2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    for _ in 0..3 {
+        assert!(
+            r.resolve(name("www.example.com"), rtype::A, false)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(count(&seen.tcp), 0);
+}
+
+#[derive(Debug)]
+struct Fixed(IpAddr);
+
+impl wrendns_recursor::SourceAddr for Fixed {
+    fn current(&self) -> std::io::Result<IpAddr> {
+        Ok(self.0)
+    }
+    fn note(&self, _: Option<std::io::ErrorKind>) {}
+}
+
+/// REQ: DNS-903, UPS-013 — with a source address set, the servers see the queries from it
+/// (over UDP, and over TCP when the UDP answer is truncated), and servers of the other IP
+/// version are not asked.
+#[tokio::test]
+async fn dns_903_queries_leave_from_the_source_address() {
+    let seen = Arc::new(Seen::default());
+    let seen2 = Arc::clone(&seen);
+    let (mut s, log) = tree(move |zones| {
+        zones[2].1.tcp = true;
+        zones[2].1.truncate_udp = true;
+        zones[2].1.seen = Some(seen2);
+    })
+    .await;
+    let src: IpAddr = Ipv4Addr::new(127, 0, 0, 20).into();
+    s.source = Some(Arc::new(Fixed(src)));
+    let r = Recursor::new(s.clone());
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert!(count(&seen.udp) >= 1);
+    assert!(seen.from.lock().unwrap().iter().all(|f| *f == src));
+    // The truncated UDP answer was repeated over TCP, and that left from the source too.
+    assert!(count(&seen.tcp) >= 1, "the TCP leg ran");
+    assert_eq!(seen.tcp_from.lock().unwrap().len() as u64, count(&seen.tcp));
+    assert!(seen.tcp_from.lock().unwrap().iter().all(|f| *f == src));
+    // A source of the other family reaches none of the (IPv4) servers.
+    s.source = Some(Arc::new(Fixed("::1".parse().unwrap())));
+    let r = Recursor::new(s);
+    log.lock().unwrap().clear();
+    assert!(
+        r.resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .is_err()
+    );
+    assert!(log.lock().unwrap().is_empty(), "{:?}", log.lock().unwrap());
+}
+
+/// REQ: DNS-903 — with a healthy sibling and hedging on (the default), a server that stopped
+/// answering is still noticed: it is marked down, sorts after every server that is up, and lookups stop waiting for it.
+#[tokio::test]
+async fn dns_903_a_down_server_with_a_sibling_is_noticed_while_hedging() {
+    let down = Arc::new(AtomicBool::new(false));
+    let down2 = Arc::clone(&down);
+    let slow = Arc::new(AtomicU64::new(20));
+    let slow2 = Arc::clone(&slow);
+    let (mut s, log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        let mut copy = zones[2].1.clone();
+        copy.delay_ms = Some(slow2);
+        zones.push((10, copy));
+        zones[2].1.down = Some(down2);
+    })
+    .await;
+    assert!(s.hedge, "hedging is the default");
+    s.infra_ttl = Duration::from_secs(30);
+    s.infra_probe = Duration::from_secs(20);
+    let r = Recursor::new(s);
+    let ask = || async {
+        let t = std::time::Instant::now();
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+        t.elapsed()
+    };
+    for _ in 0..12 {
+        ask().await;
+    }
+    down.store(true, Ordering::Relaxed);
+    // The first lookups that start with .4 wait for the hedge and are answered by .10.
+    for _ in 0..4 {
+        ask().await;
+    }
+    log.lock().unwrap().clear();
+    let mut slowest = Duration::ZERO;
+    for _ in 0..3 {
+        slowest = slowest.max(ask().await);
+    }
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter().all(|(ip, _)| *ip != 4),
+        "the down server is not asked ahead of its sibling: {seen:?}"
+    );
+    assert!(
+        slowest < Duration::from_millis(140),
+        "no lookup waits for the hedge any more: {slowest:?}"
+    );
+}
+
+/// REQ: DNS-903 — with a healthy sibling and hedging on, a server whose UDP goes unanswered
+/// (and which answered before) moves to TCP, so it is not dropped for good.
+#[tokio::test]
+async fn dns_903_tcp_after_udp_timeouts_while_hedging() {
+    let seen = Arc::new(Seen::default());
+    let drop_udp = Arc::new(AtomicBool::new(false));
+    let (seen2, drop2) = (Arc::clone(&seen), Arc::clone(&drop_udp));
+    let slow = Arc::new(AtomicU64::new(150));
+    let (mut s, _log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        let mut copy = zones[2].1.clone();
+        copy.delay_ms = Some(slow);
+        zones.push((10, copy));
+        zones[2].1.tcp = true;
+        zones[2].1.seen = Some(seen2);
+        zones[2].1.drop_udp = Some(drop2);
+    })
+    .await;
+    assert!(s.hedge);
+    s.infra_probe = Duration::from_millis(300);
+    let r = Recursor::new(s);
+    for _ in 0..12 {
+        r.resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+    }
+    assert_eq!(count(&seen.tcp), 0);
+    drop_udp.store(true, Ordering::Relaxed);
+    // Every lookup resolves (through the sibling); the dropped server is probed over TCP.
+    for _ in 0..40 {
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+        if count(&seen.tcp) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(count(&seen.tcp) >= 1, "it was asked over TCP");
+}
+
+/// REQ: DNS-903 — one FORMERR to a query with EDNS from a server that has answered EDNS
+/// queries does not turn EDNS off for it.
+#[tokio::test]
+async fn dns_903_a_stray_formerr_does_not_disable_edns_for_an_edns_server() {
+    let seen = Arc::new(Seen::default());
+    let once = Arc::new(AtomicBool::new(false));
+    let (seen2, once2) = (Arc::clone(&seen), Arc::clone(&once));
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.edns = true;
+        zones[2].1.seen = Some(seen2);
+        zones[2].1.formerr_once = Some(once2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(count(&seen.plain), 0, "EDNS answered, EDNS kept");
+    once.store(true, Ordering::Relaxed);
+    // The glitch: that lookup may fail, but the server is not downgraded.
+    let _ = r
+        .resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await;
+    assert_eq!(
+        count(&seen.plain),
+        0,
+        "no plain query after the stray FORMERR"
+    );
+    r.resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(count(&seen.plain), 0, "EDNS is still on for it");
+}
+
+/// REQ: DNS-903 — a FORMERR to EDNS followed by a REFUSED to the plain query proves nothing
+/// about EDNS: the server is not remembered as taking none.
+#[tokio::test]
+async fn dns_903_a_refused_plain_query_does_not_mark_the_server_no_edns() {
+    let seen = Arc::new(Seen::default());
+    let seen2 = Arc::clone(&seen);
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.formerr_edns = true;
+        zones[2].1.rcode_all = Some(rcode::REFUSED);
+        zones[2].1.seen = Some(seen2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    let _ = r.resolve(name("www.example.com"), rtype::A, false).await;
+    let edns = count(&seen.edns);
+    let _ = r.resolve(name("www.example.com"), rtype::A, false).await;
+    assert!(
+        count(&seen.edns) > edns,
+        "EDNS is still tried: the plain REFUSED proved nothing"
+    );
 }
