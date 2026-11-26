@@ -220,6 +220,11 @@ staged: Option<StagedSet>   // sockets bound for a pending change, none of them 
     both, since this depends on the kernel). TCP sockets set only `SO_REUSEADDR`, so on Linux
     the bind fails while the other one listens. A TCP-based overlap is staged like a changed listener,
     on a proof port.
+    QUIC sockets (DoQ, DoH3) are bound by `quinn` with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so they
+    do not share a port with an overlapping address either, and are staged on a proof port the same way
+    (TCP-based listeners compare with TCP-based, QUIC with QUIC; only plain UDP shares). When the new
+    list keeps both sides of an overlap, the real bind could never work, so the stage fails with
+    `bind_failed` ("dot 10.0.0.53:853 overlaps dot 0.0.0.0:853 on the same port").
   - **A failed bind changes nothing.** Everything staged so far is closed, and stage answers with the
     address and the OS error (for example "dot 203.0.113.9:853: Cannot assign requested address (the
     address is not on any interface)"). The engine audits `settings.guarded_rolled_back`

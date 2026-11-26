@@ -76,9 +76,29 @@ pub(super) struct StagedSet {
     streams: Vec<(Listener, Stream)>,
     /// Changed or overlapping stream listeners, on their proof ports. Never adopted.
     proofs: Vec<Stream>,
+    /// What each proof-port listener must become at commit, and what to put back if it does not.
+    plans: Vec<ProofPlan>,
+    /// The errors `apply` met while this set was staged, for the detail of a `commit_failed`.
+    apply_errors: Vec<(ListenProto, SocketAddr, String)>,
+}
+
+/// A proof-port listener's way to the real address (design 2.3, rule 2.6.4).
+struct ProofPlan {
+    /// The bound form that must be running after the reload.
+    want: Listener,
+    /// The running form this one replaces on the same protocol and address, if any.
+    replaces: Option<Listener>,
+    /// Running listeners on an overlapping address that the new list removes and `apply` closes
+    /// before the real bind.
+    overlapped: Vec<Listener>,
 }
 
 impl StagedSet {
+    /// Remembers an error `apply` met for `l` while the set is staged.
+    pub(super) fn note_apply_error(&mut self, l: &Listener, e: &io::Error) {
+        self.apply_errors.push((l.proto, l.addr, e.to_string()));
+    }
+
     /// Closes every socket of the set.
     async fn close(self) {
         for (_, l) in self.udp {
@@ -174,7 +194,25 @@ impl Stream {
     }
 }
 
-/// Two addresses on one port that a TCP bind would refuse next to each other: the same family, one
+/// The transports whose sockets do not share a port with an overlapping address: TCP-based ones
+/// set only `SO_REUSEADDR`, and QUIC ones (`quinn::Endpoint::server`) set neither it nor
+/// `SO_REUSEPORT`. Plain UDP sets `SO_REUSEPORT` and shares. Listeners compare within one class.
+fn port_class(p: ListenProto) -> Option<u8> {
+    match p {
+        ListenProto::Udp => None,
+        ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh => Some(0),
+        ListenProto::Doq | ListenProto::Doh3 => Some(1),
+    }
+}
+
+/// `a` and `b` cannot be bound next to each other: the same class and overlapping addresses.
+fn clash(a: &Listener, b: &Listener) -> bool {
+    port_class(a.proto).is_some()
+        && port_class(a.proto) == port_class(b.proto)
+        && overlaps(a.addr, b.addr)
+}
+
+/// Two addresses on one port that a TCP or QUIC bind would refuse next to each other: the same family, one
 /// of them the wildcard (an equal pair is one listener, not an overlap). Port 0 never overlaps.
 fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
     a.port() != 0
@@ -281,16 +319,38 @@ impl Listeners {
             return Ok(None);
         }
         let changed = running.is_some();
-        // A TCP bind refuses an address next to a wildcard on its port (only SO_REUSEADDR is set).
-        let overlap = l.proto.is_tcp_based()
-            && !changed
-            && self
-                .streams
-                .iter()
-                .map(|(c, _)| c)
-                .chain(set.streams.iter().map(|(c, _)| c))
-                .any(|c| c.proto.is_tcp_based() && overlaps(c.addr, l.addr));
+        // A TCP or QUIC bind refuses an address next to a wildcard on its port. When the new list
+        // keeps both, the real bind could never work: refuse the stage. When it removes the other
+        // one, the new socket goes on a proof port and `apply` closes the old one first.
+        if let Some(x) = new
+            .iter()
+            .find(|x| !(x.proto == l.proto && x.addr == l.addr) && clash(x, l))
+        {
+            return Err(WindowError {
+                reason: BIND_FAILED,
+                detail: format!(
+                    "{} {} overlaps {} {} on the same port",
+                    proto_name(l.proto),
+                    l.addr,
+                    proto_name(x.proto),
+                    x.addr
+                ),
+            });
+        }
+        let overlapped: Vec<Listener> = self
+            .streams
+            .iter()
+            .map(|(c, _)| c)
+            .filter(|c| clash(c, l))
+            .cloned()
+            .collect();
+        let overlap = !overlapped.is_empty();
         if changed || overlap {
+            let plan = ProofPlan {
+                want: form.clone(),
+                replaces: running.map(|(c, _)| c.clone()),
+                overlapped,
+            };
             let mut p = form;
             p.addr = proof_addr(l.addr);
             let s = self
@@ -298,6 +358,7 @@ impl Listeners {
                 .map_err(|e| bind_error(l, &e))?;
             let bound = s.local_addr();
             set.proofs.push(s);
+            set.plans.push(plan);
             return Ok(Some(StagedListener {
                 proto: l.proto,
                 addr: l.addr,
@@ -316,6 +377,28 @@ impl Listeners {
             bound,
             proof: false,
         }))
+    }
+
+    /// [`Listeners::bind_stream`] for a bind right after a close on the same port. A QUIC endpoint
+    /// gives its UDP socket back only when its driver task has run, a moment after `shutdown`
+    /// returns, so an address-in-use answer is retried for a short while (about half a second).
+    pub(super) async fn bind_stream_settled(
+        &self,
+        l: &Listener,
+        host: wrendns_config::HostFacts,
+        alt_svc: Option<&str>,
+    ) -> io::Result<Stream> {
+        let quic = port_class(l.proto) == Some(1);
+        let mut tries = 0;
+        loop {
+            match self.bind_stream(l, host, alt_svc) {
+                Err(e) if quic && e.kind() == io::ErrorKind::AddrInUse && tries < 20 => {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                r => return r,
+            }
+        }
     }
 
     /// Closes every staged and proof-port socket and touches nothing else.
@@ -341,21 +424,99 @@ impl Listeners {
         for s in std::mem::take(&mut set.proofs) {
             s.shutdown().await;
         }
+        let plans = std::mem::take(&mut set.plans);
+        let errors = std::mem::take(&mut set.apply_errors);
+        let failed = self.verify_swaps(plans, &errors).await;
         let mut left: Vec<String> = set.udp.iter().map(|(a, _)| format!("udp {a}")).collect();
         left.extend(
             set.streams
                 .iter()
                 .map(|(c, _)| format!("{} {}", proto_name(c.proto), c.addr)),
         );
-        if left.is_empty() {
+        if left.is_empty() && failed.is_empty() {
             return Ok(());
         }
-        let detail = format!("staged but not adopted: {}", left.join(", "));
+        let mut detail = String::new();
+        if !left.is_empty() {
+            detail = format!("staged but not adopted: {}", left.join(", "));
+        }
+        for f in failed {
+            if !detail.is_empty() {
+                detail.push_str("; ");
+            }
+            detail.push_str(&f);
+        }
         self.staged = Some(set);
         Err(WindowError {
             reason: COMMIT_FAILED,
             detail,
         })
+    }
+
+    /// After the reload: each proof-staged listener must be running in its bound form. One that is
+    /// not (the real bind failed, or the file could not be read) puts back what it replaced, and the
+    /// wildcard `apply` closed for it, with their old gates (design 2.3, rule 2.6.4). Returns the
+    /// failures, each naming the address and the OS error.
+    async fn verify_swaps(
+        &mut self,
+        plans: Vec<ProofPlan>,
+        errors: &[(ListenProto, SocketAddr, String)],
+    ) -> Vec<String> {
+        let host = crate::gate_host::read();
+        let mut failed = Vec::new();
+        for p in plans {
+            if self.streams.iter().any(|(c, _)| *c == p.want) {
+                continue;
+            }
+            let why = errors
+                .iter()
+                .find(|(pr, a, _)| *pr == p.want.proto && *a == p.want.addr)
+                .map_or_else(
+                    || "the listener was not bound after the reload".to_owned(),
+                    |(_, _, e)| e.clone(),
+                );
+            let mut note = format!(
+                "{} {} did not bind: {why}",
+                proto_name(p.want.proto),
+                p.want.addr
+            );
+            for old in p.replaces.into_iter().chain(p.overlapped) {
+                if self
+                    .streams
+                    .iter()
+                    .any(|(c, _)| c.proto == old.proto && c.addr == old.addr)
+                {
+                    continue;
+                }
+                let all: Vec<Listener> = self
+                    .streams
+                    .iter()
+                    .map(|(c, _)| c.clone())
+                    .chain(std::iter::once(old.clone()))
+                    .collect();
+                // `old` is a bound form: its gate is the one it ran with.
+                match self
+                    .bind_stream_settled(&old, host, alt_svc(&all).as_deref())
+                    .await
+                {
+                    Ok(s) => {
+                        warn!(addr = %old.addr, proto = ?old.proto, "put the old listener back after a failed swap");
+                        self.streams.push((old, s));
+                    }
+                    Err(e) => {
+                        use std::fmt::Write as _;
+                        let _ = write!(
+                            note,
+                            "; the old {} {} could not be put back: {e}",
+                            proto_name(old.proto),
+                            old.addr
+                        );
+                    }
+                }
+            }
+            failed.push(note);
+        }
+        failed
     }
 
     /// A file that now sets `[[listen]]` has taken over: the staged sockets close and a commit
@@ -382,12 +543,12 @@ impl Listeners {
         Some(set.streams.remove(i).1)
     }
 
-    /// Before a stream listener is bound at its real address: a running TCP-based listener that
+    /// Before a stream listener is bound at its real address: a running TCP or QUIC listener that
     /// overlaps it on the port and that the new list no longer names is closed first (a TCP bind
     /// would refuse the new address next to it). A gap of a few milliseconds on that one listener,
     /// as for a changed one.
     pub(super) async fn close_overlapping_removed(&mut self, l: &Listener, listen: &[Listener]) {
-        if !l.proto.is_tcp_based() {
+        if port_class(l.proto).is_none() {
             return;
         }
         let gone: Vec<usize> = self
@@ -395,8 +556,7 @@ impl Listeners {
             .iter()
             .enumerate()
             .filter(|(_, (c, _))| {
-                c.proto.is_tcp_based()
-                    && overlaps(c.addr, l.addr)
+                clash(c, l)
                     && !listen
                         .iter()
                         .any(|x| x.proto == c.proto && x.addr == c.addr)

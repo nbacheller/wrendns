@@ -520,6 +520,10 @@ impl Listeners {
         for l in listen {
             if let Err(e) = self.apply_one(l, listen, host).await {
                 error!(listener = %crate::gate_host::key(l), "{e}");
+                // REQ: API-902 — a commit names the OS error of a swap that failed.
+                if let Some(set) = self.staged.as_mut() {
+                    set.note_apply_error(l, &e);
+                }
                 first_err.get_or_insert(e);
             }
         }
@@ -634,7 +638,10 @@ impl Listeners {
                     let (_, s) = self.streams.remove(i);
                     s.shutdown().await;
                 }
-                match self.bind_stream(l, host, alt_svc(listen).as_deref()) {
+                match self
+                    .bind_stream_settled(l, host, alt_svc(listen).as_deref())
+                    .await
+                {
                     Ok(stream) => self.streams.push((bound_form(l, host), stream)),
                     Err(e) => {
                         // The old socket is already closed; say that the gate did not arrive.

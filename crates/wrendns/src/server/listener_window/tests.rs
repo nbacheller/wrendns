@@ -178,19 +178,23 @@ async fn api_902_replicated_reload_adopts_staged_sockets() {
 }
 
 // REQ: API-902 — a changed listener is bound on a proof port (the real port is held by the old
-// socket); the commit swaps it onto the real port and closes the proof port.
+// socket); the commit swaps it onto the very same real port and closes the proof port.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn api_902_changed_listener_probed_on_proof_port_then_swapped() {
     let _one = crate::gate_host::isolate();
     let (_dir, _cert, listen) = gate_fixture();
     let mut l = test_listeners();
-    let old = listen(Some(false));
+    let real = loopback(free_tcp_port());
+    let old = Listener {
+        addr: real,
+        ..listen(Some(false))
+    };
     l.apply(std::slice::from_ref(&old)).await.unwrap();
-    let old_port = l.streams[0].1.local_addr();
+    assert_eq!(l.streams[0].1.local_addr(), real);
     let changed = Listener {
         max_connections: Some(7),
-        ..listen(Some(false))
+        ..old.clone()
     };
     let staged = l.stage(std::slice::from_ref(&changed)).await.unwrap();
     assert_eq!(staged.len(), 1);
@@ -198,17 +202,168 @@ async fn api_902_changed_listener_probed_on_proof_port_then_swapped() {
         staged[0].proof,
         "a changed listener is staged on a proof port"
     );
-    assert_ne!(staged[0].bound, old_port);
+    assert_ne!(staged[0].bound, real);
     assert_eq!(staged[0].bound.ip(), old.addr.ip());
     assert!(connects(staged[0].bound).await, "the proof port answers");
-    assert!(connects(old_port).await, "the old socket is untouched");
+    assert!(connects(real).await, "the old socket is untouched");
     assert_eq!(l.streams[0].0.max_connections, None);
     // The swap and the commit.
     l.apply(std::slice::from_ref(&changed)).await.unwrap();
-    assert_eq!(l.streams[0].0.max_connections, Some(7));
     l.commit_staged().await.unwrap();
+    assert_eq!(l.streams.len(), 1);
+    assert_eq!(l.streams[0].0.addr, real);
+    assert_eq!(l.streams[0].0.max_connections, Some(7));
+    assert_eq!(l.streams[0].1.local_addr(), real, "on the old port");
+    assert!(connects(real).await);
     assert!(!connects(staged[0].bound).await, "the proof port is closed");
-    assert!(connects(l.streams[0].1.local_addr()).await);
+    crate::gate_host::clear_listeners_for_test();
+}
+
+fn runs_on(l: &Listeners, addr: SocketAddr) -> bool {
+    l.streams.iter().any(|(_, s)| s.local_addr() == addr)
+}
+
+// REQ: API-902, CLU-004 (design 2.3, rule 2.6.4) — the real bind of a changed listener fails
+// (a foreign socket took the port after the old one closed): the commit answers `commit_failed`
+// naming the address and the OS error, and the old settings, with their old gate, listen again.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener() {
+    let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
+    let mut l = test_listeners();
+    let real = loopback(free_tcp_port());
+    let old = Listener {
+        addr: real,
+        ..listen(Some(false))
+    };
+    l.apply(std::slice::from_ref(&old)).await.unwrap();
+    let changed = Listener {
+        max_connections: Some(7),
+        ..old.clone()
+    };
+    l.stage(std::slice::from_ref(&changed)).await.unwrap();
+    // The reload closes the old socket; a foreign process takes the port before the new bind.
+    let (_, gone) = l.streams.remove(0);
+    gone.shutdown().await;
+    let foreign = std::net::TcpListener::bind(real).unwrap();
+    assert!(l.apply(std::slice::from_ref(&changed)).await.is_err());
+    assert!(!runs_on(&l, real));
+    drop(foreign);
+    let e = l.commit_staged().await.unwrap_err();
+    assert_eq!(e.reason, COMMIT_FAILED);
+    assert!(e.detail.contains(&real.to_string()), "{}", e.detail);
+    assert!(e.detail.contains("did not bind"), "{}", e.detail);
+    assert!(e.detail.to_lowercase().contains("in use"), "{}", e.detail);
+    assert_eq!(l.streams.len(), 1, "the old listener is back");
+    assert_eq!(l.streams[0].0.max_connections, None);
+    assert_eq!(
+        l.streams[0].0.require_client_id,
+        Some(false),
+        "with its old gate"
+    );
+    assert!(connects(real).await);
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// REQ: API-902, CLU-004 — an overlapping replacement that cannot bind at commit puts the closed
+// wildcard back and says `commit_failed`.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_failed_overlap_swap_restores_the_removed_wildcard() {
+    let _one = crate::gate_host::isolate();
+    let mut l = test_listeners();
+    let port = free_tcp_port();
+    let wild = tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+    l.apply(std::slice::from_ref(&wild)).await.unwrap();
+    let specific = tcp(loopback(port));
+    l.stage(std::slice::from_ref(&specific)).await.unwrap();
+    let (_, gone) = l.streams.remove(0);
+    gone.shutdown().await;
+    let foreign = std::net::TcpListener::bind(specific.addr).unwrap();
+    assert!(l.apply(std::slice::from_ref(&specific)).await.is_err());
+    drop(foreign);
+    let e = l.commit_staged().await.unwrap_err();
+    assert_eq!(e.reason, COMMIT_FAILED);
+    assert!(
+        e.detail.contains(&specific.addr.to_string()),
+        "{}",
+        e.detail
+    );
+    assert_eq!(l.streams.len(), 1);
+    assert_eq!(l.streams[0].0.addr, wild.addr, "the wildcard is back");
+    assert!(connects(loopback(port)).await);
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// REQ: API-902 — a new list that keeps a wildcard and adds a specific address on its port can never
+// bind both (TCP): the stage fails, and nothing is held.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_overlap_kept_in_the_new_list_fails_the_stage() {
+    let _one = crate::gate_host::isolate();
+    let mut l = test_listeners();
+    let port = free_tcp_port();
+    let wild = tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+    let specific = tcp(loopback(port));
+    // Both added at once, in either order.
+    for list in [
+        [wild.clone(), specific.clone()],
+        [specific.clone(), wild.clone()],
+    ] {
+        let e = l.stage(&list).await.unwrap_err();
+        assert_eq!(e.reason, BIND_FAILED);
+        assert!(e.detail.contains("overlaps"), "{}", e.detail);
+        assert!(e.detail.contains("on the same port"), "{}", e.detail);
+        assert!(l.staged.is_none());
+        assert!(
+            std::net::TcpListener::bind(wild.addr).is_ok(),
+            "nothing held"
+        );
+    }
+    // The wildcard runs and the list keeps it.
+    l.apply(std::slice::from_ref(&wild)).await.unwrap();
+    let e = l.stage(&[wild.clone(), specific]).await.unwrap_err();
+    assert_eq!(e.reason, BIND_FAILED);
+    assert!(
+        connects(loopback(port)).await,
+        "the running one is untouched"
+    );
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// REQ: API-902 (design 2.3) — QUIC sockets share no port either: a DoQ listener on a specific
+// address next to a running wildcard on the same port is staged on a proof port, and kept-in-list
+// overlaps fail the stage.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_quic_overlap_staged_on_proof_port() {
+    let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
+    let mut l = test_listeners();
+    let port = free_udp_port();
+    let wild = Listener {
+        proto: ListenProto::Doq,
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+        ..listen(Some(false))
+    };
+    let specific = Listener {
+        addr: loopback(port),
+        ..wild.clone()
+    };
+    l.apply(std::slice::from_ref(&wild)).await.unwrap();
+    let e = l
+        .stage(&[wild.clone(), specific.clone()])
+        .await
+        .unwrap_err();
+    assert_eq!(e.reason, BIND_FAILED, "{}", e.detail);
+    let staged = l.stage(std::slice::from_ref(&specific)).await.unwrap();
+    assert!(staged[0].proof, "QUIC does not bind next to a wildcard");
+    assert_eq!(staged[0].bound.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    l.apply(std::slice::from_ref(&specific)).await.unwrap();
+    l.commit_staged().await.unwrap();
+    assert_eq!(l.streams.len(), 1);
+    assert_eq!(l.streams[0].0.addr, specific.addr);
     crate::gate_host::clear_listeners_for_test();
 }
 
