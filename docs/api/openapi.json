@@ -23299,7 +23299,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`discovery_agent_failing`,\n`guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,\n`listener_gate_default`, `listener_gate_stale`, `listener_not_applied`.",
             "example": "upstream_down"
           },
           "level": {
@@ -27373,6 +27373,64 @@
                 }
               }
             }
+          }
+        }
+      },
+      "ListenerAccess": {
+        "type": "object",
+        "description": "REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate.",
+        "required": [
+          "listener",
+          "requireClientId",
+          "setting",
+          "gatedByDefault",
+          "publicAddress",
+          "wildcardBind",
+          "defaultOn",
+          "defaultReason",
+          "publicExposure",
+          "canCarryKey"
+        ],
+        "properties": {
+          "canCarryKey": {
+            "type": "boolean",
+            "description": "The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`)."
+          },
+          "defaultOn": {
+            "type": "boolean",
+            "description": "What the unset setting resolves to for this listener on this host: on for a public address,\nand for a wildcard bind when the host holds a public IPv4 address (or its interface list\ncould not be read); off otherwise."
+          },
+          "defaultReason": {
+            "type": "string",
+            "description": "The default and why, as a sentence (\"on, because it binds every address and this host has a\npublic IPv4 address\"); names the wildcard rule when it applies."
+          },
+          "gatedByDefault": {
+            "type": "boolean",
+            "description": "On only because the setting is unset and the default is on (a public address, or a wildcard bind\non a host with a public IPv4 address)."
+          },
+          "listener": {
+            "type": "string",
+            "description": "The listener, as `proto://addr`."
+          },
+          "publicAddress": {
+            "type": "boolean",
+            "description": "Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a\nwildcard bind is not public)."
+          },
+          "publicExposure": {
+            "type": "boolean",
+            "description": "A public address reaches this listener (or might: fail closed), so turning the device key off\nopens it to the internet."
+          },
+          "requireClientId": {
+            "type": "boolean",
+            "description": "It answers only a query that carries a known device key (the effective `require_client_id`)."
+          },
+          "setting": {
+            "type": "string",
+            "description": "What the file says: `unset`, `true` or `false`."
+          },
+          "wildcardBind": {
+            "type": "boolean",
+            "description": "Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`)."
           }
         }
       },
@@ -32680,6 +32738,7 @@
           "starts",
           "uncleanStarts",
           "listeners",
+          "listenerAccess",
           "queryLog",
           "filterNames",
           "build",
@@ -32734,6 +32793,13 @@
             "format": "int64",
             "description": "Version of the active filter snapshot, if one is loaded.",
             "minimum": 0
+          },
+          "listenerAccess": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListenerAccess"
+            },
+            "description": "REQ: DNS-901 (T36.2) — each listener's known-ID gate: whether it requires a device key\nand whether it is bound to a public address, so the UI can warn about an open one."
           },
           "listeners": {
             "type": "array",

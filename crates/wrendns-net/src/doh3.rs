@@ -37,6 +37,8 @@ pub struct Doh3Config {
     /// Max concurrent connections from one client address (an IPv6 /64), once its handshake
     /// proved the address; 0 = no limit (review 01 q2).
     pub max_connections_per_address: usize,
+    /// REQ: DNS-901 (T36.2) — every request needs a known client ID (the listener is public).
+    pub require_client_id: bool,
 }
 
 impl Doh3Config {
@@ -48,6 +50,7 @@ impl Doh3Config {
             idle_timeout: Duration::from_secs(30),
             max_connections: 1024,
             max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
+            require_client_id: false,
         }
     }
 }
@@ -235,6 +238,23 @@ async fn answer<H: QueryHandler + ?Sized>(
     handler: &H,
 ) -> Result<(Vec<u8>, u32), StatusCode> {
     let path_id = route(&cfg.path, req.uri().path())?;
+    let meta = RequestMeta {
+        peer,
+        local: None,
+        transport: Transport::Doh,
+        // REQ: DNS-901 (ADR-1090 point 2) — on a gated listener only the path is a key: the
+        // server name is not inside the request, and a key in clear gets public answers only.
+        client_id: if cfg.require_client_id {
+            path_id
+        } else {
+            path_id.or(sni_id)
+        },
+        gated: cfg.require_client_id,
+    };
+    // REQ: DNS-901 — unknown, revoked and missing keys: 404, before the body is read.
+    if !handler.admit(&meta) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let msg = match *req.method() {
         Method::GET => get_message(req.uri().query())?,
         Method::POST => {
@@ -260,12 +280,6 @@ async fn answer<H: QueryHandler + ?Sized>(
             body
         }
         _ => return Err(StatusCode::METHOD_NOT_ALLOWED),
-    };
-    let meta = RequestMeta {
-        peer,
-        local: None,
-        transport: Transport::Doh,
-        client_id: path_id.or(sni_id),
     };
     resolve(handler, &msg, &meta).await
 }

@@ -493,6 +493,54 @@ pub struct Listener {
     /// client addresses (no PROXY protocol, source NAT), raise it or set 0. Not for `udp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections_per_address: Option<u32>,
+    /// REQ: DNS-901 (T36.2, ADR-1050) — a public listener is never an open resolver: with this on
+    /// (`dot`, `doh`, `doh3` and `doq` only), a query is answered only when it carries a known
+    /// device key, as the DoH path (`/dns-query/<key>`) or the first label of the DoT, DoH3 or
+    /// DoQ server name. A key is at least 128 random bits (26 base32 characters) and must be
+    /// the `id:` match key of a device in `[[client]]`. Unknown, revoked and missing keys are
+    /// refused the same way (DoH 404; DoT and DoQ REFUSED with an extended error) and counted.
+    /// A known key is let in from any address, outside `[access] allowed_networks` too.
+    ///
+    /// REQ: DNS-901 (ADR-1090 point 1, owner decision 2026-11-25) — three states: unset means on
+    /// on for a listener bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local) and off otherwise;
+    /// a wildcard bind (`0.0.0.0`, `[::]`, `[::ffff:0.0.0.0]`) is on only when the host holds a public IPv4 address
+    /// on an interface (or the interface list cannot be read), and off when it has only private IPv4 addresses or a global IPv6 address
+    /// alone (a warning is logged then). `true` forces it on; `false` turns it off, which is allowed
+    /// but logs a warning at start and at every reload on a public or public-resolving wildcard listener, whether the file or the web UI set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_client_id: Option<bool>,
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — whether a bind address is public, deliberately
+/// conservative: only an address known to be private is not. Loopback, RFC 1918, CGNAT
+/// (100.64.0.0/10), link-local (169.254.0.0/16, `fe80::/10`) and unique-local (`fc00::/7`) are not
+/// public; every other address is, including documentation ranges, multicast and 0.0.0.0/8.
+/// An IPv4-mapped IPv6 address is judged as its IPv4 address.
+///
+/// An unspecified bind (`0.0.0.0`, `::`, `::ffff:0.0.0.0`) is NOT public here: it is not one
+/// address. Whether it is gated by default depends on the host's addresses (ADR-1090 point 2),
+/// which `crate::default_gate` decides with the facts the node passes in.
+#[must_use]
+pub fn is_public_address(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            if v4.is_unspecified() {
+                return false;
+            }
+            let o = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || (o[0] == 100 && (o[1] & 0xc0) == 0x40))
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_unspecified() {
+                return false;
+            }
+            let s = v6.segments()[0];
+            !(v6.is_loopback() || (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80)
+        }
+    }
 }
 
 impl Listener {
@@ -505,6 +553,7 @@ impl Listener {
             proxy_protocol: false,
             max_connections: None,
             max_connections_per_address: None,
+            require_client_id: None,
         }
     }
 }

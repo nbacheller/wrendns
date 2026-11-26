@@ -8330,7 +8330,8 @@ export interface components {
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
              *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
              *     `discovery_agent_failing`,
-             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
+             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,
+             *     `listener_gate_default`, `listener_gate_stale`, `listener_not_applied`.
              * @example upstream_down
              */
             code: string;
@@ -9996,6 +9997,45 @@ export interface components {
                 totpEnabled: boolean;
                 username: string;
             }[];
+        };
+        /** @description REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate. */
+        ListenerAccess: {
+            /** @description The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`). */
+            canCarryKey: boolean;
+            /**
+             * @description What the unset setting resolves to for this listener on this host: on for a public address,
+             *     and for a wildcard bind when the host holds a public IPv4 address (or its interface list
+             *     could not be read); off otherwise.
+             */
+            defaultOn: boolean;
+            /**
+             * @description The default and why, as a sentence ("on, because it binds every address and this host has a
+             *     public IPv4 address"); names the wildcard rule when it applies.
+             */
+            defaultReason: string;
+            /**
+             * @description On only because the setting is unset and the default is on (a public address, or a wildcard bind
+             *     on a host with a public IPv4 address).
+             */
+            gatedByDefault: boolean;
+            /** @description The listener, as `proto://addr`. */
+            listener: string;
+            /**
+             * @description Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
+             *     wildcard bind is not public).
+             */
+            publicAddress: boolean;
+            /**
+             * @description A public address reaches this listener (or might: fail closed), so turning the device key off
+             *     opens it to the internet.
+             */
+            publicExposure: boolean;
+            /** @description It answers only a query that carries a known device key (the effective `require_client_id`). */
+            requireClientId: boolean;
+            /** @description What the file says: `unset`, `true` or `false`. */
+            setting: string;
+            /** @description Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`). */
+            wildcardBind: boolean;
         };
         /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */
         ListsPruneRequest: {
@@ -12254,6 +12294,11 @@ export interface components {
              * @description Version of the active filter snapshot, if one is loaded.
              */
             filterSnapshot?: number | null;
+            /**
+             * @description REQ: DNS-901 (T36.2) — each listener's known-ID gate: whether it requires a device key
+             *     and whether it is bound to a public address, so the UI can warn about an open one.
+             */
+            listenerAccess: components["schemas"]["ListenerAccess"][];
             /** @description DNS listeners, as `proto://addr`. */
             listeners: string[];
             maintenance?: components["schemas"]["NodeMaintenance"] | null;

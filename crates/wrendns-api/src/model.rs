@@ -6,6 +6,39 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+/// REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // one flag per fact the UI shows
+pub struct ListenerAccess {
+    /// The listener, as `proto://addr`.
+    pub listener: String,
+    /// It answers only a query that carries a known device key (the effective `require_client_id`).
+    pub require_client_id: bool,
+    /// What the file says: `unset`, `true` or `false`.
+    pub setting: String,
+    /// On only because the setting is unset and the default is on (a public address, or a wildcard bind
+    /// on a host with a public IPv4 address).
+    pub gated_by_default: bool,
+    /// Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
+    /// wildcard bind is not public).
+    pub public_address: bool,
+    /// Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`).
+    pub wildcard_bind: bool,
+    /// What the unset setting resolves to for this listener on this host: on for a public address,
+    /// and for a wildcard bind when the host holds a public IPv4 address (or its interface list
+    /// could not be read); off otherwise.
+    pub default_on: bool,
+    /// The default and why, as a sentence ("on, because it binds every address and this host has a
+    /// public IPv4 address"); names the wildcard rule when it applies.
+    pub default_reason: String,
+    /// A public address reaches this listener (or might: fail closed), so turning the device key off
+    /// opens it to the internet.
+    pub public_exposure: bool,
+    /// The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`).
+    pub can_carry_key: bool,
+}
+
 /// Node and build information.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +59,9 @@ pub struct SystemInfo {
     pub unclean_starts: u64,
     /// DNS listeners, as `proto://addr`.
     pub listeners: Vec<String>,
+    /// REQ: DNS-901 (T36.2) — each listener's known-ID gate: whether it requires a device key
+    /// and whether it is bound to a public address, so the UI can warn about an open one.
+    pub listener_access: Vec<ListenerAccess>,
     /// Whether the per-query log is being written.
     pub query_log: bool,
     /// Version of the active filter snapshot, if one is loaded.
@@ -3466,7 +3502,8 @@ pub struct HealthReason {
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
     /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
     /// `discovery_agent_failing`,
-    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
+    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`,
+    /// `listener_gate_default`, `listener_gate_stale`, `listener_not_applied`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

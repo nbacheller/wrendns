@@ -18,6 +18,7 @@ pub mod cmdb;
 pub mod credentials;
 pub mod discovery;
 mod env;
+pub mod gate;
 pub mod guarded;
 pub mod mute;
 pub mod safesearch;
@@ -40,6 +41,7 @@ pub use discovery::{
     SnmpVersion, UnifiReads,
 };
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
+pub use gate::{DefaultGate, HostFacts, default_gate, gate_warnings, is_wildcard};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, SourceSpec, parse_rfc3339, parse_source};
 pub use validate::{
@@ -76,15 +78,34 @@ pub struct Loaded {
 ///
 /// REQ: OPS-005 — precedence: built-in defaults < files (in the order added; later wins) <
 /// environment variables. Tables merge key by key; arrays and scalars replace.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Loader {
     layers: Vec<(String, Result<String, String>)>,
     env: Vec<(String, String)>,
+    host: HostFacts,
+}
+
+impl Default for Loader {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Loader {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            layers: Vec::new(),
+            env: Vec::new(),
+            host: HostFacts::UNKNOWN,
+        }
+    }
+
+    /// REQ: DNS-901 — the host's address facts, for the warnings about a listener's gate (the
+    /// config crate makes no system call). Unset means unreadable, which fails closed.
+    #[must_use]
+    pub fn host_facts(mut self, host: HostFacts) -> Self {
+        self.host = host;
+        self
     }
 
     /// Adds a TOML file layer. A read failure is reported by [`Loader::load`].
@@ -170,7 +191,7 @@ impl Loader {
             }
         };
 
-        warnings.extend(validate::validate(&config, &mut errors));
+        warnings.extend(validate::validate(&config, self.host, &mut errors));
         if errors.is_empty() {
             Ok(Loaded { config, warnings })
         } else {
@@ -237,7 +258,7 @@ fn merge(base: &mut Table, over: Table) {
 /// ADR-040). Returns the warnings, or every error.
 pub fn validate_config(config: &Config) -> Result<Vec<String>, Vec<ConfigError>> {
     let mut errors = Vec::new();
-    let warnings = validate::validate(config, &mut errors);
+    let warnings = validate::validate(config, HostFacts::UNKNOWN, &mut errors);
     if errors.is_empty() {
         Ok(warnings)
     } else {

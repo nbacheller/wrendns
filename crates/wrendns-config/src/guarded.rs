@@ -133,10 +133,79 @@ static REAL: &[Row] = &[
         weakens: never,
         test_only: false,
     },
+    // REQ: DNS-901, API-902 (T27.14, ADR-1090 point 1) — the known-ID gate of each DoT, DoH, DoH3
+    // and DoQ listener: unset (the default), `true` or `false`. `immediate`: it moves no
+    // address and touches no API socket, so it cannot lock an admin out; a reload applies it (a
+    // listener whose effective gate changes is closed and bound again; when its certificate cannot
+    // be loaded it fails closed: a gate turned on closes the old ungated socket, a gate turned off
+    // keeps the old gated one) and a failed reload, or a listener left closed or not as configured,
+    // puts the previous value back. Turning a listener's gate
+    // off weakens it (a red mark and a sign-in within 10 minutes). The listeners themselves (address,
+    // port, protocol, TLS) are the `listen` row's, still to come.
+    Row {
+        id: LISTEN_ACCESS,
+        label: "Listener access (device key required)",
+        paths: &["listen.require_client_id"],
+        mode: Mode::Immediate,
+        proof: None,
+        // The rule needs the host's address facts (what a wildcard listener's default resolves
+        // to), which a pure `fn(old, new)` cannot see: the applier's `check` reports the weakening
+        // with `listen_gate_weakened(old, new, host)` (REQ: DNS-901, ADR-1090 point 2).
+        weakens: never,
+        test_only: false,
+    },
 ];
 
 /// The ID of the HTTP-to-HTTPS redirect row (T24.44, ADR-1053).
 pub const API_HTTP_REDIRECT: &str = "api-http-redirect";
+
+/// The ID of the known-ID gate row (T27.14, DNS-901).
+pub const LISTEN_ACCESS: &str = "listen-access";
+
+/// REQ: DNS-901 (ADR-1090 point 1) — the effective gate of each listener in a `listen-access`
+/// value (`{"listeners": [{"proto", "addr", "require_client_id"}]}`), keyed by `proto://addr`:
+/// an explicit setting wins, unset follows `crate::default_gate` (the host's address facts are
+/// passed in), and only an encrypted DNS transport can carry a key at all.
+pub fn gate_map(
+    v: &Value,
+    host: crate::gate::HostFacts,
+) -> std::collections::BTreeMap<String, bool> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(list) = v.get("listeners").and_then(Value::as_array) else {
+        return out;
+    };
+    for l in list {
+        let (Some(proto), Some(addr)) = (
+            l.get("proto").and_then(Value::as_str),
+            l.get("addr").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let Ok(sa) = addr.parse::<std::net::SocketAddr>() else {
+            continue;
+        };
+        let ip = sa.ip();
+        let carries = matches!(proto, "dot" | "doh" | "doh3" | "doq");
+        let on = crate::gate::effective_gate(
+            carries,
+            l.get("require_client_id").and_then(Value::as_bool),
+            ip,
+            host,
+        );
+        // Keyed by the parsed address, so `[2001:db8:0::5]:853` and `[2001:db8::5]:853` are one listener.
+        out.insert(format!("{proto}://{sa}"), on);
+    }
+    out
+}
+
+/// A listener whose gate was on and is off in `new` (DNS-901): the change opens it to every query
+/// the access rules allow. A listener `new` doesn't name keeps its gate.
+pub fn listen_gate_weakened(old: &Value, new: &Value, host: crate::gate::HostFacts) -> bool {
+    let (before, after) = (gate_map(old, host), gate_map(new, host));
+    after
+        .iter()
+        .any(|(k, on)| !on && before.get(k).copied().unwrap_or(false))
+}
 
 /// The rows the end-to-end tests use. They exist only in a build with the cargo feature `e2e`
 /// (the e2e server is built with it, the release binary is not).
@@ -634,6 +703,65 @@ addr = \"127.0.0.1:5\"
         }
         assert!(FILE_ONLY.contains(&"auth.oidc.disable_local_login"));
         assert!(FILE_ONLY.contains(&"auth.oidc.allowed_admin_networks"));
+    }
+
+    // REQ: DNS-901, API-902 (T27.14) — the `listen-access` row is `immediate`, covers the listener
+    // gate's path, and "weakens" exactly when a gate that was on is off afterwards.
+    #[test]
+    fn dns_901_listen_access_row_and_weakening() {
+        let r = row(LISTEN_ACCESS).expect("the row exists");
+        assert_eq!(r.mode, Mode::Immediate);
+        assert_eq!(r.paths, ["listen.require_client_id"]);
+        assert!(r.proof.is_none());
+        assert_eq!(covering("listen.require_client_id"), Some(LISTEN_ACCESS));
+        assert_eq!(
+            covering("listen.addr"),
+            Some("listen"),
+            "the address stays the listen row's"
+        );
+        let l = |proto: &str, addr: &str, g: Value| json!({"proto": proto, "addr": addr, "require_client_id": g});
+        let v = |a: Value, b: Value| json!({"listeners": [a, b]});
+        let public = "203.0.113.5:853";
+        let lan = "192.168.1.2:853";
+        let base = v(l("dot", public, Value::Null), l("dot", lan, Value::Null));
+        // Unset: on for the public one, off for the LAN one; udp can't carry a key.
+        let host = crate::gate::HostFacts::UNKNOWN;
+        let m = gate_map(&base, host);
+        assert!(m["dot://203.0.113.5:853"]);
+        assert!(!m["dot://192.168.1.2:853"]);
+        let udp = gate_map(
+            &json!({"listeners": [l("udp", "203.0.113.5:53", json!(true))]}),
+            host,
+        );
+        assert!(!udp["udp://203.0.113.5:53"]);
+        // Public turned off: weakens. Explicit true to unset on a public address: still on.
+        let off = v(l("dot", public, json!(false)), l("dot", lan, Value::Null));
+        assert!(listen_gate_weakened(&base, &off, host));
+        let pinned = v(l("dot", public, json!(true)), l("dot", lan, Value::Null));
+        assert!(!listen_gate_weakened(&pinned, &base, host));
+        assert!(listen_gate_weakened(&pinned, &off, host));
+        // LAN turned on, and a public one left off: not weakening.
+        let lan_on = v(l("dot", public, Value::Null), l("dot", lan, json!(true)));
+        assert!(!listen_gate_weakened(&base, &lan_on, host));
+        assert!(!listen_gate_weakened(&off, &off, host));
+        // Nothing to compare: not weakening.
+        assert!(!listen_gate_weakened(&Value::Null, &off, host));
+        assert!(!listen_gate_weakened(&base, &Value::Null, host));
+        // The row's own `weakens` is `never`: the applier reports it with the host's facts.
+        assert!(!(r.weakens)(&base, &off));
+    }
+
+    // REQ: DNS-901 — a non-canonical spelling of the same address is the same listener, so turning
+    // its gate off still counts as a weakening.
+    #[test]
+    fn dns_901_non_canonical_address_still_weakens() {
+        let l =
+            |addr: &str, g: Value| json!({"proto": "dot", "addr": addr, "require_client_id": g});
+        let base = json!({"listeners": [l("[2001:db8::5]:853", Value::Null)]});
+        let off = json!({"listeners": [l("[2001:db8:0::5]:853", json!(false))]});
+        let host = crate::gate::HostFacts::UNKNOWN;
+        assert!(gate_map(&base, host)["dot://[2001:db8::5]:853"]);
+        assert!(listen_gate_weakened(&base, &off, host));
     }
 
     // REQ: API-902 (ADR-956 §1(a)) — `node.data_dir` is guarded, and staged.

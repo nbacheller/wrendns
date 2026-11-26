@@ -403,6 +403,7 @@ fn clu_014_refused_mode_answers_refused() {
         local: None,
         transport: Transport::Udp,
         client_id: None,
+        gated: false,
     };
     let mut out = [0u8; 4096];
     let Response::Ready(answered) =

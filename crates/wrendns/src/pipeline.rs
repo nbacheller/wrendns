@@ -627,6 +627,8 @@ pub(crate) struct Pipeline {
     pub(crate) metrics: Arc<Metrics>,
     /// Per-query events and their aggregates (OBS-001, OBS-002, OBS-004).
     pub(crate) telemetry: Arc<Hub>,
+    /// REQ: DNS-901 (T36.2) — the known-ID gate's counters and refusal limits.
+    pub(crate) keys: crate::key_gate::KeyGate,
     /// Queries dropped because they carried our own loop tag.
     loops: std::sync::atomic::AtomicU64,
     /// Per-process qname hash seed (keeps remote clients from precomputing collisions).
@@ -708,6 +710,7 @@ impl Pipeline {
             filter_pin: ArcSwapOption::empty(),
             flights: Singleflight::new(),
             seed: rand::random(),
+            keys: crate::key_gate::KeyGate::default(),
             loops: std::sync::atomic::AtomicU64::new(0),
             rt: tokio::runtime::Handle::try_current().ok(),
             dnssec: ArcSwapOption::empty(),
@@ -1004,7 +1007,11 @@ impl Pipeline {
             Ok(special) => special,
             Err(early) => return early,
         };
-        if let Some(len) = self.local_answer(&q, &st.policy, ident, out) {
+        // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear (DoT, DoQ) is treated as leaked:
+        // public answers only, so no local, device, zone or inventory record is answered.
+        if !public_only(meta)
+            && let Some(len) = self.local_answer(&q, &st.policy, ident, out)
+        {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
@@ -1029,7 +1036,13 @@ impl Pipeline {
                     return ready(Some(self.finish(&q, out, len, meta.transport)));
                 }
                 // REQ: FLT-014 (T9.20) — list rewrites (`$dnsrewrite`) win over blocking.
-                if let Some(r) = self.list_rewrite(&q, who) {
+                // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear does not get one that points
+                // at a private address: that answer is an inside fact (the name goes on to the
+                // filter and the upstream like any other).
+                if let Some(r) = self
+                    .list_rewrite(&q, who)
+                    .filter(|(rw, _)| !(public_only(meta) && rewrite_is_private(rw)))
+                {
                     let groups = st.policy.clients.group_names(ident);
                     return self.list_rewrite_answer(req, &q, r, groups, who, meta, out, start, oc);
                 }
@@ -1054,7 +1067,11 @@ impl Pipeline {
             return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
         }
         // REQ: FLT-014 (T7.20) — the group's rewrites (blocks above still win).
+        // REQ: DNS-901 (ADR-1090 point 3) — an address rewrite is an owner-set internal answer
+        // like a local record, so a key sent in clear does not get it (a name rewrite goes on
+        // through `safe_search`, where the route and private-PTR checks apply).
         match st.policy.clients.primary_group(ident).rewrite_for(&q.qname) {
+            Some(RewriteTarget::Addr(_)) if public_only(meta) => {}
             Some(RewriteTarget::Addr(ip)) => {
                 oc.status = Status::Local;
                 return self.rewrite_answer(&q, ip, out, meta);
@@ -1650,8 +1667,30 @@ impl Pipeline {
         let st = self.state.load();
         let q = *q;
         oc.status = Status::Refused;
+        // REQ: DNS-901 (T36.2) — a gated stream (a public listener) is answered only for a known
+        // device key, and then from any address. Unknown, revoked and missing keys get the same
+        // REFUSED (DoH never gets here: it was answered 404 by `admit`).
+        let mut known_key = false;
+        if meta.gated {
+            match self.keys.check(meta, &st.policy.clients) {
+                crate::key_gate::Verdict::Known => known_key = true,
+                crate::key_gate::Verdict::Refuse => {
+                    return Err(self.simple(
+                        &q,
+                        out,
+                        rcode::REFUSED,
+                        Some((ede::PROHIBITED, "device key required")),
+                        meta,
+                    ));
+                }
+                crate::key_gate::Verdict::Limited => {
+                    oc.status = Status::RateLimited;
+                    return Err(Response::Drop);
+                }
+            }
+        }
         // 08 §6 — never an open resolver: refuse clients outside allowed_networks.
-        if !wrendns_policy::is_allowed(&st.policy.allowed, meta.peer.ip()) {
+        if !known_key && !wrendns_policy::is_allowed(&st.policy.allowed, meta.peer.ip()) {
             return Err(self.simple(
                 &q,
                 out,
@@ -1778,8 +1817,14 @@ impl Pipeline {
         // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303);
         // REQ: DNS-019 (ADR-904) — so do single-label names with domain-needed on.
         if matches!(special, Some(Special::PrivatePtr | Special::SingleLabel))
-            && !selection.is_some_and(|s| s.routed)
+            && (public_only(meta) || !selection.is_some_and(|s| s.routed))
         {
+            return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
+        }
+        // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear gets public answers only, and a
+        // `[[route]]` is how internal zones are reached (a corporate or router domain), so a name
+        // a route sends elsewhere is not answered to a leaked key either.
+        if public_only(meta) && selection.is_some_and(|s| s.routed) {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
         }
         let Some(sel) = selection else {
@@ -2826,7 +2871,32 @@ fn response_rcode(msg: &[u8]) -> u16 {
 #[derive(Debug, Clone)]
 pub(crate) struct Handler(pub(crate) Arc<Pipeline>);
 
+/// REQ: DNS-901 (ADR-1090 point 3, ADR-1050 point 5) — a gated stream whose key travels in clear
+/// (the server name of DoT and DoQ) gets public answers only. A DoH key is in the path, inside TLS.
+fn public_only(meta: &RequestMeta) -> bool {
+    meta.gated && matches!(meta.transport, Transport::Dot | Transport::Doq)
+}
+
+/// REQ: DNS-901 (ADR-1090 point 3) — a list rewrite to an address that is not public. A rewrite
+/// to a public address or to a name is not an inside fact and stays.
+fn rewrite_is_private(rw: &wrendns_filter::rewrite::ListRewrite) -> bool {
+    match rw {
+        wrendns_filter::rewrite::ListRewrite::Addrs(ips) => {
+            ips.iter().any(|ip| !wrendns_config::is_public_address(*ip))
+        }
+        wrendns_filter::rewrite::ListRewrite::Rcode(_)
+        | wrendns_filter::rewrite::ListRewrite::Cname(_) => false,
+    }
+}
+
 impl QueryHandler for Handler {
+    /// REQ: DNS-901 (T36.2) — DoH and DoH3 ask before reading the body.
+    fn admit(&self, meta: &RequestMeta) -> bool {
+        !meta.gated
+            || self.0.keys.check(meta, &self.0.state.load().policy.clients)
+                == crate::key_gate::Verdict::Known
+    }
+
     fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
         let start = Instant::now();
         let mut oc = Outcome {
@@ -2928,6 +2998,7 @@ pub(crate) mod tests_support {
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         matches!(
@@ -2968,6 +3039,7 @@ mod tests {
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         }
     }
 
@@ -2980,7 +3052,11 @@ mod tests {
     }
 
     /// Compiles `rules` into a snapshot and installs it as the pipeline's filter.
-    fn install_filter(p: &Pipeline, rules: &str, lookup: wrendns_filter::matcher::Lookup) {
+    pub(super) fn install_filter(
+        p: &Pipeline,
+        rules: &str,
+        lookup: wrendns_filter::matcher::Lookup,
+    ) {
         use wrendns_filter::compile::{CompileOptions, ListData, ListInput, compile};
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("snap");
@@ -3087,6 +3163,7 @@ blocked_services = ["tiktok"]
                 local: None,
                 transport: Transport::Udp,
                 client_id: None,
+                gated: false,
             };
             match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
                 Response::Ready(len) => out[..len].to_vec(),
@@ -3505,6 +3582,7 @@ groups = ["kids"]
                 local: None,
                 transport: Transport::Udp,
                 client_id: None,
+                gated: false,
             };
             match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
                 Response::Ready(len) => out[..len].to_vec(),
@@ -3638,6 +3716,7 @@ groups = ["kids"]
                 local: None,
                 transport: Transport::Udp,
                 client_id: None,
+                gated: false,
             };
             match Handler(Arc::clone(&p)).handle(
                 &query("ads.example.com", rtype::A, true),
@@ -3735,6 +3814,7 @@ groups = ["kids"]
                 local: None,
                 transport: Transport::Udp,
                 client_id: None,
+                gated: false,
             };
             match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
                 Response::Ready(len) => summarize(&out[..len]).unwrap().rcode,
@@ -3794,6 +3874,7 @@ groups = ["kids"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         match Handler(Arc::clone(p)).handle(&query(name, qtype, true), &meta, &mut out) {
             Response::Ready(len) => out[..len].to_vec(),
@@ -4737,6 +4818,7 @@ groups = ["kids"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let hit = query("hit.example.com", rtype::A, true);
         let blocked = query("ads.example", rtype::A, true);
@@ -4866,6 +4948,7 @@ groups = ["kids"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         let req = query("www.example.org", rtype::A, true);
@@ -4933,6 +5016,7 @@ groups = ["kids"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         let Response::Deferred(answer) = Handler(Arc::clone(&p)).handle(
@@ -4976,6 +5060,7 @@ groups = ["kids"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let ask = |name: &str| {
             let mut out = [0u8; 4096];
@@ -5092,6 +5177,7 @@ groups = ["kids"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let statuses = |p: &Arc<Pipeline>| {
             let mut v = Vec::new();
@@ -5439,6 +5525,7 @@ members = [\"u\"]
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         let req = query("casino.example.org", rtype::A, true);
@@ -5611,6 +5698,7 @@ mod policy_tests {
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         match Handler(Arc::clone(p)).handle(&buf[..len], &meta, &mut out) {
@@ -5751,6 +5839,7 @@ mod policy_tests {
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let mut out = [0u8; 4096];
         let Response::Ready(l) = Handler(Arc::clone(&p)).handle(&buf[..len], &meta, &mut out)
@@ -5836,6 +5925,7 @@ mod reload_tests {
             local: None,
             transport: Transport::Udp,
             client_id: None,
+            gated: false,
         };
         let answer = |p: &Arc<Pipeline>| {
             let mut out = [0u8; 1024];
@@ -5915,6 +6005,7 @@ value = "10.50.5.100"
                 local: None,
                 transport: Transport::Udp,
                 client_id: None,
+                gated: false,
             };
             let mut out = [0u8; 1024];
             let mut oc = Outcome {
@@ -5944,5 +6035,401 @@ value = "10.50.5.100"
             id("default"),
             "unparseable: default"
         );
+    }
+}
+
+/// REQ: DNS-901 (T36.2) — the known-ID gate: a public listener is never an open resolver.
+#[cfg(test)]
+mod key_gate_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use wrendns_cache::CachePolicy;
+    use wrendns_config::Cidr;
+    use wrendns_net::ClientId;
+    use wrendns_proto::{
+        EdnsOut, NameBuf, ResponseBuilder, build_query, parse_query, rtype, summarize,
+    };
+
+    use super::*;
+
+    const KEY: &str = "abcdefghijklmnopqrstuvwxy2";
+    const OTHER: &str = "zyxwvutsrqponmlkjihgfedcb2";
+    const PUBLIC: &str = "203.0.113.9:4000";
+
+    /// A pipeline allowing only 192.168/16, with a device keyed `KEY`, another with a short
+    /// readable ID, and an upstream that counts the queries it receives.
+    async fn node() -> (Arc<Pipeline>, Arc<AtomicUsize>) {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((n, from)) = sock.recv_from(&mut buf).await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let query = parse_query(&buf[..n]).unwrap();
+                let mut out = [0u8; 512];
+                let mut reply = ResponseBuilder::new(&query, &mut out, rcode::NOERROR).unwrap();
+                reply
+                    .answer_a(60, std::net::Ipv4Addr::new(192, 0, 2, 7))
+                    .unwrap();
+                let len = reply.finish(None).unwrap();
+                let _ = sock.send_to(&out[..len], from).await;
+            }
+        });
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                format!(
+                    "[[upstream]]\nname = \"u\"\nurl = \"udp://{addr}\"\n\
+                     [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
+                     [[upstream_group]]\nname = \"lan\"\nmembers = [\"u\"]\n\
+                     [[route]]\nmatch_suffix = [\"corp.example\"]\nupstream_group = \"lan\"\n\
+                     [[group]]\nname = \"default\"\n\
+                     [[group.rewrite]]\ndomain = \"nas.lan.example\"\nanswer = \"192.168.1.10\"\n\
+                     [[client]]\nname = \"phone\"\nmatch = [\"id:{KEY}\"]\n\
+                     [[client]]\nname = \"tablet\"\nmatch = [\"id:kids-tablet\"]\n\
+                     [[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n"
+                ),
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                allowed: vec![Cidr::parse("192.168.0.0/16").unwrap()],
+                local: Arc::new(wrendns_policy::LocalData::from_config(&cfg).0),
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        (p, hits)
+    }
+
+    fn meta(peer: &str, transport: Transport, id: Option<&str>, gated: bool) -> RequestMeta {
+        RequestMeta {
+            peer: peer.parse().unwrap(),
+            local: None,
+            transport,
+            client_id: id.and_then(ClientId::new),
+            gated,
+        }
+    }
+
+    fn a_query(name: &str) -> Vec<u8> {
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation(name).unwrap();
+        let len =
+            build_query(&mut buf, 9, &n, rtype::A, 1, true, Some(EdnsOut::new(1232))).unwrap();
+        buf[..len].to_vec()
+    }
+
+    /// The answer to `m`: its bytes when it was refused or answered on the spot, `None` for a
+    /// drop, `Some(vec![])` for one that went upstream (and is awaited).
+    async fn ask(p: &Arc<Pipeline>, m: &RequestMeta) -> Option<Vec<u8>> {
+        let mut out = [0u8; 4096];
+        match Handler(Arc::clone(p)).handle(&a_query("www.example.org"), m, &mut out) {
+            Response::Ready(n) => Some(out[..n].to_vec()),
+            Response::Deferred(f) => {
+                assert!(f.await.is_some());
+                Some(Vec::new())
+            }
+            Response::Drop | Response::Close => None,
+        }
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// An unknown key, a revoked one, a missing one and a short readable ID are refused the
+    /// same way on a gated DoT stream from a source outside `allowed_networks`, and never reach
+    /// an upstream.
+    #[tokio::test]
+    async fn dns_901_gated_dot_refuses_unknown_revoked_missing_and_weak_keys() {
+        let (p, hits) = node().await;
+        let mut seen = Vec::new();
+        for id in [Some(OTHER), None, Some("kids-tablet"), Some("short")] {
+            let m = meta(PUBLIC, Transport::Dot, id, true);
+            let r = ask(&p, &m).await.expect("refused with an answer");
+            assert_eq!(summarize(&r).unwrap().rcode, rcode::REFUSED, "{id:?}");
+            let text = b"device key required";
+            assert!(r.windows(text.len()).any(|w| w == text), "{id:?}");
+            seen.push(r);
+        }
+        assert!(seen.windows(2).all(|w| w[0] == w[1]), "refusals differ");
+        settle().await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "no query reached an upstream"
+        );
+        assert_eq!(p.keys.counts().0, [0, 4, 0], "counted by transport");
+    }
+
+    /// The same for DoQ with no key at all.
+    #[tokio::test]
+    async fn dns_901_gated_doq_refuses_without_reaching_an_upstream() {
+        let (p, hits) = node().await;
+        let r = ask(&p, &meta(PUBLIC, Transport::Doq, None, true))
+            .await
+            .unwrap();
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::REFUSED);
+        settle().await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert_eq!(p.keys.counts().0, [0, 0, 1]);
+    }
+
+    /// A known key resolves from a source outside `allowed_networks` (that is what it is for).
+    #[tokio::test]
+    async fn dns_901_known_key_resolves_from_outside_the_allowed_networks() {
+        let (p, hits) = node().await;
+        let r = ask(&p, &meta(PUBLIC, Transport::Dot, Some(KEY), true))
+            .await
+            .unwrap();
+        assert!(r.is_empty(), "forwarded upstream and answered");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(p.keys.counts().0, [0, 0, 0]);
+    }
+
+    /// Outside the gated context nothing changes: a source outside `allowed_networks` is still
+    /// refused (a key does not matter there), and a LAN client without a key still resolves.
+    #[tokio::test]
+    async fn dns_901_ungated_streams_keep_allowed_networks() {
+        let (p, hits) = node().await;
+        let r = ask(&p, &meta(PUBLIC, Transport::Dot, Some(KEY), false))
+            .await
+            .unwrap();
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::REFUSED);
+        settle().await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        let r = ask(&p, &meta("192.168.1.9:4000", Transport::Dot, None, false))
+            .await
+            .unwrap();
+        assert!(r.is_empty(), "a LAN client without a key resolves");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(p.keys.counts(), ([0, 0, 0], 0), "nothing counted");
+    }
+
+    /// DoH and DoH3 ask `admit` before the body is read: only a known key on a gated stream passes.
+    #[tokio::test]
+    async fn dns_901_admit_answers_the_doh_gate() {
+        let (p, _) = node().await;
+        let h = Handler(Arc::clone(&p));
+        assert!(h.admit(&meta(PUBLIC, Transport::Doh, Some(KEY), true)));
+        assert!(!h.admit(&meta(PUBLIC, Transport::Doh, None, true)));
+        assert!(!h.admit(&meta(PUBLIC, Transport::Doh, Some(OTHER), true)));
+        assert!(!h.admit(&meta(PUBLIC, Transport::Doh, Some("kids-tablet"), true)));
+        assert!(
+            h.admit(&meta(PUBLIC, Transport::Doh, None, false)),
+            "not gated"
+        );
+        assert_eq!(p.keys.counts().0, [3, 0, 0]);
+    }
+
+    /// Refusals past the per-address limit get no answer on DoT (and are counted); a known key
+    /// from the same address still resolves.
+    #[tokio::test]
+    async fn dns_901_unknown_keys_are_rate_limited_per_address() {
+        let (p, _) = node().await;
+        let m = meta(PUBLIC, Transport::Dot, Some(OTHER), true);
+        let mut answered = 0;
+        for _ in 0..40 {
+            if ask(&p, &m).await.is_some() {
+                answered += 1;
+            }
+        }
+        assert_eq!(answered, 20, "the first 20 are refused, the rest dropped");
+        assert_eq!(p.keys.counts().1, 20);
+        let known = meta(PUBLIC, Transport::Dot, Some(KEY), true);
+        assert!(
+            ask(&p, &known).await.is_some(),
+            "a known key is never limited"
+        );
+    }
+
+    /// The same key tried from many addresses is limited per key.
+    #[tokio::test]
+    async fn dns_901_unknown_keys_are_rate_limited_per_key() {
+        let (p, _) = node().await;
+        let mut answered = 0;
+        for i in 0..100u8 {
+            let m = meta(
+                &format!("203.0.113.{i}:4000"),
+                Transport::Dot,
+                Some(OTHER),
+                true,
+            );
+            if ask(&p, &m).await.is_some() {
+                answered += 1;
+            }
+        }
+        assert_eq!(answered, 60);
+    }
+
+    /// A key in clear (DoT, DoQ) gets public answers only: a local record is not answered and the
+    /// query goes upstream; a DoH path key gets the local record.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_gets_public_answers_only() {
+        let (p, hits) = node().await;
+        let local = |m: RequestMeta| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                match Handler(p).handle(&a_query("nas.home.arpa"), &m, &mut out) {
+                    Response::Ready(n) => Some(out[..n].to_vec()),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Some(Vec::new())
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let doh = local(meta(PUBLIC, Transport::Doh, Some(KEY), true))
+            .await
+            .expect("local answer");
+        assert_eq!(summarize(&doh).unwrap().rcode, rcode::NOERROR);
+        assert!(doh.windows(4).any(|w| w == [192, 0, 2, 200]));
+        settle().await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "answered locally");
+        for t in [Transport::Dot, Transport::Doq] {
+            let r = local(meta(PUBLIC, t, Some(KEY), true)).await;
+            assert!(
+                r.is_none_or(|r| !r.windows(4).any(|w| w == [192, 0, 2, 200])),
+                "{t:?}: no local record"
+            );
+        }
+        settle().await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "asked upstream once, then cached"
+        );
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a group's address rewrite (split-horizon) is internal
+    // data: answered over DoH, never over a gated DoT or DoQ stream.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_does_not_get_a_group_address_rewrite() {
+        let (p, _hits) = node().await;
+        let ask = |m: RequestMeta| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                match Handler(p).handle(&a_query("nas.lan.example"), &m, &mut out) {
+                    Response::Ready(n) => Some(out[..n].to_vec()),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Some(Vec::new())
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let leak = |r: &Option<Vec<u8>>| {
+            r.as_ref()
+                .is_some_and(|r| r.windows(4).any(|w| w == [192, 168, 1, 10]))
+        };
+        let doh = ask(meta(PUBLIC, Transport::Doh, Some(KEY), true)).await;
+        assert!(leak(&doh));
+        for t in [Transport::Dot, Transport::Doq] {
+            assert!(!leak(&ask(meta(PUBLIC, t, Some(KEY), true)).await), "{t:?}");
+        }
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a list `$dnsrewrite` to a private address is an inside
+    // fact: a key sent in clear (DoT, DoQ) does not get it, a DoH path key does; a rewrite to a
+    // public address stays for both.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_does_not_get_a_list_rewrite_to_a_private_address() {
+        let (p, _hits) = node().await;
+        super::tests::install_filter(
+            &p,
+            "||inside.example^$dnsrewrite=10.9.8.7
+||outside.example^$dnsrewrite=192.0.2.55
+",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        let ask = |name: &'static str, t: Transport| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                let m = meta(PUBLIC, t, Some(KEY), true);
+                match Handler(p).handle(&a_query(name), &m, &mut out) {
+                    Response::Ready(n) => out[..n].to_vec(),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                }
+            }
+        };
+        let has = |r: &[u8], ip: [u8; 4]| r.windows(4).any(|w| w == ip);
+        assert!(has(
+            &ask("inside.example", Transport::Doh).await,
+            [10, 9, 8, 7]
+        ));
+        for t in [Transport::Dot, Transport::Doq] {
+            let r = ask("inside.example", t).await;
+            assert!(!has(&r, [10, 9, 8, 7]), "{t:?}: no private rewrite");
+        }
+        for t in [Transport::Doh, Transport::Dot, Transport::Doq] {
+            let r = ask("outside.example", t).await;
+            assert!(has(&r, [192, 0, 2, 55]), "{t:?}: a public rewrite stays");
+        }
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 3) — a name a `[[route]]` sends to an internal group is not
+    // answered over a gated DoT or DoQ stream (the key is in clear), but still is over DoH.
+    #[tokio::test]
+    async fn dns_901_a_key_in_clear_does_not_reach_routed_names() {
+        let (p, hits) = node().await;
+        let ask_corp = |m: RequestMeta| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut out = [0u8; 4096];
+                match Handler(p).handle(&a_query("db.corp.example"), &m, &mut out) {
+                    Response::Ready(n) => Some(out[..n].to_vec()),
+                    Response::Deferred(f) => {
+                        f.await;
+                        Some(Vec::new())
+                    }
+                    _ => None,
+                }
+            }
+        };
+        for t in [Transport::Dot, Transport::Doq] {
+            let r = ask_corp(meta(PUBLIC, t, Some(KEY), true)).await;
+            if let Some(r) = r.filter(|r| !r.is_empty()) {
+                assert_eq!(summarize(&r).unwrap().rcode, rcode::NXDOMAIN, "{t:?}");
+            }
+        }
+        settle().await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "no routed query went upstream"
+        );
+        let doh = ask_corp(meta(PUBLIC, Transport::Doh, Some(KEY), true)).await;
+        assert!(doh.is_some());
+        settle().await;
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "DoH keeps its routes");
+    }
+
+    #[test]
+    fn dns_901_a_key_is_26_or_more_base32_characters() {
+        use crate::key_gate::key_shape;
+        assert!(key_shape(KEY));
+        assert!(key_shape(&"a".repeat(63)));
+        assert!(!key_shape(&"a".repeat(25)));
+        assert!(!key_shape(&"a".repeat(64)));
+        assert!(!key_shape("abcdefghijklmnopqrstuvwxy1"), "1 is not base32");
+        assert!(!key_shape("kids-tablet"));
     }
 }

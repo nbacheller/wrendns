@@ -35,13 +35,17 @@ impl Report<'_> {
 }
 
 /// Returns warnings; pushes errors.
-pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<String> {
+pub(crate) fn validate(
+    cfg: &Config,
+    host: crate::gate::HostFacts,
+    errors: &mut Vec<ConfigError>,
+) -> Vec<String> {
     let mut r = Report {
         errors,
         warnings: Vec::new(),
     };
     node(cfg, &mut r);
-    listeners(cfg, &mut r);
+    listeners(cfg, host, &mut r);
     let upstreams = upstreams(cfg, &mut r);
     let groups = groups(cfg, &upstreams, &mut r);
     routes(cfg, &groups, &mut r);
@@ -1723,7 +1727,7 @@ fn node(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
-fn listeners(cfg: &Config, r: &mut Report<'_>) {
+fn listeners(cfg: &Config, host: crate::gate::HostFacts, r: &mut Report<'_>) {
     if cfg.listen.is_empty() {
         r.err("listen", "at least one listener is required");
     }
@@ -1760,6 +1764,19 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 format!("{p}.proxy_protocol"),
                 "only valid for tcp, dot, and doh listeners",
             );
+        }
+        // REQ: DNS-901 (T36.2) — the known-ID gate needs a place to carry the key. Only `true` is
+        // an error there: `false` and unset leave a udp or tcp listener as it is.
+        if l.require_client_id == Some(true) && !l.proto.needs_tls() {
+            r.err(
+                format!("{p}.require_client_id"),
+                "only valid for dot, doh, doh3, and doq listeners (a plain udp or tcp query carries no client ID)",
+            );
+        }
+        // REQ: DNS-901 (T36.2, ADR-1090 points 1 and 2, spec/08 §6) — the startup check: see
+        // `gate::listener_warnings` (the node runs the same function on the effective settings).
+        for w in crate::gate::listener_warnings(cfg, l, host, &p) {
+            r.warn(w);
         }
         if l.proto == crate::ListenProto::Udp {
             if l.max_connections.is_some() {
@@ -3013,7 +3030,10 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
 /// other).
 #[must_use]
 pub fn addrs_clash(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
-    a.port() == b.port() && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
+    a.port() == b.port()
+        && (a.ip() == b.ip()
+            || crate::gate::is_wildcard(a.ip())
+            || crate::gate::is_wildcard(b.ip()))
 }
 
 #[cfg(test)]

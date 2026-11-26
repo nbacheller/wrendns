@@ -2240,3 +2240,358 @@ fn api_003_http_redirect_needs_tls() {
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// REQ: DNS-901 (T36.2) — `require_client_id` is only for listeners that can carry a key.
+#[test]
+fn dns_901_require_client_id_needs_an_encrypted_listener() {
+    let errs = load_str(
+        "[[listen]]\nproto = \"udp\"\naddr = \"127.0.0.1:5353\"\nrequire_client_id = true\n",
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), vec!["listen[0].require_client_id"]);
+    let errs = load_str(
+        "[[listen]]\nproto = \"tcp\"\naddr = \"127.0.0.1:5353\"\nrequire_client_id = true\n",
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), vec!["listen[0].require_client_id"]);
+    let tls = "tls = { cert = \"c.pem\", key = \"k.pem\" }";
+    for proto in ["dot", "doh", "doh3", "doq"] {
+        let l = load_str(&format!(
+            "[[listen]]\nproto = \"{proto}\"\naddr = \"203.0.113.5:853\"\nrequire_client_id = true\n{tls}\n"
+        ))
+        .unwrap();
+        assert_eq!(l.config.listen[0].require_client_id, Some(true), "{proto}");
+        assert!(
+            !l.warnings.iter().any(|w| w.contains("require_client_id")),
+            "gated: no warning ({proto})"
+        );
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — the startup check: an encrypted listener on a public
+/// address with the gate explicitly off is warned about; a gated one, a LAN, loopback or
+/// wildcard bind without a setting, and anything inside `allowed_networks` are not.
+#[test]
+fn dns_901_public_listener_without_the_gate_warns_at_startup() {
+    let tls = "tls = { cert = \"c.pem\", key = \"k.pem\" }";
+    let warns = |addr: &str, extra: &str| {
+        load_str(&format!(
+            "[[listen]]
+proto = \"dot\"
+addr = \"{addr}\"
+{tls}
+{extra}
+"
+        ))
+        .unwrap()
+        .warnings
+        .into_iter()
+        .filter(|w| w.contains("open resolver"))
+        .count()
+    };
+    assert_eq!(warns("203.0.113.5:853", "require_client_id = false"), 1);
+    assert_eq!(warns("[2001:db8::5]:853", "require_client_id = false"), 1);
+    assert_eq!(warns("203.0.113.5:853", ""), 0, "gated by default");
+    assert_eq!(warns("203.0.113.5:853", "require_client_id = true"), 0);
+    assert_eq!(warns("192.168.1.2:853", ""), 0);
+    assert_eq!(warns("127.0.0.1:853", ""), 0);
+    assert_eq!(
+        warns("192.168.1.2:853", "require_client_id = false"),
+        0,
+        "a private address with the gate off is inside the default allowed_networks"
+    );
+    // A wildcard bind left on its default is not warned about here (the loader's host facts are
+    // unreadable, which gates it); an explicit false on it is (see the wildcard tests below).
+    assert_eq!(warns("0.0.0.0:853", ""), 0);
+    assert_eq!(warns("[::]:853", ""), 0);
+    // Every explicit false on a public address warns, inside allowed_networks too.
+    assert_eq!(
+        warns(
+            "203.0.113.5:853",
+            "require_client_id = false
+[access]
+allowed_networks = [\"203.0.113.0/24\"]"
+        ),
+        1,
+        "docs and code agree: every explicit false on a public listener warns"
+    );
+}
+
+/// REQ: DNS-901 — a udp or tcp listener cannot be gated, so its warning never tells the
+/// operator to set the flag (which is a configuration error there); `false` is accepted.
+#[test]
+fn dns_901_plain_listener_warning_names_no_flag() {
+    for proto in ["udp", "tcp"] {
+        let l = load_str(&format!(
+            "[[listen]]
+proto = \"{proto}\"
+addr = \"203.0.113.5:53\"
+require_client_id = false
+"
+        ))
+        .unwrap();
+        assert!(!l.config.listen[0].gated(wrendns_config::HostFacts::UNKNOWN));
+        let w: Vec<_> = l
+            .warnings
+            .iter()
+            .filter(|w| w.contains("open resolver"))
+            .collect();
+        assert_eq!(w.len(), 1, "{proto}: {:?}", l.warnings);
+        assert!(!w[0].contains("require_client_id"), "{}", w[0]);
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — the public address test is conservative: only loopback,
+/// RFC 1918, CGNAT, link-local and unique-local are private; a wildcard is not public.
+#[test]
+fn dns_901_is_public_address() {
+    use std::net::IpAddr;
+    let public = |s: &str| wrendns_config::is_public_address(s.parse::<IpAddr>().unwrap());
+    for ip in [
+        "203.0.113.5",
+        "8.8.8.8",
+        "1.1.1.1",
+        "100.63.255.255",
+        "100.128.0.0",
+        "172.15.0.1",
+        "172.32.0.1",
+        "11.0.0.1",
+        "192.169.0.1",
+        "169.255.0.1",
+        "2001:db8::5",
+        "2606:4700::1",
+        "fe00::1",
+        "fec0::1",
+        "::ffff:8.8.8.8",
+    ] {
+        assert!(public(ip), "{ip} is public");
+    }
+    for ip in [
+        "127.0.0.1",
+        "127.9.9.9",
+        "10.1.2.3",
+        "172.16.0.1",
+        "172.31.255.255",
+        "192.168.1.1",
+        "100.64.0.1",
+        "100.127.255.255",
+        "169.254.1.1",
+        "::1",
+        "fc00::1",
+        "fd12:3456::1",
+        "fe80::1",
+        "febf::1",
+        "::ffff:192.168.1.1",
+        "::ffff:127.0.0.1",
+        "0.0.0.0",
+        "::",
+    ] {
+        assert!(!public(ip), "{ip} is not public");
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 1) — unset: on for a public bind, off for private, loopback and
+/// wildcard; explicit false is honoured on a public bind; explicit true is honoured anywhere
+/// that can carry a key; udp and tcp are never gated.
+#[test]
+fn dns_901_gate_default_explicit_and_transport() {
+    let tls = "tls = { cert = \"c.pem\", key = \"k.pem\" }";
+    let gate = |proto: &str, addr: &str, extra: &str| {
+        let t = if proto == "udp" || proto == "tcp" {
+            ""
+        } else {
+            tls
+        };
+        let l = load_str(&format!(
+            "[[listen]]
+proto = \"{proto}\"
+addr = \"{addr}\"
+{t}
+{extra}
+"
+        ))
+        .unwrap();
+        let l = &l.config.listen[0];
+        let private = wrendns_config::HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: false,
+        };
+        (l.gated(private), l.gated_by_default(private))
+    };
+    for proto in ["dot", "doh", "doh3", "doq"] {
+        assert_eq!(gate(proto, "203.0.113.5:853", ""), (true, true), "{proto}");
+        assert_eq!(
+            gate(proto, "[2001:db8::5]:853", ""),
+            (true, true),
+            "{proto}"
+        );
+        assert_eq!(
+            gate(proto, "192.168.1.2:853", ""),
+            (false, false),
+            "{proto}"
+        );
+        assert_eq!(gate(proto, "127.0.0.1:853", ""), (false, false), "{proto}");
+        assert_eq!(gate(proto, "0.0.0.0:853", ""), (false, false), "{proto}");
+        assert_eq!(
+            gate(proto, "203.0.113.5:853", "require_client_id = false"),
+            (false, false),
+            "{proto}: explicit false honoured"
+        );
+        assert_eq!(
+            gate(proto, "203.0.113.5:853", "require_client_id = true"),
+            (true, false),
+            "{proto}: explicit true is not by default"
+        );
+        assert_eq!(
+            gate(proto, "192.168.1.2:853", "require_client_id = true"),
+            (true, false),
+            "{proto}: explicit true honoured on a private bind"
+        );
+    }
+    for proto in ["udp", "tcp"] {
+        assert_eq!(gate(proto, "203.0.113.5:53", ""), (false, false), "{proto}");
+    }
+}
+
+/// Loads a DoT listener at `addr` with the host's facts passed in; returns the effective gate of
+/// the default, whether it is gated by default, and the gate warnings.
+fn wildcard(addr: &str, extra: &str, host: wrendns_config::HostFacts) -> (bool, bool, Vec<String>) {
+    let loaded = Loader::new()
+        .toml_str(
+            "t.toml",
+            format!(
+                "[[listen]]
+proto = \"dot\"
+addr = \"{addr}\"
+tls = {{ cert = \"c.pem\", key = \"k.pem\" }}
+{extra}
+"
+            ),
+        )
+        .env(Vec::<(String, String)>::new())
+        .host_facts(host)
+        .load();
+    let l = loaded.unwrap_or_else(|e| unreachable!("the listener must load: {e:?}"));
+    let l0 = &l.config.listen[0];
+    (
+        l0.gated(host),
+        l0.gated_by_default(host),
+        l.warnings
+            .into_iter()
+            .filter(|w| w.contains("require_client_id"))
+            .collect(),
+    )
+}
+
+fn host(public_ipv4: Option<bool>, global_ipv6: bool) -> wrendns_config::HostFacts {
+    wrendns_config::HostFacts {
+        public_ipv4,
+        global_ipv6,
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 2) — a wildcard bind (`0.0.0.0`, `[::]`, `[::ffff:0.0.0.0]`) is gated by
+/// default when the host holds a public IPv4 address.
+#[test]
+fn dns_901_wildcard_with_a_public_ipv4_on_the_host_is_gated() {
+    for addr in ["0.0.0.0:853", "[::]:853", "[::ffff:0.0.0.0]:853"] {
+        let (gated, by_default, warns) = wildcard(addr, "", host(Some(true), false));
+        assert!(gated && by_default, "{addr}");
+        assert!(warns.is_empty(), "{addr}: {warns:?}");
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 2) — a wildcard bind on a host with private IPv4 addresses only is
+/// not gated, and not warned about.
+#[test]
+fn dns_901_wildcard_with_only_private_ipv4_is_not_gated() {
+    for addr in ["0.0.0.0:853", "[::]:853", "[::ffff:0.0.0.0]:853"] {
+        let (gated, by_default, warns) = wildcard(addr, "", host(Some(false), false));
+        assert!(!gated && !by_default, "{addr}");
+        assert!(warns.is_empty(), "{addr}: {warns:?}");
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 2) — a global IPv6 address alone does not gate a wildcard bind; the
+/// node warns instead.
+#[test]
+fn dns_901_wildcard_with_only_a_global_ipv6_is_not_gated_and_warns() {
+    for addr in ["0.0.0.0:853", "[::]:853", "[::ffff:0.0.0.0]:853"] {
+        let (gated, _, warns) = wildcard(addr, "", host(Some(false), true));
+        assert!(!gated, "{addr}");
+        assert_eq!(warns.len(), 1, "{addr}: {warns:?}");
+        assert!(warns[0].contains("global IPv6"), "{}", warns[0]);
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 2) — an unreadable interface list fails closed: gated.
+#[test]
+fn dns_901_wildcard_with_an_unreadable_interface_list_is_gated() {
+    let (gated, by_default, _) = wildcard("0.0.0.0:853", "", wrendns_config::HostFacts::UNKNOWN);
+    assert!(gated && by_default);
+    // An empty address list is as good as unreadable.
+    assert_eq!(
+        wrendns_config::HostFacts::from_addrs(&[]),
+        wrendns_config::HostFacts::UNKNOWN
+    );
+}
+
+/// REQ: DNS-901 — explicit values win over the wildcard rule, and an explicit false on a wildcard
+/// listener that a public address reaches warns (public IPv4, or unreadable: fail closed).
+#[test]
+fn dns_901_wildcard_explicit_values_are_honoured() {
+    for h in [
+        host(Some(true), false),
+        host(Some(false), true),
+        wrendns_config::HostFacts::UNKNOWN,
+    ] {
+        let (gated, by_default, _) = wildcard("0.0.0.0:853", "require_client_id = true", h);
+        assert!(gated && !by_default);
+        let (gated, _, warns) = wildcard("0.0.0.0:853", "require_client_id = false", h);
+        assert!(!gated);
+        let reaches = h.public_ipv4 != Some(false);
+        assert_eq!(warns.len(), usize::from(reaches), "{h:?}: {warns:?}");
+    }
+}
+
+/// REQ: DNS-901 (ADR-1090 point 2) — the facts are made from the addresses of the interfaces: only
+/// IPv4 addresses decide the public IPv4 fact, a mapped address counts as IPv4, a link-local or
+/// unique-local IPv6 address is not global.
+#[test]
+fn dns_901_host_facts_from_addresses() {
+    let f = |a: &[&str]| {
+        let ips: Vec<std::net::IpAddr> = a.iter().map(|s| s.parse().unwrap()).collect();
+        wrendns_config::HostFacts::from_addrs(&ips)
+    };
+    assert_eq!(
+        f(&["127.0.0.1", "192.168.1.5", "100.64.0.9"]),
+        host(Some(false), false)
+    );
+    assert_eq!(f(&["127.0.0.1", "203.0.113.5"]), host(Some(true), false));
+    assert_eq!(
+        f(&["127.0.0.1", "2001:db8::5", "fe80::1", "fd00::1"]),
+        host(Some(false), true)
+    );
+    assert_eq!(
+        f(&["127.0.0.1", "fe80::1", "fd00::1"]),
+        host(Some(false), false)
+    );
+    assert_eq!(f(&["::ffff:203.0.113.5"]), host(Some(true), false));
+}
+
+/// REQ: DNS-901 — a mapped wildcard is a wildcard everywhere, and clashes like one.
+#[test]
+fn dns_901_mapped_wildcard_is_a_wildcard() {
+    assert!(wrendns_config::is_wildcard("0.0.0.0".parse().unwrap()));
+    assert!(wrendns_config::is_wildcard("::".parse().unwrap()));
+    assert!(wrendns_config::is_wildcard(
+        "::ffff:0.0.0.0".parse().unwrap()
+    ));
+    assert!(!wrendns_config::is_wildcard(
+        "::ffff:1.2.3.4".parse().unwrap()
+    ));
+    assert!(wrendns_config::addrs_clash(
+        "[::ffff:0.0.0.0]:853".parse().unwrap(),
+        "203.0.113.5:853".parse().unwrap()
+    ));
+}

@@ -2852,6 +2852,13 @@
           "type": "boolean",
           "default": false
         },
+        "require_client_id": {
+          "description": "REQ: DNS-901 (T36.2, ADR-1050) — a public listener is never an open resolver: with this on\n(`dot`, `doh`, `doh3` and `doq` only), a query is answered only when it carries a known\ndevice key, as the DoH path (`/dns-query/<key>`) or the first label of the DoT, DoH3 or\nDoQ server name. A key is at least 128 random bits (26 base32 characters) and must be\nthe `id:` match key of a device in `[[client]]`. Unknown, revoked and missing keys are\nrefused the same way (DoH 404; DoT and DoQ REFUSED with an extended error) and counted.\nA known key is let in from any address, outside `[access] allowed_networks` too.\n\nREQ: DNS-901 (ADR-1090 point 1, owner decision 2026-11-25) — three states: unset means on\non for a listener bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local) and off otherwise;\na wildcard bind (`0.0.0.0`, `[::]`, `[::ffff:0.0.0.0]`) is on only when the host holds a public IPv4 address\non an interface (or the interface list cannot be read), and off when it has only private IPv4 addresses or a global IPv6 address\nalone (a warning is logged then). `true` forces it on; `false` turns it off, which is allowed\nbut logs a warning at start and at every reload on a public or public-resolving wildcard listener, whether the file or the web UI set it.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "tls": {
           "description": "Certificate and key (required for dot/doh/doh3/doq; reloaded on change).",
           "anyOf": [

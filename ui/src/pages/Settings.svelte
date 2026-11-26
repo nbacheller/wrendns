@@ -18,6 +18,7 @@
   // REQ: DNS-011 (T27.11) — DNSSEC mode and negative trust anchors, under Query handling.
   import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
+  import ListenerGate from '../lib/components/ListenerGate.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
@@ -926,6 +927,50 @@
       {/if}
       <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would. With HTTPS on the web UI (<code>[api] tls</code>), it's checked too: compare its SHA-256 fingerprint with the one your browser shows before trusting a self-signed certificate.</p>
     </section>
+    <!-- REQ: DNS-901 (T36.2, ADR-1090) — which listeners need a device key, and a warning for a public one that does not. -->
+    {#if info && info.listenerAccess?.length}
+      <section class="card" data-testid="listener-access">
+        <h2>Listener access<HelpButton id="listener-keys" /></h2>
+        <div class="table-wrap">
+          <table class="compact">
+            <thead><tr><th>Listener</th><th>Device key</th><th>Notes</th></tr></thead>
+            <tbody>
+              {#each info.listenerAccess as l (l.listener)}
+                <tr data-testid="listener-access-row">
+                  <td class="mono">{l.listener}</td>
+                  <td>
+                    {#if l.requireClientId}<span class="badge ok">required</span>{#if l.gatedByDefault} <span class="badge warn" data-testid="listener-default-notice">on by default</span>{/if}
+                    {:else if l.canCarryKey}<span class="badge">not required</span>
+                    {:else}<span class="badge">not available</span>{/if}
+                  </td>
+                  <td class="small">
+                    {#if l.gatedByDefault}
+                      Refuses queries without a known device key because <code>require_client_id</code> is not set and the default is {l.defaultReason} (new in 1.1.0). Set it to <code>true</code> to keep this, or <code>false</code> to open the listener.
+                    {:else if l.requireClientId}
+                      Answers only a known device key, from any address.
+                    {:else if l.publicExposure && l.canCarryKey}
+                      <span class="badge warn" data-testid="listener-open-warning">public address</span>
+                      <code>require_client_id</code> is off here, so only the allowed networks keep this listener from being an open resolver.
+                    {:else if l.publicAddress}
+                      <span class="badge warn" data-testid="listener-open-warning">public address</span>
+                      Only the allowed networks keep this listener from being an open resolver. A plain UDP or TCP query carries no device key, so use DoT, DoH, DoH3 or DoQ for devices away from home.
+                    {:else if l.wildcardBind && l.canCarryKey && l.setting === 'unset'}
+                      <span class="badge warn" data-testid="listener-wildcard-notice">every address</span>
+                      The device key is {l.defaultReason}. If it is reachable from the internet (an address added later, IPv6, a forwarded port), set <code>require_client_id = true</code>.
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="muted small">Unset, <code>require_client_id</code> is on for a public address and off otherwise, and for a listener that binds every address it is on when this host has a public IPv4 address (a change of the host's addresses is picked up at the next reload); turning it on for a listener your LAN uses refuses the devices that carry no key. In the configuration file it is <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), and a reload applies it.</p>
+        {#if can('admin')}
+          <!-- REQ: DNS-901, API-902 (T27.14) — the gate's three states, changed through the guarded framework. -->
+          <ListenerGate rows={info.listenerAccess} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />
+        {/if}
+      </section>
+    {/if}
     <section class="card" data-testid="changes-list">
       <h2>Changes<HelpButton id="change-markers" /></h2>
       <div class="change-filters">

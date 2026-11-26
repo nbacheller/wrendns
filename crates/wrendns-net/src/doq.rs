@@ -41,6 +41,8 @@ pub struct DoqConfig {
     /// Max concurrent connections from one client address (an IPv6 /64), once its handshake
     /// proved the address; 0 = no limit (review 01 q2).
     pub max_connections_per_address: usize,
+    /// REQ: DNS-901 (T36.2) — every query needs a known client ID (the listener is public).
+    pub require_client_id: bool,
 }
 
 impl DoqConfig {
@@ -52,6 +54,7 @@ impl DoqConfig {
             max_streams: 100,
             max_connections: 1024,
             max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
+            require_client_id: false,
         }
     }
 }
@@ -107,7 +110,11 @@ impl DoqServer {
             handler,
             Arc::clone(&stats),
             rx,
-            (cfg.max_connections, cfg.max_connections_per_address),
+            (
+                cfg.max_connections,
+                cfg.max_connections_per_address,
+                cfg.require_client_id,
+            ),
             cfg.idle_timeout,
         ));
         Ok(Self {
@@ -144,7 +151,7 @@ async fn accept_loop<H: QueryHandler>(
     handler: Arc<H>,
     stats: Arc<DoqStats>,
     mut stop: watch::Receiver<bool>,
-    (max_connections, max_per_address): (usize, usize),
+    (max_connections, max_per_address, gated): (usize, usize, bool),
     read_timeout: Duration,
 ) {
     // REQ: DNS-004 — the same cap as TCP (`spec/03` §1): a connection beyond it is refused
@@ -189,7 +196,7 @@ async fn accept_loop<H: QueryHandler>(
                 .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
                 .and_then(|d| d.server_name.clone())
                 .and_then(|sni| certs.client_id(&sni));
-            serve_conn(conn, peer, client_id, handler, stats, read_timeout).await;
+            serve_conn(conn, peer, (client_id, gated), handler, stats, read_timeout).await;
             drop(permit);
         });
     }
@@ -198,7 +205,7 @@ async fn accept_loop<H: QueryHandler>(
 async fn serve_conn<H: QueryHandler>(
     conn: quinn::Connection,
     peer: SocketAddr,
-    client_id: Option<ClientId>,
+    (client_id, gated): (Option<ClientId>, bool),
     handler: Arc<H>,
     stats: Arc<DoqStats>,
     read_timeout: Duration,
@@ -208,6 +215,7 @@ async fn serve_conn<H: QueryHandler>(
         local: None,
         transport: Transport::Doq,
         client_id,
+        gated,
     };
     while let Ok((send, recv)) = conn.accept_bi().await {
         let (conn, handler, stats) = (conn.clone(), Arc::clone(&handler), Arc::clone(&stats));

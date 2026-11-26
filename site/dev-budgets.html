@@ -60,7 +60,7 @@
       <tr><td>A compact zoneinfo</td><td>about 0.2 MiB</td><td>Built once with <code>zic -b fat</code> instead of copying Debian's three copies. The build fails if a zone name goes missing, and a test checks every file against the host's. (ADR-169)</td></tr>
       <tr><td>SQLite without full-text search, R-tree, and dbstat</td><td>about 0.2 MiB</td><td><code>LIBSQLITE3_FLAGS</code> in <code>.cargo/config.toml</code> (so the tests run against the SQLite we ship), with a test that the four modules are gone and the ones we use are not. (ADR-169)</td></tr>
       <tr><td>25 crates off the DNS path built for size</td><td>0.36 MiB</td><td><code>opt-level = "s"</code> in <code>[profile.release.package.*]</code>. A guard test keeps hot-path crates off the list. (ADR-170)</td></tr>
-      <tr><td>Icon glyphs minified</td><td>about 15 KiB, with eleven more glyphs</td><td>Path data to two decimals. See <a href="dev-icons.html">Extend the domain icons</a>.</td></tr>
+      <tr><td>Icon glyphs minified</td><td>about 15 KiB, with eleven more glyphs</td><td>Path data to one decimal (two on the 16 grid). See <a href="dev-icons.html">Extend the domain icons</a>.</td></tr>
     </tbody>
   </table></div>
 </section>

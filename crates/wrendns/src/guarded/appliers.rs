@@ -36,6 +36,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
     match id {
         guarded::RESTART_NOW => Some(Arc::new(NoOp)),
         guarded::API_HTTP_REDIRECT => Some(Arc::new(HttpRedirect)),
+        guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
@@ -129,6 +130,266 @@ impl Applier for HttpRedirect {
             && let Ok(a) = Self::address(value)
         {
             cfg.api.http_redirect = a;
+        }
+    }
+}
+
+/// REQ: DNS-901, API-902 (T27.14, ADR-1090 point 1) — `listen-access`: the known-ID gate of every
+/// listener, `{"listeners": [{"proto", "addr", "require_client_id"}]}` with `require_client_id`
+/// `null` (the default: on for a public address, off otherwise), `true` or `false`. The value names
+/// every listener this node runs and no other; a plain UDP or TCP listener can't carry a key, so its
+/// setting is always `null`. `immediate`: it moves no address and leaves the API alone; the reload rebinds a listener whose effective gate changes.
+///
+/// What the default resolves to is `wrendns_config::default_gate`, with the host's address facts
+/// (`crate::gate_host`): the same function the bind, the probes, the API and the health report use.
+pub(crate) struct ListenAccess;
+
+/// One listener's line in a `listen-access` value.
+struct GateLine {
+    proto: wrendns_config::ListenProto,
+    addr: std::net::SocketAddr,
+    setting: Option<bool>,
+}
+
+impl GateLine {
+    fn name(&self) -> String {
+        format!("{}://{}", proto_word(self.proto), self.addr)
+    }
+}
+
+fn proto_word(p: wrendns_config::ListenProto) -> &'static str {
+    use wrendns_config::ListenProto as P;
+    match p {
+        P::Udp => "udp",
+        P::Tcp => "tcp",
+        P::Dot => "dot",
+        P::Doh => "doh",
+        P::Doh3 => "doh3",
+        P::Doq => "doq",
+    }
+}
+
+fn gate_word(on: bool) -> &'static str {
+    if on {
+        "answers only a known device key"
+    } else {
+        "open to the allowed networks"
+    }
+}
+
+fn setting_word(s: Option<bool>) -> &'static str {
+    match s {
+        None => "default",
+        Some(true) => "on",
+        Some(false) => "off",
+    }
+}
+
+impl ListenAccess {
+    fn lines(v: &Value) -> Result<Vec<GateLine>, Problem> {
+        let bad = |why: String| Problem::new(Code::InvalidConfig, format!("`listeners`: {why}"));
+        let list = v
+            .get("listeners")
+            .and_then(Value::as_array)
+            .ok_or_else(|| bad("must be a list".to_owned()))?;
+        let mut out: Vec<GateLine> = Vec::new();
+        for l in list {
+            let o = l
+                .as_object()
+                .ok_or_else(|| bad("each entry must be an object".to_owned()))?;
+            if let Some(k) = o
+                .keys()
+                .find(|k| !matches!(k.as_str(), "proto" | "addr" | "require_client_id"))
+            {
+                return Err(bad(format!("`{k}` isn't a field here")));
+            }
+            let proto: wrendns_config::ListenProto = o
+                .get("proto")
+                .cloned()
+                .and_then(|p| serde_json::from_value(p).ok())
+                .ok_or_else(|| bad("`proto` must be udp, tcp, dot, doh, doh3 or doq".to_owned()))?;
+            let addr: std::net::SocketAddr = o
+                .get("addr")
+                .and_then(Value::as_str)
+                .and_then(|a| a.parse().ok())
+                .ok_or_else(|| bad("`addr` must look like 203.0.113.5:853".to_owned()))?;
+            let setting = match o.get("require_client_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(b)) => Some(*b),
+                Some(_) => {
+                    return Err(bad(
+                        "`require_client_id` must be null, true or false".to_owned()
+                    ));
+                }
+            };
+            let line = GateLine {
+                proto,
+                addr,
+                setting,
+            };
+            if out.iter().any(|x| x.proto == proto && x.addr == addr) {
+                return Err(bad(format!("{} appears twice", line.name())));
+            }
+            out.push(line);
+        }
+        Ok(out)
+    }
+}
+
+impl Applier for ListenAccess {
+    fn current(&self, cfg: &Config) -> Value {
+        serde_json::json!({"listeners": cfg.listen.iter().map(|l| serde_json::json!({
+            "proto": proto_word(l.proto),
+            "addr": l.addr.to_string(),
+            "require_client_id": l.require_client_id,
+        })).collect::<Vec<_>>()})
+    }
+
+    #[allow(clippy::too_many_lines)] // one ordered list of checks
+    fn check(&self, cx: &CheckCx<'_>) -> Result<Checked, Problem> {
+        let lines = Self::lines(cx.value)?;
+        // The facts the reload that applies this will use, not the ones from the last bind: when
+        // the host's addresses changed in between, the weakening is judged on what will happen.
+        let host = crate::gate_host::read();
+        let bad = |why: String| Problem::new(Code::InvalidConfig, format!("`listeners`: {why}"));
+        // Exactly the listeners this node runs: the setting is per listener, nothing is added or
+        // removed here (the listeners themselves are the `listen` setting's).
+        for line in &lines {
+            if !cx
+                .cfg
+                .listen
+                .iter()
+                .any(|l| l.proto == line.proto && l.addr == line.addr)
+            {
+                return Err(bad(format!(
+                    "{} isn't a listener {} runs",
+                    line.name(),
+                    cx.node
+                )));
+            }
+            if line.setting.is_some() && !line.proto.needs_tls() {
+                return Err(bad(format!(
+                    "{} can't carry a device key (only DoT, DoH, DoH3 and DoQ can), so it has no setting here",
+                    line.name()
+                )));
+            }
+        }
+        if let Some(l) = cx
+            .cfg
+            .listen
+            .iter()
+            .find(|l| !lines.iter().any(|x| x.proto == l.proto && x.addr == l.addr))
+        {
+            return Err(bad(format!(
+                "{}://{} is missing; name every listener",
+                proto_word(l.proto),
+                l.addr
+            )));
+        }
+        let mut changes: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
+        for l in &cx.cfg.listen {
+            let Some(line) = lines
+                .iter()
+                .find(|x| x.proto == l.proto && x.addr == l.addr)
+            else {
+                continue;
+            };
+            if line.setting == l.require_client_id {
+                continue;
+            }
+            let d = l.default_gate(host);
+            let (now, public) = (l.gated(host), d.public_exposure());
+            let after = wrendns_config::gate::effective_gate(
+                l.proto.needs_tls(),
+                line.setting,
+                l.addr.ip(),
+                host,
+            );
+            changes.push(format!(
+                "{}: {} ({}) becomes {} ({})",
+                line.name(),
+                setting_word(l.require_client_id),
+                gate_word(now),
+                setting_word(line.setting),
+                gate_word(after),
+            ));
+            if now && !after && public {
+                warnings.push(format!(
+                    "{} is on a public address. With the device key off, only [access] allowed_networks keeps it from being an open resolver for the whole internet; a mistake in that list makes it one.",
+                    line.name()
+                ));
+            } else if now && !after {
+                warnings.push(format!(
+                    "{} will answer a query without a device key, from any address the allowed networks let in.",
+                    line.name()
+                ));
+            }
+            if !now && after {
+                warnings.push(format!(
+                    "{} will refuse every query that carries no known device key, from any address, your own network included, until each device uses its key (a configured `id:` match key of the key shape).",
+                    line.name()
+                ));
+            }
+            if line.setting.is_none() && wrendns_config::is_wildcard(l.addr.ip()) && !d.on() {
+                warnings.push(format!(
+                    "{} binds every address and this host has no public IPv4 address, so the default is off. If it is reachable from the internet (an address added later, IPv6, a forwarded port), set it on.",
+                    line.name()
+                ));
+            }
+        }
+        let defaults: Vec<String> = cx
+            .cfg
+            .listen
+            .iter()
+            .filter(|l| l.proto.needs_tls())
+            .map(|l| {
+                format!(
+                    "{}://{}: the default is {}",
+                    proto_word(l.proto),
+                    l.addr,
+                    l.default_gate(host).describe()
+                )
+            })
+            .collect();
+        let mut effect = if changes.is_empty() {
+            format!("Changes no listener's device key setting on {}.", cx.node)
+        } else {
+            format!(
+                "Changes the device key setting on {} (a reload applies it; a DoT, DoH, DoH3 or DoQ listener whose effective gate changes is closed and bound again, ending its open connections, and, if its certificate cannot be loaded, is closed when the gate was turned on and keeps its gate when it was turned off): {}.",
+                cx.node,
+                changes.join("; ")
+            )
+        };
+        if !defaults.is_empty() {
+            effect.push_str(" For reference, ");
+            effect.push_str(&defaults.join("; "));
+            effect.push('.');
+        }
+        // REQ: DNS-901 — a gate that was on and is off afterwards, judged with the host's facts (the
+        // row's own `weakens` cannot see them).
+        let weakening =
+            wrendns_config::guarded::listen_gate_weakened(&self.current(cx.cfg), cx.value, host);
+        Ok(Checked {
+            effect,
+            warnings,
+            weakening,
+            ..Checked::default()
+        })
+    }
+
+    fn overlay(&self, cfg: &mut Config, value: &Value) {
+        let Ok(lines) = Self::lines(value) else {
+            return;
+        };
+        for l in &mut cfg.listen {
+            if l.proto.needs_tls()
+                && let Some(line) = lines
+                    .iter()
+                    .find(|x| x.proto == l.proto && x.addr == l.addr)
+            {
+                l.require_client_id = line.setting;
+            }
         }
     }
 }
@@ -413,5 +674,290 @@ mod redirect_tests {
         HttpRedirect.overlay(&mut plain, &json!({"address": "0.0.0.0:80"}));
         assert_eq!(plain.api.http_redirect, None);
         assert_eq!(HttpRedirect.current(&cfg), json!({"address": null}));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod listen_access_tests {
+    use serde_json::json;
+    use wrendns_api::auth::Actor;
+    use wrendns_api::guarded::GuardedCaller;
+    use wrendns_config::{ListenProto, Listener, SafeString, TlsFiles};
+
+    use super::*;
+
+    fn caller() -> GuardedCaller {
+        GuardedCaller {
+            actor: Actor {
+                name: "admin".to_owned(),
+                kind: "session",
+                remote: None,
+                reason: None,
+            },
+            username: "admin".to_owned(),
+            session: None,
+            signed_in_at: None,
+            arrived_on: None,
+            remote: None,
+            remote_under_pending: None,
+            tls: false,
+        }
+    }
+
+    fn listener(proto: ListenProto, addr: &str, gate: Option<bool>) -> Listener {
+        Listener {
+            proto,
+            addr: addr.parse().unwrap(),
+            path: None,
+            tls: proto.needs_tls().then(|| TlsFiles {
+                cert: SafeString::new("/c.pem").unwrap(),
+                key: SafeString::new("/k.pem").unwrap(),
+            }),
+            proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
+            require_client_id: gate,
+        }
+    }
+
+    /// A public DoT listener, a LAN DoH one, a wildcard DoQ one and a plain UDP one.
+    pub(crate) fn cfg() -> Config {
+        Config {
+            listen: vec![
+                listener(ListenProto::Dot, "203.0.113.5:853", None),
+                listener(ListenProto::Doh, "192.168.1.2:443", None),
+                listener(ListenProto::Doq, "0.0.0.0:853", None),
+                listener(ListenProto::Udp, "192.168.1.2:53", None),
+            ],
+            ..Config::default()
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // callers write the three states inline
+    pub(crate) fn value(dot: Value, doh: Value, doq: Value) -> Value {
+        json!({"listeners": [
+            {"proto": "dot", "addr": "203.0.113.5:853", "require_client_id": dot},
+            {"proto": "doh", "addr": "192.168.1.2:443", "require_client_id": doh},
+            {"proto": "doq", "addr": "0.0.0.0:853", "require_client_id": doq},
+            {"proto": "udp", "addr": "192.168.1.2:53", "require_client_id": null},
+        ]})
+    }
+
+    /// A host with private IPv4 addresses only, unless a test says otherwise.
+    fn check(cfg: &Config, v: &Value) -> Result<Checked, Problem> {
+        check_on(
+            wrendns_config::HostFacts {
+                public_ipv4: Some(false),
+                global_ipv6: false,
+            },
+            cfg,
+            v,
+        )
+    }
+
+    fn check_on(
+        host: wrendns_config::HostFacts,
+        cfg: &Config,
+        v: &Value,
+    ) -> Result<Checked, Problem> {
+        let (options, c) = (Value::Null, caller());
+        crate::gate_host::with_facts(host, || {
+            ListenAccess.check(&CheckCx {
+                cfg,
+                node: "pi-a",
+                value: v,
+                options: &options,
+                caller: &c,
+            })
+        })
+    }
+
+    // REQ: DNS-901, API-902 (T27.14) — the value now in force names every listener with its stored
+    // setting, and is the shape a change is judged against.
+    #[test]
+    fn dns_901_listen_access_current_lists_every_listener() {
+        let mut c = cfg();
+        c.listen[0].require_client_id = Some(true);
+        let cur = ListenAccess.current(&c);
+        assert_eq!(cur["listeners"].as_array().unwrap().len(), 4);
+        assert_eq!(cur["listeners"][0]["require_client_id"], json!(true));
+        assert_eq!(cur["listeners"][1]["require_client_id"], Value::Null);
+        // Unchanged: no change is described, and the defaults are explained per listener.
+        let ok = check(&c, &cur).unwrap();
+        assert!(ok.effect.contains("Changes no listener"), "{}", ok.effect);
+        assert!(ok.effect.contains("because the address is public"));
+        assert!(ok.effect.contains("because the address is not public"));
+        assert!(
+            ok.effect
+                .contains("binds every address and this host has no public IPv4 address"),
+            "{}",
+            ok.effect
+        );
+        assert_eq!(ok.warnings, Vec::<String>::new());
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 1) — turning the gate off on a public listener is flagged with
+    // the open-resolver warning, and is a weakening; turning it on warns about refused devices.
+    #[test]
+    fn dns_901_listen_access_off_on_public_warns_and_weakens() {
+        let c = cfg();
+        let off = value(json!(false), Value::Null, Value::Null);
+        let r = check(&c, &off).unwrap();
+        assert!(
+            r.warnings.iter().any(|w| w.contains("open resolver")),
+            "{:?}",
+            r.warnings
+        );
+        assert!(r.effect.contains("dot://203.0.113.5:853"));
+        assert!(r.weakening);
+        // On for a LAN listener: not a weakening, but a warning that keyless devices are refused.
+        let on = value(Value::Null, json!(true), Value::Null);
+        let r = check(&c, &on).unwrap();
+        assert!(r.warnings.iter().any(|w| w.contains("refuse every query")));
+        assert!(!r.weakening);
+        // A wildcard bind put back to the default says why that is off.
+        let mut c2 = cfg();
+        c2.listen[2].require_client_id = Some(true);
+        let back = value(Value::Null, Value::Null, Value::Null);
+        let r = check(&c2, &back).unwrap();
+        assert!(r.warnings.iter().any(|w| w.contains("binds every address")));
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 2) — the wildcard listener's default follows the host: on with
+    // a public IPv4 address (or an unreadable interface list), off with private IPv4 only; the
+    // review says why, and turning the gate off then is a weakening with the open-resolver warning.
+    #[test]
+    fn dns_901_listen_access_wildcard_follows_the_host() {
+        use wrendns_config::HostFacts;
+        let public = HostFacts {
+            public_ipv4: Some(true),
+            global_ipv6: false,
+        };
+        let c = cfg();
+        let cur = ListenAccess.current(&c);
+        let off = value(Value::Null, Value::Null, json!(false));
+        let r = check_on(public, &c, &off).unwrap();
+        assert!(r.weakening, "wildcard gated by the default, then off");
+        assert!(
+            r.warnings.iter().any(|w| w.contains("open resolver")),
+            "{:?}",
+            r.warnings
+        );
+        let same = check_on(public, &c, &cur).unwrap();
+        assert!(
+            same.effect.contains("this host has a public IPv4 address"),
+            "{}",
+            same.effect
+        );
+        for facts in [
+            HostFacts::UNKNOWN,
+            HostFacts {
+                public_ipv4: Some(true),
+                global_ipv6: true,
+            },
+        ] {
+            assert!(check_on(facts, &c, &off).unwrap().weakening);
+        }
+        let private = HostFacts {
+            public_ipv4: Some(false),
+            global_ipv6: true,
+        };
+        let r = check_on(private, &c, &off).unwrap();
+        assert!(!r.weakening, "a wildcard that was never gated");
+        let none = check_on(private, &c, &cur).unwrap();
+        assert!(
+            none.effect
+                .contains("global IPv6 address, which does not turn the default on"),
+            "{}",
+            none.effect
+        );
+    }
+
+    // REQ: DNS-901 — what is refused: a listener the node doesn't run, a missing one, a key on a
+    // plain transport (named without any flag advice), a repeated one, a stray field and bad types.
+    #[test]
+    fn dns_901_listen_access_validation() {
+        let c = cfg();
+        let good = value(Value::Null, Value::Null, Value::Null);
+        assert!(check(&c, &good).is_ok());
+        let mut udp_set = good.clone();
+        udp_set["listeners"][3]["require_client_id"] = json!(true);
+        let e = check(&c, &udp_set).unwrap_err();
+        assert!(
+            e.detail.contains("can't carry a device key"),
+            "{}",
+            e.detail
+        );
+        assert!(!e.detail.contains("require_client_id"), "{}", e.detail);
+        let mut missing = good.clone();
+        missing["listeners"].as_array_mut().unwrap().pop();
+        assert!(
+            check(&c, &missing)
+                .unwrap_err()
+                .detail
+                .contains("is missing")
+        );
+        let mut extra = good.clone();
+        extra["listeners"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"proto": "dot", "addr": "203.0.113.9:853"}));
+        assert!(
+            check(&c, &extra)
+                .unwrap_err()
+                .detail
+                .contains("isn't a listener")
+        );
+        let mut twice = good.clone();
+        let first = twice["listeners"][0].clone();
+        twice["listeners"].as_array_mut().unwrap().push(first);
+        assert!(check(&c, &twice).unwrap_err().detail.contains("twice"));
+        let mut stray = good.clone();
+        stray["listeners"][0]["tls"] = json!({});
+        assert!(check(&c, &stray).is_err());
+        for bad in [
+            json!({"listeners": "x"}),
+            json!({}),
+            json!({"listeners": [1]}),
+            json!({"listeners": [{"proto": "ftp", "addr": "1.2.3.4:5"}]}),
+            json!({"listeners": [{"proto": "dot", "addr": "nope"}]}),
+        ] {
+            assert!(check(&c, &bad).is_err(), "{bad}");
+        }
+        let mut stringly = good;
+        stringly["listeners"][0]["require_client_id"] = json!("yes");
+        assert!(check(&c, &stringly).is_err());
+    }
+
+    // REQ: DNS-901 (ADR-1090 point 1) — the stored value enters the merged configuration per
+    // listener (null is the default, true and false are explicit), never on a plain transport, and
+    // a listener it doesn't name is untouched.
+    #[test]
+    fn dns_901_listen_access_overlay() {
+        let mut c = cfg();
+        ListenAccess.overlay(&mut c, &value(json!(false), json!(true), Value::Null));
+        assert_eq!(c.listen[0].require_client_id, Some(false));
+        assert_eq!(c.listen[1].require_client_id, Some(true));
+        assert_eq!(c.listen[2].require_client_id, None);
+        assert!(
+            !c.listen[0].gated(wrendns_config::HostFacts::UNKNOWN),
+            "an explicit false opens a public listener"
+        );
+        let mut udp = value(Value::Null, Value::Null, Value::Null);
+        udp["listeners"][3]["require_client_id"] = json!(true);
+        ListenAccess.overlay(&mut c, &udp);
+        assert_eq!(c.listen[3].require_client_id, None);
+        let mut d = cfg();
+        ListenAccess.overlay(
+            &mut d,
+            &json!({"listeners": [
+                {"proto": "dot", "addr": "203.0.113.5:853", "require_client_id": true},
+                {"proto": "dot", "addr": "203.0.113.99:853", "require_client_id": false},
+            ]}),
+        );
+        assert_eq!(d.listen[0].require_client_id, Some(true));
+        assert_eq!(d.listen[1].require_client_id, None);
+        ListenAccess.overlay(&mut d, &json!({"listeners": 3}));
+        assert_eq!(d.listen[0].require_client_id, Some(true));
     }
 }

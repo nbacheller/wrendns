@@ -839,6 +839,32 @@ impl Backend for ApiBackend {
                 .iter()
                 .map(|l| format!("{}://{}", label(&l.proto), l.addr))
                 .collect(),
+            // REQ: DNS-901 (T36.2) — the known-ID gate of each listener.
+            listener_access: cfg
+                .listen
+                .iter()
+                .map(|l| {
+                    // REQ: DNS-901 — what the socket does, and the facts it was bound with.
+                    let host = crate::gate_host::facts_for(l);
+                    wrendns_api::model::ListenerAccess {
+                        listener: format!("{}://{}", label(&l.proto), l.addr),
+                        require_client_id: crate::gate_host::effective_gate(l),
+                        setting: match l.require_client_id {
+                            None => "unset",
+                            Some(true) => "true",
+                            Some(false) => "false",
+                        }
+                        .to_owned(),
+                        gated_by_default: l.gated_by_default(host),
+                        public_address: wrendns_config::is_public_address(l.addr.ip()),
+                        wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
+                        default_on: l.default_gate(host).on(),
+                        default_reason: l.default_gate(host).describe().to_owned(),
+                        public_exposure: l.default_gate(host).public_exposure(),
+                        can_carry_key: l.proto.needs_tls(),
+                    }
+                })
+                .collect(),
             query_log: self.src.qlog.is_some(),
             filter_snapshot: snap.as_ref().map(|s| s.manifest.version),
             filter_names: snap.as_ref().map_or(0, |s| {
@@ -2862,6 +2888,24 @@ impl Backend for ApiBackend {
         reasons.extend(crate::guarded::health_reasons());
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
+        // REQ: DNS-901 (ADR-1090 point 1) — a listener gated only by the default refuses clients
+        // without a key after an upgrade: shown until the file sets the flag (true or false).
+        reasons.extend(crate::health::gate_default_reasons(
+            &self.src.config.load().listen,
+            crate::gate_host::facts(),
+        ));
+        // REQ: DNS-901 (ADR-1090 point 2) — the host's addresses changed since the listeners were
+        // bound: a wildcard listener's default would now resolve differently.
+        reasons.extend(crate::health::gate_stale_reasons(
+            &self.src.config.load().listen,
+            &crate::gate_host::facts_for,
+            crate::gate_host::read(),
+        ));
+        // REQ: DNS-901 (ADR-1090 point 3) — a listener whose socket is not what the configuration
+        // asks for after an apply.
+        reasons.extend(crate::health::listener_not_applied_reasons(
+            &crate::gate_host::mismatched(&self.src.config.load().listen),
+        ));
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
         let mut maintenance = Vec::new();
