@@ -33,6 +33,9 @@ struct Zone {
     /// Before every answer, sends a forged one first: the question in lowercase and the
     /// address 6.6.6.6 (an off-path spoofer who guessed the ID and port, but not the case).
     spoof: bool,
+    /// Answers NXDOMAIN (with AA and the SOA) for empty non-terminals: the quirk RFC 8020
+    /// and RFC 9156 describe.
+    ent_nxdomain: bool,
     /// Milliseconds to wait before answering (changeable while running).
     delay_ms: Option<Arc<AtomicU64>>,
 }
@@ -133,9 +136,10 @@ fn respond(z: &Zone, query: &[u8]) -> Vec<u8> {
                 na += 1;
             }
         } else if !at.is_empty()
-            || z.records
-                .iter()
-                .any(|r| r.0.ends_with(&format!(".{qname}")))
+            || (!z.ent_nxdomain
+                && z.records
+                    .iter()
+                    .any(|r| r.0.ends_with(&format!(".{qname}"))))
         {
             rr(&mut ns, z.origin, rtype::SOA, 60, &soa(z.origin));
             nn += 1;
@@ -297,6 +301,9 @@ async fn tree(mutate: impl FnOnce(&mut Vec<(u8, Zone)>)) -> (Settings, Log) {
         server_timeout: Duration::from_millis(300),
         // The query-log assertions count every query: priming has its own test.
         prime: false,
+        // REQ: DNS-902 — the fixture's servers are all on loopback: the explicit allow that
+        // the refusal tests turn off again.
+        allow_local_servers: true,
         ..Settings::default()
     };
     (s, log)
@@ -790,4 +797,161 @@ async fn dns_022_stub_probe_servfail_is_down() {
     assert_eq!(Recursor::new(s.clone()).probe_stub().await, Some(false));
     s.stubs[0].servers = vec![IpAddr::from([127, 0, 0, 11]), IpAddr::from([127, 0, 0, 13])];
     assert_eq!(Recursor::new(s).probe_stub().await, Some(true));
+}
+
+/// REQ: DNS-902 — the default refuses loopback servers: a delegation to 127.0.0.1 gets no
+/// query and the lookup fails as refused (it becomes SERVFAIL with an EDE upstream); with
+/// the explicit allow, the same fixture resolves.
+#[tokio::test]
+async fn dns_902_loopback_delegation_is_not_queried() {
+    let fixture = |z: &mut Vec<(u8, Zone)>| {
+        z[0].1.cuts.push(("loop", "ns.loop", Some([127, 0, 0, 1])));
+        z.push((
+            1,
+            Zone {
+                origin: "loop",
+                records: vec![("www.loop", rtype::A, a([10, 0, 0, 7]))],
+                ..Zone::default()
+            },
+        ));
+    };
+    let (mut s, log) = tree(fixture).await;
+    s.allow_local_servers = false; // the default; the root hints stay asked
+    let r = Recursor::new(s);
+    let e = r
+        .resolve(name("www.loop"), rtype::A, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, wrendns_recursor::Error::Refused(_)), "{e:?}");
+    assert!(
+        log.lock().unwrap().iter().all(|(ip, _)| *ip != 1),
+        "nothing was sent to 127.0.0.1: {:?}",
+        log.lock().unwrap()
+    );
+    let (s, log) = tree(fixture).await;
+    let res = Recursor::new(s)
+        .resolve(name("www.loop"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        addrs(&res),
+        vec![IpAddr::from([10, 0, 0, 7])],
+        "{res:?} {:?}",
+        log.lock().unwrap()
+    );
+    assert!(log.lock().unwrap().iter().any(|(ip, _)| *ip == 1));
+}
+
+/// REQ: DNS-902 — which addresses count as local and private.
+#[test]
+fn dns_902_address_classes() {
+    use wrendns_recursor::{is_local_address, is_private_address};
+    let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+    for local in [
+        "127.0.0.1",
+        "127.8.8.8",
+        "::1",
+        "0.0.0.0",
+        "::",
+        "169.254.1.1",
+        "fe80::1",
+        "224.0.0.1",
+        "ff02::1",
+        "255.255.255.255",
+        "::ffff:127.0.0.1",
+    ] {
+        assert!(is_local_address(ip(local)), "{local}");
+    }
+    for private in [
+        "10.1.2.3",
+        "172.16.0.1",
+        "192.168.1.1",
+        "100.64.0.1",
+        "fd00::1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert!(is_private_address(ip(private)), "{private}");
+        assert!(!is_local_address(ip(private)), "{private}");
+    }
+    for public in [
+        "198.41.0.4",
+        "8.8.8.8",
+        "100.128.0.1",
+        "2001:503:ba3e::2:30",
+    ] {
+        assert!(
+            !is_local_address(ip(public)) && !is_private_address(ip(public)),
+            "{public}"
+        );
+    }
+}
+
+/// REQ: DNS-902 — a lame answer counts against the server, however fast it came: with a
+/// quick lame server and a good one for the same zone, the good one is asked first.
+#[tokio::test]
+async fn dns_902_a_fast_lame_server_stops_coming_first() {
+    let (mut s, log) = tree(|z| {
+        z[2].1.refuse = true; // .4 answers REFUSED at once
+        z[1].1
+            .cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        z.push((
+            10,
+            Zone {
+                origin: "example.com",
+                records: vec![("www.example.com", rtype::A, a([10, 0, 0, 1]))],
+                ..Zone::default()
+            },
+        ));
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    // Until the lame server has been asked once (the order of unknown servers is random).
+    let mut seen_lame = false;
+    for _ in 0..30 {
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+        if log.lock().unwrap().iter().any(|(ip, _)| *ip == 4) {
+            seen_lame = true;
+            break;
+        }
+    }
+    assert!(seen_lame, "the lame server was never asked");
+    log.lock().unwrap().clear();
+    for _ in 0..3 {
+        r.resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+    }
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter().all(|(ip, _)| *ip == 10),
+        "the good server answered every time and the lame one was not asked: {seen:?}"
+    );
+}
+
+/// REQ: DNS-902, DNS-012 (ADR-074) — an unsigned NXDOMAIN with AA and SOA for an empty
+/// non-terminal does not end the walk: the full name is asked and resolves.
+#[tokio::test]
+async fn dns_902_unsigned_nxdomain_for_an_empty_non_terminal_still_resolves() {
+    let (s, log) = tree(|z| z[2].1.ent_nxdomain = true).await;
+    let r = Recursor::new(s);
+    let res = r
+        .resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (res.rcode, addrs(&res)),
+        (rcode::NOERROR, vec![IpAddr::from([10, 0, 0, 9])])
+    );
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .any(|(ip, n)| *ip == 4 && n == ".deep.ent.example.com."),
+        "the full name was asked: {seen:?}"
+    );
 }

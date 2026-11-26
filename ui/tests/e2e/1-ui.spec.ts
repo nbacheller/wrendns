@@ -820,6 +820,69 @@ test('ups_013 a source this node does not hold is refused on save', async () => 
   }
 });
 
+// REQ: DNS-012, DNS-902 (T40.1) — the options of a recursive:// upstream (minimising names, 0x20,
+// IPv6 and which server addresses are asked) are shown for that address only, start at their
+// defaults, and are saved with the upstream; a recursive object is never written for another
+// address.
+test('dns_902 recursive upstream options are shown for recursive:// only and saved', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const labels = {
+    minimise: 'Send each server only the part of the name it needs',
+    caps: 'Randomise the letter case of each query (0x20)',
+    ipv6: 'Ask servers over IPv6 too',
+    local: 'Ask servers at loopback and link-local addresses',
+    priv: 'Ask servers at private addresses outside the stub zone',
+  };
+  const sw = (label: string) => page.getByRole('switch', { name: label, exact: true });
+  try {
+    await page.goto('/#/upstreams');
+    await page.getByTestId('view-advanced').click();
+    await page.reload();
+    const editor = page.getByTestId('editor-upstream');
+    await editor.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('dns902-rec');
+    const address = page.getByRole('textbox', { name: 'Address', exact: true });
+    // An ordinary address: none of the recursive options.
+    await address.fill('udp://192.0.2.1');
+    for (const l of Object.values(labels)) await expect(sw(l)).toHaveCount(0);
+    // A recursive address: all of them, at their defaults.
+    await address.fill('recursive://');
+    await expect(sw(labels.minimise)).toBeChecked();
+    for (const l of [labels.caps, labels.ipv6, labels.local, labels.priv]) await expect(sw(l)).not.toBeChecked();
+    await sw(labels.caps).click();
+    await sw(labels.priv).click();
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByTestId('entry-preview')).toBeVisible();
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    const row = editor.getByTestId('entry-row').filter({ hasText: 'dns902-rec' });
+    await expect(row).toContainText('recursive://');
+    const saved = async () => {
+      const list = await (await r.get('/api/v1/config/entries?kind=upstream')).json();
+      return list.items.find((e: { name: string }) => e.name === 'dns902-rec');
+    };
+    const rec = (await saved()).definition.recursive;
+    expect(rec).toMatchObject({ case_randomization: true, allow_private_servers: true });
+    expect(rec.allow_local_servers ?? false).toBe(false);
+    // Opened again, the saved options are what the switches show; the default-on one still reads on.
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(sw(labels.caps)).toBeChecked();
+    await expect(sw(labels.priv)).toBeChecked();
+    await expect(sw(labels.minimise)).toBeChecked();
+    await expect(sw(labels.local)).not.toBeChecked();
+    // Changing the address to a plain one hides them again and writes no recursive object.
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('udp://192.0.2.2');
+    await expect(sw(labels.caps)).toHaveCount(0);
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(row).toContainText('udp://192.0.2.2');
+    expect((await saved()).definition.recursive).toBeUndefined();
+  } finally {
+    await r.delete('/api/v1/upstreams/dns902-rec', { headers: h });
+    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+  }
+});
+
 // REQ: UPS-004 (T24.36) — what the simple view's ticks mean as upstream entries, and back.
 test('ups_004 picker plans entries from ticks and reads them back', async () => {
   const r = page.request;

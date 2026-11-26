@@ -1798,6 +1798,21 @@ fn listeners(cfg: &Config, host: crate::gate::HostFacts, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: DNS-902, DNS-015 — a recursive upstream talks to authoritative servers, which never get
+/// a client subnet: a subnet or `client` here would be ignored silently, so it is refused with
+/// the field named.
+fn recursive_ecs(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
+    if scheme == "recursive"
+        && let Some(e) = &u.ecs
+        && e.as_str() != "strip"
+    {
+        r.err(
+            format!("{p}.ecs"),
+            "not valid on a recursive:// upstream: it asks authoritative servers, which never get a client subnet (leave it unset or `strip`)",
+        );
+    }
+}
+
 /// REQ: DNS-022 — a stub zone needs both its name and its servers.
 fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
     match (&u.recursive.stub_zone, u.recursive.stub_servers.is_empty()) {
@@ -1898,6 +1913,7 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                         "`strip` (the default: never sent), `client` (each public client's /24 or /56), or a subnet to send instead, e.g. 203.0.113.0/24",
                     );
                 }
+                recursive_ecs(u, s, &p, r);
                 // REQ: UPS-010 (T7.16)
                 // REQ: UPS-010 (T9.9) — udp:// only through a SOCKS5 proxy's UDP relay.
                 let socks = u

@@ -12,8 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
+use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
 use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
-use hickory_net::proto::dnssec::rdata::{DNSKEY, DNSSECRData, NSEC, RRSIG};
+use hickory_net::proto::dnssec::rdata::{DNSKEY, DNSSECRData, NSEC, NSEC3, RRSIG};
 use hickory_net::proto::dnssec::{DnssecSigner, PublicKey as _, SigningKey};
 use hickory_net::proto::op::{Message, OpCode, ResponseCode};
 use hickory_net::proto::rr::rdata::{A, CNAME, NS, SOA};
@@ -41,6 +42,30 @@ struct Zone {
     forge: AtomicBool,
     /// NFR-004 — milliseconds every answer is held back (a slow upstream).
     lag_ms: AtomicU64,
+}
+
+/// REQ: DNS-902 — iteration counts of the NSEC3 fixtures: above the soft limit (50) and the
+/// default of hickory (100), and above the hard limit (500).
+const NSEC3_ITERATIONS: [u16; 2] = [60, 600];
+
+/// The NSEC3 owner name that matches the root for `iterations` (empty salt, SHA-1).
+fn nsec3_owner(iterations: u16) -> Name {
+    const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+    let hash = Nsec3HashAlgorithm::SHA1
+        .hash(&[], &n("."), iterations)
+        .unwrap();
+    let mut label = String::new();
+    for chunk in hash.as_ref().chunks(5) {
+        let mut block = [0u8; 8];
+        block[3..3 + chunk.len()].copy_from_slice(chunk);
+        let v = u64::from_be_bytes(block);
+        for i in 0..(chunk.len() * 8).div_ceil(5) {
+            label.push(char::from(
+                T[usize::try_from((v >> (35 - 5 * i)) & 31).unwrap()],
+            ));
+        }
+    }
+    n(&format!("{label}."))
 }
 
 fn b64(data: &[u8]) -> String {
@@ -136,6 +161,27 @@ fn zone() -> Zone {
             )))],
         ),
     ];
+    // REQ: DNS-902 (RFC 9276) — `n<iterations>.` is a name denied by one signed NSEC3 record
+    // (matching the root) that hashes with that many iterations.
+    let mut rrsets = rrsets;
+    for iterations in NSEC3_ITERATIONS {
+        rrsets.push((
+            nsec3_owner(iterations),
+            vec![RData::DNSSEC(DNSSECRData::NSEC3(NSEC3::new(
+                Nsec3HashAlgorithm::SHA1,
+                false,
+                iterations,
+                Vec::new(),
+                vec![0xff; 20],
+                [
+                    RecordType::NS,
+                    RecordType::SOA,
+                    RecordType::RRSIG,
+                    RecordType::DNSKEY,
+                ],
+            )))],
+        ));
+    }
     let mut sets = BTreeMap::new();
     for (name, datas) in rrsets {
         let rtype = datas[0].record_type();
@@ -269,6 +315,14 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
                 plain_answer(&z, &mut m, &qn, qt);
             } else if let Some(rs) = z.sets.get(&(qn.clone(), qt)) {
                 m.add_answers(rs.clone());
+            } else if let Some(iterations) = NSEC3_ITERATIONS
+                .into_iter()
+                .find(|i| qn == n(&format!("n{i}.")))
+            {
+                // REQ: DNS-902 — NXDOMAIN, the root's SOA and the one NSEC3 record.
+                m.metadata.response_code = ResponseCode::NXDomain;
+                m.add_authorities(z.sets[&(n("."), RecordType::SOA)].clone());
+                m.add_authorities(z.sets[&(nsec3_owner(iterations), RecordType::NSEC3)].clone());
             } else if z.sets.keys().any(|(o, _)| *o == qn) {
                 authority(&mut m, &qn);
             } else {
@@ -420,6 +474,28 @@ async fn dns_011_offline_signed_root() {
         .await
         .unwrap();
     assert!(!wrendns_proto::Header::parse(&r.bytes).unwrap().flags.ad());
+}
+
+/// REQ: DNS-902 (RFC 9276) — an NSEC3 denial that hashes with more iterations than the soft
+/// limit validates as insecure (hickory's own limit, 100, would have judged 60 iterations on
+/// the proof, which is incomplete here and so bogus); above the hard limit it is bogus.
+#[tokio::test]
+async fn dns_902_offline_nsec3_iterations_above_the_limit_are_insecure() {
+    const { assert!(wrendns_upstream::dnssec::NSEC3_SOFT_LIMIT < 60) };
+    const { assert!(wrendns_upstream::dnssec::NSEC3_HARD_LIMIT < 600) };
+    let (v, g, _, _, _dir) = setup(true).await;
+    let budget = Duration::from_secs(5);
+    let r = v
+        .resolve(&g, question("n60", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Insecure, "60 iterations");
+    assert_eq!(rcode(&r.bytes), wrendns_proto::rcode::NXDOMAIN);
+    let r = v
+        .resolve(&g, question("n600", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Bogus, "600 iterations");
 }
 
 /// REQ: DNS-011 (T9.16) — RFC 8198: after one signed NXDOMAIN, another name in the same range is

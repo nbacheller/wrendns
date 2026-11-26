@@ -414,6 +414,16 @@ pub(crate) fn explain(
             group: sel.group.name.clone(),
             routed: sel.routed,
         });
+        // REQ: DNS-902 — what a recursive member will not ask, since it can end an answer.
+        for up in sel.group.members() {
+            if let Some(s) = up.recursive_settings() {
+                e.notes.extend(recursive_notes(
+                    &up.name,
+                    s.allow_local_servers,
+                    s.allow_private_servers,
+                ));
+            }
+        }
     } else {
         e.notes
             .push("no upstream group serves this query: answered REFUSED".into());
@@ -425,6 +435,24 @@ pub(crate) fn explain(
         );
     }
     Ok(e)
+}
+
+/// REQ: DNS-902 — the server addresses a `recursive://` upstream refuses, in words: a name
+/// whose delegation points only at them fails (SERVFAIL, no upstream answered) instead of
+/// being asked there. Empty when both are allowed.
+fn recursive_notes(name: &str, allow_local: bool, allow_private: bool) -> Vec<String> {
+    let mut v = Vec::new();
+    if !allow_local {
+        v.push(format!(
+            "upstream {name} resolves from the root itself and never asks servers at loopback or link-local addresses: a delegation that points only there ends as SERVFAIL (set allow_local_servers to ask them)"
+        ));
+    }
+    if !allow_private {
+        v.push(format!(
+            "upstream {name} asks servers at private addresses only inside its stub zone: a public delegation that points only at them ends as SERVFAIL (set allow_private_servers to ask them)"
+        ));
+    }
+    v
 }
 
 /// The quick rule deciding `name` for this client, as (allow, a description), or `None`. A

@@ -1544,6 +1544,26 @@
       "docs": "dnssec-validation"
     },
     {
+      "id": "recursive-options",
+      "title": "How a recursive upstream asks",
+      "term": "QNAME minimisation, 0x20 and IPv6 (recursive upstream)",
+      "summary": "A recursive:// upstream asks the root and the authoritative servers itself. Minimising names sends each server only the part of the name it needs. Randomising letter case (0x20) makes a forged answer harder to slip in. IPv6 lets it ask servers over IPv6 too.",
+      "when": "You run WrenDNS without a forwarder and want to choose how private, how hard to forge and how reachable the lookups are.",
+      "example": "With minimisation on, the root servers see only com, never www.example.com.",
+      "caution": "Minimisation is on by default and falls back to the full name when a zone breaks with it. 0x20 is off by default because a few servers do not echo the case. IPv6 needs an IPv6 route to the Internet, or lookups wait for timeouts.",
+      "docs": "recursive-resolution-no-forwarder"
+    },
+    {
+      "id": "recursive-server-addresses",
+      "title": "Which server addresses a recursive upstream asks",
+      "term": "Loopback, link-local and private servers (recursive upstream)",
+      "summary": "A recursive:// upstream never asks a server at a loopback, unspecified, link-local, multicast or broadcast address, and asks private addresses only inside its stub zone. A public delegation that points only at such addresses fails with SERVFAIL, and Why? says so.",
+      "when": "A name that should resolve fails, and its zone delegates to an address on this machine or on your own network.",
+      "example": "A public zone that delegates to 127.0.0.1 gets no query: it could aim the resolver at a service on this machine.",
+      "caution": "Turn the switches on only for a test setup or a real authoritative server on this host or network, and prefer a stub zone for the latter: a stub zone's servers may be private. Both are off by default.",
+      "docs": "recursive-resolution-no-forwarder"
+    },
+    {
       "id": "list-limits",
       "title": "List size and staleness",
       "term": "List limits",

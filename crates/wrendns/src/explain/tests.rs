@@ -276,6 +276,45 @@ fn flt_013_routes_and_pause_are_explained() {
     assert!(served(&p, "social.example", "10.0.0.5").is_none());
 }
 
+/// REQ: DNS-902, FLT-013 — "Why?" says what a recursive upstream will not ask, since it can end
+/// an answer as SERVFAIL; once both are allowed it says nothing about it.
+#[test]
+fn dns_902_explain_notes_the_server_addresses_a_recursive_upstream_refuses() {
+    let extra = |recursive: &str| {
+        format!(
+            r#"
+[[upstream]]
+name = "rec"
+url = "recursive://"
+{recursive}
+[[upstream_group]]
+name = "walk"
+members = ["rec"]
+[[route]]
+match_suffix = ["walk.example"]
+upstream_group = "walk"
+"#
+        )
+    };
+    let (p, sources) = setup_with(&extra(""));
+    let e = ask(&p, &sources, "www.walk.example", "10.0.0.9");
+    let notes = e.notes.join("; ");
+    assert!(
+        notes.contains("never asks servers at loopback or link-local")
+            && notes.contains("private addresses only inside its stub zone"),
+        "{notes}"
+    );
+    let (p, sources) = setup_with(&extra(
+        "[upstream.recursive]\nallow_local_servers = true\nallow_private_servers = true",
+    ));
+    let e = ask(&p, &sources, "www.walk.example", "10.0.0.9");
+    assert!(
+        e.notes.iter().all(|n| !n.contains("upstream rec")),
+        "{:?}",
+        e.notes
+    );
+}
+
 #[test]
 fn flt_013_explain_serializes_for_the_api() {
     let (p, sources) = setup();

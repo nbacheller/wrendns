@@ -3595,6 +3595,16 @@
       "description": "Options for a `recursive://` upstream (`spec/03` §6).",
       "type": "object",
       "properties": {
+        "allow_local_servers": {
+          "description": "REQ: DNS-902 — also ask servers at loopback, unspecified, link-local, multicast and\nbroadcast addresses (Unbound's `do-not-query-localhost: no`). Off by default: a public\ndelegation must not be able to aim the resolver at this host. Turn it on only for a\ntest setup or an authoritative server on this machine.",
+          "type": "boolean",
+          "default": false
+        },
+        "allow_private_servers": {
+          "description": "REQ: DNS-902 — also ask servers at private addresses (RFC 1918, carrier-grade NAT,\nunique-local) outside the stub zone. Off by default: private servers are asked only\ninside the stub zone, so a public delegation can't aim the resolver at the home\nnetwork.",
+          "type": "boolean",
+          "default": false
+        },
         "case_randomization": {
           "description": "0x20: random letter case in queries, checked in answers (spoofing defense; servers\nthat don't echo the case are asked again without it).",
           "type": "boolean",

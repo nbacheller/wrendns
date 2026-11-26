@@ -99,6 +99,8 @@
   const sourceSuggestions = $derived([
     ...new Set([...nodeAddrs.map((a) => a.network), ...nodeAddrs.map((a) => a.address)]),
   ]);
+  // REQ: DNS-012 — the recursive options belong to a recursive:// address only.
+  const isRecursive = (v: Record<string, unknown>) => String(v.url ?? '').trim().toLowerCase().startsWith('recursive:');
   const upstreamFields = $derived<Field[]>([
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
       help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. An exec:// or unix:// address runs a program: only an admin sets one.',
@@ -109,6 +111,29 @@
       suggest: sourceSuggestions, helpTopic: 'upstream-source',
       help: 'Send the queries to this upstream from one of the addresses this node holds (udp://, tcp://, tls://, https://). A network, such as 198.51.100.0/24, means the address each node holds in it: in a cluster use a network, since one node’s address is missing on the others. Saving an address this node doesn’t hold is refused.' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },
+    // REQ: DNS-012, DNS-902 (T40.1) — the options of a recursive:// upstream (it asks the root and
+    // authoritative servers itself). They are shown only for that address and left out of the
+    // body for any other. The stub zone's two fields are listed too: the form rebuilds the
+    // `recursive` object from its fields, so a field left out would be dropped on every save.
+    { key: 'recursive.qname_minimization', label: 'Send each server only the part of the name it needs', type: 'bool',
+      initial: true, fallback: true, showIf: isRecursive, helpTopic: 'recursive-options',
+      help: 'QNAME minimisation (RFC 9156). On by default; if a zone breaks with it, the full name is asked as a fallback.' },
+    { key: 'recursive.case_randomization', label: 'Randomise the letter case of each query (0x20)', type: 'bool',
+      initial: false, fallback: false, showIf: isRecursive, helpTopic: 'recursive-options',
+      help: 'An extra check against forged answers. Off by default: a few servers do not echo the case.' },
+    { key: 'recursive.ipv6', label: 'Ask servers over IPv6 too', type: 'bool',
+      initial: false, fallback: false, showIf: isRecursive, helpTopic: 'recursive-options',
+      help: 'Needs an IPv6 route to the Internet.' },
+    { key: 'recursive.allow_local_servers', label: 'Ask servers at loopback and link-local addresses', type: 'bool',
+      initial: false, fallback: false, showIf: isRecursive, helpTopic: 'recursive-server-addresses',
+      help: 'Off by default: a public delegation can never aim this resolver at this machine. Turn it on only for a test setup or an authoritative server on this host.' },
+    { key: 'recursive.allow_private_servers', label: 'Ask servers at private addresses outside the stub zone', type: 'bool',
+      initial: false, fallback: false, showIf: isRecursive, helpTopic: 'recursive-server-addresses',
+      help: 'Off by default: private addresses are asked only inside the stub zone, so a public delegation cannot aim this resolver at your home network.' },
+    { key: 'recursive.stub_zone', label: 'Stub zone', type: 'text', placeholder: 'corp.example', showIf: isRecursive,
+      help: 'Names at or under it are asked of the stub servers instead of the root. Send the zone here with a route.' },
+    { key: 'recursive.stub_servers', label: 'Stub servers', type: 'lines', placeholder: '192.0.2.53', showIf: isRecursive,
+      help: 'The stub zone’s servers, one IP address per line.' },
   ]);
   const names = $derived(upstreams.map((u) => u.name).filter((n) => !n.startsWith('forward:')));
   const groupFields = $derived<Field[]>([

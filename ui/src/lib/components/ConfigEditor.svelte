@@ -25,6 +25,9 @@
     visibleWhen?: (values: Record<string, unknown>) => boolean;
     /** The value a new entry starts with. */
     initial?: unknown;
+    /** REQ: DNS-902 — for a dotted `outer.inner` field: the value an entry that doesn't set it
+     *  has (the server's default), shown in the field so a default-on switch isn't shown off. */
+    fallback?: unknown;
     /** `lines` fields kept as text while editing and converted on Check (T9.7: schedule
      *  windows as `weekdays 21:00-07:00`). `fromText` throws to report a bad line. */
     toText?: (v: unknown) => string;
@@ -213,6 +216,7 @@
       const [outer, inner] = f.key.split('.');
       const o = editing.values[outer];
       if (o && typeof o === 'object' && inner in (o as Record<string, unknown>)) editing.values[f.key] = (o as Record<string, unknown>)[inner];
+      else if (editing.values[f.key] === undefined && f.fallback !== undefined) editing.values[f.key] = f.fallback;
     }
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
