@@ -419,6 +419,8 @@ pub struct Member {
     pub node_id: String,
     pub site: String,
     pub version: String,
+    /// REQ: DSC-908 - the gated features its build announced (empty from an older build).
+    pub features: Vec<String>,
     pub advertise: Vec<String>,
     pub eligible: bool,
     pub primary: bool,
@@ -780,6 +782,8 @@ const FETCH_PARALLEL: usize = 8;
 pub struct Cluster {
     pub identity: Identity,
     pub version: String,
+    /// REQ: DSC-908 - the gated features this build announces in its Hello.
+    features: Mutex<Vec<String>>,
     members: Mutex<BTreeMap<String, Member>>,
     local: Mutex<LocalState>,
     /// The manifest this node publishes (primary), sent on every stream: the stable head.
@@ -1038,6 +1042,7 @@ impl Cluster {
             }),
             identity,
             version: version.to_owned(),
+            features: Mutex::new(crate::gate::own_features()),
             members: Mutex::new(BTreeMap::new()),
             published: watch::Sender::new(None),
             canary: watch::Sender::new(None),
@@ -2359,6 +2364,12 @@ impl Cluster {
             .any(|n| n.witness && n.node_id == node)
     }
 
+    /// REQ: DSC-908 - replaces the gated features this node announces (a test stands in a build
+    /// that predates a feature; the default is every feature this build knows).
+    pub fn set_features(&self, features: Vec<String>) {
+        *self.features.lock().unwrap_or_else(PoisonError::into_inner) = features;
+    }
+
     /// Peers, by node ID.
     pub fn members(&self) -> Vec<Member> {
         self.members
@@ -2482,6 +2493,11 @@ impl Cluster {
                 primary: self.is_primary(),
                 config_source: self.config_source(),
                 instance: self.instance.clone(),
+                features: self
+                    .features
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
             })),
         }
     }
@@ -2616,6 +2632,7 @@ impl Cluster {
                         node_id: h.node_id.clone(),
                         site: h.site,
                         version: h.version,
+                        features: h.features,
                         advertise: h.advertise,
                         eligible: h.eligible,
                         primary: h.primary,

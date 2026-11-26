@@ -18,11 +18,29 @@ fn held() -> std::sync::MutexGuard<'static, BTreeSet<Feature>> {
     HELD.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The peers heard from and the full members the identity registry names (this node and removed
+/// nodes left out): a registered member this process has not heard from since it started has
+/// not reported its build, and the gate counts it as not knowing the feature.
+fn judge(cluster: Option<&Cluster>, f: Feature) -> Result<(), gate::Refusal> {
+    let Some(c) = cluster else {
+        return gate::check_members(&[], &[], f);
+    };
+    let own = c.identity.meta.node_id.as_str();
+    let removed = c.identity.removed();
+    let registered: Vec<String> = c
+        .identity
+        .registry()
+        .into_iter()
+        .map(|n| n.node_id)
+        .filter(|id| id != own && !removed.contains(id))
+        .collect();
+    gate::check_members(&c.members(), &registered, f)
+}
+
 /// Judges `f` against `cluster`'s members (a standalone node has none, so it passes), records a
 /// refusal for health, and returns the words that name the member and its version.
 pub(crate) fn enforce(cluster: Option<&Cluster>, f: Feature) -> Result<(), String> {
-    let members = cluster.map(Cluster::members).unwrap_or_default();
-    match gate::check_members(&members, f) {
+    match judge(cluster, f) {
         Ok(()) => {
             held().remove(&f);
             Ok(())
@@ -38,10 +56,9 @@ pub(crate) fn enforce(cluster: Option<&Cluster>, f: Feature) -> Result<(), Strin
 /// they are, so a gate that has dropped away stops showing.
 pub(crate) fn standing(cluster: Option<&Cluster>) -> Vec<String> {
     let features: Vec<Feature> = held().iter().copied().collect();
-    let members = cluster.map(Cluster::members).unwrap_or_default();
     let mut out = Vec::new();
     for f in features {
-        match gate::check_members(&members, f) {
+        match judge(cluster, f) {
             Ok(()) => {
                 held().remove(&f);
             }

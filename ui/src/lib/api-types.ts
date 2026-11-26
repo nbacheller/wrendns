@@ -11737,7 +11737,7 @@ export interface components {
         };
         /** @description The body of `PUT /api/v1/secrets/{name}`. */
         SecretPut: {
-            /** @description `text` (the default) or `pem` (PEM blocks only; its value is never shown or returned). */
+            /** @description `text` (the default). `pem` is reserved for the certificate issuer and refused here (409). */
             kind?: string | null;
             /**
              * @description The value: one line of text (a token, a password, an API key), at most 8 KiB, trimmed, no

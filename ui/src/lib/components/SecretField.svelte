@@ -87,7 +87,7 @@
     inline?: boolean;
     /** Only an admin may set or clear (the server enforces it). */
     canSet: boolean;
-    /** The value kind on the wire (`text`, or `pem`). */
+    /** The value kind on the wire (`text`; `pem` is the issuer's, refused by the API). */
     kind?: string;
     /** Standalone: open straight into a replacement (the table's Replace). */
     startReplacing?: boolean;

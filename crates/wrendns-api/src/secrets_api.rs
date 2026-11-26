@@ -77,7 +77,7 @@ pub struct SecretPut {
     /// passphrase ever holds it.
     #[schema(value_type = String, write_only, example = "s3cr3t-token")]
     pub value: SecretText,
-    /// `text` (the default) or `pem` (PEM blocks only; its value is never shown or returned).
+    /// `text` (the default). `pem` is reserved for the certificate issuer and refused here (409).
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -670,7 +670,46 @@ pub(crate) async fn delete_secret(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // one path for both writes
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1; locations.md section 3.4, the names there are
+/// proposals) - the names the certificate issuer keeps for itself: `acme.account`,
+/// `cert.cluster.key`, `cert.cluster.chain`, and `cert.<slug>.key` / `cert.<slug>.chain`. The
+/// public API neither writes nor deletes them, so no admin or token can plant a key a listener
+/// would load.
+pub fn is_reserved_name(name: &str) -> bool {
+    name == "acme.account"
+        || name.strip_prefix("cert.").is_some_and(|r| {
+            r.rsplit_once('.')
+                .is_some_and(|(slug, end)| !slug.is_empty() && matches!(end, "key" | "chain"))
+        })
+}
+
+/// What the public API refuses before any gate or store: a reserved name (either write), and the
+/// `pem` kind (until the issuer exists, only it stores PEM material, internally).
+fn public_refusal(name: &str, op: &SecretOp) -> Option<Problem> {
+    if is_reserved_name(name) {
+        return Some(
+            Problem::new(
+                Code::Conflict,
+                format!("`{name}` is a name the certificate issuer keeps for itself"),
+            )
+            .hint("Names `acme.account`, `cert.<name>.key` and `cert.<name>.chain` are written only by the issuer."),
+        );
+    }
+    if let SecretOp::Put { kind, .. } = op
+        && kind.trim() == "pem"
+    {
+        return Some(
+            Problem::new(
+                Code::Conflict,
+                "the `pem` kind isn't written through the API: only the certificate issuer stores it",
+            )
+            .hint("Use kind `text` for a token or password."),
+        );
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one path for both writes
 async fn write(
     backend: Shared,
     auth: Arc<Auth>,
@@ -681,6 +720,9 @@ async fn write(
     op: SecretOp,
     dry_run: bool,
 ) -> Response {
+    if let Some(e) = public_refusal(&name, &op) {
+        return no_store(e.into_response(), None);
+    }
     // REQ: AGT-003 (ADR-903 §4) — the record keeps `PUT /secrets/<name> ` and a keyed hash of
     // the value, never the value: the same key with another value is another request (409).
     // An empty header is no key.
