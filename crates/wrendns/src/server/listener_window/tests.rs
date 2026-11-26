@@ -250,8 +250,10 @@ async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener(
         ..listen(Some(false))
     };
     l.apply(std::slice::from_ref(&old)).await.unwrap();
+    // The change also turns the gate on, so a failed bind closes the old socket (fail closed).
     let changed = Listener {
         max_connections: Some(7),
+        require_client_id: Some(true),
         ..old.clone()
     };
     l.stage(std::slice::from_ref(&changed)).await.unwrap();
@@ -260,6 +262,10 @@ async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener(
     let foreign = foreign_after_close(&mut l, real);
     assert!(l.apply(std::slice::from_ref(&changed)).await.is_err());
     assert!(!runs_on(&l, real));
+    assert!(
+        l.gate_failed,
+        "the gate did not arrive and the socket is closed"
+    );
     assert!(
         crate::gate_host::is_closed(&changed),
         "the apply publishes the listener as down"
@@ -271,6 +277,10 @@ async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener(
     assert!(e.detail.contains(&real.to_string()), "{}", e.detail);
     assert!(e.detail.contains("did not bind"), "{}", e.detail);
     assert!(e.detail.to_lowercase().contains("in use"), "{}", e.detail);
+    assert!(
+        !l.gate_failed,
+        "the listener runs again, so it is not closed"
+    );
     assert_eq!(l.streams.len(), 1, "the old listener is back");
     assert_eq!(l.streams[0].0.max_connections, None);
     assert_eq!(
@@ -296,11 +306,19 @@ async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener(
 #[allow(clippy::await_holding_lock)]
 async fn api_902_failed_overlap_swap_restores_the_removed_wildcard() {
     let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
     let mut l = test_listeners();
     let port = free_tcp_port();
-    let wild = tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+    // A DoT wildcard: the restore must republish it, though the new list does not name it.
+    let wild = Listener {
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+        ..listen(Some(false))
+    };
     l.apply(std::slice::from_ref(&wild)).await.unwrap();
-    let specific = tcp(loopback(port));
+    let specific = Listener {
+        addr: loopback(port),
+        ..wild.clone()
+    };
     l.stage(std::slice::from_ref(&specific)).await.unwrap();
     let foreign = foreign_after_close(&mut l, specific.addr);
     assert!(l.apply(std::slice::from_ref(&specific)).await.is_err());
@@ -316,6 +334,10 @@ async fn api_902_failed_overlap_swap_restores_the_removed_wildcard() {
     assert_eq!(l.streams.len(), 1);
     assert_eq!(l.streams[0].0.addr, wild.addr, "the wildcard is back");
     assert!(connects(loopback(port)).await);
+    assert!(
+        crate::gate_host::is_recorded(&wild) && !crate::gate_host::is_closed(&wild),
+        "the restored wildcard is published as running, not left unrecorded or closed"
+    );
     crate::gate_host::clear_listeners_for_test();
 }
 

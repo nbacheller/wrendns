@@ -478,7 +478,7 @@ impl Listeners {
     ) -> Vec<String> {
         let host = crate::gate_host::read();
         let mut failed = Vec::new();
-        let mut restored = false;
+        let mut restored: Vec<Listener> = Vec::new();
         for p in plans {
             if self.streams.iter().any(|(c, _)| *c == p.want) {
                 continue;
@@ -516,8 +516,8 @@ impl Listeners {
                 {
                     Ok(s) => {
                         warn!(addr = %old.addr, proto = ?old.proto, "put the old listener back after a failed swap");
-                        self.streams.push((old, s));
-                        restored = true;
+                        self.streams.push((old.clone(), s));
+                        restored.push(old);
                     }
                     Err(e) => {
                         use std::fmt::Write as _;
@@ -532,9 +532,29 @@ impl Listeners {
             }
             failed.push(note);
         }
-        if restored && !last_list.is_empty() {
-            // The apply published the listener as down; it runs again, with its old gate.
-            self.publish(last_list, host);
+        if !restored.is_empty() && !last_list.is_empty() {
+            // The apply published the listener as down; it runs again, with its old gate. A
+            // restored listener the new list no longer names (a closed wildcard) is published
+            // too, or it would stay recorded as closed.
+            let mut all = last_list.to_vec();
+            for r in restored {
+                if !all.iter().any(|l| l.proto == r.proto && l.addr == r.addr) {
+                    all.push(r);
+                }
+            }
+            self.publish(&all, host);
+            // A gate that could not be applied closed its listener; one that runs again is not
+            // closed, so the failure is recomputed rather than left as the apply set it.
+            if self.gate_failed {
+                self.gate_failed = last_list.iter().any(|l| {
+                    l.proto.needs_tls()
+                        && l.gated(host)
+                        && !self
+                            .streams
+                            .iter()
+                            .any(|(c, _)| c.proto == l.proto && c.addr == l.addr)
+                });
+            }
         }
         failed
     }
