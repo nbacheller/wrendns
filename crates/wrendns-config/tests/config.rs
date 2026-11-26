@@ -2634,3 +2634,41 @@ fn dns_901_mapped_wildcard_is_a_wildcard() {
         "203.0.113.5:853".parse().unwrap()
     ));
 }
+
+/// REQ: DNS-902 — a stub zone whose servers are loopback or link-local warns unless
+/// `allow_local_servers` is set; private servers are fine inside a stub zone.
+#[test]
+fn dns_902_stub_zone_with_local_servers_warns() {
+    let cfg = |servers: &str, extra: &str| {
+        format!(
+            "[[upstream]]
+name = \"corp\"
+url = \"recursive://\"
+[upstream.recursive]
+stub_zone = \"corp.example\"
+stub_servers = {servers}
+{extra}
+"
+        )
+    };
+    let w = load_str(&cfg("[\"127.0.0.2\"]", "")).unwrap().warnings;
+    assert!(
+        w.iter()
+            .any(|m| m.contains("stub_servers") && m.contains("allow_local_servers")),
+        "{w:?}"
+    );
+    let w = load_str(&cfg("[\"169.254.1.1\"]", "")).unwrap().warnings;
+    assert!(w.iter().any(|m| m.contains("allow_local_servers")), "{w:?}");
+    let w = load_str(&cfg("[\"127.0.0.2\"]", "allow_local_servers = true"))
+        .unwrap()
+        .warnings;
+    assert!(
+        !w.iter().any(|m| m.contains("allow_local_servers")),
+        "{w:?}"
+    );
+    let w = load_str(&cfg("[\"10.0.0.53\"]", "")).unwrap().warnings;
+    assert!(
+        !w.iter().any(|m| m.contains("allow_local_servers")),
+        "{w:?}"
+    );
+}

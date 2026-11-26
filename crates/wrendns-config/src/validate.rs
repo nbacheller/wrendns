@@ -1830,6 +1830,44 @@ fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
         ),
         _ => {}
     }
+    // REQ: DNS-902 — the recursor never asks a loopback or link-local server unless
+    // `allow_local_servers` is set, a stub zone's own servers included: say so, or the zone
+    // would only fail at query time.
+    if u.recursive.stub_zone.is_some() && !u.recursive.allow_local_servers {
+        let local: Vec<String> = u
+            .recursive
+            .stub_servers
+            .iter()
+            .filter(|ip| local_address(**ip))
+            .map(ToString::to_string)
+            .collect();
+        if !local.is_empty() {
+            r.warn(format!(
+                "{p}.recursive.stub_servers: {} is a loopback or link-local address, which a recursive upstream does not ask unless `allow_local_servers = true` is set on it; the stub zone will not be reachable",
+                local.join(", ")
+            ));
+        }
+    }
+}
+
+/// REQ: DNS-902 — loopback, unspecified, link-local, multicast or broadcast (the recursor's
+/// own list of addresses it will not ask).
+fn local_address(ip: std::net::IpAddr) -> bool {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_link_local()
+                || a.is_multicast()
+                || a.is_broadcast()
+        }
+        std::net::IpAddr::V6(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || a.segments()[0] & 0xffc0 == 0xfe80
+        }
+    }
 }
 
 /// REQ: UPS-003 (T9.9) — relays carry DNSCrypt only.
