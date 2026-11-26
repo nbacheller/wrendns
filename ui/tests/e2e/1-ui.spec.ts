@@ -2318,6 +2318,35 @@ test('dns_006 cache page', async () => {
   await expect(page.getByTestId('updates')).toContainText('Newer than the published');
 });
 
+// REQ: OBS-033, DNS-006 — past 40 markers in view a chart gives those within 8 px one button.
+// Each button was keyed by its first marker's rounded x, so two neighbouring columns could share
+// a key at some widths, and Svelte threw each_key_duplicate (a page error, which the afterEach
+// below turns into a failure of whichever test ran then). A stubbed pile of notes on the Cache
+// page, drawn at many widths: every width must draw without a page error.
+test('obs_033 many markers on the Cache page never share a key at any width', async () => {
+  const now = Date.now();
+  const items = Array.from({ length: 150 }, (_, i) => {
+    const t = new Date(now - 30_000 - i * 530 - ((i * 37) % 400));
+    return { t: t.toISOString(), tUnixMs: t.getTime(), kind: 'note', summary: `note ${i}` };
+  });
+  await page.route('**/api/v1/annotations?**', (route) => route.fulfill({ json: { items, truncated: false, missingNodes: [] } }));
+  try {
+    await page.goto('/#/cache');
+    await page.reload();
+    const layer = page.getByTestId('chart-markers').first();
+    await expect(layer.locator('button.mk').first()).toBeVisible({ timeout: 20_000 });
+    const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    for (let w = 640; w <= 1500; w += 5) {
+      await page.setViewportSize({ width: w, height: 800 });
+      await frame();
+    }
+    await expect(layer.locator('button.mk').first()).toBeVisible();
+  } finally {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.unroute('**/api/v1/annotations?**');
+  }
+});
+
 // REQ: CLU-005 (T24.38, ADR-1018) — a voter reached only some of the time is a warning on the
 // Failover line (named by site, with its drops) and a failing "voter links" check with its fix;
 // a steady cluster shows neither. The help topic is on the Failover label.

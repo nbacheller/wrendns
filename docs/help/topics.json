@@ -363,7 +363,7 @@
       "id": "upstream-source",
       "title": "Send an upstream's queries from one address",
       "term": "Source address (bind address)",
-      "summary": "The address on this node that an upstream's queries leave from. A network such as 198.51.100.0/24 means the address each node holds in it, so one shared upstream works on every node.",
+      "summary": "The address on this node that an upstream's queries leave from. A network such as 198.51.100.0/24 means the address each node holds in it, so one shared upstream works on every node. A recursive:// upstream sends every query to an authoritative server from it, and asks only servers of its IP version.",
       "when": "A DNS filter knows your network by the address its queries come from, or the node sits on several networks and you want one of them.",
       "example": "The family filter is asked from the 198.51.100.x address, so a service that keys on that network sees it.",
       "caution": "The node must hold the address (on a real interface); saving one it doesn't is refused. If it is missing at start or disappears later, only that upstream's queries fail and the health icon says why. Binding an address doesn't pick the interface: add a routing rule for it (see the runbook). In a cluster, name a network, not one node's address. This is not what makes a gateway's content filtering apply: that works on traffic, whatever DNS is used.",

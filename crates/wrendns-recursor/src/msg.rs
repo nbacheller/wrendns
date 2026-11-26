@@ -93,6 +93,8 @@ pub struct Parsed {
     pub answer: Vec<Rr>,
     pub authority: Vec<Rr>,
     pub additional: Vec<Rr>,
+    /// The message carries an OPT record (EDNS).
+    pub opt: bool,
 }
 
 /// Parses `msg` (framing already checked by the network layer).
@@ -105,6 +107,7 @@ pub fn parse(msg: &[u8]) -> Option<Parsed> {
     };
     for r in records(msg).ok()?.flatten() {
         if r.is_opt() {
+            p.opt = true;
             continue;
         }
         let mut name = NameBuf::default();
