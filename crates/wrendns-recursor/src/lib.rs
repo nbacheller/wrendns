@@ -885,7 +885,19 @@ impl Recursor {
                     None => second.await,
                 },
                 r = &mut second => match r {
-                    Some(o) => Some(o),
+                    Some(o) => {
+                        // REQ: DNS-903 — the first server is dropped unfinished: it was
+                        // slower than its usual and the next one answered, so it counts as
+                        // a timeout (else a down server with a working sibling is never
+                        // noticed), and may owe a move to TCP.
+                        self.caches.record_fail(
+                            one.ip,
+                            Failure::Timeout { tcp: false },
+                            hedge_after,
+                        );
+                        let _ = self.caches.tcp_due(one.ip);
+                        Some(o)
+                    }
                     None => first.await,
                 },
             };
@@ -932,16 +944,20 @@ impl Recursor {
         let mut parsed = res.as_ref().ok().and_then(|r| msg::parse(r));
         // REQ: DNS-903 — FORMERR or NOTIMP to a query with EDNS: once more without it; a
         // server that then answers is remembered as one that takes no EDNS.
+        // A server seen answering EDNS is not downgraded by one FORMERR (a glitch, or a
+        // forged reply); the reply counts as lame. Only a usable plain answer (NOERROR or
+        // NXDOMAIN) proves the server takes no EDNS; REFUSED or SERVFAIL prove nothing.
+        let got_opt = how.edns && parsed.as_ref().is_some_and(|p| p.opt);
         if how.edns
             && parsed
                 .as_ref()
                 .is_some_and(|p| p.rcode == rcode::FORMERR || p.rcode == rcode::NOTIMP)
+            && !self.caches.edns_seen(ip)
         {
             let plain = net::How { edns: false, ..how };
             if let Ok(r2) = self.exchange(addr, qn, qt, plain, timeout).await
                 && let Some(p2) = msg::parse(&r2)
-                && p2.rcode != rcode::FORMERR
-                && p2.rcode != rcode::NOTIMP
+                && (p2.rcode == rcode::NOERROR || p2.rcode == rcode::NXDOMAIN)
             {
                 self.caches.no_edns(ip);
                 parsed = Some(p2);
@@ -954,6 +970,9 @@ impl Recursor {
         match outcome {
             Some(o) if o != Outcome::Lame => {
                 self.caches.record_ok(ip, rtt, how.tcp);
+                if got_opt {
+                    self.caches.edns_ok(ip);
+                }
                 Some((o, ip))
             }
             _ => {

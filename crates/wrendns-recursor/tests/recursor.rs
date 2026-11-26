@@ -45,6 +45,13 @@ struct Zone {
     down: Option<Arc<AtomicBool>>,
     /// REQ: DNS-903 — while set, answers nothing over UDP (TCP still answers).
     drop_udp: Option<Arc<AtomicBool>>,
+    /// REQ: DNS-903 — echoes an OPT record in answers to queries that carry one (a server
+    /// that does EDNS).
+    edns: bool,
+    /// REQ: DNS-903 — while set, answers FORMERR to the next EDNS query only, then clears.
+    formerr_once: Option<Arc<AtomicBool>>,
+    /// REQ: DNS-903 — answers with this rcode (and the data of the zone) to every query.
+    rcode_all: Option<u16>,
     /// REQ: DNS-903 — also listens on TCP.
     tcp: bool,
     /// REQ: DNS-903 — what this server has seen.
@@ -301,7 +308,16 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
             {
                 continue;
             }
-            if z.formerr_edns && u16::from_be_bytes([q[10], q[11]]) > 0 {
+            let has_opt = u16::from_be_bytes([q[10], q[11]]) > 0;
+            if has_opt
+                && z.formerr_once
+                    .as_ref()
+                    .is_some_and(|f| f.swap(false, Ordering::Relaxed))
+            {
+                let _ = s.send_to(&formerr(q), from).await;
+                continue;
+            }
+            if z.formerr_edns && has_opt {
                 let _ = s.send_to(&formerr(q), from).await;
                 continue;
             }
@@ -315,7 +331,17 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                 }
                 let _ = s.send_to(&respond(&fake, q), from).await;
             }
-            let _ = s.send_to(&respond(&z, q), from).await;
+            let mut reply = respond(&z, q);
+            if let Some(rc) = z.rcode_all {
+                reply[3] = (reply[3] & 0xf0) | u8::try_from(rc).unwrap();
+            }
+            if z.edns && has_opt {
+                // An OPT record (root name, type 41, 1232 bytes), counted in ARCOUNT.
+                reply.extend([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]);
+                let ar = u16::from_be_bytes([reply[10], reply[11]]) + 1;
+                reply[10..12].copy_from_slice(&ar.to_be_bytes());
+            }
+            let _ = s.send_to(&reply, from).await;
         }
     });
 }
@@ -1341,4 +1367,164 @@ async fn dns_903_queries_leave_from_the_source_address() {
             .is_err()
     );
     assert!(log.lock().unwrap().is_empty(), "{:?}", log.lock().unwrap());
+}
+
+/// REQ: DNS-903 — with a healthy sibling and hedging on (the default), a server that stopped
+/// answering is still noticed: it is marked down, sorts last, and lookups stop waiting for it.
+#[tokio::test]
+async fn dns_903_a_down_server_with_a_sibling_is_noticed_while_hedging() {
+    let down = Arc::new(AtomicBool::new(false));
+    let down2 = Arc::clone(&down);
+    let slow = Arc::new(AtomicU64::new(20));
+    let slow2 = Arc::clone(&slow);
+    let (mut s, log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        let mut copy = zones[2].1.clone();
+        copy.delay_ms = Some(slow2);
+        zones.push((10, copy));
+        zones[2].1.down = Some(down2);
+    })
+    .await;
+    assert!(s.hedge, "hedging is the default");
+    s.infra_ttl = Duration::from_secs(30);
+    s.infra_probe = Duration::from_secs(20);
+    let r = Recursor::new(s);
+    let ask = || async {
+        let t = std::time::Instant::now();
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+        t.elapsed()
+    };
+    for _ in 0..12 {
+        ask().await;
+    }
+    down.store(true, Ordering::Relaxed);
+    // The first lookups that start with .4 wait for the hedge and are answered by .10.
+    for _ in 0..4 {
+        ask().await;
+    }
+    log.lock().unwrap().clear();
+    let mut slowest = Duration::ZERO;
+    for _ in 0..3 {
+        slowest = slowest.max(ask().await);
+    }
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter().all(|(ip, _)| *ip != 4),
+        "the down server is not asked ahead of its sibling: {seen:?}"
+    );
+    assert!(
+        slowest < Duration::from_millis(140),
+        "no lookup waits for the hedge any more: {slowest:?}"
+    );
+}
+
+/// REQ: DNS-903 — with a healthy sibling and hedging on, a server whose UDP goes unanswered
+/// (and which answered before) moves to TCP, so it is not dropped for good.
+#[tokio::test]
+async fn dns_903_tcp_after_udp_timeouts_while_hedging() {
+    let seen = Arc::new(Seen::default());
+    let drop_udp = Arc::new(AtomicBool::new(false));
+    let (seen2, drop2) = (Arc::clone(&seen), Arc::clone(&drop_udp));
+    let slow = Arc::new(AtomicU64::new(20));
+    let (mut s, _log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        let mut copy = zones[2].1.clone();
+        copy.delay_ms = Some(slow);
+        zones.push((10, copy));
+        zones[2].1.tcp = true;
+        zones[2].1.seen = Some(seen2);
+        zones[2].1.drop_udp = Some(drop2);
+    })
+    .await;
+    assert!(s.hedge);
+    s.infra_probe = Duration::from_millis(300);
+    let r = Recursor::new(s);
+    for _ in 0..12 {
+        r.resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+    }
+    assert_eq!(count(&seen.tcp), 0);
+    drop_udp.store(true, Ordering::Relaxed);
+    // Every lookup resolves (through the sibling); the dropped server is probed over TCP.
+    for _ in 0..40 {
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+        if count(&seen.tcp) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(count(&seen.tcp) >= 1, "it was asked over TCP");
+}
+
+/// REQ: DNS-903 — one FORMERR to a query with EDNS from a server that has answered EDNS
+/// queries does not turn EDNS off for it.
+#[tokio::test]
+async fn dns_903_a_stray_formerr_does_not_disable_edns_for_an_edns_server() {
+    let seen = Arc::new(Seen::default());
+    let once = Arc::new(AtomicBool::new(false));
+    let (seen2, once2) = (Arc::clone(&seen), Arc::clone(&once));
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.edns = true;
+        zones[2].1.seen = Some(seen2);
+        zones[2].1.formerr_once = Some(once2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(count(&seen.plain), 0, "EDNS answered, EDNS kept");
+    once.store(true, Ordering::Relaxed);
+    // The glitch: that lookup may fail, but the server is not downgraded.
+    let _ = r
+        .resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await;
+    assert_eq!(
+        count(&seen.plain),
+        0,
+        "no plain query after the stray FORMERR"
+    );
+    r.resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(count(&seen.plain), 0, "EDNS is still on for it");
+}
+
+/// REQ: DNS-903 — a FORMERR to EDNS followed by a REFUSED to the plain query proves nothing
+/// about EDNS: the server is not remembered as taking none.
+#[tokio::test]
+async fn dns_903_a_refused_plain_query_does_not_mark_the_server_no_edns() {
+    let seen = Arc::new(Seen::default());
+    let seen2 = Arc::clone(&seen);
+    let (mut s, _log) = tree(move |zones| {
+        zones[2].1.formerr_edns = true;
+        zones[2].1.rcode_all = Some(rcode::REFUSED);
+        zones[2].1.seen = Some(seen2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    let _ = r.resolve(name("www.example.com"), rtype::A, false).await;
+    let edns = count(&seen.edns);
+    let _ = r.resolve(name("www.example.com"), rtype::A, false).await;
+    assert!(
+        count(&seen.edns) > edns,
+        "EDNS is still tried: the plain REFUSED proved nothing"
+    );
 }

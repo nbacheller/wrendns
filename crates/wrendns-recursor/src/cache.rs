@@ -84,9 +84,11 @@ struct Rtt {
     srtt_us: u32,
     /// Leaves 0x20 off for this server (it doesn't echo the letter case).
     no_case: bool,
-    /// Asked without EDNS: it answered FORMERR or NOTIMP to a query with it and answered one
-    /// without.
-    no_edns: bool,
+    /// Asked without EDNS until then: it answered FORMERR or NOTIMP to a query with it and
+    /// answered one without. Set once; a busy server's entry does not renew it.
+    no_edns_until: Option<Instant>,
+    /// It has answered a query with EDNS with an OPT record of its own.
+    edns_ok: bool,
     /// It has given a usable answer since the entry began.
     answered: bool,
     /// Consecutive UDP queries it didn't answer in time.
@@ -108,7 +110,8 @@ impl Rtt {
         Self {
             srtt_us,
             no_case: false,
-            no_edns: false,
+            no_edns_until: None,
+            edns_ok: false,
             answered: false,
             udp_timeouts: 0,
             timeouts: 0,
@@ -256,7 +259,7 @@ impl Caches {
                         ip,
                         srtt_us: (!probe).then_some(x.srtt_us),
                         no_case: x.no_case,
-                        no_edns: x.no_edns,
+                        no_edns: x.no_edns_until.is_some_and(|t| t > now),
                         tcp: x.tcp_until.is_some_and(|t| t > now),
                     };
                     (s, if probe { 0 } else { x.srtt_us })
@@ -363,10 +366,30 @@ impl Caches {
         self.slot(&mut r, ip, 50_000).no_case = true;
     }
 
-    /// REQ: DNS-903 — this server answers FORMERR or NOTIMP to EDNS: ask it without.
+    /// REQ: DNS-903 — this server answers FORMERR or NOTIMP to EDNS: ask it without, for one
+    /// lifetime from now. A note already in force is not extended, so EDNS is tried again.
     pub(crate) fn no_edns(&self, ip: IpAddr) {
+        let now = Instant::now();
         let mut r = self.rtt.lock();
-        self.slot(&mut r, ip, 50_000).no_edns = true;
+        let x = self.slot(&mut r, ip, 50_000);
+        if x.no_edns_until.is_none_or(|t| t <= now) {
+            x.no_edns_until = Some(now + self.infra.ttl);
+        }
+    }
+
+    /// REQ: DNS-903 — this server has answered a query with EDNS with an OPT record.
+    pub(crate) fn edns_ok(&self, ip: IpAddr) {
+        let mut r = self.rtt.lock();
+        self.slot(&mut r, ip, 50_000).edns_ok = true;
+    }
+
+    /// Whether this server has been seen doing EDNS (its entry is alive and says so).
+    pub(crate) fn edns_seen(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        self.rtt
+            .lock()
+            .get(&ip)
+            .is_some_and(|x| x.expires > now && x.edns_ok)
     }
 
     /// Servers in the infrastructure cache (tests).
@@ -431,6 +454,37 @@ mod tests {
             assert!(c.servers() <= 1_000);
         }
         assert!(c.servers() > 0);
+    }
+
+    /// REQ: DNS-903 — the no-EDNS note is set once and lapses after one lifetime even while
+    /// the server is busy (each answer renews the entry, not the note).
+    #[test]
+    fn dns_903_the_no_edns_note_is_not_renewed_by_activity() {
+        let c = Caches::new(Infra {
+            ttl: Duration::from_millis(150),
+            ..Infra::default()
+        });
+        c.record_ok(ip(1), Duration::from_millis(5), false);
+        c.no_edns(ip(1));
+        for i in 0..4 {
+            std::thread::sleep(Duration::from_millis(50));
+            c.record_ok(ip(1), Duration::from_millis(5), false);
+            if i == 0 {
+                c.no_edns(ip(1)); // a repeat does not push the end out either
+            }
+        }
+        let s = c.order(&[ip(1)])[0];
+        assert!(s.srtt_us.is_some(), "the entry is alive: it was busy");
+        assert!(!s.no_edns, "but the note lapsed");
+    }
+
+    /// REQ: DNS-903 — a server seen doing EDNS is known as one.
+    #[test]
+    fn dns_903_edns_seen() {
+        let c = Caches::new(Infra::default());
+        assert!(!c.edns_seen(ip(1)));
+        c.edns_ok(ip(1));
+        assert!(c.edns_seen(ip(1)));
     }
 
     /// REQ: DNS-903 — an entry past its lifetime is forgotten, and the table drops the dead
