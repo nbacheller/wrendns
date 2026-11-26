@@ -183,6 +183,16 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
         .iter()
         .filter_map(|c| device_label(c.name.as_str()))
         .collect();
+    let device_domain: Option<String> = cfg
+        .local
+        .device_domain
+        .as_ref()
+        .map(|d| d.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|d| !d.is_empty());
+    // With any location answering flat names, the flat names of every location live under
+    // `device_domain`, so no location's subtree may hold it.
+    let any_flat = cfg.location.iter().any(|l| l.flat_names);
+    let mut apexes: Vec<(usize, String)> = Vec::new();
     for (i, l) in cfg.location.iter().enumerate() {
         let p = format!("location[{i}]");
         let slug = l.slug.as_str();
@@ -197,7 +207,9 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
             err(format!("{p}.slug"), format!("`{slug}` is a reserved label"));
         } else if !slugs.insert(slug) {
             err(format!("{p}.slug"), format!("`{slug}` is used twice"));
-        } else if client_labels.contains(slug) {
+        } else if client_labels.contains(slug)
+            && l.parent_domain(cfg).is_some_and(|d| Some(&d) == device_domain.as_ref())
+        {
             err(
                 format!("{p}.slug"),
                 format!(
@@ -265,23 +277,43 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
                 // they would collide with the device's location name and never be reached (the
                 // subtree is answered first).
                 let apex = format!("{}.{parent}", l.slug);
-                let flat = cfg
-                    .local
-                    .device_domain
-                    .as_ref()
-                    .map(|d| d.trim().trim_end_matches('.').to_ascii_lowercase());
-                if l.flat_names
-                    && let Some(f) = flat
-                    && (f == apex || f.ends_with(&format!(".{apex}")))
+                if slug_ok(slug) {
+                    apexes.push((i, apex.clone()));
+                }
+                if any_flat
+                    && let Some(f) = &device_domain
+                    && (*f == apex || f.ends_with(&format!(".{apex}")))
                 {
                     err(
                         format!("{p}.domain"),
                         format!(
-                            "`[local] device_domain` ({f}) is inside this location's names ({apex}); its flat names would collide with them: pick another `domain` or `slug`, or set `flat_names = false`"
+                            "`[local] device_domain` ({f}) is inside this location's names ({apex}); the flat names would collide with them: pick another `domain` or `slug`, or set `flat_names = false` on every location"
                         ),
                     );
                 }
             }
+        }
+    }
+    // One location's subtree may not sit inside another's (the first containing apex would
+    // answer for both, and the inner apex would read as no-such-name).
+    for (a, (i, ai)) in apexes.iter().enumerate() {
+        for (j, aj) in &apexes[a + 1..] {
+            let inside = |x: &str, y: &str| x == y || x.ends_with(&format!(".{y}"));
+            let (inner, outer) = if inside(aj, ai) {
+                (*j, *i)
+            } else if inside(ai, aj) {
+                (*i, *j)
+            } else {
+                continue;
+            };
+            err(
+                format!("location[{inner}].domain"),
+                format!(
+                    "inside location `{}`'s names ({}); give it another `slug` or `domain` so the subtrees do not nest",
+                    cfg.location[outer].slug,
+                    if outer == *i { ai } else { aj }
+                ),
+            );
         }
     }
     // Overlap between two locations' CIDRs names both.
@@ -420,6 +452,84 @@ mod tests {
             "{BASE}[[client]]\nname = \"Home\"\nmatch = [\"192.0.2.9\"]\n[[location]]\nslug = \"home\"\nnetworks = [\"192.0.2.0/24\"]\n"
         ));
         assert!(got.contains("also the name of a device"), "{got}");
+    }
+
+    #[test]
+    fn dsc_908_nested_location_subtrees_are_refused() {
+        let got = refused(&format!(
+            "{BASE}[[location]]
+slug = \"site\"
+networks = [\"192.0.2.0/24\"]
+[[location]]
+slug = \"lab\"
+domain = \"site.home.arpa\"
+networks = [\"198.51.100.0/24\"]
+"
+        ));
+        assert!(
+            got.contains("location[1].domain") && got.contains("inside location `site`'s names"),
+            "{got}"
+        );
+        // The order of the table does not matter.
+        let got = refused(&format!(
+            "{BASE}[[location]]
+slug = \"lab\"
+domain = \"site.home.arpa\"
+networks = [\"198.51.100.0/24\"]
+[[location]]
+slug = \"site\"
+networks = [\"192.0.2.0/24\"]
+"
+        ));
+        assert!(got.contains("location[0].domain"), "{got}");
+        // Siblings are fine.
+        cfg(&format!(
+            "{BASE}[[location]]
+slug = \"a\"
+networks = [\"192.0.2.0/24\"]
+[[location]]
+slug = \"b\"
+networks = [\"198.51.100.0/24\"]
+"
+        ));
+    }
+
+    #[test]
+    fn dsc_908_one_flat_off_location_does_not_hide_anothers_flat_names() {
+        // A is flat-off and holds device_domain; B is flat-on, so its flat names would be refused.
+        let got = refused(
+            "[local]
+device_domain = \"a.example.net\"
+[[location]]
+slug = \"a\"
+domain = \"example.net\"
+flat_names = false
+networks = [\"192.0.2.0/24\"]
+[[location]]
+slug = \"b\"
+domain = \"example.org\"
+networks = [\"198.51.100.0/24\"]
+",
+        );
+        assert!(
+            got.contains("location[0].domain") && got.contains("inside this location's names"),
+            "{got}"
+        );
+    }
+
+    #[test]
+    fn dsc_908_a_slug_may_match_a_device_under_another_domain() {
+        let c = cfg(&format!(
+            "{BASE}[[client]]
+name = \"Office\"
+match = [\"192.0.2.9\"]
+[[location]]
+slug = \"office\"
+domain = \"example.net\"
+networks = [\"198.51.100.0/24\"]
+"
+        ));
+        assert_eq!(c.location.len(), 1);
     }
 
     #[test]
