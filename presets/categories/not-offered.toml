@@ -21,11 +21,6 @@ group = "Adult and Sensitive Content"
 reason = "No open maintained list is known."
 
 [[not_offered]]
-name = "Violence and gore"
-group = "Adult and Sensitive Content"
-reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
-
-[[not_offered]]
 name = "Sex education"
 group = "Adult and Sensitive Content"
 reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
@@ -89,11 +84,6 @@ reason = "Only available through a third-party mirror of the UT1 blacklists, who
 name = "Lifestyle and religion"
 group = "Culture & Entertainment"
 reason = "No open maintained list is known."
-
-[[not_offered]]
-name = "Remote-access tools"
-group = "Networking Infrastructure"
-reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
 
 [[not_offered]]
 name = "Cloud storage and CDN"

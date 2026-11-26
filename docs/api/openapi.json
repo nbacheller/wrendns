@@ -2632,8 +2632,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Flush the cache: one name, a subtree, or everything.",
-        "description": "With `name`, removes that name's cached answers (with `subtree`, every name under it too);\nwithout, empties the cache. By default every node in the cluster flushes; `node` limits it to\none. The next query for a flushed name is asked of the upstreams again. This doesn't clear\ndevices' own caches, blocked answers are never cached (unblocking needs no flush), and to\nchange what a name resolves to, use local names instead. Needs the operator role (or the\n`ops:cache` agent scope); audit-logged as `cache.flush`.",
+        "summary": "Flush the cache: one name, a subtree, one type, one kind, or everything; or the recursor's memory.",
+        "description": "With `name`, removes that name's cached answers (with `subtree`, every name under it too);\nwithout, empties the cache. `type` (`A`, `AAAA`, `HTTPS`, `TYPE65`) keeps every other type,\nfor the name given or for every name. `kind` is `negative` (NXDOMAIN and no-data answers\nonly) or `bogus` (failed lookups: SERVFAIL, which is how a DNSSEC validation failure is\nanswered). `recursor` (`cuts`, `rtts` or `all`) instead empties what the built-in recursive\nresolver remembers between queries: zone cuts and server addresses (the next lookup starts\nfrom the root again) and each server's round-trip time; it can't be combined with the\nothers. By default every node in the cluster flushes; `node` limits it to one. The next\nquery for a flushed name is asked of the upstreams again. This doesn't clear devices' own\ncaches, blocked answers are never cached (unblocking needs no flush), and to change what a\nname resolves to, use local names instead. Needs the operator role (or the `ops:cache`\nagent scope); audit-logged as `cache.flush`.",
         "operationId": "flush",
         "requestBody": {
           "content": {
@@ -2657,7 +2657,7 @@
             }
           },
           "400": {
-            "description": "Not a domain name, or an unknown node.",
+            "description": "Not a domain name, an unknown type, kind, recursor or node, or a recursor flush combined with an answer flush.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16885,6 +16885,15 @@
               "null"
             ]
           },
+          "recursorRemoved": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "REQ: DNS-905 (T40.4) — recursor entries dropped (a `recursor` flush): zone cuts and\naddresses, or server round-trip times.",
+            "minimum": 0
+          },
           "removed": {
             "type": [
               "integer",
@@ -16900,6 +16909,14 @@
         "type": "object",
         "description": "What to flush (`POST /api/v1/cache/flush`).",
         "properties": {
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DNS-905 (T40.4) — only `negative` answers (NXDOMAIN and no-data) or `bogus` ones\n(failed lookups: SERVFAIL, which is how a DNSSEC validation failure is answered);\nabsent: every kind.",
+            "example": "negative"
+          },
           "name": {
             "type": [
               "string",
@@ -16915,12 +16932,28 @@
             ],
             "description": "One node only (its site or ID); absent: every node."
           },
+          "recursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DNS-905 (T40.4) — instead of answers, empty what the recursive resolver\nremembers: `cuts` (zone cuts and server addresses: the next lookup starts from the\nroot), `rtts` (each server's round-trip time), or `all`. Can't be combined with\n`name`, `subtree`, `type` or `kind`.",
+            "example": "cuts"
+          },
           "subtree": {
             "type": [
               "boolean",
               "null"
             ],
             "description": "Also every name under `name`."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DNS-905 (T40.4) — only this query type (`A`, `AAAA`, `HTTPS`, `TYPE65`): with a\n`name`, that name's answers of this type; without, every name's.",
+            "example": "AAAA"
           }
         },
         "additionalProperties": false
@@ -17644,6 +17677,20 @@
           },
           "name": {
             "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A notice for the group's heading (an aggregate of other maintainers' lists says so)."
+          },
+          "noteUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The page the notice points to."
           }
         }
       },

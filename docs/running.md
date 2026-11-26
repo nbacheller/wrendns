@@ -1877,6 +1877,7 @@ content = { level = "enhanced", categories = ["adult", "gambling", "social", "by
 - An allow rule, a quick rule or a group's own allow list beats a category block, and **Explain** names the category and the list that blocked. A category can be set to shadow (counts what it would block, blocks nothing) from the Lists page.
 - **Limits of DNS blocking.** A category blocks names, not content: a site served from a name that is also used for something else (a CDN, a video host) is blocked or allowed with it. Encrypted DNS in a browser or app, a VPN and a hard-coded resolver skip this resolver; turn on the Networking, DoH, VPN and proxy bypass category and your gateway's DNS redirect to narrow that. Lists lag new sites by hours or days, and no category list is complete. Safe Search and YouTube restrictions are DNS rewrites and depend on the engine not changing its names.
 - **Memory.** Every distinct name in every selected source costs about 12 bytes in the snapshot, and the compile needs several times the source text for a short while. `[filter] entry_budget` (default 1,000,000 names, **Settings, Filtering**) is the total you accept; a source above 500,000 names is **heavy** (refreshed once a day, and asks you to confirm); a selection that would use more than half of a small node's memory is refused with the numbers. The compile's sort memory is capped at a quarter of the node's memory limit. On a Pi 4 the Basic profile peaks at about 74 MiB and settles at about 31 MiB; every light category plus Ad Block settles at about 56 MiB, and newly registered domains (7 days, 2.4 million names) at about 65 MiB.
+- **Aggregate lists (blocklist.packettale.com).** The last group of the Categories view offers five categories that have no other source here: Stalkerware, Typosquatting, Violence and gore, Remote-access tools and Push notifications, each marked "(packettale)". [blocklist.packettale.com](https://blocklist.packettale.com/) is an aggregator: it republishes other maintainers' lists, and every list keeps its upstream's terms, which differ (the five here are CC BY 4.0, the Unlicense and Dandelion Sprout's own licence, whose AdGuard part is to be treated as GPL-3.0; the site's source table shows the rest, some of them copyleft or non-commercial, and none of those is offered). They are off until you tick them; your node then downloads each one straight from the site, once a day (the publisher asks automated clients to poll no more than once every five minutes), and WrenDNS ships and redistributes nothing. Remote-access tools includes AnyDesk, and Typosquatting can block a real site now and then, so each says so on its row. **Sources and licences** in the Categories view lists the upstream and licence of every one.
 - **API and agents.** `GET /api/v1/categories`, `GET` and `PUT /api/v1/groups/{name}/content`; the MCP tools `categories_list`, `get_group_content` and `plan_set_group_content`. An agent token can read and plan a content change, but only an operator can apply it, and an agent is refused a heavy selection.
 - **Cluster.** Content replicates with the groups. Only the primary downloads and compiles; replicas receive the snapshot. A change to content waits until every member runs a version that understands it.
 - **Upgrading a bundle.** The Compose and Docker Desktop bundles no longer define `hagezi-pro` as a list: the default group sets `content = { ads = true }`, which uses the same list through Ad Block. A list you manage through the API with the same URL is adopted by Ad Block (no second download). A list your config files define is left alone and shown as provided by that list.
@@ -2185,6 +2186,19 @@ the agent scope `analytics:read`.
 - **Flush this name** removes it; tick *and everything under it* to flush a whole subtree
   (`example.com` takes `www.example.com` with it). **Flush everything…** empties the cache
   after a confirmation. Flushing needs the operator role and is audit-logged as `cache.flush`.
+- **Flush by type or kind.** Under the name box, *Query type* with a name flushes just that
+  type for the name (`AAAA` for `www.example.com` leaves its `A` answer cached) and runs at
+  once; with no name, *Flush this type everywhere…* asks first. *Flush negative answers…*
+  removes only the names that don't exist (NXDOMAIN) and the names with no record of the type
+  asked (no data). *Flush failed lookups…* removes the cached SERVFAILs, which is how a DNSSEC
+  validation failure is answered (a bogus answer is never cached as such). All three ask first
+  when no name is given.
+- **Flush the recursive resolver.** If an upstream is `recursive://`, *Flush zone cuts…* makes
+  it forget the delegations and server addresses it learned, so the next lookup starts from the
+  root servers again (use it after a delegation changed and you don't want to wait for the
+  record to expire); *Flush round-trip times…* makes it forget how fast each server answered,
+  so it re-learns the fastest. Neither touches cached answers. Both ask first. The notice says
+  how many entries each node dropped; with no `recursive://` upstream there is nothing to drop.
 - In a cluster, each node has its own cache. Stats and lookups show one row per node, and a
   flush applies to every node unless you pick one. A node that can't be reached is listed with
   the error, and the others still flush.
@@ -2194,8 +2208,14 @@ the agent scope `analytics:read`.
 
 API: `GET /api/v1/cache/stats`, `GET /api/v1/cache/lookup?name=`, and
 `POST /api/v1/cache/flush` with `{"name": "example.com", "subtree": true, "node": "pi"}` (every
-field optional; an empty body empties every node's cache). Agents need `analytics:read` to
-look and `ops:cache` to flush.
+field optional; an empty body empties every node's cache). `"type": "AAAA"` limits it to one
+query type, `"kind": "negative"` or `"bogus"` to that kind of entry, and `"recursor": "cuts"`,
+`"rtts"` or `"all"` flushes the recursive resolver's memory instead of answers (it can't be
+combined with `name`, `subtree`, `type` or `kind`). On the command line:
+`wrendns ctl flush --type AAAA --name example.com`, `--kind negative`, `--recursor cuts`,
+`--node pi`. Agents need `analytics:read` to look and `ops:cache` to flush (the `flush_cache`
+tool takes the same fields). In a cluster, a node that is not yet on this version refuses a
+typed or recursor flush instead of flushing more than asked; it is listed with the error.
 
 ### Is the cache the right size?
 Each node's card on the Cache page has a **Size** line: whether a bigger cache would answer
@@ -3892,6 +3912,7 @@ wrendns ctl rules                           # quick rules; `ctl unrule <id>` rem
 wrendns ctl pause --minutes 10              # `ctl resume` to undo
 wrendns ctl maintenance start --for 30m --reason "SD card swap"   # `ctl maintenance end` to undo
 wrendns ctl flush --name example.com --subtree
+wrendns ctl flush --kind negative           # or --type AAAA, or --recursor cuts|rtts|all
 wrendns ctl lists                           # with unique names and hits
 wrendns ctl lists refresh --wait            # download every list again now (or name some)
 wrendns ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`

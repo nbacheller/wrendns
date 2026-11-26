@@ -45,6 +45,18 @@ The content categories (FLT-901, `presets/categories/*.toml`) name lists that a 
 
 The CC BY-SA 4.0 licence of the Bon-Appetit list asks for attribution, which the Categories view shows next to the checkbox: "Licensed CC BY-SA 4.0, (c) Bon-Appetit contributors." Nothing is redistributed, so its share-alike condition has nothing to apply to. The GPL-3.0 of HaGeZi's lists covers the lists as data that your node fetches; the question whether a GPL-3.0 dataset fetched at runtime needs anything more is recorded in ADR-995 as a risk for the owner, not resolved by legal review.
 
+### blocklist.packettale.com (an aggregate, downloaded by your node)
+
+The last group of the Categories view offers five categories from [blocklist.packettale.com](https://blocklist.packettale.com/) (code at [`packettale/dns-blocklist`](https://github.com/packettale/dns-blocklist), MIT). The site is an aggregator: it republishes other maintainers' lists as plain domain feeds and says "Upstream data retains its original terms" ([NOTICE](https://blocklist.packettale.com/NOTICE.md), [sources](https://blocklist.packettale.com/sources.md)); some of its upstreams are GPL-3.0 or non-commercial, and none of those is offered here. As with the lists above, WrenDNS does not ship, copy or redistribute these feeds: the binary and the image carry only the catalog entry (name, URL, licence, size), and your node downloads the feed from blocklist.packettale.com once a day when you turn the category on. Each one is off by default. The site's own table gives only generic terms for these upstreams ("Original upstream license and embedded attribution apply", "See upstream repository"), so the licences below were read at each upstream repository on 2026-11-25.
+
+| Category | Upstream list (maintainer) | Licence | Where the licence was read |
+|---|---|---|---|
+| Stalkerware | Stalkerware Indicators (AssoEchap) | CC BY 4.0 | the repository's README, section License |
+| Typosquatting, Violence and gore, Remote-access tools | Typo, Shock and Remote lists of [`ShadowWhisperer/BlockLists`](https://github.com/ShadowWhisperer/BlockLists) | Unlicense | `LICENSE` |
+| Push notifications | Anti Push Notifications of [`DandelionSprout/adfilt`](https://github.com/DandelionSprout/adfilt), which combines rules from AdGuard's Popups filter and Fanboy's Notifications list | Dandelicence 1.4 (Dandelion Sprout's own; commercial use allowed, the licence text or a link kept with copies). The list's header says the AdGuard Annoyances Web Push part "is to be treated as GPL-3.0" and credits Ryan Brown (Fanboy's Notifications Blocking List, CC BY 3.0) and AdGuard Software Limited | `LICENSE.md` |
+
+The CC BY 4.0 licence of the Stalkerware Indicators list asks for attribution, which the Categories view shows in Sources and licences: "Stalkerware Indicators, (c) AssoEchap and contributors, licensed CC BY 4.0." The aggregate is a source for these presets only: it is never merged into a list WrenDNS distributes (`docs/design/curated-category-lists.md`, section 3.3).
+
 `scripts/check-catalog.py`, run weekly by the `catalog-check` workflow, compares each source's repository (licence, last push, archived flag) with what the catalog records, and opens an issue when one goes stale.
 
 ## IP geolocation data (the world view)

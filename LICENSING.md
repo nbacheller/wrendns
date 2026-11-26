@@ -25,7 +25,7 @@ WrenDNS started from [TelltaleDNS](https://github.com/paimonsoror/telltaledns) b
 
 - the annotated git tag **`permissive-final`** (commit `2e99850b`);
 - the GitHub release [permissive-final](https://github.com/nbacheller/wrendns/releases/tag/permissive-final) (source only), published 2026-11-19;
-- an archive copy at [Software Heritage](https://www.softwareheritage.org/) has been requested (a save of `https://github.com/nbacheller/wrendns`);
+- an archive copy at [Software Heritage](https://www.softwareheritage.org/) was requested on 2026-11-26, after the repository became public (a save of `https://github.com/nbacheller/wrendns`; accepted and in progress on that day, not yet confirmed as done);
 - the container images and Helm chart built before the rename, `ghcr.io/nbacheller/telltale` and `ghcr.io/nbacheller/charts/telltale` (last built before the rename), which are made public as an archive of the permissive-era builds once their versions have been checked, and are no longer updated. Current builds are `ghcr.io/nbacheller/wrendns` and `ghcr.io/nbacheller/charts/wrendns`.
 
 Everything in that version stays available under Apache-2.0 OR MIT for good: a licence once granted cannot be taken back. Changes made after the tag are licensed under AGPL-3.0-or-later, except for the parts listed under [What stays Apache-2.0](#what-stays-apache-20); the TelltaleDNS portions keep Apache-2.0 OR MIT.
