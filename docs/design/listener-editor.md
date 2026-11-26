@@ -1,12 +1,15 @@
 # The guarded listener editor: design notes (rest of T27.14)
 
-**Requirements:** API-902, DNS-001, DNS-901, CLU-004, CLU-006, API-901. **ADRs:** ADR-914, ADR-956,
-ADR-957, ADR-977, ADR-978, ADR-1090 (points 8 to 10), ADR-107 (probes). **Task:** T27.14 in `spec/10`,
-the part still open after the `listen-access` row was built (2026-11-25).
+**Requirements:** API-902, DNS-001, DNS-901, DNS-014, CLU-004, CLU-006, API-901; reserved API-904
+(the relayed confirm, 2.7). **ADRs:** ADR-914, ADR-956 (amended 2026-11-26), ADR-957, ADR-977,
+ADR-978, ADR-1090 (points 8 to 10), ADR-107 (probes), ADR-1098 (this note's decisions). **Task:**
+T27.14 in `spec/10`, the part still open after the `listen-access` row was built (2026-11-25), split
+into T27.14a to T27.14h (section 8).
 
 *Decision* means build it this way; amend the note (and record an ADR, AGENTS rule 3) if you can't.
-*Open* means the owner decides first; the open points are listed in section 9 and asked through the
-question tool, not answered here.
+The five points this note first left open were decided by the owner on 2026-11-26 through the
+question tool. Section 9 records them, and the sections they touch are written to match. What is still
+open is listed at the end of section 9.
 
 ## 0. What exists, and what this note adds
 
@@ -33,7 +36,8 @@ Built and merged:
 
 This note designs the four `window` rows, with most of the detail on `listen`, because the engine's
 proof today is an HTTP request arriving on a new API socket, and a DNS listener cannot be proved that
-way.
+way. It also designs two pieces the owner's decisions add: the confirm relayed by the primary for a
+`listen` change (2.7) and the cluster-wide control for `[access] allowed_networks` (1.4).
 
 ## 1. What an admin can change, and what stays in the file
 
@@ -100,9 +104,33 @@ Not in this task, with reasons:
 - **`[api] confirm_window_secs`.** Already file-only (`FILE_ONLY`), because a change can't lengthen its
   own window.
 - **Allowed networks.** There is no per-listener allow list. `[access] allowed_networks` is one list in
-  the shared part of the configuration (not node-local), so a node's listener row cannot own it. Today it
-  has no UI control at all. The card shows it read-only under the listener table with a note. Where it
-  gets a control is open (section 9, question 4).
+  the shared part of the configuration (not node-local), so a node's listener row cannot own it. The
+  Listeners card shows it read-only under the listener table, with a link to its own control (1.4).
+
+### 1.4 The allowed-networks control (owner decision, 2026-11-26)
+
+`[access] allowed_networks` gets **one cluster-wide control, for admins only**, built as its own task
+(T27.14h), not as part of the `listen` row. The Listeners card and the Listener access card show the
+list read-only and link to it. What the task builds:
+- **Where.** Settings → System → Allowed networks, one card for the whole cluster (the list is in the
+  shared part, so a change on the primary reaches every node by the normal replication). On a replica
+  the card writes through the primary like any shared setting. Operators and viewers see the list
+  without controls. Whether an agent token may change it is still open (section 9).
+- **The form.** A list of CIDRs, each validated (`Cidr::parse`), with add and remove. The defaults of
+  ADR-014 are shown when the file and the UI set nothing.
+- **The warning.** Adding a **public range** warns before save: a range is public when any address in
+  it is public by `is_public_address` (ADR-1090 point 1), so `0.0.0.0/0`, `::/0` and any range that is
+  not wholly inside loopback, RFC 1918, CGNAT, link-local or ULA. The text: "This lets every address in
+  <range> use this resolver, from the internet too. Plain DNS (UDP and TCP) carries no device key, so
+  this makes the resolver open to that range." ADR-014's start-up warning for `0.0.0.0/0` stays.
+- **File wins** (ADR-040): a file that sets `[access] allowed_networks` locks the control ("Set by file:
+  <path>").
+- **Audit** of every change with before and after, like any shared setting.
+
+`allowed_networks` also limits who reaches the web UI and the API (`only_allowed` in
+`crates/wrendns/src/http.rs`, ADR-029), so a narrowed list can shut the admin's own browser out of the
+UI. How the control guards against that, and whether it is a guarded row, was not part of the owner's
+decision and is still open (section 9).
 
 ## 2. The confirmation window for a listener change
 
@@ -115,13 +143,15 @@ node's own probe** arrived on the new socket, and the node's probe of the new DN
 ADR-914 says the same: "For a DNS listener change, the confirmation also needs the node's own probe of
 the new listener to answer."
 
-### 2.2 The proof for `listen` (decision, with an open extension)
+### 2.2 The proof for `listen` (owner decision, 2026-11-26)
 
 A `listen` change is confirmed when both of these hold:
 
 1. **Intent.** The same admin sends `POST /api/v1/guarded/pending/{id}/confirm` with the single-use
    token or their own session, on any of the node's API sockets. The API did not change, so no new
    origin is needed. The token rule, the wrong-admin refusal and the five-failure block are unchanged.
+   When the admin's browser cannot open the node's API, and only for this row, the intent may instead
+   reach the node relayed by the primary (2.7).
 2. **Proof, by the node's own probe.** For every socket the change binds or rebinds:
    - **Who sends it:** the node itself, from the engine, with the probe client of ADR-107 (the upstream
      client, certificate checks off, because it connects by IP).
@@ -153,8 +183,10 @@ the pipeline answers, and that the gate is in the promised state. It cannot see 
 DHCP option, or a container's published ports. The preview says so in words (2.6), and the confirm
 step shows **evidence from other hosts**: the number of distinct client addresses, other than the
 node's own, whose queries arrived on each new socket during the window. Collecting it is described in
-2.4. Whether that evidence is only shown, or is also required before Confirm is enabled, is open
-(section 9, question 1). This note recommends showing it without requiring it.
+2.4. **The evidence is shown, never required** (owner decision, 2026-11-26): the proof before Confirm
+is the node's own test query to each new listener, and Confirm does not wait for queries from other
+machines. A window with no evidence shows "no other host has used this listener yet" next to the
+proof line, and Confirm stays enabled.
 
 **Engine change.** `Staged` gains `dns_probes: Vec<DnsProbe>` (protocol, address to ask, path, and
 whether a refusal by the gate is the expected answer). For a row whose `Staged` carries probes and no
@@ -274,22 +306,141 @@ force.
    - A certificate that is expired or close to expiry.
    - A new listener that is gated by default (section 4).
 
-### 2.7 A node with no browser at its API (open)
+### 2.7 A node with no browser at its API: the relayed confirm (owner decision, 2026-11-26)
 
-The confirm has to reach the target node itself (ADR-956 §5): the primary cannot confirm for the admin.
-For a `listen` change the node's API address does not change, so the UI opens the node's own API URL
-(from the cluster's member list), with the token in the `#fragment`. When the admin's browser cannot
-open that URL, the change cannot be confirmed and rolls back at expiry. That safe failure is the default.
-This happens on a replica whose API listens on loopback or on a cluster-only network, or a pod behind a
-shared Service where the request may land on another pod. The case where `[api] enabled = false` is
-simpler: the node has no guarded routes at all, so the file and the offline CLI are its only path.
+**The decision.** For a `listen` change, and for no other row, the primary may pass the admin's confirm
+on to the target node, carrying the admin's signed identity. This amends ADR-956 §5, which rejected a
+primary confirming for another node (and the sentence of ADR-914 that the confirmation must reach that
+node directly); the amendment is recorded under ADR-956 and in ADR-1098. It was the owner's choice
+against this note's recommendation (keep §5 and let the change roll back), so the relay below is
+deliberately narrow, and its residual risks are listed at the end of this section. It is built as its
+own task (T27.14g) after the `listen` row, and requirement ID API-904 is reserved for it. The owner
+decided the relay itself. The mechanism in this section (the lifetime, the clock allowance, the cap on
+refused relays, the token on top of the session, the target's checks) and the residual risks are this
+note's own design and wording, written after the decision; they are for the owner to accept and are not
+owner decisions.
 
-The preview says, before apply: "You confirm this at <url>. If your browser can't open it, the change
-rolls back after <n> seconds." Before apply, the UI also tries `GET <url>/livez` from the browser in
-`no-cors` mode, which tells only whether a connection was made. If it fails, the UI says the change will
-roll back and keeps Apply enabled. Whether to go further for `listen` only, for example by accepting a
-confirm relayed by the primary, is open (section 9, question 2). That needs an amendment to ADR-956 §5,
-which rejected exactly that.
+**The direct confirm stays the default.** For a `listen` change the node's API address does not change,
+so the UI opens the node's own API URL (from the cluster's member list), with the token in the
+`#fragment`. The admin's browser may be unable to open that URL: a replica whose API listens on
+loopback or on a cluster-only network, or a pod behind a shared Service where the request may land on
+another pod. Without the relay such a change cannot be confirmed and rolls back at expiry, which is
+still what happens when the relay is not used or not possible. The case where
+`[api] enabled = false` is unchanged: the node has no guarded routes at all, so the file and the offline
+CLI are its only path, and nothing is relayed to it. The preview says, before apply: "You confirm this
+at <url>." Before apply, the UI tries `GET <url>/livez` from the browser in `no-cors` mode, which tells
+only whether a connection was made. When it fails for a change on another node, the preview adds (once
+T27.14g is built; before that it says the change will roll back): "Your browser can't open <url>. You
+can confirm through the primary instead; the node still has to answer its own test queries first."
+Apply stays enabled either way.
+
+**When the relay can be used.** All of these hold, and each is checked by the server, not only by the
+UI:
+- The setting is `listen`. `api-address`, `api-tls`, `trusted-proxies`, `listen-access` and every
+  `immediate`, `staged` or `action` row are refused, by the primary and again by the target, so a fault
+  on one side alone cannot let a relay through.
+- The target X is a cluster member other than the primary. A standalone node and the primary itself
+  confirm directly; a replica that receives a relay request answers 421 `not_primary`, as for
+  forwarding.
+- A `listen` change is pending on X, applied by the same admin through this primary (the primary keeps
+  in memory, for the window, the forwarded changes it carried: pending ID, preview ID, node, setting,
+  admin, value digest).
+- The request is made by an interactive admin session at the primary. Agent tokens get 403
+  `agent_not_allowed`, other tokens 403 `reauth_required`, operators and viewers 403, as on every
+  guarded route.
+
+**The request.** The countdown on the primary's UI shows **Confirm through the primary** next to the
+direct link, for a `listen` change on another node only. It sends
+`POST /api/v1/guarded/pending/{id}/confirm-relay` to the primary, with the admin's session and, in the
+body, the `confirmToken` the apply returned (the fragment the UI kept; the apply response already came
+back through the primary, ADR-956 §5). Requiring the token as well as the session means a stolen session
+cookie alone cannot confirm: the token lives only in the browser that applied the change.
+
+**What the primary signs.** A relayed-confirm assertion, separate from the forwarding assertion (its
+`purpose` is `confirm`, so neither can be used as the other), signed by the primary's cluster key (by
+its per-node assertion key once T27.19 lands), with:
+- `purpose: "confirm"`, `setting: "listen"`, the target's node ID, the pending ID, the preview ID and
+  the digest of the previewed value;
+- the admin's user ID and role, a digest of the session ID (never the session itself), and the
+  session's sign-in time;
+- the browser's source address, as the primary saw it (for the audit, marked as reported by the
+  primary);
+- `issuedAt`, `expiresAt` (at most 30 seconds later, and never later than the window's deadline as the
+  primary last saw it), and a 128-bit random `nonce`.
+
+The assertion and the `confirmToken` travel to X over the existing mTLS cluster channel (the ADR-946
+pattern). The token is never logged or audited on either node. Before sending, the primary checks the
+conditions above, and for a change the preview marked weakening it also checks that the session signed
+in within the last 10 minutes (the apply already required that; the relay asks again, because the relay
+can come minutes later). It audits the relay first, and refuses if that audit row can't be written.
+
+**What X checks before it confirms.** Each check is X's own; the primary's checks never stand in for
+them. Any failure refuses the relay (403 `relay_refused`, with the reason in the detail) and the window
+runs on:
+1. **Sender.** The connection's mTLS node ID is the primary X knows, and the signature verifies under
+   the primary's key (ADR-977 point 5). A replica's assertion is refused.
+2. **Row.** The assertion's setting is `listen`, and the pending change on X is a `listen` change. X
+   refuses a relayed confirm for any other pending change, whatever the assertion says.
+3. **Binding.** The pending ID is pending on X (not confirmed, rolled back or expired), the node is X,
+   and the preview ID and value digest equal the staged change's. The admin is the admin bound to the
+   pending change (the one who applied it).
+4. **Token.** The `confirmToken` matches (compared in constant time) and has not been used. A relayed
+   confirm uses it up exactly as a direct one does.
+5. **Freshness.** `expiresAt` is no more than 30 seconds after `issuedAt`, and has not passed on X's
+   clock with a skew allowance of 5 seconds. The window's deadline, measured on X's monotonic clock,
+   bounds it independently: once the pending change is gone, no assertion for it is accepted.
+6. **Replay.** The nonce is not in X's used-nonce set. X keeps the nonces it has seen for the life of
+   the pending change and at least 60 seconds. They are held in memory: a restart in the window drops
+   the pending change too (ADR-956 §4), so nothing is left to replay against.
+7. **Recency.** For a change marked weakening, the session's sign-in time in the assertion is within
+   10 minutes.
+8. **Attempts.** At most 5 refused relays per pending change. After that X refuses every further relay
+   for that change without checking it; the direct confirm stays possible. The primary also counts each
+   refusal toward the session's five-failure block (ADR-956 §3).
+9. **The proof.** Exactly as for a direct confirm: every DNS probe answers at that moment (2.2), and the
+   host facts still match the staged gates (`preview_stale`, section 4). The relay changes who delivers
+   the admin's intent. It never replaces the node's own test queries. A relay refused only because a
+   probe has not answered yet is answered 403 with the probe named, as a direct confirm is (2.2), and,
+   like a direct one, is not counted in check 8 or in the session's failure block.
+
+Then X commits as for a direct confirm: the entry is written through the primary (ADR-956 §5,
+`primary_unreachable` when it can't be), the staged sockets are adopted, the removed ones close.
+
+**Audit on both nodes.** The primary writes `settings.guarded_confirm_relayed` (actor, session, source
+address, target node, setting, pending ID, nonce; never the token) when it sends, and the outcome when X
+answers. X writes `settings.guarded` as for any confirm, with `confirmedVia: "primary"`, the primary's
+node ID and the nonce. A refused relay is `settings.guarded_refused` on X with the reason, and the
+primary records the refusal with the relay. The alert `guarded_setting_changed` says "confirmed through
+the primary", so a second channel sees a relayed confirm for what it is.
+
+**Rollback is unchanged.** The relay does not lengthen the window, and it cannot confirm a change whose
+probes fail. If the primary or X can't be reached, nothing is relayed and the change rolls back at
+expiry. Cancel, expiry, `bind_failed`, `commit_failed` and `failed_start` (2.5) apply to a relayed
+change as to any other. A relayed cancel is not added: cancelling only rolls back, which expiry does as
+well.
+
+**Residual risks** (listed plainly, as the owner asked):
+- **No proof that the admin can reach X.** This is what ADR-956 §5 protected, and the relay gives it up
+  for `listen`. After a relayed confirm, nothing has shown that any path from the admin to X works. The
+  node's own probe shows that X answers itself, and the evidence counter (2.4) shows whether other
+  hosts used the new listener, but neither shows that the admin or the clients can still reach X. It is
+  bounded: a `listen` change never touches X's API sockets (2.6 rule 1), cannot leave port 53 without a
+  listener (rule 2), and the preview names every removed address (rule 3). A relayed confirm can still
+  remove an address that clients use, which the direct confirm could too.
+- **A compromised primary** can apply a `listen` change on X and relay its confirm without the admin,
+  because it holds every input the relay needs, the token included (the apply response passes through
+  it). This adds no new power, since such a primary can already forge the forwarding assertion and
+  replace X's configuration (ADR-956 §5), but it removes one step where a person had to act at X.
+- **A replica that holds `ca.key`** can impersonate the primary until T27.19 adds per-node assertion
+  keys (ADR-977 point 5, residual accepted 2026-11-18). That residual now covers relayed confirms of
+  `listen` too.
+- **A stolen browser** that holds both the admin's session at the primary and the fragment can confirm,
+  as it could confirm directly.
+- **Clock skew.** Freshness compares the primary's and X's wall clocks. It is bounded by the 30-second
+  lifetime, the single-use nonce and token, and X's monotonic window, so a skewed clock can refuse a
+  relay but cannot make one live longer than the pending change.
+- **The browser's address on X** is the one the primary reports. X never sees the browser, so its audit
+  row marks the address as reported.
 
 ## 3. Cluster behaviour (decision)
 
@@ -298,8 +449,13 @@ which rejected exactly that.
   and 5). The entry is never part of the shared part (ADR-978). There is no "all nodes" apply. Each node
   gets its own preview, its own phrase (`<node> listen`) and its own window.
 - **Forwarding.** A change made at the primary's UI for node X travels with the signed single-use
-  assertion. The window, the staged sockets and the probes all live on X, and the confirm goes to X's
-  API (2.7).
+  assertion. The window, the staged sockets and the probes all live on X. The confirm goes to X's API
+  directly when the admin's browser can open it, and otherwise, for `listen` only, through the primary
+  with the relayed-confirm assertion (2.7, amending ADR-956 §5). Either way X runs its own checks and its
+  own probes; the primary never judges the proof.
+- **Only the primary relays.** The relay is the forwarding path run the other way for one request: a
+  replica neither forwards nor relays (421 `not_primary`), and X accepts a relayed confirm only from the
+  primary's node ID (ADR-977 point 5). Both nodes audit it.
 - **Replication of the stored value.** On a replica, `write_entry` goes through the primary and comes
   back in the replicated blob. Adoption (2.3) makes the order of that reload and the engine's commit
   irrelevant. A replica that can't reach the primary at confirm answers `primary_unreachable`, and the
@@ -320,7 +476,7 @@ which rejected exactly that.
   when X is the only healthy resolver in its site (the cluster health view). If something goes wrong in
   the window, the old sockets are still there, but the warning sets expectations.
 
-## 4. The gate default and weakening (decision, one rule open)
+## 4. The gate default and weakening (decision; rule c is the owner's decision of 2026-11-26)
 
 `require_client_id` stays with `listen-access` (ADR-1090 point 8). Moving or adding a listener changes
 which address the default is judged on, so the `listen` row has to take the default into account.
@@ -363,10 +519,23 @@ which address the default is judged on, so the `listen` row has to take the defa
     "Replaced" means the same protocol, with the old one removed or changed in the same change. This
     covers moving a gated DoT listener from a public address to a wildcard on a host that has only a
     global IPv6 address.
-  - (c) The change adds a socket that a public address reaches and that answers without a device key.
-    This is open (section 9, question 3).
+  - (c) **The change adds a socket reachable from the internet that answers without a device key**
+    (owner decision, 2026-11-26). "Reachable from the internet" is ADR-1090's public test, with its
+    wildcard rule:
+    - a specific address is reachable when `is_public_address` is true for it (ADR-1090 point 1);
+    - a wildcard bind (`0.0.0.0`, `[::]`, `[::ffff:0.0.0.0]`) is reachable when the host holds a
+      public IPv4 address on an interface that is up (ADR-1090 point 9(b)), read from fresh host facts.
+      An interface list that can't be read counts as reachable, as ADR-1090's default fails closed.
 
-  A weakening change gets the red mark and needs a sign-in within the last 10 minutes.
+    "Answers without a device key" is a plain `udp` or `tcp` listener (it cannot carry a key), or a
+    `dot`, `doh`, `doh3` or `doq` listener whose effective gate is off. "Adds" means a protocol and
+    address that the running set does not have; a listener that is kept, or changed in place with the
+    same effective gate, is not added. `[access] allowed_networks` does not change the answer: the rule
+    is judged on the socket, because the list can be widened later without touching the listener.
+
+  A weakening change gets the red mark and needs a sign-in within the last 10 minutes. The preview names
+  the rule that made it weakening, for example "adds UDP on 203.0.113.9:53, which answers anyone on the
+  internet without a device key".
 
 ## 5. API, UI, help and audit
 
@@ -387,6 +556,13 @@ which address the default is judged on, so the `listen` row has to take the defa
   last probe (`answered`, `refused_by_gate`, or `no_answer` with the error, and the time) and the
   evidence counter. `GET /api/v1/guarded` keeps returning only that a change is pending, its setting
   and its deadline (ADR-956 §7), because probe lines name the pending addresses.
+- **Relayed confirm** (T27.14g, 2.7): `POST /api/v1/guarded/pending/{id}/confirm-relay` on the primary,
+  with the admin's session and `{"confirmToken"}`. It answers as the target's confirm does, or 403
+  `relay_refused` with the reason, 421 `not_primary` on a replica, 409 `primary_unreachable` when X
+  can't write. The problem code `relay_refused` and the audit action `settings.guarded_confirm_relayed`
+  are new. Agents and every token are refused; there is no MCP tool.
+- **Allowed networks** (T27.14h, 1.4) use the shared-settings route the task chooses, not a guarded
+  route, unless the owner decides it is guarded (section 9).
 - **Plans** keep refusing the path. ADR-977 point 12 is done here: a plan step naming `listen` (or a
   path inside it) is refused with `guarded_only`.
 
@@ -397,7 +573,8 @@ the table without controls):
 1. A table with one row per listener: protocol, address, port, certificate (file name and expiry),
    device key (the effective gate, read-only, linking to Listener access), PROXY (read-only), and the
    status from the probes ("answering, 3 ms", "not probed: device key required", "closed"). Below it,
-   `[access] allowed_networks` is listed read-only, with the note from section 9, question 4.
+   `[access] allowed_networks` is listed read-only, with a link to the Allowed networks card (1.4):
+   "Who may use these listeners is set once for the whole cluster, under Allowed networks."
 2. Per row, **Edit** and **Remove**, plus **Add listener** under the table. Edits go into a draft. The
    table marks draft rows "new", "changed" or "to remove", and nothing reaches the server until Review.
    The add and edit form has:
@@ -410,7 +587,8 @@ the table without controls):
 3. **Review change** opens `GuardedChange` with the draft as the value. The review step shows:
    - the diff as a list, each line with its gate sentence;
    - the warnings, the dropped gate settings and the red mark when weakening;
-   - "You confirm this at <url>" with the reachability result (2.7);
+   - "You confirm this at <url>" with the reachability result, and for another node whose URL the
+     browser can't open, the note that the confirm can go through the primary (2.7);
    - the phrase field (`<node> listen`).
 
    When the draft both adds and removes, the review step offers **Add only (recommended)** and **Add
@@ -420,8 +598,11 @@ the table without controls):
    other hosts". It also shows test commands with the address filled in, ready to copy and run from a
    client: `dig @<ip> -p <port> example.com`, `kdig +tls @<ip> -p 853 example.com`, and
    `curl -H 'accept: application/dns-message' https://<ip>/dns-query?dns=...`. **Confirm** is enabled when
-   every probe answers (or, under question 1's option B, also when evidence arrived). **Cancel** sits next
-   to it.
+   every probe answers; evidence from other hosts is shown and never required (2.2). **Cancel** sits next
+   to it. For a `listen` change on another node, **Confirm through the primary** sits beside the direct
+   link once T27.14g is built (2.7). The primary's page cannot read X's live probe lines when the
+   browser cannot open X, so that button is not held back by them: X judges the probes when the relay
+   arrives and refuses it, with the failing probe named, until they answer.
 5. The outcome uses `reasonText` for the rollback reasons, plus the new detail "the file now sets the
    listeners".
 
@@ -446,14 +627,20 @@ the table without controls):
   floating addresses; recovery (the file wins; `wrendns guarded clear listen`; `WRENDNS_IGNORE_GUARDED`).
 - `listener-keys` gains a paragraph saying a moved listener starts on its default.
 - `guarded-settings` gains a line saying a DNS listener change is proved by the node's own probe.
+- `listeners` (T27.14g) gains "Confirming through the primary": when it is offered, what the node
+  still checks, that it is for DNS listeners only, and that both nodes audit it.
+- New topic `allowed-networks` (T27.14h): what the list does (DNS and the web UI, ADR-014, ADR-029),
+  that it is one list for the whole cluster, and why a public range makes plain DNS open to that range.
 - `check:help` covers the new `HelpButton` ids.
 - Docs: `docs/running.md` (listeners), `docs/recovery.md` (the `listen` entry), `site/guide-settings.html`.
 
 ### 5.4 Audit and alerts (decision)
 
-These are the framework's records with nothing new:
+These are the framework's records, plus one for the relay:
 - `settings.guarded` at confirm, with `before` and `after` as listener lists (paths only, no secrets
-  involved) and the reason.
+  involved) and the reason; with `confirmedVia: "primary"`, the primary's node ID and the nonce for a
+  relayed confirm (2.7).
+- `settings.guarded_confirm_relayed` on the primary (new, T27.14g): the relay and its outcome.
 - `settings.guarded_rolled_back` with the reason code.
 - `settings.guarded_refused` for `would_disconnect_you`, a stale preview, a bad phrase or a reauth.
 - `guarded_setting_changed` when the change goes pending and again on its outcome.
@@ -483,12 +670,18 @@ names it at info level.
   adds the applier, the form (a list of CIDRs), and the confirm step's "the server now sees your address
   as <addr>". Weakening: an entry added.
 
-**`would_disconnect_you` for the API.** ADR-914 refuses a change "that removes the API listener the
-request came in on in the same request that is meant to confirm it". ADR-956 §3 shortens that to "that
-removes the API listener the apply request itself came in on". Read literally, ADR-956 §3 would refuse
-every `api-address` move, because `api.listen` is one address and every apply arrives on it. This note
-follows ADR-914's reading: the confirm must arrive on the new socket, so the old one is never the
-confirming request's. That reading is section 9, question 5.
+**`would_disconnect_you` for the API (owner decision, 2026-11-26).** ADR-914 refuses a change "that
+removes the API listener the request came in on in the same request that is meant to confirm it".
+ADR-956 §3 shortens that to "that removes the API listener the apply request itself came in on". Read
+literally, ADR-956 §3 would refuse every `api-address` move, because `api.listen` is one address and
+every apply arrives on it. The owner chose ADR-914's reading, recorded as an amendment to ADR-956 §3:
+**moving the API address from the UI is allowed, and a change is refused only when its confirm would
+have to arrive through a listener the change removes.** For `api-address` the confirm must arrive on
+the new socket, which the change adds, so a move is allowed; the old socket closes only after the
+confirm has been answered. The check is made on the proof each row needs: a change is refused when the
+socket its proof must arrive on (`proof_addr`, or the `proofPort` of an `api-tls` change) is one the
+same change closes, or when it leaves the node with no API listener. Since the relay (2.7) is never
+available for these rows, there is no other way for their confirm to arrive.
 
 ## 7. Test plan
 
@@ -502,8 +695,12 @@ confirming request's. That reading is section 9, question 5.
   - a witness;
   - certificate path rules;
   - a set-by-file lock.
-- The weakening table (a), (b), and (c) as decided, over `HostFacts` fixtures (public IPv4, private
-  only, global IPv6 only, unreadable).
+- The weakening table (a), (b) and (c), over `HostFacts` fixtures (public IPv4, private only, global
+  IPv6 only, unreadable): `api_902_listener_weakening_table`. For (c): UDP or TCP added on a public
+  address weakens; DoT added on a public address with the gate off weakens and with the gate on does
+  not; a wildcard added weakens on a host with a public IPv4 address or an unreadable interface list and
+  does not on a private-only or global-IPv6-only host; a kept listener never counts; a widened
+  `allowed_networks` does not change the result.
 - The gate lines and dropped explicit settings in the preview text.
 - The overlay order, `listen` before `listen-access`.
 - `listen-access` is refused while a `listen` window is pending.
@@ -529,7 +726,34 @@ ports, `tokio::time::pause` for the window):
   - `api_902_confirmed_listener_bind_failure_falls_back_at_start`, which exists for the framework and
     gets a real `listen` entry here.
   - `api_902_listener_evidence_counts_other_hosts`.
-- The `api-address`, `api-tls` and `trusted-proxies` ACs (3 and 5) as the roadmap lists them.
+  - `api_902_listener_confirm_does_not_wait_for_evidence`: Confirm is accepted with the probes
+    answering and no other host seen.
+- The `api-address`, `api-tls` and `trusted-proxies` ACs (3 and 5) as the roadmap lists them, plus
+  `api_902_api_address_move_allowed` (a move is not `would_disconnect_you`) and
+  `api_902_refused_when_proof_socket_is_removed`.
+- **The relayed confirm** (T27.14g; two nodes, the primary and X, with X's API not reachable from the
+  test client):
+  - `api_902_relayed_listen_confirm_accepted`: confirmed, entry written, both audit rows, the alert says
+    "confirmed through the primary".
+  - `api_902_relay_refused_for_other_rows`: `api-address`, `api-tls`, `trusted-proxies` and
+    `listen-access` are refused by the primary, and an assertion forged to reach X for each is refused
+    by X.
+  - `api_902_relay_from_replica_refused` (a replica's node ID or signature) and
+    `api_902_relay_on_replica_answers_not_primary`.
+  - `api_902_relay_assertion_single_use` (a replayed nonce), `api_902_relay_assertion_stale_refused`
+    (expired, lifetime over 30 s, the pending change gone), `api_902_relay_binding_checked` (another
+    pending ID, preview ID, value digest or admin), `api_902_relay_needs_the_confirm_token` (session
+    alone refused).
+  - `api_902_relay_still_needs_the_nodes_own_probe`: refused while a probe fails, not counted;
+    accepted once it answers.
+  - `api_902_relay_weakening_needs_recent_sign_in` and `api_902_relay_attempts_capped`.
+  - `api_902_relayed_change_rolls_back_at_expiry` when the relay never arrives, and when X cannot reach
+    the primary.
+  - `api_902_relay_refuses_agents_and_tokens`.
+- **Allowed networks** (T27.14h): `dns_014_allowed_networks_control_admin_only`,
+  `dns_014_allowed_networks_public_range_warns`, `dns_014_allowed_networks_file_wins`,
+  `dns_014_allowed_networks_change_reaches_every_node` (replicated), and the tests of whatever lockout
+  check the owner chooses (section 9).
 - `make bench-smoke`, with the result in the Done note.
 
 **Playwright** (the e2e server on two ports, T24.19's offsets; 1-ui runs in serial mode; stub routes,
@@ -541,8 +765,13 @@ then `goto`, then `reload`):
 - `api_902 listener editor is read-only when set by file`.
 - `api_902 listener removal warns about clients`, with the Add-only choice.
 - `api_902 operator sees listeners without controls`.
+- `api_902 public udp listener asks for sign-in` (rule c's red mark).
 - Plus the roadmap's `api_902 move the api to a new port and confirm` and `api_902 trusted proxy add
   asks for sign-in`.
+- `api_902 confirm through the primary` (T27.14g; a stubbed second node whose URL fails the
+  reachability check).
+- `dns_014 allowed networks public range warns` and `dns_014 operator sees allowed networks read only`
+  (T27.14h).
 
 **Not tested here:** a real firewall, Docker published ports, keepalived. Those are covered by the
 warnings and the docs, and by the three-node CI where it applies.
@@ -561,27 +790,73 @@ work, M two to three days, L about a week.
    probes for a row without `proof_addr`; the probe loop every 5 s; `GET /api/v1/guarded/pending/{id}`;
    `GuardedChange` shows probe lines for any row that has them (the e2e row exercises them). The
    `setting == "listen"` special case is removed. Unit and process tests. The evidence counter (2.4)
-   lands here behind its bench result.
-3. **T27.14c The `listen` row and the Listeners card** (L). Registry row, applier (check, weakening,
-   warnings, the port-53 and clash rules, gate lines, overlay order, the `listen-access` exclusion,
-   `preview_stale`), the card, the editor, the review and countdown blocks, help `listeners`, docs,
-   Playwright, OpenAPI. ACs 1, 2, 4 and 6. The `PLANNED` row moves into `REAL`.
+   lands here behind its bench result, shown and never required.
+3. **T27.14c The `listen` row and the Listeners card** (L). Registry row, applier (check, weakening with
+   rules a to c, warnings, the port-53 and clash rules, gate lines, overlay order, the `listen-access`
+   exclusion, `preview_stale`), the card with the read-only allowed-networks list, the editor, the
+   review and countdown blocks, help `listeners`, docs, Playwright, OpenAPI. ACs 1, 2, 4 and 6. The
+   `PLANNED` row moves into `REAL`.
 4. **T27.14d The API server's stage and commit, and the `api-address` row** (L). The router swap, the
-   drain, the redirect and probe follow-up, the row and form, help `api-address`, AC 3's first test and
-   the Playwright port move.
+   drain, the redirect and probe follow-up, the row and form, help `api-address`, the
+   `would_disconnect_you` reading of section 6 (a move allowed, a removed proof socket refused), AC 3's
+   first test and the Playwright port move.
 5. **T27.14e The `api-tls` row** (M). After d: in-place certificate swap, the plain-to-TLS accept-loop
    switch, the form with the same certificate checks as 1.2, AC 3's second test.
 6. **T27.14f The `trusted-proxies` row** (M). After b, independent of c to e: applier, form, the "seen
    as" line, help `trusted-proxies`, AC 5, Playwright sign-in.
+7. **T27.14g The relayed confirm for `listen`** (M; reserved API-904). After c. The primary's
+   `confirm-relay` route and its record of the forwarded changes it carried, the relayed-confirm
+   assertion (its own `purpose`), X's nine checks, the used-nonce set, the attempt cap, the audit on
+   both nodes and the alert text, the countdown's "Confirm through the primary" and the preview's
+   reachability note, the `listeners` help paragraph, `docs/recovery.md` and the two-node tests of
+   section 7. The `relay_refused` code and the `settings.guarded_confirm_relayed` action go into the
+   OpenAPI and spec/13 §3's list.
+8. **T27.14h The allowed-networks control** (M; DNS-014, API-901). Independent of a to g. The
+   cluster-wide admin-only card (1.4), the public-range warning, file wins, audit, help
+   `allowed-networks`, Playwright, OpenAPI. The open points of section 9 about this control are asked at
+   the task's start.
 
-When f and e are merged, the `#![allow(dead_code)]` on `crates/wrendns/src/guarded` comes off (ADR-977
-point 3), and T27.14's box is ticked.
+When f, e and g are merged, the `#![allow(dead_code)]` on `crates/wrendns/src/guarded` comes off
+(ADR-977 point 3). T27.14's box is ticked when a to h are all done.
 
-## 9. Open points for the owner
+## 9. Decisions (owner decisions, 2026-11-26)
 
-These are asked through the question tool, each with options and a recommendation:
-1. Whether the confirm requires evidence from another host, or only shows it.
-2. A node whose API the browser can't open: keep ADR-956 §5, or relay the confirm for `listen`.
-3. Whether adding an unguarded socket reachable from a public address counts as weakening (rule c).
-4. Where `[access] allowed_networks` gets its control; no per-listener list.
-5. The reading of `would_disconnect_you` for an API address move.
+The owner decided the five open points of the first draft through the question tool on 2026-11-26.
+ADR-1098 records them, and the amendment of ADR-956 of the same day records points 3 and 5.
+
+1. **The proof before Confirm** on a DNS listener change is the node's own test query to each new
+   listener (2.2). Queries from other machines (the evidence counter, 2.4) are shown and are not
+   required.
+2. **Weakening rule (c).** A listener change weakens security (the red mark and a sign-in within the
+   last 10 minutes) when it adds a socket reachable from the internet that answers without a device
+   key: plain UDP or TCP on a public address, and an encrypted listener with the gate off there. The
+   public test is ADR-1090's, with its wildcard rule (a wildcard is reachable when the host holds a
+   public IPv4 address). Section 4.
+3. **A node whose web UI the admin's browser cannot open.** For DNS listener changes only, the primary
+   may pass the admin's confirm on to that node, carrying the admin's signed identity. This amends
+   ADR-956 §5, which had rejected a primary confirming for another node, and was the owner's choice
+   against this note's recommendation (keep §5). It is designed conservatively in 2.7: what is signed,
+   freshness, replay protection, audit on both nodes, what the receiving node checks, that it never
+   applies to the API, TLS or trusted-proxy rows, that automatic rollback still applies, and the
+   residual risks.
+4. **Allowed networks** get one cluster-wide, admin-only control as its own task (T27.14h), warning when
+   a public range is added; the listener cards show the list read-only (1.4).
+5. **Moving the API address from the UI is allowed**, under ADR-914's reading of
+   `would_disconnect_you`: refused only when the confirm would have to arrive through a listener the
+   change removes (section 6).
+
+**Still open** (not decided by the owner; asked through the question tool before the task that needs
+the answer starts):
+- **Allowed networks and the admin's own access** (before T27.14h). The list also limits who reaches the
+  web UI and the API (ADR-029). Whether the control refuses a list that leaves out the admin's own
+  address, whether it is a guarded row with a window, or whether a warning is enough, is not decided.
+- **Agents and the allowed-networks control** (before T27.14h). Whether an agent token, or an MCP tool,
+  may change the list (API-901 and the agent rules ask for agent-ready routes; the decision said admin
+  only).
+- **A `[::]` wildcard on a host with only a global IPv6 address** (before T27.14c). ADR-1090's wildcard
+  rule looks at public IPv4 only, so under decision 2 adding plain UDP on `[::]:53` on such a host is
+  not weakening, although the host can be reached from the internet over IPv6. The preview warns, as
+  ADR-1090 point 9(b) does for the gate; whether it should also count as weakening is open.
+- **Rule (c) and `allowed_networks`** (before T27.14c). This note reads decision 2 as judged on the
+  socket alone, so a public UDP listener weakens even when `allowed_networks` would refuse the
+  internet. The owner's wording supports that reading; it is listed so the owner can confirm it.
