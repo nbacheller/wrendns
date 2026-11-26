@@ -100,10 +100,12 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 | `wrendns_telemetry_dropped_total`, `wrendns_qlog_write_seconds`, `wrendns_qlog_bytes` | | `node` |
 | `wrendns_cluster_snapshot_lag`, `wrendns_cluster_peer_up`, `wrendns_cluster_role` | gauge | `node, peer` |
 | `wrendns_ratelimited_total`, `wrendns_dnssec_validation_total{result}` | counter | |
+| `wrendns_recursor_queries_total{outcome}`, `wrendns_recursor_case_mismatch_total`, `wrendns_recursor_unwanted_replies_total` (DNS-904) | counter | `outcome`: answer, referral, nodata, nxdomain, lame, timeout, error; never a server |
+| `wrendns_recursor_zone_cuts_cached` (DNS-904) | gauge | |
 
 ### Others
 - **OTLP (P1):** the same metric set via OTLP/HTTP; optional QueryEvent export as OTel logs.
-- **dnstap (P1):** CLIENT_QUERY/CLIENT_RESPONSE and FORWARDER_QUERY/RESPONSE messages over Frame Streams (Unix or TCP), with sampling.
+- **dnstap (P1):** CLIENT_QUERY/CLIENT_RESPONSE and FORWARDER_QUERY/RESPONSE messages (`forwarder = true`) and RESOLVER_QUERY/RESPONSE messages for the built-in recursor's queries to authoritative servers (`resolver = true`, DNS-904) over Frame Streams (Unix or TCP), with sampling.
 - **Sinks (P1):** JSON-lines file (rotated), syslog RFC 5424 (UDP/TCP/TLS), and batched HTTP webhook (e.g., Loki, Elastic, Splunk HEC) with retry and a disk spill cap.
 - **Grafana:** ship `deploy/grafana/wrendns-dashboard.json` built on the Prometheus metrics.
 

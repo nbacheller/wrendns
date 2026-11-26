@@ -384,6 +384,8 @@ export const api = {
     get<S['SloAttribution']>('/stats/slo/attribution', q),
   queries: (q: Query) => get<S['QueryPage']>('/queries', q),
   explain: (q: { name: string; client?: string; qtype?: string }) => get<S['Explanation']>('/explain', q),
+  // REQ: DNS-904 — how the built-in resolver walks to an answer (a real lookup).
+  recursorTrace: (q: { name: string; qtype?: string; upstream?: string }) => get<S['RecursorTrace']>('/recursor/trace', q),
   lists: () => get<S['Items_ListInfo']>('/lists'),
   // REQ: FLT-004 — "update lists now" (202: what was queued; `refreshing` in `lists()` follows it).
   refreshLists: (names?: string[]) =>
