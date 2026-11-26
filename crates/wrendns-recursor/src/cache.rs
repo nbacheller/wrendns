@@ -405,6 +405,21 @@ impl Caches {
         }
     }
 
+    /// REQ: DNS-903 — a hedged server that lost to its sibling counts as a timeout over the
+    /// transport it was asked on: over TCP that is "TCP did not help" (back to UDP), over UDP it
+    /// may owe a move to TCP.
+    pub(crate) fn hedge_lost(&self, server: Server, zone: &NameBuf, timeout: Duration) {
+        self.record_fail(
+            server.ip,
+            zone,
+            Failure::Timeout { tcp: server.tcp },
+            timeout,
+        );
+        if !server.tcp {
+            let _ = self.tcp_due(server.ip, zone);
+        }
+    }
+
     /// REQ: DNS-903 — whether a server that has answered before, and has now left two UDP
     /// queries about `zone` in a row unanswered, should be asked over TCP; if so, its next
     /// queries about `zone` go that way first for a lifetime (then UDP is tried again).
@@ -668,6 +683,63 @@ mod tests {
             small.record_fail(ip(1), &zone, Failure::Timeout { tcp: false }, t);
             assert!(small.notes.lock().len() <= 10);
         }
+    }
+
+    /// REQ: DNS-903 (ADR-1100 point 1) — a full table drops its expired entries first, then
+    /// half of the live ones, never the whole table.
+    #[test]
+    fn dns_903_a_full_table_drops_expired_then_half_never_all() {
+        let t = Duration::from_millis(5);
+        // Expired first: 4 old entries lapse while 6 stay live; the 11th key costs only the 4.
+        let c = Caches::new(Infra {
+            ttl: Duration::from_millis(400),
+            max_hosts: 10,
+            ..Infra::default()
+        });
+        for n in 0..4 {
+            c.record_ok(ip(n), &z(), t, false);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        for n in 10..16 {
+            c.record_ok(ip(n), &z(), t, false);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        c.record_ok(ip(99), &z(), t, false);
+        assert_eq!(c.servers(), 7, "the 4 expired went, the 6 live stayed");
+        for n in 10..16 {
+            assert!(c.order(&[ip(n)], &z())[0].srtt_us.is_some(), "{n} kept");
+        }
+        // All live: half of them go, and the new one is added; the table is not emptied.
+        let c = Caches::new(Infra {
+            max_hosts: 10,
+            ..Infra::default()
+        });
+        for n in 0..10 {
+            c.record_ok(ip(n), &z(), t, false);
+        }
+        c.record_ok(ip(99), &z(), t, false);
+        assert_eq!(c.servers(), 6, "half of 10 live entries dropped, one added");
+    }
+
+    /// REQ: DNS-903 — a hedged server that lost while asked over TCP counts as "TCP did not
+    /// help" (back to UDP); one asked over UDP that owes TCP is moved to it.
+    #[test]
+    fn dns_903_a_hedge_loser_is_recorded_on_the_transport_it_was_asked_on() {
+        let c = Caches::new(Infra::default());
+        let t = Duration::from_millis(100);
+        let srv = ip(1);
+        c.record_ok(srv, &z(), Duration::from_millis(2), false);
+        for _ in 0..2 {
+            c.record_fail(srv, &z(), Failure::Timeout { tcp: false }, t);
+        }
+        // Over UDP, two timeouts in a row: the loss owes TCP.
+        c.hedge_lost(c.order(&[srv], &z())[0], &z(), t);
+        assert!(c.order(&[srv], &z())[0].tcp, "UDP loser, two before: TCP");
+        // Asked over TCP and lost: TCP did not help, so back to UDP.
+        let asked = c.order(&[srv], &z())[0];
+        assert!(asked.tcp);
+        c.hedge_lost(asked, &z(), t);
+        assert!(!c.order(&[srv], &z())[0].tcp, "TCP did not help");
     }
 
     /// REQ: DNS-903 — a recovered server's one answer sets its estimate, so it sorts before a

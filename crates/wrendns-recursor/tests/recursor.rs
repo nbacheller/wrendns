@@ -57,6 +57,8 @@ struct Zone {
     rcode_all: Option<u16>,
     /// REQ: DNS-903 — also listens on TCP.
     tcp: bool,
+    /// REQ: DNS-903 — UDP answers carry the TC bit, so every query is repeated over TCP.
+    truncate_udp: bool,
     /// REQ: DNS-903 — what this server has seen.
     seen: Option<Arc<Seen>>,
 }
@@ -70,6 +72,8 @@ struct Seen {
     udp: AtomicU64,
     tcp: AtomicU64,
     from: Mutex<Vec<IpAddr>>,
+    /// The addresses TCP queries came from.
+    tcp_from: Mutex<Vec<IpAddr>>,
 }
 
 impl Seen {
@@ -80,6 +84,9 @@ impl Seen {
         let t = if tcp { &self.tcp } else { &self.udp };
         t.fetch_add(1, Ordering::Relaxed);
         self.from.lock().unwrap().push(from);
+        if tcp {
+            self.tcp_from.lock().unwrap().push(from);
+        }
     }
 }
 
@@ -343,6 +350,9 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
             if let Some(rc) = z.rcode_all {
                 reply[3] = (reply[3] & 0xf0) | u8::try_from(rc).unwrap();
             }
+            if z.truncate_udp {
+                reply[2] |= 0x02;
+            }
             if z.edns && has_opt {
                 // An OPT record (root name, type 41, 1232 bytes), counted in ARCOUNT.
                 reply.extend([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]);
@@ -358,12 +368,28 @@ fn a(ip: [u8; 4]) -> Vec<u8> {
     ip.to_vec()
 }
 
+/// A port that is free for UDP and TCP on 127.0.0.2 and was not handed to another test of
+/// this process. It is below the ephemeral range (the resolver's own sockets bind port 0, so a
+/// port from that range could collide with one of them) and the tests run in parallel: asking
+/// the system for a free port and releasing it let two tests get the same one, and a TCP
+/// listener was not covered by a UDP probe at all.
+fn free_port() -> u16 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port = u16::try_from(20_000 + (std::process::id() * 37 + n) % 10_000).unwrap();
+        let udp = std::net::UdpSocket::bind(("127.0.0.2", port));
+        let tcp = std::net::TcpListener::bind(("127.0.0.2", port));
+        if udp.is_ok() && tcp.is_ok() {
+            return port;
+        }
+    }
+}
+
 /// Starts the tree; returns the resolver's settings and the query log.
 async fn tree(mutate: impl FnOnce(&mut Vec<(u8, Zone)>)) -> (Settings, Log) {
     // A free port on 127.0.0.2, used on every address.
-    let probe = std::net::UdpSocket::bind("127.0.0.2:0").unwrap();
-    let port = probe.local_addr().unwrap().port();
-    drop(probe);
+    let port = free_port();
     let mut zones = vec![
         (
             2,
@@ -1429,13 +1455,15 @@ impl wrendns_recursor::SourceAddr for Fixed {
 }
 
 /// REQ: DNS-903, UPS-013 — with a source address set, the servers see the queries from it
-/// (over UDP and over TCP), and servers of the other IP version are not asked.
+/// (over UDP, and over TCP when the UDP answer is truncated), and servers of the other IP
+/// version are not asked.
 #[tokio::test]
 async fn dns_903_queries_leave_from_the_source_address() {
     let seen = Arc::new(Seen::default());
     let seen2 = Arc::clone(&seen);
     let (mut s, log) = tree(move |zones| {
         zones[2].1.tcp = true;
+        zones[2].1.truncate_udp = true;
         zones[2].1.seen = Some(seen2);
     })
     .await;
@@ -1447,6 +1475,10 @@ async fn dns_903_queries_leave_from_the_source_address() {
         .unwrap();
     assert!(count(&seen.udp) >= 1);
     assert!(seen.from.lock().unwrap().iter().all(|f| *f == src));
+    // The truncated UDP answer was repeated over TCP, and that left from the source too.
+    assert!(count(&seen.tcp) >= 1, "the TCP leg ran");
+    assert_eq!(seen.tcp_from.lock().unwrap().len() as u64, count(&seen.tcp));
+    assert!(seen.tcp_from.lock().unwrap().iter().all(|f| *f == src));
     // A source of the other family reaches none of the (IPv4) servers.
     s.source = Some(Arc::new(Fixed("::1".parse().unwrap())));
     let r = Recursor::new(s);
