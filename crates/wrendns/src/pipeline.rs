@@ -792,6 +792,14 @@ impl Pipeline {
     }
 
     /// REQ: DNS-011 — turns DNSSEC validation on or off for `cfg` (at start and on reload).
+    /// REQ: DNS-905 (T40.4) — drops the validator's aggressive-NSEC ranges, which answer
+    /// names the cache never saw; a no-op while validation is off.
+    pub(crate) fn flush_nsec_ranges(&self) {
+        if let Some(d) = self.dnssec.load_full() {
+            d.validator.flush_ranges();
+        }
+    }
+
     pub(crate) fn set_dnssec(&self, cfg: &wrendns_config::Config) {
         use wrendns_config::DnssecMode;
         let permissive = match cfg.dnssec.mode {

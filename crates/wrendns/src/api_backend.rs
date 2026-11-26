@@ -4465,21 +4465,83 @@ impl Backend for ApiBackend {
 
     fn cache_flush(
         &self,
-        name: Option<&str>,
-        subtree: bool,
-        _node: Option<&str>,
+        req: &wrendns_api::model::CacheFlushRequest,
     ) -> Result<Vec<wrendns_api::model::CacheFlushNode>, Problem> {
-        let removed = match name {
-            Some(n) => {
-                let n = wrendns_proto::NameBuf::from_presentation(n.trim())
-                    .map_err(|e| Problem::invalid(format!("`name`: {e}")))?;
-                self.src.cache.flush_name(&n, subtree)
+        use wrendns_cache::{FlushFilter, FlushKind};
+        // REQ: DNS-905 (T40.4) — the recursive resolver's memory: zone cuts (and the server
+        // addresses learned with them) and round-trip times, in every `recursive://` upstream.
+        if let Some(what) = req.recursor.as_deref() {
+            let (cuts, rtts) = match what {
+                "cuts" => (true, false),
+                "rtts" => (false, true),
+                "all" => (true, true),
+                other => {
+                    return Err(Problem::invalid(format!(
+                        "`recursor`: `{other}` isn't cuts, rtts, or all"
+                    )));
+                }
+            };
+            let router = Arc::clone(&self.src.pipeline.current().router);
+            let dropped: usize = router
+                .upstreams()
+                .iter()
+                .filter_map(|u| u.flush_recursor(cuts, rtts))
+                .sum();
+            return Ok(vec![wrendns_api::model::CacheFlushNode {
+                node: None,
+                removed: None,
+                recursor_removed: Some(dropped as u64),
+                error: None,
+            }]);
+        }
+        let name = req
+            .name
+            .as_deref()
+            .map(|n| {
+                wrendns_proto::NameBuf::from_presentation(n.trim())
+                    .map_err(|e| Problem::invalid(format!("`name`: {e}")))
+            })
+            .transpose()?;
+        let qtype = req
+            .qtype
+            .as_deref()
+            .map(|t| {
+                wrendns_proto::rtype::from_name(t.trim()).ok_or_else(|| {
+                    Problem::invalid(format!(
+                        "`type`: `{t}` isn't a query type (A, AAAA, HTTPS, TYPE65)"
+                    ))
+                })
+            })
+            .transpose()?;
+        let kind = match req.kind.as_deref() {
+            None => FlushKind::Any,
+            Some("negative") => FlushKind::Negative,
+            Some("bogus") => FlushKind::Bogus,
+            Some(k) => {
+                return Err(Problem::invalid(format!(
+                    "`kind`: `{k}` isn't negative or bogus"
+                )));
             }
-            None => self.src.cache.flush_all_counted(),
+        };
+        // REQ: DNS-905 — the validator's aggressive-NSEC ranges (RFC 8198) answer a name's
+        // NXDOMAIN or no-data before any upstream is asked, so every flush that can remove a
+        // denial drops them too (all but a flush of failed lookups only).
+        if kind != FlushKind::Bogus {
+            self.src.pipeline.flush_nsec_ranges();
+        }
+        let removed = if name.is_none() && qtype.is_none() && kind == FlushKind::Any {
+            self.src.cache.flush_all_counted()
+        } else {
+            self.src.cache.flush_where(&FlushFilter {
+                name: name.as_ref().map(|n| (n, req.subtree.unwrap_or(false))),
+                qtype,
+                kind,
+            })
         };
         Ok(vec![wrendns_api::model::CacheFlushNode {
             node: None,
             removed: Some(removed as u64),
+            recursor_removed: None,
             error: None,
         }])
     }

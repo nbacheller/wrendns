@@ -116,13 +116,28 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Flush the cache (everything, or one name).
+    /// Flush the cache (everything, one name, one type, one kind), or the recursive
+    /// resolver's memory.
     Flush {
         #[arg(long)]
         name: Option<String>,
         /// Also every name under `--name`.
         #[arg(long)]
         subtree: bool,
+        /// Only this query type (A, AAAA, HTTPS, TYPE65), for `--name` or for every name.
+        #[arg(long = "type")]
+        qtype: Option<String>,
+        /// Only `negative` answers (NXDOMAIN, no data) or `bogus` ones (failed lookups).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Empty the recursive resolver's memory instead: `cuts` (zone cuts and server
+        /// addresses; the next lookup starts from the root), `rtts` (server round-trip
+        /// times), or `all`. Not combined with the other flags.
+        #[arg(long)]
+        recursor: Option<String>,
+        /// Only this node (its site, pod or ID); default: every node.
+        #[arg(long)]
+        node: Option<String>,
     },
     /// REQ: OBS-024 — what a shared configuration (a TOML file, as a Git commit would hold)
     /// would have done to the logged queries, compared with the one in effect. Changes nothing.
@@ -1264,19 +1279,32 @@ pub(crate) async fn run(
                 }
             })),
         ),
-        CtlCommand::Flush { name, subtree } => (
+        CtlCommand::Flush {
+            name,
+            subtree,
+            qtype,
+            kind,
+            recursor,
+            node,
+        } => (
             api.call(
                 http::Method::POST,
                 "cache/flush",
-                Some(&json!({"name": name, "subtree": subtree})),
+                Some(&flush_body(name, subtree, qtype, kind, recursor, node)),
             )
             .await?,
             Some(Box::new(|v: &Value| {
-                format!(
-                    "flushed{}\n",
-                    v.get("removed")
-                        .map_or_else(String::new, |n| format!(" {n} entries"))
-                )
+                let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+                let recursor: u64 = v.get("nodes").and_then(Value::as_array).map_or(0, |a| {
+                    a.iter()
+                        .filter_map(|x| x.get("recursorRemoved")?.as_u64())
+                        .sum()
+                });
+                if recursor > 0 {
+                    format!("flushed {recursor} recursor entries\n")
+                } else {
+                    format!("flushed {} entries\n", n("totalRemoved"))
+                }
             })),
         ),
         CtlCommand::Explain { name, client } => (
@@ -1811,6 +1839,37 @@ async fn named(
     ))
 }
 
+/// REQ: DNS-905 (T40.4) — the body of `POST /api/v1/cache/flush` from the flags: only what was
+/// given is sent, so a plain flush stays the original request.
+fn flush_body(
+    name: Option<String>,
+    subtree: bool,
+    qtype: Option<String>,
+    kind: Option<String>,
+    recursor: Option<String>,
+    node: Option<String>,
+) -> Value {
+    let mut b = serde_json::Map::new();
+    if let Some(n) = name {
+        b.insert("name".into(), json!(n));
+        b.insert("subtree".into(), json!(subtree));
+    } else if subtree {
+        // Sent as given: the API says `--subtree` needs a `--name`.
+        b.insert("subtree".into(), json!(true));
+    }
+    for (k, v) in [
+        ("type", qtype),
+        ("kind", kind),
+        ("recursor", recursor),
+        ("node", node),
+    ] {
+        if let Some(v) = v {
+            b.insert(k.into(), json!(v));
+        }
+    }
+    Value::Object(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1912,5 +1971,37 @@ mod tests {
         assert!(parse_duration("2w").is_err() && parse_duration("h").is_err());
         assert_eq!(path_segment("wrendns-0"), "wrendns-0");
         assert_eq!(path_segment("a/b c"), "a%2Fb%20c");
+    }
+
+    /// REQ: DNS-905 (T40.4) — `wrendns ctl flush` sends only the flags given.
+    #[test]
+    fn dns_905_ctl_flush_body_carries_only_what_was_given() {
+        assert_eq!(flush_body(None, false, None, None, None, None), json!({}));
+        assert_eq!(
+            flush_body(
+                Some("a.example".into()),
+                false,
+                Some("AAAA".into()),
+                None,
+                None,
+                None
+            ),
+            json!({"name": "a.example", "subtree": false, "type": "AAAA"})
+        );
+        assert_eq!(
+            flush_body(
+                None,
+                false,
+                None,
+                Some("negative".into()),
+                None,
+                Some("n1".into())
+            ),
+            json!({"kind": "negative", "node": "n1"})
+        );
+        assert_eq!(
+            flush_body(None, false, None, None, Some("cuts".into()), None),
+            json!({"recursor": "cuts"})
+        );
     }
 }

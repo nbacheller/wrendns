@@ -162,6 +162,11 @@ enum Read {
         name: Option<String>,
         subtree: bool,
     },
+    /// REQ: DNS-905 (T40.4) — a flush by type or kind, or of the recursor's memory. A separate
+    /// read so a peer that predates it refuses it instead of flushing more than was asked.
+    CacheFlushWhere {
+        req: wrendns_api::model::CacheFlushRequest,
+    },
     /// REQ: OBS-014, CLU-002 — the peer's own anomaly findings (older peers don't know it).
     Anomalies {
         since_s: u64,
@@ -256,7 +261,10 @@ where
 fn changes_state(r: &Read) -> bool {
     matches!(
         r,
-        Read::BlockingPause { .. } | Read::BlockingResume { .. } | Read::CacheFlush { .. }
+        Read::BlockingPause { .. }
+            | Read::BlockingResume { .. }
+            | Read::CacheFlush { .. }
+            | Read::CacheFlushWhere { .. }
     )
 }
 
@@ -399,9 +407,17 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         }
         Read::CacheLookup { name } => serde_json::to_vec(&b.cache_lookup(&name).map_err(text)?),
         Read::CacheFlush { name, subtree } => serde_json::to_vec(
-            &b.cache_flush(name.as_deref(), subtree, None)
-                .map_err(text)?,
+            &b.cache_flush(&wrendns_api::model::CacheFlushRequest {
+                name,
+                subtree: Some(subtree),
+                ..Default::default()
+            })
+            .map_err(text)?,
         ),
+        Read::CacheFlushWhere { mut req } => {
+            req.node = None;
+            serde_json::to_vec(&b.cache_flush(&req).map_err(text)?)
+        }
         Read::Anomalies { since_s } => serde_json::to_vec(&b.anomalies(since_s)),
         Read::Health => serde_json::to_vec(&b.health()),
         Read::Probes => serde_json::to_vec(&b.probes()),
@@ -3169,27 +3185,34 @@ impl Backend for Federated {
     }
     fn cache_flush(
         &self,
-        name: Option<&str>,
-        subtree: bool,
-        node: Option<&str>,
+        req: &wrendns_api::model::CacheFlushRequest,
     ) -> Result<Vec<wrendns_api::model::CacheFlushNode>, Problem> {
         use wrendns_api::model::CacheFlushNode;
+        let node = req.node.as_deref();
+        // What this node does for itself: the request without its target node.
+        let mine = wrendns_api::model::CacheFlushRequest {
+            node: None,
+            ..req.clone()
+        };
         let label = |mut v: Vec<CacheFlushNode>, l: &str| {
             for r in &mut v {
                 r.node = Some(l.to_owned());
             }
             v
         };
-        let read = || Read::CacheFlush {
-            name: name.map(str::to_owned),
-            subtree,
+        let read = || {
+            if req.is_plain() {
+                Read::CacheFlush {
+                    name: req.name.clone(),
+                    subtree: req.subtree.unwrap_or(false),
+                }
+            } else {
+                Read::CacheFlushWhere { req: mine.clone() }
+            }
         };
         match node.map(|n| self.resolve_node(n)).transpose()? {
             // One node: this one, or one peer.
-            Some(None) => Ok(label(
-                self.local.cache_flush(name, subtree, None)?,
-                &self.own_label(),
-            )),
+            Some(None) => Ok(label(self.local.cache_flush(&mine)?, &self.own_label())),
             Some(Some(peer)) => {
                 let l = self.label_of(&peer);
                 Ok(match self.call_one(&peer, &read(), DEADLINE) {
@@ -3197,21 +3220,20 @@ impl Backend for Federated {
                     Some(Err(e)) => vec![CacheFlushNode {
                         node: Some(l),
                         removed: None,
+                        recursor_removed: None,
                         error: Some(e),
                     }],
                     None => vec![CacheFlushNode {
                         node: Some(l),
                         removed: None,
+                        recursor_removed: None,
                         error: Some("no runtime".into()),
                     }],
                 })
             }
             // Every node; those that don't answer are listed with an error.
             None => {
-                let mut out = label(
-                    self.local.cache_flush(name, subtree, None)?,
-                    &self.own_label(),
-                );
+                let mut out = label(self.local.cache_flush(&mine)?, &self.own_label());
                 let answered = self.everyone_labelled::<Vec<CacheFlushNode>>(read);
                 let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
                 for (l, v) in answered {
@@ -3230,6 +3252,7 @@ impl Backend for Federated {
                         out.push(CacheFlushNode {
                             node: Some(l),
                             removed: None,
+                            recursor_removed: None,
                             error: Some("not reachable: flush it when it's back".into()),
                         });
                     }
@@ -3937,6 +3960,13 @@ mod ephemeral_tests {
         assert!(changes_state(&Read::CacheFlush {
             name: None,
             subtree: false
+        }));
+        // REQ: DNS-905 (T40.4) — a typed flush or a recursor flush is a change too.
+        assert!(changes_state(&Read::CacheFlushWhere {
+            req: wrendns_api::model::CacheFlushRequest {
+                recursor: Some("cuts".into()),
+                ..Default::default()
+            }
         }));
         assert!(!changes_state(&Read::CacheStats));
         assert!(!changes_state(&Read::BlockingState));

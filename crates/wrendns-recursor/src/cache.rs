@@ -186,6 +186,26 @@ impl Caches {
             .no_case = true;
     }
 
+    /// REQ: DNS-905 (T40.4) — forgets every zone cut and every server-name address; returns how
+    /// many entries went. The next lookup starts from the root again.
+    pub(crate) fn clear_cuts(&self) -> usize {
+        let mut z = self.zones.lock();
+        let mut a = self.addrs.lock();
+        let n = z.map.len() + a.map.len();
+        z.map.clear();
+        a.map.clear();
+        n
+    }
+
+    /// REQ: DNS-905 (T40.4) — forgets every server's smoothed RTT and its 0x20 note; returns
+    /// how many servers were known.
+    pub(crate) fn clear_rtts(&self) -> usize {
+        let mut r = self.rtt.lock();
+        let n = r.len();
+        r.clear();
+        n
+    }
+
     /// Cached zone cuts (metrics, tests).
     pub(crate) fn zones(&self) -> usize {
         self.zones.lock().map.len()

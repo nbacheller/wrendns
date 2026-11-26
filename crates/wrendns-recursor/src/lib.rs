@@ -373,6 +373,22 @@ impl Recursor {
         &self.settings
     }
 
+    /// REQ: DNS-905 (T40.4) — empties what the resolver remembers between queries: with `cuts`,
+    /// the zone cuts and server-name addresses (the next lookup starts from the root, and root
+    /// priming may run again at once); with `rtts`, each server's smoothed round-trip time.
+    /// Returns how many entries were dropped. Answers aren't held here (the answer cache is).
+    pub fn flush(&self, cuts: bool, rtts: bool) -> usize {
+        let mut n = 0;
+        if cuts {
+            n += self.caches.clear_cuts();
+            *self.primed_at.lock() = None;
+        }
+        if rtts {
+            n += self.caches.clear_rtts();
+        }
+        n
+    }
+
     /// Zone cuts cached (metrics, tests).
     pub fn cached_zones(&self) -> usize {
         self.caches.zones()

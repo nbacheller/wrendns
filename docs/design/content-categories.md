@@ -16,14 +16,14 @@ Two features, one model:
 
 ## 2. The catalog, as data
 
-`presets/categories/*.toml`, compiled into the binary like `presets/services/*.toml` (FLT-012), one file per catalog group. Format in ADR-995. A category has an id, a name, a catalog group, a one-line description (the info icon), and a list of **sources**. A source is a URL with a format, a licence, a cadence and size facts. Lists are never bundled: they are downloaded at runtime, by the primary (replicas receive the compiled snapshot), from the maintainer's own host.
+`presets/categories/*.toml`, compiled into the binary like `presets/services/*.toml` (FLT-012), one file per catalog group. Format in ADR-995. A category has an id, a name, a catalog group, a one-line description (the info icon), and a list of **sources**. A source is a URL with a format, a licence, a cadence and size facts. Lists are never bundled: they are downloaded at runtime, by the primary (replicas receive the compiled snapshot), from the maintainer's own host (one recorded exception since 2026-11-26: the opt-in aggregate group from blocklist.packettale.com, ADR-995 amendment).
 
 Only categories with a real, maintained source are offered. The rules for "real":
 
 - the source is published openly, with a licence we can read over HTTPS;
 - it has been updated within 90 days (checked at catalog build time, see T24.29 step 1);
 - the repository is not archived;
-- the URL is on the maintainer's own host (raw GitHub or jsDelivr for the same repository). **An upstream-run mirror is not admitted** in T24.29 (ADR-995 §3): a mirror can lag, change or disappear without the maintainer's say. Open: Q4.
+- the URL is on the maintainer's own host (raw GitHub or jsDelivr for the same repository). **An upstream-run mirror is not admitted** in T24.29 (ADR-995 §3; the one exception is the packettale aggregate, ADR-995 amendment of 2026-11-26): a mirror can lag, change or disappear without the maintainer's say. Open: Q4.
 
 Recency and archived status are facts about the world. The Rust tests check only the **recorded** values (`licence`, `licence_url`, a recorded `checked` date within 90 days of `catalog_version`, `archived = false` as recorded); the live check against the GitHub API is a script (`scripts/check-catalog.py`) run by the weekly job, which opens an issue. No cargo test touches the internet.
 
@@ -119,7 +119,7 @@ UniFi's seven groups map to what we can back with an open, maintained, licensed 
 | AI & Crypto | Cryptojacking is under Security | AI services and chatbots, cryptocurrency exchanges and wallets: no list from a maintainer's own host (UT1 has `ai` and `bitcoin` via the mirror, Q4); **possible as authored bundles** (hand-written `presets/services/*.toml`, our own data) if the owner wants them (Q5) |
 | Business & Professional | none | Business services, job search, finance, education, government, real estate, travel, shopping: none on a maintainer's own host; UT1 has `jobsearch`, `financial`, `shopping` and others, only via the olbat mirror (Q4) |
 | Culture & Entertainment | Social networks, Fake news, (authored bundles that already exist: video streaming, music, gaming, messaging) | News, sports, music, video, games, forums, blogs, lifestyle, religion: none on a maintainer's own host; UT1 has `press`, `sports`, `games`, `forums`, `blog` via the olbat mirror (Q4) |
-| Networking Infrastructure | DoH, VPN, Tor and proxy bypass; Dynamic DNS; URL shorteners; Hosting providers; Most abused TLDs (**blocks whole top-level domains**: HaGeZi's `spam-tlds-onlydomains.txt` lists TLDs, which also hold many legitimate sites; off by default, never in Basic, and its description and confirmation say so) | Remote-access tools (UT1 `remote-control` via the mirror, Q4), cloud storage, CDN categories (a category that blocks a CDN breaks the web) |
+| Networking Infrastructure | DoH, VPN, Tor and proxy bypass; Dynamic DNS; URL shorteners; Hosting providers; Most abused TLDs (**blocks whole top-level domains**: HaGeZi's `spam-tlds-onlydomains.txt` lists TLDs, which also hold many legitimate sites; off by default, never in Basic, and its description and confirmation say so) | Remote-access tools (since 2026-11-26 offered in the aggregate group, from blocklist.packettale.com: `curated-category-lists.md` section 3.3), cloud storage, CDN categories (a category that blocks a CDN breaks the web) |
 | New or Risky Domains | Newly registered (7 days), DGA-like (7 days), Risky TLDs, Fake stores | Parked domains, newly seen (a "first seen" list: we have `first-seen domains` in analytics, T7.14; not a blocking source) |
 | Security & Threat Protection | Malware, phishing, C2, scam and cryptojacking (threat feeds, three sizes) | Spyware (inside the threat feeds, not separately), ransomware (same) |
 

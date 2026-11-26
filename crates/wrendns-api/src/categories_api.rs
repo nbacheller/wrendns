@@ -227,6 +227,12 @@ pub struct CategoryView {
 pub struct CategoryGroupView {
     pub id: String,
     pub name: String,
+    /// A notice for the group's heading (an aggregate of other maintainers' lists says so).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The page the notice points to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_url: Option<String>,
     pub categories: Vec<CategoryView>,
 }
 
@@ -579,6 +585,8 @@ pub fn catalog_view(b: &dyn Backend, env: &CategoryEnv) -> CategoriesView {
         .map(|g| CategoryGroupView {
             id: g.id.clone(),
             name: g.name.clone(),
+            note: g.note.clone(),
+            note_url: g.note_url.clone(),
             categories: catalog
                 .categories
                 .iter()
@@ -1032,7 +1040,12 @@ fn compact_view(v: &CategoriesView) -> serde_json::Value {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    serde_json::json!({"id": g["id"], "name": g["name"], "categories": cats})
+                    let mut out =
+                        serde_json::json!({"id": g["id"], "name": g["name"], "categories": cats});
+                    if let Some(note) = g.get("note") {
+                        out["note"] = note.clone();
+                    }
+                    out
                 })
                 .collect()
         })
