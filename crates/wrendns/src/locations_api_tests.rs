@@ -271,7 +271,7 @@ async fn dsc_908_the_first_location_waits_for_every_members_build() {
             Some(&json!({ "match": ["192.0.2.9"], "location": "home" })),
         )
         .await;
-    assert!(s.is_client_error(), "{s} {v}");
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{s} {v}");
     // An ordinary device is not held.
     let (s, _, v) = ph
         .call(
@@ -326,6 +326,27 @@ async fn dsc_908_the_file_loader_holds_the_first_location_too() {
     assert!(
         why.contains("version 1.1.0-edge.40") && why.contains("does not know locations"),
         "{why}"
+    );
+    // The gate the reload itself runs (every cause: SIGHUP, an API change, a Git commit): it
+    // refuses, so the reload returns false before anything is swapped.
+    let ph = harness_in(DOMAIN, Some(Arc::clone(&old.primary)));
+    let why = crate::server::reload_gate(&ph.src, &none, &with).unwrap_err();
+    assert!(why.contains("does not know locations"), "{why}");
+    assert!(crate::server::reload_gate(&ph.src, &none, &none).is_ok());
+    assert!(crate::server::reload_gate(&ph.src, &with, &with).is_ok());
+    // A Git commit's refusal is the commit's `refused` error.
+    let mut st = crate::gitsource::Status {
+        commit: Some("0123456789abcdef".into()),
+        ..crate::gitsource::Status::default()
+    };
+    crate::gitsource::mark_gate_refusal(&mut st, &why);
+    assert!(
+        st.refused
+            && st
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("commit 0123456789ab: ")
     );
     // No change in use: not held. Already in use: later reloads are not held either.
     assert!(crate::upgrade_gate::enforce_locations(Some(&old.primary), &none, &none).is_ok());

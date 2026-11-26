@@ -283,6 +283,16 @@ async fn poll(
     Ok(changed)
 }
 
+/// REQ: DSC-908 - the Git status after the compatibility gate held a commit back.
+pub(crate) fn mark_gate_refusal(st: &mut Status, why: &str) {
+    st.error = Some(format!(
+        "commit {}: {why}",
+        st.commit.as_deref().map_or("", short)
+    ));
+    st.refused = true;
+    st.refused_commit.clone_from(&st.commit);
+}
+
 pub(crate) fn short(commit: &str) -> &str {
     commit.get(..12).unwrap_or(commit)
 }
@@ -349,6 +359,14 @@ pub(crate) async fn run(
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if sources.reload.send(tx).await.is_ok() && !rx.await.unwrap_or(false) {
                     warn!("cluster: the new Git commit's configuration didn't apply; see the log");
+                    // REQ: DSC-908 (ADR-1096 point 5) - a commit the compatibility gate holds
+                    // back is shown as the commit's refusal; the previous configuration serves.
+                    if let Some(why) = crate::upgrade_gate::standing(Some(&cluster)).first() {
+                        let mut st = status(&cfg).unwrap_or_default();
+                        mark_gate_refusal(&mut st, why);
+                        save_status(&cfg, &st);
+                        cluster.event("git_refused", &cluster.identity.meta.node_id, why.clone());
+                    }
                 }
             }
             Ok(false) => {}

@@ -1749,6 +1749,38 @@ test('api_010 match a client by router name', async () => {
   await page.unroute('**/api/v1/dhcp/leases');
 });
 
+// REQ: DSC-910 (T36.10a) — the write replaces the whole device entry, so the device form sends a
+// pinned device's location back: a rename or a regroup must not take the pin off. The server's
+// answers are stubbed (no location is defined here); the request is what is checked.
+test('dsc_910 editing a pinned device keeps its location pin', async () => {
+  await page.route(/\/api\/v1\/clients$/, async (r) => {
+    const real = await r.fetch();
+    const body = await real.json();
+    for (const c of body.items) {
+      if (c.name === 'Test laptop') Object.assign(c, { location: 'home', locationName: 'Home', locationPinned: true });
+    }
+    await r.fulfill({ response: real, json: body });
+  });
+  let sent: unknown = null;
+  await page.route(/\/api\/v1\/clients\/Test%20laptop/, async (r) => {
+    if (r.request().method() !== 'PUT') return r.continue();
+    if (!r.request().url().includes('dryRun')) sent = r.request().postDataJSON();
+    await r.fulfill({ json: { applied: true, recentQueries: 0 } });
+  });
+  try {
+    await page.goto('/#/');
+    await listOf('Top clients').getByRole('button', { name: 'Test laptop', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status')).toContainText('Saved');
+    expect(sent).toMatchObject({ name: 'Test laptop', location: 'home' });
+    await page.keyboard.press('Escape');
+  } finally {
+    await page.unroute(/\/api\/v1\/clients$/);
+    await page.unroute(/\/api\/v1\/clients\/Test%20laptop/);
+  }
+});
+
 // REQ: API-002, AGT-002, AGT-003 — the same change through the API: dry run, If-Match,
 // Idempotency-Key, validation, delete, audit.
 test('api_010 device API: dry run, versions, idempotency', async () => {

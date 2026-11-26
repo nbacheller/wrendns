@@ -1207,7 +1207,7 @@ pub fn write_tools() -> Vec<WriteTool> {
         // REQ: DSC-910, AGT-007 (T36.10a, ADR-1096) — a device's own location, as a plan.
         WriteTool {
             name: "plan_set_device_location",
-            description: "Plans a change (nothing changes until apply_plan). Pins a named device to a location (its slug from list_locations), whatever its address: it answers as <device>.<slug>.<domain> from then on, and the old flat name keeps answering while the location's flat names are on. An empty `location` takes the pin off, so the device's location is the one its address gives it. The device must already be named (plan_assign_client names one); its groups, addresses and kind are kept. Refused (409 upgrade_required, naming the member) while a cluster member's build does not know locations. Needs config:write:clients (and config:read to read the current device).",
+            description: "Plans a change (nothing changes until apply_plan). Pins a named device to a location (its slug from list_locations), whatever its address: it answers as <device>.<slug>.<domain> from then on, and the old flat name keeps answering while the location's flat names are on. An empty `location` takes the pin off, so the device's location is the one its address gives it. The device must already be named (plan_assign_client names one); its groups, addresses and kind are kept. Needs config:write:clients (and config:read to read the current device).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "device": {"type": "string", "description": "The device's name (list_devices)."},
@@ -2927,15 +2927,7 @@ impl Mcp {
                     })
                 });
             match found {
-                Some(d) => {
-                    for k in ["match", "groups"] {
-                        if !body.contains_key(k)
-                            && let Some(v) = d.get(k)
-                        {
-                            body.insert(k.into(), v.clone());
-                        }
-                    }
-                }
+                Some(d) => fill_from_device(body, d),
                 None if body.contains_key("name") => {
                     return Err(format!(
                         "no named device `{name}` (plan_assign_client names a new one)"
@@ -3626,6 +3618,25 @@ pub async fn post(
 }
 
 /// `GET /mcp`: no server-initiated stream (every answer comes with its request).
+/// Fills a device write's body from the device as it is now: its addresses, groups and kind,
+/// and its location pin (REQ: DSC-910: the write replaces the whole entry, so a regroup or a
+/// rename keeps the pin; a `location` in the body, even empty, wins).
+fn fill_from_device(body: &mut serde_json::Map<String, Value>, d: &Value) {
+    for k in ["match", "groups", "kind"] {
+        if !body.contains_key(k)
+            && let Some(v) = d.get(k)
+        {
+            body.insert(k.into(), v.clone());
+        }
+    }
+    if !body.contains_key("location")
+        && d.get("locationPinned").and_then(Value::as_bool) == Some(true)
+        && let Some(v) = d.get("location")
+    {
+        body.insert("location".into(), v.clone());
+    }
+}
+
 pub async fn get() -> Response {
     (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response()
 }
@@ -3872,5 +3883,36 @@ mod clu_014_tests {
             (r.calls)(&json!({"id": "d1-ab"})).unwrap()[0].1,
             "/api/v1/drills/d1-ab"
         );
+    }
+}
+
+#[cfg(test)]
+mod dsc_910_merge_tests {
+    use super::*;
+
+    // REQ: DSC-910 - a regroup, a rename or a pin change keeps the device's kind and its pin.
+    #[test]
+    fn dsc_910_merge_keeps_the_kind_and_the_pin() {
+        let d = json!({"name": "tv", "match": ["192.0.2.9"], "groups": ["iot"], "kind": "tv",
+            "location": "lab", "locationPinned": true});
+        for body in [json!({"groups": ["kids"]}), json!({"name": "tv2"})] {
+            let mut b = body.as_object().unwrap().clone();
+            fill_from_device(&mut b, &d);
+            assert_eq!(b["kind"], "tv");
+            assert_eq!(b["location"], "lab");
+            assert_eq!(b["match"], json!(["192.0.2.9"]));
+        }
+        // plan_set_device_location: the body's own location (even empty) wins; the kind is kept.
+        let mut b = json!({"location": ""}).as_object().unwrap().clone();
+        fill_from_device(&mut b, &d);
+        assert_eq!(
+            (b["location"].as_str(), b["kind"].as_str()),
+            (Some(""), Some("tv"))
+        );
+        // A location only the address gives is not a pin.
+        let d = json!({"location": "home", "locationPinned": false});
+        let mut b = serde_json::Map::new();
+        fill_from_device(&mut b, &d);
+        assert!(!b.contains_key("location"));
     }
 }

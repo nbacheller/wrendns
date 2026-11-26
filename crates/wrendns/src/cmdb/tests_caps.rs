@@ -482,6 +482,7 @@ fn dsc_901_no_policy_code_reads_the_cmdb() {
         "identify",
         "policy_view.rs",
         "device_dns.rs",
+        "locations.rs",
         "devices.rs",
         "pipeline.rs",
         "forward.rs",

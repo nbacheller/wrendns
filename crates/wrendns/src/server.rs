@@ -1931,6 +1931,21 @@ fn save_cache(cfg: &Config, cache: &Cache) {
     }
 }
 
+/// REQ: DSC-908 (ADR-1096 point 5) - the compatibility gate a reload runs on a primary or a
+/// standalone node. A replica applies what its primary published (judged there).
+pub(crate) fn reload_gate(
+    sources: &http::Sources,
+    current: &Config,
+    new: &Config,
+) -> Result<(), String> {
+    let replica = crate::replication::follows_primary(new)
+        || sources.cluster.as_deref().is_some_and(|c| !c.is_primary());
+    if replica {
+        return Ok(());
+    }
+    crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new)
+}
+
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the
 /// running configuration.
 // Everything a reload swaps; grouping it would only rename the parameters.
@@ -1963,13 +1978,11 @@ async fn reload(
     };
     let new = crate::replication::effective(&file);
     // REQ: DSC-908 (T36.10a, ADR-1096 point 5) - the first location is held while a cluster member's
-    // build does not know the table: a file reload that adds one is refused, the previous
-    // configuration keeps serving, and the refusal names the member. A change made through the
-    // API or replicated was judged where it was made.
-    if !from_api
-        && let Err(why) =
-            crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, &new)
-    {
+    // build does not know the table: a reload that adds one is refused, the previous configuration
+    // keeps serving, and the refusal names the member. Every cause is judged here (SIGHUP, an API
+    // change, a Git commit): a Git commit is judged nowhere else, and a file it left behind is
+    // held on the next reload of any kind until the members are upgraded.
+    if let Err(why) = reload_gate(sources, current, &new) {
         error!("reload refused: {why}; still serving the previous configuration");
         return false;
     }

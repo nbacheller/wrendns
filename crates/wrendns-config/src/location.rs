@@ -260,7 +260,28 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
             Some(d) if l.domain.is_none() && !domain_ok(&d) => {
                 // `[local] device_domain` is validated by its own rule; nothing to add.
             }
-            Some(_) => {}
+            Some(parent) => {
+                // The flat names are `<label>.<device_domain>`: inside the location's own subtree
+                // they would collide with the device's location name and never be reached (the
+                // subtree is answered first).
+                let apex = format!("{}.{parent}", l.slug);
+                let flat = cfg
+                    .local
+                    .device_domain
+                    .as_ref()
+                    .map(|d| d.trim().trim_end_matches('.').to_ascii_lowercase());
+                if l.flat_names
+                    && let Some(f) = flat
+                    && (f == apex || f.ends_with(&format!(".{apex}")))
+                {
+                    err(
+                        format!("{p}.domain"),
+                        format!(
+                            "`[local] device_domain` ({f}) is inside this location's names ({apex}); its flat names would collide with them: pick another `domain` or `slug`, or set `flat_names = false`"
+                        ),
+                    );
+                }
+            }
         }
     }
     // Overlap between two locations' CIDRs names both.
@@ -368,6 +389,25 @@ mod tests {
             let got = refused(toml);
             assert!(got.contains(want), "{toml}\n-> {got}");
         }
+    }
+
+    #[test]
+    fn dsc_908_a_device_domain_inside_the_locations_subtree_is_refused() {
+        let toml = |extra: &str| {
+            format!(
+                "[local]\ndevice_domain = \"home.arpa\"\n[[location]]\nslug = \"home\"\ndomain = \"arpa\"\nnetworks = [\"192.0.2.0/24\"]\n{extra}"
+            )
+        };
+        let got = refused(&toml(""));
+        assert!(
+            got.contains("location[0].domain") && got.contains("inside this location's names"),
+            "{got}"
+        );
+        // Flat names off: nothing collides.
+        assert_eq!(refused(&toml("flat_names = false\n")), "");
+        // A subdomain of the apex is inside too.
+        let sub = toml("").replace("= \"home.arpa\"\n[[", "= \"lab.home.arpa\"\n[[");
+        assert!(refused(&sub).contains("inside this location's names"));
     }
 
     #[test]

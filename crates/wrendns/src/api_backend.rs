@@ -5110,9 +5110,6 @@ fn plan_client(
         )
         .hint("GET /api/v1/groups lists the groups a device can join.")
     })?;
-    // REQ: DSC-908, DSC-910 (T36.10a) - a device's location is a shared field an older replica
-    // refuses: held like the first location.
-    locations_gate(src, &candidate)?;
     let (recent_queries, impact) = client_impact(src, &w.name, before.as_ref(), after.as_ref());
     Ok(ClientPlan {
         before,
