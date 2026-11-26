@@ -501,6 +501,28 @@ impl Source {
     }
 }
 
+/// REQ: DNS-903, UPS-013 — a `recursive://` upstream's view of its target's source address.
+#[derive(Debug)]
+struct TargetSource(Arc<Target>);
+
+impl wrendns_recursor::SourceAddr for TargetSource {
+    fn current(&self) -> io::Result<std::net::IpAddr> {
+        match &self.0.source {
+            Some(s) => s.current(),
+            None => Err(io::Error::from(io::ErrorKind::AddrNotAvailable)),
+        }
+    }
+
+    fn note(&self, result: Option<io::ErrorKind>) {
+        if let Some(s) = &self.0.source {
+            let _ = s.note(match result {
+                None => Ok(()),
+                Some(k) => Err(io::Error::from(k)),
+            });
+        }
+    }
+}
+
 impl Target {
     async fn addr(&self) -> Result<SocketAddr, ExchangeError> {
         match &self.host {
@@ -802,11 +824,15 @@ impl Upstream {
         if opts.source.is_some() || opts.source_spec.is_some() {
             if !matches!(
                 endpoint.protocol,
-                Protocol::Udp | Protocol::Tcp | Protocol::Tls | Protocol::Https
+                Protocol::Udp
+                    | Protocol::Tcp
+                    | Protocol::Tls
+                    | Protocol::Https
+                    | Protocol::Recursive
             ) || opts.proxy.is_some()
             {
                 return Err(format!(
-                    "upstream `{name}`: `source` works with udp://, tcp://, tls://, and https:// upstreams, without a proxy"
+                    "upstream `{name}`: `source` works with udp://, tcp://, tls://, https:// and recursive:// upstreams, without a proxy"
                 ));
             }
             let spec = opts
@@ -816,7 +842,10 @@ impl Upstream {
                 .unwrap_or_default();
             let src = Source::new(&spec, opts.source, &name)
                 .map_err(|e| format!("upstream `{name}`: {e}"))?;
-            if let Host::Ip(host) = &endpoint.host
+            // A recursive upstream asks servers of either IP version: it skips those the
+            // source can't reach.
+            if endpoint.protocol != Protocol::Recursive
+                && let Host::Ip(host) = &endpoint.host
                 && host.is_ipv4() != src.v4
             {
                 return Err(format!(
@@ -935,9 +964,14 @@ impl Upstream {
                     opts.idle_timeout,
                 )?))
             }
-            Protocol::Recursive => Transport::Recursive(Box::new(wrendns_recursor::Recursor::new(
-                opts.recursive.clone(),
-            ))),
+            Protocol::Recursive => {
+                // REQ: DNS-903, UPS-013 — queries to authoritative servers leave from `source`.
+                let mut settings = opts.recursive.clone();
+                if target.source.is_some() {
+                    settings.source = Some(Arc::new(TargetSource(Arc::clone(&target))));
+                }
+                Transport::Recursive(Box::new(wrendns_recursor::Recursor::new(settings)))
+            }
             Protocol::DnsCrypt => {
                 let (pk, name) = opts
                     .dnscrypt

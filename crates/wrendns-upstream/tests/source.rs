@@ -321,3 +321,46 @@ source = \"127.0.0.0/8\""
         .is_ok()
     );
 }
+
+/// REQ: DNS-903, UPS-013 — a `recursive://` upstream honours `source`: its queries to
+/// authoritative servers leave from that address, and the configuration accepts it.
+#[tokio::test]
+async fn dns_903_recursive_upstream_binds_the_source_address() {
+    let (addr, mut seen) = udp_server().await;
+    let src: IpAddr = "127.0.0.2".parse().unwrap();
+    let opts = UpstreamOptions {
+        timeout: Duration::from_secs(2),
+        source: Some(src),
+        recursive: wrendns_recursor::Settings {
+            roots: vec![addr.ip()],
+            port: addr.port(),
+            prime: false,
+            qname_minimization: false,
+            allow_local_servers: true,
+            ..wrendns_recursor::Settings::default()
+        },
+        ..UpstreamOptions::default()
+    };
+    let up = Upstream::build(
+        1,
+        "r",
+        Endpoint::parse("recursive://").unwrap(),
+        &opts,
+        &TlsOptions::default(),
+    )
+    .unwrap();
+    up.exchange(&question(), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(seen.recv().await.unwrap().ip(), src);
+    assert_eq!(up.source(), Some(src));
+    let accepted = wrendns_config::Loader::new()
+        .toml_str(
+            "t.toml",
+            "[[upstream]]\nname = \"r\"\nurl = \"recursive://\"\nsource = \"127.0.0.0/8\"\n"
+                .to_owned(),
+        )
+        .env(Vec::<(String, String)>::new())
+        .load();
+    assert!(accepted.is_ok(), "{:?}", accepted.err());
+}
