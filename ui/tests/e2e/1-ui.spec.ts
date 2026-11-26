@@ -1,7 +1,7 @@
 // REQ: API-003, API-005 — the UI end to end against a real server: first-run setup, the
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Request, type Route } from '@playwright/test';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
@@ -837,8 +837,10 @@ test('dns_902 recursive upstream options are shown for recursive:// only and sav
   const sw = (label: string) => page.getByRole('switch', { name: label, exact: true });
   try {
     await page.goto('/#/upstreams');
-    await page.getByTestId('view-advanced').click();
+    // The previous test left its "Add upstream" drawer open, and a same-hash goto does not reload:
+    // its backdrop would cover the view switch and the click would wait until the test timed out.
     await page.reload();
+    await page.getByTestId('view-advanced').click();
     const editor = page.getByTestId('editor-upstream');
     await editor.getByRole('button', { name: 'Add upstream', exact: true }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('dns902-rec');
@@ -854,19 +856,19 @@ test('dns_902 recursive upstream options are shown for recursive:// only and sav
     await sw(labels.priv).click();
     await page.getByRole('button', { name: 'Check', exact: true }).click();
     await expect(page.getByTestId('entry-preview')).toBeVisible();
+    const isPut = (q: Request) => q.method() === 'PUT' && q.url().endsWith('/api/v1/upstreams/dns902-rec');
+    const firstPut = page.waitForRequest(isPut);
     await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    // Only what was changed is sent: the options left at their defaults are not frozen into the entry.
+    expect(JSON.parse((await firstPut).postData() ?? '{}').recursive).toEqual({ case_randomization: true, allow_private_servers: true });
     const row = editor.getByTestId('entry-row').filter({ hasText: 'dns902-rec' });
     await expect(row).toContainText('recursive://');
+    // The server returns the entry with its defaults filled in.
     const saved = async () => {
       const list = await (await r.get('/api/v1/config/entries?kind=upstream')).json();
       return list.items.find((e: { name: string }) => e.name === 'dns902-rec');
     };
-    const rec = (await saved()).definition.recursive;
-    expect(rec).toMatchObject({ case_randomization: true, allow_private_servers: true });
-    expect(rec.allow_local_servers ?? false).toBe(false);
-    // Only what was changed is written: the options left at their defaults are not frozen.
-    expect(rec.qname_minimization).toBeUndefined();
-    expect(rec.ipv6).toBeUndefined();
+    expect((await saved()).definition.recursive).toMatchObject({ case_randomization: true, allow_private_servers: true, allow_local_servers: false, ipv6: false, qname_minimization: true });
     // Opened again, the saved options are what the switches show; the default-on one still reads on.
     await row.getByRole('button', { name: 'Edit' }).click();
     await expect(sw(labels.caps)).toBeChecked();
@@ -877,12 +879,13 @@ test('dns_902 recursive upstream options are shown for recursive:// only and sav
     await page.getByRole('textbox', { name: 'Address', exact: true }).fill('udp://192.0.2.2');
     await expect(sw(labels.caps)).toHaveCount(0);
     await page.getByRole('button', { name: 'Check', exact: true }).click();
+    const secondPut = page.waitForRequest(isPut);
     await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect(JSON.parse((await secondPut).postData() ?? '{}')).not.toHaveProperty('recursive');
     await expect(row).toContainText('udp://192.0.2.2');
-    expect((await saved()).definition.recursive).toBeUndefined();
   } finally {
     await r.delete('/api/v1/upstreams/dns902-rec', { headers: h });
-    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    await page.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 2000 }).catch(() => {});
   }
 });
 
@@ -3165,7 +3168,7 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     await row.getByRole('button', { name: 'Remove' }).click();
     await expect(row).toHaveCount(0);
   } finally {
-    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    await page.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 2000 }).catch(() => {});
     hook.close();
   }
 });
@@ -3249,7 +3252,7 @@ test('obs_010 threshold shown per condition and out-of-range refused', async () 
     await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-range' })).toHaveCount(0);
   } finally {
     await page.reload();
-    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    await page.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 2000 }).catch(() => {});
   }
 });
 
