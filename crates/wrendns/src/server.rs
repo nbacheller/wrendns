@@ -392,6 +392,9 @@ struct Listeners {
     staged: Option<listener_window::StagedSet>,
     /// The file took the listeners over while a change was pending: a commit answers `cancelled`.
     window_cancelled: bool,
+    /// Tests only: runs after the apply closed a socket and before it binds the replacement.
+    #[cfg(test)]
+    after_close: Option<Box<dyn FnMut() + Send + Sync>>,
 }
 
 /// A TCP-based listener, and the certificate watcher of a TLS one.
@@ -516,6 +519,9 @@ impl Listeners {
         // recorded with the same facts.
         let host = crate::gate_host::read();
         self.gate_failed = false;
+        if let Some(set) = self.staged.as_mut() {
+            set.note_applied(listen);
+        }
         let mut first_err: Option<io::Error> = None;
         for l in listen {
             if let Err(e) = self.apply_one(l, listen, host).await {
@@ -607,8 +613,9 @@ impl Listeners {
                     self.streams.push((bound_form(l, host), stream));
                     return Ok(());
                 }
+                let mut after_quic_close = false;
                 if old.is_none() {
-                    self.close_overlapping_removed(l, listen).await;
+                    after_quic_close = self.close_overlapping_removed(l, listen).await;
                 }
                 // The old socket answers without a device key and the new one would not: if the
                 // new one cannot be made, the old one must not survive.
@@ -635,11 +642,13 @@ impl Listeners {
                 }
                 // Same protocol and address with other settings: replace it.
                 if let Some(i) = old {
-                    let (_, s) = self.streams.remove(i);
+                    let (c, s) = self.streams.remove(i);
                     s.shutdown().await;
+                    after_quic_close = matches!(c.proto, ListenProto::Doq | ListenProto::Doh3);
+                    self.seam_after_close();
                 }
                 match self
-                    .bind_stream_settled(l, host, alt_svc(listen).as_deref())
+                    .bind_stream_settled(l, host, alt_svc(listen).as_deref(), after_quic_close)
                     .await
                 {
                     Ok(stream) => self.streams.push((bound_form(l, host), stream)),
@@ -1401,6 +1410,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         gate_failed: false,
         staged: None,
         window_cancelled: false,
+        #[cfg(test)]
+        after_close: None,
     };
     listeners.apply(&cfg.listen).await?;
 
@@ -2449,6 +2460,7 @@ mod tests {
             gate_failed: false,
             staged: None,
             window_cancelled: false,
+            after_close: None,
         }
     }
 

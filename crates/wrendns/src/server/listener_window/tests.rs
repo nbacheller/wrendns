@@ -219,6 +219,18 @@ async fn api_902_changed_listener_probed_on_proof_port_then_swapped() {
     crate::gate_host::clear_listeners_for_test();
 }
 
+type Held = std::sync::Arc<std::sync::Mutex<Option<std::net::TcpListener>>>;
+
+/// Installs the seam: right after `apply` closes a socket, a foreign process binds `addr`.
+fn foreign_after_close(l: &mut Listeners, addr: SocketAddr) -> Held {
+    let held: Held = Held::default();
+    let slot = std::sync::Arc::clone(&held);
+    l.after_close = Some(Box::new(move || {
+        *slot.lock().unwrap() = Some(std::net::TcpListener::bind(addr).unwrap());
+    }));
+    held
+}
+
 fn runs_on(l: &Listeners, addr: SocketAddr) -> bool {
     l.streams.iter().any(|(_, s)| s.local_addr() == addr)
 }
@@ -243,13 +255,17 @@ async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener(
         ..old.clone()
     };
     l.stage(std::slice::from_ref(&changed)).await.unwrap();
-    // The reload closes the old socket; a foreign process takes the port before the new bind.
-    let (_, gone) = l.streams.remove(0);
-    gone.shutdown().await;
-    let foreign = std::net::TcpListener::bind(real).unwrap();
+    // The real `apply` closes the old socket; the seam lets a foreign process take the port between
+    // that close and the new bind, so the production path fails the bind (no hand-made close).
+    let foreign = foreign_after_close(&mut l, real);
     assert!(l.apply(std::slice::from_ref(&changed)).await.is_err());
     assert!(!runs_on(&l, real));
-    drop(foreign);
+    assert!(
+        crate::gate_host::is_closed(&changed),
+        "the apply publishes the listener as down"
+    );
+    l.after_close = None;
+    foreign.lock().unwrap().take();
     let e = l.commit_staged().await.unwrap_err();
     assert_eq!(e.reason, COMMIT_FAILED);
     assert!(e.detail.contains(&real.to_string()), "{}", e.detail);
@@ -263,6 +279,14 @@ async fn api_902_failed_swap_answers_commit_failed_and_rebinds_the_old_listener(
         "with its old gate"
     );
     assert!(connects(real).await);
+    // The restore republishes: the host and the API see the old listener running with its old gate.
+    assert!(!crate::gate_host::is_closed(&changed));
+    assert_eq!(
+        crate::gate_host::mismatched(std::slice::from_ref(&changed)),
+        vec![(crate::gate_host::key(&changed), true)],
+        "running (not down), though not in the new form"
+    );
+    assert!(!crate::gate_host::effective_gate(&changed));
     crate::gate_host::clear_listeners_for_test();
 }
 
@@ -278,11 +302,10 @@ async fn api_902_failed_overlap_swap_restores_the_removed_wildcard() {
     l.apply(std::slice::from_ref(&wild)).await.unwrap();
     let specific = tcp(loopback(port));
     l.stage(std::slice::from_ref(&specific)).await.unwrap();
-    let (_, gone) = l.streams.remove(0);
-    gone.shutdown().await;
-    let foreign = std::net::TcpListener::bind(specific.addr).unwrap();
+    let foreign = foreign_after_close(&mut l, specific.addr);
     assert!(l.apply(std::slice::from_ref(&specific)).await.is_err());
-    drop(foreign);
+    l.after_close = None;
+    foreign.lock().unwrap().take();
     let e = l.commit_staged().await.unwrap_err();
     assert_eq!(e.reason, COMMIT_FAILED);
     assert!(
@@ -436,6 +459,8 @@ async fn api_902_file_taking_over_cancels_the_window() {
     assert_eq!(e.reason, CANCELLED);
     assert_eq!(e.detail, "the file now sets the listeners");
     assert!(answers(old.addr).await);
+    // The answer is taken: the next commit has nothing to be cancelled.
+    assert!(l.commit_staged().await.is_ok());
     // Without a pending change it changes nothing.
     let mut idle = test_listeners();
     idle.cancel_window_for_file().await;
@@ -443,27 +468,105 @@ async fn api_902_file_taking_over_cancels_the_window() {
     crate::gate_host::clear_listeners_for_test();
 }
 
-// REQ: API-902 (ADR-956 section 4) — a restart in the window starts with the previous list: the
-// pending change was held in memory only, so a new process knows nothing of the staged sockets.
+// REQ: API-902 — a cancel followed by an abort (the engine's rollback) ends the window: a later
+// commit with nothing staged is Ok, not a stale `cancelled`.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn api_902_restart_in_window_starts_with_old_listeners() {
+async fn api_902_cancel_then_abort_then_commit_is_ok() {
     let _one = crate::gate_host::isolate();
-    let old = udp(loopback(free_udp_port()));
+    let mut l = test_listeners();
     let new = udp(loopback(free_udp_port()));
-    {
-        let mut first = test_listeners();
-        first.apply(std::slice::from_ref(&old)).await.unwrap();
-        first.stage(std::slice::from_ref(&new)).await.unwrap();
-        assert!(answers(new.addr).await);
-    }
-    // The process is gone; the next start reads the previous list.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let mut second = test_listeners();
-    second.apply(std::slice::from_ref(&old)).await.unwrap();
-    assert!(second.staged.is_none());
-    assert!(answers(old.addr).await);
-    assert!(!answers(new.addr).await);
+    l.stage(std::slice::from_ref(&new)).await.unwrap();
+    l.cancel_window_for_file().await;
+    l.abort_staged().await;
+    assert!(l.commit_staged().await.is_ok());
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// REQ: API-902 — the `reload` wiring: a file whose `file_set` has `listen` cancels the window; a
+// reload of a file without it leaves the staged sockets alone.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_reload_with_listen_in_the_file_cancels_the_window() {
+    let _one = crate::gate_host::isolate();
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("plain.toml");
+    std::fs::write(&plain, "").unwrap();
+    let taken = dir.path().join("listen.toml");
+    let port = free_udp_port();
+    std::fs::write(
+        &taken,
+        format!("[[listen]]\nproto = \"udp\"\naddr = \"127.0.0.1:{port}\"\n"),
+    )
+    .unwrap();
+    let sources = std::sync::Arc::new(crate::http::tests::sources());
+    let pipeline = std::sync::Arc::clone(&sources.pipeline);
+    let mut current = wrendns_config::Config::default();
+    let mut health = tokio::spawn(async {});
+    let mut lists = None;
+    let mut l = test_listeners();
+    let new = udp(loopback(free_udp_port()));
+    l.stage(std::slice::from_ref(&new)).await.unwrap();
+    // A file without `[[listen]]`: the staged socket stays.
+    let files = [plain];
+    let ok = crate::server::reload(
+        &files,
+        &mut current,
+        &mut l,
+        &mut health,
+        &pipeline,
+        &sources,
+        &mut lists,
+        true,
+    )
+    .await;
+    assert!(ok);
+    assert!(l.staged.is_some(), "an ordinary reload keeps the window");
+    assert!(answers(new.addr).await);
+    // The file that sets `[[listen]]` takes over.
+    let files = [taken];
+    let ok = crate::server::reload(
+        &files,
+        &mut current,
+        &mut l,
+        &mut health,
+        &pipeline,
+        &sources,
+        &mut lists,
+        true,
+    )
+    .await;
+    assert!(ok);
+    assert!(l.staged.is_none());
+    assert!(!answers(new.addr).await, "the staged socket is closed");
+    let e = l.commit_staged().await.unwrap_err();
+    assert_eq!(e.reason, CANCELLED);
+    health.abort();
+    crate::gate_host::clear_listeners_for_test();
+}
+
+// REQ: API-902 — the QUIC address-in-use retry is for a bind right after this apply closed a QUIC
+// socket. A foreign holder of the port is answered at once, not after half a second.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn api_902_foreign_quic_port_holder_does_not_stall_a_reload() {
+    let _one = crate::gate_host::isolate();
+    let (_dir, _cert, listen) = gate_fixture();
+    let mut l = test_listeners();
+    let foreign = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let doq = Listener {
+        proto: ListenProto::Doq,
+        addr: foreign.local_addr().unwrap(),
+        ..listen(Some(false))
+    };
+    let t = std::time::Instant::now();
+    let e = l.apply(std::slice::from_ref(&doq)).await.unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e}");
+    assert!(
+        t.elapsed() < Duration::from_millis(250),
+        "no retry without a close: {:?}",
+        t.elapsed()
+    );
     crate::gate_host::clear_listeners_for_test();
 }
 

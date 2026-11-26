@@ -80,6 +80,8 @@ pub(super) struct StagedSet {
     plans: Vec<ProofPlan>,
     /// The errors `apply` met while this set was staged, for the detail of a `commit_failed`.
     apply_errors: Vec<(ListenProto, SocketAddr, String)>,
+    /// The list the last `apply` ran with, so a restore after a failed swap can republish the states.
+    last_list: Vec<Listener>,
 }
 
 /// A proof-port listener's way to the real address (design 2.3, rule 2.6.4).
@@ -97,6 +99,11 @@ impl StagedSet {
     /// Remembers an error `apply` met for `l` while the set is staged.
     pub(super) fn note_apply_error(&mut self, l: &Listener, e: &io::Error) {
         self.apply_errors.push((l.proto, l.addr, e.to_string()));
+    }
+
+    /// Remembers the list an `apply` ran with while the set is staged.
+    pub(super) fn note_applied(&mut self, list: &[Listener]) {
+        self.last_list = list.to_vec();
     }
 
     /// Closes every socket of the set.
@@ -381,14 +388,17 @@ impl Listeners {
 
     /// [`Listeners::bind_stream`] for a bind right after a close on the same port. A QUIC endpoint
     /// gives its UDP socket back only when its driver task has run, a moment after `shutdown`
-    /// returns, so an address-in-use answer is retried for a short while (about half a second).
+    /// returns, so an address-in-use answer is retried for a short while (about half a second), but
+    /// only when `after_quic_close`: this apply closed a QUIC socket on that port just before. Any
+    /// other address-in-use is a real holder, and answers at once.
     pub(super) async fn bind_stream_settled(
         &self,
         l: &Listener,
         host: wrendns_config::HostFacts,
         alt_svc: Option<&str>,
+        after_quic_close: bool,
     ) -> io::Result<Stream> {
-        let quic = port_class(l.proto) == Some(1);
+        let quic = after_quic_close && port_class(l.proto) == Some(1);
         let mut tries = 0;
         loop {
             match self.bind_stream(l, host, alt_svc) {
@@ -407,12 +417,14 @@ impl Listeners {
             info!("closing the staged listeners");
             set.close().await;
         }
+        // An abort ends the window: a later commit has nothing to be cancelled.
+        self.window_cancelled = false;
     }
 
     /// The close of a window: the proof ports go, and a staged socket that `apply` did not adopt is
     /// an error (it stays staged, for an abort to close).
     pub(super) async fn commit_staged(&mut self) -> Result<(), WindowError> {
-        if self.window_cancelled {
+        if std::mem::take(&mut self.window_cancelled) {
             return Err(WindowError {
                 reason: CANCELLED,
                 detail: FILE_TOOK_OVER.to_owned(),
@@ -426,7 +438,8 @@ impl Listeners {
         }
         let plans = std::mem::take(&mut set.plans);
         let errors = std::mem::take(&mut set.apply_errors);
-        let failed = self.verify_swaps(plans, &errors).await;
+        let last_list = std::mem::take(&mut set.last_list);
+        let failed = self.verify_swaps(plans, &errors, &last_list).await;
         let mut left: Vec<String> = set.udp.iter().map(|(a, _)| format!("udp {a}")).collect();
         left.extend(
             set.streams
@@ -461,9 +474,11 @@ impl Listeners {
         &mut self,
         plans: Vec<ProofPlan>,
         errors: &[(ListenProto, SocketAddr, String)],
+        last_list: &[Listener],
     ) -> Vec<String> {
         let host = crate::gate_host::read();
         let mut failed = Vec::new();
+        let mut restored = false;
         for p in plans {
             if self.streams.iter().any(|(c, _)| *c == p.want) {
                 continue;
@@ -496,12 +511,13 @@ impl Listeners {
                     .collect();
                 // `old` is a bound form: its gate is the one it ran with.
                 match self
-                    .bind_stream_settled(&old, host, alt_svc(&all).as_deref())
+                    .bind_stream_settled(&old, host, alt_svc(&all).as_deref(), false)
                     .await
                 {
                     Ok(s) => {
                         warn!(addr = %old.addr, proto = ?old.proto, "put the old listener back after a failed swap");
                         self.streams.push((old, s));
+                        restored = true;
                     }
                     Err(e) => {
                         use std::fmt::Write as _;
@@ -515,6 +531,10 @@ impl Listeners {
                 }
             }
             failed.push(note);
+        }
+        if restored && !last_list.is_empty() {
+            // The apply published the listener as down; it runs again, with its old gate.
+            self.publish(last_list, host);
         }
         failed
     }
@@ -547,9 +567,14 @@ impl Listeners {
     /// overlaps it on the port and that the new list no longer names is closed first (a TCP bind
     /// would refuse the new address next to it). A gap of a few milliseconds on that one listener,
     /// as for a changed one.
-    pub(super) async fn close_overlapping_removed(&mut self, l: &Listener, listen: &[Listener]) {
+    /// Answers whether a QUIC socket was closed (the bind after it may need to settle).
+    pub(super) async fn close_overlapping_removed(
+        &mut self,
+        l: &Listener,
+        listen: &[Listener],
+    ) -> bool {
         if port_class(l.proto).is_none() {
-            return;
+            return false;
         }
         let gone: Vec<usize> = self
             .streams
@@ -563,12 +588,30 @@ impl Listeners {
             })
             .map(|(i, _)| i)
             .collect();
+        let mut quic = false;
         for i in gone.into_iter().rev() {
             let (c, s) = self.streams.remove(i);
             info!(addr = %c.addr, proto = ?c.proto, "closing an overlapping listener before its replacement binds");
             s.shutdown().await;
+            quic |= port_class(c.proto) == Some(1);
+            self.seam_after_close();
+        }
+        quic
+    }
+
+    /// Test seam: runs between a close the apply made and the bind that follows it, where a foreign
+    /// process could take the port. Nothing in a release build.
+    #[cfg(test)]
+    pub(super) fn seam_after_close(&mut self) {
+        if let Some(f) = self.after_close.as_mut() {
+            f();
         }
     }
+
+    #[cfg(not(test))]
+    #[inline]
+    #[allow(clippy::unused_self)]
+    pub(super) const fn seam_after_close(&mut self) {}
 
     /// Runs one command from the engine.
     pub(super) async fn window_cmd(&mut self, cmd: ListenerCmd) {

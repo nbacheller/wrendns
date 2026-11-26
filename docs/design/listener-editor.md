@@ -225,6 +225,11 @@ staged: Option<StagedSet>   // sockets bound for a pending change, none of them 
     (TCP-based listeners compare with TCP-based, QUIC with QUIC; only plain UDP shares). When the new
     list keeps both sides of an overlap, the real bind could never work, so the stage fails with
     `bind_failed` ("dot 10.0.0.53:853 overlaps dot 0.0.0.0:853 on the same port").
+    **Owner decision, 2026-11-26:** the wildcard is closed just before the new address is bound (a gap of
+    a few milliseconds on that one listener, as for a changed listener); if the bind fails, the old
+    wildcard is bound again with its old gate and the commit answers `commit_failed`. The owner chose
+    this over refusing such changes or sharing the port. A QUIC bind right after a QUIC close is
+    retried for about half a second on address-in-use; any other bind answers at once.
   - **A failed bind changes nothing.** Everything staged so far is closed, and stage answers with the
     address and the OS error (for example "dot 203.0.113.9:853: Cannot assign requested address (the
     address is not on any interface)"). The engine audits `settings.guarded_rolled_back`
