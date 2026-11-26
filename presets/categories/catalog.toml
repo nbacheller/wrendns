@@ -5,7 +5,7 @@
 # recorded-metadata tests compare each source's `checked` and `pushed` dates with this day, never
 # with the clock, so a stale catalog fails the weekly job (scripts/check-catalog.py) and not an
 # unrelated build.
-catalog_version = "2026-11-18"
+catalog_version = "2026-11-26"
 
 # What "Basic" means in a profile (`level = "basic"`, ADR-994 owner decision 2).
 [[preset]]
