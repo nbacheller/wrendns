@@ -7,7 +7,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -45,6 +45,9 @@ struct Zone {
     down: Option<Arc<AtomicBool>>,
     /// REQ: DNS-903 — while set, answers nothing over UDP (TCP still answers).
     drop_udp: Option<Arc<AtomicBool>>,
+    /// REQ: DNS-903 — while set, answers nothing over UDP to names at or under this one (TCP
+    /// still answers): one server that fails for one zone only.
+    drop_udp_under: Option<(Arc<AtomicBool>, &'static str)>,
     /// REQ: DNS-903 — echoes an OPT record in answers to queries that carry one (a server
     /// that does EDNS).
     edns: bool,
@@ -301,7 +304,12 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                     tokio::time::sleep(Duration::from_millis(ms)).await;
                 }
             }
-            if z.down.as_ref().is_some_and(|d| d.load(Ordering::Relaxed))
+            let dropped_name = z.drop_udp_under.as_ref().is_some_and(|(d, zone)| {
+                let q = name.display().to_string().to_ascii_lowercase();
+                d.load(Ordering::Relaxed) && under(q.trim_end_matches('.'), zone)
+            });
+            if dropped_name
+                || z.down.as_ref().is_some_and(|d| d.load(Ordering::Relaxed))
                 || z.drop_udp
                     .as_ref()
                     .is_some_and(|d| d.load(Ordering::Relaxed))
@@ -1171,7 +1179,9 @@ fn count(c: &AtomicU64) -> u64 {
 #[tokio::test]
 async fn dns_903_a_server_that_was_down_is_probed_and_returns_to_first_place() {
     let down = Arc::new(AtomicBool::new(false));
-    let slow = Arc::new(AtomicU64::new(20));
+    // The sibling is slow enough that scheduling noise cannot put it ahead of a server that
+    // answers at once (a stall of 150 ms or more would be needed).
+    let slow = Arc::new(AtomicU64::new(150));
     let (down2, slow2) = (Arc::clone(&down), Arc::clone(&slow));
     let (mut s, log) = tree(move |zones| {
         zones[1]
@@ -1187,7 +1197,10 @@ async fn dns_903_a_server_that_was_down_is_probed_and_returns_to_first_place() {
     .await;
     s.hedge = false;
     s.infra_ttl = Duration::from_secs(30);
-    s.infra_probe = Duration::from_millis(500);
+    s.infra_probe = Duration::from_secs(1);
+    // So .10 (150 ms) never times out, and a probe of the silent .4 (which waits out this
+    // timeout) ends before the next one is due: only .4 can be down.
+    s.server_timeout = Duration::from_millis(600);
     let r = Recursor::new(s);
     let ask = || async {
         let res = r
@@ -1196,15 +1209,32 @@ async fn dns_903_a_server_that_was_down_is_probed_and_returns_to_first_place() {
             .unwrap();
         assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
     };
-    // Both are learned: .4 answers at once, .10 after 20 ms.
+    // Both are learned: .4 answers at once, .10 after 150 ms.
     for _ in 0..12 {
         ask().await;
     }
     // .4 stops answering: its lookups fall to .10, and it is marked down.
     down.store(true, Ordering::Relaxed);
-    for _ in 0..4 {
+    log.lock().unwrap().clear();
+    let mut tried = 0;
+    for _ in 0..20 {
         ask().await;
+        tried = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(ip, _)| *ip == 4)
+            .count();
+        if tried >= 2 {
+            break;
+        }
     }
+    // The precondition: .4 was asked, did not answer, was asked again (so it is down), and
+    // its last probe has only just gone (else the check below counts nothing, or a probe).
+    assert!(
+        tried >= 2,
+        "the down server was asked and timed out: {tried}"
+    );
     // While it is down and not due, it is not asked.
     log.lock().unwrap().clear();
     ask().await;
@@ -1216,8 +1246,20 @@ async fn dns_903_a_server_that_was_down_is_probed_and_returns_to_first_place() {
     );
     // It recovers; a probe within its lifetime finds that out.
     down.store(false, Ordering::Relaxed);
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    ask().await;
+    // A bounded wait for the probe (due every second), well inside the lifetime of 30 s.
+    let begun = Instant::now();
+    let mut probed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        log.lock().unwrap().clear();
+        ask().await;
+        if log.lock().unwrap().iter().any(|(ip, _)| *ip == 4) {
+            probed = true;
+            break;
+        }
+    }
+    assert!(probed, "a probe reached the recovered server");
+    assert!(begun.elapsed() < Duration::from_secs(20));
     log.lock().unwrap().clear();
     for _ in 0..3 {
         ask().await;
@@ -1302,6 +1344,54 @@ async fn dns_903_tcp_after_repeated_udp_timeouts() {
         .await
         .unwrap();
     assert_eq!(count(&seen.udp), udp, "UDP was not tried again");
+}
+
+/// REQ: DNS-903 — the TCP note is kept per zone: one server that drops UDP for zone A is still
+/// asked over UDP for zone B.
+#[tokio::test]
+async fn dns_903_one_zones_timeouts_do_not_move_another_zone_to_tcp() {
+    let seen = Arc::new(Seen::default());
+    let drop_a = Arc::new(AtomicBool::new(false));
+    let (seen2, drop2) = (Arc::clone(&seen), Arc::clone(&drop_a));
+    let (mut s, _log) = tree(move |zones| {
+        zones[1]
+            .1
+            .cuts
+            .push(("zoneb.com", "ns1.example.com", Some([127, 0, 0, 4])));
+        let z = &mut zones[2].1;
+        z.tcp = true;
+        z.seen = Some(seen2);
+        z.drop_udp_under = Some((drop2, "example.com"));
+        z.records
+            .push(("www.zoneb.com", rtype::A, a([10, 0, 0, 7])));
+        z.records
+            .push(("one.example.com", rtype::A, a([10, 0, 0, 1])));
+        z.records
+            .push(("two.example.com", rtype::A, a([10, 0, 0, 1])));
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    // The server answers for both zones.
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    // Zone A goes silent over UDP: the second timeout turns that zone to TCP.
+    drop_a.store(true, Ordering::Relaxed);
+    let mut ok = false;
+    for n in ["one.example.com", "two.example.com", "one.example.com"] {
+        ok |= r.resolve(name(n), rtype::A, false).await.is_ok();
+    }
+    assert!(ok && count(&seen.tcp) >= 1, "zone A was moved to TCP");
+    // Zone B on the same address is asked over UDP, as ever.
+    let (tcp, udp) = (count(&seen.tcp), count(&seen.udp));
+    let res = r
+        .resolve(name("www.zoneb.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 7])]);
+    assert_eq!(count(&seen.tcp), tcp, "zone B was not asked over TCP");
+    assert!(count(&seen.udp) > udp, "zone B was asked over UDP");
 }
 
 /// REQ: DNS-903 — without an earlier answer a timeout is not a reason for TCP.
@@ -1432,7 +1522,7 @@ async fn dns_903_tcp_after_udp_timeouts_while_hedging() {
     let seen = Arc::new(Seen::default());
     let drop_udp = Arc::new(AtomicBool::new(false));
     let (seen2, drop2) = (Arc::clone(&seen), Arc::clone(&drop_udp));
-    let slow = Arc::new(AtomicU64::new(20));
+    let slow = Arc::new(AtomicU64::new(150));
     let (mut s, _log) = tree(move |zones| {
         zones[1]
             .1

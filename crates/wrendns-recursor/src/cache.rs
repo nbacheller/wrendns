@@ -75,22 +75,43 @@ impl Default for Infra {
     }
 }
 
-/// What is known of one server (REQ: DNS-012, DNS-902, DNS-903): its smoothed RTT in
-/// microseconds, and what its answers have shown. Unknown servers start optimistic, so each
-/// gets tried. An entry lives `Infra::ttl` after its last update, then the server is a
-/// stranger again.
+/// What is known of one server, whatever zone it is asked about (REQ: DNS-012, DNS-902,
+/// DNS-903): its smoothed RTT in microseconds, and what its answers have shown about the
+/// server itself. Unknown servers start optimistic, so each gets tried. An entry lives
+/// `Infra::ttl` after its last update, then the server is a stranger again.
 #[derive(Debug, Clone, Copy)]
 struct Rtt {
     srtt_us: u32,
     /// Leaves 0x20 off for this server (it doesn't echo the letter case).
     no_case: bool,
-    /// Asked without EDNS until then: it answered FORMERR or NOTIMP to a query with it and
-    /// answered one without. Set once; a busy server's entry does not renew it.
-    no_edns_until: Option<Instant>,
     /// It has answered a query with EDNS with an OPT record of its own.
     edns_ok: bool,
     /// It has given a usable answer since the entry began.
     answered: bool,
+    expires: Instant,
+}
+
+impl Rtt {
+    fn fresh(srtt_us: u32, infra: &Infra) -> Self {
+        Self {
+            srtt_us,
+            no_case: false,
+            edns_ok: false,
+            answered: false,
+            expires: Instant::now() + infra.ttl,
+        }
+    }
+}
+
+/// What is known of one server as asked about one zone (Unbound keys these by address and zone
+/// too): its down, TCP and EDNS notes. A name under another zone cannot change how a server is
+/// asked for this one: a zone's operator could otherwise steer queries for every zone that
+/// shares the server's address.
+#[derive(Debug, Clone, Copy)]
+struct Note {
+    /// Asked without EDNS until then: it answered FORMERR or NOTIMP to a query with it and
+    /// answered one without. Set once; a busy server's entry does not renew it.
+    no_edns_until: Option<Instant>,
     /// Consecutive UDP queries it didn't answer in time.
     udp_timeouts: u8,
     /// Consecutive queries (any transport) it didn't answer in time: a server with any is down,
@@ -104,15 +125,11 @@ struct Rtt {
     expires: Instant,
 }
 
-impl Rtt {
-    fn fresh(srtt_us: u32, infra: &Infra) -> Self {
+impl Note {
+    fn fresh(infra: &Infra) -> Self {
         let now = Instant::now();
         Self {
-            srtt_us,
-            no_case: false,
             no_edns_until: None,
-            edns_ok: false,
-            answered: false,
             udp_timeouts: 0,
             timeouts: 0,
             tcp_until: None,
@@ -152,6 +169,8 @@ pub(crate) struct Caches {
     zones: Mutex<Table<Delegation>>,
     addrs: Mutex<Table<(Vec<IpAddr>, Instant)>>,
     rtt: Mutex<HashMap<IpAddr, Rtt>>,
+    /// Lock order: `rtt`, then `notes`.
+    notes: Mutex<HashMap<(IpAddr, NameBuf), Note>>,
     infra: Infra,
 }
 
@@ -238,29 +257,37 @@ impl Caches {
         a.map.insert(name, (addrs, now + ttl(ttl_s)));
     }
 
-    /// `servers` ordered fastest first, with their smoothed RTT (`None`: never asked; those
-    /// sort as a small random RTT, so each gets tried).
+    /// `servers` ordered fastest first as asked about `zone`, with their smoothed RTT (`None`:
+    /// never asked; those sort as a small random RTT, so each gets tried).
     ///
     /// REQ: DNS-903 — an entry past its lifetime is forgotten (the server is a stranger again),
-    /// and a server that has been timing out sorts last but is put first once per
+    /// and a server that has been timing out for `zone` sorts last but is put first once per
     /// `Infra::probe`, so it is noticed when it is back.
-    pub(crate) fn order(&self, servers: &[IpAddr]) -> Vec<Server> {
+    pub(crate) fn order(&self, servers: &[IpAddr], zone: &NameBuf) -> Vec<Server> {
         let now = Instant::now();
-        let mut r = self.rtt.lock();
+        let r = self.rtt.lock();
+        let mut n = self.notes.lock();
         let mut v: Vec<(Server, u32)> = servers
             .iter()
-            .map(|&ip| match r.get_mut(&ip).filter(|x| x.expires > now) {
+            .map(|&ip| match r.get(&ip).filter(|x| x.expires > now) {
                 Some(x) => {
-                    let probe = x.down() && x.probe_at <= now;
-                    if probe {
-                        x.probe_at = now + self.infra.probe;
+                    let note = n.get_mut(&(ip, *zone)).filter(|y| y.expires > now);
+                    let probe = note.as_ref().is_some_and(|y| y.down() && y.probe_at <= now);
+                    let (no_edns, tcp) = note.as_ref().map_or((false, false), |y| {
+                        (
+                            y.no_edns_until.is_some_and(|t| t > now),
+                            y.tcp_until.is_some_and(|t| t > now),
+                        )
+                    });
+                    if probe && let Some(y) = note {
+                        y.probe_at = now + self.infra.probe;
                     }
                     let s = Server {
                         ip,
                         srtt_us: (!probe).then_some(x.srtt_us),
                         no_case: x.no_case,
-                        no_edns: x.no_edns_until.is_some_and(|t| t > now),
-                        tcp: x.tcp_until.is_some_and(|t| t > now),
+                        no_edns,
+                        tcp,
                     };
                     (s, if probe { 0 } else { x.srtt_us })
                 }
@@ -280,24 +307,35 @@ impl Caches {
         v.into_iter().map(|(s, _)| s).collect()
     }
 
+    /// Makes room for one more key in `map` (never more than `Infra::max_hosts`): drops the
+    /// dead first, then an arbitrary half rather than grow.
+    fn room<K: std::hash::Hash + Eq + Clone, V>(
+        &self,
+        map: &mut HashMap<K, V>,
+        key: &K,
+        dead: impl Fn(&V) -> bool,
+    ) {
+        let max = self.infra.max_hosts.max(1);
+        if map.get(key).is_some_and(&dead) {
+            map.remove(key);
+        }
+        if !map.contains_key(key) && map.len() >= max {
+            map.retain(|_, x| !dead(x));
+            if map.len() >= max {
+                let n = (map.len() / 2).max(map.len() + 1 - max);
+                let drop: Vec<K> = map.keys().take(n).cloned().collect();
+                for k in drop {
+                    map.remove(&k);
+                }
+            }
+        }
+    }
+
     /// The entry for `ip` (a fresh one, with `srtt_us`, when there is none or it is past its
     /// lifetime), its lifetime renewed. The table never holds more than `Infra::max_hosts`.
     fn slot<'a>(&self, r: &'a mut HashMap<IpAddr, Rtt>, ip: IpAddr, srtt_us: u32) -> &'a mut Rtt {
         let now = Instant::now();
-        if r.get(&ip).is_some_and(|x| x.expires <= now) {
-            r.remove(&ip);
-        }
-        if !r.contains_key(&ip) && r.len() >= self.infra.max_hosts.max(1) {
-            r.retain(|_, x| x.expires > now);
-            if r.len() >= self.infra.max_hosts.max(1) {
-                // Still full of live entries: drop an arbitrary half rather than grow.
-                let n = (r.len() / 2).max(r.len() + 1 - self.infra.max_hosts.max(1));
-                let drop: Vec<IpAddr> = r.keys().take(n).copied().collect();
-                for k in drop {
-                    r.remove(&k);
-                }
-            }
-        }
+        self.room(r, &ip, |x| x.expires <= now);
         let e = r
             .entry(ip)
             .or_insert_with(|| Rtt::fresh(srtt_us, &self.infra));
@@ -305,56 +343,79 @@ impl Caches {
         e
     }
 
-    /// Folds in an answer after `rtt` (over TCP when `tcp`). A server that was timing out, or
-    /// is new, takes this answer's time as its estimate, so a recovered server is first again.
-    pub(crate) fn record_ok(&self, ip: IpAddr, rtt: Duration, tcp: bool) {
+    /// The note for `ip` as asked about `zone`, made and renewed like `slot`'s.
+    fn note<'a>(
+        &self,
+        n: &'a mut HashMap<(IpAddr, NameBuf), Note>,
+        ip: IpAddr,
+        zone: &NameBuf,
+    ) -> &'a mut Note {
+        let now = Instant::now();
+        let key = (ip, *zone);
+        self.room(n, &key, |x| x.expires <= now);
+        let e = n.entry(key).or_insert_with(|| Note::fresh(&self.infra));
+        e.expires = now + self.infra.ttl;
+        e
+    }
+
+    /// Folds in an answer about `zone` after `rtt` (over TCP when `tcp`). A server that was
+    /// timing out for `zone`, or is new, takes this answer's time as its estimate, so a
+    /// recovered server is first again.
+    pub(crate) fn record_ok(&self, ip: IpAddr, zone: &NameBuf, rtt: Duration, tcp: bool) {
         let sample = u32::try_from(rtt.as_micros()).unwrap_or(u32::MAX);
         let mut r = self.rtt.lock();
+        let mut n = self.notes.lock();
+        let y = self.note(&mut n, ip, zone);
+        let was_down = y.timeouts > 0;
+        y.timeouts = 0;
+        if !tcp {
+            y.udp_timeouts = 0;
+            y.tcp_until = None;
+        }
         let x = self.slot(&mut r, ip, sample);
-        x.srtt_us = if x.timeouts > 0 || !x.answered {
+        x.srtt_us = if was_down || !x.answered {
             sample
         } else {
             ewma(x.srtt_us, sample)
         };
         x.answered = true;
-        x.timeouts = 0;
-        if !tcp {
-            x.udp_timeouts = 0;
-            x.tcp_until = None;
-        }
     }
 
-    /// Folds in a failure: it counts as twice the timeout in the estimate.
-    pub(crate) fn record_fail(&self, ip: IpAddr, why: Failure, timeout: Duration) {
+    /// Folds in a failure about `zone`: it counts as twice the timeout in the estimate.
+    pub(crate) fn record_fail(&self, ip: IpAddr, zone: &NameBuf, why: Failure, timeout: Duration) {
         let sample = u32::try_from((timeout * 2).as_micros()).unwrap_or(u32::MAX);
         let mut r = self.rtt.lock();
+        let mut n = self.notes.lock();
         let x = self.slot(&mut r, ip, sample);
         x.srtt_us = ewma(x.srtt_us, sample);
+        let y = self.note(&mut n, ip, zone);
         match why {
             Failure::Timeout { tcp } => {
-                x.timeouts = x.timeouts.saturating_add(1);
+                y.timeouts = y.timeouts.saturating_add(1);
                 if tcp {
                     // TCP didn't help: back to UDP, and two fresh timeouts before TCP again.
-                    x.tcp_until = None;
-                    x.udp_timeouts = 0;
+                    y.tcp_until = None;
+                    y.udp_timeouts = 0;
                 } else {
-                    x.udp_timeouts = x.udp_timeouts.saturating_add(1);
+                    y.udp_timeouts = y.udp_timeouts.saturating_add(1);
                 }
             }
             // It spoke: it is up, if no use.
-            Failure::Lame => x.timeouts = 0,
+            Failure::Lame => y.timeouts = 0,
         }
     }
 
     /// REQ: DNS-903 — whether a server that has answered before, and has now left two UDP
-    /// queries in a row unanswered, should be asked over TCP; if so, its next queries go that
-    /// way first for a lifetime (then UDP is tried again).
-    pub(crate) fn tcp_due(&self, ip: IpAddr) -> bool {
+    /// queries about `zone` in a row unanswered, should be asked over TCP; if so, its next
+    /// queries about `zone` go that way first for a lifetime (then UDP is tried again).
+    pub(crate) fn tcp_due(&self, ip: IpAddr, zone: &NameBuf) -> bool {
         let now = Instant::now();
-        let mut r = self.rtt.lock();
-        match r.get_mut(&ip) {
-            Some(x) if x.expires > now && x.answered && x.udp_timeouts >= 2 => {
-                x.tcp_until = Some(now + self.infra.ttl);
+        let r = self.rtt.lock();
+        let mut n = self.notes.lock();
+        let answered = r.get(&ip).is_some_and(|x| x.expires > now && x.answered);
+        match n.get_mut(&(ip, *zone)) {
+            Some(y) if answered && y.expires > now && y.udp_timeouts >= 2 => {
+                y.tcp_until = Some(now + self.infra.ttl);
                 true
             }
             _ => false,
@@ -366,14 +427,17 @@ impl Caches {
         self.slot(&mut r, ip, 50_000).no_case = true;
     }
 
-    /// REQ: DNS-903 — this server answers FORMERR or NOTIMP to EDNS: ask it without, for one
-    /// lifetime from now. A note already in force is not extended, so EDNS is tried again.
-    pub(crate) fn no_edns(&self, ip: IpAddr) {
+    /// REQ: DNS-903 — this server answers FORMERR or NOTIMP to EDNS for `zone`: ask it without,
+    /// for that zone, for one lifetime from now. A note already in force is not extended, so
+    /// EDNS is tried again.
+    pub(crate) fn no_edns(&self, ip: IpAddr, zone: &NameBuf) {
         let now = Instant::now();
         let mut r = self.rtt.lock();
-        let x = self.slot(&mut r, ip, 50_000);
-        if x.no_edns_until.is_none_or(|t| t <= now) {
-            x.no_edns_until = Some(now + self.infra.ttl);
+        let mut n = self.notes.lock();
+        self.slot(&mut r, ip, 50_000);
+        let y = self.note(&mut n, ip, zone);
+        if y.no_edns_until.is_none_or(|t| t <= now) {
+            y.no_edns_until = Some(now + self.infra.ttl);
         }
     }
 
@@ -413,8 +477,10 @@ impl Caches {
     /// how many servers were known.
     pub(crate) fn clear_rtts(&self) -> usize {
         let mut r = self.rtt.lock();
+        let mut notes = self.notes.lock();
         let n = r.len();
         r.clear();
+        notes.clear();
         n
     }
 
@@ -429,6 +495,10 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    fn z() -> NameBuf {
+        NameBuf::default()
+    }
+
     fn ip(n: u32) -> IpAddr {
         IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + n))
     }
@@ -441,16 +511,17 @@ mod tests {
             ..Infra::default()
         });
         for n in 0..100_000 {
-            c.record_ok(ip(n), Duration::from_millis(5), false);
+            c.record_ok(ip(n), &z(), Duration::from_millis(5), false);
             assert!(c.servers() <= 1_000);
         }
         for n in 0..100_000 {
             c.record_fail(
                 ip(n),
+                &z(),
                 Failure::Timeout { tcp: false },
                 Duration::from_millis(5),
             );
-            c.no_edns(ip(n));
+            c.no_edns(ip(n), &z());
             assert!(c.servers() <= 1_000);
         }
         assert!(c.servers() > 0);
@@ -464,16 +535,16 @@ mod tests {
             ttl: Duration::from_millis(150),
             ..Infra::default()
         });
-        c.record_ok(ip(1), Duration::from_millis(5), false);
-        c.no_edns(ip(1));
+        c.record_ok(ip(1), &z(), Duration::from_millis(5), false);
+        c.no_edns(ip(1), &z());
         for i in 0..4 {
             std::thread::sleep(Duration::from_millis(50));
-            c.record_ok(ip(1), Duration::from_millis(5), false);
+            c.record_ok(ip(1), &z(), Duration::from_millis(5), false);
             if i == 0 {
-                c.no_edns(ip(1)); // a repeat does not push the end out either
+                c.no_edns(ip(1), &z()); // a repeat does not push the end out either
             }
         }
-        let s = c.order(&[ip(1)])[0];
+        let s = c.order(&[ip(1)], &z())[0];
         assert!(s.srtt_us.is_some(), "the entry is alive: it was busy");
         assert!(!s.no_edns, "but the note lapsed");
     }
@@ -496,20 +567,20 @@ mod tests {
             max_hosts: 4,
             ..Infra::default()
         });
-        c.record_ok(ip(1), Duration::from_millis(5), false);
-        c.no_edns(ip(1));
-        assert!(c.order(&[ip(1)])[0].no_edns);
+        c.record_ok(ip(1), &z(), Duration::from_millis(5), false);
+        c.no_edns(ip(1), &z());
+        assert!(c.order(&[ip(1)], &z())[0].no_edns);
         std::thread::sleep(Duration::from_millis(60));
-        let s = c.order(&[ip(1)])[0];
+        let s = c.order(&[ip(1)], &z())[0];
         assert!(
             s.srtt_us.is_none() && !s.no_edns,
             "forgotten after its lifetime"
         );
         for n in 10..13 {
-            c.record_ok(ip(n), Duration::from_millis(5), false);
+            c.record_ok(ip(n), &z(), Duration::from_millis(5), false);
         }
         std::thread::sleep(Duration::from_millis(60));
-        c.record_ok(ip(20), Duration::from_millis(5), false);
+        c.record_ok(ip(20), &z(), Duration::from_millis(5), false);
         assert_eq!(c.servers(), 1, "the expired entries went first");
     }
 
@@ -523,19 +594,19 @@ mod tests {
         });
         let (a, b) = (ip(1), ip(2));
         let t = Duration::from_millis(100);
-        c.record_ok(a, Duration::from_millis(2), false);
-        c.record_ok(b, Duration::from_millis(20), false);
-        assert_eq!(c.order(&[a, b])[0].ip, a);
-        c.record_fail(a, Failure::Timeout { tcp: false }, t);
-        c.record_fail(a, Failure::Timeout { tcp: false }, t);
+        c.record_ok(a, &z(), Duration::from_millis(2), false);
+        c.record_ok(b, &z(), Duration::from_millis(20), false);
+        assert_eq!(c.order(&[a, b], &z())[0].ip, a);
+        c.record_fail(a, &z(), Failure::Timeout { tcp: false }, t);
+        c.record_fail(a, &z(), Failure::Timeout { tcp: false }, t);
         // Down: probed first right away (its first probe is due), then last until the next.
-        assert_eq!(c.order(&[a, b])[0].ip, a);
-        assert_eq!(c.order(&[a, b])[0].ip, b);
+        assert_eq!(c.order(&[a, b], &z())[0].ip, a);
+        assert_eq!(c.order(&[a, b], &z())[0].ip, b);
         std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(c.order(&[a, b])[0].ip, a, "probed again");
-        c.record_ok(a, Duration::from_millis(2), false);
+        assert_eq!(c.order(&[a, b], &z())[0].ip, a, "probed again");
+        c.record_ok(a, &z(), Duration::from_millis(2), false);
         assert_eq!(
-            c.order(&[a, b])[0].ip,
+            c.order(&[a, b], &z())[0].ip,
             a,
             "first place again after one answer"
         );
@@ -547,18 +618,70 @@ mod tests {
         let c = Caches::new(Infra::default());
         let t = Duration::from_millis(100);
         let (known, stranger) = (ip(1), ip(2));
-        c.record_ok(known, Duration::from_millis(2), false);
+        c.record_ok(known, &z(), Duration::from_millis(2), false);
         for s in [known, stranger] {
-            c.record_fail(s, Failure::Timeout { tcp: false }, t);
+            c.record_fail(s, &z(), Failure::Timeout { tcp: false }, t);
         }
-        assert!(!c.tcp_due(known), "one timeout is not repeated");
+        assert!(!c.tcp_due(known, &z()), "one timeout is not repeated");
         for s in [known, stranger] {
-            c.record_fail(s, Failure::Timeout { tcp: false }, t);
+            c.record_fail(s, &z(), Failure::Timeout { tcp: false }, t);
         }
-        assert!(!c.tcp_due(stranger), "never answered: no TCP");
-        assert!(c.tcp_due(known));
-        assert!(c.order(&[known])[0].tcp, "its next queries start with TCP");
-        c.record_ok(known, Duration::from_millis(2), false);
-        assert!(!c.order(&[known])[0].tcp, "a UDP answer ends it");
+        assert!(!c.tcp_due(stranger, &z()), "never answered: no TCP");
+        assert!(c.tcp_due(known, &z()));
+        assert!(
+            c.order(&[known], &z())[0].tcp,
+            "its next queries start with TCP"
+        );
+        c.record_ok(known, &z(), Duration::from_millis(2), false);
+        assert!(!c.order(&[known], &z())[0].tcp, "a UDP answer ends it");
+    }
+
+    /// REQ: DNS-903 — the down, TCP and no-EDNS notes belong to the zone they were seen for: a
+    /// server's behaviour for one zone does not change how it is asked for another.
+    #[test]
+    fn dns_903_notes_are_kept_per_zone() {
+        let c = Caches::new(Infra::default());
+        let za = NameBuf::from_presentation("a.example").expect("name");
+        let zb = NameBuf::from_presentation("b.example").expect("name");
+        let t = Duration::from_millis(100);
+        let srv = ip(1);
+        c.record_ok(srv, &zb, Duration::from_millis(2), false);
+        for _ in 0..2 {
+            c.record_fail(srv, &za, Failure::Timeout { tcp: false }, t);
+        }
+        assert!(c.tcp_due(srv, &za));
+        c.no_edns(srv, &za);
+        let for_a = c.order(&[srv], &za)[0];
+        assert!(for_a.tcp && for_a.no_edns);
+        // Lame answers clear the down note, not the TCP one: still scoped to `a`.
+        c.record_fail(srv, &za, Failure::Lame, t);
+        let for_b = c.order(&[srv], &zb)[0];
+        assert!(!for_b.tcp && !for_b.no_edns, "zone b is asked as usual");
+        assert!(for_b.srtt_us.is_some(), "and the server is not down for b");
+        // The notes table is bounded too.
+        let small = Caches::new(Infra {
+            max_hosts: 10,
+            ..Infra::default()
+        });
+        for n in 0..1_000 {
+            let zone = NameBuf::from_presentation(&format!("z{n}.example")).expect("name");
+            small.record_fail(ip(1), &zone, Failure::Timeout { tcp: false }, t);
+            assert!(small.notes.lock().len() <= 10);
+        }
+    }
+
+    /// REQ: DNS-903 — a recovered server's one answer sets its estimate, so it sorts before a
+    /// 20 ms sibling.
+    #[test]
+    fn dns_903_a_recovered_server_takes_its_answer_as_its_estimate() {
+        let c = Caches::new(Infra::default());
+        let (a, b) = (ip(1), ip(2));
+        let t = Duration::from_millis(300);
+        c.record_ok(a, &z(), Duration::from_millis(2), false);
+        c.record_ok(b, &z(), Duration::from_millis(20), false);
+        c.record_fail(a, &z(), Failure::Timeout { tcp: false }, t);
+        c.record_ok(a, &z(), Duration::from_micros(500), false);
+        assert_eq!(c.order(&[a, b], &z())[0].ip, a);
+        assert_eq!(c.order(&[a, b], &z())[0].srtt_us, Some(500));
     }
 }

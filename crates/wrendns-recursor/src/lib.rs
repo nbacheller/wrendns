@@ -351,7 +351,7 @@ impl Recursor {
             *at = Some(Instant::now());
         }
         let roots = self.permit(&self.settings.roots, &root, work);
-        for server in self.caches.order(&roots).into_iter().take(MAX_TRIES) {
+        for server in self.caches.order(&roots, &root).into_iter().take(MAX_TRIES) {
             if work.spend().is_err() {
                 return;
             }
@@ -452,7 +452,12 @@ impl Recursor {
     pub async fn probe_stub(&self) -> Option<bool> {
         let s = self.settings.stubs.first()?;
         let servers = self.permit(&s.servers, &s.zone, &mut Work::default());
-        for server in self.caches.order(&servers).into_iter().take(MAX_TRIES) {
+        for server in self
+            .caches
+            .order(&servers, &s.zone)
+            .into_iter()
+            .take(MAX_TRIES)
+        {
             let ip = server.ip;
             let addr = SocketAddr::new(ip, self.settings.port);
             let t0 = Instant::now();
@@ -466,10 +471,10 @@ impl Recursor {
             )
             .await;
             match &r {
-                Ok(_) => self.caches.record_ok(ip, t0.elapsed(), server.tcp),
+                Ok(_) => self.caches.record_ok(ip, &s.zone, t0.elapsed(), server.tcp),
                 Err(e) => self
                     .caches
-                    .record_fail(ip, failure(*e, server.tcp), timeout),
+                    .record_fail(ip, &s.zone, failure(*e, server.tcp), timeout),
             }
             if r.is_ok_and(|reply| {
                 msg::parse(&reply).is_some_and(|p| p.rcode != wrendns_proto::rcode::SERVFAIL)
@@ -842,7 +847,7 @@ impl Recursor {
         }
         let order: Vec<_> = self
             .caches
-            .order(&servers)
+            .order(&servers, zone)
             .into_iter()
             .take(MAX_TRIES)
             .collect();
@@ -892,10 +897,11 @@ impl Recursor {
                         // noticed), and may owe a move to TCP.
                         self.caches.record_fail(
                             one.ip,
+                            zone,
                             Failure::Timeout { tcp: false },
                             hedge_after,
                         );
-                        let _ = self.caches.tcp_due(one.ip);
+                        let _ = self.caches.tcp_due(one.ip, zone);
                         Some(o)
                     }
                     None => first.await,
@@ -934,8 +940,8 @@ impl Recursor {
             // REQ: DNS-903 — a server that answered before and now leaves a second UDP query
             // unanswered is asked over TCP (once now, first from then on for a while).
             self.caches
-                .record_fail(ip, Failure::Timeout { tcp: false }, timeout);
-            if !self.caches.tcp_due(ip) {
+                .record_fail(ip, zone, Failure::Timeout { tcp: false }, timeout);
+            if !self.caches.tcp_due(ip, zone) {
                 return None;
             }
             how.tcp = true;
@@ -959,7 +965,7 @@ impl Recursor {
                 && let Some(p2) = msg::parse(&r2)
                 && (p2.rcode == rcode::NOERROR || p2.rcode == rcode::NXDOMAIN)
             {
-                self.caches.no_edns(ip);
+                self.caches.no_edns(ip, zone);
                 parsed = Some(p2);
             }
         }
@@ -969,7 +975,7 @@ impl Recursor {
         // however fast it came: counting its RTT as a success kept a quick lame server first.
         match outcome {
             Some(o) if o != Outcome::Lame => {
-                self.caches.record_ok(ip, rtt, how.tcp);
+                self.caches.record_ok(ip, zone, rtt, how.tcp);
                 if got_opt {
                     self.caches.edns_ok(ip);
                 }
@@ -980,7 +986,7 @@ impl Recursor {
                     Err(e) => failure(e, how.tcp),
                     Ok(_) => Failure::Lame,
                 };
-                self.caches.record_fail(ip, why, timeout);
+                self.caches.record_fail(ip, zone, why, timeout);
                 None
             }
         }
