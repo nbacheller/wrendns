@@ -4523,6 +4523,12 @@ impl Backend for ApiBackend {
                 )));
             }
         };
+        // REQ: DNS-905 — the validator's aggressive-NSEC ranges (RFC 8198) answer a name's
+        // NXDOMAIN or no-data before any upstream is asked, so every flush that can remove a
+        // denial drops them too (all but a flush of failed lookups only).
+        if kind != FlushKind::Bogus {
+            self.src.pipeline.flush_nsec_ranges();
+        }
         let removed = if name.is_none() && qtype.is_none() && kind == FlushKind::Any {
             self.src.cache.flush_all_counted()
         } else {

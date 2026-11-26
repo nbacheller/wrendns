@@ -2071,7 +2071,7 @@ test('dns_905 cache flush by type, kind and recursor', async () => {
   await card.getByRole('button', { name: 'Look up' }).click();
   await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
   // A name and a type: narrow, so no confirmation, and the A answer stays.
-  await card.getByRole('textbox', { name: 'Query type' }).fill('txt');
+  await card.getByRole('combobox', { name: 'Query type' }).fill('txt');
   await card.getByRole('button', { name: 'Flush TXT for this name' }).click();
   await expect(card.getByTestId('cache-flushed')).toContainText('Removed 0 entries');
   await expect.poll(() => bodies[0]).toMatchObject({ name: 'typed.cache.e2e.test', type: 'TXT' });
@@ -2102,7 +2102,7 @@ test('dns_905 cache flush by type, kind and recursor', async () => {
   await expect.poll(() => bodies[4]).toEqual({ recursor: 'rtts' });
   // A type with no name is broad: it asks, then flushes that type for every name.
   await card.getByRole('textbox', { name: 'Name to look up' }).fill('');
-  await card.getByRole('textbox', { name: 'Query type' }).fill('aaaa');
+  await card.getByRole('combobox', { name: 'Query type' }).fill('aaaa');
   await card.getByRole('button', { name: 'Flush this type everywhere…' }).click();
   await expect(card.getByTestId('cache-flush-confirm')).toContainText('Flush every AAAA answer');
   await card.getByRole('button', { name: 'Yes, flush' }).click();
