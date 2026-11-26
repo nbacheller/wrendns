@@ -1,6 +1,6 @@
 # Locations and DNS-provider integrations (T36.10) — design
 
-Status: design only, for #110 and T36.10 (sub-tasks T36.10a0 to T36.10f in `spec/10`). It covers the self-hosted node only. The hosted service's side (managed names, the broker-seen address, the cloud zone) is in `docs/design/hosted.md` and is not designed here. The decisions already taken are ADR-1081 (locations), ADR-1082 (certificates), ADR-1083 (dynamic DNS), ADR-1084 (the provider table) and ADR-1085 (the ACME crate), with requirements DSC-908 to DSC-915, CLD-903 and CLD-904. This note grounds them in the code as it is on `main`, names the places where the code and those records disagree, and proposes the rest. The owner decided the eight questions this note raised on 2026-11-26; they are listed in the decisions section at the end and recorded in ADR-1095 (location names; amends ADR-1081), ADR-1096 (what a location's integrations never hand out; amends ADR-1082 and ADR-1083) and a dated amendment to ADR-1084 (the provider set). Points the owner has not decided are listed there as still open.
+Status: design only, for #110 and T36.10 (sub-tasks T36.10a0 to T36.10f in `spec/10`). It covers the self-hosted node only. The hosted service's side (managed names, the broker-seen address, the cloud zone) is in `docs/design/hosted.md` and is not designed here. The decisions already taken are ADR-1081 (locations), ADR-1082 (certificates), ADR-1083 (dynamic DNS), ADR-1084 (the provider table) and ADR-1085 (the ACME crate), with requirements DSC-908 to DSC-915, CLD-903 and CLD-904. This note grounds them in the code as it is on `main`, names the places where the code and those records disagree, and proposes the rest. The owner decided the eight questions this note raised on 2026-11-26; they are listed in the decisions section at the end and recorded in ADR-1096 (location names; amends ADR-1081), ADR-1097 (what a location's integrations never hand out; amends ADR-1082 and ADR-1083) and a dated amendment to ADR-1084 (the provider set). Points the owner has not decided are listed there as still open.
 
 ## 1. What exists today
 
@@ -141,7 +141,7 @@ A certificate for `nas.home.example.net` would put `nas` in the public certifica
 
 ### 3.4 Storage and distribution
 
-- The ACME account key, each shared certificate's key and its chain are stored secrets of a new kind `pem` (the kind `value.rs` reserves). Names are system-reserved: `acme.account`, `cert.<slug>.key`, `cert.<slug>.chain`, `cert.cluster.key`, `cert.cluster.chain`. An admin cannot create or overwrite a name with the `acme.` or `cert.` prefix through the secrets API; they are written only by the issuer.
+- The ACME account key, each shared certificate's key and its chain are stored secrets of a new kind `pem` (the kind `value.rs` reserves). Proposed, not decided: system-reserved names (`acme.account`, `cert.<slug>.key`, `cert.<slug>.chain`, `cert.cluster.key`, `cert.cluster.chain`), which an admin could not create or overwrite through the secrets API, written only by the issuer. The owner has not decided this; it is in the open list below.
 - Sizes: an ECDSA chain with two intermediates is about 3 to 4 KiB, under the 8 KiB value limit. Each location certificate uses two of the 128 secrets; a cluster with 10 certificate locations uses 23. The issuer refuses `certificate = true` when the store would pass 100 secrets, leaving room for credentials.
 - Distribution is the existing secret sync (CLU-015): every full member gets them. A member in the location's `nodes` writes the key and chain to `<data_dir>/acme/<slug>/` (0600, written to a temporary file and renamed), and the existing reload in `tls.rs` and `api_tls.rs` picks them up with no restart. Members not serving the location hold the secret but do not write the files.
 - **Using the certificate.** A listener or the API uses it when its `tls` names `acme = "<slug>"` instead of `cert`/`key` paths. Changing the API listener to it goes through the existing `api-tls` guarded row; a DoT or DoH listener through the `listen` row.
@@ -293,14 +293,14 @@ Already in `spec/01`: DSC-908 to DSC-915, CLD-903, CLD-904. Rows added with the 
 | DSC-916 | Flat-name migration: `flat_names`, its per-location switch (on by default) and the 7-day use count (§2.5). | Row in `spec/01` (decision 2). |
 | DSC-917 | Publishing a chosen local name publicly: per-name opt-in, off by default, audited, never to a private, CGNAT, link-local or reserved address (ADR-1083 point 7 asked for its own row). | Row in `spec/01` (decision 8). |
 | CLD-919 | Provider writes: ownership ledger and adopt, dry run, per-entry rate limits, the propagation check (§4.2, §4.5, §3.3). | Reserved; the row is written when these design points are decided (still open). |
-| CLD-920 | Certificate storage: the `pem` secret kind, system-reserved names, the file install for serving nodes, the key not exportable (§3.4). | Row in `spec/01` (decisions 5 and 7); the 100-secret ceiling is not in the row (still open). |
+| CLD-920 | Certificate storage: the `pem` secret kind, the file install for serving nodes, the key not exportable (§3.4). | Row in `spec/01` (decisions 5 and 7; the reserved names are not in the row); the 100-secret ceiling is not in the row (still open). |
 
 Wording changes to existing rows: DSC-908 (rolling upgrade, decision 5), DSC-909 (collision rule, decision 3; the location from configuration and router reads, not the CMDB, decision 1), DSC-910 (where the override lives, decision 1), DSC-911 (subtree answer, decision 4) and CLD-904 (the provider set, decision 6) are made. DSC-912 (drop the cache sentence, finding 5) and DSC-915 (the new WAN read, finding 4) are still open.
 
 ### ADRs
 
-1. **ADR-1095, location names** (Accepted 2026-11-26): the override's home, the collision rule, the subtree answer, flat names, the upgrade gate (decisions 1 to 5). Amends ADR-1081.
-2. **ADR-1096, what a location's integrations never hand out** (Accepted 2026-11-26): the wildcard key is not exportable (decision 7) and a public local name never points at a non-public address (decision 8). Amends ADR-1082 and ADR-1083.
+1. **ADR-1096, location names** (Accepted 2026-11-26): the override's home, the collision rule, the subtree answer, flat names, the upgrade gate (decisions 1 to 5). Amends ADR-1081.
+2. **ADR-1097, what a location's integrations never hand out** (Accepted 2026-11-26): the wildcard key is not exportable (decision 7) and a public local name never points at a non-public address (decision 8). Amends ADR-1082 and ADR-1083.
 3. **The provider set** (decision 6) is a dated amendment to ADR-1084. The rest of the provider-table additions (the ledger and adopt, dry run, rate limits) is still open, with CLD-919.
 4. **Still to write:** certificate storage and use beyond decision 7 (the reserved names, the per-location file install, the order builder's wildcard-only rule; amends ADR-1082); dynamic DNS's WAN read (amends ADR-1083); the rest of public publishing, when T36.10f starts.
 
@@ -351,7 +351,7 @@ a and b can run in parallel after a0 (they touch different modules; both touch `
 
 ## Decisions
 
-Owner decision, 2026-11-26, on the eight questions this note asked through the question tool. Records: ADR-1095 (decisions 1 to 5), the dated amendment to ADR-1084 (decision 6), ADR-1096 (decisions 7 and 8); requirement rows DSC-908 to DSC-911, DSC-916, DSC-917, CLD-904 and CLD-920 in `spec/01`; tasks T36.10a0 to T36.10f in `spec/10`.
+Owner decision, 2026-11-26, on the eight questions this note asked through the question tool. Records: ADR-1096 (decisions 1 to 5), the dated amendment to ADR-1084 (decision 6), ADR-1097 (decisions 7 and 8); requirement rows DSC-908 to DSC-911, DSC-916, DSC-917, CLD-904 and CLD-920 in `spec/01`; tasks T36.10a0 to T36.10f in `spec/10`.
 
 1. **The manual override.** A device's manual location override is a `location` field on its `[[client]]` entry. The rule that CMDB data never reaches device names (DSC-901) stays; DSC-910 is reworded (§2.3).
 2. **Flat names.** The old names `<device>.<device_domain>` keep answering for devices in a location, with a per-location switch (`flat_names`) that is on by default and a 7-day use count on the Locations page (§2.5, DSC-916).
