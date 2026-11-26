@@ -87,7 +87,7 @@
     inline?: boolean;
     /** Only an admin may set or clear (the server enforces it). */
     canSet: boolean;
-    /** The value kind on the wire (`text`; `pem` is reserved). */
+    /** The value kind on the wire (`text`; a `pem` secret has its own form on the Integrations & secrets page). */
     kind?: string;
     /** Standalone: open straight into a replacement (the table's Replace). */
     startReplacing?: boolean;

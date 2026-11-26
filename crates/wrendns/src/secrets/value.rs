@@ -51,8 +51,11 @@ impl SecretValue {
         if v.0.len() > MAX_VALUE {
             return Err(ValueError::TooLong);
         }
-        if kind == Kind::Text && v.0.chars().any(char::is_control) {
-            return Err(ValueError::Control);
+        match kind {
+            Kind::Text if v.0.chars().any(char::is_control) => return Err(ValueError::Control),
+            // REQ: CLD-920 (ADR-1097 point 1) — PEM blocks only; the line breaks are kept.
+            Kind::Pem if !is_pem(&v.0) => return Err(ValueError::NotPem),
+            _ => {}
         }
         if v.0.as_str() == MARKER {
             return Err(ValueError::Marker);
@@ -72,14 +75,17 @@ impl SecretValue {
 pub(crate) enum Kind {
     /// One line of text: a token, a password, an API key.
     Text,
+    /// REQ: CLD-920 — one or more PEM blocks, with their line breaks: a certificate chain, a key.
+    /// Never returned by any API, MCP or `ctl` path.
+    Pem,
 }
 
 impl Kind {
-    /// `text`; `pem` is reserved (PEM blocks, with their line breaks) and not taken yet.
+    /// `text` or `pem` (PEM blocks, with their line breaks).
     pub(crate) fn parse(s: &str) -> Result<Self, ValueError> {
         match s {
             "text" => Ok(Self::Text),
-            "pem" => Err(ValueError::KindReserved),
+            "pem" => Ok(Self::Pem),
             _ => Err(ValueError::Kind),
         }
     }
@@ -87,8 +93,59 @@ impl Kind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Text => "text",
+            Self::Pem => "pem",
         }
     }
+}
+
+/// REQ: CLD-920 — whether `text` is one or more well-formed PEM blocks and nothing else: each
+/// `-----BEGIN <label>-----`, base64 lines, `-----END <label>-----`, with blank lines between.
+/// Line breaks (`\n` or `\r\n`) are the only control characters allowed.
+fn is_pem(text: &str) -> bool {
+    let mut open: Option<&str> = None;
+    let mut blocks = 0usize;
+    let mut body = false;
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.chars().any(char::is_control) {
+            return false;
+        }
+        let line = line.trim_end();
+        if let Some(label) = open {
+            if let Some(end) = line
+                .strip_prefix("-----END ")
+                .and_then(|l| l.strip_suffix("-----"))
+            {
+                if end != label || !body {
+                    return false;
+                }
+                open = None;
+                blocks += 1;
+            } else if line.is_empty()
+                || !line
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+            {
+                return false;
+            } else {
+                body = true;
+            }
+        } else if line.is_empty() {
+            // Blank lines between blocks.
+        } else if let Some(label) = line
+            .strip_prefix("-----BEGIN ")
+            .and_then(|l| l.strip_suffix("-----"))
+        {
+            if label.is_empty() || !label.bytes().all(|b| b.is_ascii_uppercase() || b == b' ') {
+                return false;
+            }
+            open = Some(label);
+            body = false;
+        } else {
+            return false;
+        }
+    }
+    open.is_none() && blocks > 0
 }
 
 /// Why a value can't be stored.
@@ -99,7 +156,7 @@ pub(crate) enum ValueError {
     Control,
     Marker,
     Kind,
-    KindReserved,
+    NotPem,
     Name,
 }
 
@@ -112,8 +169,10 @@ impl fmt::Display for ValueError {
                 "the value holds a control character (a line break, a tab): a text secret is one line"
             }
             Self::Marker => "`<redacted>` is what a hidden value reads as, not a value",
-            Self::Kind => "the kind must be `text`",
-            Self::KindReserved => "the kind `pem` isn't available yet: use `text`",
+            Self::Kind => "the kind must be `text` or `pem`",
+            Self::NotPem => {
+                "a `pem` secret holds PEM blocks only (-----BEGIN ...----- to -----END ...-----), and nothing else"
+            }
             Self::Name => {
                 "a secret's name is lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit, at most 63"
             }

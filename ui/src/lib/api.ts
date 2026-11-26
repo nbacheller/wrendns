@@ -42,8 +42,13 @@ const READABLE: Record<string, (detail: string) => string> = {
   set_by_file: (d) =>
     `The configuration file sets${fieldIn(d) || ' this credential'}, and it wins over the UI and the API. Change it in the file.`,
   credential_reentry_required: (d) => reentry(d),
-  upgrade_required: () =>
-    'This change touches a credential, and this node is too old to send it to the primary. Upgrade this node, or make the change on the primary.',
+  // The compatibility gate names the member (`node X runs version V, which does not know ...`).
+  upgrade_required: (d) => {
+    const m = /^node (\S+) .*which does not know secrets of the `pem` kind/.exec(d);
+    return m
+      ? `node ${m[1]} does not know PEM secrets yet; upgrade it first. DNS is unaffected.`
+      : 'This change touches a credential, and this node is too old to send it to the primary. Upgrade this node, or make the change on the primary.';
+  },
   secret_missing: (d) =>
     `A reference names a secret this node doesn't store${fieldIn(d)}. Store the secret first under Settings → Integrations & secrets, or pick one that exists.`,
   // The server's detail names the entries and nodes that use it, so it stays in the sentence.

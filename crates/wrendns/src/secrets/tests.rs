@@ -826,7 +826,7 @@ fn ops_014_control_chars_and_empty_refused() {
         ValueError::TooLong
     );
     assert_eq!(Kind::parse("text").unwrap(), Kind::Text);
-    assert_eq!(Kind::parse("pem").unwrap_err(), ValueError::KindReserved);
+    assert_eq!(Kind::parse("pem").unwrap(), Kind::Pem);
     assert_eq!(Kind::parse("blob").unwrap_err(), ValueError::Kind);
     let tmp = tempfile::tempdir().unwrap();
     let s = store(&cfg_in(tmp.path()), &env(&[]));
@@ -1087,4 +1087,154 @@ fn ops_014_shadow_reencrypted_at_start() {
     assert!(!contains(&bytes, &old.key_id), "old key_id left");
     assert_eq!(rotated.purge_cluster().unwrap(), (0, 1));
     assert_eq!(read(&rotated, "sh"), "shadow-value-45");
+}
+
+const PEM_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIPlantedKeyBytes0123456789abcdefghijkLMNOP\nQRSTUV+/=\n-----END PRIVATE KEY-----";
+const PEM_CERT: &str =
+    "-----BEGIN CERTIFICATE-----\nMIIBplantedcertbytes0123456789\n-----END CERTIFICATE-----";
+
+fn pem(s: &str) -> Result<SecretValue, ValueError> {
+    SecretValue::new(Kind::Pem, Zeroizing::new(s.to_owned()))
+}
+
+/// REQ: CLD-920 (ADR-1097 point 1) — the `pem` kind takes PEM blocks only, with their line breaks,
+/// within the 8 KiB limit; anything else is refused with the reason; the value prints `<redacted>`.
+#[test]
+fn cld_920_pem_kind_takes_pem_blocks_only() {
+    let chain = format!("{PEM_CERT}\n\n{PEM_KEY}\n");
+    let v = pem(&chain).unwrap();
+    assert_eq!(v.expose(), chain.trim(), "line breaks kept, ends trimmed");
+    assert_eq!(format!("{v:?} {v}"), "<redacted> <redacted>");
+    assert!(pem(&chain.replace('\n', "\r\n")).is_ok(), "CRLF files");
+    for (bad, why) in [
+        ("", ValueError::Empty),
+        ("   \n ", ValueError::Empty),
+        ("plain text", ValueError::NotPem),
+        ("-----BEGIN CERTIFICATE-----\nAAAA", ValueError::NotPem),
+        (
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END PRIVATE KEY-----",
+            ValueError::NotPem,
+        ),
+        (
+            "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----",
+            ValueError::NotPem,
+        ),
+        (
+            "-----BEGIN CERTIFICATE-----\nAA AA\n-----END CERTIFICATE-----",
+            ValueError::NotPem,
+        ),
+        (
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\nextra text",
+            ValueError::NotPem,
+        ),
+        (
+            "-----BEGIN CERTIFICATE-----\nAA\u{0}AA\n-----END CERTIFICATE-----",
+            ValueError::NotPem,
+        ),
+        ("<redacted>", ValueError::NotPem),
+    ] {
+        assert_eq!(pem(bad).unwrap_err(), why, "{bad:?}");
+    }
+    // A block of exactly `n` bytes: full 64-character lines, then one shorter line.
+    let big = |n: usize| {
+        let mut s = String::from("-----BEGIN CERTIFICATE-----\n");
+        let rest = n - s.len() - "-----END CERTIFICATE-----".len();
+        for _ in 0..rest / 65 {
+            s.push_str(&"A".repeat(64));
+            s.push('\n');
+        }
+        s.push_str(&"A".repeat(rest % 65 - 1));
+        s.push('\n');
+        s.push_str("-----END CERTIFICATE-----");
+        s
+    };
+    assert_eq!(big(8 * 1024).len(), 8 * 1024);
+    assert!(pem(&big(8 * 1024)).is_ok());
+    assert_eq!(pem(&big(8 * 1024 + 1)).unwrap_err(), ValueError::TooLong);
+}
+
+/// REQ: CLD-920 (ADR-1097 point 1) — a `pem` secret is stored encrypted as a row of kind `pem`,
+/// but a credential field can't be given it (so it can't be sent to another service), and a
+/// backup export leaves it out.
+#[test]
+fn cld_920_pem_is_stored_but_never_handed_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = store(&cfg_in(tmp.path()), &env(&[]));
+    put(&s, "plain", "token");
+    s.put(
+        "loc.key",
+        Kind::Pem,
+        &pem(PEM_KEY).unwrap(),
+        0,
+        "root",
+        "local",
+        100,
+    )
+    .unwrap();
+    assert!(s.exists("loc.key"));
+    assert_eq!(
+        s.get("loc.key").unwrap_err(),
+        super::store::Unavailable::WrongKind
+    );
+    assert_eq!(read(&s, "plain"), "token");
+    let e = s.export_rows().unwrap();
+    assert_eq!(e.rows.len(), 1, "only the text secret is exported");
+    assert_eq!(e.rows[0].name, "plain");
+    // Left out on purpose, so it is not counted as an unreadable (damaged) row.
+    assert_eq!((e.unreadable, e.pem_kept), (0, 1));
+    // `readable` agrees with `get` for a credential field.
+    assert_eq!(
+        s.readable("loc.key").unwrap_err(),
+        super::store::Unavailable::WrongKind
+    );
+    assert!(s.readable("plain").is_ok());
+    let shown = format!("{s:?} {:?}", s.status());
+    assert!(!shown.contains("PlantedKeyBytes"), "{shown}");
+}
+
+/// REQ: CLU-015, CLD-920 - a `pem` row goes through replication like a text row: the primary's
+/// page carries it with its value, the replica re-encrypts it under its own key as kind `pem`,
+/// still refuses it to a credential field, leaves it out of its own backup export, and passes it
+/// on in its own page (so a later primary has it).
+#[test]
+fn cld_920_pem_row_replicates_to_a_replica() {
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let primary = store(&cfg_in(a.path()), &env(&[]));
+    let replica = store(&cfg_in(b.path()), &env(&[]));
+    put(&primary, "plain", "token");
+    primary
+        .put(
+            "loc.key",
+            Kind::Pem,
+            &pem(PEM_KEY).unwrap(),
+            1,
+            "root",
+            "cluster",
+            100,
+        )
+        .unwrap();
+    let page = primary.export_page(None, 1 << 20).unwrap();
+    let sent = page.items.iter().find(|r| r.name == "loc.key").unwrap();
+    assert_eq!(sent.kind, "pem");
+    assert_eq!(sent.value.as_ref().unwrap().expose(), PEM_KEY);
+    replica.apply_remote(&page.items, 1, true, 100).unwrap();
+    assert!(replica.exists("loc.key"));
+    let info = replica.status();
+    let row = info.secrets.iter().find(|r| r.name == "loc.key").unwrap();
+    assert_eq!(row.kind, "pem");
+    assert_eq!(row.health, super::store::RowHealth::Readable);
+    assert_eq!(
+        replica.get("loc.key").unwrap_err(),
+        super::store::Unavailable::WrongKind
+    );
+    assert_eq!(read(&replica, "plain"), "token");
+    let e = replica.export_rows().unwrap();
+    assert_eq!((e.rows.len(), e.pem_kept), (1, 1));
+    let again = replica.export_page(None, 1 << 20).unwrap();
+    let relayed = again.items.iter().find(|r| r.name == "loc.key").unwrap();
+    assert_eq!(relayed.value.as_ref().unwrap().expose(), PEM_KEY);
+    assert_eq!(
+        again.head, page.head,
+        "the replica holds what the primary does"
+    );
 }

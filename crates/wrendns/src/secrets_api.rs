@@ -641,6 +641,17 @@ pub(crate) fn apply(
         SecretOp::Put { kind, value } => {
             let kind = Kind::parse(kind.trim()).map_err(invalid)?;
             let value = SecretValue::new(kind, value.into_inner()).map_err(invalid)?;
+            // REQ: CLD-920, DSC-908 (ADR-1096 point 5) — a `pem` secret waits until every
+            // member's build knows the kind (dry runs too, so the answer is the same).
+            if kind == Kind::Pem
+                && let Err(why) = crate::upgrade_gate::enforce(
+                    src.cluster.as_deref(),
+                    wrendns_cluster::gate::Feature::PemSecrets,
+                )
+            {
+                return Err(Problem::new(Code::UpgradeRequired, why)
+                    .hint("Upgrade the member named, then repeat the write. DNS is unaffected."));
+            }
             if let Some(p) = set_by_file(src, &name) {
                 return Err(p);
             }
@@ -833,6 +844,21 @@ fn meta_of_existing(
             nodes: Vec::new(),
         },
     }
+}
+
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1) — a write that came from outside the node's own code,
+/// applied here: the public route's, or one a replica forwarded (an older replica forwards a
+/// reserved name as kind `text`, since only the entry node's handler judged it). The issuer's
+/// names are refused here, where the write is applied, on the trimmed name as the store keeps it.
+/// The certificate issuer's own path calls [`write_here`] directly and stays allowed.
+pub(crate) async fn write_external(
+    src: Arc<Sources>,
+    w: SecretWrite,
+) -> Result<SecretChange, Problem> {
+    if let Some(p) = wrendns_api::secrets_api::public_refusal(w.name.trim()) {
+        return Err(p);
+    }
+    write_here(src, w).await
 }
 
 /// REQ: API-015 — a write applied here: the other members' references read first (a delete in a

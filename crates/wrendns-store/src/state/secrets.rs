@@ -31,7 +31,7 @@ pub struct Stamp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretRow {
     pub name: String,
-    /// `text` (`pem` is reserved).
+    /// `text` or `pem`.
     pub kind: String,
     pub key_id: Vec<u8>,
     pub nonce: Vec<u8>,
