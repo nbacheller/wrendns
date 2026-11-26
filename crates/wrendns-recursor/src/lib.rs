@@ -95,6 +95,8 @@ const MAX_QUERIES: u32 = 96;
 const MAX_MINIMIZE: usize = 10;
 /// Servers tried for one question before giving up.
 const MAX_TRIES: usize = 4;
+/// Zones whose refused server lists are remembered (REQ: DNS-902).
+const REFUSALS_KEPT: usize = 16;
 
 /// Resolver settings (`[[upstream]]` with `url = "recursive://"`).
 #[derive(Debug, Clone)]
@@ -256,6 +258,9 @@ pub struct Recursor {
     caches: Caches,
     /// When priming was last tried (it's not tried again for a minute after a failure).
     primed_at: parking_lot::Mutex<Option<Instant>>,
+    /// REQ: DNS-902 — the zones whose server lists the address rules emptied, newest last (a
+    /// few; "Why?" says an address rule affected an answer only when one of these covers it).
+    refusals: parking_lot::Mutex<Vec<(NameBuf, Instant)>>,
 }
 
 /// `name` cut to its last `n` labels.
@@ -277,6 +282,7 @@ impl Recursor {
             settings,
             caches: Caches::default(),
             primed_at: parking_lot::Mutex::new(None),
+            refusals: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -338,6 +344,22 @@ impl Recursor {
             self.caches.put_zone(root, names, addrs, ttl);
             return;
         }
+    }
+
+    /// REQ: DNS-902 — whether the address rules affected answers for `name`: a stub zone
+    /// covering it whose servers are all refused, or a server list for a zone at or above it
+    /// emptied by the rules within `within`. "Why?" shows its refusal notes only then.
+    #[must_use]
+    pub fn address_rules_affect(&self, name: &NameBuf, within: Duration) -> bool {
+        let stub_refused = self.stub_for(name, false).is_some_and(|s| {
+            !s.servers.is_empty() && s.servers.iter().all(|ip| !self.may_ask(*ip, &s.zone))
+        });
+        stub_refused
+            || self
+                .refusals
+                .lock()
+                .iter()
+                .any(|(z, at)| name.is_subdomain_of(z) && at.elapsed() <= within)
     }
 
     /// The settings this resolver runs with.
@@ -644,6 +666,12 @@ impl Recursor {
         if ok.is_empty() && !addrs.is_empty() {
             debug!(zone = %zone.display(), "every server address refused");
             work.refused = true;
+            let mut r = self.refusals.lock();
+            r.retain(|(z, _)| z != zone);
+            if r.len() >= REFUSALS_KEPT {
+                r.remove(0);
+            }
+            r.push((*zone, Instant::now()));
         }
         ok
     }
@@ -883,5 +911,47 @@ mod tests {
         });
         assert!(private_only.may_ask(ip("10.0.0.1"), &outside));
         assert!(!private_only.may_ask(ip("127.0.0.1"), &outside));
+    }
+
+    /// REQ: DNS-902 — "Why?" learns that an address rule affected an answer only from a stub
+    /// zone whose servers are all refused, or a server list the rules emptied; not otherwise.
+    #[test]
+    fn dns_902_address_rules_affect_only_after_a_refusal() {
+        let within = Duration::from_secs(60);
+        let name = NameBuf::from_presentation("www.example.com").unwrap();
+        let zone = NameBuf::from_presentation("example.com").unwrap();
+        let other = NameBuf::from_presentation("other.test").unwrap();
+        let r = Recursor::new(Settings::default());
+        assert!(
+            !r.address_rules_affect(&name, within),
+            "nothing refused yet"
+        );
+        let mut work = Work::default();
+        // A public server is fine; a delegation to private-only servers leaves nothing to ask.
+        assert_eq!(r.permit(&[ip("198.51.100.1")], &zone, &mut work).len(), 1);
+        assert!(!r.address_rules_affect(&name, within));
+        let left = r.permit(&[ip("10.0.0.1")], &zone, &mut work);
+        assert_eq!(left.len(), 0);
+        assert!(r.address_rules_affect(&name, within));
+        assert!(!r.address_rules_affect(&other, within), "another zone");
+        assert!(
+            !r.address_rules_affect(&name, Duration::ZERO),
+            "too long ago"
+        );
+        // A stub zone whose only server is on this machine is refused by the rules.
+        let stub_zone = NameBuf::from_presentation("corp.test").unwrap();
+        let stubbed = |allow| {
+            Recursor::new(Settings {
+                stubs: vec![Stub {
+                    zone: stub_zone,
+                    servers: vec![ip("127.0.0.1")],
+                }],
+                allow_local_servers: allow,
+                ..Settings::default()
+            })
+        };
+        let inside = NameBuf::from_presentation("a.corp.test").unwrap();
+        assert!(stubbed(false).address_rules_affect(&inside, within));
+        assert!(!stubbed(true).address_rules_affect(&inside, within));
     }
 }

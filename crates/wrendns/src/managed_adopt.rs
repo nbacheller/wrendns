@@ -636,12 +636,16 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
         };
         let mut servers = Vec::new();
         let mut stub = false;
+        let (mut allow_local, mut allow_private) = (false, false);
         for m in &g.members {
             let Some(u) = served.upstream.iter().find(|u| u.name == *m) else {
                 continue;
             };
             if u.recursive.stub_zone.is_some() {
                 stub = true;
+                // REQ: DNS-902 — the allowances travel with the stub zone.
+                allow_local |= u.recursive.allow_local_servers;
+                allow_private |= u.recursive.allow_private_servers;
                 servers.extend(u.recursive.stub_servers.iter().map(ToString::to_string));
             } else {
                 servers.push(u.url.to_string());
@@ -658,6 +662,8 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
         let f = managed::Forward {
             servers,
             stub,
+            allow_local_servers: allow_local,
+            allow_private_servers: allow_private,
             match_group: r.match_group.iter().map(ToString::to_string).collect(),
             match_qtype: r.match_qtype.iter().map(ToString::to_string).collect(),
             dnssec_nta: r.dnssec_nta,

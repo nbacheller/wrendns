@@ -663,6 +663,29 @@ fn bogus_marker(code: u16) -> Arc<[u8]> {
     Arc::from(vec![0xBE, u8::try_from(code).unwrap_or(6)])
 }
 
+/// REQ: DNS-902 (RFC 9276 §3.2) — an insecure answer that must reach the client with EDE 27
+/// travels through the shared lookup as the message with opcode 15 (never a real answer's),
+/// and is not cached: a cache hit would lose the EDE.
+const EDE_OPCODE_MARK: u8 = 15;
+
+fn mark_nsec3_ede(mut msg: Vec<u8>) -> Arc<[u8]> {
+    if let Some(b) = msg.get_mut(2) {
+        *b = (*b & 0x87) | (EDE_OPCODE_MARK << 3);
+    }
+    Arc::from(msg)
+}
+
+/// The message with the mark taken off, and whether it was there.
+fn take_nsec3_mark(resp: &[u8]) -> (std::borrow::Cow<'_, [u8]>, bool) {
+    if resp.len() >= 12 && (resp[2] >> 3) & 0x0F == EDE_OPCODE_MARK {
+        let mut v = resp.to_vec();
+        v[2] &= 0x87;
+        (std::borrow::Cow::Owned(v), true)
+    } else {
+        (std::borrow::Cow::Borrowed(resp), false)
+    }
+}
+
 fn bogus_code(resp: &[u8]) -> Option<u16> {
     match resp {
         [0xBE, c] => Some(u16::from(*c)),
@@ -675,6 +698,9 @@ fn bogus_text(code: u16) -> &'static str {
         ede::SIGNATURE_EXPIRED => "DNSSEC validation failed: signature expired",
         ede::SIGNATURE_NOT_YET_VALID => "DNSSEC validation failed: signature not yet valid",
         ede::RRSIGS_MISSING => "DNSSEC validation failed: signatures missing",
+        ede::UNSUPPORTED_NSEC3_ITERATIONS => {
+            "DNSSEC validation failed: NSEC3 iteration count too high"
+        }
         _ => "DNSSEC validation failed",
     }
 }
@@ -2396,8 +2422,10 @@ impl Pipeline {
                 ))
             }
             Some((resp, upstream)) => {
+                let (resp, nsec3) = take_nsec3_mark(&resp);
+                let ede = nsec3.then_some((ede::UNSUPPORTED_NSEC3_ITERATIONS, ""));
                 let client =
-                    Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+                    Client::from_query(&q, response_edns(&q, self.settings.edns_payload, ede));
                 // The answer plus our OPT (with room for an EDE and its text).
                 let mut out = vec![0u8; (resp.len() + 512).min(MAX_RESPONSE)];
                 match Cache::render(&q, &resp, &client, &mut out) {
@@ -2576,6 +2604,12 @@ impl Pipeline {
             let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
             self.after_upstream(st, group, question, &a.bytes, a.upstream_id);
             return Some((a.bytes.into(), a.upstream_id));
+        }
+        // REQ: DNS-902 (RFC 9276 §3.2) — insecure because of the NSEC3 iteration count: EDE 27,
+        // so the answer is not cached (a cache hit would lose it).
+        if v.verdict == Verdict::Insecure && v.ede == ede::UNSUPPORTED_NSEC3_ITERATIONS {
+            self.after_upstream(st, group, question, &v.bytes, upstream);
+            return Some((mark_nsec3_ede(v.bytes), upstream));
         }
         let _ = self.cache.insert(&key, q, &v.bytes, Instant::now());
         self.after_upstream(st, group, question, &v.bytes, upstream);
@@ -3014,6 +3048,20 @@ mod tests {
     use wrendns_proto::{NameBuf, build_query, rtype, summarize};
 
     use super::*;
+
+    /// REQ: DNS-902 (RFC 9276 §3.2) — the EDE 27 mark rides on the message and comes off whole.
+    #[test]
+    fn dns_902_nsec3_ede_mark_round_trips() {
+        let msg = vec![0x12, 0x34, 0x81, 0x83, 0, 1, 0, 0, 0, 1, 0, 0, 9, 9];
+        let (plain, marked) = take_nsec3_mark(&msg);
+        assert!(!marked && *plain == *msg, "a real answer has no mark");
+        let wire = mark_nsec3_ede(msg.clone());
+        assert_ne!(*wire, *msg);
+        let (back, marked) = take_nsec3_mark(&wire);
+        assert!(marked);
+        assert_eq!(*back, *msg, "flags and RCODE are as they were");
+        assert!(bogus_text(ede::UNSUPPORTED_NSEC3_ITERATIONS).contains("NSEC3"));
+    }
 
     fn pipeline() -> Arc<Pipeline> {
         let cache = Arc::new(Cache::new(CachePolicy::default()));

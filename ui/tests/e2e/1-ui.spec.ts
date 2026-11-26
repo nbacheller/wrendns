@@ -864,6 +864,9 @@ test('dns_902 recursive upstream options are shown for recursive:// only and sav
     const rec = (await saved()).definition.recursive;
     expect(rec).toMatchObject({ case_randomization: true, allow_private_servers: true });
     expect(rec.allow_local_servers ?? false).toBe(false);
+    // Only what was changed is written: the options left at their defaults are not frozen.
+    expect(rec.qname_minimization).toBeUndefined();
+    expect(rec.ipv6).toBeUndefined();
     // Opened again, the saved options are what the switches show; the default-on one still reads on.
     await row.getByRole('button', { name: 'Edit' }).click();
     await expect(sw(labels.caps)).toBeChecked();
@@ -880,6 +883,60 @@ test('dns_902 recursive upstream options are shown for recursive:// only and sav
   } finally {
     await r.delete('/api/v1/upstreams/dns902-rec', { headers: h });
     await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+  }
+});
+
+// REQ: DNS-902, DNS-022 (T40.1) — a stub-zone forward whose server is on this machine cannot be
+// saved until the "ask a server on this machine" box is ticked; the box is kept when the forward
+// is opened again, a private server gets its own optional box, and a re-save that does not
+// mention the flags (the API, an agent) keeps them.
+test('dns_902 stub forward allowances in the forward form', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const forward = async () => (await (await r.get('/api/v1/forwards')).json()).items.find((f: { domain: string }) => f.domain === 'stub902.example');
+  try {
+    await page.goto('/#/local-dns');
+    await page.reload();
+    await page.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+    const form = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+    await form.getByLabel('Domain', { exact: true }).fill('stub902.example');
+    await form.getByLabel('Server address', { exact: true }).fill('127.0.0.1');
+    // Not a stub zone yet: no boxes, nothing blocked.
+    await expect(form.locator('input[name="allow-local-servers"]')).toHaveCount(0);
+    await form.locator('input[name="stub"]').check();
+    const local = form.locator('input[name="allow-local-servers"]');
+    await expect(local).not.toBeChecked();
+    await expect(form.getByTestId('local-server-blocked')).toContainText('Tick the box above to save');
+    await expect(form.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await local.check();
+    await expect(form.getByTestId('local-server-blocked')).toHaveCount(0);
+    await expect(form.locator('input[name="allow-private-servers"]')).toHaveCount(0);
+    await form.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'stub902.example' })).toBeVisible();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+    expect(await forward()).toMatchObject({ stub: true, allowLocalServers: true, allowPrivateServers: false });
+    // Opened again: ticked from the stored value; a private server adds the optional box.
+    const row = page.locator('tr').filter({ hasText: 'stub902.example' });
+    await row.getByRole('button', { name: 'Edit stub902.example' }).click();
+    const again = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+    await expect(again.locator('input[name="allow-local-servers"]')).toBeChecked();
+    await again.getByLabel('Server address', { exact: true }).fill('127.0.0.1 10.9.9.9');
+    const priv = again.locator('input[name="allow-private-servers"]');
+    await expect(priv).not.toBeChecked();
+    await expect(again.getByRole('button', { name: 'Save' })).toBeEnabled();
+    await priv.check();
+    await again.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'stub902.example' })).toBeVisible();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+    expect(await forward()).toMatchObject({ allowLocalServers: true, allowPrivateServers: true });
+    // A re-save through the API that does not mention the flags keeps them; a plain forward is refused them.
+    const put = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['127.0.0.1'], stub: true } });
+    expect(put.status()).toBe(200);
+    expect(await forward()).toMatchObject({ allowLocalServers: true, allowPrivateServers: true });
+    const bad = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['10.9.9.9'], allowLocalServers: true } });
+    expect(bad.status()).toBeGreaterThanOrEqual(400);
+  } finally {
+    await r.delete('/api/v1/forwards/stub902.example', { headers: h });
   }
 });
 

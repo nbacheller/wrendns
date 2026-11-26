@@ -490,12 +490,19 @@ async fn dns_902_offline_nsec3_iterations_above_the_limit_are_insecure() {
         .await
         .unwrap();
     assert_eq!(r.verdict, Verdict::Insecure, "60 iterations");
+    // RFC 9276 §3.2: an insecure answer because of the count carries EDE 27.
+    assert_eq!(r.ede, wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS);
     assert_eq!(rcode(&r.bytes), wrendns_proto::rcode::NXDOMAIN);
     let r = v
         .resolve(&g, question("n600", rtype::A), budget, true, false)
         .await
         .unwrap();
     assert_eq!(r.verdict, Verdict::Bogus, "600 iterations");
+    assert_eq!(
+        r.ede,
+        wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS,
+        "SERVFAIL because of the count says so"
+    );
 }
 
 /// REQ: DNS-011 (T9.16) — RFC 8198: after one signed NXDOMAIN, another name in the same range is

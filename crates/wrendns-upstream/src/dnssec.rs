@@ -92,7 +92,9 @@ pub struct Validated {
     pub bytes: Vec<u8>,
     pub verdict: Verdict,
     /// REQ: DNS-013 (T9.8) — for a bogus answer, the EDE code saying why: 7 (a signature
-    /// expired), 8 (not yet valid), 10 (no signatures), else 6.
+    /// expired), 8 (not yet valid), 10 (no signatures), else 6. REQ: DNS-902 (RFC 9276 §3.2)
+    /// — 27 (unsupported NSEC3 iterations) for an answer that is insecure, or bogus, because of
+    /// the iteration count; an insecure answer carrying it should reach the client with it.
     pub ede: u16,
     pub upstream_id: u16,
     pub attempts: u8,
@@ -340,6 +342,17 @@ impl Validator {
             Ok(Some(Err(e))) if is_transport(&e) => return Err(ResolveError::Empty),
             Ok(Some(Err(e))) => {
                 let mut verdict = error_verdict(&e);
+                // REQ: DNS-902 (RFC 9276 §3.2) — SERVFAIL because the NSEC3 iteration count is
+                // past the hard limit says so (EDE 27) rather than "DNSSEC bogus".
+                let ede = match &e {
+                    NetError::Dns(hickory_net::DnsError::Nsec { response, .. })
+                        if verdict == Verdict::Bogus
+                            && nsec3_max_iterations(response) > NSEC3_HARD_LIMIT =>
+                    {
+                        wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS
+                    }
+                    _ => wrendns_proto::ede::DNSSEC_BOGUS,
+                };
                 tracing::debug!(name = %q.name.display().to_string(), ?verdict, "DNSSEC: {e}");
                 if self
                     .proven_insecure(group, &handle, &qkey, budget, deadline)
@@ -351,7 +364,7 @@ impl Validator {
                 return Ok(Validated {
                     bytes: Vec::new(),
                     verdict,
-                    ede: wrendns_proto::ede::DNSSEC_BOGUS,
+                    ede,
                     upstream_id,
                     attempts,
                 });
@@ -381,6 +394,7 @@ impl Validator {
             verdict = Verdict::Insecure;
         }
         self.stats.count(verdict);
+        let iterations = nsec3_max_iterations(&response);
         let mut message = response.into_message();
         // REQ: DNS-011 (T9.16) — a secure denial's NSEC ranges, for later questions.
         if self.aggressive && verdict == Verdict::Secure {
@@ -393,7 +407,12 @@ impl Validator {
                 .learn(&message, std::time::Instant::now());
         }
         // Before DNSSEC records are stripped: why a bogus answer failed.
-        let ede = if verdict == Verdict::Bogus {
+        let ede = if over_limit {
+            // REQ: DNS-902 (RFC 9276 §3.2) — insecure because of the iteration count: EDE 27.
+            wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS
+        } else if verdict == Verdict::Bogus && iterations > NSEC3_HARD_LIMIT {
+            wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS
+        } else if verdict == Verdict::Bogus {
             message
                 .to_vec()
                 .map_or(wrendns_proto::ede::DNSSEC_BOGUS, |b| {
@@ -828,12 +847,21 @@ fn base32hex(data: &[u8]) -> String {
 /// REQ: DNS-902 (RFC 9276 §3.2) — a negative answer whose NSEC3 records hash with more
 /// iterations than [`NSEC3_SOFT_LIMIT`] (and not more than the hard limit, which is bogus).
 fn nsec3_over_soft_limit(response: &DnsResponse) -> bool {
-    response.authorities.iter().any(|r| match &r.data {
-        RData::DNSSEC(DNSSECRData::NSEC3(n)) => {
-            (NSEC3_SOFT_LIMIT + 1..=NSEC3_HARD_LIMIT).contains(&n.iterations())
-        }
-        _ => false,
-    })
+    (NSEC3_SOFT_LIMIT + 1..=NSEC3_HARD_LIMIT).contains(&nsec3_max_iterations(response))
+}
+
+/// REQ: DNS-902 — the most iterations any NSEC3 record in the authority section hashes with
+/// (0 when there is none).
+fn nsec3_max_iterations(response: &DnsResponse) -> u16 {
+    response
+        .authorities
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::DNSSEC(DNSSECRData::NSEC3(n)) => Some(n.iterations()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// REQ: DNS-011 (ADR-098) — what a validation error says about the answer. Hitting the

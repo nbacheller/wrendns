@@ -414,9 +414,14 @@ pub(crate) fn explain(
             group: sel.group.name.clone(),
             routed: sel.routed,
         });
-        // REQ: DNS-902 — what a recursive member will not ask, since it can end an answer.
+        // REQ: DNS-902 — what a recursive member will not ask, since it can end an answer:
+        // said only when an address rule actually affected answers for this name (a stub
+        // zone's servers all refused, or a recent lookup under it left no server to ask).
         for up in sel.group.members() {
-            if let Some(s) = up.recursive_settings() {
+            if let Some(s) = up
+                .recursive_settings()
+                .filter(|_| up.address_rules_affect(&q.qname, ADDRESS_RULE_MEMORY))
+            {
                 e.notes.extend(recursive_notes(
                     &up.name,
                     s.allow_local_servers,
@@ -436,6 +441,9 @@ pub(crate) fn explain(
     }
     Ok(e)
 }
+
+/// REQ: DNS-902 — how long "Why?" remembers that an address rule emptied a server list.
+const ADDRESS_RULE_MEMORY: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// REQ: DNS-902 — the server addresses a `recursive://` upstream refuses, in words: a name
 /// whose delegation points only at them fails (SERVFAIL, no upstream answered) instead of

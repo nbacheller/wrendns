@@ -267,6 +267,10 @@
       const x = v[f.key];
       delete v[f.key];
       if (x === undefined) continue;
+      // REQ: DNS-902 — a field shown at the server's default, which the entry did not set and
+      // the user did not change, is not written: saving must not freeze today's defaults.
+      const was = (original[outer] as Record<string, unknown> | undefined)?.[inner];
+      if (f.fallback !== undefined && was === undefined && x === f.fallback) continue;
       v[outer] = { ...((v[outer] as Record<string, unknown> | undefined) ?? {}), [inner]: x };
     }
     return v;

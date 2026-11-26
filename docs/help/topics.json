@@ -376,7 +376,7 @@
       "summary": "Questions for one domain go to a specific server instead of the public ones, such as your work network's or your router's.",
       "when": "Names like nas.home or corp.example only exist on another server.",
       "example": "Send everything under corp.example to 10.0.0.53 so work names resolve at home over the VPN.",
-      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box. Limit it with groups (only their devices are sent) and query types (only PTR, say), and leave the DNSSEC box ticked unless the domain is signed or you know why it isn't. Ticking “Only on this node” keeps the route here: the other nodes answer as if it weren't there.",
+      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box (a server on this machine, such as 127.0.0.1, then needs its own box ticked, or WrenDNS never asks it). Limit it with groups (only their devices are sent) and query types (only PTR, say), and leave the DNSSEC box ticked unless the domain is signed or you know why it isn't. Ticking “Only on this node” keeps the route here: the other nodes answer as if it weren't there.",
       "diagram": "route",
       "docs": "routing-conditional-forwarding"
     },
@@ -1560,7 +1560,7 @@
       "summary": "A recursive:// upstream never asks a server at a loopback, unspecified, link-local, multicast or broadcast address, and asks private addresses only inside its stub zone. A public delegation that points only at such addresses fails with SERVFAIL, and Why? says so.",
       "when": "A name that should resolve fails, and its zone delegates to an address on this machine or on your own network.",
       "example": "A public zone that delegates to 127.0.0.1 gets no query: it could aim the resolver at a service on this machine.",
-      "caution": "Turn the switches on only for a test setup or a real authoritative server on this host or network, and prefer a stub zone for the latter: a stub zone's servers may be private. Both are off by default.",
+      "caution": "Turn the switches on only for a test setup or a real authoritative server on this host or network, and prefer a stub zone for the latter: a stub zone's servers may be private. Both are off by default. On Local DNS, “Send a domain to another server”, a stub zone whose server is on this machine shows a box to allow it for that zone only (Save waits for it: without it the zone never answers), and one whose server is on a private network shows an optional box for names outside the zone. Other upstreams set them under Upstreams.",
       "docs": "recursive-resolution-no-forwarder"
     },
     {
