@@ -2869,4 +2869,105 @@ own_lookups = true
             );
         }
     }
+
+    /// REQ: DSC-908 (ADR-1096 point 5, ADR-1104 point 5) - `reload` itself, not only the check it
+    /// runs: a file that adds the first location is refused while a member's build does not know
+    /// the table (the running configuration stays); it is applied once every member announces the
+    /// feature; and while the start-up hold stands the same reload leaves the entries out.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn dsc_908_reload_applies_the_gate_and_the_start_up_hold() {
+        use crate::secrets_api_tests::{GATE, pair, pair_features};
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                crate::upgrade_gate::HOLD.clear();
+            }
+        }
+        let _turn = GATE.lock().await;
+        let _clear = Clear;
+        let dir = tempfile::tempdir().unwrap();
+        let base = format!(
+            "[node]
+data_dir = {:?}
+[local]
+device_domain = \"home.arpa\"
+",
+            dir.path()
+        );
+        let file = dir.path().join("wrendns.toml");
+        std::fs::write(&file, &base).unwrap();
+        let files = vec![file.clone()];
+        let with = format!(
+            "{base}[[location]]
+slug = \"home\"
+networks = [\"192.0.2.0/24\"]
+"
+        );
+        let mut current = load_files(&files).unwrap();
+        let pipeline = crate::pipeline::tests_support::pipeline_from(&current);
+        let mut listeners = test_listeners();
+        let mut health = tokio::spawn(async {});
+        let mut lists = None;
+        let sources = |c: &Arc<wrendns_cluster::net::Cluster>| {
+            let (reload, _rx) = tokio::sync::mpsc::channel(1);
+            Arc::new(http::Sources {
+                reload,
+                cluster: Some(Arc::clone(c)),
+                ..crate::http::tests::sources_in(dir.path())
+            })
+        };
+
+        // An older member: refused, and the running configuration is untouched.
+        let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+        std::fs::write(&file, &with).unwrap();
+        let src = sources(&old.primary);
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(!ok && current.location.is_empty(), "refused: {ok}");
+        let _ = old.stop.send(true);
+
+        // Every member announces the feature, but the start-up hold stands: applied without them.
+        let new = pair("1.1.0", "1.1.0").await;
+        let src = sources(&new.primary);
+        let mut c = current.clone();
+        c.location = load_files(&files).unwrap().location;
+        assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true));
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(ok && current.location.is_empty(), "held out: {ok}");
+        // The hold ends: the next reload applies them.
+        crate::upgrade_gate::HOLD.clear();
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(ok && current.location.len() == 1, "applied: {ok}");
+        let _ = new.stop.send(true);
+    }
 }

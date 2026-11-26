@@ -129,6 +129,17 @@ impl Hold {
         true
     }
 
+    /// Puts the hold back after a release whose reload did not apply the entries.
+    pub(crate) fn resume(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Tests only: ends the hold of the process.
+    #[cfg(test)]
+    pub(crate) fn clear(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+
     /// For every later configuration the node builds while the hold stands.
     pub(crate) fn apply(&self, cfg: &mut wrendns_config::Config) {
         if self.active() {
@@ -180,7 +191,9 @@ pub(crate) fn hold_words(r: &gate::Refusal) -> String {
 
 /// REQ: DSC-908 - the hold, polled until it ends: every couple of seconds the gate is judged
 /// again (members arrive, announce, or are upgraded), and when it passes the locations are applied
-/// by a reload.
+/// by a reload. A reload that does not apply them (the gate refused it after a member changed
+/// between the two judgements, or the file was invalid) puts the hold back and the loop goes on,
+/// so the entries are never dropped silently.
 pub(crate) async fn release_loop(
     sources: std::sync::Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -193,8 +206,12 @@ pub(crate) async fn release_loop(
         if HOLD.release(sources.cluster.as_deref()) {
             tracing::info!("locations: every member knows them; applying the held entries");
             let (tx, rx) = tokio::sync::oneshot::channel();
-            if sources.reload.send(tx).await.is_ok() {
-                let _ = rx.await;
+            let applied = sources.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
+            if !applied {
+                tracing::warn!(
+                    "locations: the reload did not apply the held entries; holding them and trying again"
+                );
+                HOLD.resume();
             }
         }
     }

@@ -2180,10 +2180,11 @@ impl Backend for ApiBackend {
                 .into_iter()
                 .map(|i| (i.client.clone(), i))
                 .collect();
-        self.src
-            .config
-            .load()
-            .client
+        // REQ: DSC-908, DSC-910 (ADR-1104 point 5) - while the start-up hold stands the running
+        // configuration has no pins; the devices are read from the unheld one, so an edit that
+        // copies the entry back (the UI form, MCP) keeps the pin it has stored.
+        let cfg = unheld_config(&self.src);
+        cfg.client
             .iter()
             .map(|c| {
                 let mut info = client_info(c, &managed);
@@ -5040,6 +5041,16 @@ fn client_impact(
     (recent_queries, impact)
 }
 
+/// The configuration with the start-up hold's entries in it: the running one, except while the
+/// hold stands, when it is built again from the files and the stored rows without stripping.
+fn unheld_config(src: &Sources) -> Arc<wrendns_config::Config> {
+    if crate::upgrade_gate::HOLD.active() {
+        Arc::new(crate::replication::effective(&src.file_config.load()))
+    } else {
+        src.config.load_full()
+    }
+}
+
 /// Checks a device write against the running configuration (ADR-040): files win, names are
 /// unique, and the resulting configuration must validate.
 fn plan_client(
@@ -5053,7 +5064,10 @@ fn plan_client(
         .into_iter()
         .map(|m| m.name)
         .collect();
-    let cfg = src.config.load_full();
+    // REQ: DSC-908, DSC-910 (ADR-1104 point 5) - judged against the configuration the start-up hold
+    // keeps out of service: the stored pins and the location table are still the owner's, and a
+    // write must not lose them (nor refuse a pin to a location the files define).
+    let cfg = unheld_config(src);
     let is_managed = |n: &str| managed.iter().any(|m| m == n);
     let in_files = |n: &str| cfg.client.iter().any(|c| c.name.as_str() == n) && !is_managed(n);
     if in_files(&w.name) {
@@ -5117,6 +5131,9 @@ fn plan_client(
         .hint("GET /api/v1/groups lists the groups a device can join.")
     })?;
     let (recent_queries, impact) = client_impact(src, &w.name, before.as_ref(), after.as_ref());
+    // What the node serves while the hold stands has the locations out: a simulation compares
+    // that with the same change made to it.
+    crate::upgrade_gate::HOLD.apply(&mut candidate);
     Ok(ClientPlan {
         before,
         after,
@@ -5124,7 +5141,7 @@ fn plan_client(
         impact,
         warnings,
         candidate: Arc::new(candidate),
-        baseline: cfg,
+        baseline: src.config.load_full(),
     })
 }
 

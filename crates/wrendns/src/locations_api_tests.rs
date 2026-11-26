@@ -535,3 +535,229 @@ async fn dsc_908_a_refused_git_commit_is_retried_when_the_members_allow_it() {
     assert_eq!(counted.load(std::sync::atomic::Ordering::SeqCst), 1);
     let _ = new.stop.send(true);
 }
+
+/// Ends the process-wide start-up hold when a test ends, however it ends.
+struct ClearHold;
+impl Drop for ClearHold {
+    fn drop(&mut self) {
+        crate::upgrade_gate::HOLD.clear();
+    }
+}
+
+/// Waits up to `secs` seconds for `f`.
+async fn within(secs: u64, mut f: impl FnMut() -> bool) -> bool {
+    for _ in 0..secs * 20 {
+        if f() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    f()
+}
+
+/// What the server's reload does to each build while the hold stands.
+fn strip_running(h: &crate::credential_tests::Harness) {
+    let mut c = (*h.src.config.load_full()).clone();
+    crate::upgrade_gate::HOLD.apply(&mut c);
+    h.src.config.store(Arc::new(c));
+}
+
+fn rpc(id: u64, name: &str, args: &Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}})
+}
+
+/// REQ: DSC-908, DSC-910 (ADR-1104 point 5) - the hold of the process, as the server wires it: while
+/// it stands the running configuration has no pins, but a device the API holds is still read with
+/// its pin, so the edit forms and the MCP plans (which copy the entry back) keep it; a rename, a
+/// regroup, a kind change and a pin to a file's location all go through, and the pin is still
+/// there when the hold ends.
+#[tokio::test]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+async fn dsc_910_a_device_edited_during_the_hold_keeps_its_pin() {
+    let _turn = GATE.lock().await;
+    let _end = ClearHold;
+    let h = harness(&format!(
+        "{DOMAIN}[[location]]\nslug = \"lab\"\nnetworks = [\"198.51.100.0/24\"]\n\
+         [[location]]\nslug = \"home\"\nnetworks = [\"192.0.2.0/24\"]\n"
+    ));
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            "/api/v1/clients/laptop",
+            Some(&json!({ "match": ["192.0.2.9"], "kind": "tv", "location": "lab" })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The hold starts: what the node serves has no pin (the server's reload strips each build).
+    let mut c = (*h.src.config.load_full()).clone();
+    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true));
+    h.src.config.store(Arc::new(c));
+    assert!(
+        h.src
+            .config
+            .load()
+            .client
+            .iter()
+            .all(|c| c.location.is_none())
+    );
+    let (_, _, v) = h.call("GET", "/api/v1/clients", None).await;
+    let d = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "laptop")
+        .cloned()
+        .unwrap();
+    assert_eq!(d["location"], "lab", "read from the unheld entry: {d}");
+    assert_eq!(d["locationPinned"], true, "{d}");
+
+    // The edit form: the entry as read, renamed.
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            "/api/v1/clients/laptop",
+            Some(
+                &json!({ "name": "laptop2", "match": d["match"], "groups": d["groups"],
+                "kind": d["kind"], "location": d["location"] }),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    strip_running(&h);
+    // The MCP plans: rename, regroup, then a pin to the other location (validated against the
+    // table the hold keeps out of service).
+    for (i, (tool, args)) in [
+        (
+            "plan_rename_client",
+            json!({"client": "laptop2", "newName": "laptop3", "reason": "r"}),
+        ),
+        (
+            "plan_assign_client",
+            json!({"client": "laptop3", "groups": ["default"], "reason": "r"}),
+        ),
+        (
+            "plan_set_device_location",
+            json!({"device": "laptop3", "location": "home", "reason": "r"}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (_, _, v) = h
+            .call("POST", "/mcp", Some(&rpc(i as u64 + 1, tool, &args)))
+            .await;
+        assert_ne!(v["result"]["isError"], true, "{tool}: {v}");
+        let id = v["result"]["structuredContent"]["planId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no planId: {v}"))
+            .to_owned();
+        let (_, _, v) = h
+            .call(
+                "POST",
+                "/mcp",
+                Some(&rpc(i as u64 + 10, "apply_plan", &json!({"planId": id}))),
+            )
+            .await;
+        assert_ne!(v["result"]["isError"], true, "{tool} apply: {v}");
+        strip_running(&h);
+    }
+    // The hold ends and a reload applies: the pin and the kind are in the device.
+    crate::upgrade_gate::HOLD.clear();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    h.src.reload.send(tx).await.unwrap();
+    assert!(rx.await.unwrap());
+    let cfg = h.src.config.load_full();
+    let c = cfg.client.iter().find(|c| c.name.as_str() == "laptop3");
+    let c = c.unwrap_or_else(|| panic!("{:?}", cfg.client));
+    assert_eq!(
+        c.location.as_ref().map(wrendns_config::SafeString::as_str),
+        Some("home")
+    );
+    assert_eq!(
+        c.kind,
+        Some(wrendns_config::DeviceClass::Tv),
+        "the kind is kept"
+    );
+}
+
+/// How many `locations_held` reasons the node's health lists.
+async fn held_reasons(h: &crate::credential_tests::Harness) -> usize {
+    let (s, _, v) = h.call("GET", "/api/v1/system/health", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["code"] == "locations_held")
+        .count()
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - the process-wide hold as the server uses it: health says why
+/// while it stands (and not after); the release loop leaves it alone while an older member
+/// stands, applies the entries by one reload once every member announces the feature, and when
+/// that reload does not apply them it puts the hold back and tries again.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn dsc_908_the_process_hold_shows_in_health_and_is_released_by_the_loop() {
+    let _turn = GATE.lock().await;
+    let _end = ClearHold;
+    let mut c = crate::credential_tests::config(HELD);
+    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true));
+    // An older member: the reason names it, and the loop sends no reload.
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let h = harness_in(DOMAIN, Some(Arc::clone(&old.primary)));
+    crate::http::serve_peers(&h.src);
+    assert_eq!(held_reasons(&h).await, 1);
+    let dir = tempfile::tempdir().unwrap();
+    let make = |cluster: &Arc<wrendns_cluster::net::Cluster>| {
+        let (reload, rx) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(4);
+        let src = Arc::new(crate::http::Sources {
+            reload,
+            cluster: Some(Arc::clone(cluster)),
+            ..crate::http::tests::sources_in(dir.path())
+        });
+        (src, rx)
+    };
+    let (src, mut reloads) = make(&old.primary);
+    let (stop_tx, stop) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(crate::upgrade_gate::release_loop(src, stop));
+    tokio::time::sleep(std::time::Duration::from_millis(4500)).await;
+    assert!(
+        reloads.try_recv().is_err(),
+        "no reload while a member is old"
+    );
+    assert!(crate::upgrade_gate::HOLD.active());
+    let _ = stop_tx.send(true);
+    let _ = task.await;
+    let _ = old.stop.send(true);
+
+    // Every member announces it: the first reload is refused (answered false), so the hold is put
+    // back and the loop goes on; the second one applies, and the hold and its reason are gone.
+    let new = pair("1.1.0", "1.1.0").await;
+    let h = harness_in(DOMAIN, Some(Arc::clone(&new.primary)));
+    crate::http::serve_peers(&h.src);
+    let (src, mut reloads) = make(&new.primary);
+    let (_stop_tx, stop) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(crate::upgrade_gate::release_loop(src, stop));
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c2 = Arc::clone(&count);
+    tokio::spawn(async move {
+        while let Some(done) = reloads.recv().await {
+            let n = c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = done.send(n >= 1);
+        }
+    });
+    assert!(
+        within(12, || {
+            count.load(std::sync::atomic::Ordering::SeqCst) == 2
+                && !crate::upgrade_gate::HOLD.active()
+        })
+        .await,
+        "reloads: {}, held: {}",
+        count.load(std::sync::atomic::Ordering::SeqCst),
+        crate::upgrade_gate::HOLD.active()
+    );
+    let _ = task.await;
+    assert_eq!(held_reasons(&h).await, 0, "the reason clears with the hold");
+    let _ = new.stop.send(true);
+}
