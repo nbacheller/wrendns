@@ -34,6 +34,7 @@ const FILES: &[&str] = &[
     include_str!("../../../presets/categories/security-threats.toml"),
     include_str!("../../../presets/categories/privacy-ads.toml"),
     include_str!("../../../presets/categories/not-offered.toml"),
+    include_str!("../../../presets/categories/packettale.toml"),
 ];
 
 /// A group of categories in the picker ("Adult and Sensitive Content").
@@ -43,6 +44,13 @@ pub struct CatalogGroup {
     pub id: String,
     pub name: String,
     pub order: u32,
+    /// A notice shown under the group's heading (an aggregate of other maintainers' lists says so
+    /// here, REQ: FLT-901).
+    #[serde(default)]
+    pub note: Option<String>,
+    /// The page the notice points to (the aggregator's table of sources and their terms).
+    #[serde(default)]
+    pub note_url: Option<String>,
 }
 
 /// `list` (a maintained list behind it) or `service` (an authored FLT-012 bundle, turned on with
@@ -155,6 +163,11 @@ pub struct Source {
     #[serde(default)]
     pub attribution: Option<String>,
     pub homepage: String,
+    /// For a feed an aggregator republishes: the `owner/name` GitHub repository of the list it
+    /// is built from. `scripts/check-catalog.py` reads that repository's licence, last push and
+    /// archived flag, because `homepage` is the aggregator's table, not a repository.
+    #[serde(default)]
+    pub upstream_repo: Option<String>,
     pub cadence: Cadence,
     /// From the file's own header when the catalog was built.
     pub entries: u64,
@@ -485,6 +498,15 @@ impl Catalog {
             if !self.categories.iter().any(|c| c.group == g.id) {
                 p.push(format!("group `{}` has no categories", g.id));
             }
+            if g.note_url.is_some() && g.note.as_deref().is_none_or(|n| n.trim().is_empty()) {
+                p.push(format!("group `{}`: a note_url needs a note", g.id));
+            }
+            if g.note_url
+                .as_deref()
+                .is_some_and(|u| !u.starts_with("https://"))
+            {
+                p.push(format!("group `{}`: note_url is an https link", g.id));
+            }
         }
         for s in &self.sources {
             let id = &s.id;
@@ -512,6 +534,12 @@ impl Catalog {
                 p.push(format!(
                     "source `{id}`: licence_url and homepage are https links"
                 ));
+            }
+            if s.upstream_repo.as_deref().is_some_and(|r| {
+                r.split_once('/')
+                    .is_none_or(|(o, n)| o.is_empty() || n.is_empty() || n.contains('/'))
+            }) {
+                p.push(format!("source `{id}`: upstream_repo is `owner/name`"));
             }
             if s.entries == 0 || s.bytes == 0 {
                 p.push(format!(
@@ -1150,7 +1178,7 @@ mod tests {
     #[test]
     fn flt_901_catalog_parses() {
         let c = Catalog::parse(FILES).unwrap();
-        assert_eq!(c.version, "2026-11-18");
+        assert_eq!(c.version, "2026-11-26");
         assert!(
             c.categories.len() >= 20,
             "{} categories",
@@ -1170,7 +1198,8 @@ mod tests {
                 "network",
                 "risky",
                 "security",
-                "privacy"
+                "privacy",
+                "packettale"
             ]
         );
     }
@@ -1178,7 +1207,15 @@ mod tests {
     /// REQ: FLT-901 — every source has an SPDX licence, an https URL, a format and a cadence.
     #[test]
     fn flt_901_catalog_has_licence_and_url_for_every_source() {
-        let spdx = ["GPL-3.0", "MIT", "CC-BY-SA-4.0"];
+        let spdx = [
+            "GPL-3.0",
+            "MIT",
+            "CC-BY-SA-4.0",
+            // The blocklist.packettale.com feeds carry their upstream's own licence.
+            "Unlicense",
+            "CC-BY-4.0",
+            "LicenseRef-Dandelicence-1.4",
+        ];
         for s in &catalog().sources {
             assert!(
                 spdx.contains(&s.licence.as_str()),
@@ -1280,6 +1317,110 @@ mod tests {
             );
             assert!(!s.archived, "{} is archived", s.id);
         }
+    }
+
+    /// REQ: FLT-901 (the blocklist.packettale.com review of 2026-11-26) — the aggregate's categories
+    /// sit in their own group with a notice that points to the publisher's table of sources; each
+    /// feed is a plain domain list on the publisher's own host, light, refreshed once a day (the
+    /// publisher asks for no more than one poll every five minutes) and carries its upstream's
+    /// licence and repository. Nothing the catalog already covers, no huge false-positive feed,
+    /// and no IP feed or bundle is offered from it.
+    #[test]
+    fn flt_901_packettale_aggregate_presets() {
+        let c = catalog();
+        let g = c.groups.iter().find(|g| g.id == "packettale").unwrap();
+        let note = g.note.as_deref().unwrap();
+        assert!(
+            note.contains("aggregate") && note.contains("mixed licences"),
+            "{note}"
+        );
+        assert_eq!(
+            g.note_url.as_deref(),
+            Some("https://blocklist.packettale.com/sources.md")
+        );
+        let cats: Vec<&Category> = c
+            .categories
+            .iter()
+            .filter(|x| x.group == "packettale")
+            .collect();
+        assert_eq!(
+            ids(&cats, |x| x.id.as_str()),
+            [
+                "stalkerware",
+                "typosquatting",
+                "violence",
+                "remote-access",
+                "push-notifications"
+            ]
+        );
+        for cat in cats {
+            assert_eq!(cat.kind, CategoryKind::List, "{}", cat.id);
+            assert!(cat.name.ends_with("(packettale)"), "{}", cat.name);
+            assert!(cat.description.contains("blocklist.packettale.com"));
+            assert!(cat.tier.is_empty() && cat.sources.len() == 1, "{}", cat.id);
+            // Off by default: no preset (Basic) names it.
+            assert!(
+                c.presets.iter().all(|p| !p.categories.contains(&cat.id)),
+                "{}",
+                cat.id
+            );
+            let s = c.source(&cat.sources[0]).unwrap();
+            assert_eq!(
+                s.url,
+                format!("https://blocklist.packettale.com/{}.txt", cat.id)
+            );
+            assert_eq!(s.format, Format::Domains);
+            assert_eq!(s.weight, Weight::Light);
+            assert_eq!(s.homepage, "https://blocklist.packettale.com/sources.md");
+            assert!(s.upstream_repo.is_some(), "{}", s.id);
+            assert!(!s.licence.contains("NC"), "{}: {}", s.id, s.licence);
+            // Once a day: far above the publisher's five-minute floor.
+            assert_eq!(c.refresh_secs(s), c.measured.heavy_refresh_secs);
+            assert!(c.refresh_secs(s) >= 300);
+            // The CC BY upstream's attribution line is shown.
+            if s.licence.starts_with("CC-BY") {
+                assert!(
+                    s.attribution
+                        .as_deref()
+                        .is_some_and(|a| a.contains("AssoEchap"))
+                );
+            }
+        }
+        // Left out of the aggregate's presets: what a direct source covers, NRD and DGA, the IP
+        // feeds, the bundles, and cryptomining and cryptocurrency (design notes, section 3.3).
+        for s in c
+            .sources
+            .iter()
+            .filter(|s| s.url.contains("packettale.com"))
+        {
+            for banned in [
+                "ads",
+                "tracking",
+                "malware",
+                "phishing",
+                "newly-registered",
+                "dga",
+                "protection",
+                "optional",
+                "all",
+                "cryptomining",
+                "cryptocurrency",
+                "mixed",
+            ] {
+                assert!(
+                    !s.url.contains(&format!("/{banned}")),
+                    "{} is a feed the aggregate presets leave out",
+                    s.id
+                );
+            }
+            assert!(!s.url.contains(".ips"), "{}", s.id);
+        }
+        // The two rows the aggregate now fills are no longer "not available".
+        assert!(
+            !c.not_offered
+                .iter()
+                .any(|n| { n.name == "Violence and gore" || n.name == "Remote-access tools" })
+        );
     }
 
     /// REQ: FLT-901 — the tiers are of a stated kind: gambling and the threat tiers are

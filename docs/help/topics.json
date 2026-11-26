@@ -1651,7 +1651,7 @@
       "summary": "A category is a named kind of site (adult content, gambling, malware, social networks, ad block) backed by an open list its maintainer publishes. A profile chooses categories; this node downloads each list once, however many profiles use it, and blocks the names in it for that profile's devices only.",
       "when": "You want to keep a kind of site away from some devices, such as adult content and gambling on the children's tablets, without writing a list yourself.",
       "example": "A Kids profile with Basic filtering blocks adult content, malware, phishing and scams. The Teens profile adds Gambling and Social networks. The default profile blocks none of them.",
-      "caution": "A category block is a DNS block: it stops names, not pages. A device on mobile data, a VPN or its own encrypted DNS goes around it, apps cache answers, and no list is complete. It is not a promise of child safety.",
+      "caution": "A category block is a DNS block: it stops names, not pages. A device on mobile data, a VPN or its own encrypted DNS goes around it, apps cache answers, and no list is complete. It is not a promise of child safety. The last group, from blocklist.packettale.com, is an aggregate of other maintainers' lists with mixed licences: each is off until you turn it on, and this node downloads it from the aggregator once a day.",
       "docs": "content-categories-and-filter-profiles"
     },
     {

@@ -1,0 +1,154 @@
+# WrenDNS content-category catalog: category feeds of the blocklist.packettale.com aggregate
+# (REQ: FLT-901, ADR-995; reviewed 2026-11-26, docs/design/curated-category-lists.md section 3.3).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads each feed
+# straight from blocklist.packettale.com only while a group uses it, and WrenDNS ships and
+# redistributes nothing.
+#
+# The publisher is an aggregator of other maintainers' lists, not a list author, and its data keeps
+# the upstreams' own terms ("Upstream data retains its original terms"). Only categories WrenDNS has
+# no direct preset for are offered here. Left out on purpose: ads, analytics, tracking, telemetry,
+# fingerprinting, the per-vendor trackers, popup ads, CNAME and regional filters, malware,
+# phishing, fraud and the threat feeds (a direct source covers each), newly registered domains and
+# DGA (about 13.5 and 2.5 million names, high in false positives), cryptomining (its upstream has
+# had no push in 74 days), cryptocurrency (decided against 2026-11-18), the bundles, and the IP
+# feeds. Every feed below is a plain domain list (one name per line, no comments), updated by the
+# publisher once a day, so a node asks once a day (`cadence = "low"`), far below the publisher's
+# request of no more than one poll every five minutes.
+
+[[group]]
+id = "packettale"
+name = "Aggregate lists from blocklist.packettale.com"
+order = 9
+note = "An aggregate of other maintainers' lists, not a list the publisher writes, and its upstreams have mixed licences (some are copyleft or non-commercial; the five here are listed under Sources and licences). Each one is off until you turn it on, and your node then downloads it straight from blocklist.packettale.com once a day. WrenDNS ships nothing."
+note_url = "https://blocklist.packettale.com/sources.md"
+
+[[category]]
+id = "stalkerware"
+name = "Stalkerware (packettale)"
+group = "packettale"
+description = "Servers that stalkerware apps report to, from the Stalkerware Indicators list (AssoEchap), through the blocklist.packettale.com aggregate. This stops such an app from reporting, not from being installed on a phone."
+sources = ["packettale-stalkerware"]
+
+[[category]]
+id = "typosquatting"
+name = "Typosquatting (packettale)"
+group = "packettale"
+description = "Look-alike spellings of popular sites, from ShadowWhisperer's Typo list, through the blocklist.packettale.com aggregate."
+warn = "This list has about 74,000 names and its quality varies, so it can block a real site now and then. Turn it on for a profile that needs it and watch the query log."
+sources = ["packettale-typosquatting"]
+
+[[category]]
+id = "violence"
+name = "Violence and gore (packettale)"
+group = "packettale"
+description = "Gore and shock sites, from ShadowWhisperer's Shock list, through the blocklist.packettale.com aggregate. A short list (99 names): it covers the well-known shock sites, not violent content in general."
+sources = ["packettale-violence"]
+
+[[category]]
+id = "remote-access"
+name = "Remote-access tools (packettale)"
+group = "packettale"
+description = "Domains used to remotely control a computer, from ShadowWhisperer's Remote list, through the blocklist.packettale.com aggregate."
+warn = "This list includes real remote-control tools such as AnyDesk as well as fake remote-support sites. Do not turn it on for a profile whose devices rely on remote IT support."
+sources = ["packettale-remote-access"]
+
+[[category]]
+id = "push-notifications"
+name = "Push notifications (packettale)"
+group = "packettale"
+description = "Services that send web push notifications, from Dandelion Sprout's Anti Push Notifications list, through the blocklist.packettale.com aggregate. Sites that depend on web push alerts will stop sending them."
+sources = ["packettale-push-notifications"]
+
+[[source]]
+id = "packettale-stalkerware"
+name = "packettale Stalkerware (Stalkerware Indicators)"
+maintainer = "blocklist.packettale.com aggregate of AssoEchap's Stalkerware Indicators"
+url = "https://blocklist.packettale.com/stalkerware.txt"
+format = "domains"
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/AssoEchap/stalkerware-indicators#license"
+attribution = "Stalkerware Indicators, (c) AssoEchap and contributors, licensed CC BY 4.0 (https://github.com/AssoEchap/stalkerware-indicators). Fetched by your node from blocklist.packettale.com, which aggregates it, and never redistributed."
+homepage = "https://blocklist.packettale.com/sources.md"
+upstream_repo = "AssoEchap/stalkerware-indicators"
+cadence = "low"
+entries = 929
+bytes = 19662
+weight = "light"
+checked = "2026-11-25"
+pushed = "2026-11-02"
+archived = false
+
+[[source]]
+id = "packettale-typosquatting"
+name = "packettale Typosquatting (ShadowWhisperer Typo)"
+maintainer = "blocklist.packettale.com aggregate of ShadowWhisperer's Typo list"
+url = "https://blocklist.packettale.com/typosquatting.txt"
+format = "domains"
+licence = "Unlicense"
+licence_url = "https://github.com/ShadowWhisperer/BlockLists/blob/master/LICENSE"
+homepage = "https://blocklist.packettale.com/sources.md"
+upstream_repo = "ShadowWhisperer/BlockLists"
+cadence = "low"
+entries = 73942
+bytes = 1174140
+weight = "light"
+checked = "2026-11-25"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "packettale-violence"
+name = "packettale Violence and gore (ShadowWhisperer Shock)"
+maintainer = "blocklist.packettale.com aggregate of ShadowWhisperer's Shock list"
+url = "https://blocklist.packettale.com/violence.txt"
+format = "domains"
+licence = "Unlicense"
+licence_url = "https://github.com/ShadowWhisperer/BlockLists/blob/master/LICENSE"
+homepage = "https://blocklist.packettale.com/sources.md"
+upstream_repo = "ShadowWhisperer/BlockLists"
+cadence = "low"
+entries = 99
+bytes = 1480
+weight = "light"
+checked = "2026-11-25"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "packettale-remote-access"
+name = "packettale Remote-access tools (ShadowWhisperer Remote)"
+maintainer = "blocklist.packettale.com aggregate of ShadowWhisperer's Remote list"
+url = "https://blocklist.packettale.com/remote-access.txt"
+format = "domains"
+licence = "Unlicense"
+licence_url = "https://github.com/ShadowWhisperer/BlockLists/blob/master/LICENSE"
+homepage = "https://blocklist.packettale.com/sources.md"
+upstream_repo = "ShadowWhisperer/BlockLists"
+cadence = "low"
+entries = 176
+bytes = 2769
+weight = "light"
+checked = "2026-11-25"
+pushed = "2026-11-18"
+archived = false
+
+# Dandelion Sprout's own licence (Dandelicence 1.4: commercial use allowed, the licence text or a link
+# to it kept with copies). The list combines rules from AdGuard's Popups filter and Fanboy's
+# Notifications list, which carry their own terms; a node downloads the feed and does not copy it.
+[[source]]
+id = "packettale-push-notifications"
+name = "packettale Push notifications (Dandelion Sprout's Anti Push Notifications)"
+maintainer = "blocklist.packettale.com aggregate of Dandelion Sprout's Anti Push Notifications list"
+url = "https://blocklist.packettale.com/push-notifications.txt"
+format = "domains"
+licence = "LicenseRef-Dandelicence-1.4"
+licence_url = "https://github.com/DandelionSprout/adfilt/blob/master/LICENSE.md"
+homepage = "https://blocklist.packettale.com/sources.md"
+upstream_repo = "DandelionSprout/adfilt"
+cadence = "low"
+entries = 445
+bytes = 6688
+weight = "light"
+checked = "2026-11-25"
+pushed = "2026-11-25"
+archived = false
