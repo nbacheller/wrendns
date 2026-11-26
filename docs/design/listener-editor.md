@@ -2,7 +2,7 @@
 
 **Requirements:** API-902, DNS-001, DNS-901, DNS-014, CLU-004, CLU-006, API-901; reserved API-904
 (the relayed confirm, 2.7). **ADRs:** ADR-914, ADR-956 (amended 2026-11-26), ADR-957, ADR-977,
-ADR-978, ADR-1090 (points 8 to 10), ADR-107 (probes), ADR-1095 (this note's decisions). **Task:**
+ADR-978, ADR-1090 (points 8 to 10), ADR-107 (probes), ADR-1098 (this note's decisions). **Task:**
 T27.14 in `spec/10`, the part still open after the `listen-access` row was built (2026-11-25), split
 into T27.14a to T27.14h (section 8).
 
@@ -311,10 +311,14 @@ force.
 **The decision.** For a `listen` change, and for no other row, the primary may pass the admin's confirm
 on to the target node, carrying the admin's signed identity. This amends ADR-956 §5, which rejected a
 primary confirming for another node (and the sentence of ADR-914 that the confirmation must reach that
-node directly); the amendment is recorded under ADR-956 and in ADR-1095. It was the owner's choice
+node directly); the amendment is recorded under ADR-956 and in ADR-1098. It was the owner's choice
 against this note's recommendation (keep §5 and let the change roll back), so the relay below is
 deliberately narrow, and its residual risks are listed at the end of this section. It is built as its
-own task (T27.14g) after the `listen` row, and requirement ID API-904 is reserved for it.
+own task (T27.14g) after the `listen` row, and requirement ID API-904 is reserved for it. The owner
+decided the relay itself. The mechanism in this section (the lifetime, the clock allowance, the cap on
+refused relays, the token on top of the session, the target's checks) and the residual risks are this
+note's own design and wording, written after the decision; they are for the owner to accept and are not
+owner decisions.
 
 **The direct confirm stays the default.** For a `listen` change the node's API address does not change,
 so the UI opens the node's own API URL (from the cluster's member list), with the token in the
@@ -818,7 +822,7 @@ When f, e and g are merged, the `#![allow(dead_code)]` on `crates/wrendns/src/gu
 ## 9. Decisions (owner decisions, 2026-11-26)
 
 The owner decided the five open points of the first draft through the question tool on 2026-11-26.
-ADR-1095 records them, and the amendment of ADR-956 of the same day records points 3 and 5.
+ADR-1098 records them, and the amendment of ADR-956 of the same day records points 3 and 5.
 
 1. **The proof before Confirm** on a DNS listener change is the node's own test query to each new
    listener (2.2). Queries from other machines (the evidence counter, 2.4) are shown and are not
