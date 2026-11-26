@@ -61,6 +61,8 @@ struct Zone {
     truncate_udp: bool,
     /// REQ: DNS-903 — what this server has seen.
     seen: Option<Arc<Seen>>,
+    /// REQ: DNS-904 — before every answer, sends a forged one with the wrong ID.
+    spoof_id: bool,
 }
 
 /// REQ: DNS-903 — what a fixture server saw: queries with and without an OPT record, by
@@ -345,6 +347,11 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                     }
                 }
                 let _ = s.send_to(&respond(&fake, q), from).await;
+            }
+            if z.spoof_id {
+                let mut fake = respond(&z, q);
+                fake[0] ^= 0x55;
+                let _ = s.send_to(&fake, from).await;
             }
             let mut reply = respond(&z, q);
             if let Some(rc) = z.rcode_all {
@@ -1649,4 +1656,141 @@ async fn dns_903_a_refused_plain_query_does_not_mark_the_server_no_edns() {
         count(&seen.edns) > edns,
         "EDNS is still tried: the plain REFUSED proved nothing"
     );
+}
+
+/// REQ: DNS-904 — the fixture's three-level delegation: example.com delegates
+/// sub.example.com to a server of its own (127.0.0.8).
+fn three_levels(z: &mut Vec<(u8, Zone)>) {
+    z[2].1.cuts.push((
+        "sub.example.com",
+        "ns.sub.example.com",
+        Some([127, 0, 0, 8]),
+    ));
+    z.push((
+        8,
+        Zone {
+            origin: "sub.example.com",
+            records: vec![("www.sub.example.com", rtype::A, a([10, 0, 0, 8]))],
+            ..Zone::default()
+        },
+    ));
+}
+
+/// REQ: DNS-904 — a traced lookup shows where it began and one step per query: three
+/// referrals down a three-level delegation, each with the server's address, then the answer.
+#[tokio::test]
+async fn dns_904_the_trace_shows_three_referral_steps_with_the_servers() {
+    let (s, _log) = tree(three_levels).await;
+    let r = Recursor::new(s);
+    let (res, steps) = r
+        .resolve_traced(name("www.sub.example.com"), rtype::A, false)
+        .await;
+    assert_eq!(addrs(&res.unwrap()), vec![IpAddr::from([10, 0, 0, 8])]);
+    assert_eq!(steps[0].kind, "start");
+    assert_eq!(steps[0].outcome, "root");
+    let referrals: Vec<_> = steps
+        .iter()
+        .filter(|st| st.kind == "query" && st.outcome == "referral")
+        .collect();
+    assert_eq!(referrals.len(), 3, "{steps:?}");
+    let servers: Vec<_> = referrals.iter().map(|st| st.server.unwrap()).collect();
+    assert_eq!(
+        servers,
+        vec![
+            IpAddr::from([127, 0, 0, 2]),
+            IpAddr::from([127, 0, 0, 3]),
+            IpAddr::from([127, 0, 0, 4])
+        ]
+    );
+    let to: Vec<_> = referrals
+        .iter()
+        .map(|st| st.detail.trim_end_matches('.').to_owned())
+        .collect();
+    assert_eq!(to, vec!["com", "example.com", "sub.example.com"]);
+    let last = steps.last().unwrap();
+    assert_eq!(
+        (last.outcome, last.server, last.transport),
+        ("answer", Some(IpAddr::from([127, 0, 0, 8])), "udp")
+    );
+    // The second lookup starts from the cached cut: no referrals.
+    let (_, again) = r
+        .resolve_traced(name("www.sub.example.com"), rtype::A, false)
+        .await;
+    assert_eq!(again[0].outcome, "cache");
+    assert!(again.iter().all(|st| st.outcome != "referral"), "{again:?}");
+}
+
+/// REQ: DNS-904 — a reply with the wrong ID raises the unwanted-reply counter by one, and
+/// the real answer still wins; the counters tell referrals from answers, and the cuts cached.
+#[tokio::test]
+async fn dns_904_a_spoofed_reply_is_counted_as_unwanted() {
+    let (s, _log) = tree(|z| z[2].1.spoof_id = true).await;
+    let r = Recursor::new(s);
+    let before = r.stats();
+    assert_eq!(before.unwanted, 0);
+    let res = r
+        .resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        addrs(&res),
+        vec![IpAddr::from([10, 0, 0, 1])],
+        "not 6.6.6.6"
+    );
+    let after = r.stats();
+    assert_eq!(after.unwanted, 1);
+    assert_eq!((after.referral, after.answer), (2, 1), "{after:?}");
+    assert_eq!(after.timeout + after.lame + after.error, 0, "{after:?}");
+    assert!(after.zone_cuts >= 2, "{after:?}");
+}
+
+/// REQ: DNS-904 — a server that doesn't answer is a timeout, a lame one a lame answer.
+#[tokio::test]
+async fn dns_904_timeouts_and_lame_answers_are_counted() {
+    let down = Arc::new(AtomicBool::new(true));
+    let down2 = Arc::clone(&down);
+    let (mut s, _log) = tree(move |z| {
+        z[2].1.down = Some(down2);
+    })
+    .await;
+    s.hedge = false;
+    let r = Recursor::new(s);
+    let _ = r.resolve(name("www.example.com"), rtype::A, false).await;
+    assert!(r.stats().timeout >= 1, "{:?}", r.stats());
+    let (s, _log) = tree(|_| {}).await;
+    let r = Recursor::new(s);
+    let _ = r.resolve(name("www.lame.com"), rtype::A, false).await;
+    assert!(r.stats().lame >= 1, "{:?}", r.stats());
+}
+
+/// REQ: DNS-904, OBS-007 — the tap is shown one exchange per authoritative query, with the
+/// query and the response that answered it.
+#[tokio::test]
+async fn dns_904_the_tap_sees_each_exchange() {
+    type Seen = Arc<Mutex<Vec<(SocketAddr, bool, bool, bool)>>>;
+    let seen: Seen = Arc::default();
+    let seen2 = Arc::clone(&seen);
+    let (mut s, _log) = tree(|_| {}).await;
+    s.tap = Some(wrendns_recursor::ExchangeTap::new(move |e| {
+        let same_id = e.response.is_some_and(|r| r[..2] == e.query[..2]);
+        seen2
+            .lock()
+            .unwrap()
+            .push((e.server, e.tcp, e.response.is_some(), same_id));
+    }));
+    let r = Recursor::new(s);
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    let seen = seen.lock().unwrap().clone();
+    let ips: Vec<_> = seen.iter().map(|e| e.0.ip()).collect();
+    assert_eq!(
+        ips,
+        vec![
+            IpAddr::from([127, 0, 0, 2]),
+            IpAddr::from([127, 0, 0, 3]),
+            IpAddr::from([127, 0, 0, 4])
+        ]
+    );
+    assert!(seen.iter().all(|e| !e.1 && e.2 && e.3), "{seen:?}");
 }

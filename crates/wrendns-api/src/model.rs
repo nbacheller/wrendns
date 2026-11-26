@@ -4794,3 +4794,65 @@ pub struct NodeSection {
     /// Whether every field of the section applies only after a restart of the node.
     pub restart_only: bool,
 }
+
+/// Query parameters for `GET /recursor/trace` (REQ: DNS-904).
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RecursorTraceParams {
+    /// The name to look up.
+    #[param(example = "www.example.com")]
+    pub name: String,
+    /// Query type. Default: `A`.
+    pub qtype: Option<String>,
+    /// The `recursive://` upstream to ask. Default: the first one.
+    pub upstream: Option<String>,
+}
+
+/// One line of a recursive lookup's trace (REQ: DNS-904).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecursorTraceStep {
+    /// `start` (where the lookup began) or `query` (one query to one server).
+    pub kind: String,
+    /// The zone whose servers were asked (`start`: the zone the lookup began at).
+    pub zone: String,
+    /// The server's address (none for `start`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// The name asked: a prefix of the full name while the name is being cut down (RFC 9156).
+    pub qname: String,
+    /// The type asked, as text (`A`, `NS`).
+    pub qtype: String,
+    /// A query: `referral`, `answer`, `nodata`, `nxdomain`, `lame`, `timeout`, `error` or
+    /// `case-mismatch`. A start: `cache`, `stub` or `root`.
+    pub outcome: String,
+    /// The zone a referral delegates to, the target of a CNAME answer, or how many servers a
+    /// start had; empty otherwise.
+    pub detail: String,
+    /// `udp` or `tcp` (empty for `start`).
+    pub transport: String,
+    /// Time spent, in microseconds.
+    pub micros: u64,
+}
+
+/// How a recursive lookup went, step by step (`GET /api/v1/recursor/trace`, REQ: DNS-904).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecursorTrace {
+    pub name: String,
+    pub qtype: String,
+    /// The `recursive://` upstream that resolved it.
+    pub upstream: String,
+    /// The answer's code (`NOERROR`, `NXDOMAIN`); absent when the lookup failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rcode: Option<String>,
+    /// Records in the answer section.
+    pub answers: u32,
+    /// Why the lookup failed (answered SERVFAIL to a client), when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// From the first step to the last, in microseconds.
+    pub total_micros: u64,
+    /// The steps, in order. At most 128.
+    pub steps: Vec<RecursorTraceStep>,
+}

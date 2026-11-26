@@ -12,6 +12,7 @@ use tokio::net::{TcpSocket, UdpSocket};
 use wrendns_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
 
 use crate::SourceAddr;
+use crate::observe::{Exchange, ExchangeTap, Stats};
 
 /// Why a server gave nothing usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -39,6 +40,10 @@ pub(crate) struct How<'a> {
     pub(crate) tcp: bool,
     /// REQ: DNS-903, UPS-013 — the local address sockets are bound to.
     pub(crate) source: Option<&'a dyn SourceAddr>,
+    /// REQ: DNS-904 — what the servers did is counted here.
+    pub(crate) stats: &'a Stats,
+    /// REQ: DNS-904, OBS-007 — shown every exchange, when set.
+    pub(crate) tap: Option<&'a ExchangeTap>,
 }
 
 /// The address to bind for a socket to `server`: the source address (which must be of the
@@ -123,7 +128,8 @@ fn check(resp: &[u8], query: &[u8], exact: bool) -> Result<(), NetError> {
     summarize(resp).map(|_| ()).map_err(|_| NetError::Bad)
 }
 
-/// Sends the query to `server` and returns its response.
+/// Sends the query to `server` and returns its response; the exchange is shown to the tap
+/// (REQ: DNS-904).
 pub(crate) async fn ask(
     server: SocketAddr,
     name: &NameBuf,
@@ -133,9 +139,31 @@ pub(crate) async fn ask(
 ) -> Result<Vec<u8>, NetError> {
     let id: u16 = rand::random();
     let query = wire_query(id, name, qtype, &o).ok_or(NetError::Bad)?;
+    let sent = o.tap.map(|_| std::time::SystemTime::now());
+    let mut tcp = o.tcp;
+    let result = ask_inner(server, &query, &o, timeout, &mut tcp).await;
+    if let (Some(t), Some(sent)) = (o.tap, sent) {
+        t.show(&Exchange {
+            server,
+            tcp,
+            query: &query,
+            response: result.as_ref().ok().map(Vec::as_slice),
+            sent,
+        });
+    }
+    result
+}
+
+async fn ask_inner(
+    server: SocketAddr,
+    query: &[u8],
+    o: &How<'_>,
+    timeout: Duration,
+    used_tcp: &mut bool,
+) -> Result<Vec<u8>, NetError> {
     let mix_case = o.mix_case;
     if o.tcp {
-        return tokio::time::timeout(timeout * 2, tcp(server, &query, mix_case, o.source))
+        return tokio::time::timeout(timeout * 2, tcp(server, query, mix_case, o.source, o.stats))
             .await
             .map_err(|_| NetError::Timeout)?;
     }
@@ -146,7 +174,7 @@ pub(crate) async fn ask(
     let case_changed = AtomicBool::new(false);
     let resp = match tokio::time::timeout(
         timeout,
-        udp(server, &query, mix_case, &case_changed, o.source),
+        udp(server, query, mix_case, &case_changed, o.source, o.stats),
     )
     .await
     {
@@ -156,7 +184,8 @@ pub(crate) async fn ask(
     };
     if Header::parse(&resp).is_some_and(|h| h.flags.tc()) {
         // Truncated: the whole answer over TCP (RFC 7766), with a little more time.
-        return tokio::time::timeout(timeout * 2, tcp(server, &query, mix_case, o.source))
+        *used_tcp = true;
+        return tokio::time::timeout(timeout * 2, tcp(server, query, mix_case, o.source, o.stats))
             .await
             .map_err(|_| NetError::Timeout)?;
     }
@@ -169,6 +198,7 @@ async fn udp(
     exact: bool,
     case_changed: &AtomicBool,
     source: Option<&dyn SourceAddr>,
+    stats: &Stats,
 ) -> Result<Vec<u8>, NetError> {
     let bind = bind_addr(server, source)?;
     let sock = bound(source, UdpSocket::bind(bind).await)?;
@@ -183,9 +213,12 @@ async fn udp(
                 return Ok(buf);
             }
             // The case changed: noted, and the wait for an intact one goes on.
-            Err(NetError::CaseMismatch) => case_changed.store(true, Ordering::Relaxed),
-            // Stray or spoofed: keep waiting for the real one.
-            Err(_) => {}
+            Err(NetError::CaseMismatch) => {
+                case_changed.store(true, Ordering::Relaxed);
+                stats.case_mismatch();
+            }
+            // Stray or spoofed: counted (REQ: DNS-904), and the wait for the real one goes on.
+            Err(_) => stats.unwanted(),
         }
     }
 }
@@ -195,6 +228,7 @@ async fn tcp(
     query: &[u8],
     exact: bool,
     source: Option<&dyn SourceAddr>,
+    stats: &Stats,
 ) -> Result<Vec<u8>, NetError> {
     let bind = bind_addr(server, source)?;
     let sock = if server.is_ipv4() {
@@ -214,6 +248,11 @@ async fn tcp(
     s.read_exact(&mut lb).await.map_err(|_| NetError::Io)?;
     let mut buf = vec![0u8; usize::from(u16::from_be_bytes(lb))];
     s.read_exact(&mut buf).await.map_err(|_| NetError::Io)?;
-    check(&buf, query, exact)?;
+    if let Err(e) = check(&buf, query, exact) {
+        if e == NetError::CaseMismatch {
+            stats.case_mismatch();
+        }
+        return Err(e);
+    }
     Ok(buf)
 }

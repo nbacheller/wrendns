@@ -1105,6 +1105,35 @@ impl Upstream {
         }
     }
 
+    /// REQ: DNS-904, OBS-005 — what a `recursive://` upstream's authoritative servers did since
+    /// start (totals, no per-server label); `None` for any other upstream.
+    #[must_use]
+    pub fn recursor_stats(&self) -> Option<wrendns_recursor::StatsSnapshot> {
+        match &self.transport {
+            Transport::Recursive(r) => Some(r.stats()),
+            _ => None,
+        }
+    }
+
+    /// REQ: DNS-904, FLT-013 — resolves `name` through this `recursive://` upstream's own
+    /// resolver and returns the steps taken (where it began, each query with its server,
+    /// outcome and time). A real lookup (it warms the resolver's caches); `None` for an
+    /// upstream that isn't our own resolver.
+    pub async fn trace_lookup(
+        &self,
+        name: NameBuf,
+        qtype: u16,
+        dnssec_ok: bool,
+    ) -> Option<(
+        Result<wrendns_recursor::Resolved, wrendns_recursor::Error>,
+        Vec<wrendns_recursor::TraceStep>,
+    )> {
+        match &self.transport {
+            Transport::Recursive(r) => Some(r.resolve_traced(name, qtype, dnssec_ok).await),
+            _ => None,
+        }
+    }
+
     /// REQ: UPS-006, DNS-022 — a stub upstream's liveness: one of its servers answers the zone's
     /// SOA (a refusal counts, since authoritative servers may refuse even the apex they delegate
     /// from; a SERVFAIL doesn't). The one rule behind the active check and the draft-upstream

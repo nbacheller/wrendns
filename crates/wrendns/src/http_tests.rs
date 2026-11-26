@@ -382,6 +382,46 @@ fn obs_005_ring_series_are_unique_per_thread_name() {
     assert_eq!(text.matches("ring=\"twin\"").count(), 2, "{text}");
 }
 
+// REQ: DNS-904, OBS-005 — the recursor's metrics: queries by outcome, case mismatches, unwanted
+// replies and cached cuts, with no label naming a server or an upstream (low cardinality).
+#[test]
+fn dns_904_recursor_metrics_are_low_cardinality() {
+    let s = wrendns_upstream::RecursorStats {
+        answer: 5,
+        referral: 7,
+        timeout: 2,
+        case_mismatch: 1,
+        unwanted: 3,
+        zone_cuts: 9,
+        ..Default::default()
+    };
+    let mut w = PromWriter::new();
+    render_recursor_stats(&mut w, &s);
+    let text = w.finish();
+    for line in [
+        "wrendns_recursor_queries_total{outcome=\"answer\"} 5",
+        "wrendns_recursor_queries_total{outcome=\"referral\"} 7",
+        "wrendns_recursor_queries_total{outcome=\"timeout\"} 2",
+        "wrendns_recursor_case_mismatch_total 1",
+        "wrendns_recursor_unwanted_replies_total 3",
+        "wrendns_recursor_zone_cuts_cached 9",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    let series = text
+        .lines()
+        .filter(|l| l.starts_with("wrendns_recursor_") && !l.starts_with('#'))
+        .count();
+    assert_eq!(
+        series,
+        7 + 3,
+        "seven outcomes and three more, no per-server series"
+    );
+    for label in ["server=", "address=", "upstream=", "zone="] {
+        assert!(!text.contains(label), "{label}: {text}");
+    }
+}
+
 // REQ: FLT-004 — an inline list is never fetched, so it reports no last-success time (it would
 // trip the "> 48 h" list alert two days after every config edit); its other gauges remain.
 #[test]

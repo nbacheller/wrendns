@@ -42,6 +42,7 @@
 mod cache;
 pub mod msg;
 mod net;
+mod observe;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -54,6 +55,8 @@ use wrendns_proto::{HEADER_LEN, NameBuf, rcode, read_name, rtype};
 use crate::cache::{Caches, Failure};
 use crate::msg::{Outcome, Rr};
 pub use net::NetError;
+pub use observe::{Exchange, ExchangeTap, StatsSnapshot, TraceStep, set_exchange_observer};
+use observe::{Stats, TraceLog};
 
 /// The root servers (IANA root hints, `named.root`): IPv4, then IPv6.
 pub const ROOT_HINTS_V4: [[u8; 4]; 13] = [
@@ -140,6 +143,9 @@ pub struct Settings {
     /// REQ: DNS-903, UPS-013 — the local address queries to authoritative servers are sent from
     /// (Unbound's `outgoing-interface`); servers of the other IP version are not asked.
     pub source: Option<std::sync::Arc<dyn SourceAddr>>,
+    /// REQ: DNS-904, OBS-007 — shown every exchange with an authoritative server (dnstap's
+    /// resolver messages); without one, the process-wide observer (`set_exchange_observer`).
+    pub tap: Option<ExchangeTap>,
 }
 
 /// REQ: DNS-903, UPS-013 — where the recursor's sockets are bound: an address this node holds,
@@ -184,6 +190,7 @@ impl Default for Settings {
             infra_probe: Duration::from_secs(10),
             infra_max_hosts: 20_000,
             source: None,
+            tap: None,
         }
     }
 }
@@ -254,6 +261,8 @@ struct Work {
     queries: u32,
     /// REQ: DNS-902 — a server list was emptied by the address rules (`permit`).
     refused: bool,
+    /// REQ: DNS-904 — the steps of this lookup, kept only when a trace was asked for.
+    trace: Option<TraceLog>,
 }
 
 impl Work {
@@ -295,6 +304,8 @@ pub struct Recursor {
     /// REQ: DNS-902 — the zones whose server lists the address rules emptied, newest last (a
     /// few; "Why?" says an address rule affected an answer only when one of these covers it).
     refusals: parking_lot::Mutex<Vec<(NameBuf, Instant)>>,
+    /// REQ: DNS-904 — what the servers did.
+    stats: Stats,
 }
 
 /// `name` cut to its last `n` labels.
@@ -321,7 +332,14 @@ impl Recursor {
             settings,
             primed_at: parking_lot::Mutex::new(None),
             refusals: parking_lot::Mutex::new(Vec::new()),
+            stats: Stats::default(),
         }
+    }
+
+    /// REQ: DNS-904 — what the servers did since start, and the zone cuts cached now.
+    #[must_use]
+    pub fn stats(&self) -> StatsSnapshot {
+        self.stats.snapshot(self.caches.zones())
     }
 
     /// How a query to `server` is sent: its transport and EDNS notes, the source address.
@@ -332,6 +350,8 @@ impl Recursor {
             edns: !server.no_edns,
             tcp: server.tcp,
             source: self.settings.source.as_deref(),
+            stats: &self.stats,
+            tap: self.settings.tap.as_ref().or_else(|| observe::global_tap()),
         }
     }
 
@@ -557,6 +577,31 @@ impl Recursor {
             .map_err(|e| work.explain(e))
     }
 
+    /// REQ: DNS-904 — like [`Recursor::resolve`], and the steps taken: where the lookup began,
+    /// then every query to every server with its outcome and time (the trace is built only
+    /// here). The lookup is real: it fills the caches like any other.
+    pub async fn resolve_traced(
+        &self,
+        name: NameBuf,
+        qtype: u16,
+        dnssec_ok: bool,
+    ) -> (Result<Resolved, Error>, Vec<TraceStep>) {
+        let log: TraceLog = TraceLog::default();
+        let mut work = Work {
+            trace: Some(std::sync::Arc::clone(&log)),
+            ..Work::default()
+        };
+        if self.stub_for(&name, false).is_none() {
+            self.prime(&mut work).await;
+        }
+        let r = self
+            .lookup(name, qtype, dnssec_ok, &mut work, 0)
+            .await
+            .map_err(|e| work.explain(e));
+        let steps = std::mem::take(&mut *log.lock());
+        (r, steps)
+    }
+
     #[allow(clippy::too_many_lines)] // one state machine: referrals, minimization, chasing
     fn lookup<'a>(
         &'a self,
@@ -574,6 +619,32 @@ impl Recursor {
                 let (mut zone, mut servers) = self
                     .start(&current, qtype == rtype::DS, work, depth)
                     .await?;
+                if work.trace.is_some() {
+                    let how = if zone.is_root() {
+                        "root"
+                    } else if self
+                        .stub_for(&current, false)
+                        .is_some_and(|s| s.zone == zone)
+                    {
+                        "stub"
+                    } else {
+                        "cache"
+                    };
+                    observe::push(
+                        work.trace.as_ref(),
+                        TraceStep {
+                            kind: "start",
+                            zone: zone.display().to_string(),
+                            server: None,
+                            qname: current.display().to_string(),
+                            qtype,
+                            outcome: how,
+                            detail: format!("{} servers", servers.len()),
+                            transport: "",
+                            micros: 0,
+                        },
+                    );
+                }
                 let mut minimize = self.settings.qname_minimization;
                 let mut labels = zone.label_count() + 1;
                 let mut steps = 0usize;
@@ -872,7 +943,7 @@ impl Recursor {
             let one = order[i];
             let srtt_us = one.srtt_us;
             work.spend()?;
-            let first = self.try_server(one, qn, qt, dnssec_ok, zone);
+            let first = self.try_server(one, qn, qt, dnssec_ok, zone, work.trace.clone());
             tokio::pin!(first);
             let next = order.get(i + 1).copied().filter(|_| self.settings.hedge);
             let Some(two) = next else {
@@ -898,7 +969,7 @@ impl Recursor {
             }
             // REQ: DNS-012 (T9.8) — slower than usual: ask the next server as well.
             work.spend()?;
-            let second = self.try_server(two, qn, qt, dnssec_ok, zone);
+            let second = self.try_server(two, qn, qt, dnssec_ok, zone, work.trace.clone());
             tokio::pin!(second);
             let won = tokio::select! {
                 r = &mut first => match r {
@@ -935,6 +1006,7 @@ impl Recursor {
         qt: u16,
         dnssec_ok: bool,
         zone: &NameBuf,
+        trace: Option<TraceLog>,
     ) -> Option<(Outcome, IpAddr)> {
         let ip = server.ip;
         let timeout = match server.srtt_us {
@@ -946,8 +1018,23 @@ impl Recursor {
         let mix = self.settings.case_randomization && !server.no_case;
         let t0 = Instant::now();
         let mut how = self.how(dnssec_ok, mix, &server);
+        let step = |outcome: &'static str, detail: String, tcp: bool, at: Instant| TraceStep {
+            kind: "query",
+            zone: zone.display().to_string(),
+            server: Some(ip),
+            qname: qn.display().to_string(),
+            qtype: qt,
+            outcome,
+            detail,
+            transport: if tcp { "tcp" } else { "udp" },
+            micros: u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX),
+        };
         let mut res = self.exchange(addr, qn, qt, how, timeout).await;
         if res == Err(NetError::Timeout) && !how.tcp {
+            self.stats.timeout();
+            if trace.is_some() {
+                observe::push(trace.as_ref(), step("timeout", String::new(), false, t0));
+            }
             // REQ: DNS-903 — a server that answered before and now leaves a second UDP query
             // unanswered is asked over TCP (once now, first from then on for a while).
             self.caches
@@ -957,6 +1044,7 @@ impl Recursor {
             }
             how.tcp = true;
             res = self.exchange(addr, qn, qt, how, timeout).await;
+            // The retry's own time (the step above has the first leg's).
         }
         let mut parsed = res.as_ref().ok().and_then(|r| msg::parse(r));
         // REQ: DNS-903 — FORMERR or NOTIMP to a query with EDNS: once more without it; a
@@ -982,6 +1070,11 @@ impl Recursor {
         }
         let rtt = t0.elapsed();
         let outcome = parsed.map(|p| msg::classify(&p, qn, qt, zone));
+        self.count(res.as_ref().err().copied(), outcome.as_ref());
+        if trace.is_some() {
+            let (what, detail) = describe(res.as_ref().err().copied(), outcome.as_ref());
+            observe::push(trace.as_ref(), step(what, detail, how.tcp, t0));
+        }
         // REQ: DNS-902 — a lame answer (or one that can't be read) is a failure of the server,
         // however fast it came: counting its RTT as a success kept a quick lame server first.
         match outcome {
@@ -1000,6 +1093,16 @@ impl Recursor {
                 self.caches.record_fail(ip, zone, why, timeout);
                 None
             }
+        }
+    }
+
+    /// REQ: DNS-904 — counts what one query came to: the reply's meaning, or how it failed.
+    fn count(&self, err: Option<NetError>, outcome: Option<&Outcome>) {
+        match (err, outcome) {
+            (Some(NetError::Timeout), _) => self.stats.timeout(),
+            (Some(NetError::Io), _) => self.stats.error(),
+            (Some(NetError::Bad | NetError::CaseMismatch), _) | (None, None) => self.stats.lame(),
+            (None, Some(o)) => self.stats.outcome(o),
         }
     }
 
@@ -1029,6 +1132,24 @@ impl Recursor {
             .await;
         }
         res
+    }
+}
+
+/// REQ: DNS-904 — a query's outcome as the trace words it, and its detail.
+fn describe(err: Option<NetError>, outcome: Option<&Outcome>) -> (&'static str, String) {
+    match (err, outcome) {
+        (Some(NetError::Timeout), _) => ("timeout", String::new()),
+        (Some(NetError::Io), _) => ("error", String::new()),
+        (Some(NetError::CaseMismatch), _) => ("case-mismatch", String::new()),
+        (Some(NetError::Bad), _) | (None, None | Some(Outcome::Lame)) => ("lame", String::new()),
+        (None, Some(Outcome::Referral { child, .. })) => ("referral", child.display().to_string()),
+        (None, Some(Outcome::Answer { next, .. })) => (
+            "answer",
+            next.as_ref()
+                .map_or_else(String::new, |t| format!("CNAME to {}", t.display())),
+        ),
+        (None, Some(Outcome::NoData { .. })) => ("nodata", String::new()),
+        (None, Some(Outcome::NxDomain { .. })) => ("nxdomain", String::new()),
     }
 }
 
