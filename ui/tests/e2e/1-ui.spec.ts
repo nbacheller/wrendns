@@ -46,7 +46,7 @@ async function signIn(user: string, pass: string) {
   await page.getByRole('button', { name: 'Sign in' }).click();
 }
 
-// REQ: API-003 — signIn, saying which part was lost when a sign-in does nothing under load: a field that
+// REQ: API-003 â€” signIn, saying which part was lost when a sign-in does nothing under load: a field that
 // does not hold what was typed (the form was replaced after the fill), or a click that sent no request.
 async function signInSent(user: string, pass: string) {
   const name = page.getByLabel('Username', { exact: true });

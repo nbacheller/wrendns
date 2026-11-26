@@ -40,6 +40,7 @@ struct Node {
     log: PathBuf,
     config: PathBuf,
     api: u16,
+    metrics: u16,
 }
 
 /// Writes a node's configuration. The primary creates the cluster (`[cluster.init]`); a replica
@@ -96,6 +97,7 @@ config_source = "file"
         data,
         config,
         api,
+        metrics,
     }
 }
 
@@ -241,11 +243,47 @@ fn try_sign_in(port: u16) -> Result<Session, u16> {
     Ok(Session { port, cookie, csrf })
 }
 
-/// Waits for a node's sign-in. A timeout names what the node last answered (0: nothing listened,
-/// so the process was still starting; any other status: it was up and refused) and whether the
-/// process was still running, which tells a slow start from a refusal or a crash; a process that
-/// has exited fails at once instead of after the whole wait.
-fn wait_sign_in(secs: u64, who: &str, node: &mut Running, port: u16) -> Session {
+/// The stage a node's startup has reached, from what its two listeners answer: "before the metrics
+/// bind" (nothing on either port: the process is still starting early), "metrics up, API not" (the
+/// auth store is opening, which hashes the bootstrap password with Argon2, before the API binds),
+/// or "API up" (it answered a sign-in with the status in `last`).
+fn stage(metrics: u16, last: u16) -> &'static str {
+    if last != 0 {
+        "API up (it answered and refused)"
+    } else if request(metrics, "GET", "/healthz", &[], None).0 != 0 {
+        "metrics up, API not (auth store opening)"
+    } else {
+        "before the metrics bind"
+    }
+}
+
+/// The message of a sign-in timeout: the stage, what the node last answered, and its log's tail.
+fn timeout_report(
+    who: &str,
+    node: &Running,
+    tries: u32,
+    secs: u64,
+    last: u16,
+    metrics: u16,
+) -> String {
+    let log = std::fs::read_to_string(&node.1).unwrap_or_default();
+    let tail: Vec<&str> = log.lines().rev().take(12).collect();
+    let age = std::fs::metadata(&node.1)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map_or_else(|| "unknown".to_owned(), |d| format!("{} s", d.as_secs()));
+    format!(
+        "timed out waiting for {who}'s sign-in: {tries} tries in {secs} s, last answer {last} (0 = nothing listening), stage: {}; the log was last written {age} ago, its last lines:\n{}",
+        stage(metrics, last),
+        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+    )
+}
+
+/// Waits for a node's sign-in. A timeout names the stage the node reached (see `stage`), what it
+/// last answered at a sign-in (0: nothing listened), and the last lines of its log with the log
+/// file's age; a process that has exited fails at once instead of after the whole wait.
+fn wait_sign_in(secs: u64, who: &str, node: &mut Running, port: u16, metrics: u16) -> Session {
     let until = Instant::now() + Duration::from_secs(secs);
     let mut tries = 0_u32;
     loop {
@@ -261,7 +299,8 @@ fn wait_sign_in(secs: u64, who: &str, node: &mut Running, port: u16) -> Session 
         );
         assert!(
             Instant::now() < until,
-            "timed out waiting for {who}'s sign-in: {tries} tries in {secs} s, last answer {last}              (0 = nothing listening), the process still running"
+            "{}",
+            timeout_report(who, node, tries, secs, last, metrics)
         );
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -338,7 +377,7 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     let r = node(root.path(), "replica", "pi", false);
     // The primary creates the cluster on its first start; a token then brings the replica in.
     let mut pr = start(&p);
-    let ps = wait_sign_in(60, "the primary", &mut pr, p.api);
+    let ps = wait_sign_in(60, "the primary", &mut pr, p.api, p.metrics);
     let text = run_cli(
         &p,
         &["cluster", "token", "create", "--eligible", "--ttl", "30m"],
@@ -353,7 +392,7 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
         &["cluster", "join", &token, "--site", "pi", "--eligible"],
     );
     let mut rr = start(&r);
-    let mut rs = wait_sign_in(60, "the replica", &mut rr, r.api);
+    let mut rs = wait_sign_in(60, "the replica", &mut rr, r.api, r.metrics);
     wait_for(90, "the replica to join and be seen", || {
         let v = get_json(&ps, "/api/v1/cluster")?;
         let up = v["nodes"]
@@ -404,7 +443,7 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     // The replica still has it after a restart (its own key, its own table).
     drop(rr);
     rr = start(&r);
-    let rs = wait_sign_in(60, "the restarted replica", &mut rr, r.api);
+    let rs = wait_sign_in(60, "the restarted replica", &mut rr, r.api, r.metrics);
     let again = wait_for(60, "the secret after a restart", || {
         let v = get_json(&rs, "/api/v1/secrets/unifi")?;
         (v["set"] == true).then_some(v)
