@@ -1761,7 +1761,7 @@
       "summary": "The one list, for the whole cluster, of the networks that may use this resolver: a client outside it gets REFUSED for DNS and is turned away from the web UI and the API too. It is saved once, applies on every node within seconds, and a configuration file that sets it wins.",
       "when": "You add a VLAN, a VPN range or a branch office, or you narrow the list to fewer networks.",
       "example": "10.20.0.0/24 is a new IoT VLAN: add it here and its devices are answered, with no restart on any node.",
-      "caution": "Adding a public range, such as 0.0.0.0/0, makes plain DNS (UDP and TCP) answer that range from the internet, because it carries no device key: you are warned before you save. A list that leaves out the address you are using now is refused, so it cannot lock you out of this page. Only admins change it, and no agent token can. A known device key on an encrypted listener is answered from any address, whatever this list holds.",
+      "caution": "Adding a public range, such as 0.0.0.0/0, makes plain DNS (UDP and TCP) answer that range from the internet, because it carries no device key: you are warned before you save. A list that leaves out the address you are using now (or, behind a proxy, the proxy's address) is refused, and so is Revert to the file when the file's list would leave you out, so it cannot lock you out of this page. Only admins change it, and no agent token can. A known device key on an encrypted listener is answered from any address, whatever this list holds.",
       "docs": "who-can-query-and-how-often"
     }
   ]

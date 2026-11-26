@@ -8628,11 +8628,46 @@ test('dns_014 allowed networks public range warns', async () => {
     if (await cancel.count()) await cancel.click();
   }
   await expect(card.getByTestId('allowed-networks-list')).toContainText('127.0.0.0/8');
-  // The Listener access card shows it read-only and links to this card.
-  const summary = page.getByTestId('allowed-networks-summary');
-  if (await summary.count()) {
+  // The Listener access card shows it read-only and links to this card (the section shows when a
+  // listener is listed: stubbed, as the e2e server binds one loopback UDP listener).
+  await page.route('**/api/v1/system/info', async (route) => {
+    const res = await route.fetch();
+    const info = await res.json();
+    info.listenerAccess = [
+      { listener: 'dot://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'true', defaultOn: false, defaultReason: 'off', publicExposure: false },
+    ];
+    await route.fulfill({ response: res, json: info });
+  });
+  try {
+    await page.reload();
+    const summary = page.getByTestId('allowed-networks-summary');
+    await expect(summary).toBeVisible();
     await expect(summary).toContainText('127.0.0.0/8');
     await summary.getByTestId('allowed-networks-link').click();
+    await expect(page.locator('#allowed-networks')).toBeInViewport();
+  } finally {
+    await page.unroute('**/api/v1/system/info');
+  }
+});
+
+// REQ: DNS-014, API-901 (T27.14h, review) — a list that holds a network twice (a file may) still renders:
+// the rows are keyed by position, not by the network.
+test('dns_014 allowed networks list with a repeated entry renders', async () => {
+  await page.route('**/api/v1/config/entries?kind=access', (route) =>
+    route.fulfill({
+      json: { items: [{ name: 'default', source: 'override', setByFile: [], definition: { allowed_networks: ['10.0.0.0/8', '10.0.0.0/8'] } }] },
+    }),
+  );
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const card = page.getByTestId('allowed-networks-card');
+    await expect(card.getByTestId('allowed-networks-row')).toHaveCount(2);
+    await card.getByTestId('allowed-networks-edit').click();
+    await expect(card.getByTestId('allowed-networks-draft-row')).toHaveCount(2);
+    await card.getByRole('button', { name: 'Cancel' }).click();
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=access');
   }
 });
 

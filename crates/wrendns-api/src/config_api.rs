@@ -3982,13 +3982,14 @@ pub(crate) async fn delete_rule(
 /// `allowed_networks` list, sent in `body`, that does not hold `client`, the requester's address (the
 /// forwarded one on a replica's behalf). A body without the list, one with an entry that does not
 /// parse (the backend says which), and an unknown address (no connection information) pass.
-pub fn lockout_guard(body: &serde_json::Value, client: std::net::IpAddr) -> Result<(), Problem> {
+pub fn lockout_guard(
+    body: &serde_json::Value,
+    client: std::net::IpAddr,
+    peer: Option<std::net::IpAddr>,
+) -> Result<(), Problem> {
     let Some(list) = body.get("allowed_networks").and_then(|v| v.as_array()) else {
         return Ok(());
     };
-    if client.is_unspecified() {
-        return Ok(());
-    }
     let mut nets = Vec::new();
     for v in list {
         match v.as_str().map(wrendns_config::Cidr::parse) {
@@ -3996,16 +3997,26 @@ pub fn lockout_guard(body: &serde_json::Value, client: std::net::IpAddr) -> Resu
             _ => return Ok(()),
         }
     }
-    if nets.iter().any(|n| n.contains(client)) {
-        return Ok(());
+    // The gate judges the TCP peer; behind a trusted proxy that is the proxy, not the client. Both
+    // must be in the list, or the proxy is refused and the whole UI with it.
+    for (ip, what) in [
+        (Some(client), "your own address"),
+        (peer, "the address your request reached this node from"),
+    ] {
+        let Some(ip) = ip.filter(|i| !i.is_unspecified()) else {
+            continue;
+        };
+        if !nets.iter().any(|n| n.contains(ip)) {
+            return Err(Problem::new(
+                Code::WouldDisconnectYou,
+                format!(
+                    "this list leaves out {what}, {ip}: once it applies, this web UI and API would refuse you"
+                ),
+            )
+            .hint("Add a network that holds your address, then save again. If you need the list without it, change it in the configuration file."));
+        }
     }
-    Err(Problem::new(
-        Code::WouldDisconnectYou,
-        format!(
-            "this list leaves out your own address, {client}: once it applies, this web UI and API would refuse you"
-        ),
-    )
-    .hint("Add a network that holds your address, then save again. If you need the list without it, change it in the configuration file."))
+    Ok(())
 }
 
 /// REQ: API-002, API-010 (ADR-040) - a configuration write runs to its end (the audit record
@@ -4126,10 +4137,38 @@ async fn write_inner(
     );
     // REQ: DNS-014, API-901 (T27.14h) — the list also limits the web UI and the API (ADR-029): a list
     // that leaves out the address this request came from is refused, a dry run included.
-    if let Op::Managed(ManagedKind::Access, Some(b)) = &op
-        && let Err(e) = lockout_guard(b, remote(&auth, &ext, &headers))
-    {
-        return e.into_response();
+    if let Op::Managed(ManagedKind::Access, body) = &op {
+        let client = remote(&auth, &ext, &headers);
+        let peer = if ext.get::<crate::auth::routes::OnBehalfOf>().is_some() {
+            None
+        } else {
+            ext.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0.ip())
+        };
+        // A DELETE reverts to the file's list: the check runs on the list that would be in force.
+        let list = match body {
+            Some(b) => Some(b.clone()),
+            None => backend
+                .write_managed(ManagedWrite {
+                    kind: ManagedKind::Access,
+                    name: name.clone(),
+                    body: None,
+                    dry_run: true,
+                    expect: None,
+                    by: actor.name.clone(),
+                    simulate: None,
+                    role: Some(p.role),
+                    agent: p.agent.as_ref().map(|a| a.token_name.clone()),
+                })
+                .await
+                .ok()
+                .and_then(|c| c.after),
+        };
+        if let Some(b) = list
+            && let Err(e) = lockout_guard(&b, client, peer)
+        {
+            return e.into_response();
+        }
     }
     let result: Result<serde_json::Value, Problem> = match op {
         Op::Client(input) => backend

@@ -861,6 +861,9 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         (ManagedKind::TelemetryQlog, false) => "The config file's query log settings (or the defaults) apply again: the privacy level within a few seconds, the rest after a restart.".into(),
         (ManagedKind::TelemetryMetrics, true) => "Applies on every node within a few seconds, with no restart: per-client series appear or go, up to the cap.".into(),
         (ManagedKind::TelemetryMetrics, false) => "The config file's per-client settings (or off) apply again within a few seconds.".into(),
+        // REQ: DNS-014 (T27.14h) - the list is read again on every node at the reload.
+        (ManagedKind::Access, true) => "Applies on every node within a few seconds, with no restart, to DNS, the web UI and the API: addresses outside the list are refused from then on.".into(),
+        (ManagedKind::Access, false) => "The config file's allowed networks apply again on every node within a few seconds, to DNS, the web UI and the API.".into(),
         (ManagedKind::Special, true) => "Applies on the next query, on every node, with no restart. Names the switches turn on or off answer differently from then on; answers already cached stay until they expire.".into(),
         (ManagedKind::Special, false) => "The config file's special-name settings (or the defaults) apply again from the next query.".into(),
         // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.

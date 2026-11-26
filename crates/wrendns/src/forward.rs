@@ -551,6 +551,9 @@ pub(crate) const SETTINGS_KINDS_SINCE: (u64, u64, u64) = (0, 8, 0);
 /// refused while any member runs an older version (`members_too_old`). It is the release that
 /// carries the section, the same as `SETTINGS_KINDS_SINCE`; the workspace version is that release.
 pub(crate) const DISCOVERY_SINCE: (u64, u64, u64) = (0, 8, 0);
+/// REQ: DNS-014 (T27.14h) - the first version that knows the `access` kind: an older primary
+/// refuses it as an unknown variant, which a replica can't tell from a failed write.
+pub(crate) const ACCESS_SINCE: (u64, u64, u64) = (1, 1, 0);
 /// REQ: FLT-901, FLT-902 (T24.29, ADR-994 item 7) — the first version that reads a group's `content`
 /// and `safe_search_engines`; the workspace version is that release. A node of the previous version
 /// rejects a group entry with a field it doesn't know, so a group entry that carries one waits until
@@ -635,10 +638,13 @@ fn settings_kinds_understood(
             | ManagedKind::TelemetryMetrics
             | ManagedKind::Map
             | ManagedKind::Filter
+            | ManagedKind::Access
     ) {
         return Ok(());
     }
-    let since = if matches!(kind, ManagedKind::Discovery | ManagedKind::Cmdb) {
+    let since = if kind == ManagedKind::Access {
+        ACCESS_SINCE
+    } else if matches!(kind, ManagedKind::Discovery | ManagedKind::Cmdb) {
         DISCOVERY_SINCE
     } else {
         SETTINGS_KINDS_SINCE

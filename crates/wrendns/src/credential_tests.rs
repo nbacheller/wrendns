@@ -190,7 +190,10 @@ pub(crate) fn harness_toml(
             let ok = s2.auth.get().is_some_and(|a| {
                 let e = crate::managed::entries(a.state());
                 crate::managed::merge(&s2.file_config.load(), &e)
-                    .map(|c| s2.config.store(Arc::new(c)))
+                    .map(|c| {
+                        crate::server::follow_allowed(&s2, &c);
+                        s2.config.store(Arc::new(c));
+                    })
                     .is_ok()
             });
             // REQ: API-016 (T23.7) — the router loop reads the new list, as the server's reload does.

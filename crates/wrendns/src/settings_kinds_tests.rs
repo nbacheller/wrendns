@@ -604,3 +604,25 @@ async fn obs_016_slo_settings_operator_and_bounds() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
     assert!(v.to_string().contains("window"), "{v}");
 }
+
+/// REQ: DNS-014, CLU-010 (T27.14h, review) - a primary that predates the `access` kind is refused
+/// before forwarding (409 `upgrade_required`), as for the other settings kinds; a current one gets it.
+#[tokio::test(flavor = "multi_thread")]
+async fn dns_014_older_primary_is_refused_for_access_before_forwarding() {
+    let url = "/api/v1/access-settings/default";
+    let body = json!({ "allowed_networks": ["127.0.0.0/8"] });
+    let (replica, older) = older_primary_and_replica("1.0.0").await;
+    let h = harness_in("", Some(replica));
+    let (s, _, v) = h.call("PUT", url, Some(&body)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "upgrade_required", "{v}");
+    assert_eq!(older.got.lock().unwrap().len(), 0, "not forwarded");
+    let _ = older.stop.send(true);
+
+    let (replica, current) = older_primary_and_replica("1.1.0").await;
+    let h = harness_in("", Some(replica));
+    let (s, _, v) = h.call("PUT", url, Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(current.got.lock().unwrap().len(), 1, "forwarded");
+    let _ = current.stop.send(true);
+}

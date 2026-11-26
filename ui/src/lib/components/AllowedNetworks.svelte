@@ -135,7 +135,7 @@
       {/if}
       <p class="small muted" data-testid="allowed-networks-origin">{origin}</p>
       <ul class="plain mono" data-testid="allowed-networks-list">
-        {#each current as n (n)}<li data-testid="allowed-networks-row">{n}</li>{/each}
+        {#each current as n, i (i)}<li data-testid="allowed-networks-row">{n}</li>{/each}
         {#if !current.length}<li class="muted">none: every client is refused</li>{/if}
       </ul>
       {#if admin && !editing && !byFile}
@@ -148,7 +148,7 @@
     {#if editing}
       <form class="form" data-testid="allowed-networks-form" onsubmit={check}>
         <ul class="plain mono">
-          {#each draft as n (n)}
+          {#each draft as n, i (i)}
             <li data-testid="allowed-networks-draft-row">
               {n} <button type="button" class="link" aria-label="Remove {n}" onclick={() => remove(n)}>remove</button>
             </li>
@@ -163,7 +163,7 @@
         {#if preview}
           <div class="preview" data-testid="allowed-networks-preview">
             <p><b>What this will do:</b> {preview.impact || 'Changes the list as shown.'}</p>
-            {#each preview.warnings as w (w)}<p class="small warn-text" data-testid="allowed-networks-warning">{w}</p>{/each}
+            {#each preview.warnings as w, i (i)}<p class="small warn-text" data-testid="allowed-networks-warning">{w}</p>{/each}
           </div>
           <div class="row">
             <button type="button" class="primary" disabled={busy} onclick={apply} data-testid="allowed-networks-apply">Apply</button>

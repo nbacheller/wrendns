@@ -5716,7 +5716,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             "Names under `{name}` go back to the upstreams (or the zone file, if the files define one); {recent_queries} queries for them in the last two hours (at least)."
         ),
         // The plans of the kinds added by T27.2 and T27.11 (ADR-1006) write their own impact.
-        (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill | ManagedKind::Access, _) => String::new(), // rule_impact says it better
+        (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill, _) => String::new(), // rule_impact says it better
         (ManagedKind::Sink, _) => {
             "Started, changed or stopped on every node within seconds, without a restart: a removed sink sends what it holds and ends, and the batches it kept on disk go.".into()
         }
@@ -5791,6 +5791,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
+            | ManagedKind::Access
             | ManagedKind::UpstreamCheck
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog

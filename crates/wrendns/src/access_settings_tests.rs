@@ -282,7 +282,7 @@ fn dns_014_public_range_test_and_lockout_guard() {
     assert!(!p("127.0.0.1") && !p("fc00::/7") && !p("fd00::1/128") && !p("fe80::/10"));
     assert!(p("2000::/3"));
     let me: std::net::IpAddr = "192.168.1.9".parse().unwrap();
-    let guard = |v: Value, ip| wrendns_api::config_api::lockout_guard(&v, ip);
+    let guard = |v: Value, ip| wrendns_api::config_api::lockout_guard(&v, ip, Some(ip));
     assert!(guard(json!({"allowed_networks": ["192.168.0.0/16"]}), me).is_ok());
     assert!(guard(json!({"allowed_networks": ["10.0.0.0/8"]}), me).is_err());
     assert!(
@@ -291,4 +291,137 @@ fn dns_014_public_range_test_and_lockout_guard() {
     );
     let mapped: std::net::IpAddr = "::ffff:192.168.1.9".parse().unwrap();
     assert!(guard(json!({"allowed_networks": ["192.168.0.0/16"]}), mapped).is_ok());
+}
+
+/// The status of a request to the harness's router from `ip`.
+async fn status_from(h: &Harness, ip: [u8; 4]) -> StatusCode {
+    let req = axum::http::Request::builder()
+        .method("GET")
+        .uri("/healthz")
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            ip, 40100,
+        ))))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    h.send(req).await.0
+}
+
+/// REQ: DNS-014, API-901 (T27.14h, ADR-1103 point 4) - the web UI's and the API's own gate follows the
+/// list: an address the list adds gets through after the PUT and is refused again after the DELETE.
+#[tokio::test]
+async fn dns_014_allowed_networks_gate_follows_the_list() {
+    let h = bare();
+    assert_eq!(
+        status_from(&h, [198, 18, 0, 5]).await,
+        StatusCode::FORBIDDEN
+    );
+    let (s, _, v) = h.call("PUT", URL, Some(&list(&["198.18.0.0/15"]))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        h.src
+            .allowed
+            .load()
+            .iter()
+            .any(|n| n.to_string() == "198.18.0.0/15")
+    );
+    assert_eq!(status_from(&h, [198, 18, 0, 5]).await, StatusCode::OK);
+    assert_eq!(
+        status_from(&h, [203, 0, 113, 9]).await,
+        StatusCode::FORBIDDEN
+    );
+    let (s, _, v) = h.call("DELETE", URL, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        !h.src
+            .allowed
+            .load()
+            .iter()
+            .any(|n| n.to_string() == "198.18.0.0/15")
+    );
+    assert_eq!(
+        status_from(&h, [198, 18, 0, 5]).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+fn behind_proxy() -> Harness {
+    harness_toml(
+        "",
+        None,
+        vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()],
+        wrendns_api::auth::Settings {
+            trusted_proxies: vec![("127.0.0.1".parse().unwrap(), 32)],
+            ..wrendns_api::auth::Settings::default()
+        },
+    )
+}
+
+/// REQ: DNS-014, API-901 (T27.14h, review) - behind a trusted proxy the gate judges the proxy's
+/// address, so a list that holds the client but not the proxy is refused (it would lock out every
+/// request, the page included); a list that holds both is accepted.
+#[tokio::test]
+async fn dns_014_allowed_networks_lockout_judges_the_proxy_too() {
+    let h = behind_proxy();
+    let admin = token(&h, "adm", Role::Admin, None);
+    let xff = [("x-forwarded-for", "192.168.1.20")];
+    let (s, _, v) = call_as(
+        &h,
+        &admin,
+        "PUT",
+        URL,
+        Some(&json!({ "allowed_networks": ["192.168.1.0/24"] })),
+        &xff,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "would_disconnect_you", "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("127.0.0.1"), "{v}");
+    assert_eq!(h.auth.state().managed("access").unwrap().len(), 0);
+    let (s, _, v) = call_as(
+        &h,
+        &admin,
+        "PUT",
+        URL,
+        Some(&json!({ "allowed_networks": ["192.168.1.0/24", "127.0.0.1"] })),
+        &xff,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// REQ: DNS-014, API-901 (T27.14h, review) - a DELETE is checked on the list that would be in force:
+/// the file's (here the defaults) leave out a public client, so the revert is refused and the list
+/// stays.
+#[tokio::test]
+async fn dns_014_allowed_networks_revert_is_checked() {
+    let h = behind_proxy();
+    let admin = token(&h, "adm", Role::Admin, None);
+    let xff = [("x-forwarded-for", "8.8.8.8")];
+    let (s, _, v) = call_as(
+        &h,
+        &admin,
+        "PUT",
+        URL,
+        Some(&json!({ "allowed_networks": ["127.0.0.0/8", "8.8.8.0/24"] })),
+        &xff,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = call_as(&h, &admin, "DELETE", URL, None, &xff).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "would_disconnect_you", "{v}");
+    assert_eq!(h.auth.state().managed("access").unwrap().len(), 1);
+    // From an address the defaults hold, the revert goes through.
+    let (s, _, v) = call_as(&h, &admin, "DELETE", URL, None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// REQ: DNS-014 (T27.14h, review) - the dry run says what the change does.
+#[tokio::test]
+async fn dns_014_allowed_networks_dry_run_states_the_impact() {
+    let h = bare();
+    let dry = format!("{URL}?dryRun=true");
+    let (s, _, v) = h.call("PUT", &dry, Some(&list(&[]))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["impact"].as_str().unwrap().contains("every node"), "{v}");
 }
