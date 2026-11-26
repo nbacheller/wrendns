@@ -2324,6 +2324,8 @@ test('dns_006 cache page', async () => {
 // below turns into a failure of whichever test ran then). A stubbed pile of notes on the Cache
 // page, drawn at many widths: every width must draw without a page error.
 test('obs_033 many markers on the Cache page never share a key at any width', async () => {
+  // 173 widths, each a resize and two frames: a slow runner needs more than the default 30 s.
+  test.setTimeout(120_000);
   const now = Date.now();
   const items = Array.from({ length: 150 }, (_, i) => {
     const t = new Date(now - 30_000 - i * 530 - ((i * 37) % 400));
