@@ -2186,6 +2186,19 @@ the agent scope `analytics:read`.
 - **Flush this name** removes it; tick *and everything under it* to flush a whole subtree
   (`example.com` takes `www.example.com` with it). **Flush everything…** empties the cache
   after a confirmation. Flushing needs the operator role and is audit-logged as `cache.flush`.
+- **Flush by type or kind.** Under the name box, *Query type* with a name flushes just that
+  type for the name (`AAAA` for `www.example.com` leaves its `A` answer cached) and runs at
+  once; with no name, *Flush this type everywhere…* asks first. *Flush negative answers…*
+  removes only the names that don't exist (NXDOMAIN) and the names with no record of the type
+  asked (no data). *Flush failed lookups…* removes the cached SERVFAILs, which is how a DNSSEC
+  validation failure is answered (a bogus answer is never cached as such). All three ask first
+  when no name is given.
+- **Flush the recursive resolver.** If an upstream is `recursive://`, *Flush zone cuts…* makes
+  it forget the delegations and server addresses it learned, so the next lookup starts from the
+  root servers again (use it after a delegation changed and you don't want to wait for the
+  record to expire); *Flush round-trip times…* makes it forget how fast each server answered,
+  so it re-learns the fastest. Neither touches cached answers. Both ask first. The notice says
+  how many entries each node dropped; with no `recursive://` upstream there is nothing to drop.
 - In a cluster, each node has its own cache. Stats and lookups show one row per node, and a
   flush applies to every node unless you pick one. A node that can't be reached is listed with
   the error, and the others still flush.
@@ -2195,8 +2208,14 @@ the agent scope `analytics:read`.
 
 API: `GET /api/v1/cache/stats`, `GET /api/v1/cache/lookup?name=`, and
 `POST /api/v1/cache/flush` with `{"name": "example.com", "subtree": true, "node": "pi"}` (every
-field optional; an empty body empties every node's cache). Agents need `analytics:read` to
-look and `ops:cache` to flush.
+field optional; an empty body empties every node's cache). `"type": "AAAA"` limits it to one
+query type, `"kind": "negative"` or `"bogus"` to that kind of entry, and `"recursor": "cuts"`,
+`"rtts"` or `"all"` flushes the recursive resolver's memory instead of answers (it can't be
+combined with `name`, `subtree`, `type` or `kind`). On the command line:
+`wrendns ctl flush --type AAAA --name example.com`, `--kind negative`, `--recursor cuts`,
+`--node pi`. Agents need `analytics:read` to look and `ops:cache` to flush (the `flush_cache`
+tool takes the same fields). In a cluster, a node that is not yet on this version refuses a
+typed or recursor flush instead of flushing more than asked; it is listed with the error.
 
 ### Is the cache the right size?
 Each node's card on the Cache page has a **Size** line: whether a bigger cache would answer
@@ -3893,6 +3912,7 @@ wrendns ctl rules                           # quick rules; `ctl unrule <id>` rem
 wrendns ctl pause --minutes 10              # `ctl resume` to undo
 wrendns ctl maintenance start --for 30m --reason "SD card swap"   # `ctl maintenance end` to undo
 wrendns ctl flush --name example.com --subtree
+wrendns ctl flush --kind negative           # or --type AAAA, or --recursor cuts|rtts|all
 wrendns ctl lists                           # with unique names and hits
 wrendns ctl lists refresh --wait            # download every list again now (or name some)
 wrendns ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`

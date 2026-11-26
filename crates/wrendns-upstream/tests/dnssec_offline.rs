@@ -464,6 +464,27 @@ async fn dns_011_offline_aggressive_nsec() {
     assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
 }
 
+/// REQ: DNS-905 (T40.4) — a flush drops the cached NSEC ranges: a name in the same range is
+/// then asked of the upstream again, not answered NXDOMAIN from the old proof.
+#[tokio::test]
+async fn dns_905_flush_ranges_stops_synthesis() {
+    let (v, g, asked, stats, _dir) = setup(true).await;
+    let budget = Duration::from_secs(5);
+    v.resolve(&g, question("zz-one", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    v.flush_ranges();
+    let before = asked.load(Ordering::Relaxed);
+    v.resolve(&g, question("zz-two", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert!(
+        asked.load(Ordering::Relaxed) > before,
+        "asked upstream again"
+    );
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
+}
+
 /// REQ: DNS-011 — with the real root's anchors (not the test key), the test root's answers
 /// can't be proven: bogus.
 #[tokio::test]

@@ -2960,6 +2960,92 @@ async fn agt_005_mcp_changes_keep_the_client_address() {
     assert_eq!(flush[0].reason.as_deref(), Some("stale answers"));
 }
 
+// REQ: DNS-905 (T40.4) — the flush by type, kind and recursor: a viewer can't; bad combinations
+// are refused before anything is flushed; each flush that runs is audited with what it was.
+#[tokio::test]
+async fn dns_905_flush_choices_are_validated_and_audited() {
+    let (app, fake) = app();
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let url = "/api/v1/cache/flush";
+    let post = |uri: &str, bearer: &str, body: serde_json::Value| {
+        Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (s, _, _) = send(
+        &app,
+        post(url, &viewer, serde_json::json!({"kind": "negative"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a viewer can't");
+    for bad in [
+        serde_json::json!({"kind": "stale"}),
+        serde_json::json!({"recursor": "everything"}),
+        serde_json::json!({"recursor": "cuts", "name": "example.com"}),
+        serde_json::json!({"recursor": "rtts", "type": "A"}),
+        serde_json::json!({"subtree": true}),
+    ] {
+        let (s, _, v) = send(&app, post(url, &app.bearer, bad.clone())).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+    let audited = || {
+        app.auth
+            .state()
+            .audit_page(None, 10, Some("cache.flush"), None)
+            .unwrap()
+            .len()
+    };
+    assert_eq!(audited(), 0, "refused flushes leave no record");
+    for ok in [
+        serde_json::json!({"name": "www.example.com", "type": "AAAA"}),
+        serde_json::json!({"kind": "negative"}),
+        serde_json::json!({"kind": "bogus"}),
+        serde_json::json!({"recursor": "cuts"}),
+    ] {
+        let (s, _, v) = send(&app, post(url, &app.bearer, ok.clone())).await;
+        assert_eq!(s, StatusCode::OK, "{ok}: {v}");
+    }
+    assert_eq!(audited(), 4);
+    let marks: Vec<String> = fake
+        .notes
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|a| a.summary.clone())
+        .collect();
+    assert!(
+        marks.iter().any(|m| m.contains("recursor cuts flushed")),
+        "{marks:?}"
+    );
+    assert!(
+        marks.iter().any(|m| m.contains("negative answers")),
+        "{marks:?}"
+    );
+    assert!(
+        marks.iter().any(|m| m.contains("AAAA answers")),
+        "{marks:?}"
+    );
+}
+
 // REQ: AGT-009 (review 06-04) — an agent's rate limit counts tool calls: the REST read behind
 // `get_overview` doesn't take a second request from the bucket.
 #[tokio::test]

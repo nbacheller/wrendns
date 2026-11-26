@@ -135,19 +135,25 @@ async fn entries(State(b): State<Shared>, Query(p): Query<EntriesParams>) -> Res
     }
 }
 
-/// Flush the cache: one name, a subtree, or everything.
+/// Flush the cache: one name, a subtree, one type, one kind, or everything; or the recursor's memory.
 ///
 /// With `name`, removes that name's cached answers (with `subtree`, every name under it too);
-/// without, empties the cache. By default every node in the cluster flushes; `node` limits it to
-/// one. The next query for a flushed name is asked of the upstreams again. This doesn't clear
-/// devices' own caches, blocked answers are never cached (unblocking needs no flush), and to
-/// change what a name resolves to, use local names instead. Needs the operator role (or the
-/// `ops:cache` agent scope); audit-logged as `cache.flush`.
+/// without, empties the cache. `type` (`A`, `AAAA`, `HTTPS`, `TYPE65`) keeps every other type,
+/// for the name given or for every name. `kind` is `negative` (NXDOMAIN and no-data answers
+/// only) or `bogus` (failed lookups: SERVFAIL, which is how a DNSSEC validation failure is
+/// answered). `recursor` (`cuts`, `rtts` or `all`) instead empties what the built-in recursive
+/// resolver remembers between queries: zone cuts and server addresses (the next lookup starts
+/// from the root again) and each server's round-trip time; it can't be combined with the
+/// others. By default every node in the cluster flushes; `node` limits it to one. The next
+/// query for a flushed name is asked of the upstreams again. This doesn't clear devices' own
+/// caches, blocked answers are never cached (unblocking needs no flush), and to change what a
+/// name resolves to, use local names instead. Needs the operator role (or the `ops:cache`
+/// agent scope); audit-logged as `cache.flush`.
 #[utoipa::path(post, path = "/api/v1/cache/flush", tag = "system",
     request_body = CacheFlushRequest,
     responses(
         (status = 200, body = CacheFlushResult, description = "What each node removed."),
-        (status = 400, body = Problem, description = "Not a domain name, or an unknown node."),
+        (status = 400, body = Problem, description = "Not a domain name, an unknown type, kind, recursor or node, or a recursor flush combined with an answer flush."),
     ))]
 async fn flush(
     State((backend, auth)): State<(Shared, Arc<Auth>)>,
@@ -163,37 +169,63 @@ async fn flush(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
+    // REQ: DNS-905 (T40.4) — bad combinations are refused before anything is flushed.
+    if let Some(text) = req.problem() {
+        return Problem::invalid(text).into_response();
+    }
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     let r = req.clone();
     let b2: Arc<dyn Backend> = Arc::clone(&backend);
-    let result = tokio::task::spawn_blocking(move || {
-        b2.cache_flush(
-            r.name.as_deref(),
-            r.subtree.unwrap_or(false),
-            r.node.as_deref(),
-        )
-    })
-    .await;
+    let result = tokio::task::spawn_blocking(move || b2.cache_flush(&r)).await;
     match result {
         Ok(Ok(nodes)) => {
-            let total_removed = nodes.iter().filter_map(|n| n.removed).sum();
+            let total_removed: u64 = nodes.iter().filter_map(|n| n.removed).sum();
+            let recursor_removed: u64 = nodes.iter().filter_map(|n| n.recursor_removed).sum();
             let out = CacheFlushResult {
                 total_removed,
                 nodes,
             };
-            let target = req.name.clone().unwrap_or_else(|| "*".into());
+            let target = req.name.clone().unwrap_or_else(|| {
+                req.recursor
+                    .as_ref()
+                    .map_or("*".into(), |_| "recursor".into())
+            });
             auth.record(
                 &actor,
                 "cache.flush",
                 &target,
-                &serde_json::json!({ "subtree": req.subtree.unwrap_or(false), "node": req.node, "removed": total_removed }),
+                &serde_json::json!({
+                    "subtree": req.subtree.unwrap_or(false),
+                    "node": req.node,
+                    "type": req.qtype,
+                    "kind": req.kind,
+                    "recursor": req.recursor,
+                    "removed": total_removed,
+                    "recursorRemoved": recursor_removed,
+                }),
             );
-            // REQ: OBS-033 — a change marker on this node, naming where it applied.
-            let what = match (&req.name, req.subtree.unwrap_or(false)) {
-                (None, _) => "cache flushed".to_owned(),
-                (Some(n), true) => format!("cache flushed for {n} and below"),
-                (Some(n), false) => format!("cache flushed for {n}"),
+            // REQ: OBS-033, DNS-905 — a change marker on this node, naming where it applied
+            // and what was flushed.
+            let scope = match (&req.qtype, &req.kind) {
+                (Some(ty), Some(kind)) => format!("{} {kind} answers", ty.to_ascii_uppercase()),
+                (Some(ty), None) => format!("{} answers", ty.to_ascii_uppercase()),
+                (None, Some(kind)) => format!("{kind} answers"),
+                (None, None) => String::new(),
             };
+            let what = match (&req.recursor, &req.name, req.subtree.unwrap_or(false)) {
+                (Some(r), _, _) => format!("recursor {r} flushed"),
+                (None, None, _) if scope.is_empty() => "cache flushed".to_owned(),
+                (None, None, _) => format!("cache flushed: {scope}"),
+                (None, Some(n), sub) => {
+                    let below = if sub { " and below" } else { "" };
+                    if scope.is_empty() {
+                        format!("cache flushed for {n}{below}")
+                    } else {
+                        format!("cache flushed for {n}{below}: {scope}")
+                    }
+                }
+            };
+            let total_removed = total_removed + recursor_removed;
             crate::annotations_api::mark(
                 &backend,
                 crate::model::Annotation {
