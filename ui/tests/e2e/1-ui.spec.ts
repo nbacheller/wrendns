@@ -565,6 +565,7 @@ test('dns_901 listener access warns about a public listener without a device key
     await route.fulfill({ response: res, json: info });
   });
   await page.goto('/#/settings?tab=system');
+  await page.reload(); // the page may already be on this tab (a hash change doesn't reload), with the real info cached
   const card = page.getByTestId('listener-access');
   await expect(card).toContainText('Listener access');
   const rows = card.getByTestId('listener-access-row');
@@ -625,6 +626,7 @@ test('dns_901 listener gate is changed through the guarded review', async () => 
     });
   });
   await page.goto('/#/settings?tab=system');
+  await page.reload(); // as above: the stub must answer the page's own info request
   const gate = page.getByTestId('listener-gate');
   await expect(gate).toBeVisible();
   const rows = gate.getByTestId('listener-gate-row');
