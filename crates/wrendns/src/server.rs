@@ -24,6 +24,9 @@ use wrendns_upstream::Router;
 use crate::http;
 use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 
+mod listener_window;
+pub(crate) use listener_window::{ListenerCmd, ListenerHandle, StagedListener, WindowError};
+
 /// Loads and validates config from `files` + environment plus what the UI/API stored
 /// (ADR-040), logging every problem.
 /// REQ: NFR-001 (T10.2) — drops the executable's resident pages after work that runs once
@@ -384,6 +387,14 @@ struct Listeners {
     /// Set by the last apply: a listener that was to get its device key gate could not, so its
     /// old ungated socket was closed (REQ: DNS-901).
     gate_failed: bool,
+    /// REQ: API-902, CLU-004 (T27.14a) — the sockets bound for a pending listener change, none of
+    /// them in `udp` or `streams` (`listener_window.rs`).
+    staged: Option<listener_window::StagedSet>,
+    /// The file took the listeners over while a change was pending: a commit answers `cancelled`.
+    window_cancelled: bool,
+    /// Tests only: runs after the apply closed a socket and before it binds the replacement.
+    #[cfg(test)]
+    after_close: Option<Box<dyn FnMut() + Send + Sync>>,
 }
 
 /// A TCP-based listener, and the certificate watcher of a TLS one.
@@ -508,10 +519,17 @@ impl Listeners {
         // recorded with the same facts.
         let host = crate::gate_host::read();
         self.gate_failed = false;
+        if let Some(set) = self.staged.as_mut() {
+            set.note_applied(listen);
+        }
         let mut first_err: Option<io::Error> = None;
         for l in listen {
             if let Err(e) = self.apply_one(l, listen, host).await {
                 error!(listener = %crate::gate_host::key(l), "{e}");
+                // REQ: API-902 — a commit names the OS error of a swap that failed.
+                if let Some(set) = self.staged.as_mut() {
+                    set.note_apply_error(l, &e);
+                }
                 first_err.get_or_insert(e);
             }
         }
@@ -558,6 +576,12 @@ impl Listeners {
         let ctx = |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
         match l.proto {
             ListenProto::Udp if !self.udp.iter().any(|(a, _)| *a == l.addr) => {
+                // REQ: API-902 (T27.14a) — a socket staged for this address is adopted, not bound again.
+                if let Some(listener) = self.adopt_udp(l.addr) {
+                    info!(addr = %listener.local_addr(), "adopted a staged udp listener");
+                    self.udp.push((l.addr, listener));
+                    return Ok(());
+                }
                 let listener = UdpListener::spawn(
                     &UdpConfig::new(l.addr, self.workers),
                     &self.handler,
@@ -578,6 +602,21 @@ impl Listeners {
                     .streams
                     .iter()
                     .position(|(c, _)| c.proto == l.proto && c.addr == l.addr);
+                // REQ: API-902 (T27.14a) — a socket staged with this bound form is adopted, not
+                // bound again; whatever ran on the address before closes.
+                if let Some(stream) = self.adopt_stream(&bound_form(l, host)) {
+                    info!(addr = %stream.local_addr(), proto = ?l.proto, "adopted a staged listener");
+                    if let Some(i) = old {
+                        let (_, s) = self.streams.remove(i);
+                        tokio::spawn(s.shutdown());
+                    }
+                    self.streams.push((bound_form(l, host), stream));
+                    return Ok(());
+                }
+                let mut after_quic_close = false;
+                if old.is_none() {
+                    after_quic_close = self.close_overlapping_removed(l, listen).await;
+                }
                 // The old socket answers without a device key and the new one would not: if the
                 // new one cannot be made, the old one must not survive.
                 let fail_closed = l.proto.needs_tls()
@@ -603,10 +642,15 @@ impl Listeners {
                 }
                 // Same protocol and address with other settings: replace it.
                 if let Some(i) = old {
-                    let (_, s) = self.streams.remove(i);
+                    let (c, s) = self.streams.remove(i);
                     s.shutdown().await;
+                    after_quic_close = matches!(c.proto, ListenProto::Doq | ListenProto::Doh3);
+                    self.seam_after_close();
                 }
-                match self.bind_stream(l, host, alt_svc(listen).as_deref()) {
+                match self
+                    .bind_stream_settled(l, host, alt_svc(listen).as_deref(), after_quic_close)
+                    .await
+                {
                     Ok(stream) => self.streams.push((bound_form(l, host), stream)),
                     Err(e) => {
                         // The old socket is already closed; say that the gate did not arrive.
@@ -1364,6 +1408,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         rt: tokio::runtime::Handle::current(),
         bound_facts: std::collections::HashMap::new(),
         gate_failed: false,
+        staged: None,
+        window_cancelled: false,
+        #[cfg(test)]
+        after_close: None,
     };
     listeners.apply(&cfg.listen).await?;
 
@@ -1376,6 +1424,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let stats = listeners.stats();
     let (reload_tx, mut reload_rx) =
         tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(8);
+    // REQ: API-902 (T27.14a) — the guarded engine's way to the listeners.
+    let (listener_tx, mut listener_rx) = tokio::sync::mpsc::channel::<ListenerCmd>(8);
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     // REQ: CLU-009 — create or join the cluster on first start (the Helm chart's controller
     // and resolver pods). A resolver pod that can't join exits, so Kubernetes retries it.
@@ -1459,6 +1509,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         sinks: sink_manager,
         oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: reload_tx,
+        listeners: ListenerHandle::new(listener_tx),
         config_writes: tokio::sync::Mutex::new(()),
         probes: Arc::default(),
         shadow,
@@ -1722,6 +1773,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
                 let ok = reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists, true).await;
                 let _ = done.send(ok);
             }
+            Some(cmd) = listener_rx.recv() => { listeners.window_cmd(cmd).await; }
             _ = usr1.recv() => {
                 // REQ: FLT-004 — refresh every list now (like `pihole -g`); the compiler
                 // runs if anything changed.
@@ -1929,6 +1981,11 @@ async fn reload(
         }
     };
     set_client_metrics(&new, pipeline);
+    // REQ: API-902 (T27.14a) — a file that now sets `[[listen]]` has taken the listeners over: a
+    // pending change is cancelled. Any other reload leaves the staged sockets alone.
+    if file.file_set.iter().any(|k| k == "listen") {
+        listeners.cancel_window_for_file().await;
+    }
     if let Err(e) = listeners.apply(&new.listen).await {
         error!("reload: {e}; listeners unchanged where binding failed");
     }
@@ -2360,7 +2417,7 @@ mod tests {
     }
 
     /// A DoT listener on a free port with a fresh certificate, and the pieces a gate test needs.
-    fn gate_fixture() -> (
+    pub(super) fn gate_fixture() -> (
         tempfile::TempDir,
         std::path::PathBuf,
         impl Fn(Option<bool>) -> Listener,
@@ -2391,7 +2448,7 @@ mod tests {
         (dir, cert, listen)
     }
 
-    fn test_listeners() -> Listeners {
+    pub(super) fn test_listeners() -> Listeners {
         let pipeline = crate::pipeline::tests_support::pipeline_from(&Config::default());
         Listeners {
             udp: Vec::new(),
@@ -2401,6 +2458,9 @@ mod tests {
             rt: tokio::runtime::Handle::current(),
             bound_facts: std::collections::HashMap::new(),
             gate_failed: false,
+            staged: None,
+            window_cancelled: false,
+            after_close: None,
         }
     }
 
