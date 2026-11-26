@@ -693,6 +693,7 @@ pub struct Upstream {
 /// Options for a `recursive://` upstream (`spec/03` §6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
+#[allow(clippy::struct_excessive_bools)] // independent on/off switches, not a state machine
 pub struct RecursiveConfig {
     /// RFC 9156: each server sees only as much of the name as it needs.
     pub qname_minimization: bool,
@@ -710,6 +711,16 @@ pub struct RecursiveConfig {
     /// REQ: DNS-022 — the stub zone's servers (IP addresses, port 53), asked iteratively.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stub_servers: Vec<IpAddr>,
+    /// REQ: DNS-902 — also ask servers at loopback, unspecified, link-local, multicast and
+    /// broadcast addresses (Unbound's `do-not-query-localhost: no`). Off by default: a public
+    /// delegation must not be able to aim the resolver at this host. Turn it on only for a
+    /// test setup or an authoritative server on this machine.
+    pub allow_local_servers: bool,
+    /// REQ: DNS-902 — also ask servers at private addresses (RFC 1918, carrier-grade NAT,
+    /// unique-local) outside the stub zone. Off by default: private servers are asked only
+    /// inside the stub zone, so a public delegation can't aim the resolver at the home
+    /// network.
+    pub allow_private_servers: bool,
 }
 
 impl Default for RecursiveConfig {
@@ -720,6 +731,8 @@ impl Default for RecursiveConfig {
             ipv6: false,
             stub_zone: None,
             stub_servers: Vec::new(),
+            allow_local_servers: false,
+            allow_private_servers: false,
         }
     }
 }

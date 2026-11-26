@@ -1824,6 +1824,16 @@ pub struct ForwardInput {
     /// followed, instead of forwarding with recursion desired. Default `false`.
     #[serde(default)]
     pub stub: bool,
+    /// REQ: DNS-902 — a stub zone only: also ask its servers at loopback or link-local
+    /// addresses (a server on this machine). Off by default, and refused for a forward that
+    /// is not a stub zone. Left out, the stored value stays as it is.
+    #[serde(default)]
+    pub allow_local_servers: Option<bool>,
+    /// REQ: DNS-902 — a stub zone only: also ask private-range servers for names outside the
+    /// zone (the zone's own private servers are asked either way). Off by default, and refused
+    /// for a forward that is not a stub zone. Left out, the stored value stays as it is.
+    #[serde(default)]
+    pub allow_private_servers: Option<bool>,
     /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client).
     #[serde(default)]
     pub match_group: Vec<String>,
@@ -2294,6 +2304,7 @@ pub struct RuleInfo {
 /// A domain sent to other servers (conditional forwarding).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // independent flags of one route, as the API shows them
 pub struct ForwardInfo {
     #[schema(example = "corp.example")]
     pub domain: String,
@@ -2302,6 +2313,11 @@ pub struct ForwardInfo {
     /// REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations
     /// followed.
     pub stub: bool,
+    /// REQ: DNS-902 — a stub zone whose servers may be at loopback or link-local addresses.
+    pub allow_local_servers: bool,
+    /// REQ: DNS-902 — a stub zone whose private-range servers are also asked for names outside
+    /// the zone.
+    pub allow_private_servers: bool,
     /// `file` (read-only here) or `api`.
     pub source: String,
     /// REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client).

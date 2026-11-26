@@ -1574,10 +1574,18 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). Needs the config:write:forwards scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). A stub zone does not ask a server on this machine (loopback or link-local) unless allowLocalServers is true, and asks private-range servers only for names under the zone unless allowPrivateServers is true; leave them out to keep what is stored. Needs the config:write:forwards scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "allowLocalServers": {
+          "description": "Stub zone only: also ask servers at loopback or link-local addresses (a server on this machine). Default false; left out, the stored value stays.",
+          "type": "boolean"
+        },
+        "allowPrivateServers": {
+          "description": "Stub zone only: also ask private-range servers for names outside the zone. Default false; left out, the stored value stays.",
+          "type": "boolean"
+        },
         "domain": {
           "description": "The domain, e.g. corp.example.",
           "type": "string"

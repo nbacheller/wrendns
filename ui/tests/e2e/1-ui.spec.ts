@@ -1,7 +1,7 @@
 // REQ: API-003, API-005 — the UI end to end against a real server: first-run setup, the
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Request, type Route } from '@playwright/test';
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
@@ -817,6 +817,147 @@ test('ups_013 a source this node does not hold is refused on save', async () => 
     expect(row.source).toBe('127.0.0.1');
   } finally {
     await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
+// REQ: DNS-012, DNS-902 (T40.1) — the options of a recursive:// upstream (minimising names, 0x20,
+// IPv6 and which server addresses are asked) are shown for that address only, start at their
+// defaults, and are saved with the upstream; a recursive object is never written for another
+// address.
+test('dns_902 recursive upstream options are shown for recursive:// only and saved', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const labels = {
+    minimise: 'Send each server only the part of the name it needs',
+    caps: 'Randomise the letter case of each query (0x20)',
+    ipv6: 'Ask servers over IPv6 too',
+    local: 'Ask servers at loopback and link-local addresses',
+    priv: 'Ask servers at private addresses outside the stub zone',
+  };
+  const sw = (label: string) => page.getByRole('switch', { name: label, exact: true });
+  try {
+    await page.goto('/#/upstreams');
+    // The previous test left its "Add upstream" drawer open, and a same-hash goto does not reload:
+    // its backdrop would cover the view switch and the click would wait until the test timed out.
+    await page.reload();
+    await page.getByTestId('view-advanced').click();
+    const editor = page.getByTestId('editor-upstream');
+    await editor.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('dns902-rec');
+    const address = page.getByRole('textbox', { name: 'Address', exact: true });
+    // An ordinary address: none of the recursive options.
+    await address.fill('udp://192.0.2.1');
+    for (const l of Object.values(labels)) await expect(sw(l)).toHaveCount(0);
+    // A recursive address: all of them, at their defaults.
+    await address.fill('recursive://');
+    await expect(sw(labels.minimise)).toBeChecked();
+    for (const l of [labels.caps, labels.ipv6, labels.local, labels.priv]) await expect(sw(l)).not.toBeChecked();
+    await sw(labels.caps).click();
+    await sw(labels.priv).click();
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByTestId('entry-preview')).toBeVisible();
+    const isPut = (q: Request) => q.method() === 'PUT' && q.url().endsWith('/api/v1/upstreams/dns902-rec');
+    const firstPut = page.waitForRequest(isPut);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    // Only what was changed is sent: the options left at their defaults are not frozen into the entry.
+    expect(JSON.parse((await firstPut).postData() ?? '{}').recursive).toEqual({ case_randomization: true, allow_private_servers: true });
+    const row = editor.getByTestId('entry-row').filter({ hasText: 'dns902-rec' });
+    await expect(row).toContainText('recursive://');
+    // The server returns the entry with its defaults filled in.
+    const saved = async () => {
+      const list = await (await r.get('/api/v1/config/entries?kind=upstream')).json();
+      return list.items.find((e: { name: string }) => e.name === 'dns902-rec');
+    };
+    expect((await saved()).definition.recursive).toMatchObject({ case_randomization: true, allow_private_servers: true, allow_local_servers: false, ipv6: false, qname_minimization: true });
+    // Opened again, the saved options are what the switches show; the default-on one still reads on.
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(sw(labels.caps)).toBeChecked();
+    await expect(sw(labels.priv)).toBeChecked();
+    await expect(sw(labels.minimise)).toBeChecked();
+    await expect(sw(labels.local)).not.toBeChecked();
+    // Changing the address to a plain one hides them again and writes no recursive object.
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('udp://192.0.2.2');
+    await expect(sw(labels.caps)).toHaveCount(0);
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    const secondPut = page.waitForRequest(isPut);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect(JSON.parse((await secondPut).postData() ?? '{}')).not.toHaveProperty('recursive');
+    await expect(row).toContainText('udp://192.0.2.2');
+  } finally {
+    await r.delete('/api/v1/upstreams/dns902-rec', { headers: h });
+    await page.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 2000 }).catch(() => {});
+  }
+});
+
+// REQ: DNS-902, DNS-022 (T40.1) — a stub-zone forward whose server is on this machine cannot be
+// saved until the "ask a server on this machine" box is ticked; the box is kept when the forward
+// is opened again, a private server gets its own optional box, and a re-save that does not
+// mention the flags (the API, an agent) keeps them.
+test('dns_902 stub forward allowances in the forward form', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const forward = async () => (await (await r.get('/api/v1/forwards')).json()).items.find((f: { domain: string }) => f.domain === 'stub902.example');
+  try {
+    await page.goto('/#/local-dns');
+    await page.reload();
+    await page.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+    const form = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+    await form.getByLabel('Domain', { exact: true }).fill('stub902.example');
+    await form.getByLabel('Server address', { exact: true }).fill('127.0.0.1');
+    // Not a stub zone yet: no boxes, nothing blocked.
+    await expect(form.locator('input[name="allow-local-servers"]')).toHaveCount(0);
+    await form.locator('input[name="stub"]').check();
+    const local = form.locator('input[name="allow-local-servers"]');
+    await expect(local).not.toBeChecked();
+    await expect(form.getByTestId('local-server-blocked')).toContainText('Tick the box above to save');
+    await expect(form.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await local.check();
+    await expect(form.getByTestId('local-server-blocked')).toHaveCount(0);
+    await expect(form.locator('input[name="allow-private-servers"]')).toHaveCount(0);
+    await form.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'stub902.example' })).toBeVisible();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+    expect(await forward()).toMatchObject({ stub: true, allowLocalServers: true, allowPrivateServers: false });
+    // Opened again: ticked from the stored value; a private server adds the optional box.
+    const row = page.locator('tr').filter({ hasText: 'stub902.example' });
+    await row.getByRole('button', { name: 'Edit stub902.example' }).click();
+    const again = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+    await expect(again.locator('input[name="allow-local-servers"]')).toBeChecked();
+    await again.getByLabel('Server address', { exact: true }).fill('127.0.0.1 10.9.9.9');
+    const priv = again.locator('input[name="allow-private-servers"]');
+    await expect(priv).not.toBeChecked();
+    await expect(again.getByRole('button', { name: 'Save' })).toBeEnabled();
+    await priv.check();
+    await again.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'stub902.example' })).toBeVisible();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+    expect(await forward()).toMatchObject({ allowLocalServers: true, allowPrivateServers: true });
+    // A re-save through the API that does not mention the flags keeps them; a plain forward is refused them.
+    const put = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['127.0.0.1'], stub: true } });
+    expect(put.status()).toBe(200);
+    // ...but a flag that no listed server needs (here the private one, with only 127.0.0.1 left) is dropped.
+    expect(await forward()).toMatchObject({ allowLocalServers: true, allowPrivateServers: false });
+    const bad = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['10.9.9.9'], allowLocalServers: true } });
+    expect(bad.status()).toBeGreaterThanOrEqual(400);
+    // Asking for an allowance with no matching server is refused, not stored hidden.
+    const hidden = await r.put('/api/v1/forwards/stub902.example', { headers: h, data: { servers: ['203.0.113.5'], stub: true, allowLocalServers: true } });
+    expect(hidden.status()).toBeGreaterThanOrEqual(400);
+    expect(hidden.status()).toBeLessThan(500);
+    // In the form: the server changes to a non-local address; the hidden box must not keep the allowance stored.
+    await page.goto('/#/local-dns');
+    await page.reload();
+    await page.locator('tr').filter({ hasText: 'stub902.example' }).getByRole('button', { name: 'Edit stub902.example' }).click();
+    const moved = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+    await expect(moved.locator('input[name="allow-local-servers"]')).toBeChecked();
+    await moved.getByLabel('Server address', { exact: true }).fill('203.0.113.5');
+    await expect(moved.locator('input[name="allow-local-servers"]')).toHaveCount(0);
+    await expect(moved.locator('input[name="allow-private-servers"]')).toHaveCount(0);
+    await moved.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'stub902.example' })).toBeVisible();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+    expect(await forward()).toMatchObject({ stub: true, allowLocalServers: false, allowPrivateServers: false });
+  } finally {
+    await r.delete('/api/v1/forwards/stub902.example', { headers: h });
   }
 });
 
@@ -3027,7 +3168,7 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     await row.getByRole('button', { name: 'Remove' }).click();
     await expect(row).toHaveCount(0);
   } finally {
-    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    await page.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 2000 }).catch(() => {});
     hook.close();
   }
 });
@@ -3111,7 +3252,7 @@ test('obs_010 threshold shown per condition and out-of-range refused', async () 
     await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-range' })).toHaveCount(0);
   } finally {
     await page.reload();
-    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    await page.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 2000 }).catch(() => {});
   }
 });
 

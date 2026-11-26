@@ -1653,6 +1653,45 @@ stub_servers = ["10.0.0.53"]
     }
 }
 
+/// REQ: DNS-902, DNS-015 — `ecs` on a `recursive://` upstream is refused with the field named
+/// (the recursor asks authoritative servers, which never get a client subnet); `strip` is the
+/// default's own word and stays valid. The address settings are plain booleans, off by default.
+#[test]
+fn dns_902_ecs_is_refused_on_a_recursive_upstream() {
+    let ok = load_str(
+        r#"
+[[upstream]]
+name = "root"
+url = "recursive://"
+ecs = "strip"
+[upstream.recursive]
+allow_local_servers = true
+allow_private_servers = true
+"#,
+    )
+    .unwrap();
+    let r = &ok.config.upstream[0].recursive;
+    assert!(r.allow_local_servers && r.allow_private_servers);
+    let d = wrendns_config::RecursiveConfig::default();
+    assert!(!d.allow_local_servers && !d.allow_private_servers);
+    for ecs in ["client", "203.0.113.0/24"] {
+        let errs = load_str(&format!(
+            r#"
+[[upstream]]
+name = "root"
+url = "recursive://"
+ecs = "{ecs}"
+"#
+        ))
+        .unwrap_err();
+        assert!(
+            paths(&errs).contains(&"upstream[0].ecs"),
+            "{ecs}: {:?}",
+            paths(&errs)
+        );
+    }
+}
+
 /// REQ: OBS-038 (ADR-161) — anomaly mutes: a device or group and a kind each, names that exist
 /// and have addresses, no mute for everyone, no MAC address, a readable end time; devices and
 /// groups resolve to the networks the engine matches.
@@ -2594,4 +2633,42 @@ fn dns_901_mapped_wildcard_is_a_wildcard() {
         "[::ffff:0.0.0.0]:853".parse().unwrap(),
         "203.0.113.5:853".parse().unwrap()
     ));
+}
+
+/// REQ: DNS-902 — a stub zone whose servers are loopback or link-local warns unless
+/// `allow_local_servers` is set; private servers are fine inside a stub zone.
+#[test]
+fn dns_902_stub_zone_with_local_servers_warns() {
+    let cfg = |servers: &str, extra: &str| {
+        format!(
+            "[[upstream]]
+name = \"corp\"
+url = \"recursive://\"
+[upstream.recursive]
+stub_zone = \"corp.example\"
+stub_servers = {servers}
+{extra}
+"
+        )
+    };
+    let w = load_str(&cfg("[\"127.0.0.2\"]", "")).unwrap().warnings;
+    assert!(
+        w.iter()
+            .any(|m| m.contains("stub_servers") && m.contains("allow_local_servers")),
+        "{w:?}"
+    );
+    let w = load_str(&cfg("[\"169.254.1.1\"]", "")).unwrap().warnings;
+    assert!(w.iter().any(|m| m.contains("allow_local_servers")), "{w:?}");
+    let w = load_str(&cfg("[\"127.0.0.2\"]", "allow_local_servers = true"))
+        .unwrap()
+        .warnings;
+    assert!(
+        !w.iter().any(|m| m.contains("allow_local_servers")),
+        "{w:?}"
+    );
+    let w = load_str(&cfg("[\"10.0.0.53\"]", "")).unwrap().warnings;
+    assert!(
+        !w.iter().any(|m| m.contains("allow_local_servers")),
+        "{w:?}"
+    );
 }

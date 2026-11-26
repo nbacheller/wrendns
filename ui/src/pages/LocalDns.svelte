@@ -126,7 +126,31 @@
   // hand-offs to other servers for sub-domains are followed.
   // REQ: DNS-010 (T27.7) — groups and query types the route is limited to (comma-separated),
   // the trust anchor (on by default), and node-only.
-  let fw = $state<{ domain: string; servers: string; stub: boolean; groups: string; qtypes: string; dnssec: boolean; nodeOnly: boolean } | null>(null);
+  let fw = $state<{ domain: string; servers: string; stub: boolean; groups: string; qtypes: string; dnssec: boolean; nodeOnly: boolean; allowLocal: boolean; allowPrivate: boolean } | null>(null);
+  // REQ: DNS-902 — a stub zone's server on this machine (loopback, link-local) is asked only when
+  // allowed; one on a private network is asked for the zone either way, and the second box also
+  // lets names outside the zone reach private servers. The same address classes as the server's.
+  function addressClass(server: string): 'local' | 'private' | null {
+    const a = server.trim().replace(/^udp:\/\//i, '').replace(/^\[|\]$/g, '').toLowerCase();
+    const v4 = a.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (v4) {
+      const [x, y] = [Number(v4[1]), Number(v4[2])];
+      if (x === 127 || x === 0 || (x === 169 && y === 254) || (x >= 224 && x <= 239) || (x === 255 && y === 255)) return 'local';
+      if (x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 100 && y >= 64 && y <= 127)) return 'private';
+      return null;
+    }
+    if (!a.includes(':')) return null;
+    const mapped = a.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return addressClass(mapped[1]);
+    const first = parseInt(a.split(':')[0] || '0', 16);
+    if (a === '::1' || a === '::' || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00) return 'local';
+    if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfec0) return 'private';
+    return null;
+  }
+  const fwClasses = $derived(fw && fw.stub ? fw.servers.split(/[\s,]+/).filter(Boolean).map(addressClass) : []);
+  const fwHasLocal = $derived(fwClasses.includes('local'));
+  const fwHasPrivate = $derived(fwClasses.includes('private'));
+  const fwLocalBlocked = $derived(Boolean(fw && fwHasLocal && !fw.allowLocal));
   const splitList = (s: string) => s.split(/[\s,]+/).filter(Boolean);
   const fwScope = $derived.by(() => {
     if (!fw) return '';
@@ -144,9 +168,23 @@
   // REQ: API-014 (T24.16, ADR-926) — a server that runs a program (exec://, unix://) is an admin's.
   const runsProgram = (servers: string) => servers.split(/[\s,]+/).some((s) => /^(exec|unix):\/\//i.test(s));
   const forwardBlocked = $derived(Boolean(fw && session.user?.role !== 'admin' && runsProgram(fw.servers)));
+  function editForward(f: S['ForwardInfo']) {
+    fw = {
+      domain: f.domain,
+      servers: f.servers.join(' '),
+      stub: f.stub,
+      groups: f.matchGroup.join(', '),
+      qtypes: f.matchQtype.join(', '),
+      dnssec: f.dnssecNta,
+      nodeOnly: f.nodeOnly,
+      allowLocal: f.allowLocalServers,
+      allowPrivate: f.allowPrivateServers,
+    };
+    formError = done = '';
+  }
   async function saveForward(ev: SubmitEvent) {
     ev.preventDefault();
-    if (!fw) return;
+    if (!fw || fwLocalBlocked) return;
     busy = true;
     formError = '';
     try {
@@ -154,6 +192,10 @@
       await api.putForward(fw.domain.trim().toLowerCase(), {
         servers,
         stub: fw.stub,
+        // REQ: DNS-902 — sent for a stub zone only (the API refuses them on a plain forward), and
+        // each only while a matching server is listed: the box is hidden otherwise, so a stored
+        // allowance the user can no longer see is sent as off (the API clears it).
+        ...(fw.stub ? { allowLocalServers: fw.allowLocal && fwHasLocal, allowPrivateServers: fw.allowPrivate && fwHasPrivate } : {}),
         matchGroup: splitList(fw.groups),
         matchQtype: splitList(fw.qtypes).map((t) => t.toUpperCase()),
         dnssecNta: fw.dnssec,
@@ -262,7 +304,7 @@
     <div class="row actions">
       <button class="primary" onclick={openWizard}>Set up your home domain</button>
       <button onclick={openAdd}>Add a name</button>
-      <button onclick={() => ((fw = { domain: '', servers: '', stub: false, groups: '', qtypes: '', dnssec: true, nodeOnly: false }), (formError = done = ''))}>Send a domain to another server</button>
+      <button onclick={() => ((fw = { domain: '', servers: '', stub: false, groups: '', qtypes: '', dnssec: true, nodeOnly: false, allowLocal: false, allowPrivate: false }), (formError = done = ''))}>Send a domain to another server</button>
       <button onclick={openZone} data-testid="zone-add">Add a zone</button>
     </div>
   {/if}
@@ -362,6 +404,7 @@
                 <td class="small">{f.source === 'api' ? 'the UI / API' : 'config file'}</td>
                 <td class="num">
                   {#if f.source === 'api' && canEdit}
+                    <button class="link small" onclick={() => editForward(f)} aria-label={`Edit ${f.domain}`}>Edit</button>
                     <button class="link small" onclick={() => removeForward(f.domain)} aria-label={`Stop sending ${f.domain}`}>Remove</button>
                   {/if}
                 </td>
@@ -440,6 +483,30 @@
         A <em>stub zone</em>: the servers are asked directly (by IP address) and their hand-offs are followed, as BIND's stub zones do.
         Use it when the servers refuse other questions.
       </p>
+      <!-- REQ: DNS-902 — a stub zone's servers on this machine or on a private network. -->
+      {#if fw.stub && fwHasLocal}
+        <label
+          ><input type="checkbox" name="allow-local-servers" bind:checked={fw.allowLocal} /> Allow WrenDNS to ask a server on this machine for this zone only<HelpButton id="recursive-server-addresses" /></label
+        >
+        <p class="muted small">
+          One of these servers is on this machine (a loopback or link-local address such as 127.0.0.1). WrenDNS never asks such a server unless you allow it here, and this
+          allowance covers only this stub zone.
+        </p>
+        {#if fwLocalBlocked}
+          <p class="notice warn small" role="alert" data-testid="local-server-blocked">
+            Tick the box above to save. Without it WrenDNS would never ask this server, and every name under {fw.domain.trim() || 'this domain'} would fail.
+          </p>
+        {/if}
+      {/if}
+      {#if fw.stub && fwHasPrivate}
+        <label
+          ><input type="checkbox" name="allow-private-servers" bind:checked={fw.allowPrivate} /> Also allow private-network servers for names outside this zone<HelpButton id="recursive-server-addresses" /></label
+        >
+        <p class="muted small">
+          One of these servers is on your private network. WrenDNS already asks it for this zone, so you can leave this off. Tick it only if answers under this zone point to
+          names outside it (a CNAME, say) that must also be asked of private servers.
+        </p>
+      {/if}
       <!-- REQ: DNS-010 (T27.7) — the route's limits: client groups, query types, trust anchor, node-only. -->
       <label>Only for the devices in these groups (optional) <input name="match-group" bind:value={fw.groups} placeholder="Kids, Guests" /></label>
       <label>Only for these query types (optional) <input name="match-qtype" bind:value={fw.qtypes} placeholder="PTR" /></label>
@@ -453,7 +520,7 @@
       {#if forwardBlocked}<p class="notice warn small" role="status" data-testid="admin-only-forward">Only an admin can send names to a program (an exec:// or unix:// server). <HelpButton id="credentials-in-forms" /></p>{/if}
       {#if formError}<p class="notice bad" role="alert">{formError}</p>{/if}
       {#if done}<p class="notice ok" role="status">{done}</p>{/if}
-      <div class="row"><button type="submit" class="primary" disabled={busy || forwardBlocked}>{busy ? 'Saving…' : 'Save'}</button></div>
+      <div class="row"><button type="submit" class="primary" disabled={busy || forwardBlocked || fwLocalBlocked}>{busy ? 'Saving…' : 'Save'}</button></div>
     </form>
   </Drawer>
 {/if}

@@ -1798,6 +1798,21 @@ fn listeners(cfg: &Config, host: crate::gate::HostFacts, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: DNS-902, DNS-015 — a recursive upstream talks to authoritative servers, which never get
+/// a client subnet: a subnet or `client` here would be ignored silently, so it is refused with
+/// the field named.
+fn recursive_ecs(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
+    if scheme == "recursive"
+        && let Some(e) = &u.ecs
+        && e.as_str() != "strip"
+    {
+        r.err(
+            format!("{p}.ecs"),
+            "not valid on a recursive:// upstream: it asks authoritative servers, which never get a client subnet (leave it unset or `strip`)",
+        );
+    }
+}
+
 /// REQ: DNS-022 — a stub zone needs both its name and its servers.
 fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
     match (&u.recursive.stub_zone, u.recursive.stub_servers.is_empty()) {
@@ -1814,6 +1829,44 @@ fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
             "name the zone `stub_servers` serve, e.g. \"corp.example\"",
         ),
         _ => {}
+    }
+    // REQ: DNS-902 — the recursor never asks a loopback or link-local server unless
+    // `allow_local_servers` is set, a stub zone's own servers included: say so, or the zone
+    // would only fail at query time.
+    if u.recursive.stub_zone.is_some() && !u.recursive.allow_local_servers {
+        let local: Vec<String> = u
+            .recursive
+            .stub_servers
+            .iter()
+            .filter(|ip| local_address(**ip))
+            .map(ToString::to_string)
+            .collect();
+        if !local.is_empty() {
+            r.warn(format!(
+                "{p}.recursive.stub_servers: {} is a loopback or link-local address, which a recursive upstream does not ask unless `allow_local_servers = true` is set on it; the stub zone will not be reachable",
+                local.join(", ")
+            ));
+        }
+    }
+}
+
+/// REQ: DNS-902 — loopback, unspecified, link-local, multicast or broadcast (the recursor's
+/// own list of addresses it will not ask).
+fn local_address(ip: std::net::IpAddr) -> bool {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_link_local()
+                || a.is_multicast()
+                || a.is_broadcast()
+        }
+        std::net::IpAddr::V6(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || a.segments()[0] & 0xffc0 == 0xfe80
+        }
     }
 }
 
@@ -1898,6 +1951,7 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                         "`strip` (the default: never sent), `client` (each public client's /24 or /56), or a subnet to send instead, e.g. 203.0.113.0/24",
                     );
                 }
+                recursive_ecs(u, s, &p, r);
                 // REQ: UPS-010 (T7.16)
                 // REQ: UPS-010 (T9.9) — udp:// only through a SOCKS5 proxy's UDP relay.
                 let socks = u

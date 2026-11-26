@@ -663,6 +663,29 @@ fn bogus_marker(code: u16) -> Arc<[u8]> {
     Arc::from(vec![0xBE, u8::try_from(code).unwrap_or(6)])
 }
 
+/// REQ: DNS-902 (RFC 9276 §3.2) — an insecure answer that must reach the client with EDE 27
+/// travels through the shared lookup as the message with opcode 15 (never a real answer's),
+/// and is not cached: a cache hit would lose the EDE.
+const EDE_OPCODE_MARK: u8 = 15;
+
+fn mark_nsec3_ede(mut msg: Vec<u8>) -> Arc<[u8]> {
+    if let Some(b) = msg.get_mut(2) {
+        *b = (*b & 0x87) | (EDE_OPCODE_MARK << 3);
+    }
+    Arc::from(msg)
+}
+
+/// The message with the mark taken off, and whether it was there.
+fn take_nsec3_mark(resp: &[u8]) -> (std::borrow::Cow<'_, [u8]>, bool) {
+    if resp.len() >= 12 && (resp[2] >> 3) & 0x0F == EDE_OPCODE_MARK {
+        let mut v = resp.to_vec();
+        v[2] &= 0x87;
+        (std::borrow::Cow::Owned(v), true)
+    } else {
+        (std::borrow::Cow::Borrowed(resp), false)
+    }
+}
+
 fn bogus_code(resp: &[u8]) -> Option<u16> {
     match resp {
         [0xBE, c] => Some(u16::from(*c)),
@@ -675,6 +698,9 @@ fn bogus_text(code: u16) -> &'static str {
         ede::SIGNATURE_EXPIRED => "DNSSEC validation failed: signature expired",
         ede::SIGNATURE_NOT_YET_VALID => "DNSSEC validation failed: signature not yet valid",
         ede::RRSIGS_MISSING => "DNSSEC validation failed: signatures missing",
+        ede::UNSUPPORTED_NSEC3_ITERATIONS => {
+            "DNSSEC validation failed: NSEC3 iteration count too high"
+        }
         _ => "DNSSEC validation failed",
     }
 }
@@ -2404,8 +2430,10 @@ impl Pipeline {
                 ))
             }
             Some((resp, upstream)) => {
+                let (resp, nsec3) = take_nsec3_mark(&resp);
+                let ede = nsec3.then_some((ede::UNSUPPORTED_NSEC3_ITERATIONS, ""));
                 let client =
-                    Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+                    Client::from_query(&q, response_edns(&q, self.settings.edns_payload, ede));
                 // The answer plus our OPT (with room for an EDE and its text).
                 let mut out = vec![0u8; (resp.len() + 512).min(MAX_RESPONSE)];
                 match Cache::render(&q, &resp, &client, &mut out) {
@@ -2584,6 +2612,12 @@ impl Pipeline {
             let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
             self.after_upstream(st, group, question, &a.bytes, a.upstream_id);
             return Some((a.bytes.into(), a.upstream_id));
+        }
+        // REQ: DNS-902 (RFC 9276 §3.2) — insecure because of the NSEC3 iteration count: EDE 27,
+        // so the answer is not cached (a cache hit would lose it).
+        if v.verdict == Verdict::Insecure && v.ede == ede::UNSUPPORTED_NSEC3_ITERATIONS {
+            self.after_upstream(st, group, question, &v.bytes, upstream);
+            return Some((mark_nsec3_ede(v.bytes), upstream));
         }
         let _ = self.cache.insert(&key, q, &v.bytes, Instant::now());
         self.after_upstream(st, group, question, &v.bytes, upstream);
@@ -3022,6 +3056,20 @@ mod tests {
     use wrendns_proto::{NameBuf, build_query, rtype, summarize};
 
     use super::*;
+
+    /// REQ: DNS-902 (RFC 9276 §3.2) — the EDE 27 mark rides on the message and comes off whole.
+    #[test]
+    fn dns_902_nsec3_ede_mark_round_trips() {
+        let msg = vec![0x12, 0x34, 0x81, 0x83, 0, 1, 0, 0, 0, 1, 0, 0, 9, 9];
+        let (plain, marked) = take_nsec3_mark(&msg);
+        assert!(!marked && *plain == *msg, "a real answer has no mark");
+        let wire = mark_nsec3_ede(msg.clone());
+        assert_ne!(*wire, *msg);
+        let (back, marked) = take_nsec3_mark(&wire);
+        assert!(marked);
+        assert_eq!(*back, *msg, "flags and RCODE are as they were");
+        assert!(bogus_text(ede::UNSUPPORTED_NSEC3_ITERATIONS).contains("NSEC3"));
+    }
 
     fn pipeline() -> Arc<Pipeline> {
         let cache = Arc::new(Cache::new(CachePolicy::default()));
@@ -5044,6 +5092,239 @@ groups = ["kids"]
         assert!(resp.windows(2).any(|w| w == ede22), "EDE 22");
         let text = b"no upstream answered";
         assert!(resp.windows(text.len()).any(|w| w == text), "the reason");
+    }
+
+    /// REQ: DNS-902 (RFC 9276) — a signed root whose only denial is one NSEC3 record that hashes
+    /// with 60 rounds (above the soft limit of 50): the fake upstream's address, the directory
+    /// of the anchors file, and the count of questions it got for `n60.`.
+    #[allow(clippy::too_many_lines)] // one signed root: keys, records, signatures, server
+    async fn nsec3_root() -> (
+        std::net::SocketAddr,
+        tempfile::TempDir,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
+        use hickory_net::proto::dnssec::rdata::{DNSKEY, DNSSECRData, NSEC3, RRSIG};
+        use hickory_net::proto::dnssec::{
+            DnssecSigner, Nsec3HashAlgorithm, PublicKey as _, SigningKey,
+        };
+        use hickory_net::proto::op::{Edns, Message, OpCode, ResponseCode};
+        use hickory_net::proto::rr::rdata::{NS, SOA};
+        use hickory_net::proto::rr::{DNSClass, Name, RData, Record, RecordSet, RecordType};
+        use std::sync::atomic::Ordering;
+        const ITERATIONS: u16 = 60;
+        let n = |s: &str| Name::from_ascii(s).unwrap();
+        let pkcs8 = Ed25519SigningKey::generate_pkcs8().unwrap();
+        let key = Ed25519SigningKey::from_pkcs8(&pkcs8).unwrap();
+        let public = key.to_public_key().unwrap();
+        let dnskey = DNSKEY::new(true, true, false, public.clone());
+        let signer = DnssecSigner::new(
+            dnskey.clone(),
+            Box::new(key),
+            n("."),
+            std::time::Duration::from_hours(24),
+        );
+        let inception = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+        // The NSEC3 owner: base32hex of the root's hash (empty salt, SHA-1).
+        let hash = Nsec3HashAlgorithm::SHA1
+            .hash(&[], &n("."), ITERATIONS)
+            .unwrap();
+        let mut label = String::new();
+        for chunk in hash.as_ref().chunks(5) {
+            let mut block = [0u8; 8];
+            block[3..3 + chunk.len()].copy_from_slice(chunk);
+            let v = u64::from_be_bytes(block);
+            for i in 0..(chunk.len() * 8).div_ceil(5) {
+                let at = usize::try_from((v >> (35 - 5 * i)) & 31).unwrap();
+                label.push(char::from(b"0123456789abcdefghijklmnopqrstuv"[at]));
+            }
+        }
+        let owner = n(&format!("{label}."));
+        let soa = SOA::new(
+            n("a.root-servers.test."),
+            n("nstld.test."),
+            1,
+            1800,
+            900,
+            604_800,
+            600,
+        );
+        let rrsets: Vec<(Name, RData)> = vec![
+            (n("."), RData::SOA(soa)),
+            (n("."), RData::NS(NS(n("ns.a.")))),
+            (n("."), RData::DNSSEC(DNSSECRData::DNSKEY(dnskey))),
+            (
+                owner.clone(),
+                RData::DNSSEC(DNSSECRData::NSEC3(NSEC3::new(
+                    Nsec3HashAlgorithm::SHA1,
+                    false,
+                    ITERATIONS,
+                    Vec::new(),
+                    vec![0xff; 20],
+                    [
+                        RecordType::NS,
+                        RecordType::SOA,
+                        RecordType::RRSIG,
+                        RecordType::DNSKEY,
+                    ],
+                ))),
+            ),
+        ];
+        let mut sets: std::collections::BTreeMap<(Name, RecordType), Vec<Record>> =
+            std::collections::BTreeMap::new();
+        for (name, data) in rrsets {
+            let rtype = data.record_type();
+            let rec = Record::from_rdata(name.clone(), 3600, data);
+            let mut rs = RecordSet::new(name.clone(), rtype, 0);
+            rs.insert(rec.clone(), 0);
+            let sig = RRSIG::from_rrset(&rs, DNSClass::IN, inception, &signer).unwrap();
+            sets.insert(
+                (name.clone(), rtype),
+                vec![
+                    rec,
+                    Record::from_rdata(name, 3600, RData::DNSSEC(DNSSECRData::RRSIG(sig))),
+                ],
+            );
+        }
+        // The trust anchor, in zone-file form (flags 257, protocol 3, algorithm 15).
+        let mut b64 = String::new();
+        for c in public.public_bytes().chunks(3) {
+            let v = (u32::from(c[0]) << 16)
+                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..4 {
+                b64.push(if i <= c.len() {
+                    let at = usize::try_from((v >> (18 - 6 * i)) & 63).unwrap();
+                    char::from(
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[at],
+                    )
+                } else {
+                    '='
+                });
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("root.key"),
+            format!(". 3600 IN DNSKEY 257 3 15 {b64}\n"),
+        )
+        .unwrap();
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&asked);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            while let Ok((len, from)) = s.recv_from(&mut buf).await {
+                let Ok(q) = Message::from_vec(&buf[..len]) else {
+                    continue;
+                };
+                let Some(question) = q.queries.first().cloned() else {
+                    continue;
+                };
+                let (qn, qt) = (question.name().clone(), question.query_type());
+                if qn == n("n60.") {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+                let mut m = Message::response(q.metadata.id, OpCode::Query);
+                m.metadata.recursion_desired = true;
+                m.metadata.recursion_available = true;
+                m.add_query(question);
+                if let Some(rs) = sets.get(&(qn.clone(), qt)) {
+                    m.add_answers(rs.clone());
+                } else {
+                    // NXDOMAIN: the root's SOA and the one NSEC3 record.
+                    m.metadata.response_code = ResponseCode::NXDomain;
+                    m.add_authorities(sets[&(n("."), RecordType::SOA)].clone());
+                    m.add_authorities(sets[&(owner.clone(), RecordType::NSEC3)].clone());
+                }
+                let mut edns = Edns::new();
+                edns.set_dnssec_ok(true);
+                edns.set_max_payload(4096);
+                m.set_edns(edns);
+                if let Ok(out) = m.to_vec() {
+                    let _ = s.send_to(&out, from).await;
+                }
+            }
+        });
+        (addr, dir, asked)
+    }
+
+    /// REQ: DNS-902 (RFC 9276 §3.2) — through the pipeline, a denial above the NSEC3 iteration
+    /// limit is insecure: a client that sent EDNS gets EDE 27, one that did not gets none, the
+    /// AD bit is clear, and the answer is not cached (the upstream is asked again, so it is
+    /// never served stale either).
+    #[tokio::test]
+    async fn dns_902_nsec3_iterations_reach_the_client_as_ede_27_and_are_not_cached() {
+        use std::sync::atomic::Ordering;
+        let (addr, dir, asked) = nsec3_root().await;
+        let anchors = dir.path().join("root.key");
+        let cfg = format!(
+            "[[upstream]]\nname = \"root\"\nurl = \"udp://{addr}\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"root\"]\n\
+             [dnssec]\nmode = \"validate\"\ntrust_anchors_file = \"{}\"\n",
+            anchors.to_str().unwrap().replace('\\', "/")
+        );
+        let loaded: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", &cfg)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = pipeline_with(&cfg, "");
+        p.set_dnssec(&loaded);
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+            gated: false,
+        };
+        let ask = |edns: bool| {
+            let p = Arc::clone(&p);
+            async move {
+                let mut buf = [0u8; 512];
+                let n = NameBuf::from_presentation("n60").unwrap();
+                let e = edns.then(|| EdnsOut::new(1232));
+                let len = build_query(&mut buf, 9, &n, rtype::A, 1, true, e).unwrap();
+                let mut out = [0u8; 4096];
+                let Response::Deferred(answer) =
+                    Handler(Arc::clone(&p)).handle(&buf[..len], &meta, &mut out)
+                else {
+                    panic!("a miss goes upstream");
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(10), answer)
+                    .await
+                    .expect("answered")
+                    .unwrap()
+            }
+        };
+        // An EDE option (option code 15) with info-code 27.
+        let has_ede27 = |r: &[u8]| {
+            r.windows(6)
+                .any(|w| w[0] == 0 && w[1] == 15 && w[4] == 0 && w[5] == 27)
+        };
+        let with = ask(true).await;
+        assert_eq!(
+            summarize(&with).unwrap().rcode,
+            rcode::NXDOMAIN,
+            "insecure, not bogus"
+        );
+        assert!(has_ede27(&with), "EDE 27 for a client that sent EDNS");
+        assert!(
+            !wrendns_proto::Header::parse(&with).unwrap().flags.ad(),
+            "insecure: AD clear"
+        );
+        let after_first = asked.load(Ordering::Relaxed);
+        assert!(after_first >= 1);
+        let without = ask(false).await;
+        assert_eq!(summarize(&without).unwrap().rcode, rcode::NXDOMAIN);
+        assert!(!has_ede27(&without), "no EDNS, no EDE");
+        assert!(!wrendns_proto::Header::parse(&without).unwrap().flags.ad());
+        assert!(
+            asked.load(Ordering::Relaxed) > after_first,
+            "not cached: the upstream was asked again"
+        );
     }
 
     /// REQ: DNS-017 — conditional forwarding of a reverse zone (Pi-hole `rev-server`): reverse

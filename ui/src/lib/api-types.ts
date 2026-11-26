@@ -7878,6 +7878,13 @@ export interface components {
         };
         /** @description A domain sent to other servers (conditional forwarding). */
         ForwardInfo: {
+            /** @description REQ: DNS-902 — a stub zone whose servers may be at loopback or link-local addresses. */
+            allowLocalServers: boolean;
+            /**
+             * @description REQ: DNS-902 — a stub zone whose private-range servers are also asked for names outside
+             *     the zone.
+             */
+            allowPrivateServers: boolean;
             /** @description REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain. */
             dnssecNta: boolean;
             /** @example corp.example */
@@ -7900,6 +7907,18 @@ export interface components {
         };
         /** @description The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`). */
         ForwardInput: {
+            /**
+             * @description REQ: DNS-902 — a stub zone only: also ask its servers at loopback or link-local
+             *     addresses (a server on this machine). Off by default, and refused for a forward that
+             *     is not a stub zone. Left out, the stored value stays as it is.
+             */
+            allowLocalServers?: boolean | null;
+            /**
+             * @description REQ: DNS-902 — a stub zone only: also ask private-range servers for names outside the
+             *     zone (the zone's own private servers are asked either way). Off by default, and refused
+             *     for a forward that is not a stub zone. Left out, the stored value stays as it is.
+             */
+            allowPrivateServers?: boolean | null;
             /**
              * @description REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:
              *     local zones are usually unsigned).
@@ -8891,6 +8910,13 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_ForwardInfo: {
             items: {
+                /** @description REQ: DNS-902 — a stub zone whose servers may be at loopback or link-local addresses. */
+                allowLocalServers: boolean;
+                /**
+                 * @description REQ: DNS-902 — a stub zone whose private-range servers are also asked for names outside
+                 *     the zone.
+                 */
+                allowPrivateServers: boolean;
                 /** @description REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain. */
                 dnssecNta: boolean;
                 /** @example corp.example */

@@ -369,6 +369,9 @@ fn build_upstreams<'c>(
             recursive: wrendns_recursor::Settings {
                 qname_minimization: u.recursive.qname_minimization,
                 case_randomization: u.recursive.case_randomization,
+                // REQ: DNS-902
+                allow_local_servers: u.recursive.allow_local_servers,
+                allow_private_servers: u.recursive.allow_private_servers,
                 stubs,
                 ..wrendns_recursor::Settings::default()
             }

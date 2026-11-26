@@ -23,6 +23,16 @@
 //!   instead of the root (BIND's `static-stub`, Unbound's `stub-zone`), so an internal zone's
 //!   own delegations are followed; names outside it are resolved from the root as usual.
 //!
+//! - **Addresses never queried** (DNS-902, Unbound's `do-not-query-localhost`): loopback,
+//!   unspecified, link-local, multicast and broadcast addresses are never asked, whatever the
+//!   glue, a server-name lookup or the cache holds, and private ranges (RFC 1918, carrier
+//!   NAT, unique-local) only inside a stub zone, unless `allow_local_servers` or
+//!   `allow_private_servers` says otherwise. A public delegation can't aim the resolver at
+//!   the host or the home network.
+//! - **Lame answers are failures** (DNS-902): a server that answers REFUSED, FORMERR or a
+//!   referral that goes nowhere has its smoothed RTT worsened like a timeout, so a fast lame
+//!   server stops coming first.
+//!
 //! DNSSEC: with DO set, signatures, DS sets, and NSEC/NSEC3 proofs are passed through, so the
 //! validator above (DNS-011) checks the chain from the root's trust anchor.
 
@@ -85,6 +95,8 @@ const MAX_QUERIES: u32 = 96;
 const MAX_MINIMIZE: usize = 10;
 /// Servers tried for one question before giving up.
 const MAX_TRIES: usize = 4;
+/// Zones whose refused server lists are remembered (REQ: DNS-902).
+const REFUSALS_KEPT: usize = 16;
 
 /// Resolver settings (`[[upstream]]` with `url = "recursive://"`).
 #[derive(Debug, Clone)]
@@ -108,6 +120,15 @@ pub struct Settings {
     pub hedge: bool,
     /// REQ: DNS-022 — zones that start at their own servers instead of the root.
     pub stubs: Vec<Stub>,
+    /// REQ: DNS-902 — also ask loopback, unspecified, link-local, multicast and broadcast
+    /// addresses (off by default; the test fixtures run their servers on loopback).
+    pub allow_local_servers: bool,
+    /// REQ: DNS-902 — also ask private-range addresses outside stub zones (off by default).
+    pub allow_private_servers: bool,
+    /// REQ: DNS-902 — with stub zones set, `allow_local_servers` covers only the names at or
+    /// under a stub zone, not a CNAME target or a server-name lookup outside it (on by
+    /// default; only tests whose whole fixture tree is on loopback turn it off).
+    pub scope_local_to_stubs: bool,
 }
 
 /// REQ: DNS-022 — a stub zone: questions at or under `zone` are asked of `servers`
@@ -131,7 +152,41 @@ impl Default for Settings {
             prime: true,
             hedge: true,
             stubs: Vec::new(),
+            allow_local_servers: false,
+            allow_private_servers: false,
+            scope_local_to_stubs: true,
         }
+    }
+}
+
+/// REQ: DNS-902 — an address no authoritative server should have on the public Internet:
+/// loopback, unspecified, link-local, multicast, broadcast.
+#[must_use]
+pub fn is_local_address(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_link_local()
+                || a.is_multicast()
+                || a.is_broadcast()
+        }
+        IpAddr::V6(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || a.segments()[0] & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+/// REQ: DNS-902 — a private-range address: RFC 1918, carrier-grade NAT (100.64.0.0/10),
+/// unique-local (`fc00::/7`) and the deprecated site-local range (`fec0::/10`).
+#[must_use]
+pub fn is_private_address(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(a) => a.is_private() || (a.octets()[0] == 100 && a.octets()[1] & 0xc0 == 0x40),
+        IpAddr::V6(a) => a.segments()[0] & 0xfe00 == 0xfc00 || a.segments()[0] & 0xffc0 == 0xfec0,
     }
 }
 
@@ -158,6 +213,8 @@ pub enum Error {
     NoServer(String),
     #[error("too many referrals, CNAMEs, or queries (a loop or a misconfigured zone)")]
     Limit,
+    #[error("every server address for {0} is refused (loopback, link-local or private)")]
+    Refused(String),
     #[error("malformed question")]
     Question,
 }
@@ -166,9 +223,19 @@ pub enum Error {
 #[derive(Debug, Default)]
 struct Work {
     queries: u32,
+    /// REQ: DNS-902 — a server list was emptied by the address rules (`permit`).
+    refused: bool,
 }
 
 impl Work {
+    /// A `NoServer` failure that followed an emptied server list says why.
+    fn explain(&self, e: Error) -> Error {
+        match e {
+            Error::NoServer(z) if self.refused => Error::Refused(z),
+            e => e,
+        }
+    }
+
     fn spend(&mut self) -> Result<(), Error> {
         self.queries += 1;
         if self.queries > MAX_QUERIES {
@@ -196,6 +263,9 @@ pub struct Recursor {
     caches: Caches,
     /// When priming was last tried (it's not tried again for a minute after a failure).
     primed_at: parking_lot::Mutex<Option<Instant>>,
+    /// REQ: DNS-902 — the zones whose server lists the address rules emptied, newest last (a
+    /// few; "Why?" says an address rule affected an answer only when one of these covers it).
+    refusals: parking_lot::Mutex<Vec<(NameBuf, Instant)>>,
 }
 
 /// `name` cut to its last `n` labels.
@@ -217,6 +287,7 @@ impl Recursor {
             settings,
             caches: Caches::default(),
             primed_at: parking_lot::Mutex::new(None),
+            refusals: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -235,12 +306,8 @@ impl Recursor {
             }
             *at = Some(Instant::now());
         }
-        for (ip, _, _) in self
-            .caches
-            .order(&self.settings.roots)
-            .into_iter()
-            .take(MAX_TRIES)
-        {
+        let roots = self.permit(&self.settings.roots, &root, work);
+        for (ip, _, _) in self.caches.order(&roots).into_iter().take(MAX_TRIES) {
             if work.spend().is_err() {
                 return;
             }
@@ -284,6 +351,28 @@ impl Recursor {
         }
     }
 
+    /// REQ: DNS-902 — whether the address rules affected answers for `name`: a stub zone
+    /// covering it whose servers are all refused, or a server list for a zone at or above it
+    /// emptied by the rules within `within`. "Why?" shows its refusal notes only then.
+    #[must_use]
+    pub fn address_rules_affect(&self, name: &NameBuf, within: Duration) -> bool {
+        let stub_refused = self.stub_for(name, false).is_some_and(|s| {
+            !s.servers.is_empty() && s.servers.iter().all(|ip| !self.may_ask(*ip, &s.zone))
+        });
+        stub_refused
+            || self
+                .refusals
+                .lock()
+                .iter()
+                .any(|(z, at)| name.is_subdomain_of(z) && at.elapsed() <= within)
+    }
+
+    /// The settings this resolver runs with.
+    #[must_use]
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
     /// REQ: DNS-905 (T40.4) — empties what the resolver remembers between queries: with `cuts`,
     /// the zone cuts and server-name addresses (the next lookup starts from the root, and root
     /// priming may run again at once); with `rtts`, each server's smoothed round-trip time.
@@ -319,7 +408,8 @@ impl Recursor {
     /// without a stub zone.
     pub async fn probe_stub(&self) -> Option<bool> {
         let s = self.settings.stubs.first()?;
-        for (ip, _, _) in self.caches.order(&s.servers).into_iter().take(MAX_TRIES) {
+        let servers = self.permit(&s.servers, &s.zone, &mut Work::default());
+        for (ip, _, _) in self.caches.order(&servers).into_iter().take(MAX_TRIES) {
             let addr = SocketAddr::new(ip, self.settings.port);
             let t0 = Instant::now();
             let timeout = self.settings.server_timeout;
@@ -364,7 +454,10 @@ impl Recursor {
         if self.stub_for(&name, false).is_none() {
             self.prime(&mut work).await;
         }
-        let r = self.lookup(name, qtype, dnssec_ok, &mut work, 0).await?;
+        let r = self
+            .lookup(name, qtype, dnssec_ok, &mut work, 0)
+            .await
+            .map_err(|e| work.explain(e))?;
         msg::encode(query, r.rcode, &r.answer, &r.authority).ok_or(Error::Question)
     }
 
@@ -379,7 +472,9 @@ impl Recursor {
         if self.stub_for(&name, false).is_none() {
             self.prime(&mut work).await;
         }
-        self.lookup(name, qtype, dnssec_ok, &mut work, 0).await
+        self.lookup(name, qtype, dnssec_ok, &mut work, 0)
+            .await
+            .map_err(|e| work.explain(e))
     }
 
     #[allow(clippy::too_many_lines)] // one state machine: referrals, minimization, chasing
@@ -537,8 +632,13 @@ impl Recursor {
                 {
                     break;
                 }
-                Some((zone, d)) if !d.addrs.is_empty() => return Ok((zone, self.usable(&d.addrs))),
                 Some((zone, d)) => {
+                    if !d.addrs.is_empty() {
+                        let a = self.usable(&d.addrs, &zone, work);
+                        if !a.is_empty() {
+                            return Ok((zone, a));
+                        }
+                    }
                     let addrs = self.delegation(&zone, &d.ns, &[], work, depth).await;
                     if !addrs.is_empty() {
                         self.caches.add_zone_addrs(&zone, &addrs);
@@ -561,12 +661,58 @@ impl Recursor {
         Ok((NameBuf::default(), self.settings.roots.clone()))
     }
 
-    fn usable(&self, addrs: &[IpAddr]) -> Vec<IpAddr> {
-        addrs
+    /// REQ: DNS-902 — whether `ip` may be asked for `zone`: not a local address unless
+    /// allowed (and, with stub zones, only for a zone at or under one: a name outside them
+    /// that delegates to loopback is still refused), and a private one only inside a stub
+    /// zone unless allowed.
+    fn may_ask(&self, ip: IpAddr, zone: &NameBuf) -> bool {
+        // The root hints are the resolver's own (built in; only tests replace them).
+        if self.settings.roots.contains(&ip) {
+            return true;
+        }
+        let in_stub = self.stub_for(zone, false).is_some();
+        if is_local_address(ip) {
+            return self.settings.allow_local_servers
+                && (in_stub
+                    || self.settings.stubs.is_empty()
+                    || !self.settings.scope_local_to_stubs);
+        }
+        !is_private_address(ip) || self.settings.allow_private_servers || in_stub
+    }
+
+    /// `addrs` that may be asked for `zone` (REQ: DNS-902). When that leaves nothing of a
+    /// non-empty list, the work is marked so the failure says the addresses were refused.
+    fn permit(&self, addrs: &[IpAddr], zone: &NameBuf, work: &mut Work) -> Vec<IpAddr> {
+        let ok: Vec<IpAddr> = addrs
+            .iter()
+            .copied()
+            .filter(|a| self.may_ask(*a, zone))
+            .collect();
+        if ok.is_empty() && !addrs.is_empty() {
+            debug!(zone = %zone.display(), "every server address refused");
+            work.refused = true;
+            // The memory of refusals is bounded (REFUSALS_KEPT, oldest dropped first). An
+            // eviction only means a later "Why?" omits its address-rule note for that zone,
+            // never a different answer: the refusal itself (`work.refused`) is per lookup,
+            // and the note is advice, so a rare missed one is acceptable.
+            let mut r = self.refusals.lock();
+            r.retain(|(z, _)| z != zone);
+            if r.len() >= REFUSALS_KEPT {
+                r.remove(0);
+            }
+            r.push((*zone, Instant::now()));
+        }
+        ok
+    }
+
+    /// The addresses of the allowed families that may be asked for `zone`.
+    fn usable(&self, addrs: &[IpAddr], zone: &NameBuf, work: &mut Work) -> Vec<IpAddr> {
+        let fam: Vec<IpAddr> = addrs
             .iter()
             .copied()
             .filter(|a| self.settings.ipv6 || a.is_ipv4())
-            .collect()
+            .collect();
+        self.permit(&fam, zone, work)
     }
 
     /// Addresses for a zone's servers: glue first, then cached addresses, then (if neither)
@@ -579,14 +725,11 @@ impl Recursor {
         work: &mut Work,
         depth: u8,
     ) -> Vec<IpAddr> {
-        let mut addrs: Vec<IpAddr> = glue
-            .iter()
-            .map(|(_, a)| *a)
-            .filter(|a| self.settings.ipv6 || a.is_ipv4())
-            .collect();
+        let glued: Vec<IpAddr> = glue.iter().map(|(_, a)| *a).collect();
+        let mut addrs = self.usable(&glued, child, work);
         for n in ns {
             if let Some(a) = self.caches.addrs(n) {
-                addrs.extend(self.usable(&a));
+                addrs.extend(self.usable(&a, child, work));
             }
         }
         addrs.sort_unstable();
@@ -611,7 +754,7 @@ impl Recursor {
                     let a: Vec<IpAddr> = r.answer.iter().filter_map(Rr::addr).collect();
                     if !a.is_empty() {
                         self.caches.put_addrs(*n, a.clone(), ttl);
-                        found.extend(a);
+                        found.extend(self.usable(&a, child, work));
                     }
                 }
             }
@@ -634,9 +777,10 @@ impl Recursor {
         zone: &NameBuf,
         work: &mut Work,
     ) -> Result<(Outcome, IpAddr), Error> {
+        let servers = self.permit(servers, zone, work);
         let order: Vec<_> = self
             .caches
-            .order(servers)
+            .order(&servers)
             .into_iter()
             .take(MAX_TRIES)
             .collect();
@@ -718,14 +862,23 @@ impl Recursor {
             self.caches.no_case(ip);
             res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
         }
-        let Ok(resp) = res else {
-            self.caches.record(ip, None, timeout);
-            return None;
-        };
-        self.caches.record(ip, Some(t0.elapsed()), timeout);
-        let p = msg::parse(&resp)?;
-        let o = msg::classify(&p, qn, qt, zone);
-        (o != Outcome::Lame).then_some((o, ip))
+        let rtt = t0.elapsed();
+        let outcome = res.ok().and_then(|resp| {
+            let p = msg::parse(&resp)?;
+            Some(msg::classify(&p, qn, qt, zone))
+        });
+        // REQ: DNS-902 — a lame answer (or one that can't be read) is a failure of the server,
+        // however fast it came: counting its RTT as a success kept a quick lame server first.
+        match outcome {
+            Some(o) if o != Outcome::Lame => {
+                self.caches.record(ip, Some(rtt), timeout);
+                Some((o, ip))
+            }
+            _ => {
+                self.caches.record(ip, None, timeout);
+                None
+            }
+        }
     }
 }
 
@@ -742,5 +895,92 @@ mod tests {
         );
         assert_eq!(suffix(&n, 0), NameBuf::default());
         assert_eq!(suffix(&n, 9), n);
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// REQ: DNS-902 — private servers are asked only inside a stub zone (the zone's own
+    /// servers and the delegations below it), unless allowed; local ones never unless allowed.
+    #[test]
+    fn dns_902_private_only_inside_stub_zones() {
+        let corp = NameBuf::from_presentation("corp.example.com").unwrap();
+        let below = NameBuf::from_presentation("sub.corp.example.com").unwrap();
+        let outside = NameBuf::from_presentation("example.com").unwrap();
+        let r = Recursor::new(Settings {
+            stubs: vec![Stub {
+                zone: corp,
+                servers: vec![ip("10.1.0.8")],
+            }],
+            ..Settings::default()
+        });
+        assert!(r.may_ask(ip("10.1.0.8"), &corp));
+        assert!(r.may_ask(ip("192.168.4.4"), &below));
+        assert!(r.may_ask(ip("fd00::8"), &below));
+        assert!(!r.may_ask(ip("10.1.0.8"), &outside));
+        assert!(!r.may_ask(ip("10.1.0.8"), &NameBuf::default()));
+        assert!(r.may_ask(ip("198.51.100.1"), &outside));
+        assert!(
+            !r.may_ask(ip("127.0.0.1"), &corp),
+            "loopback even in a stub zone"
+        );
+        assert!(!r.may_ask(ip("::1"), &corp));
+        assert!(!r.may_ask(ip("169.254.0.5"), &outside));
+        let open = Recursor::new(Settings {
+            allow_local_servers: true,
+            allow_private_servers: true,
+            ..Settings::default()
+        });
+        assert!(open.may_ask(ip("127.0.0.1"), &outside));
+        assert!(open.may_ask(ip("10.0.0.1"), &outside));
+        let private_only = Recursor::new(Settings {
+            allow_private_servers: true,
+            ..Settings::default()
+        });
+        assert!(private_only.may_ask(ip("10.0.0.1"), &outside));
+        assert!(!private_only.may_ask(ip("127.0.0.1"), &outside));
+    }
+
+    /// REQ: DNS-902 — "Why?" learns that an address rule affected an answer only from a stub
+    /// zone whose servers are all refused, or a server list the rules emptied; not otherwise.
+    #[test]
+    fn dns_902_address_rules_affect_only_after_a_refusal() {
+        let within = Duration::from_secs(60);
+        let name = NameBuf::from_presentation("www.example.com").unwrap();
+        let zone = NameBuf::from_presentation("example.com").unwrap();
+        let other = NameBuf::from_presentation("other.test").unwrap();
+        let r = Recursor::new(Settings::default());
+        assert!(
+            !r.address_rules_affect(&name, within),
+            "nothing refused yet"
+        );
+        let mut work = Work::default();
+        // A public server is fine; a delegation to private-only servers leaves nothing to ask.
+        assert_eq!(r.permit(&[ip("198.51.100.1")], &zone, &mut work).len(), 1);
+        assert!(!r.address_rules_affect(&name, within));
+        let left = r.permit(&[ip("10.0.0.1")], &zone, &mut work);
+        assert_eq!(left.len(), 0);
+        assert!(r.address_rules_affect(&name, within));
+        assert!(!r.address_rules_affect(&other, within), "another zone");
+        assert!(
+            !r.address_rules_affect(&name, Duration::ZERO),
+            "too long ago"
+        );
+        // A stub zone whose only server is on this machine is refused by the rules.
+        let stub_zone = NameBuf::from_presentation("corp.test").unwrap();
+        let stubbed = |allow| {
+            Recursor::new(Settings {
+                stubs: vec![Stub {
+                    zone: stub_zone,
+                    servers: vec![ip("127.0.0.1")],
+                }],
+                allow_local_servers: allow,
+                ..Settings::default()
+            })
+        };
+        let inside = NameBuf::from_presentation("a.corp.test").unwrap();
+        assert!(stubbed(false).address_rules_affect(&inside, within));
+        assert!(!stubbed(true).address_rules_affect(&inside, within));
     }
 }

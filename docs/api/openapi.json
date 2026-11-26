@@ -22215,6 +22215,8 @@
           "domain",
           "servers",
           "stub",
+          "allowLocalServers",
+          "allowPrivateServers",
           "source",
           "matchGroup",
           "matchQtype",
@@ -22222,6 +22224,14 @@
           "nodeOnly"
         ],
         "properties": {
+          "allowLocalServers": {
+            "type": "boolean",
+            "description": "REQ: DNS-902 — a stub zone whose servers may be at loopback or link-local addresses."
+          },
+          "allowPrivateServers": {
+            "type": "boolean",
+            "description": "REQ: DNS-902 — a stub zone whose private-range servers are also asked for names outside\nthe zone."
+          },
           "dnssecNta": {
             "type": "boolean",
             "description": "REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain."
@@ -22272,6 +22282,20 @@
           "servers"
         ],
         "properties": {
+          "allowLocalServers": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "REQ: DNS-902 — a stub zone only: also ask its servers at loopback or link-local\naddresses (a server on this machine). Off by default, and refused for a forward that\nis not a stub zone. Left out, the stored value stays as it is."
+          },
+          "allowPrivateServers": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "REQ: DNS-902 — a stub zone only: also ask private-range servers for names outside the\nzone (the zone's own private servers are asked either way). Off by default, and refused\nfor a forward that is not a stub zone. Left out, the stored value stays as it is."
+          },
           "dnssecNta": {
             "type": "boolean",
             "description": "REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:\nlocal zones are usually unsigned)."
@@ -24683,6 +24707,8 @@
                 "domain",
                 "servers",
                 "stub",
+                "allowLocalServers",
+                "allowPrivateServers",
                 "source",
                 "matchGroup",
                 "matchQtype",
@@ -24690,6 +24716,14 @@
                 "nodeOnly"
               ],
               "properties": {
+                "allowLocalServers": {
+                  "type": "boolean",
+                  "description": "REQ: DNS-902 — a stub zone whose servers may be at loopback or link-local addresses."
+                },
+                "allowPrivateServers": {
+                  "type": "boolean",
+                  "description": "REQ: DNS-902 — a stub zone whose private-range servers are also asked for names outside\nthe zone."
+                },
                 "dnssecNta": {
                   "type": "boolean",
                   "description": "REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain."

@@ -1082,6 +1082,25 @@ impl Upstream {
         }
     }
 
+    /// REQ: DNS-902 — the settings of a `recursive://` upstream (`None` for any other).
+    #[must_use]
+    pub fn recursive_settings(&self) -> Option<&wrendns_recursor::Settings> {
+        match &self.transport {
+            Transport::Recursive(r) => Some(r.settings()),
+            _ => None,
+        }
+    }
+
+    /// REQ: DNS-902 — a `recursive://` upstream whose address rules (loopback, link-local and
+    /// private servers) affected answers for `name` within `within`; `false` for any other.
+    #[must_use]
+    pub fn address_rules_affect(&self, name: &NameBuf, within: Duration) -> bool {
+        match &self.transport {
+            Transport::Recursive(r) => r.address_rules_affect(name, within),
+            _ => false,
+        }
+    }
+
     /// REQ: UPS-006, DNS-022 — what a health check asks: a stub zone's SOA (its servers are
     /// authoritative only and refuse anything else), else the root's NS records.
     pub fn health_question(&self) -> Question {

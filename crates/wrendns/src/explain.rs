@@ -414,6 +414,21 @@ pub(crate) fn explain(
             group: sel.group.name.clone(),
             routed: sel.routed,
         });
+        // REQ: DNS-902 — what a recursive member will not ask, since it can end an answer:
+        // said only when an address rule actually affected answers for this name (a stub
+        // zone's servers all refused, or a recent lookup under it left no server to ask).
+        for up in sel.group.members() {
+            if let Some(s) = up
+                .recursive_settings()
+                .filter(|_| up.address_rules_affect(&q.qname, ADDRESS_RULE_MEMORY))
+            {
+                e.notes.extend(recursive_notes(
+                    &up.name,
+                    s.allow_local_servers,
+                    s.allow_private_servers,
+                ));
+            }
+        }
     } else {
         e.notes
             .push("no upstream group serves this query: answered REFUSED".into());
@@ -425,6 +440,27 @@ pub(crate) fn explain(
         );
     }
     Ok(e)
+}
+
+/// REQ: DNS-902 — how long "Why?" remembers that an address rule emptied a server list.
+const ADDRESS_RULE_MEMORY: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// REQ: DNS-902 — the server addresses a `recursive://` upstream refuses, in words: a name
+/// whose delegation points only at them fails (SERVFAIL, no upstream answered) instead of
+/// being asked there. Empty when both are allowed.
+fn recursive_notes(name: &str, allow_local: bool, allow_private: bool) -> Vec<String> {
+    let mut v = Vec::new();
+    if !allow_local {
+        v.push(format!(
+            "upstream {name} resolves from the root itself and never asks servers at loopback or link-local addresses: a delegation that points only there ends as SERVFAIL (set allow_local_servers to ask them)"
+        ));
+    }
+    if !allow_private {
+        v.push(format!(
+            "upstream {name} asks servers at private addresses only inside its stub zone: a public delegation that points only at them ends as SERVFAIL (set allow_private_servers to ask them)"
+        ));
+    }
+    v
 }
 
 /// The quick rule deciding `name` for this client, as (allow, a description), or `None`. A

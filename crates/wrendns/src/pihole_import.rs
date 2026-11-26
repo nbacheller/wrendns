@@ -703,6 +703,8 @@ pub(crate) fn build(
             let f = Forward {
                 servers: servers.clone(),
                 stub: false,
+                allow_local_servers: false,
+                allow_private_servers: false,
                 match_group: Vec::new(),
                 match_qtype: Vec::new(),
                 dnssec_nta: true,

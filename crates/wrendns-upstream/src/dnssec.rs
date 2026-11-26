@@ -92,7 +92,9 @@ pub struct Validated {
     pub bytes: Vec<u8>,
     pub verdict: Verdict,
     /// REQ: DNS-013 (T9.8) — for a bogus answer, the EDE code saying why: 7 (a signature
-    /// expired), 8 (not yet valid), 10 (no signatures), else 6.
+    /// expired), 8 (not yet valid), 10 (no signatures), else 6. REQ: DNS-902 (RFC 9276 §3.2)
+    /// — 27 (unsupported NSEC3 iterations) for an answer that is insecure, or bogus, because of
+    /// the iteration count; an insecure answer carrying it should reach the client with it.
     pub ede: u16,
     pub upstream_id: u16,
     pub attempts: u8,
@@ -137,6 +139,16 @@ impl DnsHandle for GroupHandle {
         }))
     }
 }
+
+/// REQ: DNS-902 (RFC 9276 §3.2) — an NSEC3 denial that hashes with more iterations than this
+/// proves nothing: the answer validates as insecure. RFC 9276 asks zones for 0 iterations and
+/// validators for a low limit, because every extra iteration costs a resolver one more hash per
+/// name for an attacker who sends random names (CVE-2023-50868). The value is the ADR's
+/// choice (ADR-1094); hickory's own default of 100 is looser.
+pub const NSEC3_SOFT_LIMIT: u16 = 50;
+/// REQ: DNS-902 (RFC 9276 §3.2) — above this many iterations the answer is bogus (SERVFAIL),
+/// not insecure: no honest zone signs like that. hickory's default, kept.
+pub const NSEC3_HARD_LIMIT: u16 = 500;
 
 /// A group's validating handle, and the last upstream that answered through it.
 type Checked = (DnssecDnsHandle<GroupHandle>, Arc<Mutex<(u16, u8)>>);
@@ -260,7 +272,8 @@ impl Validator {
                     last: Arc::clone(&last),
                 };
                 (
-                    DnssecDnsHandle::with_trust_anchor(inner, Arc::clone(&self.anchors)),
+                    DnssecDnsHandle::with_trust_anchor(inner, Arc::clone(&self.anchors))
+                        .nsec3_iteration_limits(Some(NSEC3_SOFT_LIMIT), Some(NSEC3_HARD_LIMIT)),
                     last,
                 )
             })
@@ -269,6 +282,7 @@ impl Validator {
 
     /// Resolves `q` through `group` and validates it. `client_do`/`client_ad`: what the
     /// client asked for (DNSSEC records kept, AD reported).
+    #[allow(clippy::too_many_lines)] // one flow: lookup, the verdicts it can end in, the reply
     pub async fn resolve(
         &self,
         group: &Arc<Group>,
@@ -312,12 +326,40 @@ impl Validator {
         let result =
             tokio::time::timeout(budget * LOOKUP_SHARE.0 / LOOKUP_SHARE.1, stream.next()).await;
         let (upstream_id, attempts) = *last.lock();
+        // REQ: DNS-902 — the answer is a denial the validator would not accept (too many
+        // NSEC3 iterations), served unvalidated.
+        let mut over_limit = false;
         let response = match result {
             Ok(Some(Ok(r))) => r,
+            // REQ: DNS-902 (RFC 9276 §3.2) — hickory reports a denial it can't rely on as an
+            // error carrying the proof. When the reason is that its NSEC3 records hash with
+            // more iterations than `NSEC3_SOFT_LIMIT`, the zone is treated as unsigned for this
+            // answer: served as it came, without AD, and not taught to the NSEC cache.
+            Ok(Some(Err(NetError::Dns(hickory_net::DnsError::Nsec {
+                proof: Proof::Insecure,
+                response,
+                ..
+            }))))
+                if nsec3_over_soft_limit(&response) =>
+            {
+                over_limit = true;
+                *response
+            }
             // An upstream failure is an upstream failure (stale or SERVFAIL as usual).
             Ok(Some(Err(e))) if is_transport(&e) => return Err(ResolveError::Empty),
             Ok(Some(Err(e))) => {
                 let mut verdict = error_verdict(&e);
+                // REQ: DNS-902 (RFC 9276 §3.2) — SERVFAIL because the NSEC3 iteration count is
+                // past the hard limit says so (EDE 27) rather than "DNSSEC bogus".
+                let ede = match &e {
+                    NetError::Dns(hickory_net::DnsError::Nsec { response, .. })
+                        if verdict == Verdict::Bogus
+                            && nsec3_max_iterations(response) > NSEC3_HARD_LIMIT =>
+                    {
+                        wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS
+                    }
+                    _ => wrendns_proto::ede::DNSSEC_BOGUS,
+                };
                 tracing::debug!(name = %q.name.display().to_string(), ?verdict, "DNSSEC: {e}");
                 if self
                     .proven_insecure(group, &handle, &qkey, budget, deadline)
@@ -329,7 +371,7 @@ impl Validator {
                 return Ok(Validated {
                     bytes: Vec::new(),
                     verdict,
-                    ede: wrendns_proto::ede::DNSSEC_BOGUS,
+                    ede,
                     upstream_id,
                     attempts,
                 });
@@ -345,7 +387,11 @@ impl Validator {
             }
             Ok(None) | Err(_) => return Err(ResolveError::Empty),
         };
-        let mut verdict = verdict(&response);
+        let mut verdict = if over_limit {
+            Verdict::Insecure
+        } else {
+            verdict(&response)
+        };
         if verdict == Verdict::Bogus
             && self
                 .all_unsigned(group, &handle, &response, &qkey, budget, deadline)
@@ -355,6 +401,7 @@ impl Validator {
             verdict = Verdict::Insecure;
         }
         self.stats.count(verdict);
+        let iterations = nsec3_max_iterations(&response);
         let mut message = response.into_message();
         // REQ: DNS-011 (T9.16) — a secure denial's NSEC ranges, for later questions.
         if self.aggressive && verdict == Verdict::Secure {
@@ -367,7 +414,12 @@ impl Validator {
                 .learn(&message, std::time::Instant::now());
         }
         // Before DNSSEC records are stripped: why a bogus answer failed.
-        let ede = if verdict == Verdict::Bogus {
+        let ede = if over_limit {
+            // REQ: DNS-902 (RFC 9276 §3.2) — insecure because of the iteration count: EDE 27.
+            wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS
+        } else if verdict == Verdict::Bogus && iterations > NSEC3_HARD_LIMIT {
+            wrendns_proto::ede::UNSUPPORTED_NSEC3_ITERATIONS
+        } else if verdict == Verdict::Bogus {
             message
                 .to_vec()
                 .map_or(wrendns_proto::ede::DNSSEC_BOGUS, |b| {
@@ -797,6 +849,26 @@ fn base32hex(data: &[u8]) -> String {
         }
     }
     out
+}
+
+/// REQ: DNS-902 (RFC 9276 §3.2) — a negative answer whose NSEC3 records hash with more
+/// iterations than [`NSEC3_SOFT_LIMIT`] (and not more than the hard limit, which is bogus).
+fn nsec3_over_soft_limit(response: &DnsResponse) -> bool {
+    (NSEC3_SOFT_LIMIT + 1..=NSEC3_HARD_LIMIT).contains(&nsec3_max_iterations(response))
+}
+
+/// REQ: DNS-902 — the most iterations any NSEC3 record in the authority section hashes with
+/// (0 when there is none).
+fn nsec3_max_iterations(response: &DnsResponse) -> u16 {
+    response
+        .authorities
+        .iter()
+        .filter_map(|r| match &r.data {
+            RData::DNSSEC(DNSSECRData::NSEC3(n)) => Some(n.iterations()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// REQ: DNS-011 (ADR-098) — what a validation error says about the answer. Hitting the
