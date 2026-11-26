@@ -11,7 +11,7 @@
 //! required: the proof is the node's own test query.
 
 use std::net::{IpAddr, Ipv6Addr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wrendns_net::{QueryHandler, RequestMeta, Response};
@@ -28,6 +28,8 @@ pub(crate) struct Evidence {
     /// The node's own addresses, read when the socket was staged.
     own: Vec<IpAddr>,
     peers: Mutex<Vec<IpAddr>>,
+    /// Requests from the node itself that got past the DoH path check to the gate (T27.14b).
+    routed: AtomicU32,
 }
 
 impl Evidence {
@@ -38,6 +40,7 @@ impl Evidence {
             observe: AtomicBool::new(true),
             own,
             peers: Mutex::new(Vec::new()),
+            routed: AtomicU32::new(0),
         })
     }
 
@@ -79,6 +82,20 @@ impl Evidence {
         }
     }
 
+    /// Counts a gated DoH or DoH3 request that reached the gate (its path was served), when it
+    /// comes from the node itself. A 404 from the gate and a 404 for a path that is not served look
+    /// the same on the wire (ADR-1090); this is how the node's own probe tells them apart.
+    pub(crate) fn note_routed(&self, ip: IpAddr) {
+        if self.observe.load(Ordering::Relaxed) && self.is_own(ip) {
+            self.routed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// How many of the node's own gated requests reached the gate so far.
+    pub(crate) fn routed(&self) -> u32 {
+        self.routed.load(Ordering::Relaxed)
+    }
+
     /// Distinct other hosts seen so far (at most [`MAX_PEERS`]).
     pub(crate) fn others(&self) -> u32 {
         let n = self
@@ -118,6 +135,10 @@ impl QueryHandler for Observed {
     }
 
     fn admit(&self, meta: &RequestMeta) -> bool {
+        // `admit` runs only after the request's path matched, and only a gated listener's matters.
+        if meta.gated {
+            self.evidence.note_routed(meta.peer.ip());
+        }
         self.inner.admit(meta)
     }
 

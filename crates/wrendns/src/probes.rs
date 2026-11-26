@@ -178,13 +178,17 @@ async fn ask(url: &str, timeout: Duration) -> Result<Duration, String> {
 /// REQ: API-902, OBS-020 (T27.14b; design 2.2) — the proof probe of a window change: the same
 /// client, once. On an ungated listener any well-formed answer counts (ADR-107). On a gated one the
 /// gate's refusal is the answer (HTTP 404 on DoH and DoH3, REFUSED with extended error 18 on the
-/// others, ADR-1090 point 4), and a normal answer means the gate is not on.
+/// others, ADR-1090 point 4), and a normal answer means the gate is not on. A DoH 404 is also what
+/// a path the listener does not serve gets, so on a gated DoH or DoH3 listener it counts only when
+/// the node's own request got past the path check to the gate (`evidence.routed()` went up).
 pub(crate) async fn ask_proof(
     url: &str,
     gated: bool,
+    evidence: Option<&crate::server::Evidence>,
     timeout: Duration,
 ) -> Result<crate::guarded::dns_proof::Kind, String> {
     use crate::guarded::dns_proof::Kind;
+    let routed_before = evidence.map(crate::server::Evidence::routed);
     let answer = ask_raw(url, timeout).await;
     if !gated {
         let resp = answer?;
@@ -193,7 +197,16 @@ pub(crate) async fn ask_proof(
             .map_err(|_| "the answer was not a well-formed DNS message".to_owned());
     }
     match answer {
-        Err(e) if e.contains("HTTP 404") => Ok(Kind::RefusedByGate),
+        Err(e) if e.contains("HTTP 404") => {
+            if evidence.map(crate::server::Evidence::routed) > routed_before {
+                Ok(Kind::RefusedByGate)
+            } else {
+                Err(
+                    "HTTP 404, but not from the gate: the listener does not serve this path"
+                        .to_owned(),
+                )
+            }
+        }
         Err(e) => Err(e),
         Ok(resp) => {
             let refused = wrendns_proto::summarize(&resp)

@@ -1646,7 +1646,7 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
     w.family(
         "wrendns_upstream_failures_total",
         "counter",
-        "Failed upstream attempts by kind: timeout, network, bad_response, unresolved, servfail, refused, other_rcode.",
+        "Failed upstream attempts by kind: timeout, network (including an HTTP status other than 200), bad_response, unresolved, servfail, refused, other_rcode.",
     );
     for (name, s) in &snaps {
         for (kind, n) in Outcome::FAILURES.iter().zip(s.failures_by_kind) {

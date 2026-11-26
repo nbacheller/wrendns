@@ -3143,7 +3143,7 @@ Main metrics:
 | `wrendns_responses_total{rcode}`, `wrendns_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
 | `wrendns_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
 | `wrendns_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
-| `wrendns_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
+| `wrendns_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket, or an HTTP status other than 200 from a DoH or DoH3 upstream), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
 | `wrendns_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
 | `wrendns_upstream_breaker_state`, `wrendns_upstream_latency_ewma_seconds` | circuit breaker (0 closed = healthy, 1 half-open = probing, 2 open = benched; the web UI says Healthy, Probing, Benched); smoothed latency |
 | `wrendns_upstream_connections_opened_total{upstream,outcome}`, `wrendns_upstream_connect_seconds_total{upstream}` | connections opened to TCP, DoT, and DoH upstreams (`ok` or `failed`), and the time spent opening them: their ratio is the mean connect time, TCP and TLS together. Many opens per minute mean the pool keeps closing them (see below) |
