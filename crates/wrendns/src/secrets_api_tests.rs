@@ -823,6 +823,25 @@ async fn cld_920_public_api_refuses_pem_and_the_issuers_names() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["detail"].as_str().unwrap().contains("`pem`"), "{v}");
     assert!(!h.src.secrets.exists("loc.key"));
+    // The store trims a name; a padded spelling of a reserved name is the reserved name.
+    for name in [
+        "%20cert.cluster.key",
+        "cert.cluster.key%09",
+        "%20acme.account",
+    ] {
+        for body in [put_body(VALUE), pem_body.clone()] {
+            let (s, _, v) = h
+                .call("PUT", &format!("/api/v1/secrets/{name}"), Some(&body))
+                .await;
+            assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
+        }
+        let (s, _, v) = h
+            .call("DELETE", &format!("/api/v1/secrets/{name}"), None)
+            .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
+    }
+    assert!(!h.src.secrets.exists("cert.cluster.key"));
+    assert!(!h.src.secrets.exists("acme.account"));
     for name in [
         "acme.accounts",
         "cert.key",
@@ -1792,6 +1811,52 @@ async fn clu_015_adopt_audited_and_tombstones_conflict() {
     );
     assert!(!log.contains("fresh-value-8891"), "no value in the audit");
     let _ = p.stop.send(true);
+}
+
+/// REQ: DSC-908, CLD-920 (ADR-1096 point 5) - a joining node's `pem` row is not taken while a
+/// member's build does not announce the kind (a conflict: the joiner keeps it), and is taken once
+/// every member announces it; a text row from the same offer is taken either way.
+#[tokio::test]
+async fn dsc_908_adopt_holds_a_pem_row_until_every_member_knows_the_kind() {
+    let _turn = GATE.lock().await;
+    let body = json!({ "secrets": [
+        { "name": "joined.text", "kind": "text", "value": "joined-value-7741" },
+        { "name": "cert.cluster.key", "kind": "pem", "value": PEM_VALUE },
+    ]});
+    for (features, pem_taken) in [(Some(Vec::new()), false), (None, true)] {
+        let p = pair_features("1.1.0", "1.1.0-edge.40", features).await;
+        let ph = harness_in("", Some(Arc::clone(&p.primary)));
+        crate::http::serve_peers(&ph.src);
+        let peer = p.replica.identity.meta.node_id.clone();
+        let raw = crate::secrets::sync::answer_adopt(
+            Arc::clone(&ph.src),
+            Arc::clone(&p.primary),
+            peer,
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await
+        .unwrap();
+        let ans: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(ph.src.secrets.exists("joined.text"), "{ans}");
+        assert_eq!(
+            ph.src.secrets.exists("cert.cluster.key"),
+            pem_taken,
+            "{ans}"
+        );
+        if pem_taken {
+            assert_eq!(ans["conflicts"], json!([]), "{ans}");
+            assert_eq!(
+                crate::upgrade_gate::standing(Some(&p.primary)),
+                Vec::<String>::new()
+            );
+        } else {
+            assert_eq!(ans["conflicts"], json!(["cert.cluster.key"]), "{ans}");
+            let holds = crate::upgrade_gate::standing(Some(&p.primary));
+            assert_eq!(holds.len(), 1, "{holds:?}");
+            assert!(holds[0].contains("1.1.0-edge.40"), "{holds:?}");
+        }
+        let _ = p.stop.send(true);
+    }
 }
 
 /// REQ: CLU-015 (AC9; M5) — over the real channel: a primary whose data-directory key is lost

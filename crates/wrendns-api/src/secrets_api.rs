@@ -720,7 +720,8 @@ async fn write(
     op: SecretOp,
     dry_run: bool,
 ) -> Response {
-    if let Some(e) = public_refusal(&name, &op) {
+    // The store trims the name before it validates and keeps it: the check sees what is stored.
+    if let Some(e) = public_refusal(name.trim(), &op) {
         return no_store(e.into_response(), None);
     }
     // REQ: AGT-003 (ADR-903 §4) — the record keeps `PUT /secrets/<name> ` and a keyed hash of
