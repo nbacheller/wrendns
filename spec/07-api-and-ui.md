@@ -21,7 +21,7 @@
 | Rules | `/rules` (manual allow/deny, regex), bulk import/export |
 | Upstreams | `/upstreams`, `/upstream-groups`, `/routes`, `/upstreams/presets`, `/upstreams/{id}/health`, `POST /upstreams/test` (run a query through a candidate upstream) |
 | Local DNS | `/records`, `/zones`, `/rewrites`, `/safesearch`, `/services` |
-| Cache | `GET /cache/stats`, `POST /cache/flush` (`{name?, subtree?}`) |
+| Cache | `GET /cache/stats`, `POST /cache/flush` (`{name?, subtree?, type?, kind?, recursor?, node?}`, DNS-905) |
 | Blocking | `POST /blocking/pause`, `POST /blocking/resume` (global) |
 | Settings | `GET/PATCH /config` (whole document, JSON-Patch), `GET /config/schema`, `POST /config/validate` |
 | Cluster | `GET /cluster` (members, roles, versions, lag, epochs), `GET /cluster/compare` (every node side by side, odd-one-out findings: OBS-028), `POST /cluster/tokens`, `POST /cluster/promote`, `DELETE /cluster/nodes/{id}`, `GET /cluster/conflicts`, `POST /cluster/conflicts/{id}/reapply` |

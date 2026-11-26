@@ -791,3 +791,40 @@ async fn dns_022_stub_probe_servfail_is_down() {
     s.stubs[0].servers = vec![IpAddr::from([127, 0, 0, 11]), IpAddr::from([127, 0, 0, 13])];
     assert_eq!(Recursor::new(s).probe_stub().await, Some(true));
 }
+
+/// REQ: DNS-905 (T40.4) — flushing the zone cuts makes the next lookup start from the root
+/// again; flushing only the round-trip times leaves the cuts in place.
+#[tokio::test]
+async fn dns_905_flushing_cuts_restarts_from_the_root() {
+    let (s, log) = tree(|_| {}).await;
+    let r = Recursor::new(s);
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert!(r.cached_zones() > 0);
+    // Round-trip times only: the cuts stay, so the root isn't asked.
+    assert!(r.flush(false, true) > 0);
+    log.lock().unwrap().clear();
+    r.resolve(name("deep.ent.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert!(
+        log.lock().unwrap().iter().all(|(ip, _)| *ip == 4),
+        "{:?}",
+        log.lock().unwrap()
+    );
+    // The cuts: the next lookup begins at the root.
+    assert!(r.flush(true, false) > 0);
+    assert_eq!(r.cached_zones(), 0);
+    log.lock().unwrap().clear();
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    let roots = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(ip, _)| *ip == 2)
+        .count();
+    assert_eq!(roots, 1, "{:?}", log.lock().unwrap());
+}

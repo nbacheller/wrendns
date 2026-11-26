@@ -715,15 +715,13 @@ pub trait Backend: Send + Sync + 'static {
         let _ = name;
         Ok(Vec::new())
     }
-    /// Flushes `name` (with `subtree`, everything under it; `None`: everything) on every
-    /// node, or on `node` only (T6.13).
+    /// Flushes what `req` says (T6.13: a name, a subtree or everything; T40.4: a type, a kind,
+    /// or the recursor's memory) on every node, or on `req.node` only. The request is valid.
     fn cache_flush(
         &self,
-        name: Option<&str>,
-        subtree: bool,
-        node: Option<&str>,
+        req: &crate::model::CacheFlushRequest,
     ) -> Result<Vec<crate::model::CacheFlushNode>, Problem> {
-        let _ = (name, subtree, node);
+        let _ = req;
         Ok(Vec::new())
     }
     /// Sets (`body` set) or removes (`body` None) a local name or a forwarded domain made

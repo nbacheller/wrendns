@@ -1,6 +1,9 @@
 <script lang="ts">
   // REQ: DNS-006, API-005 (T6.13) — the cache: counters per node, what it holds for a name,
   // and flushing a name, a subtree, or everything, on every node (or one).
+  // REQ: DNS-905 (T40.4) — and flushing one query type, the negative answers or the failed
+  // lookups, or what the recursive resolver remembers (zone cuts, round-trip times). The broad
+  // ones ask first.
   import { api, type S } from '../api';
   import { can } from '../session.svelte';
   import { bytes, num, pct } from '../format';
@@ -10,8 +13,9 @@
   let {
     name: initial = '',
     compact = false,
+    more = undefined,
     title = 'Cache',
-  }: { name?: string; compact?: boolean; title?: string } = $props();
+  }: { name?: string; compact?: boolean; more?: boolean; title?: string } = $props();
 
   let stats = $state<S['CacheNodeStats'][]>([]);
   let name = $state('');
@@ -22,7 +26,17 @@
   let busy = $state(false);
   let error = $state<unknown>(null);
   let confirmAll = $state(false);
+  let qtype = $state('');
+  // A broad flush waiting for its confirmation.
+  let pending = $state<{ label: string; body: S['CacheFlushRequest'] } | null>(null);
   const writable = $derived(can('operator'));
+  // The type, kind and recursor flushes: on by default except in the compact quick cards, and a
+  // page that hides only the counters (the Cache page has its own) asks for them with `more`.
+  const showMore = $derived(more ?? !compact);
+  const typeName = $derived(qtype.trim().toUpperCase());
+  const recursorDropped = $derived(
+    flushed ? flushed.nodes.reduce((a, n) => a + (n.recursorRemoved ?? 0), 0) : 0,
+  );
 
   async function loadStats() {
     try {
@@ -58,6 +72,25 @@
     } finally {
       busy = false;
     }
+  }
+  async function run(body: S['CacheFlushRequest']) {
+    busy = true;
+    error = null;
+    try {
+      flushed = await api.cacheFlush({ ...body, node: node || undefined });
+      pending = null;
+      await loadStats();
+      if (name.trim()) await lookup();
+    } catch (err) {
+      error = err;
+    } finally {
+      busy = false;
+    }
+  }
+  /** A flush with a name and a type is narrow and runs at once; the rest ask first. */
+  function ask(label: string, body: S['CacheFlushRequest']) {
+    confirmAll = false;
+    pending = { label, body };
   }
   $effect(() => {
     name = initial;
@@ -133,13 +166,55 @@
         <button class="danger" disabled={busy} onclick={() => flush(true)}>Yes, empty the cache</button>
         <button class="link" onclick={() => (confirmAll = false)}>Cancel</button>
       {:else}
-        <button class="link" onclick={() => (confirmAll = true)}>Flush everything…</button>
+        <button class="link" onclick={() => { pending = null; confirmAll = true; }}>Flush everything…</button>
       {/if}
     </div>
+    {#if showMore}
+      <div class="row" data-testid="cache-flush-more">
+        <input
+          class="mono type"
+          list="cache-flush-types"
+          aria-label="Query type"
+          data-testid="cache-flush-type"
+          placeholder="Type, e.g. AAAA"
+          bind:value={qtype}
+        />
+        <datalist id="cache-flush-types">
+          {#each ['A', 'AAAA', 'CNAME', 'HTTPS', 'MX', 'NS', 'PTR', 'SRV', 'TXT'] as t (t)}<option value={t}></option>{/each}
+        </datalist>
+        {#if name.trim()}
+          <button
+            disabled={busy || !typeName}
+            onclick={() => run({ name: name.trim(), subtree: subtree || undefined, type: typeName })}
+          >Flush {typeName || 'one type'} for this name</button>
+        {:else}
+          <button
+            disabled={busy || !typeName}
+            onclick={() => ask(`Flush every ${typeName} answer`, { type: typeName })}
+          >Flush this type everywhere…</button>
+        {/if}
+        <button disabled={busy} onclick={() => ask('Flush negative answers', { kind: 'negative' })}>Flush negative answers…</button>
+        <button disabled={busy} onclick={() => ask('Flush failed lookups', { kind: 'bogus' })}>Flush failed lookups…</button>
+      </div>
+      <div class="row" data-testid="cache-flush-recursor">
+        <span class="small muted">Recursive resolver:</span>
+        <button disabled={busy} onclick={() => ask("Flush the recursor's zone cuts", { recursor: 'cuts' })}>Flush zone cuts…</button>
+        <button disabled={busy} onclick={() => ask("Flush the recursor's round-trip times", { recursor: 'rtts' })}>Flush round-trip times…</button>
+      </div>
+      {#if pending}
+        <div class="row" data-testid="cache-flush-confirm">
+          <span class="small">{pending.label}{node ? ` on ${node}` : ' on every node'}?</span>
+          <button class="danger" disabled={busy} onclick={() => run(pending!.body)}>Yes, flush</button>
+          <button class="link" onclick={() => (pending = null)}>Cancel</button>
+        </div>
+      {/if}
+    {/if}
   {/if}
   {#if flushed}
     <p class="notice ok small" data-testid="cache-flushed">
-      Removed {num(flushed.totalRemoved)} {flushed.totalRemoved === 1 ? 'entry' : 'entries'}{#each flushed.nodes.filter((n) => n.error) as n (n.node)}{` · ${n.node}: ${n.error}`}{/each}.
+      {#if recursorDropped > 0 || flushed.nodes.some((n) => n.recursorRemoved != null)}
+        Dropped {num(recursorDropped)} resolver {recursorDropped === 1 ? 'entry' : 'entries'}{:else}
+        Removed {num(flushed.totalRemoved)} {flushed.totalRemoved === 1 ? 'entry' : 'entries'}{/if}{#each flushed.nodes.filter((n) => n.error) as n (n.node)}{` · ${n.node}: ${n.error}`}{/each}.
     </p>
   {/if}
   <ErrorNote {error} />
@@ -159,6 +234,9 @@
   }
   .grow {
     flex: 1 1 220px;
+  }
+  .type {
+    width: 150px;
   }
   .badge {
     margin-left: 6px;

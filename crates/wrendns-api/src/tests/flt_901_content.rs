@@ -92,9 +92,21 @@ async fn flt_901_categories_lists_the_catalog_and_what_groups_select() {
     with_groups(&fake);
     let (s, _, v) = get(&app, "/api/v1/categories").await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["catalogVersion"], "2026-11-18");
+    assert_eq!(v["catalogVersion"], "2026-11-26");
     let groups = v["groups"].as_array().unwrap();
     assert!(groups.len() >= 7);
+    // The aggregate's group carries its notice and the link to the publisher's table of sources.
+    let pt = groups.iter().find(|g| g["id"] == "packettale").unwrap();
+    assert!(
+        pt["note"].as_str().unwrap().contains("mixed licences"),
+        "{pt}"
+    );
+    assert_eq!(pt["noteUrl"], "https://blocklist.packettale.com/sources.md");
+    assert_eq!(pt["categories"].as_array().unwrap().len(), 5);
+    assert!(
+        groups[0].get("note").is_none(),
+        "a group with no notice has none"
+    );
     let adult = groups
         .iter()
         .flat_map(|g| g["categories"].as_array().unwrap())
@@ -135,7 +147,7 @@ async fn flt_901_categories_lists_the_catalog_and_what_groups_select() {
     let (s, _, v) = get(&app, "/api/v1/groups/kids/content").await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["content"]["level"], "enhanced");
-    assert_eq!(v["summary"], "Enhanced (1 of 20)");
+    assert_eq!(v["summary"], "Enhanced (1 of 25)");
     assert_eq!(
         get(&app, "/api/v1/groups/nobody/content").await.0,
         StatusCode::NOT_FOUND

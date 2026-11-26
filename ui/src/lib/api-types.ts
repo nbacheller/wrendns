@@ -1094,13 +1094,19 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Flush the cache: one name, a subtree, or everything.
+         * Flush the cache: one name, a subtree, one type, one kind, or everything; or the recursor's memory.
          * @description With `name`, removes that name's cached answers (with `subtree`, every name under it too);
-         *     without, empties the cache. By default every node in the cluster flushes; `node` limits it to
-         *     one. The next query for a flushed name is asked of the upstreams again. This doesn't clear
-         *     devices' own caches, blocked answers are never cached (unblocking needs no flush), and to
-         *     change what a name resolves to, use local names instead. Needs the operator role (or the
-         *     `ops:cache` agent scope); audit-logged as `cache.flush`.
+         *     without, empties the cache. `type` (`A`, `AAAA`, `HTTPS`, `TYPE65`) keeps every other type,
+         *     for the name given or for every name. `kind` is `negative` (NXDOMAIN and no-data answers
+         *     only) or `bogus` (failed lookups: SERVFAIL, which is how a DNSSEC validation failure is
+         *     answered). `recursor` (`cuts`, `rtts` or `all`) instead empties what the built-in recursive
+         *     resolver remembers between queries: zone cuts and server addresses (the next lookup starts
+         *     from the root again) and each server's round-trip time; it can't be combined with the
+         *     others. By default every node in the cluster flushes; `node` limits it to one. The next
+         *     query for a flushed name is asked of the upstreams again. This doesn't clear devices' own
+         *     caches, blocked answers are never cached (unblocking needs no flush), and to change what a
+         *     name resolves to, use local names instead. Needs the operator role (or the `ops:cache`
+         *     agent scope); audit-logged as `cache.flush`.
          */
         post: operations["flush"];
         delete?: never;
@@ -5617,6 +5623,12 @@ export interface components {
             node?: string | null;
             /**
              * Format: int64
+             * @description REQ: DNS-905 (T40.4) — recursor entries dropped (a `recursor` flush): zone cuts and
+             *     addresses, or server round-trip times.
+             */
+            recursorRemoved?: number | null;
+            /**
+             * Format: int64
              * @description Entries removed; absent when the node couldn't be reached.
              */
             removed?: number | null;
@@ -5624,14 +5636,35 @@ export interface components {
         /** @description What to flush (`POST /api/v1/cache/flush`). */
         CacheFlushRequest: {
             /**
+             * @description REQ: DNS-905 (T40.4) — only `negative` answers (NXDOMAIN and no-data) or `bogus` ones
+             *     (failed lookups: SERVFAIL, which is how a DNSSEC validation failure is answered);
+             *     absent: every kind.
+             * @example negative
+             */
+            kind?: string | null;
+            /**
              * @description A name; absent: everything.
              * @example www.example.com
              */
             name?: string | null;
             /** @description One node only (its site or ID); absent: every node. */
             node?: string | null;
+            /**
+             * @description REQ: DNS-905 (T40.4) — instead of answers, empty what the recursive resolver
+             *     remembers: `cuts` (zone cuts and server addresses: the next lookup starts from the
+             *     root), `rtts` (each server's round-trip time), or `all`. Can't be combined with
+             *     `name`, `subtree`, `type` or `kind`.
+             * @example cuts
+             */
+            recursor?: string | null;
             /** @description Also every name under `name`. */
             subtree?: boolean | null;
+            /**
+             * @description REQ: DNS-905 (T40.4) — only this query type (`A`, `AAAA`, `HTTPS`, `TYPE65`): with a
+             *     `name`, that name's answers of this type; without, every name's.
+             * @example AAAA
+             */
+            type?: string | null;
         };
         /** @description The result of a flush. */
         CacheFlushResult: {
@@ -5945,6 +5978,10 @@ export interface components {
             categories: components["schemas"]["CategoryView"][];
             id: string;
             name: string;
+            /** @description A notice for the group's heading (an aggregate of other maintainers' lists says so). */
+            note?: string | null;
+            /** @description The page the notice points to. */
+            noteUrl?: string | null;
         };
         /** @description One category. */
         CategoryView: {
@@ -15034,7 +15071,7 @@ export interface operations {
                     "application/json": components["schemas"]["CacheFlushResult"];
                 };
             };
-            /** @description Not a domain name, or an unknown node. */
+            /** @description Not a domain name, an unknown type, kind, recursor or node, or a recursor flush combined with an answer flush. */
             400: {
                 headers: {
                     [name: string]: unknown;
