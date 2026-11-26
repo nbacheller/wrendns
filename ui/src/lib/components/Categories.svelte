@@ -236,6 +236,7 @@
         </label>
         <span class="muted small" data-testid="cat-group-count">{st.on} of {st.of}</span>
       </header>
+      {#if g.note}<p class="notice small" data-testid="cat-group-note">{g.note}{#if g.noteUrl} <a href={g.noteUrl} target="_blank" rel="noreferrer">Sources and their terms</a>{/if}</p>{/if}
       <ul>
         {#each g.categories as c (c.id)}
           <li data-testid="cat-row" data-category={c.id}>
@@ -308,7 +309,7 @@
 {#if licences}
   <Drawer title="Sources and licences" onclose={() => (licences = false)}>
     <div data-testid="cat-licences">
-      <p class="small muted">Lists are downloaded by this node from their maintainers while a profile uses them. Nothing is bundled or redistributed.</p>
+      <p class="small muted">Lists are downloaded by this node from their maintainers (the aggregate group, from the aggregator that republishes them) while a profile uses them. Nothing is bundled or redistributed.</p>
       {#each view.attributions as a (a)}<p class="notice" data-testid="cat-attribution">{a}</p>{/each}
       <div class="table-wrap">
         <table class="compact">

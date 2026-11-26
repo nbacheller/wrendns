@@ -1824,6 +1824,16 @@ pub struct ForwardInput {
     /// followed, instead of forwarding with recursion desired. Default `false`.
     #[serde(default)]
     pub stub: bool,
+    /// REQ: DNS-902 — a stub zone only: also ask its servers at loopback or link-local
+    /// addresses (a server on this machine). Off by default, and refused for a forward that
+    /// is not a stub zone. Left out, the stored value stays as it is.
+    #[serde(default)]
+    pub allow_local_servers: Option<bool>,
+    /// REQ: DNS-902 — a stub zone only: also ask private-range servers for names outside the
+    /// zone (the zone's own private servers are asked either way). Off by default, and refused
+    /// for a forward that is not a stub zone. Left out, the stored value stays as it is.
+    #[serde(default)]
+    pub allow_private_servers: Option<bool>,
     /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client).
     #[serde(default)]
     pub match_group: Vec<String>,
@@ -2163,6 +2173,61 @@ pub struct CacheFlushRequest {
     pub subtree: Option<bool>,
     /// One node only (its site or ID); absent: every node.
     pub node: Option<String>,
+    /// REQ: DNS-905 (T40.4) — only this query type (`A`, `AAAA`, `HTTPS`, `TYPE65`): with a
+    /// `name`, that name's answers of this type; without, every name's.
+    #[serde(rename = "type")]
+    #[schema(example = "AAAA")]
+    pub qtype: Option<String>,
+    /// REQ: DNS-905 (T40.4) — only `negative` answers (NXDOMAIN and no-data) or `bogus` ones
+    /// (failed lookups: SERVFAIL, which is how a DNSSEC validation failure is answered);
+    /// absent: every kind.
+    #[schema(example = "negative")]
+    pub kind: Option<String>,
+    /// REQ: DNS-905 (T40.4) — instead of answers, empty what the recursive resolver
+    /// remembers: `cuts` (zone cuts and server addresses: the next lookup starts from the
+    /// root), `rtts` (each server's round-trip time), or `all`. Can't be combined with
+    /// `name`, `subtree`, `type` or `kind`.
+    #[schema(example = "cuts")]
+    pub recursor: Option<String>,
+}
+
+impl CacheFlushRequest {
+    /// REQ: DNS-905 (T40.4) — whether this is the original flush (a name, a subtree, or
+    /// everything), which every node version understands.
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        self.qtype.is_none() && self.kind.is_none() && self.recursor.is_none()
+    }
+
+    /// REQ: DNS-905 (T40.4) — the text of what's wrong with the request, if anything: an
+    /// unknown `kind` or `recursor`, or a recursor flush mixed with an answer flush.
+    #[must_use]
+    pub fn problem(&self) -> Option<String> {
+        if let Some(k) = &self.kind
+            && !["negative", "bogus"].contains(&k.as_str())
+        {
+            return Some(format!("`kind`: `{k}` isn't negative or bogus"));
+        }
+        if let Some(r) = &self.recursor {
+            if !["cuts", "rtts", "all"].contains(&r.as_str()) {
+                return Some(format!("`recursor`: `{r}` isn't cuts, rtts, or all"));
+            }
+            if self.name.is_some()
+                || self.subtree.is_some()
+                || self.qtype.is_some()
+                || self.kind.is_some()
+            {
+                return Some(
+                    "`recursor` flushes the resolver's memory and can't be combined with `name`, `subtree`, `type` or `kind`"
+                        .into(),
+                );
+            }
+        }
+        if self.subtree == Some(true) && self.name.is_none() {
+            return Some("`subtree` needs a `name`".into());
+        }
+        None
+    }
 }
 
 /// What one node removed.
@@ -2172,6 +2237,10 @@ pub struct CacheFlushNode {
     pub node: Option<String>,
     /// Entries removed; absent when the node couldn't be reached.
     pub removed: Option<u64>,
+    /// REQ: DNS-905 (T40.4) — recursor entries dropped (a `recursor` flush): zone cuts and
+    /// addresses, or server round-trip times.
+    #[serde(default)]
+    pub recursor_removed: Option<u64>,
     pub error: Option<String>,
 }
 
@@ -2235,6 +2304,7 @@ pub struct RuleInfo {
 /// A domain sent to other servers (conditional forwarding).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // independent flags of one route, as the API shows them
 pub struct ForwardInfo {
     #[schema(example = "corp.example")]
     pub domain: String,
@@ -2243,6 +2313,11 @@ pub struct ForwardInfo {
     /// REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations
     /// followed.
     pub stub: bool,
+    /// REQ: DNS-902 — a stub zone whose servers may be at loopback or link-local addresses.
+    pub allow_local_servers: bool,
+    /// REQ: DNS-902 — a stub zone whose private-range servers are also asked for names outside
+    /// the zone.
+    pub allow_private_servers: bool,
     /// `file` (read-only here) or `api`.
     pub source: String,
     /// REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client).

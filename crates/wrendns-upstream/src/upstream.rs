@@ -1061,6 +1061,16 @@ impl Upstream {
             .await;
     }
 
+    /// REQ: DNS-905 (T40.4) — empties a `recursive://` upstream's zone cuts (`cuts`) and/or
+    /// server round-trip times (`rtts`); returns how many entries went, or `None` for an
+    /// upstream that isn't our own resolver.
+    pub fn flush_recursor(&self, cuts: bool, rtts: bool) -> Option<usize> {
+        match &self.transport {
+            Transport::Recursive(r) => Some(r.flush(cuts, rtts)),
+            _ => None,
+        }
+    }
+
     /// REQ: UPS-006, DNS-022 — a stub upstream's liveness: one of its servers answers the zone's
     /// SOA (a refusal counts, since authoritative servers may refuse even the apex they delegate
     /// from; a SERVFAIL doesn't). The one rule behind the active check and the draft-upstream
@@ -1069,6 +1079,25 @@ impl Upstream {
         match &self.transport {
             Transport::Recursive(r) => r.probe_stub().await,
             _ => None,
+        }
+    }
+
+    /// REQ: DNS-902 — the settings of a `recursive://` upstream (`None` for any other).
+    #[must_use]
+    pub fn recursive_settings(&self) -> Option<&wrendns_recursor::Settings> {
+        match &self.transport {
+            Transport::Recursive(r) => Some(r.settings()),
+            _ => None,
+        }
+    }
+
+    /// REQ: DNS-902 — a `recursive://` upstream whose address rules (loopback, link-local and
+    /// private servers) affected answers for `name` within `within`; `false` for any other.
+    #[must_use]
+    pub fn address_rules_affect(&self, name: &NameBuf, within: Duration) -> bool {
+        match &self.transport {
+            Transport::Recursive(r) => r.address_rules_affect(name, within),
+            _ => false,
         }
     }
 

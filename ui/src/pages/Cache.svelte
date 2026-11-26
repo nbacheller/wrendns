@@ -363,7 +363,7 @@
   </section>
 
   {#key lookupName}
-    <CacheCard name={lookupName} compact title="Look up and flush" />
+    <CacheCard name={lookupName} compact more title="Look up and flush" />
   {/key}
 </div>
 

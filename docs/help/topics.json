@@ -376,7 +376,7 @@
       "summary": "Questions for one domain go to a specific server instead of the public ones, such as your work network's or your router's.",
       "when": "Names like nas.home or corp.example only exist on another server.",
       "example": "Send everything under corp.example to 10.0.0.53 so work names resolve at home over the VPN.",
-      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box. Limit it with groups (only their devices are sent) and query types (only PTR, say), and leave the DNSSEC box ticked unless the domain is signed or you know why it isn't. Ticking “Only on this node” keeps the route here: the other nodes answer as if it weren't there.",
+      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box (a server on this machine, such as 127.0.0.1, then needs its own box ticked, or WrenDNS never asks it). Limit it with groups (only their devices are sent) and query types (only PTR, say), and leave the DNSSEC box ticked unless the domain is signed or you know why it isn't. Ticking “Only on this node” keeps the route here: the other nodes answer as if it weren't there.",
       "diagram": "route",
       "docs": "routing-conditional-forwarding"
     },
@@ -703,10 +703,10 @@
       "id": "cache-tools",
       "title": "What's in the cache, and flushing it",
       "term": "DNS cache",
-      "summary": "WrenDNS keeps upstream answers until their time to live runs out, so repeat questions are answered in microseconds. Here you can see each node's hit rate, look up what's cached for a name (and how long it stays fresh), and flush a name, everything under it, or the whole cache, on every node or one.",
+      "summary": "WrenDNS keeps upstream answers until their time to live runs out, so repeat questions are answered in microseconds. Here you can see each node's hit rate, look up what's cached for a name (and how long it stays fresh), and flush a name, everything under it, one query type, only the negative answers (names that don't exist, or have no record of that type), only the failed lookups (SERVFAIL, which is how a DNSSEC validation failure is answered), or the whole cache, on every node or one. If you use the built-in recursive resolver, you can also make it forget its zone cuts (the next lookup starts from the root servers again) or its server round-trip times (it re-learns which servers are fastest). The wide flushes ask for confirmation.",
       "when": "A site moved to a new address and you don't want to wait for the old answer to expire, or you're checking whether an answer came from the cache.",
       "example": "Look up www.example.com: A, NOERROR, 1 answer, validated, 212 s left, on both nodes. Flush it, and the next query asks the upstreams again.",
-      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on your network instead. Each node in a cluster has its own cache.",
+      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on your network instead. Each node in a cluster has its own cache. Flushing everything, or the resolver's zone cuts, sends a burst of lookups upstream while it refills.",
       "docs": "cache-tools"
     },
     {
@@ -1544,6 +1544,26 @@
       "docs": "dnssec-validation"
     },
     {
+      "id": "recursive-options",
+      "title": "How a recursive upstream asks",
+      "term": "QNAME minimisation, 0x20 and IPv6 (recursive upstream)",
+      "summary": "A recursive:// upstream asks the root and the authoritative servers itself. Minimising names sends each server only the part of the name it needs. Randomising letter case (0x20) makes a forged answer harder to slip in. IPv6 lets it ask servers over IPv6 too.",
+      "when": "You run WrenDNS without a forwarder and want to choose how private, how hard to forge and how reachable the lookups are.",
+      "example": "With minimisation on, the root servers see only com, never www.example.com.",
+      "caution": "Minimisation is on by default and falls back to the full name when a zone breaks with it. 0x20 is off by default because a few servers do not echo the case. IPv6 needs an IPv6 route to the Internet, or lookups wait for timeouts.",
+      "docs": "recursive-resolution-no-forwarder"
+    },
+    {
+      "id": "recursive-server-addresses",
+      "title": "Which server addresses a recursive upstream asks",
+      "term": "Loopback, link-local and private servers (recursive upstream)",
+      "summary": "A recursive:// upstream never asks a server at a loopback, unspecified, link-local, multicast or broadcast address, and asks private addresses only inside its stub zone. A public delegation that points only at such addresses fails with SERVFAIL, and Why? says so.",
+      "when": "A name that should resolve fails, and its zone delegates to an address on this machine or on your own network.",
+      "example": "A public zone that delegates to 127.0.0.1 gets no query: it could aim the resolver at a service on this machine.",
+      "caution": "Turn the switches on only for a test setup or a real authoritative server on this host or network, and prefer a stub zone for the latter: a stub zone's servers may be private. Both are off by default. On Local DNS, “Send a domain to another server”, a stub zone whose server is on this machine shows a box to allow it for that zone only (Save waits for it: without it the zone never answers), and one whose server is on a private network shows an optional box for names outside the zone. Other upstreams set them under Upstreams.",
+      "docs": "recursive-resolution-no-forwarder"
+    },
+    {
       "id": "list-limits",
       "title": "List size and staleness",
       "term": "List limits",
@@ -1651,7 +1671,7 @@
       "summary": "A category is a named kind of site (adult content, gambling, malware, social networks, ad block) backed by an open list its maintainer publishes. A profile chooses categories; this node downloads each list once, however many profiles use it, and blocks the names in it for that profile's devices only.",
       "when": "You want to keep a kind of site away from some devices, such as adult content and gambling on the children's tablets, without writing a list yourself.",
       "example": "A Kids profile with Basic filtering blocks adult content, malware, phishing and scams. The Teens profile adds Gambling and Social networks. The default profile blocks none of them.",
-      "caution": "A category block is a DNS block: it stops names, not pages. A device on mobile data, a VPN or its own encrypted DNS goes around it, apps cache answers, and no list is complete. It is not a promise of child safety.",
+      "caution": "A category block is a DNS block: it stops names, not pages. A device on mobile data, a VPN or its own encrypted DNS goes around it, apps cache answers, and no list is complete. It is not a promise of child safety. The last group, from blocklist.packettale.com, is an aggregate of other maintainers' lists with mixed licences: each is off until you turn it on, and this node downloads it from the aggregator once a day.",
       "docs": "content-categories-and-filter-profiles"
     },
     {

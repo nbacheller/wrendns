@@ -116,6 +116,8 @@ pub mod ede {
     pub const NOT_SUPPORTED: u16 = 21;
     pub const NO_REACHABLE_AUTHORITY: u16 = 22;
     pub const NETWORK_ERROR: u16 = 23;
+    /// RFC 9276 §3.2: an NSEC3 denial past the iteration limit (insecure, or SERVFAIL).
+    pub const UNSUPPORTED_NSEC3_ITERATIONS: u16 = 27;
 }
 
 /// Classic (non-EDNS) DNS-over-UDP message limit.

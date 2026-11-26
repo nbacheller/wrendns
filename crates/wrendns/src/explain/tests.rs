@@ -276,6 +276,54 @@ fn flt_013_routes_and_pause_are_explained() {
     assert!(served(&p, "social.example", "10.0.0.5").is_none());
 }
 
+/// REQ: DNS-902, FLT-013 — "Why?" says what a recursive upstream will not ask only when an
+/// address rule actually affected the answer: a stub zone whose servers are all refused. An
+/// upstream that refused nothing, or whose rules allow the addresses, adds no note.
+#[test]
+fn dns_902_explain_notes_the_server_addresses_a_recursive_upstream_refuses() {
+    let extra = |recursive: &str| {
+        format!(
+            r#"
+[[upstream]]
+name = "rec"
+url = "recursive://"
+{recursive}
+[[upstream_group]]
+name = "walk"
+members = ["rec"]
+[[route]]
+match_suffix = ["walk.example"]
+upstream_group = "walk"
+"#
+        )
+    };
+    let noted = |recursive: &str| {
+        let (p, sources) = setup_with(&extra(recursive));
+        let e = ask(&p, &sources, "www.walk.example", "10.0.0.9");
+        e.notes.iter().any(|n| n.contains("upstream rec"))
+    };
+    // A plain recursive upstream that has refused nothing: no note on every query.
+    assert!(!noted(""));
+    // A stub zone whose only server is on this machine, not allowed: it affects the answer.
+    let stub = |allow: &str| {
+        format!(
+            "[upstream.recursive]
+stub_zone = \"walk.example\"
+stub_servers = [\"127.0.0.1\"]
+{allow}"
+        )
+    };
+    assert!(noted(&stub("")));
+    // Allowed, the rule affects nothing.
+    assert!(!noted(&stub("allow_local_servers = true")));
+    // A private stub server is asked inside its zone without any allowance: no note.
+    assert!(!noted(
+        "[upstream.recursive]
+stub_zone = \"walk.example\"
+stub_servers = [\"10.1.1.1\"]"
+    ));
+}
+
 #[test]
 fn flt_013_explain_serializes_for_the_api() {
     let (p, sources) = setup();

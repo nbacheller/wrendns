@@ -1281,12 +1281,14 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_forward_domain",
-            description: "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). Needs the config:write:forwards scope.",
+            description: "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). A stub zone does not ask a server on this machine (loopback or link-local) unless allowLocalServers is true, and asks private-range servers only for names under the zone unless allowPrivateServers is true; leave them out to keep what is stored. Needs the config:write:forwards scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "domain": {"type": "string", "description": "The domain, e.g. corp.example."},
                 "servers": {"type": "array", "items": {"type": "string"}, "description": "The servers, tried in order."},
                 "stub": {"type": "boolean", "description": "A stub zone: the servers are authoritative only (IPs), asked iteratively, delegations followed. Default false."},
+                "allowLocalServers": {"type": "boolean", "description": "Stub zone only: also ask servers at loopback or link-local addresses (a server on this machine). Default false; left out, the stored value stays."},
+                "allowPrivateServers": {"type": "boolean", "description": "Stub zone only: also ask private-range servers for names outside the zone. Default false; left out, the stored value stays."},
                 "reason": reason_schema()
             }, "required": ["domain", "servers", "reason"], "additionalProperties": false})
             },
@@ -1301,10 +1303,20 @@ pub fn write_tools() -> Vec<WriteTool> {
                 // REQ: DNS-022
                 let stub = a.get("stub").and_then(Value::as_bool).unwrap_or(false);
                 let how = if stub { " (stub zone)" } else { "" };
+                let mut body = json!({"servers": servers, "stub": stub});
+                // REQ: DNS-902 — only what the caller says; the rest stays as stored.
+                for (arg, key) in [
+                    ("allowLocalServers", "allowLocalServers"),
+                    ("allowPrivateServers", "allowPrivateServers"),
+                ] {
+                    if let Some(b) = a.get(arg).and_then(Value::as_bool) {
+                        body[key] = b.into();
+                    }
+                }
                 Ok(Write {
                     method: "PUT",
                     path: format!("/api/v1/forwards/{}", enc(&domain)),
-                    body: Some(json!({"servers": servers, "stub": stub})),
+                    body: Some(body),
                     summary: format!(
                         "Send questions under {domain} to {}{how}",
                         servers.join(", ")
@@ -1917,11 +1929,14 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "flush_cache",
-            description: "Changes at once (audited, no plan). Removes cached answers: one name (optionally everything under it), or the whole cache; on every node unless `node` names one. The next query is asked upstream again. Blocked answers are never cached. Needs the ops:cache scope.",
+            description: "Changes at once (audited, no plan). Removes cached answers: one name (optionally everything under it), one query type (`type`, for a name or for every name), one kind (`kind`: negative = NXDOMAIN and no-data answers, bogus = failed lookups, SERVFAIL), or the whole cache; or, with `recursor` (cuts, rtts, or all), empties what the built-in recursive resolver remembers instead (zone cuts and server addresses, so the next lookup starts from the root; server round-trip times), which can't be combined with name, type or kind. On every node unless `node` names one. The next query is asked upstream again. Blocked answers are never cached. Flushing everything or a recursor's cuts costs a burst of upstream queries. Needs the ops:cache scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "One name (default: everything)."},
                 "subtree": {"type": "boolean", "description": "Also every name under it."},
+                "type": {"type": "string", "description": "Only this query type (A, AAAA, HTTPS, TYPE65)."},
+                "kind": {"type": "string", "enum": ["negative", "bogus"], "description": "Only negative answers (NXDOMAIN, no data) or bogus ones (failed lookups)."},
+                "recursor": {"type": "string", "enum": ["cuts", "rtts", "all"], "description": "Empty the recursive resolver's memory instead of the answers."},
                 "node": {"type": "string", "description": "Only this node."},
                 "reason": reason_schema()
             }, "required": ["reason"], "additionalProperties": false})
@@ -1931,15 +1946,29 @@ pub fn write_tools() -> Vec<WriteTool> {
             write: |a| {
                 let body = pick(
                     a,
-                    &[("name", "name"), ("subtree", "subtree"), ("node", "node")],
+                    &[
+                        ("name", "name"),
+                        ("subtree", "subtree"),
+                        ("type", "type"),
+                        ("kind", "kind"),
+                        ("recursor", "recursor"),
+                        ("node", "node"),
+                    ],
                 );
                 Ok(Write {
                     method: "POST",
                     path: "/api/v1/cache/flush".into(),
-                    summary: s(a, "name").map_or_else(
-                        || "Empty the cache".into(),
-                        |n| format!("Flush {n} from the cache"),
-                    ),
+                    summary: if let Some(r) = s(a, "recursor") {
+                        format!("Flush the recursor's {r}")
+                    } else if let Some(n) = s(a, "name") {
+                        format!("Flush {n} from the cache")
+                    } else if let Some(k) = s(a, "kind") {
+                        format!("Flush {k} answers from the cache")
+                    } else if let Some(t) = s(a, "type") {
+                        format!("Flush {t} answers from the cache")
+                    } else {
+                        "Empty the cache".into()
+                    },
                     body: Some(Value::Object(body)),
                     merge: None,
                 })

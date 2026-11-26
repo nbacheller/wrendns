@@ -181,12 +181,19 @@ pub(crate) struct RecordValue {
 /// The servers a domain is sent to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // independent flags of one route
 pub(crate) struct Forward {
     pub(crate) servers: Vec<String>,
     /// REQ: DNS-022 — a stub zone: the servers are the zone's own (authoritative only), asked
     /// iteratively, and the delegations they give are followed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) stub: bool,
+    /// REQ: DNS-902 — a stub zone's servers may be at loopback or link-local addresses.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) allow_local_servers: bool,
+    /// REQ: DNS-902 — a stub zone's private-range servers are also asked outside the zone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) allow_private_servers: bool,
     /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: all).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) match_group: Vec<String>,
@@ -562,7 +569,8 @@ pub(crate) fn stub_addr(s: &str) -> Option<std::net::IpAddr> {
 
 /// REQ: DNS-022 — a stub zone as an upstream: `recursive://`, starting at `servers` for
 /// `domain` instead of the root.
-fn stub_upstream(domain: &str, group: &str, servers: &[String]) -> Result<Upstream, String> {
+fn stub_upstream(domain: &str, group: &str, f: &Forward) -> Result<Upstream, String> {
+    let servers = &f.servers;
     let mut addrs = Vec::new();
     for s in servers {
         addrs.push(stub_addr(s).ok_or_else(|| {
@@ -573,6 +581,8 @@ fn stub_upstream(domain: &str, group: &str, servers: &[String]) -> Result<Upstre
         .ok_or("invalid upstream")?;
     u.recursive.stub_zone = Some(safe(domain)?);
     u.recursive.stub_servers = addrs;
+    u.recursive.allow_local_servers = f.allow_local_servers;
+    u.recursive.allow_private_servers = f.allow_private_servers;
     Ok(u)
 }
 
@@ -872,7 +882,7 @@ fn forward_upstreams(
 ) -> Vec<SafeString> {
     let mut members = Vec::new();
     if f.stub {
-        match stub_upstream(domain, group, &f.servers) {
+        match stub_upstream(domain, group, f) {
             Ok(u) => {
                 members.push(u.name.clone());
                 cfg.upstream.push(u);
@@ -1112,6 +1122,8 @@ mod tests {
                 Forward {
                     servers: vec!["10.0.0.53".into(), "tls://10.0.0.54".into()],
                     stub: false,
+                    allow_local_servers: false,
+                    allow_private_servers: false,
                     match_group: Vec::new(),
                     match_qtype: Vec::new(),
                     dnssec_nta: true,
@@ -1163,6 +1175,8 @@ mod tests {
                 Forward {
                     servers: vec!["ftp://x".into()],
                     stub: false,
+                    allow_local_servers: false,
+                    allow_private_servers: false,
                     match_group: Vec::new(),
                     match_qtype: Vec::new(),
                     dnssec_nta: true,
@@ -1184,6 +1198,8 @@ mod tests {
                 Forward {
                     servers: vec!["10.0.0.53".into(), "udp://10.0.0.54".into()],
                     stub: true,
+                    allow_local_servers: false,
+                    allow_private_servers: false,
                     match_group: Vec::new(),
                     match_qtype: Vec::new(),
                     dnssec_nta: true,
@@ -1213,6 +1229,8 @@ mod tests {
                 Forward {
                     servers: vec!["tls://10.0.0.53".into()],
                     stub: true,
+                    allow_local_servers: false,
+                    allow_private_servers: false,
                     match_group: Vec::new(),
                     match_qtype: Vec::new(),
                     dnssec_nta: true,

@@ -913,10 +913,18 @@ members = ["recursive"]
 # qname_minimization = true    # each server sees only as much of the name as it needs (RFC 9156)
 # case_randomization = false   # 0x20: random letter case, checked in answers (spoofing defense)
 # ipv6 = false                 # also ask servers over IPv6 (needs an IPv6 route)
+# allow_local_servers = false  # also ask loopback and link-local servers (see below)
+# allow_private_servers = false  # also ask private-address servers outside the stub zone
 # stub_zone / stub_servers     # start one zone at its own servers: see Stub zones
 ```
+The same options are on the Upstreams page (Advanced view): they appear when the address is `recursive://` and are not shown for any other upstream.
 - **Private by default:** with QNAME minimization the root servers see only `com`, the `com` servers only `example.com`, and only `example.com`'s own servers see `www.example.com`. If a server mishandles the shortened question, the full one is sent (relaxed mode).
 - **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization` (off by default), each query asks for a random mix of upper and lower case, and only an answer that echoes it exactly is accepted: it adds about one bit of entropy per letter to the 32 bits of ID and port an off-path spoofer must guess, so it is worth turning on for a recursive resolver. An answer with the case changed is ignored like any other stray packet while the real one is awaited; only a server that never echoes the case is remembered (after one timeout) and asked without it.
+- **Never aimed at your own machine or network** (Unbound's `do-not-query-localhost`): a recursive upstream does not ask a server at a loopback (`127.0.0.0/8`, `::1`), unspecified, link-local, multicast or broadcast address, whatever the glue, a server-name lookup or its cache says, and asks private addresses (RFC 1918, `100.64.0.0/10`, `fc00::/7`) only inside its stub zone. A public zone that delegates only to such addresses can't make WrenDNS send queries there: the lookup fails with SERVFAIL (Extended DNS Error 22, no upstream answered), and "Why?" names the rule. `allow_local_servers` and `allow_private_servers` lift them (on an upstream with a stub zone, `allow_local_servers` covers only the names at or under that zone and the servers it hands them to: a name outside it that delegates to a loopback or link-local address is still refused): use them only for a test setup or an authoritative server on this host or network, and give a server on your network as a stub zone instead (its servers may be private). The built-in root server addresses are always asked.
+- **A lame server stops coming first:** a server that answers REFUSED, FORMERR or a referral that leads nowhere counts as a failure for that server, however fast it answered, so a quick but lame server is no longer asked before a good one.
+- **An unsigned NXDOMAIN does not end the walk:** a server that answers NXDOMAIN for a name with names below it (an empty non-terminal) loses nothing: the full name is asked next, as before (ADR-074). Stopping at a DNSSEC-proven NXDOMAIN (RFC 8020) is not done: the owner decided on 2026-11-26 to keep today's behaviour and plan it as its own task (T40.12, ADR-1094).
+- **Upgrading from 1.0:** a configuration that sets `ecs` on a `recursive://` upstream no longer loads, and a stub zone whose servers are loopback or link-local needs `allow_local_servers = true` (the configuration check warns). A forward saved with "These servers only know this domain" in the web UI, the API or an agent can carry it (**Allow WrenDNS to ask a server on this machine for this zone only**, `allowLocalServers`). Each allowance needs a server it is for: the API refuses `allowLocalServers` with no loopback or link-local server listed and `allowPrivateServers` with no private one, and an allowance a re-save leaves unmentioned is dropped when the servers no longer include such a server, so none stays stored out of sight.
+- **`ecs` is refused:** a recursive upstream asks authoritative servers, which never get a client subnet, so a `recursive://` upstream with `ecs` set to anything but `strip` is rejected when the configuration is checked.
 - **Fast after the first time:** zone cuts and server addresses are remembered (bounded, by their TTLs), answers go to the normal cache, and servers are picked by measured response time. A first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.
 - **Hedged:** when a server is slower than usual (1.5 times its usual response time, at least 150 ms), the next server is asked too, and the first good answer wins, so one sluggish server doesn't hold up a lookup.
 - **Root priming** (RFC 8109): on first use, the built-in root server addresses are only used to ask for the root's current list, which is then remembered for a day. A root server that changes address doesn't need a new WrenDNS.
@@ -1877,6 +1885,7 @@ content = { level = "enhanced", categories = ["adult", "gambling", "social", "by
 - An allow rule, a quick rule or a group's own allow list beats a category block, and **Explain** names the category and the list that blocked. A category can be set to shadow (counts what it would block, blocks nothing) from the Lists page.
 - **Limits of DNS blocking.** A category blocks names, not content: a site served from a name that is also used for something else (a CDN, a video host) is blocked or allowed with it. Encrypted DNS in a browser or app, a VPN and a hard-coded resolver skip this resolver; turn on the Networking, DoH, VPN and proxy bypass category and your gateway's DNS redirect to narrow that. Lists lag new sites by hours or days, and no category list is complete. Safe Search and YouTube restrictions are DNS rewrites and depend on the engine not changing its names.
 - **Memory.** Every distinct name in every selected source costs about 12 bytes in the snapshot, and the compile needs several times the source text for a short while. `[filter] entry_budget` (default 1,000,000 names, **Settings, Filtering**) is the total you accept; a source above 500,000 names is **heavy** (refreshed once a day, and asks you to confirm); a selection that would use more than half of a small node's memory is refused with the numbers. The compile's sort memory is capped at a quarter of the node's memory limit. On a Pi 4 the Basic profile peaks at about 74 MiB and settles at about 31 MiB; every light category plus Ad Block settles at about 56 MiB, and newly registered domains (7 days, 2.4 million names) at about 65 MiB.
+- **Aggregate lists (blocklist.packettale.com).** The last group of the Categories view offers five categories that have no other source here: Stalkerware, Typosquatting, Violence and gore, Remote-access tools and Push notifications, each marked "(packettale)". [blocklist.packettale.com](https://blocklist.packettale.com/) is an aggregator: it republishes other maintainers' lists, and every list keeps its upstream's terms, which differ (the five here are CC BY 4.0, the Unlicense and Dandelion Sprout's own licence, whose AdGuard part is to be treated as GPL-3.0; the site's source table shows the rest, some of them copyleft or non-commercial, and none of those is offered). They are off until you tick them; your node then downloads each one straight from the site, once a day (the publisher asks automated clients to poll no more than once every five minutes), and WrenDNS ships and redistributes nothing. Remote-access tools includes AnyDesk, and Typosquatting can block a real site now and then, so each says so on its row. **Sources and licences** in the Categories view lists the upstream and licence of every one.
 - **API and agents.** `GET /api/v1/categories`, `GET` and `PUT /api/v1/groups/{name}/content`; the MCP tools `categories_list`, `get_group_content` and `plan_set_group_content`. An agent token can read and plan a content change, but only an operator can apply it, and an agent is refused a heavy selection.
 - **Cluster.** Content replicates with the groups. Only the primary downloads and compiles; replicas receive the snapshot. A change to content waits until every member runs a version that understands it.
 - **Upgrading a bundle.** The Compose and Docker Desktop bundles no longer define `hagezi-pro` as a list: the default group sets `content = { ads = true }`, which uses the same list through Ad Block. A list you manage through the API with the same URL is adopted by Ad Block (no second download). A list your config files define is left alone and shown as provided by that list.
@@ -2185,6 +2194,19 @@ the agent scope `analytics:read`.
 - **Flush this name** removes it; tick *and everything under it* to flush a whole subtree
   (`example.com` takes `www.example.com` with it). **Flush everything…** empties the cache
   after a confirmation. Flushing needs the operator role and is audit-logged as `cache.flush`.
+- **Flush by type or kind.** Under the name box, *Query type* with a name flushes just that
+  type for the name (`AAAA` for `www.example.com` leaves its `A` answer cached) and runs at
+  once; with no name, *Flush this type everywhere…* asks first. *Flush negative answers…*
+  removes only the names that don't exist (NXDOMAIN) and the names with no record of the type
+  asked (no data). *Flush failed lookups…* removes the cached SERVFAILs, which is how a DNSSEC
+  validation failure is answered (a bogus answer is never cached as such). All three ask first
+  when no name is given.
+- **Flush the recursive resolver.** If an upstream is `recursive://`, *Flush zone cuts…* makes
+  it forget the delegations and server addresses it learned, so the next lookup starts from the
+  root servers again (use it after a delegation changed and you don't want to wait for the
+  record to expire); *Flush round-trip times…* makes it forget how fast each server answered,
+  so it re-learns the fastest. Neither touches cached answers. Both ask first. The notice says
+  how many entries each node dropped; with no `recursive://` upstream there is nothing to drop.
 - In a cluster, each node has its own cache. Stats and lookups show one row per node, and a
   flush applies to every node unless you pick one. A node that can't be reached is listed with
   the error, and the others still flush.
@@ -2194,8 +2216,14 @@ the agent scope `analytics:read`.
 
 API: `GET /api/v1/cache/stats`, `GET /api/v1/cache/lookup?name=`, and
 `POST /api/v1/cache/flush` with `{"name": "example.com", "subtree": true, "node": "pi"}` (every
-field optional; an empty body empties every node's cache). Agents need `analytics:read` to
-look and `ops:cache` to flush.
+field optional; an empty body empties every node's cache). `"type": "AAAA"` limits it to one
+query type, `"kind": "negative"` or `"bogus"` to that kind of entry, and `"recursor": "cuts"`,
+`"rtts"` or `"all"` flushes the recursive resolver's memory instead of answers (it can't be
+combined with `name`, `subtree`, `type` or `kind`). On the command line:
+`wrendns ctl flush --type AAAA --name example.com`, `--kind negative`, `--recursor cuts`,
+`--node pi`. Agents need `analytics:read` to look and `ops:cache` to flush (the `flush_cache`
+tool takes the same fields). In a cluster, a node that is not yet on this version refuses a
+typed or recursor flush instead of flushing more than asked; it is listed with the error.
 
 ### Is the cache the right size?
 Each node's card on the Cache page has a **Size** line: whether a bigger cache would answer
@@ -2258,6 +2286,7 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only
   names that are really broken (like `dnssec-failed.org`) should show up.
 - **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `wrendns_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
+- **NSEC3 iteration limit** (RFC 9276): a "no such name" or "no such record" answer whose NSEC3 records hash with more than 50 iterations is not checked: it is answered as unsigned (no AD), because every extra iteration costs a validating resolver a hash per name and no honest zone needs them. Above 500 iterations it is refused as bogus. Either answer carries Extended DNS Error 27 (Unsupported NSEC3 Iterations Value, RFC 9276 §3.2), and the unsigned one is not cached. Both limits are fixed, not settings (ADR-1094).
 - **Why it failed:** a bogus answer's SERVFAIL says why when its signatures show it: EDE 7 (signature expired), 8 (signature not yet valid), 10 (signatures missing), else 6. A clock that's far off shows up as 7 or 8 everywhere, which is worth checking first.
 - **Trust anchors:** the root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you. To use other anchors (a future key before WrenDNS is updated, or a test root), give a file of DNSKEY records in zone-file form, as `dig DNSKEY . +noall +answer` prints them or Unbound's `root.key` holds:
   ```toml
@@ -3892,6 +3921,7 @@ wrendns ctl rules                           # quick rules; `ctl unrule <id>` rem
 wrendns ctl pause --minutes 10              # `ctl resume` to undo
 wrendns ctl maintenance start --for 30m --reason "SD card swap"   # `ctl maintenance end` to undo
 wrendns ctl flush --name example.com --subtree
+wrendns ctl flush --kind negative           # or --type AAAA, or --recursor cuts|rtts|all
 wrendns ctl lists                           # with unique names and hits
 wrendns ctl lists refresh --wait            # download every list again now (or name some)
 wrendns ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`

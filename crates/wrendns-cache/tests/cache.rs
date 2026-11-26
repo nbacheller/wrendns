@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wrendns_cache::{
-    Cache, CacheKey, CachePolicy, Client, Flight, Lookup, Singleflight, Uncacheable,
+    Cache, CacheKey, CachePolicy, Client, Flight, FlushFilter, FlushKind, Lookup, Singleflight,
+    Uncacheable,
 };
 use wrendns_proto::{
     EdnsOut, NameBuf, Query, ResponseBuilder, build_query, ede, parse_query, rcode, records, rtype,
@@ -924,4 +925,65 @@ fn dns_005_oversized_cached_answer_is_truncated_not_missed() {
     assert!(!s.header.flags.tc());
     assert_eq!(s.header.ancount, 20);
     assert_eq!(cache.stats().hits, 2);
+}
+
+/// REQ: DNS-905 (T40.4) — flushing one type for a name leaves its other types; flushing a kind
+/// removes only that kind.
+#[test]
+fn dns_905_flush_by_type_and_by_kind() {
+    let cache = Cache::new(CachePolicy::default());
+    let t0 = Instant::now();
+    let put = |name: &str, qtype: u16, resp: &dyn Fn(&Query<'_>) -> Vec<u8>| {
+        let m = query_bytes(name, qtype, None, 1);
+        let q = parse_query(&m).unwrap();
+        cache.insert(&key(&q), &q, &resp(&q), t0).unwrap();
+    };
+    let positive = |q: &Query<'_>| upstream_a(q, &[300]);
+    put("www.example.com", rtype::A, &positive);
+    put("www.example.com", rtype::AAAA, &positive);
+    put("other.example.com", rtype::AAAA, &positive);
+    let www = NameBuf::from_presentation("www.example.com").unwrap();
+    // AC 1: type AAAA for a name leaves its A answer.
+    let removed = cache.flush_where(&FlushFilter {
+        name: Some((&www, false)),
+        qtype: Some(rtype::AAAA),
+        kind: FlushKind::Any,
+    });
+    assert_eq!(removed, 1);
+    assert_eq!(cache.stats().entries, 2);
+    let info = cache.inspect(&www, t0);
+    assert_eq!(info.iter().map(|e| e.qtype).collect::<Vec<_>>(), [rtype::A]);
+    // A type with no name: every name's AAAA goes.
+    let removed = cache.flush_where(&FlushFilter {
+        qtype: Some(rtype::AAAA),
+        ..FlushFilter::default()
+    });
+    assert_eq!(removed, 1);
+    assert_eq!(cache.stats().entries, 1);
+
+    // AC 2: negative removes NXDOMAIN and NODATA, never an answer or a SERVFAIL.
+    put("nx.example.com", rtype::A, &|q| {
+        upstream_negative(q, rcode::NXDOMAIN, Some(300))
+    });
+    put("nodata.example.com", rtype::A, &|q| {
+        upstream_negative(q, rcode::NOERROR, Some(300))
+    });
+    put("fail.example.com", rtype::A, &|q| {
+        upstream_negative(q, rcode::SERVFAIL, None)
+    });
+    assert_eq!(cache.stats().entries, 4);
+    let removed = cache.flush_where(&FlushFilter {
+        kind: FlushKind::Negative,
+        ..FlushFilter::default()
+    });
+    assert_eq!(removed, 2);
+    assert_eq!(cache.stats().entries, 2);
+    // Failed lookups (how a validation failure is answered) go with `Bogus`.
+    let removed = cache.flush_where(&FlushFilter {
+        kind: FlushKind::Bogus,
+        ..FlushFilter::default()
+    });
+    assert_eq!(removed, 1);
+    assert_eq!(cache.stats().entries, 1);
+    assert_eq!(cache.flush_where(&FlushFilter::default()), 1);
 }

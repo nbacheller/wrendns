@@ -861,3 +861,53 @@ fn clu_015_obs_902_map_geoip_is_adopted_with_the_map() {
     crate::managed_adopt::strip(&mut stripped, &derived, &own);
     assert_eq!(stripped.map, own.map);
 }
+
+/// REQ: DNS-902, CLU-015 (T24.40) — a hand-written group with two stub members is adopted as one
+/// forward only when their allowances agree: `OR`ing them would widen the narrower member's.
+#[test]
+fn clu_015_dns_902_stub_members_with_different_allowances_are_not_adopted() {
+    let own = Config::default();
+    let served_with = |second_allows: bool| -> Config {
+        let toml = format!(
+            r#"
+[[upstream]]
+name = "a"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["127.0.0.1"]
+allow_local_servers = true
+
+[[upstream]]
+name = "b"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["127.0.0.2"]
+allow_local_servers = {second_allows}
+
+[[upstream_group]]
+name = "forward:corp.example"
+members = ["a", "b"]
+
+[[route]]
+match_suffix = ["corp.example"]
+upstream_group = "forward:corp.example"
+"#
+        );
+        toml::from_str(&toml).unwrap()
+    };
+    let forwards = |c: &Config| -> Vec<crate::node_managed::Entry> {
+        crate::managed_adopt::derive(c, &own)
+            .into_iter()
+            .filter(|e| e.kind == "forward")
+            .collect()
+    };
+    let agree = forwards(&served_with(true));
+    assert_eq!(agree.len(), 1, "members that agree are adopted");
+    assert_eq!(agree[0].body["allow_local_servers"], true);
+    assert!(
+        forwards(&served_with(false)).is_empty(),
+        "members that differ stay unadopted"
+    );
+}

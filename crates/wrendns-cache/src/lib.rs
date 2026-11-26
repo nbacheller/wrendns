@@ -80,6 +80,29 @@ pub struct Makeup {
     pub validated: u64,
 }
 
+/// REQ: DNS-905 (T40.4) — which kind of entry a flush removes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlushKind {
+    /// Every kind.
+    #[default]
+    Any,
+    /// NXDOMAIN and NODATA (NOERROR without answers) only.
+    Negative,
+    /// Failed lookups: SERVFAIL, which is how a DNSSEC validation failure is answered. Bogus
+    /// answers aren't kept as such (only permissive mode would cache one, unmarked).
+    Bogus,
+}
+
+/// REQ: DNS-905 (T40.4) — what [`Cache::flush_where`] removes: entries matching every part given.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FlushFilter<'a> {
+    /// A name, and whether names below it go too.
+    pub name: Option<(&'a NameBuf, bool)>,
+    /// One query type (every other type for the same name stays).
+    pub qtype: Option<u16>,
+    pub kind: FlushKind,
+}
+
 /// A candidate in [`Cache::top`]'s bounded heap, ordered by score then arrival.
 struct Ranked {
     score: i64,
@@ -575,6 +598,41 @@ impl Cache {
             g.fifo.clear();
         }
         n
+    }
+
+    /// REQ: DNS-905 (T40.4) — removes the entries that match `f` (a name or subtree, a query
+    /// type, a kind; all the parts given must match). Returns the count. Takes each shard lock
+    /// briefly, off the query path.
+    pub fn flush_where(&self, f: &FlushFilter<'_>) -> usize {
+        let mut removed = 0;
+        for s in &self.shards {
+            s.0.lock().fifo.retain(|k, e| {
+                let flags = e.wire().get(3).copied().unwrap_or(0) & 0x0f;
+                let answers = e
+                    .wire()
+                    .get(6..8)
+                    .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
+                let kind = match f.kind {
+                    FlushKind::Any => true,
+                    FlushKind::Negative => flags == 3 || (flags == 0 && answers == 0),
+                    FlushKind::Bogus => flags == 2,
+                };
+                let typed = f.qtype.is_none_or(|t| t == k.qtype);
+                let named = f.name.is_none_or(|(name, subtree)| {
+                    if subtree {
+                        let mut n = NameBuf::default();
+                        wrendns_proto::read_name_uncompressed(e.name(), 0, &mut n)
+                            .is_ok_and(|_| n.is_subdomain_of(name))
+                    } else {
+                        e.name() == name.as_wire()
+                    }
+                });
+                let hit = kind && typed && named;
+                removed += usize::from(hit);
+                !hit
+            });
+        }
+        removed
     }
 
     /// Removes everything.

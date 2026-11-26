@@ -35,8 +35,11 @@ def load_sources():
 
 
 def repo_of(source):
-    """owner/name for a source's homepage (a GitHub repository URL)."""
-    m = re.match(r"https://github\.com/([^/]+/[^/]+?)/?$", source["homepage"])
+    """owner/name for a source's repository: `upstream_repo` for a feed an aggregator republishes
+    (its homepage is the aggregator's table), else the homepage (a GitHub repository URL)."""
+    if source.get("upstream_repo"):
+        return source["upstream_repo"]
+    m =re.match(r"https://github\.com/([^/]+/[^/]+?)/?$", source["homepage"])
     return m.group(1) if m else None
 
 
@@ -76,7 +79,11 @@ def main():
             problems.append(f"{s['id']}: cannot read {repo}: {info['error']}")
             continue
         spdx = (info.get("license") or {}).get("spdx_id")
-        if spdx != s["licence"]:
+        if s.get("upstream_repo") and spdx in (None, "NOASSERTION"):
+            # An aggregated feed's upstream may state its licence in a README or a custom file that
+            # GitHub cannot name: the recorded licence was read there, so say so, do not fail.
+            notes.append(f"{s['id']}: {repo} has no licence GitHub can name; recheck {s['licence']} at {s['licence_url']}")
+        elif spdx != s["licence"]:
             problems.append(f"{s['id']}: licence is {spdx}, the catalog records {s['licence']}")
         if info.get("archived"):
             problems.append(f"{s['id']}: {repo} is archived")
@@ -84,7 +91,17 @@ def main():
         age = (now - pushed).days
         if age > MAX_AGE_DAYS:
             problems.append(f"{s['id']}: last push {age} days ago (limit {MAX_AGE_DAYS})")
-        if not args.no_headers and s.get("resolve") is None:
+        if not args.no_headers and s.get("upstream_repo"):
+            # An aggregator's feed has no header: fetch it once (they are small) and count the lines.
+            try:
+                n = len([x for x in get(s["url"], None).decode("utf-8", "replace").splitlines() if x.strip()])
+                if n == 0:
+                    problems.append(f"{s['id']}: {s['url']} is empty")
+                elif abs(n - s["entries"]) * 2 > s["entries"]:
+                    notes.append(f"{s['id']}: the feed has {n} names, the catalog has {s['entries']}")
+            except Exception as e:
+                problems.append(f"{s['id']}: cannot fetch {s['url']}: {e}")
+        elif not args.no_headers and s.get("resolve") is None:
             try:
                 head = get(s["url"], None, limit=3000).decode("utf-8", "replace")
                 n = header_entries(head)
