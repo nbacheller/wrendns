@@ -16,14 +16,14 @@ Two features, one model:
 
 ## 2. The catalog, as data
 
-`presets/categories/*.toml`, compiled into the binary like `presets/services/*.toml` (FLT-012), one file per catalog group. Format in ADR-995. A category has an id, a name, a catalog group, a one-line description (the info icon), and a list of **sources**. A source is a URL with a format, a licence, a cadence and size facts. Lists are never bundled: they are downloaded at runtime, by the primary (replicas receive the compiled snapshot), from the maintainer's own host.
+`presets/categories/*.toml`, compiled into the binary like `presets/services/*.toml` (FLT-012), one file per catalog group. Format in ADR-995. A category has an id, a name, a catalog group, a one-line description (the info icon), and a list of **sources**. A source is a URL with a format, a licence, a cadence and size facts. Lists are never bundled: they are downloaded at runtime, by the primary (replicas receive the compiled snapshot), from the maintainer's own host (one recorded exception since 2026-11-26: the opt-in aggregate group from blocklist.packettale.com, ADR-995 amendment).
 
 Only categories with a real, maintained source are offered. The rules for "real":
 
 - the source is published openly, with a licence we can read over HTTPS;
 - it has been updated within 90 days (checked at catalog build time, see T24.29 step 1);
 - the repository is not archived;
-- the URL is on the maintainer's own host (raw GitHub or jsDelivr for the same repository). **An upstream-run mirror is not admitted** in T24.29 (ADR-995 §3): a mirror can lag, change or disappear without the maintainer's say. Open: Q4.
+- the URL is on the maintainer's own host (raw GitHub or jsDelivr for the same repository). **An upstream-run mirror is not admitted** in T24.29 (ADR-995 §3; the one exception is the packettale aggregate, ADR-995 amendment of 2026-11-26): a mirror can lag, change or disappear without the maintainer's say. Open: Q4.
 
 Recency and archived status are facts about the world. The Rust tests check only the **recorded** values (`licence`, `licence_url`, a recorded `checked` date within 90 days of `catalog_version`, `archived = false` as recorded); the live check against the GitHub API is a script (`scripts/check-catalog.py`) run by the weekly job, which opens an issue. No cargo test touches the internet.
 

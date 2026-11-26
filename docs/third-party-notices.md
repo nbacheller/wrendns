@@ -53,7 +53,7 @@ The last group of the Categories view offers five categories from [blocklist.pac
 |---|---|---|---|
 | Stalkerware | Stalkerware Indicators (AssoEchap) | CC BY 4.0 | the repository's README, section License |
 | Typosquatting, Violence and gore, Remote-access tools | Typo, Shock and Remote lists of [`ShadowWhisperer/BlockLists`](https://github.com/ShadowWhisperer/BlockLists) | Unlicense | `LICENSE` |
-| Push notifications | Anti Push Notifications of [`DandelionSprout/adfilt`](https://github.com/DandelionSprout/adfilt), which combines rules from AdGuard's Popups filter and Fanboy's Notifications list | Dandelicence 1.4 (Dandelion Sprout's own; commercial use allowed, the licence text or a link kept with copies); the combined rules keep their own terms | `LICENSE.md` |
+| Push notifications | Anti Push Notifications of [`DandelionSprout/adfilt`](https://github.com/DandelionSprout/adfilt), which combines rules from AdGuard's Popups filter and Fanboy's Notifications list | Dandelicence 1.4 (Dandelion Sprout's own; commercial use allowed, the licence text or a link kept with copies). The list's header says the AdGuard Annoyances Web Push part "is to be treated as GPL-3.0" and credits Ryan Brown (Fanboy's Notifications Blocking List, CC BY 3.0) and AdGuard Software Limited | `LICENSE.md` |
 
 The CC BY 4.0 licence of the Stalkerware Indicators list asks for attribution, which the Categories view shows in Sources and licences: "Stalkerware Indicators, (c) AssoEchap and contributors, licensed CC BY 4.0." The aggregate is a source for these presets only: it is never merged into a list WrenDNS distributes (`docs/design/curated-category-lists.md`, section 3.3).
 

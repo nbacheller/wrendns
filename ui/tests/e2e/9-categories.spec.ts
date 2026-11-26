@@ -153,6 +153,7 @@ test('flt_901 the blocklist.packettale.com aggregate group: its notice and sourc
   await expect(sw.getByRole('link', { name: /packettale Stalkerware/ })).toHaveAttribute('href', 'https://blocklist.packettale.com/sources.md');
   await expect(lic.getByTestId('cat-attribution').filter({ hasText: 'AssoEchap' })).toContainText('licensed CC BY 4.0');
   await expect(lic.locator('[data-source="packettale-push-notifications"]').getByRole('link', { name: 'LicenseRef-Dandelicence-1.4' })).toBeVisible();
+  await expect(lic.getByTestId('cat-attribution').filter({ hasText: 'Ryan Brown' })).toContainText('GPL-3.0');
   await page.keyboard.press('Escape');
   // The two rows the aggregate fills are no longer under Not available.
   const na = page.getByTestId('cat-not-available');

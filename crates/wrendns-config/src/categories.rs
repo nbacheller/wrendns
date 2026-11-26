@@ -1386,6 +1386,12 @@ mod tests {
                 );
             }
         }
+        // The Push notifications list names its GPL-3.0 part and credits both upstreams.
+        let push = c.source("packettale-push-notifications").unwrap();
+        let a = push.attribution.as_deref().unwrap();
+        for needle in ["GPL-3.0", "AdGuard Software Limited", "Ryan Brown"] {
+            assert!(a.contains(needle), "attribution lacks {needle}");
+        }
         // Left out of the aggregate's presets: what a direct source covers, NRD and DGA, the IP
         // feeds, the bundles, and cryptomining and cryptocurrency (design notes, section 3.3).
         for s in c

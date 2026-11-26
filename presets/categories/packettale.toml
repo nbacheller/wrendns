@@ -133,8 +133,10 @@ pushed = "2026-11-18"
 archived = false
 
 # Dandelion Sprout's own licence (Dandelicence 1.4: commercial use allowed, the licence text or a link
-# to it kept with copies). The list combines rules from AdGuard's Popups filter and Fanboy's
-# Notifications list, which carry their own terms; a node downloads the feed and does not copy it.
+# to it kept with copies). The upstream file's header says the AdGuard Annoyances Web Push part is to
+# be treated as GPL-3.0, and that Fanboy's Notifications Blocking List (CC BY 3.0) is relicensed under
+# the Dandelicence; it asks for credit to Ryan Brown and AdGuard Software Limited (the attribution
+# below). A node downloads the feed and does not copy it, as for HaGeZi's GPL-3.0 lists.
 [[source]]
 id = "packettale-push-notifications"
 name = "packettale Push notifications (Dandelion Sprout's Anti Push Notifications)"
@@ -143,6 +145,7 @@ url = "https://blocklist.packettale.com/push-notifications.txt"
 format = "domains"
 licence = "LicenseRef-Dandelicence-1.4"
 licence_url = "https://github.com/DandelionSprout/adfilt/blob/master/LICENSE.md"
+attribution = "Dandelion Sprout's Anti Push Notifications, under the Dandelicence 1.4; its AdGuard Annoyances Web Push part (AdGuard Software Limited) is to be treated as GPL-3.0, and its Fanboy's Notifications Blocking List part is credited to Ryan Brown (CC BY 3.0). Fetched by your node from blocklist.packettale.com, which aggregates it, and never redistributed."
 homepage = "https://blocklist.packettale.com/sources.md"
 upstream_repo = "DandelionSprout/adfilt"
 cadence = "low"
