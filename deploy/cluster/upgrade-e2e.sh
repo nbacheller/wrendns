@@ -80,12 +80,20 @@ if sys.argv[1] == 'one':
 else:  # load primary-port replica-port stop-file: like a client with two DNS servers
     p, r, stop = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
     sent = ok = 0
+    def served(port):  # the client got an answer from this port just now (see `served_since`)
+        with open(stop + '.%d.tmp' % port, 'w') as f:
+            f.write('%.3f' % time.time())
+        os.replace(stop + '.%d.tmp' % port, stop + '.%d' % port)
     while not os.path.exists(stop):
         sent += 1
         first, second = (p, r) if sent % 2 else (r, p)
         a = first_a = query(first, 'up.test', 0.4)
-        if not a:
+        if a:
+            served(first)
+        else:
             a = query(second, 'up.test', 0.4)
+            if a:
+                served(second)
         ok += bool(a)
         if not a:  # say when, and what each node did, so a lost query can be placed in the steps
             show = lambda v: 'timeout' if v is None else 'empty answer'
@@ -99,8 +107,21 @@ wait_answer() { # port value seconds
   for _ in $(seq $(( $3 * 10 ))); do [ "$(q "$1" up.test)" = "$2" ] && return 0; sleep 0.1; done
   return 1
 }
-start_p() { "$1" run -c "$E/p.toml" >> "$E/p.log" 2>&1 & P_PID=$!; }
-start_r() { "$1" run -c "$E/r.toml" >> "$E/r.log" 2>&1 & R_PID=$!; }
+start_p() { "$1" run -c "$E/p.toml" >> "$E/p.log" 2>&1 & P_PID=$!; P_AT=$(date +%s.%N); }
+start_r() { "$1" run -c "$E/r.toml" >> "$E/r.log" 2>&1 & R_PID=$!; R_AT=$(date +%s.%N); }
+# REQ: CLU-010 - a client with two servers can only be promised answers while one of them is up at every moment
+# it tries. A restarted node answers the wait_answer probes a moment before the client's own query
+# to it (a query sent while it was down waits out its 0.4 s timeout), so the next node is stopped
+# only once the client itself was answered by the restarted one: otherwise the client's query
+# that started while the replica was down goes on to a primary that was stopped meanwhile, and
+# both servers are down for that one query. That is the test's orchestration, not the product.
+served_since() { # port epoch-seconds: the load's client was answered by this port after that time
+  for _ in $(seq 100); do
+    [ -s "$E/stop.$1" ] && awk -v t="$2" -v f="$(cat "$E/stop.$1")" 'BEGIN { exit !(f > t) }' && return 0
+    sleep 0.1
+  done
+  return 1
+}
 stop_p() { kill "$P_PID"; wait "$P_PID" 2>/dev/null || true; P_PID=; }
 stop_r() { kill "$R_PID"; wait "$R_PID" 2>/dev/null || true; R_PID=; }
 edit() { # value: change the record on the primary and reload it
@@ -138,6 +159,7 @@ wait_answer 25502 10.0.0.2 15 || fail "an edit on the N-1 primary didn't reach t
 echo ok
 
 echo "== $(date +%s.%3N) 3. primary on N"
+served_since 25502 "$R_AT" || fail "the client was never answered by the restarted replica"
 stop_p; start_p "$NEW"
 wait_answer 25501 10.0.0.2 10 || fail "the new primary doesn't answer"
 edit 10.0.0.3
@@ -145,6 +167,7 @@ wait_answer 25502 10.0.0.3 15 || fail "an edit on the N primary didn't reach the
 echo ok
 
 echo "== $(date +%s.%3N) 4. replica back on N-1 follows the N primary"
+served_since 25501 "$P_AT" || fail "the client was never answered by the restarted primary"
 stop_r; start_r "$OLD"
 wait_answer 25502 10.0.0.3 10 || fail "the old replica doesn't answer"
 edit 10.0.0.4
