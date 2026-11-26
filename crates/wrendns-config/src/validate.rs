@@ -1892,10 +1892,10 @@ fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>)
 /// readable as an address or a network.
 fn source_errors(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
     let Some(src) = &u.source else { return };
-    if !matches!(scheme, "udp" | "tcp" | "tls" | "https") {
+    if !matches!(scheme, "udp" | "tcp" | "tls" | "https" | "recursive") {
         r.err(
             format!("{p}.source"),
-            "only for udp://, tcp://, tls://, and https:// upstreams",
+            "only for udp://, tcp://, tls://, https:// and recursive:// upstreams",
         );
     } else if u.proxy.is_some() {
         r.err(

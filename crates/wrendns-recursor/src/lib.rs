@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use tracing::debug;
 use wrendns_proto::{HEADER_LEN, NameBuf, rcode, read_name, rtype};
 
-use crate::cache::Caches;
+use crate::cache::{Caches, Failure};
 use crate::msg::{Outcome, Rr};
 pub use net::NetError;
 
@@ -129,6 +129,31 @@ pub struct Settings {
     /// under a stub zone, not a CNAME target or a server-name lookup outside it (on by
     /// default; only tests whose whole fixture tree is on loopback turn it off).
     pub scope_local_to_stubs: bool,
+    /// REQ: DNS-903 — how long what is known of a server (its RTT, its notes) is kept after
+    /// its last answer or failure (Unbound's `infra-host-ttl`, 900 s).
+    pub infra_ttl: Duration,
+    /// REQ: DNS-903 — how often a server that was timing out is asked ahead of the others,
+    /// to see whether it is back.
+    pub infra_probe: Duration,
+    /// REQ: DNS-903 — servers remembered (Unbound's `infra-cache-numhosts`).
+    pub infra_max_hosts: usize,
+    /// REQ: DNS-903, UPS-013 — the local address queries to authoritative servers are sent from
+    /// (Unbound's `outgoing-interface`); servers of the other IP version are not asked.
+    pub source: Option<std::sync::Arc<dyn SourceAddr>>,
+}
+
+/// REQ: DNS-903, UPS-013 — where the recursor's sockets are bound: an address this node holds,
+/// which may be looked up again (a network names the address each node holds in it) and may
+/// go away.
+pub trait SourceAddr: std::fmt::Debug + Send + Sync {
+    /// The address to bind now, or why there is none.
+    ///
+    /// # Errors
+    /// The node holds no such address.
+    fn current(&self) -> std::io::Result<IpAddr>;
+    /// How a bind went: `None` for success, else the error kind (so an address that left the
+    /// node is looked up again, and the problem is reported).
+    fn note(&self, result: Option<std::io::ErrorKind>);
 }
 
 /// REQ: DNS-022 — a stub zone: questions at or under `zone` are asked of `servers`
@@ -155,6 +180,10 @@ impl Default for Settings {
             allow_local_servers: false,
             allow_private_servers: false,
             scope_local_to_stubs: true,
+            infra_ttl: Duration::from_mins(15),
+            infra_probe: Duration::from_secs(10),
+            infra_max_hosts: 20_000,
+            source: None,
         }
     }
 }
@@ -284,10 +313,25 @@ fn suffix(name: &NameBuf, n: usize) -> NameBuf {
 impl Recursor {
     pub fn new(settings: Settings) -> Self {
         Self {
+            caches: Caches::new(cache::Infra {
+                ttl: settings.infra_ttl,
+                probe: settings.infra_probe,
+                max_hosts: settings.infra_max_hosts,
+            }),
             settings,
-            caches: Caches::default(),
             primed_at: parking_lot::Mutex::new(None),
             refusals: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// How a query to `server` is sent: its transport and EDNS notes, the source address.
+    fn how(&self, dnssec_ok: bool, mix_case: bool, server: &cache::Server) -> net::How<'_> {
+        net::How {
+            dnssec_ok,
+            mix_case,
+            edns: !server.no_edns,
+            tcp: server.tcp,
+            source: self.settings.source.as_deref(),
         }
     }
 
@@ -307,17 +351,16 @@ impl Recursor {
             *at = Some(Instant::now());
         }
         let roots = self.permit(&self.settings.roots, &root, work);
-        for (ip, _, _) in self.caches.order(&roots).into_iter().take(MAX_TRIES) {
+        for server in self.caches.order(&roots).into_iter().take(MAX_TRIES) {
             if work.spend().is_err() {
                 return;
             }
-            let addr = SocketAddr::new(ip, self.settings.port);
+            let addr = SocketAddr::new(server.ip, self.settings.port);
             let Ok(resp) = net::ask(
                 addr,
                 &root,
                 rtype::NS,
-                false,
-                false,
+                self.how(false, false, &server),
                 self.settings.server_timeout,
             )
             .await
@@ -409,13 +452,25 @@ impl Recursor {
     pub async fn probe_stub(&self) -> Option<bool> {
         let s = self.settings.stubs.first()?;
         let servers = self.permit(&s.servers, &s.zone, &mut Work::default());
-        for (ip, _, _) in self.caches.order(&servers).into_iter().take(MAX_TRIES) {
+        for server in self.caches.order(&servers).into_iter().take(MAX_TRIES) {
+            let ip = server.ip;
             let addr = SocketAddr::new(ip, self.settings.port);
             let t0 = Instant::now();
             let timeout = self.settings.server_timeout;
-            let r = net::ask(addr, &s.zone, rtype::SOA, false, false, timeout).await;
-            self.caches
-                .record(ip, r.is_ok().then(|| t0.elapsed()), timeout);
+            let r = net::ask(
+                addr,
+                &s.zone,
+                rtype::SOA,
+                self.how(false, false, &server),
+                timeout,
+            )
+            .await;
+            match &r {
+                Ok(_) => self.caches.record_ok(ip, t0.elapsed(), server.tcp),
+                Err(e) => self
+                    .caches
+                    .record_fail(ip, failure(*e, server.tcp), timeout),
+            }
             if r.is_ok_and(|reply| {
                 msg::parse(&reply).is_some_and(|p| p.rcode != wrendns_proto::rcode::SERVFAIL)
             }) {
@@ -777,7 +832,14 @@ impl Recursor {
         zone: &NameBuf,
         work: &mut Work,
     ) -> Result<(Outcome, IpAddr), Error> {
-        let servers = self.permit(servers, zone, work);
+        let mut servers = self.permit(servers, zone, work);
+        // REQ: DNS-903 — with a source address, only servers of its IP version can be reached.
+        if let Some(src) = &self.settings.source {
+            let Ok(local) = src.current() else {
+                return Err(Error::NoServer(zone.display().to_string()));
+            };
+            servers.retain(|s| s.is_ipv4() == local.is_ipv4());
+        }
         let order: Vec<_> = self
             .caches
             .order(&servers)
@@ -786,12 +848,13 @@ impl Recursor {
             .collect();
         let mut i = 0;
         while i < order.len() {
-            let (ip, srtt_us, no_case) = order[i];
+            let one = order[i];
+            let srtt_us = one.srtt_us;
             work.spend()?;
-            let first = self.try_server(ip, srtt_us, no_case, qn, qt, dnssec_ok, zone);
+            let first = self.try_server(one, qn, qt, dnssec_ok, zone);
             tokio::pin!(first);
             let next = order.get(i + 1).copied().filter(|_| self.settings.hedge);
-            let Some((ip2, srtt2, no_case2)) = next else {
+            let Some(two) = next else {
                 if let Some(o) = first.await {
                     return Ok(o);
                 }
@@ -814,7 +877,7 @@ impl Recursor {
             }
             // REQ: DNS-012 (T9.8) — slower than usual: ask the next server as well.
             work.spend()?;
-            let second = self.try_server(ip2, srtt2, no_case2, qn, qt, dnssec_ok, zone);
+            let second = self.try_server(two, qn, qt, dnssec_ok, zone);
             tokio::pin!(second);
             let won = tokio::select! {
                 r = &mut first => match r {
@@ -834,51 +897,111 @@ impl Recursor {
         Err(Error::NoServer(zone.display().to_string()))
     }
 
-    /// One server, once (twice when it breaks 0x20): its usable outcome, or `None`. Records
-    /// the server's RTT or timeout.
-    #[allow(clippy::too_many_arguments)]
+    /// One server, once (more when it breaks 0x20, mishandles EDNS or drops UDP): its usable
+    /// outcome, or `None`. Records the server's RTT or failure.
     async fn try_server(
         &self,
-        ip: IpAddr,
-        srtt_us: Option<u32>,
-        no_case: bool,
+        server: cache::Server,
         qn: &NameBuf,
         qt: u16,
         dnssec_ok: bool,
         zone: &NameBuf,
     ) -> Option<(Outcome, IpAddr)> {
-        let timeout = match srtt_us {
+        let ip = server.ip;
+        let timeout = match server.srtt_us {
             None => self.settings.server_timeout,
             Some(s) => (Duration::from_micros(u64::from(s)) * 3 + Duration::from_millis(100))
                 .clamp(Duration::from_millis(250), self.settings.server_timeout),
         };
         let addr = SocketAddr::new(ip, self.settings.port);
-        let mix = self.settings.case_randomization && !no_case;
+        let mix = self.settings.case_randomization && !server.no_case;
         let t0 = Instant::now();
-        let mut res = net::ask(addr, qn, qt, dnssec_ok, mix, timeout).await;
-        if res == Err(NetError::CaseMismatch) {
-            // REQ: DNS-012 — 0x20: nothing with the case intact came in time, only replies
-            // with it changed: this server doesn't echo the case; ask it plainly.
-            self.caches.no_case(ip);
-            res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
+        let mut how = self.how(dnssec_ok, mix, &server);
+        let mut res = self.exchange(addr, qn, qt, how, timeout).await;
+        if res == Err(NetError::Timeout) && !how.tcp {
+            // REQ: DNS-903 — a server that answered before and now leaves a second UDP query
+            // unanswered is asked over TCP (once now, first from then on for a while).
+            self.caches
+                .record_fail(ip, Failure::Timeout { tcp: false }, timeout);
+            if !self.caches.tcp_due(ip) {
+                return None;
+            }
+            how.tcp = true;
+            res = self.exchange(addr, qn, qt, how, timeout).await;
+        }
+        let mut parsed = res.as_ref().ok().and_then(|r| msg::parse(r));
+        // REQ: DNS-903 — FORMERR or NOTIMP to a query with EDNS: once more without it; a
+        // server that then answers is remembered as one that takes no EDNS.
+        if how.edns
+            && parsed
+                .as_ref()
+                .is_some_and(|p| p.rcode == rcode::FORMERR || p.rcode == rcode::NOTIMP)
+        {
+            let plain = net::How { edns: false, ..how };
+            if let Ok(r2) = self.exchange(addr, qn, qt, plain, timeout).await
+                && let Some(p2) = msg::parse(&r2)
+                && p2.rcode != rcode::FORMERR
+                && p2.rcode != rcode::NOTIMP
+            {
+                self.caches.no_edns(ip);
+                parsed = Some(p2);
+            }
         }
         let rtt = t0.elapsed();
-        let outcome = res.ok().and_then(|resp| {
-            let p = msg::parse(&resp)?;
-            Some(msg::classify(&p, qn, qt, zone))
-        });
+        let outcome = parsed.map(|p| msg::classify(&p, qn, qt, zone));
         // REQ: DNS-902 — a lame answer (or one that can't be read) is a failure of the server,
         // however fast it came: counting its RTT as a success kept a quick lame server first.
         match outcome {
             Some(o) if o != Outcome::Lame => {
-                self.caches.record(ip, Some(rtt), timeout);
+                self.caches.record_ok(ip, rtt, how.tcp);
                 Some((o, ip))
             }
             _ => {
-                self.caches.record(ip, None, timeout);
+                let why = match res {
+                    Err(e) => failure(e, how.tcp),
+                    Ok(_) => Failure::Lame,
+                };
+                self.caches.record_fail(ip, why, timeout);
                 None
             }
         }
+    }
+
+    /// One exchange; REQ: DNS-012 — 0x20: when nothing with the case intact came in time, only
+    /// replies with it changed, the server doesn't echo the case and is asked plainly.
+    async fn exchange(
+        &self,
+        addr: SocketAddr,
+        qn: &NameBuf,
+        qt: u16,
+        how: net::How<'_>,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, NetError> {
+        let res = net::ask(addr, qn, qt, how, timeout).await;
+        if res == Err(NetError::CaseMismatch) {
+            self.caches.no_case(addr.ip());
+            return net::ask(
+                addr,
+                qn,
+                qt,
+                net::How {
+                    mix_case: false,
+                    ..how
+                },
+                timeout,
+            )
+            .await;
+        }
+        res
+    }
+}
+
+/// How a failed exchange counts for the infrastructure cache: no reply (a timeout, a refused
+/// connection) is a server that is down; a reply that can't be used is a server that is up.
+fn failure(e: NetError, tcp: bool) -> Failure {
+    match e {
+        NetError::Timeout | NetError::Io => Failure::Timeout { tcp },
+        NetError::Bad | NetError::CaseMismatch => Failure::Lame,
     }
 }
 
