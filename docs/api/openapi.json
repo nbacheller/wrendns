@@ -337,7 +337,7 @@
             }
           },
           "409": {
-            "description": "`set_by_file`, or the list leaves out your own address (`would_disconnect_you`).",
+            "description": "`set_by_file`, the list leaves out your own address (`would_disconnect_you`), or a cluster member's build does not know the allowed networks yet (`upgrade_required`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -417,6 +417,16 @@
           },
           "404": {
             "description": "The API sets no allowed networks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The list that would apply leaves out your own address (`would_disconnect_you`).",
             "content": {
               "application/json": {
                 "schema": {

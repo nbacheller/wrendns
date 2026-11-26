@@ -60,8 +60,8 @@
     adding = '';
     preview = null;
   }
-  function remove(n: string) {
-    draft = draft.filter((d) => d !== n);
+  function remove(at: number) {
+    draft = draft.filter((_, i) => i !== at);
     preview = null;
   }
   function jump() {
@@ -150,7 +150,7 @@
         <ul class="plain mono">
           {#each draft as n, i (i)}
             <li data-testid="allowed-networks-draft-row">
-              {n} <button type="button" class="link" aria-label="Remove {n}" onclick={() => remove(n)}>remove</button>
+              {n} <button type="button" class="link" aria-label="Remove {n}" onclick={() => remove(i)}>remove</button>
             </li>
           {/each}
         </ul>

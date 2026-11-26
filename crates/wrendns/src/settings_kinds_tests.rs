@@ -317,7 +317,8 @@ async fn dns_023_older_primary_is_refused_before_forwarding() {
         .call("PUT", CLIENTS, Some(&json!({ "mdns": false })))
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(current.got.lock().unwrap().len(), 1, "forwarded");
+    // The primary judges the write twice: the dry run that the lockout check reads, then the write.
+    assert_eq!(current.got.lock().unwrap().len(), 2, "forwarded");
     let _ = current.stop.send(true);
 }
 
@@ -634,7 +635,8 @@ async fn dns_014_primary_without_the_access_feature_is_refused_before_forwarding
     let h = harness_in("", Some(replica));
     let (s, _, v) = h.call("PUT", url, Some(&body)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(current.got.lock().unwrap().len(), 1, "forwarded");
+    // The primary judges the write twice: the dry run that the lockout check reads, then the write.
+    assert_eq!(current.got.lock().unwrap().len(), 2, "forwarded");
     let _ = current.stop.send(true);
 }
 
@@ -646,27 +648,34 @@ async fn dns_014_primary_without_the_access_feature_is_refused_before_forwarding
 async fn dns_014_access_write_waits_for_every_members_build() {
     let url = "/api/v1/access-settings/default";
     let body = json!({ "allowed_networks": ["127.0.0.0/8"] });
-    let (_replica, old) = crate::credential_tests::older_primary_and_replica_features(
+    let (replica, old) = crate::credential_tests::older_primary_and_replica_features(
         "1.1.0",
         None,
         Some(Vec::new()),
     )
     .await;
+    let member = replica.identity.meta.node_id.clone();
     let h = harness_in("", Some(Arc::clone(&old.primary)));
     for dry in [true, false] {
-        let u = if dry {
+        let target = if dry {
             format!("{url}?dryRun=true")
         } else {
             url.to_owned()
         };
-        let (s, _, v) = h.call("PUT", &u, Some(&body)).await;
+        let (s, _, v) = h.call("PUT", &target, Some(&body)).await;
         assert_eq!(s, StatusCode::CONFLICT, "{v}");
         assert_eq!(v["code"], "upgrade_required", "{v}");
+        let detail = v["detail"].as_str().unwrap();
+        assert!(detail.contains("allowed networks"), "{v}");
         assert!(
-            v["detail"].as_str().unwrap().contains("allowed networks"),
-            "{v}"
+            detail.contains(&member),
+            "the refusal names the member: {v}"
         );
     }
+    // A DELETE is not held: nothing is stored, so it answers 404, not 409 upgrade_required.
+    let (s, _, v) = h.call("DELETE", url, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert_ne!(v["code"], "upgrade_required", "{v}");
     assert_eq!(
         h.auth.state().managed("access").unwrap().len(),
         0,

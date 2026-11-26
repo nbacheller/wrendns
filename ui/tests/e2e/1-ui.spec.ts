@@ -8764,6 +8764,27 @@ test('dns_014 allowed networks list with a repeated entry renders', async () => 
   }
 });
 
+// REQ: DNS-014, API-901 (T27.14h review) — removing one of two equal rows removes that row only.
+test('dns_014 allowed networks removes one of two equal rows', async () => {
+  await page.route('**/api/v1/config/entries?kind=access', (route) =>
+    route.fulfill({
+      json: { items: [{ name: 'default', source: 'override', setByFile: [], definition: { allowed_networks: ['10.0.0.0/8', '10.0.0.0/8'] } }] },
+    }),
+  );
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const card = page.getByTestId('allowed-networks-card');
+    await card.getByTestId('allowed-networks-edit').click();
+    await expect(card.getByTestId('allowed-networks-draft-row')).toHaveCount(2);
+    await card.getByTestId('allowed-networks-draft-row').first().getByRole('button', { name: 'Remove 10.0.0.0/8' }).click();
+    await expect(card.getByTestId('allowed-networks-draft-row')).toHaveCount(1);
+    await card.getByRole('button', { name: 'Cancel' }).click();
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=access');
+  }
+});
+
 // REQ: DNS-014, API-901 (T27.14h) — an operator and a viewer see the list and no control, and the API
 // refuses their write.
 test('dns_014 operator sees allowed networks read only', async () => {

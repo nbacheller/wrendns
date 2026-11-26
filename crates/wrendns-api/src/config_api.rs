@@ -3296,7 +3296,7 @@ pub(crate) async fn delete_drill_settings(
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change; `warnings` names a public range)."),
         (status = 403, body = Problem, description = "Only an admin can change the allowed networks; agents are refused."),
-        (status = 409, body = Problem, description = "`set_by_file`, or the list leaves out your own address (`would_disconnect_you`)."),
+        (status = 409, body = Problem, description = "`set_by_file`, the list leaves out your own address (`would_disconnect_you`), or a cluster member's build does not know the allowed networks yet (`upgrade_required`)."),
         (status = 422, body = Problem, description = "A network is wrong."),
     ))]
 pub(crate) async fn put_access_settings(
@@ -3328,6 +3328,7 @@ pub(crate) async fn put_access_settings(
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 403, body = Problem, description = "Only an admin can change the allowed networks."),
+        (status = 409, body = Problem, description = "The list that would apply leaves out your own address (`would_disconnect_you`)."),
         (status = 404, body = Problem, description = "The API sets no allowed networks."),
     ))]
 pub(crate) async fn delete_access_settings(
@@ -4145,29 +4146,43 @@ async fn write_inner(
             ext.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                 .map(|c| c.0.ip())
         };
-        // A DELETE reverts to the file's list: the check runs on the list that would be in force.
-        let list = match body {
-            Some(b) => Some(b.clone()),
-            None => backend
-                .write_managed(ManagedWrite {
-                    kind: ManagedKind::Access,
-                    name: name.clone(),
-                    body: None,
-                    dry_run: true,
-                    expect: None,
-                    by: actor.name.clone(),
-                    simulate: None,
-                    role: Some(p.role),
-                    agent: p.agent.as_ref().map(|a| a.token_name.clone()),
-                })
-                .await
-                .ok()
-                .and_then(|c| c.after),
-        };
-        if let Some(b) = list
-            && let Err(e) = lockout_guard(&b, client, peer)
-        {
-            return e.into_response();
+        // The check runs on the list that WOULD BE IN FORCE after the write (the backend's normalized
+        // result), whatever the body holds: a PUT without the key stores the built-in defaults, and a
+        // DELETE reverts to the file's list. A dry run that fails is its own answer: the real write
+        // would fail the same way, and a DELETE is never let through unjudged.
+        let judged = backend
+            .write_managed(ManagedWrite {
+                kind: ManagedKind::Access,
+                name: name.clone(),
+                body: body.clone(),
+                dry_run: true,
+                expect: None,
+                by: actor.name.clone(),
+                simulate: None,
+                role: Some(p.role),
+                agent: p.agent.as_ref().map(|a| a.token_name.clone()),
+            })
+            .await;
+        match judged {
+            Ok(c) => {
+                let Some(after) = c.after else {
+                    return Problem::internal("the dry run named no resulting list")
+                        .into_response();
+                };
+                if let Err(e) = lockout_guard(&after, client, peer) {
+                    return e.into_response();
+                }
+            }
+            Err(e) => {
+                // A list the backend cannot take (an empty one) that also cuts the requester off
+                // is answered as the lockout, the more useful word.
+                if let Some(b) = body
+                    && let Err(lock) = lockout_guard(b, client, peer)
+                {
+                    return lock.into_response();
+                }
+                return crate::simulate_api::sanitize_problem(&p, e).into_response();
+            }
         }
     }
     let result: Result<serde_json::Value, Problem> = match op {

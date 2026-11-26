@@ -13428,7 +13428,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `set_by_file`, or the list leaves out your own address (`would_disconnect_you`). */
+            /** @description `set_by_file`, the list leaves out your own address (`would_disconnect_you`), or a cluster member's build does not know the allowed networks yet (`upgrade_required`). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -13492,6 +13492,15 @@ export interface operations {
             };
             /** @description The API sets no allowed networks. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The list that would apply leaves out your own address (`would_disconnect_you`). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

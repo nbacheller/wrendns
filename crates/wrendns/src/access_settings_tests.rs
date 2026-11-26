@@ -496,3 +496,23 @@ async fn dns_014_lockout_check_covers_client_and_peer_on_put_and_delete() {
     assert!(v["detail"].as_str().unwrap().contains("8.8.8.8"), "{v}");
     assert_eq!(h.auth.state().managed("access").unwrap().len(), 1);
 }
+
+/// REQ: DNS-014, API-901 (T27.14h review) - a PUT whose body holds no `allowed_networks` stores
+/// the built-in defaults; the check judges that list, so a requester the defaults leave out is
+/// refused, on a dry run too, and nothing is stored. A DELETE with nothing stored answers from
+/// its own dry run (404), not from an unjudged write.
+#[tokio::test]
+async fn dns_014_put_without_the_list_is_judged_on_the_defaults() {
+    let h = behind_proxy_with("");
+    let admin = token(&h, "adm", Role::Admin, None);
+    let out = [("x-forwarded-for", "8.8.8.8")];
+    for url in [URL.to_owned(), format!("{URL}?dryRun=true")] {
+        let (s, _, v) = call_as(&h, &admin, "PUT", &url, Some(&json!({})), &out).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{url}: {v}");
+        assert_eq!(v["code"], "would_disconnect_you", "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("8.8.8.8"), "{v}");
+    }
+    assert_eq!(h.auth.state().managed("access").unwrap().len(), 0);
+    let (s, _, v) = call_as(&h, &admin, "DELETE", URL, None, &out).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+}
