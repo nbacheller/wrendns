@@ -501,7 +501,10 @@ Part A's step 9 and Parts B and C up to step 25 were carried out on 2026-11-25. 
 - **Step 26, 20:22:** the owner could not run step 20's fork tests for the foreseeable future and gave the yes for step 26 without them; no fork, fork pull request or waiting fork run existed; the eight supervisors were enabled again with `systemctl enable --now wrendns-lxd-runner@NN`, all eight runners read online, and both variables were set again. Consequence: nothing has shown in practice that a fork pull request waits for approval, so no fork run is approved before its whole diff is read.
 - **Step 27:** the site switch went through a pull request (#118).
 
-Still open after this record: step 20's fork tests, step 24a, and steps 28 to 31.
+- **Step 30, 2026-11-26:** the owner requested the save with Software Heritage's "Save code now" form at `https://archive.softwareheritage.org/save/`. The request was accepted and was still running that day. Their API answers an automated client with 403 and a pointer to their usage charter, so the form is the way, and the status is read on the same page. `LICENSING.md` says requested, not confirmed, until the save shows as done.
+- **Step 31, 2026-11-26:** the context is `cla`: the job of `cla.yml`, reported by the GitHub Actions app. It reports on every pull request into `main`, and passes for the authors on the action's allow-list (`nbacheller`, `dependabot[bot]`, `github-actions[bot]`), as pull requests #116 to #124 showed. The ruleset now requires four contexts: `privacy`, `site`, `pr-ok` and `cla`. A Dependabot pull request opened before 2026-11-25 carries no checks (step 15 deleted its runs) and needs a rebase before it can merge.
+
+Still open after this record: step 20's fork tests, step 24a, step 28, and the confirmation of step 30's save.
 
 ## Part D: standing procedures
 
