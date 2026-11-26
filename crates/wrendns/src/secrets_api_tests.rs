@@ -789,11 +789,11 @@ async fn dsc_908_a_registered_member_never_heard_from_holds_the_gate() {
     drop(dir);
 }
 
-/// REQ: CLD-920, DSC-908 - the public secrets API neither writes nor deletes the names the
-/// issuer keeps, and does not take the `pem` kind (no admin or stolen admin token can plant a key
-/// a listener would load); a name that only looks similar is an ordinary secret.
+/// REQ: CLD-920, DSC-908 (owner decision 2026-11-26) - the public secrets API neither writes nor
+/// deletes the five names the issuer keeps (no admin or stolen admin token can plant a key a
+/// listener would load), whatever the kind; a name that only looks similar is an ordinary secret.
 #[tokio::test]
-async fn cld_920_public_api_refuses_pem_and_the_issuers_names() {
+async fn cld_920_public_api_refuses_the_issuers_names() {
     let h = harness("");
     let pem_body = json!({"value": PEM_VALUE, "kind": "pem"});
     for name in [
@@ -817,12 +817,6 @@ async fn cld_920_public_api_refuses_pem_and_the_issuers_names() {
         assert_eq!(s, StatusCode::CONFLICT, "{name}: {v}");
         assert!(!h.src.secrets.exists(name));
     }
-    let (s, _, v) = h
-        .call("PUT", "/api/v1/secrets/loc.key", Some(&pem_body))
-        .await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["detail"].as_str().unwrap().contains("`pem`"), "{v}");
-    assert!(!h.src.secrets.exists("loc.key"));
     // The store trims a name; a padded spelling of a reserved name is the reserved name.
     for name in [
         "%20cert.cluster.key",
@@ -857,6 +851,82 @@ async fn cld_920_public_api_refuses_pem_and_the_issuers_names() {
             .await;
         assert_eq!(s, StatusCode::OK, "{name}: {v}");
     }
+}
+
+/// REQ: CLD-920 (owner decision 2026-11-26) - an admin uploads a `pem` secret through the public
+/// API under a name the issuer does not keep: stored as kind `pem`, audited like another secret
+/// write, and the value is in neither the answer, the dry run, the list nor the audit log. The
+/// value is checked as PEM (400 otherwise), an operator and a viewer are refused (403), an agent
+/// token is refused even with an admin owner and every scope, and a credential field cannot name
+/// it.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one path, every actor
+async fn cld_920_admin_uploads_a_pem_secret_and_nobody_reads_it_back() {
+    let h = harness("");
+    let body = json!({"value": PEM_VALUE, "kind": "pem"});
+    let gone = |t: &str| assert!(!t.contains("plantedPemKeyBytes"), "a key came back: {t}");
+    let (s, _, v) = h
+        .call("PUT", "/api/v1/secrets/loc.key?dryRun=true", Some(&body))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    gone(&v.to_string());
+    assert!(!h.src.secrets.exists("loc.key"), "a dry run stores nothing");
+    let (s, _, v) = h.call("PUT", "/api/v1/secrets/loc.key", Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["secret"]["kind"], "pem", "{v}");
+    gone(&v.to_string());
+    assert!(h.src.secrets.exists("loc.key"));
+    let (s, _, list) = h.call("GET", "/api/v1/secrets", None).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    assert!(list.to_string().contains("loc.key"), "{list}");
+    gone(&list.to_string());
+    let log = audit(&h);
+    assert!(
+        log.contains("secret.put") && log.contains("loc.key"),
+        "{log}"
+    );
+    gone(&log);
+    // The value is not a credential: a `*_ref` field cannot name it, and `get` agrees.
+    assert!(h.src.secrets.get("loc.key").is_err());
+    assert!(h.src.secrets.readable("loc.key").is_err());
+    // Not PEM: refused with the reason, nothing stored.
+    for bad in ["just a token", "-----BEGIN CERTIFICATE-----\nAAAA"] {
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                "/api/v1/secrets/other.key",
+                Some(&json!({"value": bad, "kind": "pem"})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("PEM"), "{v}");
+    }
+    assert!(!h.src.secrets.exists("other.key"));
+    // Operator, viewer and an agent token (admin owner, every scope): refused, nothing stored.
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot-pem", auth::Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive-pem", auth::Role::Operator, None);
+    let viewer = token(&h, "vic-pem", auth::Role::Viewer, None);
+    for (who, bearer, status, code) in [
+        ("operator", &op, StatusCode::FORBIDDEN, "forbidden"),
+        ("viewer", &viewer, StatusCode::FORBIDDEN, "forbidden"),
+        ("agent", &agent, StatusCode::FORBIDDEN, "agent_not_allowed"),
+    ] {
+        let (s, _, v) = json_of(
+            &h,
+            req_from(
+                bearer,
+                [127, 0, 0, 1],
+                "PUT",
+                "/api/v1/secrets/by-other.key",
+                Some(&body),
+            ),
+        )
+        .await;
+        assert_eq!((s, v["code"].clone()), (status, json!(code)), "{who}: {v}");
+        gone(&v.to_string());
+    }
+    assert!(!h.src.secrets.exists("by-other.key"));
 }
 
 /// REQ: CLD-920 (AC 4) - a `pem` value stored through the issuer's path appears in no log line,
@@ -1333,7 +1403,7 @@ async fn api_015_csrf_enforced() {
 }
 
 /// REQ: API-015, OPS-014 (AC15, ADR-903 §2) — the value rules through the API: empty, over
-/// 8 KiB, a control character, `<redacted>`, the reserved kind `pem` or an unknown kind, a bad
+/// 8 KiB, a control character, `<redacted>`, a `pem` value that is not PEM or an unknown kind, a bad
 /// name, a 129th secret, and a webhook secret under 16 characters are refused (with the reason,
 /// never the value); 8 KiB exactly and surrounding space are fine. A credential the files set
 /// can't get the secret the UI would name for it (409 `set_by_file`).
@@ -1351,6 +1421,7 @@ async fn api_015_value_limits() {
         ("a", json!({"value": "one\ntwo"}), "control"),
         ("a", json!({"value": "<redacted>"}), "<redacted>"),
         ("a", json!({"value": VALUE, "kind": "blob"}), "kind"),
+        ("a", json!({"value": VALUE, "kind": "pem"}), "PEM"),
         ("Bad.Name", json!({"value": VALUE}), "name"),
         ("-lead", json!({"value": VALUE}), "name"),
         (&"n".repeat(64), json!({"value": VALUE}), "name"),

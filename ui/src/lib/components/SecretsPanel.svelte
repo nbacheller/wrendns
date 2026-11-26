@@ -28,6 +28,42 @@
 
   // The secret being replaced (or added under a name) in the form below the table.
   let target = $state('');
+  // REQ: CLD-920 (owner decision 2026-11-26) — the kind the form below stores: a token or password
+  // (`text`) or PEM blocks (`pem`: a certificate chain or key, pasted or read from a file).
+  let kindSel = $state<'text' | 'pem'>('text');
+  let pemName = $state('');
+  let pemText = $state('');
+  let pemBusy = $state(false);
+  let pemError = $state<unknown>(null);
+  // The names the certificate issuer keeps for itself: the API refuses them, so no control is offered.
+  const issuerName = (n: string) => n === 'acme.account' || /^cert\..+\.(key|chain)$/.test(n);
+  async function pickPem(e: Event) {
+    const f = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!f) return;
+    pemError = f.size > 8192 ? new Error('A PEM secret is at most 8 KiB; that file is larger.') : null;
+    if (!pemError) pemText = await f.text();
+  }
+  async function savePem() {
+    if (pemBusy || !pemText.trim() || !pemName.trim()) return;
+    pemBusy = true;
+    pemError = null;
+    try {
+      await api.putSecret(pemName.trim(), pemText, 'pem', false, status?.head.etag);
+      pemName = '';
+      target = '';
+      await load();
+    } catch (e) {
+      // Another admin changed the stored secrets since this page read them: show the list again.
+      pemError = e instanceof ApiError && e.status === 412
+        ? new Error('Someone else changed the stored secrets since this page was read. The list is reloaded: check it, then save again.')
+        : e;
+      if (e instanceof ApiError && e.status === 412) void load();
+    } finally {
+      // The key is never kept in the page after a try, saved or not.
+      pemText = '';
+      pemBusy = false;
+    }
+  }
   let rowError = $state<{ name: string; error: unknown } | null>(null);
   let rowBusy = $state('');
 
@@ -188,8 +224,10 @@
                     {/each}
                   </td>
                   <td class="actions">
-                    {#if isAdmin && s.set}
-                      <button class="link small" onclick={() => (target = s.name)}>Replace</button>
+                    {#if isAdmin && s.set && issuerName(s.name)}
+                      <span class="muted">kept by the certificate issuer</span>
+                    {:else if isAdmin && s.set}
+                      <button class="link small" onclick={() => ((target = s.name), (kindSel = s.kind === 'pem' ? 'pem' : 'text'), (pemName = s.name))}>Replace</button>
                       <button class="link small danger" disabled={rowBusy === s.name} onclick={() => remove(s.name)}>Delete</button>
                     {/if}
                   </td>
@@ -218,16 +256,44 @@
           A value goes in once and is kept encrypted with this node's key; it's never shown again. Entries name it with a
           <code>*_ref</code> field, such as <code>token_ref = "ntfy"</code>.
         </p>
-        {#key target}
-          <!-- The name stays editable: a stored name is replaced by the value typed under it. -->
-          <SecretField label="Value" nameLabel="Secret name" testid="secret-form" canSet={isAdmin} defaultName={target}
-            kind="text" startReplacing={target !== ''}
-            onsaved={() => {
-              target = '';
-              void load();
-            }}
-            onremoved={() => void load()} />
-        {/key}
+        <label class="kind">
+          <span class="muted small">Kind<HelpButton id="pem-secret" /></span>
+          <select aria-label="Secret kind" bind:value={kindSel} data-testid="secret-kind">
+            <option value="text">Token or password</option>
+            <option value="pem">PEM certificate or key</option>
+          </select>
+        </label>
+        {#if kindSel === 'pem'}
+          <!-- Pasted or read from a .pem file; it is stored encrypted and never shown again. -->
+          <div class="pem" data-testid="pem-form">
+            <label>
+              <span class="muted small">Secret name</span>
+              <input class="mono" aria-label="PEM secret name" bind:value={pemName} autocomplete="off" />
+            </label>
+            <label>
+              <span class="muted small">PEM text (-----BEGIN ...----- to -----END ...-----)</span>
+              <textarea class="mono" rows="6" aria-label="PEM text" bind:value={pemText} spellcheck="false" autocomplete="off"></textarea>
+            </label>
+            <label>
+              <span class="muted small">or a .pem file</span>
+              <input type="file" accept=".pem,.crt,.cer,.key,text/plain" aria-label="PEM file" onchange={pickPem} />
+            </label>
+            <p class="small muted">Only WrenDNS's own listeners use it. No page, API call, backup or support package ever returns it.</p>
+            <div><button class="primary small" disabled={pemBusy || !pemText.trim() || !pemName.trim()} onclick={savePem}>Save PEM secret</button></div>
+            <ErrorNote error={pemError} />
+          </div>
+        {:else}
+          {#key target}
+            <!-- The name stays editable: a stored name is replaced by the value typed under it. -->
+            <SecretField label="Value" nameLabel="Secret name" testid="secret-form" canSet={isAdmin} defaultName={target}
+              kind="text" startReplacing={target !== ''}
+              onsaved={() => {
+                target = '';
+                void load();
+              }}
+              onremoved={() => void load()} />
+          {/key}
+        {/if}
       {:else}
         <p class="small muted" data-testid="secrets-read-only">Only an admin sets, replaces or deletes a stored secret. You can see where each one is used.</p>
       {/if}
@@ -281,6 +347,12 @@
   .secrets {
     display: grid;
     gap: 16px;
+  }
+  .kind,
+  .pem,
+  .pem label {
+    display: grid;
+    gap: 6px;
   }
   .facts {
     display: grid;

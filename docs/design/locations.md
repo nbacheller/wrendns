@@ -22,7 +22,7 @@ Status: design only, for #110 and T36.10 (sub-tasks T36.10a0 to T36.10f in `spec
 ### Secrets
 
 - `crates/wrendns/src/secrets.rs` and `secrets/` (OPS-014, API-014, ADR-903): one 32-byte node key, an encrypted SQLite table, values printed `<redacted>` and wiped on drop. `secrets/credential.rs` is the one place a credential is read (inline, `*_file` or stored `*_ref`; the files win). Names are `^[a-z0-9][a-z0-9._-]{0,62}$` (`crates/wrendns-config/src/secret_refs.rs`).
-- **Limits that matter here:** at most 128 stored secrets (`store.rs` `MAX_SECRETS`), at most 8 KiB per value (`value.rs` `MAX_VALUE`), and the only kind accepted is `text`, one line; `pem` is reserved and refused (`value.rs` `Kind::parse`).
+- **Limits that matter here:** at most 128 stored secrets (`store.rs` `MAX_SECRETS`), at most 8 KiB per value (`value.rs` `MAX_VALUE`), and the kinds accepted are `text` (one line) and, since T36.10a0, `pem` (PEM blocks with their line breaks; an admin may store one, behind the compatibility gate; `value.rs` `Kind::parse`).
 - **Replication (CLU-015, ADR-917).** `secrets/sync.rs`: the primary serves its rows over the mTLS cluster channel only, a full replica pulls when the heartbeat's head differs and re-encrypts under its own key. Nothing here gates DNS (CLU-004).
 - Support bundles redact by a classification table (`crates/wrendns-support/src/classify.rs`; `local.device_domain` is `Scan`).
 
@@ -54,7 +54,7 @@ These are the findings that change the design. Each is resolved below, decided b
 3. **ADR-1081 point 4 (neither colliding name answers) differed from ADR-901 (the best-ranked device keeps it).** Decided (decision 3): ADR-901's ranking everywhere, every collision listed on the Locations page; this replaces ADR-1081 point 4.
 4. **ADR-1083 assumes the router read stores a WAN address in the CMDB.** It does not; WAN networks are skipped. T36.10e must add a WAN read (§4.6). Still open: the amendment of ADR-1083 and the rewording of DSC-915.
 5. **DSC-912 asks for the answer to be keyed by location in the cache.** Local answers are not cached (they are answered before the cache), so no cache change is needed; the location test sits in the local-answer step. Still open: the rewording of DSC-912 and ADR-1081 point 6.
-6. **The secret store takes only one-line text up to 8 KiB.** A certificate chain and key need the reserved `pem` kind (§3.4). Decision 5 gates the first `pem` secret like the first location.
+6. **The secret store takes only one-line text up to 8 KiB.** A certificate chain and key need the `pem` kind (§3.4; built in T36.10a0). Decision 5 gates the first `pem` secret like the first location.
 
 ## 2. Locations
 
@@ -141,7 +141,7 @@ A certificate for `nas.home.example.net` would put `nas` in the public certifica
 
 ### 3.4 Storage and distribution
 
-- The ACME account key, each shared certificate's key and its chain are stored secrets of a new kind `pem` (the kind `value.rs` reserves). Proposed, not decided: system-reserved names (`acme.account`, `cert.<slug>.key`, `cert.<slug>.chain`, `cert.cluster.key`, `cert.cluster.chain`), which an admin could not create or overwrite through the secrets API, written only by the issuer. The owner has not decided this; it is in the open list below.
+- The ACME account key, each shared certificate's key and its chain are stored secrets of a new kind `pem` (the kind `value.rs` now takes). **Owner decision, 2026-11-26:** the five system-reserved names (`acme.account`, `cert.<slug>.key`, `cert.<slug>.chain`, `cert.cluster.key`, `cert.cluster.chain`) are adopted as decided, no longer a proposal. They stay issuer-only: the public secrets API refuses to write or delete them (409), whatever the kind and whoever asks. **Owner decision, 2026-11-26, against the recommendation:** an admin may upload a `pem` secret through the public secrets API now (`PUT /api/v1/secrets/{name}` with kind `pem`, and a PEM form on Settings → Integrations & secrets), for a name that is not reserved. It is for the admin role only (never an operator, a viewer, an agent token or an MCP tool), behind the compatibility gate (every member must announce `pem_secrets`), checked as PEM, audited as `secret.put` like another secret write, and its value is never returned by any API, MCP, `ctl`, log, support package or backup export path (a backup leaves `pem` rows out, "No export at first"). A restore refuses a `pem` row and a reserved name from any archive, because the restoring node is standalone and cannot judge the gate; a node that joins a cluster with a `pem` row while the gate refuses keeps the row on the joiner and health shows a conflict until every member knows the kind.
 - Sizes: an ECDSA chain with two intermediates is about 3 to 4 KiB, under the 8 KiB value limit. Each location certificate uses two of the 128 secrets; a cluster with 10 certificate locations uses 23. The issuer refuses `certificate = true` when the store would pass 100 secrets, leaving room for credentials.
 - Distribution is the existing secret sync (CLU-015): every full member gets them. A member in the location's `nodes` writes the key and chain to `<data_dir>/acme/<slug>/` (0600, written to a temporary file and renamed), and the existing reload in `tls.rs` and `api_tls.rs` picks them up with no restart. Members not serving the location hold the secret but do not write the files.
 - **Using the certificate.** A listener or the API uses it when its `tls` names `acme = "<slug>"` instead of `cert`/`key` paths. Changing the API listener to it goes through the existing `api-tls` guarded row; a DoT or DoH listener through the `listen` row.
@@ -369,7 +369,7 @@ Reading of decision 5: "its secret kind" is read as the new `pem` secret kind, w
 Not decided by the owner; the body above states them as proposals:
 - DSC-912's cache sentence and ADR-1081 point 6 (finding 5), and DSC-915's WAN read with its ADR-1083 amendment (finding 4).
 - The provider-write details: the ownership ledger and adopt, dry run by default on new entries, the per-entry rate limits and the propagation check (reserved CLD-919, §3.3, §4.2, §4.5).
-- Certificate storage details beyond decision 7: the system-reserved names, the per-location file install, the 100-secret ceiling and the order builder's wildcard-only rule (§3.2, §3.4).
+- Certificate storage details beyond decision 7 (the system-reserved names and the admin upload are decided, §3.4): the per-location file install, the 100-secret ceiling and the order builder's wildcard-only rule (§3.2, §3.4).
 - Dynamic DNS and public names for a zone whose provider has no stored key (GoDaddy, Network Solutions): whether a CNAME into a zone at an API provider is offered (§4.3).
 - The later guarded, audited download of a wildcard key (decision 7): its own task, design and record when it is wanted.
 - What the Locations page and the CMDB show for collisions beyond the list decision 3 requires (the CMDB listing this note first proposed).

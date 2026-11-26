@@ -114,13 +114,18 @@ pub(crate) fn create(
             }
             let store = crate::secrets::SecretStore::read_only(cfg, crate::secrets::cli::env());
             store.load_now();
-            let (rows, unreadable) = store.export_rows().map_err(|why| {
+            let super::Exported {
+                rows,
+                unreadable,
+                pem_kept,
+            } = store.export_rows().map_err(|why| {
                 format!("the stored secrets can't be read, so none can be backed up ({why}); fix the node's key (docs/secrets.md) or back up without a passphrase")
             })?;
             Some(super::SecretsExport {
                 passphrase: pass,
                 rows,
                 unreadable,
+                pem_kept,
             })
         }
         None => None,

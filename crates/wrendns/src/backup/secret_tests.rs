@@ -72,11 +72,12 @@ fn node_with_secrets(root: &Path) -> (Vec<PathBuf>, wrendns_config::Config) {
 fn export_of(cfg: &wrendns_config::Config, pass: &str) -> SecretsExport {
     let store = SecretStore::read_only(cfg, env(&[]));
     store.load_now();
-    let (rows, unreadable) = store.export_rows().unwrap();
+    let e = store.export_rows().unwrap();
     SecretsExport {
         passphrase: Zeroizing::new(pass.to_owned()),
-        rows,
-        unreadable,
+        rows: e.rows,
+        unreadable: e.unreadable,
+        pem_kept: e.pem_kept,
     }
 }
 
@@ -1163,4 +1164,92 @@ fn api_007_restore_as_root_gives_the_key_to_the_data_owner() {
         let md = fs::metadata(new.join("data").join(f)).unwrap();
         assert_eq!((md.uid(), md.gid()), (4242, 4343), "{f}");
     }
+}
+
+const PEM_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIPlantedKeyBytes0123456789abcdefghijkLMNOP\n-----END PRIVATE KEY-----";
+
+/// An export that carries one hand-made row, as a planted archive could.
+fn export_with_row(cfg: &wrendns_config::Config, name: &str, kind: Kind, v: &str) -> SecretsExport {
+    let mut e = export_of(cfg, PASS);
+    e.rows.push(ExportRow {
+        name: name.to_owned(),
+        kind: kind.as_str().to_owned(),
+        value: SecretValue::new(kind, Zeroizing::new(v.to_owned())).unwrap(),
+        updated: 1_700_000_000,
+        updated_by: "root".to_owned(),
+    });
+    e
+}
+
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1) - a restore refuses a `pem` row and a name the
+/// certificate issuer keeps for itself, whoever made the archive: the restoring node is standalone
+/// and cannot judge the cluster's gate, and a key stays on its node. Nothing is restored.
+#[test]
+fn cld_920_restore_refuses_pem_rows_and_issuer_names() {
+    let _serial = test_lock();
+    for (name, kind, v) in [
+        ("loc.key", Kind::Pem, PEM_KEY),
+        ("cert.cluster.key", Kind::Text, "planted-text-1"),
+        ("acme.account", Kind::Text, "planted-text-2"),
+        ("cert.home.chain", Kind::Text, "planted-text-3"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+        let out = tmp.path().join("b.ttbk");
+        create_with(
+            &files,
+            &cfg,
+            false,
+            &out,
+            Some(&export_with_row(&cfg, name, kind, v)),
+        )
+        .unwrap();
+        let new = tmp.path().join("new");
+        let none = env(&[]);
+        let err = restore_with(
+            &out,
+            Some(&new.join("data")),
+            Some(&new.join("etc")),
+            false,
+            &SecretsMode::Passphrase(Zeroizing::new(PASS.to_owned())),
+            &plain_keys(&*none),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains(name) && err.contains("nothing was restored"),
+            "{name}: {err}"
+        );
+        assert!(!err.contains("PlantedKeyBytes") && !err.contains("planted-text"));
+        assert!(!new.join("data").join("state.db").exists(), "{name}");
+    }
+}
+
+/// REQ: CLD-920 - a backup counts a `pem` secret it leaves out on purpose apart from the secrets
+/// it could not read: its own warning, and no "couldn't be read" for it.
+#[test]
+fn cld_920_backup_warning_separates_pem_kept_from_unreadable() {
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+    let store = SecretStore::with_env(&cfg, env(&[]), true, false);
+    store
+        .put(
+            "loc.key",
+            Kind::Pem,
+            &SecretValue::new(Kind::Pem, Zeroizing::new(PEM_KEY.to_owned())).unwrap(),
+            0,
+            "root",
+            "local",
+            1_700_000_000,
+        )
+        .unwrap();
+    let out = tmp.path().join("b.ttbk");
+    let c = create_with(&files, &cfg, false, &out, Some(&export_of(&cfg, PASS))).unwrap();
+    let said = c.warnings.join(" | ");
+    assert!(
+        said.contains("1 stored PEM secret(s)") && said.contains("never put in a backup"),
+        "{said}"
+    );
+    assert!(!said.contains("couldn't be read"), "{said}");
+    assert!(!said.contains("PlantedKeyBytes"), "{said}");
 }

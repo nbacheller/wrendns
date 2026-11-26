@@ -143,6 +143,16 @@ pub(crate) struct SecretsExport {
     pub(crate) rows: Vec<ExportRow>,
     /// Live secrets this node holds but couldn't read (another key, damaged): left out.
     pub(crate) unreadable: usize,
+    /// REQ: CLD-920 - `pem` secrets left out on purpose: a key never leaves the node.
+    pub(crate) pem_kept: usize,
+}
+
+/// What [`crate::secrets::SecretStore::export_rows`] found.
+#[derive(Debug, Default)]
+pub(crate) struct Exported {
+    pub(crate) rows: Vec<ExportRow>,
+    pub(crate) unreadable: usize,
+    pub(crate) pem_kept: usize,
 }
 
 impl fmt::Debug for SecretsExport {
@@ -151,6 +161,7 @@ impl fmt::Debug for SecretsExport {
             .field("passphrase", &"<redacted>")
             .field("rows", &self.rows.len())
             .field("unreadable", &self.unreadable)
+            .field("pem_kept", &self.pem_kept)
             .finish()
     }
 }
@@ -476,6 +487,22 @@ pub(crate) fn store_rows(
     let mut names = std::collections::BTreeSet::new();
     for r in rows {
         let kind = Kind::parse(&r.kind).map_err(|e| format!("secret `{}`: {e}", r.name))?;
+        // REQ: CLD-920, DSC-908 (ADR-1097 point 1) - a backup never carries a `pem` secret (a key
+        // stays on its node) and the issuer's names are written only by the issuer, so neither is
+        // taken from a restore: the restoring node is standalone and cannot judge the cluster's
+        // gate, and a planted archive must not become a key a listener loads.
+        if kind == Kind::Pem {
+            return Err(format!(
+                "secret `{}`: a `pem` secret is not restored from a backup (a key stays on its node); nothing was restored",
+                r.name
+            ));
+        }
+        if wrendns_api::secrets_api::is_reserved_name(r.name.trim()) {
+            return Err(format!(
+                "secret `{}`: this is a name the certificate issuer keeps for itself and is not restored from a backup; nothing was restored",
+                r.name
+            ));
+        }
         if !wrendns_config::secret_refs::valid_name(&r.name) || !names.insert(r.name.clone()) {
             return Err(format!(
                 "the backup holds a secret with an invalid or repeated name (`{}`)",

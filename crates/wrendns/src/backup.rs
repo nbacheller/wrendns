@@ -29,7 +29,7 @@ pub(crate) mod cli;
 mod passphrase;
 
 pub(crate) use passphrase::{
-    BackupError, ExportRow, SecretsExport, SecretsInfo, check_passphrase, kdf_busy,
+    BackupError, ExportRow, Exported, SecretsExport, SecretsInfo, check_passphrase, kdf_busy,
 };
 #[cfg(test)]
 pub(crate) use passphrase::{kdf_slot_for_tests, test_lock};
@@ -540,12 +540,21 @@ fn write_into(
                     x.unreadable
                 ));
             }
+            // REQ: CLD-920 - said apart: these were left out on purpose, not because they failed.
+            if x.pem_kept > 0 {
+                warnings.push(format!(
+                    "{} stored PEM secret(s) (certificate keys) are never put in a backup: they stay on the node that holds them",
+                    x.pem_kept
+                ));
+            }
             info
         }
         Some(x) => SecretsInfo::omitted(
             x.unreadable,
             if x.unreadable > 0 {
                 "none of the stored secrets could be read on this node"
+            } else if x.pem_kept > 0 {
+                "only certificate keys are stored, and they never leave the node"
             } else {
                 "none stored"
             },

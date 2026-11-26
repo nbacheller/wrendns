@@ -985,8 +985,11 @@ impl Backend for ApiBackend {
                 if crate::backup::kdf_busy() {
                     return Err(busy_problem());
                 }
-                let (rows, unreadable) =
-                    self.src.secrets.export_rows().map_err(|why| {
+                let crate::backup::Exported {
+                    rows,
+                    unreadable,
+                    pem_kept,
+                } = self.src.secrets.export_rows().map_err(|why| {
                         Problem::new(wrendns_api::problem::Code::SecretsLocked, format!("the stored secrets can't be read, so none can be backed up: {why}"))
                             .hint("Fix the node's secrets key (docs/secrets.md), or make the backup without a passphrase.")
                     })?;
@@ -994,6 +997,7 @@ impl Backend for ApiBackend {
                     passphrase: pass,
                     rows,
                     unreadable,
+                    pem_kept,
                 })
             }
             None => None,

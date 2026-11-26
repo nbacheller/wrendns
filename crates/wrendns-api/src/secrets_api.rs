@@ -77,7 +77,7 @@ pub struct SecretPut {
     /// passphrase ever holds it.
     #[schema(value_type = String, write_only, example = "s3cr3t-token")]
     pub value: SecretText,
-    /// `text` (the default). `pem` is reserved for the certificate issuer and refused here (409).
+    /// `text` (the default) or `pem` (PEM blocks, with their line breaks; never shown again).
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -553,6 +553,12 @@ fn replay(r: &Replay) -> Response {
 /// fields that would become configured, storing nothing. `Idempotency-Key` replays the first
 /// answer for the same value (another value with the same key is 409); `If-Match` takes the
 /// secrets head's `ETag` (412 when it moved).
+///
+/// Kind `pem` (PEM blocks, with their line breaks) is for WrenDNS's own listeners: admin only, once
+/// every cluster member's build knows it (409 `upgrade_required`, naming the member), and its value
+/// is never returned by any API, MCP, `ctl`, log, support package or backup. The names the
+/// certificate issuer keeps (`acme.account`, `cert.<name>.key`, `cert.<name>.chain`,
+/// `cert.cluster.key`, `cert.cluster.chain`) are refused with 409, whatever the kind.
 #[utoipa::path(put, path = "/api/v1/secrets/{name}", tag = "config",
     params(("name" = String, Path, description = "The secret's name."), SecretQuery),
     request_body = SecretPut,
@@ -670,11 +676,10 @@ pub(crate) async fn delete_secret(
     .await
 }
 
-/// REQ: CLD-920, DSC-908 (ADR-1097 point 1; locations.md section 3.4, the names there are
-/// proposals) - the names the certificate issuer keeps for itself: `acme.account`,
-/// `cert.cluster.key`, `cert.cluster.chain`, and `cert.<slug>.key` / `cert.<slug>.chain`. The
-/// public API neither writes nor deletes them, so no admin or token can plant a key a listener
-/// would load.
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1, amended 2026-11-26) - the five names the certificate
+/// issuer keeps for itself: `acme.account`, `cert.cluster.key`, `cert.cluster.chain`, and
+/// `cert.<slug>.key` / `cert.<slug>.chain`. The public API neither writes nor deletes them, so no
+/// admin or token can plant a key a listener would load.
 pub fn is_reserved_name(name: &str) -> bool {
     name == "acme.account"
         || name.strip_prefix("cert.").is_some_and(|r| {
@@ -683,9 +688,9 @@ pub fn is_reserved_name(name: &str) -> bool {
         })
 }
 
-/// What the public API refuses before any gate or store: a reserved name (either write), and the
-/// `pem` kind (until the issuer exists, only it stores PEM material, internally).
-fn public_refusal(name: &str, op: &SecretOp) -> Option<Problem> {
+/// What the public API refuses before any gate or store: a reserved name (either write). The
+/// `pem` kind itself is allowed for an admin (the gate and the PEM check are in the backend).
+fn public_refusal(name: &str) -> Option<Problem> {
     if is_reserved_name(name) {
         return Some(
             Problem::new(
@@ -693,17 +698,6 @@ fn public_refusal(name: &str, op: &SecretOp) -> Option<Problem> {
                 format!("`{name}` is a name the certificate issuer keeps for itself"),
             )
             .hint("Names `acme.account`, `cert.<name>.key` and `cert.<name>.chain` are written only by the issuer."),
-        );
-    }
-    if let SecretOp::Put { kind, .. } = op
-        && kind.trim() == "pem"
-    {
-        return Some(
-            Problem::new(
-                Code::Conflict,
-                "the `pem` kind isn't written through the API: only the certificate issuer stores it",
-            )
-            .hint("Use kind `text` for a token or password."),
         );
     }
     None
@@ -721,7 +715,7 @@ async fn write(
     dry_run: bool,
 ) -> Response {
     // The store trims the name before it validates and keeps it: the check sees what is stored.
-    if let Some(e) = public_refusal(name.trim(), &op) {
+    if let Some(e) = public_refusal(name.trim()) {
         return no_store(e.into_response(), None);
     }
     // REQ: AGT-003 (ADR-903 §4) — the record keeps `PUT /secrets/<name> ` and a keyed hash of

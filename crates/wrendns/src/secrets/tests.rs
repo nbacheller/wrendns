@@ -1177,10 +1177,64 @@ fn cld_920_pem_is_stored_but_never_handed_out() {
         super::store::Unavailable::WrongKind
     );
     assert_eq!(read(&s, "plain"), "token");
-    let (rows, skipped) = s.export_rows().unwrap();
-    assert_eq!(rows.len(), 1, "only the text secret is exported");
-    assert_eq!(rows[0].name, "plain");
-    assert_eq!(skipped, 1);
+    let e = s.export_rows().unwrap();
+    assert_eq!(e.rows.len(), 1, "only the text secret is exported");
+    assert_eq!(e.rows[0].name, "plain");
+    // Left out on purpose, so it is not counted as an unreadable (damaged) row.
+    assert_eq!((e.unreadable, e.pem_kept), (0, 1));
+    // `readable` agrees with `get` for a credential field.
+    assert_eq!(
+        s.readable("loc.key").unwrap_err(),
+        super::store::Unavailable::WrongKind
+    );
+    assert!(s.readable("plain").is_ok());
     let shown = format!("{s:?} {:?}", s.status());
     assert!(!shown.contains("PlantedKeyBytes"), "{shown}");
+}
+
+/// REQ: CLU-015, CLD-920 - a `pem` row goes through replication like a text row: the primary's
+/// page carries it with its value, the replica re-encrypts it under its own key as kind `pem`,
+/// still refuses it to a credential field, leaves it out of its own backup export, and passes it
+/// on in its own page (so a later primary has it).
+#[test]
+fn cld_920_pem_row_replicates_to_a_replica() {
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let primary = store(&cfg_in(a.path()), &env(&[]));
+    let replica = store(&cfg_in(b.path()), &env(&[]));
+    put(&primary, "plain", "token");
+    primary
+        .put(
+            "loc.key",
+            Kind::Pem,
+            &pem(PEM_KEY).unwrap(),
+            1,
+            "root",
+            "cluster",
+            100,
+        )
+        .unwrap();
+    let page = primary.export_page(None, 1 << 20).unwrap();
+    let sent = page.items.iter().find(|r| r.name == "loc.key").unwrap();
+    assert_eq!(sent.kind, "pem");
+    assert_eq!(sent.value.as_ref().unwrap().expose(), PEM_KEY);
+    replica.apply_remote(&page.items, 1, true, 100).unwrap();
+    assert!(replica.exists("loc.key"));
+    let info = replica.status();
+    let row = info.secrets.iter().find(|r| r.name == "loc.key").unwrap();
+    assert_eq!(row.kind, "pem");
+    assert_eq!(row.health, super::store::RowHealth::Readable);
+    assert_eq!(
+        replica.get("loc.key").unwrap_err(),
+        super::store::Unavailable::WrongKind
+    );
+    assert_eq!(read(&replica, "plain"), "token");
+    let e = replica.export_rows().unwrap();
+    assert_eq!((e.rows.len(), e.pem_kept), (1, 1));
+    let again = replica.export_page(None, 1 << 20).unwrap();
+    let relayed = again.items.iter().find(|r| r.name == "loc.key").unwrap();
+    assert_eq!(relayed.value.as_ref().unwrap().expose(), PEM_KEY);
+    assert_eq!(
+        again.head, page.head,
+        "the replica holds what the primary does"
+    );
 }
