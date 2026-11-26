@@ -121,6 +121,7 @@ mod tail;
 mod technitium;
 mod traces;
 mod updates;
+mod upgrade_gate;
 mod upstream_checks;
 mod upstream_presets;
 mod vqlog;

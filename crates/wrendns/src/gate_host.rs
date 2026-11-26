@@ -153,6 +153,13 @@ pub(crate) fn mismatched(listen: &[wrendns_config::Listener]) -> Vec<(String, bo
         .collect()
 }
 
+/// Whether the apply recorded anything for `l` (a test reads it to see that a restored listener is
+/// published even when the new list does not name it).
+#[cfg(test)]
+pub(crate) fn is_recorded(l: &wrendns_config::Listener) -> bool {
+    state_of(l).is_some()
+}
+
 #[cfg(test)]
 pub(crate) fn clear_listeners_for_test() {
     states().clear();

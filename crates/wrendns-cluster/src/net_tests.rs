@@ -960,6 +960,7 @@ fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
             primary: false,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -1054,6 +1055,7 @@ fn clu_005_only_voters_can_fence_the_primary() {
             primary: true,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -1262,6 +1264,7 @@ fn clu_005_an_unknown_member_is_trusted_with_nothing() {
             primary: false,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -1641,6 +1644,7 @@ fn clu_001_primary_urls_leave_out_nodes_known_not_to_be_primary() {
             primary,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -1812,6 +1816,7 @@ fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
             primary: false,
             config_source: source.into(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -1894,6 +1899,7 @@ fn clu_005_deference_follows_the_lease_not_a_members_hello_flag() {
                 primary: false,
                 config_source: "gitops".into(),
                 instance: String::new(),
+                features: Vec::new(),
                 source_commit: String::new(),
             })),
         },
@@ -2014,6 +2020,7 @@ fn clu_001_removing_a_node_drops_it_and_refuses_it() {
             primary: false,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -2286,6 +2293,7 @@ fn clu_005_a_promotion_reaches_a_replica_in_the_heartbeats() {
             primary: false,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };
@@ -2401,6 +2409,7 @@ fn clu_001_a_replica_learns_that_another_replica_is_up_from_the_primarys_heartbe
             primary: true,
             config_source: String::new(),
             instance: String::new(),
+            features: Vec::new(),
             source_commit: String::new(),
         })),
     };

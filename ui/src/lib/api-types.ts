@@ -4076,6 +4076,12 @@ export interface paths {
          *     fields that would become configured, storing nothing. `Idempotency-Key` replays the first
          *     answer for the same value (another value with the same key is 409); `If-Match` takes the
          *     secrets head's `ETag` (412 when it moved).
+         *
+         *     Kind `pem` (PEM blocks, with their line breaks) is for WrenDNS's own listeners: admin only, once
+         *     every cluster member's build knows it (409 `upgrade_required`, naming the member), and its value
+         *     is never returned by any API, MCP, `ctl`, log, support package or backup. The names the
+         *     certificate issuer keeps (`acme.account`, `cert.<name>.key`, `cert.<name>.chain`,
+         *     `cert.cluster.key`, `cert.cluster.chain`) are refused with 409, whatever the kind.
          */
         put: operations["put_secret"];
         post?: never;
@@ -11765,7 +11771,7 @@ export interface components {
         };
         /** @description The body of `PUT /api/v1/secrets/{name}`. */
         SecretPut: {
-            /** @description `text` (the default). `pem` is reserved. */
+            /** @description `text` (the default) or `pem` (PEM blocks, with their line breaks; never shown again). */
             kind?: string | null;
             /**
              * @description The value: one line of text (a token, a password, an API key), at most 8 KiB, trimmed, no
