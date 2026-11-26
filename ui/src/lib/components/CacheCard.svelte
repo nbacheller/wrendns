@@ -13,8 +13,9 @@
   let {
     name: initial = '',
     compact = false,
+    more = undefined,
     title = 'Cache',
-  }: { name?: string; compact?: boolean; title?: string } = $props();
+  }: { name?: string; compact?: boolean; more?: boolean; title?: string } = $props();
 
   let stats = $state<S['CacheNodeStats'][]>([]);
   let name = $state('');
@@ -29,6 +30,9 @@
   // A broad flush waiting for its confirmation.
   let pending = $state<{ label: string; body: S['CacheFlushRequest'] } | null>(null);
   const writable = $derived(can('operator'));
+  // The type, kind and recursor flushes: on by default except in the compact quick cards, and a
+  // page that hides only the counters (the Cache page has its own) asks for them with `more`.
+  const showMore = $derived(more ?? !compact);
   const typeName = $derived(qtype.trim().toUpperCase());
   const recursorDropped = $derived(
     flushed ? flushed.nodes.reduce((a, n) => a + (n.recursorRemoved ?? 0), 0) : 0,
@@ -165,12 +169,13 @@
         <button class="link" onclick={() => { pending = null; confirmAll = true; }}>Flush everything…</button>
       {/if}
     </div>
-    {#if !compact}
+    {#if showMore}
       <div class="row" data-testid="cache-flush-more">
         <input
           class="mono type"
           list="cache-flush-types"
           aria-label="Query type"
+          data-testid="cache-flush-type"
           placeholder="Type, e.g. AAAA"
           bind:value={qtype}
         />

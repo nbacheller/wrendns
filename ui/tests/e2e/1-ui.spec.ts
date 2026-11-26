@@ -2071,7 +2071,7 @@ test('dns_905 cache flush by type, kind and recursor', async () => {
   await card.getByRole('button', { name: 'Look up' }).click();
   await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
   // A name and a type: narrow, so no confirmation, and the A answer stays.
-  await card.getByRole('combobox', { name: 'Query type' }).fill('txt');
+  await card.getByTestId('cache-flush-type').fill('txt');
   await card.getByRole('button', { name: 'Flush TXT for this name' }).click();
   await expect(card.getByTestId('cache-flushed')).toContainText('Removed 0 entries');
   await expect.poll(() => bodies[0]).toMatchObject({ name: 'typed.cache.e2e.test', type: 'TXT' });
@@ -2084,29 +2084,36 @@ test('dns_905 cache flush by type, kind and recursor', async () => {
   expect(bodies.length).toBe(1);
   await card.getByRole('button', { name: 'Flush negative answers…' }).click();
   await card.getByRole('button', { name: 'Yes, flush' }).click();
-  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
   await expect.poll(() => bodies[1]).toEqual({ kind: 'negative' });
+  // The confirmation closes only when this flush has answered, so the notice below is its own.
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
   // The positive answer is still cached after negative and failed-lookup flushes.
   await card.getByRole('button', { name: 'Flush failed lookups…' }).click();
   await card.getByRole('button', { name: 'Yes, flush' }).click();
-  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
   await expect.poll(() => bodies[2]).toEqual({ kind: 'bogus' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
   expect((await (await r.get('/api/v1/cache/lookup?name=typed.cache.e2e.test')).json()).entries.length).toBeGreaterThan(0);
   // The recursor: zone cuts and round-trip times (this build's upstream isn't recursive: none to drop).
   await card.getByRole('button', { name: 'Flush zone cuts…' }).click();
   await card.getByRole('button', { name: 'Yes, flush' }).click();
-  await expect(card.getByTestId('cache-flushed')).toContainText('Dropped 0 resolver entries');
   await expect.poll(() => bodies[3]).toEqual({ recursor: 'cuts' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Dropped 0 resolver entries');
   await card.getByRole('button', { name: 'Flush round-trip times…' }).click();
   await card.getByRole('button', { name: 'Yes, flush' }).click();
   await expect.poll(() => bodies[4]).toEqual({ recursor: 'rtts' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
   // A type with no name is broad: it asks, then flushes that type for every name.
   await card.getByRole('textbox', { name: 'Name to look up' }).fill('');
-  await card.getByRole('combobox', { name: 'Query type' }).fill('aaaa');
+  await card.getByTestId('cache-flush-type').fill('aaaa');
   await card.getByRole('button', { name: 'Flush this type everywhere…' }).click();
   await expect(card.getByTestId('cache-flush-confirm')).toContainText('Flush every AAAA answer');
   await card.getByRole('button', { name: 'Yes, flush' }).click();
   await expect.poll(() => bodies[5]).toEqual({ type: 'AAAA' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
   await page.unroute('**/api/v1/cache/flush');
   // Operators only: a viewer is refused by the API.
   const viewer = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
