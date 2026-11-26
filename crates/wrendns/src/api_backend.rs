@@ -2886,6 +2886,10 @@ impl Backend for ApiBackend {
         // REQ: API-902 (ADR-956 §4, ADR-957) — guarded entries ignored by the environment switch,
         // or a confirmed listener that fell back at this start: degraded, DNS unaffected.
         reasons.extend(crate::guarded::health_reasons());
+        // REQ: DSC-908, CLD-920 (ADR-1096 point 5) — a first use the upgrade gate is holding back.
+        reasons.extend(crate::health::upgrade_gate_reasons(
+            &crate::upgrade_gate::standing(self.src.cluster.as_deref()),
+        ));
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
         // REQ: DNS-901 (ADR-1090 point 1) — a listener gated only by the default refuses clients

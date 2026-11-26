@@ -220,6 +220,25 @@ pub(crate) fn cmdb_reasons(s: &wrendns_api::cmdb_api::CmdbStatus) -> Vec<HealthR
     out
 }
 
+/// REQ: DSC-908, CLD-920 (ADR-1096 point 5; T36.10a0) — a change the upgrade gate is holding back
+/// because a member's build does not know the new section or secret kind: degraded, DNS
+/// unaffected. `holds` are the refusals' words, which name the member and its version.
+pub(crate) fn upgrade_gate_reasons(holds: &[String]) -> Vec<HealthReason> {
+    holds
+        .iter()
+        .map(|h| {
+            reason(
+                DEGRADED,
+                "upgrade_gate_holding",
+                format!(
+                    "a change is held back until every member is upgraded: {h}. DNS is unaffected"
+                ),
+                "#/cluster",
+            )
+        })
+        .collect()
+}
+
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
         level: level.to_owned(),

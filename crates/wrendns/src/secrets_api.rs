@@ -641,6 +641,17 @@ pub(crate) fn apply(
         SecretOp::Put { kind, value } => {
             let kind = Kind::parse(kind.trim()).map_err(invalid)?;
             let value = SecretValue::new(kind, value.into_inner()).map_err(invalid)?;
+            // REQ: CLD-920, DSC-908 (ADR-1096 point 5) — a `pem` secret waits until every
+            // member's build knows the kind (dry runs too, so the answer is the same).
+            if kind == Kind::Pem
+                && let Err(why) = crate::upgrade_gate::enforce(
+                    src.cluster.as_deref(),
+                    wrendns_cluster::gate::Feature::PemSecrets,
+                )
+            {
+                return Err(Problem::new(Code::UpgradeRequired, why)
+                    .hint("Upgrade the member named, then repeat the write. DNS is unaffected."));
+            }
             if let Some(p) = set_by_file(src, &name) {
                 return Err(p);
             }

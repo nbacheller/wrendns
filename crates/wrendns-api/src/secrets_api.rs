@@ -77,7 +77,7 @@ pub struct SecretPut {
     /// passphrase ever holds it.
     #[schema(value_type = String, write_only, example = "s3cr3t-token")]
     pub value: SecretText,
-    /// `text` (the default). `pem` is reserved.
+    /// `text` (the default) or `pem` (PEM blocks only; its value is never shown or returned).
     #[serde(default)]
     pub kind: Option<String>,
 }

@@ -54,6 +54,12 @@ Full members share stored secrets; resolver pods and witnesses never hold one. T
 
 Only `secrets.fetch` and `secrets.adopt` carry values, and only over the cluster channel: between full members, in memory. Nothing is written to a blob, a file or a log line.
 
+## The `pem` kind
+
+A secret is of the kind `text` (one line, the default) or `pem`: one or more PEM blocks, with their line breaks, within the same 8 KiB limit. A `pem` value is for WrenDNS's own listeners (a location's certificate key and chain, ADR-1097): no API route, UI control, MCP tool or `ctl` command returns it, the secrets API never shows it, a credential field (`*_ref`) cannot name one, a backup leaves it out, and a support package never contains the secrets store. It replicates like any other stored secret.
+
+**Upgrade gate.** A released build refuses a secret kind it does not know, so the first `pem` secret is refused (409 `upgrade_required`, dry runs too) while any member's heartbeat reports a build that does not know the kind. The answer names the member and its version ("node X runs version Y, which does not know secrets of the `pem` kind; upgrade it first"), and health shows `upgrade_gate_holding` until the member is upgraded. Once every member knows the kind, the gate no longer applies. The same gate holds the first `[[location]]` and the first `[[dns_provider]]` when those tables arrive (ADR-1096 point 5).
+
 ## Rotation
 
 **The data-directory key** (`secrets.key`): stop WrenDNS, then

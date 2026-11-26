@@ -78,11 +78,16 @@ pub(crate) enum Unavailable {
     Ephemeral,
     /// REQ: CLU-015 — stamped by an older primary after the current one took over: not used.
     Orphaned,
+    /// REQ: CLD-920 — a `pem` secret named by a credential field.
+    WrongKind,
 }
 
 impl fmt::Display for Unavailable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WrongKind => f.write_str(
+                "it is a `pem` secret, which only WrenDNS's own listeners use; a credential takes a `text` secret",
+            ),
             Self::NotSet => f.write_str("no secret of that name is stored"),
             Self::Locked(why) => write!(f, "the secrets store is locked: {why}"),
             Self::Unreadable => {
@@ -720,6 +725,11 @@ impl SecretStore {
         if c.row.orphaned {
             return Err(Unavailable::Orphaned);
         }
+        // REQ: CLD-920 (ADR-1097 point 1) — a `pem` value is for WrenDNS's own listeners; a
+        // credential field (`*_ref`) never gets one, so it can't be sent to another service.
+        if c.row.kind == "pem" {
+            return Err(Unavailable::WrongKind);
+        }
         let Some(keys) = &g.keys else {
             return Err(Unavailable::Locked(
                 g.locked.clone().unwrap_or_else(|| "no key".to_owned()),
@@ -1217,7 +1227,8 @@ impl SecretStore {
             if r.deleted {
                 continue;
             }
-            if r.orphaned || c.health != RowHealth::Readable {
+            // REQ: CLD-920 — a `pem` key never leaves the node, a backup included.
+            if r.orphaned || c.health != RowHealth::Readable || r.kind == "pem" {
                 skipped += 1;
                 continue;
             }

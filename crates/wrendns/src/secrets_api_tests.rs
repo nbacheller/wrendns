@@ -656,6 +656,58 @@ async fn api_015_n_minus_1_primary_refuses_by_kind() {
     let _ = p.stop.send(true);
 }
 
+const PEM_VALUE: &str =
+    "-----BEGIN PRIVATE KEY-----\nplantedPemKeyBytes61f0\n-----END PRIVATE KEY-----";
+
+/// REQ: DSC-908, CLD-920 (ADR-1096 point 5) — the first `pem` secret is refused while a member's
+/// build does not know the kind, naming the member and its version (dry runs too); a text secret
+/// is not held; health says the gate is holding a change back; and once the member's build
+/// knows the kind the write goes through and nothing returned holds the key.
+#[tokio::test]
+async fn dsc_908_pem_secret_waits_for_every_members_build() {
+    let old = pair("1.1.0", "1.0.0").await;
+    let ph = harness_in("", Some(Arc::clone(&old.primary)));
+    crate::http::serve_peers(&ph.src);
+    let body = json!({"value": PEM_VALUE, "kind": "pem"});
+    for path in [
+        "/api/v1/secrets/loc.key",
+        "/api/v1/secrets/loc.key?dryRun=true",
+    ] {
+        let (s, _, v) = ph.call("PUT", path, Some(&body)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "upgrade_required", "{v}");
+        let d = v["detail"].as_str().unwrap();
+        assert!(d.contains("version 1.0.0") && d.contains("`pem`"), "{v}");
+        assert!(!v.to_string().contains("plantedPemKeyBytes"), "{v}");
+    }
+    assert!(!ph.src.secrets.exists("loc.key"));
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/plain", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let holds = crate::upgrade_gate::standing(Some(&old.primary));
+    assert_eq!(holds.len(), 1, "{holds:?}");
+    let reasons = crate::health::upgrade_gate_reasons(&holds);
+    assert_eq!(reasons[0].code, "upgrade_gate_holding");
+    assert!(reasons[0].summary.contains("version 1.0.0"), "{reasons:?}");
+    let _ = old.stop.send(true);
+
+    let new = pair("1.1.0", "1.1.0").await;
+    let ph = harness_in("", Some(Arc::clone(&new.primary)));
+    crate::http::serve_peers(&ph.src);
+    let (s, _, v) = ph.call("PUT", "/api/v1/secrets/loc.key", Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["secret"]["kind"], "pem", "{v}");
+    assert!(!v.to_string().contains("plantedPemKeyBytes"), "{v}");
+    assert_eq!(
+        crate::upgrade_gate::standing(Some(&new.primary)),
+        Vec::<String>::new()
+    );
+    let (_, _, list) = ph.call("GET", "/api/v1/secrets", None).await;
+    assert!(!list.to_string().contains("plantedPemKeyBytes"), "{list}");
+    let _ = new.stop.send(true);
+}
+
 /// A primary of its own cluster (no peers), its identity's authority `authority`.
 fn lone_primary(authority: &str) -> (Arc<Cluster>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();

@@ -31426,7 +31426,7 @@
               "string",
               "null"
             ],
-            "description": "`text` (the default). `pem` is reserved."
+            "description": "`text` (the default) or `pem` (PEM blocks only; its value is never shown or returned)."
           },
           "value": {
             "type": "string",
