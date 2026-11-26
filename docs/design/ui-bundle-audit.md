@@ -143,11 +143,11 @@ The brotli first-load figure is an estimate: of the 432 KiB first load, the thre
 
 ### Recommendation
 
-Not decided here; for the owner.
+**Owner decision, 2026-11-26: brotli is not shipped.** The reasons are points 1 and 2 below. The saving held in reserve for the day a feature reaches the budget is the glossary on demand (idea 1, point 4 below). The points are kept as measured.
 
 1. **Do not ship (b) while the UI is mostly opened over plain HTTP.** It is image-neutral and gives 87 KiB under the UI budget, but every plain-HTTP browser, the default on a LAN, would get the file uncompressed: a first load 2.9 times larger than today, to buy headroom that the image gate does not need (9.2 MiB left). It also adds a crate (a `cargo-deny` and supply-chain check) and decoding on the request path (up to about 1 MB of output per file; not measured), where today's inflate is the cheap path.
 2. **(c) is the safe way to get brotli** if the HTTPS first load matters (about 17% smaller, about 358 KiB against 432). It adds no dependency and changes nothing for plain-HTTP clients, but it costs 0.36 MiB of image and gives no headroom on the embedded size: the 512 KiB budget in `postbuild.mjs` would have to count what is embedded (about 863 KiB for both copies), or stay as the transfer budget with the embedded size as a second figure. Either is a change to ADR-168 and to the budget's measure in `spec/07` §3.
 3. **Conditions for either:** most installations open the UI over HTTPS (the owner's call, or a measure; no counter records the transport today); the other two architectures built for the size; a request-time and memory measurement of the decoder if (b) is still wanted; an ADR amending ADR-168 and the budget's measure.
 4. **If headroom under the 512 KiB budget is the goal,** the glossary on demand (idea 1, -46.9 KiB) lowers the first load for every client on every transport and needs no server coding, so it does not depend on this question.
 
-Still open for the owner: whether brotli is wanted at all given plain HTTP; (b) or (c); what the UI budget measures afterwards; whether to re-measure on the real zigbuild image before relying on the stand-in.
+Nothing here is open after that decision. If brotli is looked at again, the questions are the ones above: (b) or (c), what the UI budget measures afterwards, and a measurement on the real image build.
