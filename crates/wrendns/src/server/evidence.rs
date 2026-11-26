@@ -117,18 +117,18 @@ impl Evidence {
 }
 
 /// The shared handler with the evidence counter in front of it.
-pub(crate) struct Observed {
-    inner: Arc<Handler>,
+pub(crate) struct Observed<H = Handler> {
+    inner: Arc<H>,
     evidence: Arc<Evidence>,
 }
 
-impl Observed {
-    pub(crate) const fn new(inner: Arc<Handler>, evidence: Arc<Evidence>) -> Self {
+impl<H> Observed<H> {
+    pub(crate) const fn new(inner: Arc<H>, evidence: Arc<Evidence>) -> Self {
         Self { inner, evidence }
     }
 }
 
-impl QueryHandler for Observed {
+impl<H: QueryHandler> QueryHandler for Observed<H> {
     fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
         self.evidence.note(meta.peer.ip());
         self.inner.handle(req, meta, out)
@@ -187,5 +187,36 @@ mod tests {
         assert_eq!(e.others(), 0);
         e.note(ip("192.0.2.10"));
         assert_eq!(e.others(), 0);
+    }
+
+    struct Stub;
+
+    impl QueryHandler for Stub {
+        fn handle(&self, _: &[u8], _: &RequestMeta, _: &mut [u8]) -> Response {
+            Response::Drop
+        }
+    }
+
+    fn meta(peer: &str) -> RequestMeta {
+        RequestMeta {
+            peer: format!("{peer}:5300").parse().unwrap(),
+            local: None,
+            transport: wrendns_net::Transport::Udp,
+            client_id: None,
+            gated: false,
+        }
+    }
+
+    /// `Observed::handle` is the one place the counter is fed. Dropping the counter removes that
+    /// call and this test with it (T27.14b).
+    #[test]
+    fn api_902_observed_handle_counts_other_hosts_only() {
+        let ev = Evidence::new(Vec::new());
+        let o = Observed::new(Arc::new(Stub), Arc::clone(&ev));
+        let mut out = [0u8; 16];
+        o.handle(&[0; 12], &meta("198.51.100.7"), &mut out);
+        assert_eq!(ev.others(), 1);
+        o.handle(&[0; 12], &meta("127.0.0.1"), &mut out);
+        assert_eq!(ev.others(), 1);
     }
 }
