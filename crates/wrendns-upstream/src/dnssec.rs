@@ -194,6 +194,13 @@ impl Validator {
         self
     }
 
+    /// REQ: DNS-905 (T40.4) — forgets the validated NSEC ranges (RFC 8198), so a flush of
+    /// negative answers also stops a denial being synthesized from them; the next miss asks
+    /// the upstream again.
+    pub fn flush_ranges(&self) {
+        self.nsec.lock().clear();
+    }
+
     /// REQ: DNS-011 (T9.8) — root trust anchors from `path` (DNSKEY records in zone-file
     /// form) instead of the built-in ones. A file that can't be read or holds no key keeps the
     /// built-in anchors (and says so).

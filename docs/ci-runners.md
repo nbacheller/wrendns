@@ -62,6 +62,15 @@ The base is a sealed, stopped container built from Ubuntu 26.04. It holds the Ru
 
 Recreating a container keeps its identity, so GitHub still sees the same runner.
 
+## The runner's service unit
+
+Inside each container the runner is the unit `wrendns-runner.service`. Two of its lines exist because of faults found on 2026-11-26:
+
+- **`ExecStop` signals the listener itself.** The runner's start script does not pass a stop signal on, so a plain stop waited for the unit's timeout (five minutes then) and killed the runner. The unit now sends the interrupt to the listener process, which deletes its session and exits within seconds; the stop timeout is 90 seconds.
+- **`Environment=PATH=...` puts the image's own toolchain first.** Without a path the job found no `rustup`, so the toolchain step of every job installed one into the cargo folder that all the runners share. Two jobs doing that at once left one of them without `rustup` (`rustup: command not found`). With the image's `rustup` first on the path the step finds it and installs nothing.
+
+A change to the unit goes into each runner's `clean` snapshot, not only into the base: the host keeps the unit file beside the image build script, and a per-runner update script waits until the runner is idle, stops it, restores `clean`, replaces the unit, takes the snapshot again and starts the supervisor. It never interrupts a job.
+
 ## Rolling back to host runners
 
 Each runner can go back to its host unit at any stage. The rollback procedure does this:

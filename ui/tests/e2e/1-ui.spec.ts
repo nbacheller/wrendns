@@ -2048,6 +2048,89 @@ test('dns_006 cache lookup and flush', async () => {
   await viewer.close();
 });
 
+// REQ: DNS-905 (T40.4) — the Cache page's other flush choices: one type for a name leaves its
+// other types; the broad ones (a type everywhere, negative answers, failed lookups, the
+// recursor's zone cuts and round-trip times) ask first and send what they say; operators only.
+test('dns_905 cache flush by type, kind and recursor', async () => {
+  await query('typed.cache.e2e.test'); // routed to the stub upstream: an A answer is cached
+  const r = page.request;
+  await expect
+    .poll(async () => (await (await r.get('/api/v1/cache/lookup?name=typed.cache.e2e.test')).json()).entries.length, {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route('**/api/v1/cache/flush', (route) => {
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    return route.continue();
+  });
+  await page.goto('/#/cache');
+  await page.reload();
+  const card = page.getByTestId('cache-card');
+  await card.getByRole('textbox', { name: 'Name to look up' }).fill('typed.cache.e2e.test');
+  await card.getByRole('button', { name: 'Look up' }).click();
+  await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
+  // A name and a type: narrow, so no confirmation, and the A answer stays.
+  await card.getByTestId('cache-flush-type').fill('txt');
+  await card.getByRole('button', { name: 'Flush TXT for this name' }).click();
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed 0 entries');
+  await expect.poll(() => bodies[0]).toMatchObject({ name: 'typed.cache.e2e.test', type: 'TXT' });
+  await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
+  // The broad ones ask first: nothing is sent until the confirmation, and Cancel sends nothing.
+  await card.getByRole('button', { name: 'Flush negative answers…' }).click();
+  await expect(card.getByTestId('cache-flush-confirm')).toContainText('Flush negative answers on every node?');
+  await card.getByTestId('cache-flush-confirm').getByRole('button', { name: 'Cancel' }).click();
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  expect(bodies.length).toBe(1);
+  await card.getByRole('button', { name: 'Flush negative answers…' }).click();
+  await card.getByRole('button', { name: 'Yes, flush' }).click();
+  await expect.poll(() => bodies[1]).toEqual({ kind: 'negative' });
+  // The confirmation closes only when this flush has answered, so the notice below is its own.
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
+  // The positive answer is still cached after negative and failed-lookup flushes.
+  await card.getByRole('button', { name: 'Flush failed lookups…' }).click();
+  await card.getByRole('button', { name: 'Yes, flush' }).click();
+  await expect.poll(() => bodies[2]).toEqual({ kind: 'bogus' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
+  expect((await (await r.get('/api/v1/cache/lookup?name=typed.cache.e2e.test')).json()).entries.length).toBeGreaterThan(0);
+  // The recursor: zone cuts and round-trip times (this build's upstream isn't recursive: none to drop).
+  await card.getByRole('button', { name: 'Flush zone cuts…' }).click();
+  await card.getByRole('button', { name: 'Yes, flush' }).click();
+  await expect.poll(() => bodies[3]).toEqual({ recursor: 'cuts' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Dropped 0 resolver entries');
+  await card.getByRole('button', { name: 'Flush round-trip times…' }).click();
+  await card.getByRole('button', { name: 'Yes, flush' }).click();
+  await expect.poll(() => bodies[4]).toEqual({ recursor: 'rtts' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  // A type with no name is broad: it asks, then flushes that type for every name.
+  await card.getByRole('textbox', { name: 'Name to look up' }).fill('');
+  await card.getByTestId('cache-flush-type').fill('aaaa');
+  await card.getByRole('button', { name: 'Flush this type everywhere…' }).click();
+  await expect(card.getByTestId('cache-flush-confirm')).toContainText('Flush every AAAA answer');
+  await card.getByRole('button', { name: 'Yes, flush' }).click();
+  await expect.poll(() => bodies[5]).toEqual({ type: 'AAAA' });
+  await expect(card.getByTestId('cache-flush-confirm')).toHaveCount(0);
+  await expect(card.getByTestId('cache-flushed')).toContainText('Removed');
+  await page.unroute('**/api/v1/cache/flush');
+  // Operators only: a viewer is refused by the API.
+  const viewer = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  const vr = viewer.request;
+  const st = await (await vr.get('/api/v1/auth/status')).json();
+  const login = await vr.post('/api/v1/auth/login', {
+    headers: { 'x-csrf-token': st.csrfToken ?? '' },
+    data: { username: VIEWER.user, password: VIEWER.pass },
+  });
+  expect(login.ok()).toBeTruthy();
+  const csrf = (await (await vr.get('/api/v1/auth/status')).json()).csrfToken as string;
+  for (const data of [{ kind: 'negative' }, { recursor: 'cuts' }, { type: 'AAAA' }]) {
+    expect((await vr.post('/api/v1/cache/flush', { headers: { 'x-csrf-token': csrf }, data })).status()).toBe(403);
+  }
+  await viewer.close();
+});
+
 // REQ: DNS-006, OBS-003 (T6.15) — the Cache page: this node's hit rate, how full it is, its
 // settings and start; what it holds by kind and its top entries (sortable); Settings links here.
 test('dns_006 cache page', async () => {
