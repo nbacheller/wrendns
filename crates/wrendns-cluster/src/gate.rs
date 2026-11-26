@@ -21,11 +21,18 @@ pub enum Feature {
     DnsProviders,
     /// The `pem` secret kind (CLD-920).
     PemSecrets,
+    /// The `access` settings kind, the cluster-wide allowed networks (DNS-014, T27.14h).
+    Access,
 }
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 3] = [Self::Locations, Self::DnsProviders, Self::PemSecrets];
+    pub const ALL: [Feature; 4] = [
+        Self::Locations,
+        Self::DnsProviders,
+        Self::PemSecrets,
+        Self::Access,
+    ];
 
     /// The name a build announces the feature under (wire: Hello `features`).
     pub const fn name(self) -> &'static str {
@@ -33,6 +40,7 @@ impl Feature {
             Self::Locations => "locations",
             Self::DnsProviders => "dns_providers",
             Self::PemSecrets => "pem_secrets",
+            Self::Access => "access",
         }
     }
 
@@ -42,6 +50,7 @@ impl Feature {
             Self::Locations => "locations",
             Self::DnsProviders => "DNS providers",
             Self::PemSecrets => "secrets of the `pem` kind",
+            Self::Access => "the allowed networks",
         }
     }
 }
@@ -56,7 +65,7 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `Locations` and `DnsProviders` join the list in
 /// the commits that bring their tables (T36.10a, T36.10b): a build cut before then does not
 /// know them, and announcing them would let the gate pass a section such a member refuses.
-const ANNOUNCED: [Feature; 1] = [Feature::PemSecrets];
+const ANNOUNCED: [Feature; 2] = [Feature::PemSecrets, Feature::Access];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
 /// field, or one that has not reported yet) knows none.
@@ -179,7 +188,7 @@ mod tests {
     #[test]
     fn dsc_908_a_build_announces_only_the_features_it_handles() {
         let own = own_features();
-        assert_eq!(own, vec!["pem_secrets".to_owned()]);
+        assert_eq!(own, vec!["pem_secrets".to_owned(), "access".to_owned()]);
         assert!(!knows(&own, Feature::Locations));
         assert!(!knows(&own, Feature::DnsProviders));
     }

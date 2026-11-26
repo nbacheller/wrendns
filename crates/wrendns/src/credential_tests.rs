@@ -962,7 +962,7 @@ async fn api_014_pin_diff_never_shows_a_credential() {
 pub(crate) struct OlderPrimary {
     pub(crate) got: Arc<std::sync::Mutex<Vec<Value>>>,
     pub(crate) stop: tokio::sync::watch::Sender<bool>,
-    _primary: Arc<wrendns_cluster::net::Cluster>,
+    pub(crate) primary: Arc<wrendns_cluster::net::Cluster>,
     _dirs: (tempfile::TempDir, tempfile::TempDir),
 }
 
@@ -970,6 +970,16 @@ pub(crate) struct OlderPrimary {
 /// does (the entry as stored, credentials in), and the replica, joined and connected.
 pub(crate) async fn older_primary_and_replica(
     version: &str,
+) -> (Arc<wrendns_cluster::net::Cluster>, OlderPrimary) {
+    older_primary_and_replica_features(version, None, None).await
+}
+
+/// [`older_primary_and_replica`], the primary and the replica announcing the gated features
+/// given (`None`: every feature this build knows; `Some(vec![])`: a build from before the field).
+pub(crate) async fn older_primary_and_replica_features(
+    version: &str,
+    primary_features: Option<Vec<String>>,
+    replica_features: Option<Vec<String>>,
 ) -> (Arc<wrendns_cluster::net::Cluster>, OlderPrimary) {
     use wrendns_cluster::net::{Cluster, dial, join, serve};
     use wrendns_cluster::node::{Identity, JoinRequest, TokenGrants};
@@ -991,6 +1001,9 @@ pub(crate) async fn older_primary_and_replica(
         )
         .unwrap();
     let primary = Cluster::new(pid, version);
+    if let Some(f) = primary_features {
+        primary.set_features(f);
+    }
     let got = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let g = Arc::clone(&got);
     primary.set_rpc_handler(Arc::new(move |_peer, kind, body| {
@@ -1029,6 +1042,9 @@ pub(crate) async fn older_primary_and_replica(
     let resp = join(&token, &req).await.unwrap();
     let rid = Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
     let replica = Cluster::new(rid, crate::build_info::VERSION);
+    if let Some(f) = replica_features {
+        replica.set_features(f);
+    }
     tokio::spawn(dial(Arc::clone(&replica), stop));
     for _ in 0..400 {
         if replica.reachable_primary().is_some() {
@@ -1045,7 +1061,7 @@ pub(crate) async fn older_primary_and_replica(
         OlderPrimary {
             got,
             stop: stop_tx,
-            _primary: primary,
+            primary,
             _dirs: (pdir, rdir),
         },
     )

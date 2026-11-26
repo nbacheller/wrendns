@@ -6213,6 +6213,19 @@ fn plan_settings(
             return Err(problem);
         }
     }
+    // REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
+    // member's build announces the `access` kind (a feature, not a version number). A DELETE is
+    // never held. Dry runs too, so the answer is the same.
+    if w.kind == ManagedKind::Access
+        && w.body.is_some()
+        && let Err(why) = crate::upgrade_gate::enforce(
+            src.cluster.as_deref(),
+            wrendns_cluster::gate::Feature::Access,
+        )
+    {
+        return Err(Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then make this change again."));
+    }
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);

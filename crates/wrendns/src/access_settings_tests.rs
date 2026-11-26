@@ -425,3 +425,74 @@ async fn dns_014_allowed_networks_dry_run_states_the_impact() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["impact"].as_str().unwrap().contains("every node"), "{v}");
 }
+
+fn behind_proxy_with(toml: &str) -> Harness {
+    harness_toml(
+        toml,
+        None,
+        vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()],
+        wrendns_api::auth::Settings {
+            trusted_proxies: vec![("127.0.0.1".parse().unwrap(), 32)],
+            ..wrendns_api::auth::Settings::default()
+        },
+    )
+}
+
+/// REQ: DNS-014, API-901 (T27.14h, ADR-1103) - through the real router, a PUT is judged on the
+/// client address AND the TCP peer: a list that holds the peer but not the client is refused
+/// naming the client, one that holds the client but not the peer is refused naming the peer, and
+/// a DELETE is judged the same way on the list that would be in force (the peer-excluded case of
+/// a DELETE cannot arise: the file wins field by field, so no list is stored while the file sets one). Nothing is stored by a refused write.
+#[tokio::test]
+async fn dns_014_lockout_check_covers_client_and_peer_on_put_and_delete() {
+    let h = behind_proxy_with("");
+    let admin = token(&h, "adm", Role::Admin, None);
+    let xff = [("x-forwarded-for", "192.168.1.20")];
+    // PUT: holds the peer (127.0.0.1), not the client.
+    let (s, _, v) = call_as(
+        &h,
+        &admin,
+        "PUT",
+        URL,
+        Some(&json!({ "allowed_networks": ["127.0.0.0/8"] })),
+        &xff,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "would_disconnect_you", "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("192.168.1.20"),
+        "{v}"
+    );
+    // PUT: holds the client, not the peer.
+    let (s, _, v) = call_as(
+        &h,
+        &admin,
+        "PUT",
+        URL,
+        Some(&json!({ "allowed_networks": ["192.168.1.0/24"] })),
+        &xff,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("127.0.0.1"), "{v}");
+    assert_eq!(h.auth.state().managed("access").unwrap().len(), 0);
+    // A list that holds both is stored.
+    let (s, _, v) = call_as(
+        &h,
+        &admin,
+        "PUT",
+        URL,
+        Some(&json!({ "allowed_networks": ["192.168.1.0/24", "127.0.0.0/8"] })),
+        &xff,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // DELETE: the file's list (the defaults) holds the peer but not this public client.
+    let out = [("x-forwarded-for", "8.8.8.8")];
+    let (s, _, v) = call_as(&h, &admin, "DELETE", URL, None, &out).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "would_disconnect_you", "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("8.8.8.8"), "{v}");
+    assert_eq!(h.auth.state().managed("access").unwrap().len(), 1);
+}
