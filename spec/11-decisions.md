@@ -6354,7 +6354,7 @@ Still open for the owner: the runner variables for the window, `sha_pinning_requ
 
 **Consequences:** The gate exists before any device-key creation, using the clients the node already has. T36.8 replaces point 2's source with keys created on the node and anchored to the CMDB device, keeping the shape rule. A node that turns the flag on loses unauthenticated access on that listener only. Rejected: gating every wildcard bind automatically (it would refuse the LAN devices of the common `0.0.0.0:853` home setup; point 9 gates it only on a host with a public IPv4 address), judging only the bind address and ignoring the host (an internet-facing `0.0.0.0` listener would be an open resolver by default), accepting any configured `id:` (a guessable ID would open the resolver), and a different answer for a rate-limited key (it would tell a prober which keys exist).
 
-## ADR-1094 — The cache flush choices: `bogus` is a cached SERVFAIL, the recursor is flushed apart from the answers, and a typed flush is a separate peer read (Proposed 2026-11-25; DNS-905; T40.4)
+## ADR-1095 — The cache flush choices: `bogus` is a cached SERVFAIL, the recursor is flushed apart from the answers, and a typed flush is a separate peer read (Proposed 2026-11-25; DNS-905; T40.4)
 
 **Context:** T40.4 adds Unbound's `flush_type`, `flush_negative`, `flush_bogus` and `flush_infra`/`flush_zone` equivalents to `POST /api/v1/cache/flush`. The task does not say what a "bogus" entry is here, whether a recursor flush may be combined with an answer flush, or how the new choices reach peers that run an older version.
 
