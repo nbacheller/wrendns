@@ -36,6 +36,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:records",
         "add, change, and remove local names",
     ),
+    (
+        "config:write:locations",
+        "add, change, and remove locations (parts of the network with their own device names)",
+    ),
     ("config:write:forwards", "send domains to other servers"),
     (
         "config:write:rules",
@@ -232,6 +236,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/upstreams"
             | "/api/v1/records"
             | "/api/v1/zones"
+            // REQ: DSC-913 (T36.10a) - the locations and the names each composes.
+            | "/api/v1/locations"
             | "/api/v1/alerts"
             | "/api/v1/forwards"
             | "/api/v1/rules"
@@ -265,6 +271,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if policy_path(p) => return Need::Scope("config:read"),
             // REQ: FLT-902 (T24.29) - a group's content.
             _ if content_path(p) => return Need::Scope("config:read"),
+            // REQ: DSC-913 (T36.10a) - one location.
+            _ if location_path(p) => return Need::Scope("config:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -285,6 +293,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         // REQ: DNS-010 (T27.7) — zones are local data: the records scope writes them too.
         if under("/api/v1/zones") {
             return Need::Scope("config:write:records");
+        }
+        // REQ: DSC-913 (T36.10a) - a location changes the names devices answer as.
+        if under("/api/v1/locations") {
+            return Need::Scope("config:write:locations");
         }
         if under("/api/v1/rules") {
             return Need::Scope("config:write:rules");
@@ -414,6 +426,12 @@ fn content_path(p: &str) -> bool {
     p.strip_prefix("/api/v1/groups/")
         .and_then(|r| r.strip_suffix("/content"))
         .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// REQ: DSC-913 (T36.10a) - `/api/v1/locations/{slug}`.
+fn location_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/locations/")
+        .is_some_and(|n| !n.is_empty() && !n.contains('/'))
 }
 
 /// REQ: FLT-006, API-010 (T24.30) — `/api/v1/clients/{id}/policy`.
@@ -1083,6 +1101,32 @@ mod tests {
         );
     }
 
+    /// REQ: DSC-913 (T36.10a) - a location changes the names devices answer as, so it has its own
+    /// write scope; reading it is `config:read`.
+    #[test]
+    fn dsc_913_locations_need_their_scope() {
+        use Need::Scope;
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/locations/home"),
+                Scope("config:write:locations"),
+                "{m}"
+            );
+        }
+        for p in ["/api/v1/locations", "/api/v1/locations/home"] {
+            assert_eq!(required(&Method::GET, p), Scope("config:read"), "{p}");
+        }
+        assert!(
+            parse_scopes(&["config:write:*".into()])
+                .unwrap()
+                .contains("config:write:locations")
+        );
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:locations".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
     /// REQ: DNS-019, DNS-023 (T24.12, T24.13) — the settings sections have their own scopes
     /// (operators' areas), and no scope reaches `[clients]`: an agent can't write `mdns`.
     #[test]
@@ -1133,8 +1177,8 @@ mod tests {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            16,
-            "fifteen write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate, map, special, local) + analytics"
+            17,
+            "sixteen write areas (clients, records, locations, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate, map, special, local) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

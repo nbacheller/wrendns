@@ -472,19 +472,19 @@ async fn api_015_audit_without_value() {
 
 /// A two-node cluster on loopback: a primary (answering with `handler`, or the real node when
 /// `None`) and a replica, joined and connected.
-struct Pair {
-    primary: Arc<Cluster>,
-    replica: Arc<Cluster>,
-    stop: tokio::sync::watch::Sender<bool>,
+pub(crate) struct Pair {
+    pub(crate) primary: Arc<Cluster>,
+    pub(crate) replica: Arc<Cluster>,
+    pub(crate) stop: tokio::sync::watch::Sender<bool>,
     _dirs: (tempfile::TempDir, tempfile::TempDir),
 }
 
-async fn pair(version: &str, replica_version: &str) -> Pair {
+pub(crate) async fn pair(version: &str, replica_version: &str) -> Pair {
     pair_features(version, replica_version, None).await
 }
 
 /// [`pair`], the replica announcing `features` (`None`: every feature this build knows).
-async fn pair_features(
+pub(crate) async fn pair_features(
     version: &str,
     replica_version: &str,
     features: Option<Vec<String>>,
@@ -672,7 +672,7 @@ const PEM_VALUE: &str =
     "-----BEGIN PRIVATE KEY-----\nplantedPemKeyBytes61f0\n-----END PRIVATE KEY-----";
 
 /// The upgrade gate keeps one process-wide record for health; the tests that read it take turns.
-static GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// What the issuer's own path does: a write that does not go through the public routes.
 async fn issuer_put(

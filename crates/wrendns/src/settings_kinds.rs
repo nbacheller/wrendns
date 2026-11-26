@@ -832,7 +832,7 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         // REQ: DSC-901 (T31.2) — the CMDB starts or stops on the designated node at the reload.
         (ManagedKind::Cmdb, true) => "Applies on the designated node within a few seconds, with no restart: the CMDB starts or stops there, and the thresholds are read again. Other nodes change nothing, and no DNS answer changes.".into(),
         (ManagedKind::Cmdb, false) => "The config file's CMDB settings (or the defaults: off) apply again on the designated node within a few seconds. What the CMDB stored stays on disk.".into(),
-        (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
+        (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart. A location without a domain of its own composes its names under this domain, so changing it renames those too (the old name keeps answering while the location's flat names are on); clearing it is refused while such a location exists.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
         // REQ: DNS-011 (T27.11) - the validator's mode and trust anchors are read on a reload.
         (ManagedKind::Dnssec, true) => "Applies on every node within a few seconds (the next reload), with no restart. Answers already cached keep their status until they expire.".into(),

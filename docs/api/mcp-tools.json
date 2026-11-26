@@ -676,6 +676,44 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The locations (parts of the network with a device-name subtree of their own): each one's slug, label, networks as resolved now (a VLAN to the subnets the routers report, or \"no network reported\"), serving nodes, parent domain, visibility (shared, or private: answered only to clients in its networks), whether the old flat names still answer, how many queries those flat names answered over the last 7 days, the devices that answer under it with the names they answer as (and whether a device is pinned there by its own setting), and every name collision with the device that kept it. A device's location comes from the configured networks and its own `location` setting, never from the CMDB. Set one with plan_set_location. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_locations"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. One location by slug, with its resolved networks, the devices that answer under it (name, address, flat name, pinned) and its collisions. For a device's location, find the device in list_locations or read `location` in list_devices. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "slug": {
+          "description": "The location's slug (list_locations).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug"
+      ],
+      "type": "object"
+    },
+    "name": "get_location"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Is WrenDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
     "inputSchema": {
       "additionalProperties": false,
@@ -1428,6 +1466,43 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Plans a change (nothing changes until apply_plan). Pins a named device to a location (its slug from list_locations), whatever its address: it answers as <device>.<slug>.<domain> from then on, and the old flat name keeps answering while the location's flat names are on. An empty `location` takes the pin off, so the device's location is the one its address gives it. The device must already be named (plan_assign_client names one); its groups, addresses and kind are kept. Refused (409 upgrade_required, naming the member) while a cluster member's build does not know locations. Needs config:write:clients (and config:read to read the current device).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "description": "The device's name (list_devices).",
+          "type": "string"
+        },
+        "location": {
+          "description": "The location's slug (list_locations); empty to remove the pin.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device",
+        "location",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_device_location"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Plans a change (nothing changes until apply_plan). A failover drill: for 15 to 300 seconds (default 60) one node stops answering the targets (everyone, a group, or some devices) while the other nodes keep serving, so devices with a working second DNS server switch to it. About a minute after it ends, drill_report says who followed, how fast, and who was stuck. The preview lists every precondition (another node ready and answering, no drill in the last 10 minutes, no rollout baking or pin, health not severe), the baseline (devices that used the node in the last hour), and the devices it would stop answering. Devices without a working second server lose DNS for the drill's length: start with one device for 30 seconds. Needs the ops:drill scope, which no token has by default.",
     "inputSchema": {
       "additionalProperties": false,
@@ -1764,6 +1839,73 @@
       "type": "object"
     },
     "name": "plan_set_schedule"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Makes or replaces a location: a part of the network with a device-name subtree of its own. A device on one of its `networks` answers as <device>.<slug>.<domain> (its PTR is that name), the old flat name <device>.<device_domain> keeps answering while `flat_names` is on (the default), a `private` location's names answer only to clients in its networks, and any other name under <slug>.<domain> gets \"no such name\" from this node. The whole location is replaced: send every field you want kept. Not for a device's own location setting, a certificate or a public name. Refused (409 upgrade_required, naming the member) while a cluster member's build does not know locations, and read-only when the config files define the location. Shared by the cluster. Needs config:write:locations.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "The parent domain (default: [local] device_domain).",
+          "type": "string"
+        },
+        "flat_names": {
+          "description": "Keep answering the old flat names for the location's devices (default true).",
+          "type": "boolean"
+        },
+        "label": {
+          "description": "Display name (up to 64 characters).",
+          "type": "string"
+        },
+        "networks": {
+          "description": "CIDRs (192.0.2.0/24) or vlan:<id> (1 to 4094); at least one; none may overlap another location's.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "nodes": {
+          "description": "The nodes that serve it, by node name; empty: every node.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "slug": {
+          "description": "The location's DNS label: lowercase letters, digits and hyphens, 1 to 32 characters (e.g. home).",
+          "type": "string"
+        },
+        "visibility": {
+          "description": "Default shared.",
+          "enum": [
+            "shared",
+            "private"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "networks",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_location"
   },
   {
     "annotations": {

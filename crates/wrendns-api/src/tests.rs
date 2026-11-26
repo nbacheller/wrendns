@@ -2077,7 +2077,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 195 with DSC-901's /cmdb-settings/default and DSC-902's /cmdb/status, /cmdb/cis,
     // /cmdb/cis/{id}, /cmdb/proposals and DSC-903's /cmdb/cis/{id}/link, /unlink, /merge and /split
     // (T31.2).
-    assert_eq!(paths.len(), 195);
+    // 197 with DSC-913's /locations and /locations/{slug} (T36.10a).
+    assert_eq!(paths.len(), 197);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

@@ -8596,6 +8596,267 @@
         }
       }
     },
+    "/api/v1/locations": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The locations in the configuration, with the names each composes.",
+        "description": "For each location: its networks as resolved now (a VLAN to the subnets the routers and this\nnode's VLAN interfaces report), the devices that answer under it with their names and the old\nflat names that still answer, the collisions with the device that kept each name (ADR-901's\nranking), and how many queries the flat names answered over the last 7 days on this node. A\ndevice's location comes from the configured networks and its `[[client]] location`, never from\nthe CMDB (DSC-901). Names and address lists reflect this node's table, rebuilt every 10 seconds.",
+        "operationId": "list_locations",
+        "responses": {
+          "200": {
+            "description": "The locations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/locations/{slug}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "One location, with its devices and collisions.",
+        "description": "The same entry `GET /api/v1/locations` lists: its networks as resolved now, the devices that\nanswer under it with the names they answer as (and the old flat names that still answer), its\ncollisions with the ADR-901 winner, and the 7-day count of queries its flat names answered.",
+        "operationId": "get_location",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The location's slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The location.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationInfo"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such location.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Create or replace a location (DSC-913, T36.10a, ADR-1081, ADR-1096).",
+        "description": "A location is a part of the network with a device-name subtree of its own: a device on one of\nits `networks` answers as `<device>.<slug>.<domain>` (its PTR is that name), the old flat name\nkeeps answering while `flatNames` is on, a `private` location's names answer only to clients in\nits networks, and a name in its subtree that is no device gets \"no such name\" locally. The\nfields left out take their defaults. A location the configuration files define is read-only\nhere (409 `set_by_file`). The first location is refused (409 `upgrade_required`, dry runs too)\nwhile a cluster member's build does not know locations, naming the member. Needs the operator\nrole (or the `config:write:locations` agent scope, with a reason).",
+        "operationId": "put_location",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The location's slug (a DNS label, e.g. home).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the configuration files (`set_by_file`), or a cluster member does not know locations yet (`upgrade_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The slug, a network, the domain or the visibility is invalid, or two locations overlap.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a location made through the API (DSC-913, T36.10a).",
+        "description": "Its devices go back to the names they had without it (`<device>.<device_domain>`), and a device\npinned to it (`[[client]] location`) must be unpinned first (422). A location the configuration\nfiles define can't be removed here (409).",
+        "operationId": "delete_location",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "description": "The location's slug.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the configuration files (`set_by_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A device is pinned to it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/map": {
       "get": {
         "tags": [
@@ -17959,6 +18220,25 @@
             "description": "REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.",
             "example": "camera"
           },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DSC-910 (T36.10a) - the location in effect: the one it is pinned to (`[[client]]\nlocation`), else the one whose networks hold its address; absent when it is on no\nlocation's network.",
+            "example": "home"
+          },
+          "locationName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DSC-910 - the location's display name (its label, else its slug)."
+          },
+          "locationPinned": {
+            "type": "boolean",
+            "description": "REQ: DSC-910 - `location` is the device's own setting (an override), not derived from its\naddress."
+          },
           "match": {
             "type": "array",
             "items": {
@@ -17997,6 +18277,14 @@
             ],
             "description": "REQ: OBS-025 — what kind of device it is (`camera`, `tv`, `unknown` to stop guessing);\nwins over identification.",
             "example": "camera"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DSC-910 (T36.10a) - pin the device to a location (its slug), whatever its address;\nabsent: the location its address gives it. A slug that names no location is refused.",
+            "example": "home"
           },
           "match": {
             "type": "array",
@@ -24365,6 +24653,25 @@
                   "description": "REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.",
                   "example": "camera"
                 },
+                "location": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: DSC-910 (T36.10a) - the location in effect: the one it is pinned to (`[[client]]\nlocation`), else the one whose networks hold its address; absent when it is on no\nlocation's network.",
+                  "example": "home"
+                },
+                "locationName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: DSC-910 - the location's display name (its label, else its slug)."
+                },
+                "locationPinned": {
+                  "type": "boolean",
+                  "description": "REQ: DSC-910 - `location` is the device's own setting (an override), not derived from its\naddress."
+                },
                 "match": {
                   "type": "array",
                   "items": {
@@ -27672,6 +27979,271 @@
           "source": {
             "type": "string",
             "description": "`file` (read-only here) or `api`."
+          }
+        }
+      },
+      "LocationCollision": {
+        "type": "object",
+        "description": "REQ: DSC-909, DSC-916 (T36.10a) - a name two devices wanted: the better-ranked one (ADR-901)\nkept it.",
+        "required": [
+          "name",
+          "flat",
+          "lostAddress"
+        ],
+        "properties": {
+          "flat": {
+            "type": "boolean",
+            "description": "The name is a flat alias: the device that lost it keeps its location name."
+          },
+          "keptAddress": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address of the device that kept the name; absent when the name is a location's own\nsubtree (the location wins)."
+          },
+          "lostAddress": {
+            "type": "string",
+            "description": "The address of the device that did not."
+          },
+          "lostLocation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The slug of the location the losing device is in, when it has one."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "LocationDevice": {
+        "type": "object",
+        "description": "REQ: DSC-909, DSC-910, DSC-916 (T36.10a) - a device and the names it answers as.",
+        "required": [
+          "name",
+          "address",
+          "pinned"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "addressesV6": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The IPv6 addresses that answer AAAA and PTR for it."
+          },
+          "flatName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The old flat name that still answers for it (A and AAAA, no PTR), while `flatNames` is on."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name it answers as (`nas.home.example.net`); its PTR is the same name."
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "The location comes from the device's `[[client]] location`, not its address."
+          }
+        }
+      },
+      "LocationInfo": {
+        "type": "object",
+        "description": "REQ: DSC-913 (T36.10a) - a location, as the node composes names for it now.",
+        "required": [
+          "slug",
+          "source",
+          "networks",
+          "nodes",
+          "domain",
+          "visibility",
+          "flatNames",
+          "flatNameUses7d",
+          "devices",
+          "collisions"
+        ],
+        "properties": {
+          "collisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocationCollision"
+            },
+            "description": "Every name that collided in this location or with its devices' flat names, each with its\nADR-901 winner."
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocationDevice"
+            },
+            "description": "The devices that answer under it, by name."
+          },
+          "domain": {
+            "type": "string",
+            "description": "The parent domain in effect; its names are `<device>.<slug>.<domain>`."
+          },
+          "flatNameUses7d": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many queries the flat names answered over the last 7 days (this node; a restart starts\nthe count again).",
+            "minimum": 0
+          },
+          "flatNames": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocationNetworkInfo"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "slug": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (read-only here) or `api`.",
+            "example": "api"
+          },
+          "visibility": {
+            "type": "string",
+            "description": "`shared` or `private`."
+          }
+        }
+      },
+      "LocationInput": {
+        "type": "object",
+        "description": "REQ: DSC-913 (T36.10a, ADR-1081, ADR-1096) - a location to create or replace\n(`PUT /api/v1/locations/{slug}`): a part of the network with a device-name subtree of its own.\nFields left out take their defaults (`visibility` shared, `flatNames` on).",
+        "required": [
+          "networks"
+        ],
+        "properties": {
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The parent domain (default: `[local] device_domain`).",
+            "example": "example.net"
+          },
+          "flatNames": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Keep answering the old `<device>.<device_domain>` names for the location's devices\n(default on)."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name, at most 64 characters (untrusted text).",
+            "example": "Home"
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The networks that belong to it: CIDRs, or `vlan:<id>` (1 to 4094) resolved through the\nrouter network reads and this node's own VLAN interfaces. At least one; no CIDR may\noverlap another location's.",
+            "example": [
+              "192.0.2.0/24",
+              "vlan:30"
+            ]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The nodes that serve the location, by node name; empty: every node."
+          },
+          "visibility": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`shared` (default: every client `[access]` allows sees the names) or `private` (only a\nclient whose address is in the location's networks does).",
+            "example": "shared"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LocationList": {
+        "type": "object",
+        "description": "REQ: DSC-913 (T36.10a) - the locations (`GET /api/v1/locations`).",
+        "required": [
+          "items",
+          "conflicts",
+          "collisions"
+        ],
+        "properties": {
+          "collisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocationCollision"
+            },
+            "description": "Collisions of devices on no location's network."
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Networks two locations claim at once (neither applies until it is fixed), as sentences."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocationInfo"
+            }
+          }
+        }
+      },
+      "LocationNetworkInfo": {
+        "type": "object",
+        "description": "REQ: DSC-909 (T36.10a) - one entry of a location's `networks`, with what it resolved to.",
+        "required": [
+          "entry",
+          "resolved"
+        ],
+        "properties": {
+          "entry": {
+            "type": "string",
+            "description": "As written: a CIDR or `vlan:<id>`."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`no network reported` for a VLAN nothing reports; `conflict` for a network two locations\nclaim (neither applies until it is fixed)."
+          },
+          "resolved": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The networks it covers now: the CIDR itself, or the subnets the routers and this node's\nVLAN interfaces report for the VLAN."
           }
         }
       },

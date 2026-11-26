@@ -1962,6 +1962,17 @@ async fn reload(
         return false;
     };
     let new = crate::replication::effective(&file);
+    // REQ: DSC-908 (T36.10a, ADR-1096 point 5) - the first location is held while a cluster member's
+    // build does not know the table: a file reload that adds one is refused, the previous
+    // configuration keeps serving, and the refusal names the member. A change made through the
+    // API or replicated was judged where it was made.
+    if !from_api
+        && let Err(why) =
+            crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, &new)
+    {
+        error!("reload refused: {why}; still serving the previous configuration");
+        return false;
+    }
     warn_ui_gates(&file, &new);
     // Unchanged upstream config keeps the running router: its health state, pooled
     // connections, and bootstrap cache survive the reload (T2.7).

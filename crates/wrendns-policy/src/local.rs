@@ -134,32 +134,7 @@ pub fn reverse_name(ip: IpAddr) -> NameBuf {
     NameBuf::from_presentation(&text).unwrap_or_default()
 }
 
-/// REQ: DNS-023 (T22.1) — a device's name as one DNS label: lowercase letters, digits, and
-/// hyphens, at most 63 bytes (`Kitchen Tablet` → `kitchen-tablet`, `Alex's iPhone` →
-/// `alexs-iphone`, `shelly1-ABC123.local` → `shelly1-abc123-local`). Apostrophes are dropped;
-/// anything else that isn't an ASCII letter or digit separates words. `None` when nothing is
-/// left.
-pub fn device_label(name: &str) -> Option<String> {
-    let mut out = String::with_capacity(name.len().min(63));
-    let mut gap = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            if gap && !out.is_empty() {
-                out.push('-');
-            }
-            gap = false;
-            out.push(c.to_ascii_lowercase());
-            if out.len() >= 63 {
-                break;
-            }
-        } else if !matches!(c, '\'' | '\u{2019}') {
-            gap = true;
-        }
-    }
-    out.truncate(63);
-    let label = out.trim_end_matches('-');
-    (!label.is_empty()).then(|| label.to_owned())
-}
+pub use wrendns_config::device_label;
 
 impl LocalData {
     /// Builds from `[[record]]` entries and `[local] hosts_files`.
@@ -301,6 +276,18 @@ impl LocalData {
             let _ = d.add(name, rt, &ip.to_string(), ttl);
         }
         d.generate_ptrs(ttl);
+        d
+    }
+
+    /// REQ: DSC-916 (T36.10a, ADR-1096) - A and AAAA records only, with no PTR: the old flat names
+    /// that keep answering for devices in a location while people move over (the PTR stays the
+    /// location name). A name that doesn't parse is skipped.
+    pub fn from_aliases<'a>(names: impl IntoIterator<Item = (&'a str, IpAddr)>, ttl: u32) -> Self {
+        let mut d = Self::default();
+        for (name, ip) in names {
+            let rt = if ip.is_ipv4() { "A" } else { "AAAA" };
+            let _ = d.add(name, rt, &ip.to_string(), ttl);
+        }
         d
     }
 

@@ -26,6 +26,9 @@ pub(crate) const FORWARD: &str = "forward";
 /// REQ: DNS-010 (T27.7) — authoritative zones made through the API, by apex: the body is a
 /// `[[zone]]` without its file (the files' zones win).
 pub(crate) const ZONE: &str = "zone";
+/// REQ: DSC-913 (T36.10a) - locations made through the API, by slug: the body is a `[[location]]`
+/// without its slug (the files' locations win).
+pub(crate) const LOCATION: &str = "location";
 /// Quick rules (T6.12, ADR-067), stored by ID.
 pub(crate) const RULE: &str = "rule";
 /// T7.5 (ADR-069): these may override or hide the files' entry of the same name.
@@ -227,6 +230,8 @@ pub(crate) struct Entries {
     pub(crate) forwards: Vec<(String, Forward)>,
     /// REQ: DNS-010 (T27.7) — the zones made through the API, by apex.
     pub(crate) zones: Vec<(String, wrendns_config::ZoneConfig)>,
+    /// REQ: DSC-913 (T36.10a) — the locations made through the API, by slug.
+    pub(crate) locations: Vec<(String, wrendns_config::LocationConfig)>,
     pub(crate) rules: Vec<wrendns_config::RuleConfig>,
     pub(crate) upstreams: Vec<(String, Ovr<Upstream>)>,
     pub(crate) upstream_groups: Vec<(String, Ovr<UpstreamGroup>)>,
@@ -455,6 +460,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         records: decode(state, RECORD),
         forwards: decode(state, FORWARD),
         zones: decode(state, ZONE),
+        locations: decode(state, LOCATION),
         rules: decode::<wrendns_config::RuleConfig>(state, RULE)
             .into_iter()
             .map(|(_, r)| r)
@@ -789,6 +795,14 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
         z.file = None;
         cfg.zone.push(z);
     }
+    // REQ: DSC-913 (T36.10a) - locations made through the API; a location the files define wins,
+    // and a bad one is named in the errors (the files alone then apply, CLU-004).
+    for (_, l) in &e.locations {
+        if file.location.iter().any(|f| f.slug == l.slug) {
+            continue;
+        }
+        cfg.location.push(l.clone());
+    }
     if let Err(v) = wrendns_config::validate_config(&cfg) {
         errs.extend(v.iter().map(ToString::to_string));
     }
@@ -986,6 +1000,7 @@ mod tests {
                 .map(|g| SafeString::new(*g).unwrap())
                 .collect(),
             kind: None,
+            location: None,
         }
     }
 

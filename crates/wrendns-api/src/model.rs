@@ -1121,6 +1121,128 @@ pub struct ZoneInput {
     pub records: Vec<ZoneRecordInput>,
 }
 
+/// REQ: DSC-913 (T36.10a, ADR-1081, ADR-1096) - a location to create or replace
+/// (`PUT /api/v1/locations/{slug}`): a part of the network with a device-name subtree of its own.
+/// Fields left out take their defaults (`visibility` shared, `flatNames` on).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocationInput {
+    /// Display name, at most 64 characters (untrusted text).
+    #[serde(default)]
+    #[schema(example = "Home")]
+    pub label: Option<String>,
+    /// The networks that belong to it: CIDRs, or `vlan:<id>` (1 to 4094) resolved through the
+    /// router network reads and this node's own VLAN interfaces. At least one; no CIDR may
+    /// overlap another location's.
+    #[schema(example = json!(["192.0.2.0/24", "vlan:30"]))]
+    pub networks: Vec<String>,
+    /// The nodes that serve the location, by node name; empty: every node.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    /// The parent domain (default: `[local] device_domain`).
+    #[serde(default)]
+    #[schema(example = "example.net")]
+    pub domain: Option<String>,
+    /// `shared` (default: every client `[access]` allows sees the names) or `private` (only a
+    /// client whose address is in the location's networks does).
+    #[serde(default)]
+    #[schema(example = "shared")]
+    pub visibility: Option<String>,
+    /// Keep answering the old `<device>.<device_domain>` names for the location's devices
+    /// (default on).
+    #[serde(default)]
+    pub flat_names: Option<bool>,
+}
+
+/// REQ: DSC-909 (T36.10a) - one entry of a location's `networks`, with what it resolved to.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationNetworkInfo {
+    /// As written: a CIDR or `vlan:<id>`.
+    pub entry: String,
+    /// The networks it covers now: the CIDR itself, or the subnets the routers and this node's
+    /// VLAN interfaces report for the VLAN.
+    pub resolved: Vec<String>,
+    /// `no network reported` for a VLAN nothing reports; `conflict` for a network two locations
+    /// claim (neither applies until it is fixed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// REQ: DSC-909, DSC-910, DSC-916 (T36.10a) - a device and the names it answers as.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationDevice {
+    /// The name it answers as (`nas.home.example.net`); its PTR is the same name.
+    pub name: String,
+    pub address: String,
+    /// The IPv6 addresses that answer AAAA and PTR for it.
+    #[serde(default)]
+    pub addresses_v6: Vec<String>,
+    /// The old flat name that still answers for it (A and AAAA, no PTR), while `flatNames` is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flat_name: Option<String>,
+    /// The location comes from the device's `[[client]] location`, not its address.
+    pub pinned: bool,
+}
+
+/// REQ: DSC-909, DSC-916 (T36.10a) - a name two devices wanted: the better-ranked one (ADR-901)
+/// kept it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationCollision {
+    pub name: String,
+    /// The name is a flat alias: the device that lost it keeps its location name.
+    pub flat: bool,
+    /// The address of the device that kept the name; absent when the name is a location's own
+    /// subtree (the location wins).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_address: Option<String>,
+    /// The address of the device that did not.
+    pub lost_address: String,
+    /// The slug of the location the losing device is in, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_location: Option<String>,
+}
+
+/// REQ: DSC-913 (T36.10a) - a location, as the node composes names for it now.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationInfo {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// `file` (read-only here) or `api`.
+    #[schema(example = "api")]
+    pub source: String,
+    pub networks: Vec<LocationNetworkInfo>,
+    pub nodes: Vec<String>,
+    /// The parent domain in effect; its names are `<device>.<slug>.<domain>`.
+    pub domain: String,
+    /// `shared` or `private`.
+    pub visibility: String,
+    pub flat_names: bool,
+    /// How many queries the flat names answered over the last 7 days (this node; a restart starts
+    /// the count again).
+    pub flat_name_uses_7d: u64,
+    /// The devices that answer under it, by name.
+    pub devices: Vec<LocationDevice>,
+    /// Every name that collided in this location or with its devices' flat names, each with its
+    /// ADR-901 winner.
+    pub collisions: Vec<LocationCollision>,
+}
+
+/// REQ: DSC-913 (T36.10a) - the locations (`GET /api/v1/locations`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationList {
+    pub items: Vec<LocationInfo>,
+    /// Networks two locations claim at once (neither applies until it is fixed), as sentences.
+    pub conflicts: Vec<String>,
+    /// Collisions of devices on no location's network.
+    pub collisions: Vec<LocationCollision>,
+}
+
 /// REQ: FLT-012 (T7.9) — a blockable service.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1163,6 +1285,19 @@ pub struct ClientInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "camera")]
     pub kind: Option<String>,
+    /// REQ: DSC-910 (T36.10a) - the location in effect: the one it is pinned to (`[[client]]
+    /// location`), else the one whose networks hold its address; absent when it is on no
+    /// location's network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "home")]
+    pub location: Option<String>,
+    /// REQ: DSC-910 - the location's display name (its label, else its slug).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_name: Option<String>,
+    /// REQ: DSC-910 - `location` is the device's own setting (an override), not derived from its
+    /// address.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub location_pinned: bool,
     /// REQ: OBS-025 — what it looks like (the identity of the first of its addresses that was
     /// seen), without the evidence (`GET /api/v1/clients/{id}/identity` has it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1292,6 +1427,11 @@ pub struct ClientInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "camera")]
     pub kind: Option<String>,
+    /// REQ: DSC-910 (T36.10a) - pin the device to a location (its slug), whatever its address;
+    /// absent: the location its address gives it. A slug that names no location is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "home")]
+    pub location: Option<String>,
 }
 
 /// What a device change did, or would do with `dryRun=true` (AGT-002).

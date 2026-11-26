@@ -246,6 +246,15 @@ fn strip_tuning(cfg: &mut Config, e: &Entry, own: &Config) {
             }
             return;
         }
+        // REQ: DSC-913 (T36.10a) - a location by slug goes back to the files' location of that name
+        // (or goes).
+        managed::LOCATION => {
+            cfg.location.retain(|l| l.slug.as_str() != e.name);
+            if let Some(o) = own.location.iter().find(|l| l.slug.as_str() == e.name) {
+                cfg.location.push(o.clone());
+            }
+            return;
+        }
         managed::DNSSEC => K::Dnssec,
         managed::FILTER => K::Filter,
         managed::DRILL => K::Drill,
@@ -293,6 +302,7 @@ pub(crate) const ADOPTED_KINDS: &[&str] = &[
     managed::FILTER,
     managed::DRILL,
     managed::ZONE,
+    managed::LOCATION,
     managed::SLO,
     managed::PROBE,
     managed::UPSTREAM_CHECK,
@@ -702,6 +712,15 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
             push(&mut out, managed::ZONE, &apex, b);
         }
     }
+    // REQ: DSC-913 (T36.10a) - locations by slug; the files' win.
+    for l in &served.location {
+        if own.location.iter().any(|o| o.slug == l.slug) {
+            continue;
+        }
+        if let Ok(b) = serde_json::to_value(l) {
+            push(&mut out, managed::LOCATION, l.slug.as_str(), b);
+        }
+    }
     // Sections the API replaces whole.
     macro_rules! whole {
         ($kind:expr, $a:expr, $b:expr) => {
@@ -843,6 +862,7 @@ pub(crate) fn strip(cfg: &mut Config, entries: &[Entry], own: &Config) {
             managed::CMDB => cfg.cmdb = own.cmdb.clone(),
             managed::CLIENTS => cfg.clients.mdns = own.clients.mdns,
             managed::ZONE
+            | managed::LOCATION
             | managed::DNSSEC
             | managed::FILTER
             | managed::DRILL

@@ -67,3 +67,26 @@ pub(crate) fn standing(cluster: Option<&Cluster>) -> Vec<String> {
     }
     out
 }
+
+/// REQ: DSC-908, DSC-910 (T36.10a; ADR-1096 point 5) - whether a configuration uses what an older
+/// replica refuses to read: a `[[location]]` entry, or a `location` on a `[[client]]` (both are
+/// shared, and `deny_unknown_fields` makes a build without them refuse the whole section).
+pub(crate) fn uses_locations(cfg: &wrendns_config::Config) -> bool {
+    !cfg.location.is_empty() || cfg.client.iter().any(|c| c.location.is_some())
+}
+
+/// REQ: DSC-908 (T36.10a) - the gate for the first location: `Ok` unless `after` starts using
+/// locations (`before` did not) while a member's build does not know them. Used by the API write
+/// path (dry runs too) and by the file loader on a reload; once the table is in use, every
+/// member already knew it when it was let in, so later changes are not held. A node that joins
+/// later with an older build refuses the table itself and says so (the replica's own refusal).
+pub(crate) fn enforce_locations(
+    cluster: Option<&Cluster>,
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> Result<(), String> {
+    if !uses_locations(after) || uses_locations(before) {
+        return Ok(());
+    }
+    enforce(cluster, Feature::Locations)
+}

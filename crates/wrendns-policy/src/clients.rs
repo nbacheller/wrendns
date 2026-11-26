@@ -275,6 +275,8 @@ pub struct Client {
     pub group_names: Vec<Box<str>>,
     /// No groups of its own: it takes its network's group (ADR-050).
     pub inherit: bool,
+    /// REQ: DSC-910 (T36.10a) - the `[[location]]` slug the device is pinned to, if any.
+    pub location: Option<Box<str>>,
 }
 
 /// REQ: FLT-006, API-010 (T24.30, ADR-996) — where a device's group came from.
@@ -642,6 +644,7 @@ impl ClientTable {
                     .collect(),
                 groups: gs,
                 inherit,
+                location: c.location.as_ref().map(|l| l.as_str().into()),
             });
             for key in &c.match_keys {
                 match MatchKey::parse(key) {

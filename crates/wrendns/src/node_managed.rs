@@ -78,6 +78,8 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     // REQ: DNS-010, OBS-016, OBS-020, OBS-019 (T27.5, T27.7, ADR-1007) — the zones and the SLO, probe
     // and upstream-check sections are shared too.
     crate::managed::ZONE,
+    // REQ: DSC-913 (T36.10a) - locations are shared too.
+    crate::managed::LOCATION,
     crate::managed::SLO,
     crate::managed::PROBE,
     crate::managed::UPSTREAM_CHECK,

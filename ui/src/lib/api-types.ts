@@ -3043,6 +3043,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The locations in the configuration, with the names each composes.
+         * @description For each location: its networks as resolved now (a VLAN to the subnets the routers and this
+         *     node's VLAN interfaces report), the devices that answer under it with their names and the old
+         *     flat names that still answer, the collisions with the device that kept each name (ADR-901's
+         *     ranking), and how many queries the flat names answered over the last 7 days on this node. A
+         *     device's location comes from the configured networks and its `[[client]] location`, never from
+         *     the CMDB (DSC-901). Names and address lists reflect this node's table, rebuilt every 10 seconds.
+         */
+        get: operations["list_locations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/locations/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One location, with its devices and collisions.
+         * @description The same entry `GET /api/v1/locations` lists: its networks as resolved now, the devices that
+         *     answer under it with the names they answer as (and the old flat names that still answer), its
+         *     collisions with the ADR-901 winner, and the 7-day count of queries its flat names answered.
+         */
+        get: operations["get_location"];
+        /**
+         * Create or replace a location (DSC-913, T36.10a, ADR-1081, ADR-1096).
+         * @description A location is a part of the network with a device-name subtree of its own: a device on one of
+         *     its `networks` answers as `<device>.<slug>.<domain>` (its PTR is that name), the old flat name
+         *     keeps answering while `flatNames` is on, a `private` location's names answer only to clients in
+         *     its networks, and a name in its subtree that is no device gets "no such name" locally. The
+         *     fields left out take their defaults. A location the configuration files define is read-only
+         *     here (409 `set_by_file`). The first location is refused (409 `upgrade_required`, dry runs too)
+         *     while a cluster member's build does not know locations, naming the member. Needs the operator
+         *     role (or the `config:write:locations` agent scope, with a reason).
+         */
+        put: operations["put_location"];
+        post?: never;
+        /**
+         * Remove a location made through the API (DSC-913, T36.10a).
+         * @description Its devices go back to the names they had without it (`<device>.<device_domain>`), and a device
+         *     pinned to it (`[[client]] location`) must be unpinned first (422). A location the configuration
+         *     files define can't be removed here (409).
+         */
+        delete: operations["delete_location"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/map": {
         parameters: {
             query?: never;
@@ -6084,6 +6148,20 @@ export interface components {
              * @example camera
              */
             kind?: string | null;
+            /**
+             * @description REQ: DSC-910 (T36.10a) - the location in effect: the one it is pinned to (`[[client]]
+             *     location`), else the one whose networks hold its address; absent when it is on no
+             *     location's network.
+             * @example home
+             */
+            location?: string | null;
+            /** @description REQ: DSC-910 - the location's display name (its label, else its slug). */
+            locationName?: string | null;
+            /**
+             * @description REQ: DSC-910 - `location` is the device's own setting (an override), not derived from its
+             *     address.
+             */
+            locationPinned?: boolean;
             /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
             match: string[];
             name: string;
@@ -6104,6 +6182,12 @@ export interface components {
              * @example camera
              */
             kind?: string | null;
+            /**
+             * @description REQ: DSC-910 (T36.10a) - pin the device to a location (its slug), whatever its address;
+             *     absent: the location its address gives it. A slug that names no location is refused.
+             * @example home
+             */
+            location?: string | null;
             /**
              * @description How to recognize it: IPs, CIDRs, MACs (`aa:bb:cc:dd:ee:ff`), or `id:<client-id>`.
              * @example [
@@ -8759,6 +8843,20 @@ export interface components {
                  * @example camera
                  */
                 kind?: string | null;
+                /**
+                 * @description REQ: DSC-910 (T36.10a) - the location in effect: the one it is pinned to (`[[client]]
+                 *     location`), else the one whose networks hold its address; absent when it is on no
+                 *     location's network.
+                 * @example home
+                 */
+                location?: string | null;
+                /** @description REQ: DSC-910 - the location's display name (its label, else its slug). */
+                locationName?: string | null;
+                /**
+                 * @description REQ: DSC-910 - `location` is the device's own setting (an override), not derived from its
+                 *     address.
+                 */
+                locationPinned?: boolean;
                 /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
                 match: string[];
                 name: string;
@@ -10179,6 +10277,129 @@ export interface components {
             records: components["schemas"]["RecordInput"][];
             /** @description `file` (read-only here) or `api`. */
             source: string;
+        };
+        /**
+         * @description REQ: DSC-909, DSC-916 (T36.10a) - a name two devices wanted: the better-ranked one (ADR-901)
+         *     kept it.
+         */
+        LocationCollision: {
+            /** @description The name is a flat alias: the device that lost it keeps its location name. */
+            flat: boolean;
+            /**
+             * @description The address of the device that kept the name; absent when the name is a location's own
+             *     subtree (the location wins).
+             */
+            keptAddress?: string | null;
+            /** @description The address of the device that did not. */
+            lostAddress: string;
+            /** @description The slug of the location the losing device is in, when it has one. */
+            lostLocation?: string | null;
+            name: string;
+        };
+        /** @description REQ: DSC-909, DSC-910, DSC-916 (T36.10a) - a device and the names it answers as. */
+        LocationDevice: {
+            address: string;
+            /** @description The IPv6 addresses that answer AAAA and PTR for it. */
+            addressesV6?: string[];
+            /** @description The old flat name that still answers for it (A and AAAA, no PTR), while `flatNames` is on. */
+            flatName?: string | null;
+            /** @description The name it answers as (`nas.home.example.net`); its PTR is the same name. */
+            name: string;
+            /** @description The location comes from the device's `[[client]] location`, not its address. */
+            pinned: boolean;
+        };
+        /** @description REQ: DSC-913 (T36.10a) - a location, as the node composes names for it now. */
+        LocationInfo: {
+            /**
+             * @description Every name that collided in this location or with its devices' flat names, each with its
+             *     ADR-901 winner.
+             */
+            collisions: components["schemas"]["LocationCollision"][];
+            /** @description The devices that answer under it, by name. */
+            devices: components["schemas"]["LocationDevice"][];
+            /** @description The parent domain in effect; its names are `<device>.<slug>.<domain>`. */
+            domain: string;
+            /**
+             * Format: int64
+             * @description How many queries the flat names answered over the last 7 days (this node; a restart starts
+             *     the count again).
+             */
+            flatNameUses7d: number;
+            flatNames: boolean;
+            label?: string | null;
+            networks: components["schemas"]["LocationNetworkInfo"][];
+            nodes: string[];
+            slug: string;
+            /**
+             * @description `file` (read-only here) or `api`.
+             * @example api
+             */
+            source: string;
+            /** @description `shared` or `private`. */
+            visibility: string;
+        };
+        /**
+         * @description REQ: DSC-913 (T36.10a, ADR-1081, ADR-1096) - a location to create or replace
+         *     (`PUT /api/v1/locations/{slug}`): a part of the network with a device-name subtree of its own.
+         *     Fields left out take their defaults (`visibility` shared, `flatNames` on).
+         */
+        LocationInput: {
+            /**
+             * @description The parent domain (default: `[local] device_domain`).
+             * @example example.net
+             */
+            domain?: string | null;
+            /**
+             * @description Keep answering the old `<device>.<device_domain>` names for the location's devices
+             *     (default on).
+             */
+            flatNames?: boolean | null;
+            /**
+             * @description Display name, at most 64 characters (untrusted text).
+             * @example Home
+             */
+            label?: string | null;
+            /**
+             * @description The networks that belong to it: CIDRs, or `vlan:<id>` (1 to 4094) resolved through the
+             *     router network reads and this node's own VLAN interfaces. At least one; no CIDR may
+             *     overlap another location's.
+             * @example [
+             *       "192.0.2.0/24",
+             *       "vlan:30"
+             *     ]
+             */
+            networks: string[];
+            /** @description The nodes that serve the location, by node name; empty: every node. */
+            nodes?: string[];
+            /**
+             * @description `shared` (default: every client `[access]` allows sees the names) or `private` (only a
+             *     client whose address is in the location's networks does).
+             * @example shared
+             */
+            visibility?: string | null;
+        };
+        /** @description REQ: DSC-913 (T36.10a) - the locations (`GET /api/v1/locations`). */
+        LocationList: {
+            /** @description Collisions of devices on no location's network. */
+            collisions: components["schemas"]["LocationCollision"][];
+            /** @description Networks two locations claim at once (neither applies until it is fixed), as sentences. */
+            conflicts: string[];
+            items: components["schemas"]["LocationInfo"][];
+        };
+        /** @description REQ: DSC-909 (T36.10a) - one entry of a location's `networks`, with what it resolved to. */
+        LocationNetworkInfo: {
+            /** @description As written: a CIDR or `vlan:<id>`. */
+            entry: string;
+            /**
+             * @description `no network reported` for a VLAN nothing reports; `conflict` for a network two locations
+             *     claim (neither applies until it is fixed).
+             */
+            note?: string | null;
+            /**
+             * @description The networks it covers now: the CIDR itself, or the subnets the routers and this node's
+             *     VLAN interfaces report for the VLAN.
+             */
+            resolved: string[];
         };
         /** @description Body of `POST /api/auth`. */
         LoginBody: {
@@ -19477,6 +19698,201 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_locations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The locations. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationList"];
+                };
+            };
+        };
+    };
+    get_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The location's slug. */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The location. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationInfo"];
+                };
+            };
+            /** @description No such location. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_location: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The location's slug (a DNS label, e.g. home). */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Defined in the configuration files (`set_by_file`), or a cluster member does not know locations yet (`upgrade_required`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The slug, a network, the domain or the visibility is invalid, or two locations overlap. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_location: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The location's slug. */
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Defined in the configuration files (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A device is pinned to it. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

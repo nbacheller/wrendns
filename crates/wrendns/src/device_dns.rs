@@ -12,19 +12,32 @@
 //! then a router's or Home Assistant's name, then an mDNS name, then the lowest address. The
 //! others get neither an A record nor a PTR; collisions are counted in the log line that
 //! reports each change.
+//!
+//! REQ: DSC-908..DSC-911, DSC-916 (T36.10a; ADR-1081, ADR-1096) - with `[[location]]` entries a
+//! device in a location answers as `<label>.<slug>.<domain>` (its PTR is that name), the old flat
+//! name keeps answering while the location's `flat_names` is on, a private location's names
+//! answer only to clients in its networks, and the node owns each location's subtree and says
+//! no-such-name for anything in it that is not a device. The snapshot the query path reads is
+//! built here, off the path, as the whole table is.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tracing::info;
+use wrendns_config::Cidr;
 use wrendns_policy::{ClientTable, LocalData, device_label};
+use wrendns_proto::{EdnsOut, NameBuf, Query, ResponseBuilder, rcode, rtype};
 
 use crate::devices::Leases;
+use crate::locations::{FlatUse, Plan, Resolved};
 
 /// How often the table is rebuilt (it changes when a router is read, every few minutes).
 const EVERY: Duration = Duration::from_secs(10);
+
+/// How long this node's own VLAN interfaces are remembered between reads.
+const OWN_NETWORKS_EVERY: Duration = Duration::from_secs(60);
 
 /// The policy the router names were last given to (held as a `Weak`, see [`run`]), and the names.
 type GivenRouterNames = (Weak<crate::pipeline::Dynamic>, HashMap<IpAddr, Arc<str>>);
@@ -32,7 +45,8 @@ type GivenRouterNames = (Weak<crate::pipeline::Dynamic>, HashMap<IpAddr, Arc<str
 /// `[local] device_domain`, `device_ttl`, `device_mdns`, as the pipeline's policy holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Settings {
-    /// Lowercase, without a trailing dot.
+    /// Lowercase, without a trailing dot. Empty when only `[[location]]` entries (each with its
+    /// own domain) name devices: a device on no location's network then has no name.
     pub(crate) domain: String,
     pub(crate) ttl: u32,
     pub(crate) mdns: bool,
@@ -40,9 +54,14 @@ pub(crate) struct Settings {
 
 impl Settings {
     pub(crate) fn from_config(cfg: &wrendns_config::Config) -> Option<Self> {
-        let d = cfg.local.device_domain.as_ref()?;
-        let domain = d.trim().trim_end_matches('.').to_ascii_lowercase();
-        (!domain.is_empty()).then(|| Self {
+        let domain = cfg
+            .local
+            .device_domain
+            .as_ref()
+            .map(|d| d.trim().trim_end_matches('.').to_ascii_lowercase())
+            .unwrap_or_default();
+        // REQ: DSC-908 - locations name devices too, so they turn the table on.
+        (!domain.is_empty() || !cfg.location.is_empty()).then(|| Self {
             domain,
             ttl: cfg.local.device_ttl.max(1),
             mdns: cfg.local.device_mdns && cfg.clients.mdns,
@@ -57,14 +76,194 @@ pub(crate) struct Named {
     pub(crate) name: String,
     pub(crate) ip: Ipv4Addr,
     pub(crate) v6: Vec<Ipv6Addr>,
+    /// REQ: DSC-909 - the index of its location in the [`Plan`]; `None`: on no location's network.
+    pub(crate) loc: Option<usize>,
+    /// REQ: DSC-910 - the location comes from the device's `[[client]] location`, not its address.
+    pub(crate) pinned: bool,
+    /// REQ: DSC-916 - the old flat name that keeps answering (A and AAAA, no PTR).
+    pub(crate) flat: Option<String>,
+}
+
+impl Default for Named {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            ip: Ipv4Addr::UNSPECIFIED,
+            v6: Vec::new(),
+            loc: None,
+            pinned: false,
+            flat: None,
+        }
+    }
+}
+
+/// REQ: DSC-909 - a name two devices wanted: the better-ranked one (ADR-901) kept it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Collision {
+    pub(crate) name: String,
+    /// The name is a flat alias (the device keeps its location name).
+    pub(crate) flat: bool,
+    /// The device that kept it; `None` when the name is a location's own subtree apex.
+    pub(crate) kept: Option<Ipv4Addr>,
+    /// The device that did not.
+    pub(crate) lost: Ipv4Addr,
+    pub(crate) lost_location: Option<usize>,
+}
+
+/// One location in the snapshot the query path reads.
+#[derive(Debug)]
+pub(crate) struct LocTable {
+    pub(crate) slug: Box<str>,
+    /// `<slug>.<domain>`: the subtree this node owns.
+    apex: NameBuf,
+    soa: Box<[u8]>,
+    ttl: u32,
+    pub(crate) private: bool,
+    /// Every network of the location, as resolved (the private rule's test).
+    nets: Box<[Cidr]>,
+    /// A private location's names and PTRs; empty for a shared one (those are in the shared table).
+    names: LocalData,
+    /// The flat aliases of the location's devices (A and AAAA).
+    flat: LocalData,
+    pub(crate) flat_use: Arc<FlatUse>,
+}
+
+impl LocTable {
+    fn has_member(&self, peer: Option<IpAddr>) -> bool {
+        peer.is_some_and(|p| self.nets.iter().any(|n| n.contains(p)))
+    }
+}
+
+/// Where a local answer came from (for `explain` and the trace).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hit<'a> {
+    /// A device on no location's network, or a PTR.
+    Device,
+    /// A name composed under this location.
+    Location(&'a str),
+    /// A flat name that still answers for a device in this location (DSC-916).
+    Flat(&'a str),
+    /// A name in this location's subtree that is no device: no such name, said locally.
+    NoSuchName(&'a str),
 }
 
 /// The table the pipeline answers from, and each address's name for the API.
 #[derive(Debug, Default)]
 pub(crate) struct DeviceNames {
+    /// The shared table: devices on no location's network and the shared locations' names.
     pub(crate) data: LocalData,
     /// Address → the full name it answers as.
     pub(crate) by_ip: HashMap<Ipv4Addr, String>,
+    /// One per location, in the plan's order.
+    pub(crate) locs: Vec<LocTable>,
+    /// REQ: DSC-909 - every device with its location, for the API.
+    pub(crate) named: Vec<Named>,
+    pub(crate) collisions: Vec<Collision>,
+    pub(crate) resolved: Resolved,
+    pub(crate) plan: Plan,
+}
+
+/// SOA RDATA for a location's negative answers: `localhost.`, `hostmaster.<apex>`, the TTL as the
+/// minimum (the same shape a made-up zone SOA has, `server::apex_soa_ns`).
+fn soa_rdata(apex: &str, ttl: u32) -> Vec<u8> {
+    let localhost = NameBuf::from_presentation("localhost").unwrap_or_default();
+    let hostmaster = NameBuf::from_presentation(&format!("hostmaster.{apex}")).unwrap_or_default();
+    let serial = u32::try_from(crate::pipeline::unix_now()).unwrap_or(1);
+    let mut out = localhost.as_wire().to_vec();
+    out.extend_from_slice(hostmaster.as_wire());
+    for n in [serial, 3600, 600, 86_400, ttl] {
+        out.extend_from_slice(&n.to_be_bytes());
+    }
+    out
+}
+
+impl DeviceNames {
+    /// REQ: DNS-023, DSC-909, DSC-911, DSC-912 - answers `q` from the device names for a client at
+    /// `peer`: a private location's names to its own networks, then the shared table, then the
+    /// no-such-name answer for a name in a location's subtree, then the flat aliases. No
+    /// allocation, lock or I/O (one lock-free load of the snapshot happens before this); the
+    /// location tests are over a handful of entries. With `explain` set nothing is counted and the
+    /// answer's source is worked out; without it the source is only what is free to know.
+    pub(crate) fn lookup<'a>(
+        &'a self,
+        q: &Query<'_>,
+        peer: Option<IpAddr>,
+        out: &mut [u8],
+        edns: Option<EdnsOut<'_>>,
+        explain: bool,
+    ) -> Option<(usize, Hit<'a>)> {
+        if self.locs.is_empty() {
+            return self.data.answer(q, out, edns).map(|n| (n, Hit::Device));
+        }
+        for l in &self.locs {
+            if l.private
+                && l.has_member(peer)
+                && let Some(n) = l.names.answer(q, out, edns)
+            {
+                return Some((n, Hit::Location(&l.slug)));
+            }
+        }
+        if let Some(n) = self.data.answer(q, out, edns) {
+            let hit = if explain {
+                self.locs
+                    .iter()
+                    .find(|l| !l.private && q.qname.is_subdomain_of(&l.apex))
+                    .map_or(Hit::Device, |l| Hit::Location(&l.slug))
+            } else {
+                Hit::Device
+            };
+            return Some((n, hit));
+        }
+        for l in &self.locs {
+            if q.qname.is_subdomain_of(&l.apex) {
+                return Self::no_such_name(l, q, out, edns).map(|n| (n, Hit::NoSuchName(&l.slug)));
+            }
+        }
+        for l in &self.locs {
+            if (l.private && !l.has_member(peer)) || l.flat.is_empty() {
+                continue;
+            }
+            if let Some(n) = l.flat.answer(q, out, edns) {
+                if !explain {
+                    l.flat_use.hit(crate::pipeline::unix_now());
+                }
+                return Some((n, Hit::Flat(&l.slug)));
+            }
+        }
+        None
+    }
+
+    /// The answer for a name in a location's subtree that no device, node or record holds: the
+    /// same to everyone, a member of a private location included, so a private name looks like an
+    /// unknown one to an outsider. The apex itself exists (it has names below it): no data.
+    fn no_such_name(
+        l: &LocTable,
+        q: &Query<'_>,
+        out: &mut [u8],
+        edns: Option<EdnsOut<'_>>,
+    ) -> Option<usize> {
+        let rc = if q.qname == l.apex {
+            rcode::NOERROR
+        } else {
+            rcode::NXDOMAIN
+        };
+        let mut b = ResponseBuilder::new(q, out, rc).ok()?;
+        b.authoritative(true)
+            .authority_rdata(&l.apex, rtype::SOA, l.ttl, &l.soa)
+            .ok()?;
+        b.finish(edns).ok()
+    }
+
+    /// [`Self::lookup`] without the source.
+    pub(crate) fn answer(
+        &self,
+        q: &Query<'_>,
+        peer: Option<IpAddr>,
+        out: &mut [u8],
+        edns: Option<EdnsOut<'_>>,
+    ) -> Option<usize> {
+        self.lookup(q, peer, out, edns, false).map(|(n, _)| n)
+    }
 }
 
 /// Labels no device gets, whatever it calls itself (ADR-901): `wpad` and `isatap` are how
@@ -86,6 +285,13 @@ pub(crate) struct Inputs<'a> {
     pub(crate) mdns: [&'a Leases; 2],
 }
 
+/// REQ: DSC-909 - the locations a table is composed for.
+#[derive(Clone, Copy)]
+pub(crate) struct Located<'a> {
+    pub(crate) plan: &'a Plan,
+    pub(crate) resolved: &'a Resolved,
+}
+
 fn parse_mac(s: &str) -> Option<[u8; 6]> {
     let mut out = [0u8; 6];
     let mut parts = s.split([':', '-']);
@@ -96,18 +302,39 @@ fn parse_mac(s: &str) -> Option<[u8; 6]> {
 }
 
 /// The devices to answer, sorted by name, and how many names collided.
+#[cfg(test)]
 pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<Named>, usize) {
-    // Best name per address.
-    let mut by_ip: HashMap<Ipv4Addr, (u8, String)> = HashMap::new();
-    let mut offer = |ip: Ipv4Addr, rank: u8, name: &str| {
-        let better = by_ip.get(&ip).is_none_or(|(r, _)| rank < *r);
+    let c = compose(inputs, domain, None);
+    (c.named, c.collisions.len())
+}
+
+/// The devices to answer and the names that collided.
+#[derive(Debug, Default)]
+pub(crate) struct Composed {
+    pub(crate) named: Vec<Named>,
+    pub(crate) collisions: Vec<Collision>,
+}
+
+/// REQ: DNS-023, DSC-909, DSC-910, DSC-916 - composes every device's name. A device's location is
+/// its `[[client]] location` when it has one, else the location whose resolved networks hold its
+/// address; the router and `[[client]]` data only, never the device inventory's records (DSC-901). Names are claimed in
+/// ADR-901's order (a named device, then a router's name, then mDNS, then the lowest address), the
+/// first claimant keeping a name and every other getting nothing at it: a device that loses its
+/// own name has none, one that loses only its flat alias keeps its location name.
+#[allow(clippy::too_many_lines)] // one pass: candidates, ranking, claims
+pub(crate) fn compose(inputs: &Inputs<'_>, domain: &str, located: Option<Located<'_>>) -> Composed {
+    /// The best name per address: its rank, name and the `[[client]] location` pin.
+    type Best = (u8, String, Option<String>);
+    let mut by_ip: HashMap<Ipv4Addr, Best> = HashMap::new();
+    let mut offer = |ip: Ipv4Addr, rank: u8, name: &str, pin: Option<&str>| {
+        let better = by_ip.get(&ip).is_none_or(|(r, _, _)| rank < *r);
         if better {
-            by_ip.insert(ip, (rank, name.to_owned()));
+            by_ip.insert(ip, (rank, name.to_owned(), pin.map(str::to_owned)));
         }
     };
     for (ip, c) in inputs.clients.exact_ips() {
         if let IpAddr::V4(v4) = ip {
-            offer(v4, NAMED, &c.name);
+            offer(v4, NAMED, &c.name, c.location.as_deref());
         }
     }
     for table in inputs.routers {
@@ -120,8 +347,8 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<Named>, usize) {
             // A device named in WrenDNS by its MAC keeps that name at its new address.
             let named = parse_mac(&l.mac).and_then(|m| inputs.clients.by_exact_mac(m));
             match (named, &l.hostname) {
-                (Some(c), _) => offer(l.ip, NAMED, &c.name),
-                (None, Some(h)) => offer(l.ip, ROUTER, h),
+                (Some(c), _) => offer(l.ip, NAMED, &c.name, c.location.as_deref()),
+                (None, Some(h)) => offer(l.ip, ROUTER, h, None),
                 (None, None) => {}
             }
         }
@@ -129,7 +356,7 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<Named>, usize) {
     for table in inputs.mdns {
         for l in table.values() {
             if let Some(h) = &l.hostname {
-                offer(l.ip, MDNS, h);
+                offer(l.ip, MDNS, h, None);
             }
         }
     }
@@ -143,42 +370,108 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<Named>, usize) {
         }
     }
     // Best address per label: rank, then the lowest address.
-    let mut ranked: Vec<(u8, Ipv4Addr, String)> = by_ip
+    let mut ranked: Vec<(u8, Ipv4Addr, String, Option<String>)> = by_ip
         .into_iter()
-        .filter_map(|(ip, (rank, name))| Some((rank, ip, device_label(&name)?)))
-        .filter(|(_, _, label)| !RESERVED.contains(&label.as_str()))
+        .filter_map(|(ip, (rank, name, pin))| Some((rank, ip, device_label(&name)?, pin)))
+        .filter(|(_, _, label, _)| !RESERVED.contains(&label.as_str()))
         .collect();
     ranked.sort_by(|a, b| (a.0, u32::from(a.1)).cmp(&(b.0, u32::from(b.1))));
+    // Every name a device may answer as: the first claimant keeps it.
     let mut taken: HashMap<String, Ipv4Addr> = HashMap::new();
+    // A location's subtree apex is the location's, whatever device label equals it.
+    let apexes: HashSet<String> = located
+        .map(|l| {
+            l.plan
+                .locs
+                .iter()
+                .map(crate::locations::Loc::apex)
+                .collect()
+        })
+        .unwrap_or_default();
     // One IPv6 address, one name: the better-ranked device keeps it (as for an IPv4 address).
     let mut v6_taken: HashSet<Ipv6Addr> = HashSet::new();
-    let mut v6_kept: HashMap<Ipv4Addr, Vec<Ipv6Addr>> = HashMap::new();
-    let mut collisions = 0;
-    for (_, ip, label) in ranked {
-        if let Some(kept) = taken.get(&label) {
-            collisions += 1;
-            tracing::debug!(%label, %kept, dropped = %ip, "device names: two devices share a name; the first keeps it");
+    let mut out: Vec<Named> = Vec::new();
+    let mut collisions: Vec<Collision> = Vec::new();
+    for (_, ip, label, pin) in ranked {
+        let by_pin = located.and_then(|l| pin.as_deref().and_then(|s| l.plan.index_of(s)));
+        let loc = by_pin.or_else(|| located.and_then(|l| l.resolved.locate(IpAddr::V4(ip))));
+        let (fwd, flat) = match (loc, located) {
+            (Some(i), Some(l)) => {
+                let lc = &l.plan.locs[i];
+                (
+                    format!("{label}.{}.{}", lc.slug, lc.parent),
+                    (lc.flat && !domain.is_empty()).then(|| format!("{label}.{domain}")),
+                )
+            }
+            _ if domain.is_empty() => continue,
+            _ => (format!("{label}.{domain}"), None),
+        };
+        if apexes.contains(&fwd) {
+            collisions.push(Collision {
+                name: fwd,
+                flat: false,
+                kept: None,
+                lost: ip,
+                lost_location: loc,
+            });
             continue;
         }
+        if let Some(kept) = taken.get(&fwd) {
+            tracing::debug!(name = %fwd, %kept, dropped = %ip, "device names: two devices share a name; the first keeps it");
+            collisions.push(Collision {
+                name: fwd,
+                flat: false,
+                kept: Some(*kept),
+                lost: ip,
+                lost_location: loc,
+            });
+            continue;
+        }
+        taken.insert(fwd.clone(), ip);
+        let flat = flat.filter(|f| {
+            if apexes.contains(f) {
+                collisions.push(Collision {
+                    name: f.clone(),
+                    flat: true,
+                    kept: None,
+                    lost: ip,
+                    lost_location: loc,
+                });
+                return false;
+            }
+            if let Some(kept) = taken.get(f) {
+                collisions.push(Collision {
+                    name: f.clone(),
+                    flat: true,
+                    kept: Some(*kept),
+                    lost: ip,
+                    lost_location: loc,
+                });
+                return false;
+            }
+            taken.insert(f.clone(), ip);
+            true
+        });
         let v6: Vec<Ipv6Addr> = v6_of
             .get(&ip)
             .into_iter()
             .flat_map(|a| a.iter().copied())
             .filter(|a| crate::devices::usable_ipv6(a) && v6_taken.insert(*a))
             .collect();
-        v6_kept.insert(ip, v6);
-        taken.insert(label, ip);
-    }
-    let mut out: Vec<Named> = taken
-        .into_iter()
-        .map(|(label, ip)| Named {
-            name: format!("{label}.{domain}"),
+        out.push(Named {
+            name: fwd,
             ip,
-            v6: v6_kept.remove(&ip).unwrap_or_default(),
-        })
-        .collect();
+            v6,
+            loc,
+            pinned: by_pin.is_some(),
+            flat,
+        });
+    }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    (out, collisions)
+    Composed {
+        named: out,
+        collisions,
+    }
 }
 
 /// REQ: FLT-006 (T24.9, ADR-973) — the name each address's router gave it (the label form, so
@@ -201,28 +494,113 @@ pub(crate) fn router_names(routers: [&Leases; 2]) -> HashMap<IpAddr, Arc<str>> {
     out
 }
 
-/// The table for `names`.
+fn addrs_of(n: &Named) -> impl Iterator<Item = IpAddr> + '_ {
+    std::iter::once(IpAddr::V4(n.ip)).chain(n.v6.iter().map(|a| IpAddr::V6(*a)))
+}
+
+/// The table for `names`, with no locations.
 pub(crate) fn build(names: &[Named], ttl: u32) -> DeviceNames {
-    let addrs = names.iter().flat_map(|n| {
-        std::iter::once((n.name.as_str(), IpAddr::V4(n.ip)))
-            .chain(n.v6.iter().map(|a| (n.name.as_str(), IpAddr::V6(*a))))
-    });
+    let addrs = names
+        .iter()
+        .flat_map(|n| addrs_of(n).map(move |a| (n.name.as_str(), a)));
     DeviceNames {
         data: LocalData::from_device_names(addrs, ttl),
         by_ip: names.iter().map(|n| (n.ip, n.name.clone())).collect(),
+        named: names.to_vec(),
+        ..DeviceNames::default()
     }
+}
+
+/// REQ: DSC-909, DSC-911, DSC-916 - the table with locations: a private location's names in its
+/// own table, the rest in the shared one, the flat aliases apart (so they can be counted and
+/// kept private with their location). `uses` are the flat-name counters, one per location in the
+/// plan's order.
+pub(crate) fn build_located(
+    composed: Composed,
+    ttl: u32,
+    plan: &Plan,
+    resolved: &Resolved,
+    uses: &[Arc<FlatUse>],
+) -> DeviceNames {
+    let Composed { named, collisions } = composed;
+    let private = |n: &Named| n.loc.is_some_and(|i| plan.locs[i].private);
+    let shared = named
+        .iter()
+        .filter(|n| !private(n))
+        .flat_map(|n| addrs_of(n).map(move |a| (n.name.as_str(), a)));
+    let data = LocalData::from_device_names(shared, ttl);
+    let locs = plan
+        .locs
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let apex_text = l.apex();
+            let apex = NameBuf::from_presentation(&apex_text).unwrap_or_default();
+            let mine = || named.iter().filter(move |n| n.loc == Some(i));
+            let names = if l.private {
+                LocalData::from_device_names(
+                    mine().flat_map(|n| addrs_of(n).map(move |a| (n.name.as_str(), a))),
+                    ttl,
+                )
+            } else {
+                LocalData::default()
+            };
+            let flat = LocalData::from_aliases(
+                mine()
+                    .filter_map(|n| n.flat.as_deref().map(|f| (f, n)))
+                    .flat_map(|(f, n)| addrs_of(n).map(move |a| (f, a))),
+                ttl,
+            );
+            LocTable {
+                slug: l.slug.as_str().into(),
+                soa: soa_rdata(&apex_text, ttl).into(),
+                apex,
+                ttl,
+                private: l.private,
+                nets: resolved.nets.get(i).cloned().unwrap_or_default().into(),
+                names,
+                flat,
+                flat_use: uses.get(i).cloned().unwrap_or_default(),
+            }
+        })
+        .collect();
+    DeviceNames {
+        data,
+        by_ip: named.iter().map(|n| (n.ip, n.name.clone())).collect(),
+        locs,
+        named,
+        collisions,
+        resolved: resolved.clone(),
+        plan: plan.clone(),
+    }
+}
+
+/// Everything a rebuild is decided by: when none of it changed the stored table stays.
+#[derive(PartialEq)]
+struct Built {
+    settings: Settings,
+    plan: Plan,
+    resolved: Resolved,
+    named: Vec<Named>,
+    collisions: Vec<Collision>,
 }
 
 /// Rebuilds the table every [`EVERY`] until `stop`, storing it only when it changed. Reads the
 /// settings from the live policy, so a reload that sets or clears the domain takes effect.
 /// `mdns_listening` is the `[clients] mdns` the node started with: the listener starts once
 /// (`restart_only_changes`), so device names follow mDNS only while it runs (REQ: DNS-023, H1).
+#[allow(clippy::too_many_lines)] // one tick: inputs, locations, compose, store
 pub(crate) async fn run(
     pipeline: Arc<crate::pipeline::Pipeline>,
     mdns_listening: bool,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut last: Option<(Settings, Vec<Named>)> = None;
+    let mut last: Option<Built> = None;
+    // REQ: DSC-916 - the flat-name counters live across rebuilds, by location slug.
+    let mut flat_uses: HashMap<String, Arc<FlatUse>> = HashMap::new();
+    // REQ: DSC-909 - this node's own VLAN interfaces, read at most once a minute and only when a
+    // location names a VLAN.
+    let mut own: Option<(Instant, Vec<crate::own_networks::OwnNetwork>)> = None;
     // REQ: FLT-006 (T24.9) — the router names last given to the policy in force (a reload makes
     // a new one, so the names are given again to it). The policy is held as a `Weak`: its
     // allocation stays reserved while it is remembered, so a new policy can't reuse its address.
@@ -265,23 +643,66 @@ pub(crate) async fn run(
                 [&empty, &empty]
             },
         };
-        let (names, collisions) = names(&inputs, &settings.domain);
-        if last
-            .as_ref()
-            .is_some_and(|(s, n)| *s == settings && *n == names)
-        {
+        let plan = (*state.policy.locations).clone();
+        let resolved = if plan.is_empty() {
+            Resolved::default()
+        } else {
+            let own_nets = if plan.has_vlans() {
+                if own
+                    .as_ref()
+                    .is_none_or(|(at, _)| at.elapsed() >= OWN_NETWORKS_EVERY)
+                {
+                    let read = tokio::task::spawn_blocking(crate::own_networks::current)
+                        .await
+                        .unwrap_or_default();
+                    own = Some((Instant::now(), read));
+                }
+                own.as_ref().map(|(_, n)| n.clone()).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let nets = pipeline.router_networks.load();
+            Resolved::resolve(&plan, &nets, &own_nets)
+        };
+        let composed = compose(
+            &inputs,
+            &settings.domain,
+            (!plan.is_empty()).then_some(Located {
+                plan: &plan,
+                resolved: &resolved,
+            }),
+        );
+        let now = Built {
+            settings,
+            plan,
+            resolved,
+            named: composed.named.clone(),
+            collisions: composed.collisions.clone(),
+        };
+        if last.as_ref().is_some_and(|b| *b == now) {
             continue;
         }
         info!(
-            domain = %settings.domain,
-            names = names.len(),
-            collisions,
+            domain = %now.settings.domain,
+            names = now.named.len(),
+            collisions = now.collisions.len(),
+            locations = now.plan.locs.len(),
             "device names in DNS: updated"
         );
-        pipeline
-            .device_names
-            .store(Arc::new(build(&names, settings.ttl)));
-        last = Some((settings, names));
+        let table = if now.plan.is_empty() {
+            build(&now.named, now.settings.ttl)
+        } else {
+            flat_uses.retain(|slug, _| now.plan.locs.iter().any(|l| &l.slug == slug));
+            let uses: Vec<Arc<FlatUse>> = now
+                .plan
+                .locs
+                .iter()
+                .map(|l| Arc::clone(flat_uses.entry(l.slug.clone()).or_default()))
+                .collect();
+            build_located(composed, now.settings.ttl, &now.plan, &now.resolved, &uses)
+        };
+        pipeline.device_names.store(Arc::new(table));
+        last = Some(now);
     }
 }
 
@@ -460,6 +881,7 @@ mod tests {
             name: "nas.home.arpa".to_owned(),
             ip: Ipv4Addr::new(192, 0, 2, 5),
             v6: Vec::new(),
+            ..Default::default()
         }];
         let t = build(&names, 60);
         assert_eq!(t.data.len(), 2, "an A and a PTR");
@@ -582,5 +1004,214 @@ match = [\"192.0.2.5\"]
         ] {
             assert!(!crate::devices::usable_ipv6(&v6(bad)), "{bad}");
         }
+    }
+
+    // ---- REQ: DSC-909, DSC-910, DSC-916 (T36.10a) - names with locations ----
+
+    const LOCS: &str = "[local]\ndevice_domain = \"home.arpa\"\n\
+        [[location]]\nslug = \"home\"\nnetworks = [\"10.1.1.0/24\"]\n\
+        [[location]]\nslug = \"lab\"\nnetworks = [\"10.2.2.0/24\"]\n";
+
+    fn located(toml: &str, routers: &Leases, mdns: &Leases) -> (Composed, crate::locations::Plan) {
+        let c = cfg(toml);
+        let plan = crate::locations::Plan::from_config(&c);
+        let resolved = crate::locations::Resolved::resolve(&plan, &[], &[]);
+        let clients = ClientTable::from_config(&c);
+        let empty = Leases::new();
+        let inputs = Inputs {
+            clients: &clients,
+            routers: [routers, &empty],
+            mdns: [mdns, &empty],
+        };
+        let domain = c
+            .local
+            .device_domain
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let composed = compose(
+            &inputs,
+            &domain,
+            Some(Located {
+                plan: &plan,
+                resolved: &resolved,
+            }),
+        );
+        (composed, plan)
+    }
+
+    fn name_list(c: &Composed) -> Vec<(String, Ipv4Addr, Option<String>)> {
+        c.named
+            .iter()
+            .map(|n| (n.name.clone(), n.ip, n.flat.clone()))
+            .collect()
+    }
+
+    // REQ: DSC-910 - a device that moves to another location's network is renamed by the next
+    // rebuild, and its old name stops at the same moment (the inventory is never read).
+    #[test]
+    fn dsc_910_a_moved_device_is_renamed_at_the_next_rebuild() {
+        let empty = Leases::new();
+        let at = |ip: [u8; 4]| -> Leases { [lease(ip, "aa:bb:cc:00:00:20", Some("phone"))].into() };
+        let (first, _) = located(LOCS, &at([10, 1, 1, 20]), &empty);
+        assert_eq!(
+            name_list(&first),
+            vec![(
+                "phone.home.home.arpa".to_owned(),
+                Ipv4Addr::new(10, 1, 1, 20),
+                Some("phone.home.arpa".to_owned())
+            )]
+        );
+        let (moved, _) = located(LOCS, &at([10, 2, 2, 20]), &empty);
+        assert_eq!(
+            name_list(&moved),
+            vec![(
+                "phone.lab.home.arpa".to_owned(),
+                Ipv4Addr::new(10, 2, 2, 20),
+                Some("phone.home.arpa".to_owned())
+            )]
+        );
+    }
+
+    // REQ: DSC-909 - two devices that make one label in one location: the ADR-901 winner (a named
+    // device over a router's name) keeps it, the other gets nothing, and the collision is listed.
+    #[test]
+    fn dsc_909_a_collision_in_a_location_keeps_the_adr_901_winner() {
+        let routers: Leases = [
+            lease([10, 1, 1, 5], "aa:bb:cc:00:00:05", Some("tablet")),
+            lease([10, 1, 1, 6], "aa:bb:cc:00:00:06", Some("Tablet")),
+            lease([10, 1, 1, 7], "aa:bb:cc:00:00:07", Some("tablet")),
+        ]
+        .into();
+        let toml = format!("{LOCS}[[client]]\nname = \"Tablet\"\nmatch = [\"10.1.1.7\"]\n");
+        let (c, _) = located(&toml, &routers, &Leases::new());
+        let home: Vec<_> = c
+            .named
+            .iter()
+            .filter(|n| n.name == "tablet.home.home.arpa")
+            .collect();
+        assert_eq!(home.len(), 1);
+        assert_eq!(
+            home[0].ip,
+            Ipv4Addr::new(10, 1, 1, 7),
+            "the named device keeps it"
+        );
+        let lost: Vec<Ipv4Addr> = c
+            .collisions
+            .iter()
+            .filter(|k| !k.flat)
+            .map(|k| k.lost)
+            .collect();
+        assert_eq!(
+            lost,
+            vec![Ipv4Addr::new(10, 1, 1, 5), Ipv4Addr::new(10, 1, 1, 6)],
+            "the others are listed, lowest address first"
+        );
+        assert!(
+            c.collisions
+                .iter()
+                .all(|k| k.kept == Some(Ipv4Addr::new(10, 1, 1, 7)))
+        );
+    }
+
+    // REQ: DSC-916 - one flat label two locations compose goes to the ADR-901 winner and the
+    // loser keeps its location name; with `flat_names` off a device does not claim it at all.
+    #[test]
+    fn dsc_916_a_flat_name_two_locations_compose_goes_to_the_ranked_winner() {
+        let routers: Leases = [
+            lease([10, 1, 1, 5], "aa:bb:cc:00:00:05", Some("nas")),
+            lease([10, 2, 2, 5], "aa:bb:cc:00:00:15", Some("nas")),
+        ]
+        .into();
+        let (c, _) = located(LOCS, &routers, &Leases::new());
+        let flat: Vec<(&str, Option<&str>)> = c
+            .named
+            .iter()
+            .map(|n| (n.name.as_str(), n.flat.as_deref()))
+            .collect();
+        assert_eq!(
+            flat,
+            vec![
+                ("nas.home.home.arpa", Some("nas.home.arpa")),
+                ("nas.lab.home.arpa", None)
+            ],
+            "the lower address keeps the flat name; both keep their location names"
+        );
+        let k: Vec<_> = c.collisions.iter().collect();
+        assert_eq!(k.len(), 1);
+        assert!(
+            k[0].flat && k[0].name == "nas.home.arpa" && k[0].lost == Ipv4Addr::new(10, 2, 2, 5)
+        );
+        // The home location turns its flat names off: the lab's device may have the name.
+        let off = LOCS.replacen(
+            "slug = \"home\"\n",
+            "slug = \"home\"\nflat_names = false\n",
+            1,
+        );
+        let (c, _) = located(&off, &routers, &Leases::new());
+        assert_eq!(c.collisions.len(), 0);
+        let flat: Vec<(&str, Option<&str>)> = c
+            .named
+            .iter()
+            .map(|n| (n.name.as_str(), n.flat.as_deref()))
+            .collect();
+        assert_eq!(
+            flat,
+            vec![
+                ("nas.home.home.arpa", None),
+                ("nas.lab.home.arpa", Some("nas.home.arpa"))
+            ]
+        );
+    }
+
+    // REQ: DSC-909 - a device on no location's network keeps its flat name, a device called like
+    // a location's subtree apex loses to the location, and with no domain at all only located
+    // devices have names.
+    #[test]
+    fn dsc_909_unlocated_devices_and_the_subtree_apex() {
+        let routers: Leases = [
+            lease([10, 9, 9, 4], "aa:bb:cc:00:00:04", Some("printer")),
+            lease([10, 9, 9, 5], "aa:bb:cc:00:00:05", Some("home")),
+            lease([10, 1, 1, 8], "aa:bb:cc:00:00:08", Some("camera")),
+        ]
+        .into();
+        let (c, _) = located(LOCS, &routers, &Leases::new());
+        let names: Vec<&str> = c.named.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["camera.home.home.arpa", "printer.home.arpa"]);
+        assert_eq!(c.collisions.len(), 1);
+        assert_eq!(c.collisions[0].name, "home.home.arpa");
+        assert_eq!(c.collisions[0].kept, None, "the location wins");
+        // No device_domain: the location has its own domain, and the unlocated printer has none.
+        let own = "[[location]]\nslug = \"home\"\nnetworks = [\"10.1.1.0/24\"]\ndomain = \"example.net\"\n";
+        let (c, _) = located(own, &routers, &Leases::new());
+        let names: Vec<&str> = c.named.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["camera.home.example.net"]);
+        assert_eq!(c.named[0].flat, None, "no device_domain, no flat name");
+    }
+
+    // REQ: DSC-910 - a pin from `[[client]] location` wins over the address, by IP and by MAC.
+    #[test]
+    fn dsc_910_a_pin_wins_by_address_and_by_mac() {
+        let routers: Leases = [
+            lease([10, 1, 1, 9], "aa:bb:cc:00:00:09", Some("laptop")),
+            lease([10, 1, 1, 10], "AA:BB:CC:00:00:0A", Some("macbook")),
+        ]
+        .into();
+        let toml = format!(
+            "{LOCS}[[client]]\nname = \"Laptop\"\nmatch = [\"10.1.1.9\"]\nlocation = \"lab\"\n[[client]]\nname = \"Work Mac\"\nmatch = [\"aa:bb:cc:00:00:0a\"]\nlocation = \"lab\"\n"
+        );
+        let (c, _) = located(&toml, &routers, &Leases::new());
+        let names: Vec<(&str, bool)> = c
+            .named
+            .iter()
+            .map(|n| (n.name.as_str(), n.pinned))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("laptop.lab.home.arpa", true),
+                ("work-mac.lab.home.arpa", true)
+            ]
+        );
     }
 }

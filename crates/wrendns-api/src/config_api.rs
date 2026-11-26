@@ -100,6 +100,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         )
         // REQ: DNS-010 (T27.7) — authoritative zones made through the API or UI.
         .route("/api/v1/zones/{name}", put(put_zone).delete(delete_zone))
+        // REQ: DSC-913 (T36.10a) — locations made through the API or UI.
+        .route(
+            "/api/v1/locations/{slug}",
+            put(put_location).delete(delete_location),
+        )
         // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the tuning
         // sections (one entry each).
         .route(
@@ -3442,6 +3447,7 @@ impl Op {
             Self::Managed(ManagedKind::Record, _) => "record",
             Self::Managed(ManagedKind::Forward, _) => "forward",
             Self::Managed(ManagedKind::Zone, _) => "zone",
+            Self::Managed(ManagedKind::Location, _) => "location",
             Self::Managed(ManagedKind::Rule, _) => "rule",
             Self::Managed(ManagedKind::Upstream, _) => "upstream",
             Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",
@@ -3762,6 +3768,87 @@ pub(crate) async fn put_zone(
         request,
         name,
         Op::Managed(ManagedKind::Zone, Some(v)),
+    )
+    .await
+}
+
+/// Create or replace a location (DSC-913, T36.10a, ADR-1081, ADR-1096).
+///
+/// A location is a part of the network with a device-name subtree of its own: a device on one of
+/// its `networks` answers as `<device>.<slug>.<domain>` (its PTR is that name), the old flat name
+/// keeps answering while `flatNames` is on, a `private` location's names answer only to clients in
+/// its networks, and a name in its subtree that is no device gets "no such name" locally. The
+/// fields left out take their defaults. A location the configuration files define is read-only
+/// here (409 `set_by_file`). The first location is refused (409 `upgrade_required`, dry runs too)
+/// while a cluster member's build does not know locations, naming the member. Needs the operator
+/// role (or the `config:write:locations` agent scope, with a reason).
+#[utoipa::path(put, path = "/api/v1/locations/{slug}", tag = "config",
+    params(("slug" = String, Path, description = "The location's slug (a DNS label, e.g. home)."), DryRun),
+    request_body = crate::model::LocationInput,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "Defined in the configuration files (`set_by_file`), or a cluster member does not know locations yet (`upgrade_required`)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "The slug, a network, the domain or the visibility is invalid, or two locations overlap."),
+    ))]
+pub(crate) async fn put_location(
+    State((backend, auth)): State<Ctx>,
+    Path(slug): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<crate::model::LocationInput>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /locations/{slug} {}", json_of(&input));
+    let v = serde_json::to_value(&input).unwrap_or_default();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        slug,
+        Op::Managed(ManagedKind::Location, Some(v)),
+    )
+    .await
+}
+
+/// Remove a location made through the API (DSC-913, T36.10a).
+///
+/// Its devices go back to the names they had without it (`<device>.<device_domain>`), and a device
+/// pinned to it (`[[client]] location`) must be unpinned first (422). A location the configuration
+/// files define can't be removed here (409).
+#[utoipa::path(delete, path = "/api/v1/locations/{slug}", tag = "config",
+    params(("slug" = String, Path, description = "The location's slug."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Not found."),
+        (status = 409, body = Problem, description = "Defined in the configuration files (`set_by_file`)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A device is pinned to it."),
+    ))]
+pub(crate) async fn delete_location(
+    State((backend, auth)): State<Ctx>,
+    Path(slug): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /locations/{slug}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        slug,
+        Op::Managed(ManagedKind::Location, None),
     )
     .await
 }
