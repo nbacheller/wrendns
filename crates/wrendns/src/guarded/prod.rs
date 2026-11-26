@@ -464,6 +464,24 @@ impl Host for ProdHost {
         self.proof_socket_with(addr, None)
     }
 
+    fn stage_listeners(
+        &self,
+        list: Vec<wrendns_config::Listener>,
+    ) -> BoxFuture<Result<Vec<crate::server::StagedListener>, crate::server::WindowError>> {
+        let h = self.src.listeners.clone();
+        Box::pin(async move { h.stage(list).await })
+    }
+
+    fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
+        let h = self.src.listeners.clone();
+        Box::pin(async move { h.commit().await })
+    }
+
+    fn abort_listeners(&self) -> BoxFuture<()> {
+        let h = self.src.listeners.clone();
+        Box::pin(async move { h.abort().await })
+    }
+
     fn proof_socket_with(
         &self,
         addr: SocketAddr,

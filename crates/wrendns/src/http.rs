@@ -109,6 +109,8 @@ pub(crate) struct Sources {
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
+    /// REQ: API-902 (T27.14a) — stage, commit and abort for the listeners of a pending change.
+    pub(crate) listeners: crate::server::ListenerHandle,
     /// REQ: API-002, API-010 (ADR-040) — configuration changes through the API run one at a
     /// time: a plan is checked against the configuration the store then changes.
     pub(crate) config_writes: tokio::sync::Mutex<()>,

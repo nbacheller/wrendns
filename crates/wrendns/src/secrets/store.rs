@@ -78,11 +78,16 @@ pub(crate) enum Unavailable {
     Ephemeral,
     /// REQ: CLU-015 — stamped by an older primary after the current one took over: not used.
     Orphaned,
+    /// REQ: CLD-920 — a `pem` secret named by a credential field.
+    WrongKind,
 }
 
 impl fmt::Display for Unavailable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WrongKind => f.write_str(
+                "it is a `pem` secret, which only WrenDNS's own listeners use; a credential takes a `text` secret",
+            ),
             Self::NotSet => f.write_str("no secret of that name is stored"),
             Self::Locked(why) => write!(f, "the secrets store is locked: {why}"),
             Self::Unreadable => {
@@ -720,6 +725,11 @@ impl SecretStore {
         if c.row.orphaned {
             return Err(Unavailable::Orphaned);
         }
+        // REQ: CLD-920 (ADR-1097 point 1) — a `pem` value is for WrenDNS's own listeners; a
+        // credential field (`*_ref`) never gets one, so it can't be sent to another service.
+        if c.row.kind == "pem" {
+            return Err(Unavailable::WrongKind);
+        }
         let Some(keys) = &g.keys else {
             return Err(Unavailable::Locked(
                 g.locked.clone().unwrap_or_else(|| "no key".to_owned()),
@@ -744,6 +754,10 @@ impl SecretStore {
         };
         if c.row.orphaned {
             return Err(Unavailable::Orphaned);
+        }
+        // REQ: CLD-920 - agrees with `get`: a `pem` secret is no credential's.
+        if c.row.kind == "pem" {
+            return Err(Unavailable::WrongKind);
         }
         if g.keys.is_none() {
             return Err(Unavailable::Locked(
@@ -1197,24 +1211,39 @@ impl SecretStore {
     }
 
     /// REQ: API-007 (T23.9, ADR-903 §8) — every live secret this node can read, decrypted, for a
-    /// backup that carries them under a passphrase; and how many live ones were left out (stored
-    /// under another key, damaged, or orphaned by a failover). Refused while the store is locked.
-    pub(crate) fn export_rows(&self) -> Result<(Vec<crate::backup::ExportRow>, usize), String> {
+    /// backup that carries them under a passphrase; how many live ones were left out because this
+    /// node could not read them (stored under another key, damaged, or orphaned by a failover);
+    /// how many `pem` ones were left out on purpose (a key never leaves the node), and how many rows under an issuer-only name. Refused
+    /// while the store is locked.
+    pub(crate) fn export_rows(&self) -> Result<crate::backup::Exported, String> {
         let g = self.ready();
         if let Some(why) = &g.locked {
             return Err(format!("the secrets store is locked: {why}"));
         }
         // Nothing stored: nothing to read, and no key needed (a node that never stored one).
         if g.rows.values().all(|c| c.row.deleted) {
-            return Ok((Vec::new(), 0));
+            return Ok(crate::backup::Exported::default());
         }
         let Some(keys) = g.keys.clone() else {
             return Err(g.key_error.clone().unwrap_or_else(|| "no key".to_owned()));
         };
-        let (mut out, mut skipped) = (Vec::new(), 0);
+        let (mut out, mut skipped, mut pem_kept, mut reserved_kept) = (Vec::new(), 0, 0, 0);
         for c in g.rows.values() {
             let r = &c.row;
             if r.deleted {
+                continue;
+            }
+            // REQ: CLD-920 — a `pem` key never leaves the node, a backup included: counted apart
+            // from the rows that could not be read.
+            if r.kind == "pem" {
+                pem_kept += 1;
+                continue;
+            }
+            // REQ: CLD-920 (ADR-1097) - a row under a name the certificate issuer keeps for itself
+            // (a text row from a build before the rule, or one forwarded by an older replica)
+            // is not exported either: a restore never applies one, so it would only be noise.
+            if wrendns_api::secrets_api::is_reserved_name(r.name.trim()) {
+                reserved_kept += 1;
                 continue;
             }
             if r.orphaned || c.health != RowHealth::Readable {
@@ -1234,7 +1263,12 @@ impl SecretStore {
                 Err(_) => skipped += 1,
             }
         }
-        Ok((out, skipped))
+        Ok(crate::backup::Exported {
+            rows: out,
+            unreadable: skipped,
+            pem_kept,
+            reserved_kept,
+        })
     }
 
     /// REQ: CLU-015 — every row this node holds (tombstones too): `(name, stamp, deleted)`. A

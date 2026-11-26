@@ -1019,8 +1019,12 @@ impl Backend for ApiBackend {
                 if crate::backup::kdf_busy() {
                     return Err(busy_problem());
                 }
-                let (rows, unreadable) =
-                    self.src.secrets.export_rows().map_err(|why| {
+                let crate::backup::Exported {
+                    rows,
+                    unreadable,
+                    pem_kept,
+                    reserved_kept,
+                } = self.src.secrets.export_rows().map_err(|why| {
                         Problem::new(wrendns_api::problem::Code::SecretsLocked, format!("the stored secrets can't be read, so none can be backed up: {why}"))
                             .hint("Fix the node's secrets key (docs/secrets.md), or make the backup without a passphrase.")
                     })?;
@@ -1028,6 +1032,8 @@ impl Backend for ApiBackend {
                     passphrase: pass,
                     rows,
                     unreadable,
+                    pem_kept,
+                    reserved_kept,
                 })
             }
             None => None,
@@ -3009,6 +3015,10 @@ impl Backend for ApiBackend {
         // REQ: API-902 (ADR-956 §4, ADR-957) — guarded entries ignored by the environment switch,
         // or a confirmed listener that fell back at this start: degraded, DNS unaffected.
         reasons.extend(crate::guarded::health_reasons());
+        // REQ: DSC-908, CLD-920 (ADR-1096 point 5) — a first use the upgrade gate is holding back.
+        reasons.extend(crate::health::upgrade_gate_reasons(
+            &crate::upgrade_gate::standing(self.src.cluster.as_deref()),
+        ));
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
         // REQ: DNS-901 (ADR-1090 point 1) — a listener gated only by the default refuses clients
@@ -4328,7 +4338,7 @@ impl Backend for ApiBackend {
         &self,
         w: wrendns_api::secrets_api::SecretWrite,
     ) -> BoxFuture<Result<wrendns_api::secrets_api::SecretChange, Problem>> {
-        Box::pin(crate::secrets_api::write_here(Arc::clone(&self.src), w))
+        Box::pin(crate::secrets_api::write_external(Arc::clone(&self.src), w))
     }
 
     fn secret_idempotency(

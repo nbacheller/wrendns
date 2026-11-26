@@ -428,6 +428,18 @@ pub(crate) async fn answer_adopt(
                     refused(&mut ans);
                     continue;
                 };
+                // REQ: DSC-908 (ADR-1096 point 5) - a `pem` row joins the cluster only once every
+                // member's build knows the kind; until then the joiner keeps it (a conflict).
+                if kind == Kind::Pem
+                    && crate::upgrade_gate::enforce(
+                        Some(&cluster),
+                        wrendns_cluster::gate::Feature::PemSecrets,
+                    )
+                    .is_err()
+                {
+                    refused(&mut ans);
+                    continue;
+                }
                 let Ok(value) = SecretValue::new(kind, zeroize::Zeroizing::new(it.value)) else {
                     refused(&mut ans);
                     continue;

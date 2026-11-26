@@ -88,6 +88,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         sinks: crate::sinks::Manager::new().0,
         oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: tokio::sync::mpsc::channel(1).0,
+        listeners: crate::server::ListenerHandle::detached(),
         config_writes: tokio::sync::Mutex::new(()),
         allowed: Vec::new(),
         probes: Arc::default(),

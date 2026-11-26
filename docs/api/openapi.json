@@ -12130,7 +12130,7 @@
           "config"
         ],
         "summary": "Set (or replace) a stored secret.",
-        "description": "Stores `value`, encrypted with the node's key, under `name` (lowercase letters, digits, `.`,\n`_` and `-`, starting with a letter or digit, at most 63). Entries name it in their `*_ref`\nfields (`api_key_ref = \"unifi\"`). The value is write-only: the answer, every read, the audit\nentry (`secret.put`: name, kind, stamp, users) and the logs hold only metadata. In a cluster a\nreplica sends it to the primary (`secret.put` over the cluster channel); pins and staged\nrollouts don't hold it back, and a configuration managed in Git doesn't refuse it (secrets\nare state, never in Git). Refused on an emergency primary, a primary without its lease, or\nwith no primary reachable (409).\n\nAdmins only: agent tokens get 403 `agent_not_allowed`, whatever their scopes. Only over HTTPS\nor from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts it).\n`?dryRun=true` checks the name, kind and value and reports `wouldCreate`/`wouldReplace` and the\nfields that would become configured, storing nothing. `Idempotency-Key` replays the first\nanswer for the same value (another value with the same key is 409); `If-Match` takes the\nsecrets head's `ETag` (412 when it moved).",
+        "description": "Stores `value`, encrypted with the node's key, under `name` (lowercase letters, digits, `.`,\n`_` and `-`, starting with a letter or digit, at most 63). Entries name it in their `*_ref`\nfields (`api_key_ref = \"unifi\"`). The value is write-only: the answer, every read, the audit\nentry (`secret.put`: name, kind, stamp, users) and the logs hold only metadata. In a cluster a\nreplica sends it to the primary (`secret.put` over the cluster channel); pins and staged\nrollouts don't hold it back, and a configuration managed in Git doesn't refuse it (secrets\nare state, never in Git). Refused on an emergency primary, a primary without its lease, or\nwith no primary reachable (409).\n\nAdmins only: agent tokens get 403 `agent_not_allowed`, whatever their scopes. Only over HTTPS\nor from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts it).\n`?dryRun=true` checks the name, kind and value and reports `wouldCreate`/`wouldReplace` and the\nfields that would become configured, storing nothing. `Idempotency-Key` replays the first\nanswer for the same value (another value with the same key is 409); `If-Match` takes the\nsecrets head's `ETag` (412 when it moved).\n\nKind `pem` (PEM blocks, with their line breaks) is for WrenDNS's own listeners: admin only, once\nevery cluster member's build knows it (409 `upgrade_required`, naming the member), and its value\nis never returned by any API, MCP, `ctl`, log, support package or backup. The names the\ncertificate issuer keeps (`acme.account`, `cert.<name>.key`, `cert.<name>.chain`,\n`cert.cluster.key`, `cert.cluster.chain`) are refused with 409, whatever the kind.",
         "operationId": "put_secret",
         "parameters": [
           {
@@ -31612,7 +31612,7 @@
               "string",
               "null"
             ],
-            "description": "`text` (the default). `pem` is reserved."
+            "description": "`text` (the default) or `pem` (PEM blocks, with their line breaks; never shown again)."
           },
           "value": {
             "type": "string",

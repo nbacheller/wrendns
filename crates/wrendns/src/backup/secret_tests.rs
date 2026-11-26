@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::cli::{Source, create as cli_create, restore as cli_restore};
+use super::passphrase::StoreSkipped;
 use super::*;
 use crate::secrets::SecretStore;
 use crate::secrets::store::EnvFn;
@@ -72,11 +73,13 @@ fn node_with_secrets(root: &Path) -> (Vec<PathBuf>, wrendns_config::Config) {
 fn export_of(cfg: &wrendns_config::Config, pass: &str) -> SecretsExport {
     let store = SecretStore::read_only(cfg, env(&[]));
     store.load_now();
-    let (rows, unreadable) = store.export_rows().unwrap();
+    let e = store.export_rows().unwrap();
     SecretsExport {
         passphrase: Zeroizing::new(pass.to_owned()),
-        rows,
-        unreadable,
+        rows: e.rows,
+        unreadable: e.unreadable,
+        pem_kept: e.pem_kept,
+        reserved_kept: e.reserved_kept,
     }
 }
 
@@ -1163,4 +1166,165 @@ fn api_007_restore_as_root_gives_the_key_to_the_data_owner() {
         let md = fs::metadata(new.join("data").join(f)).unwrap();
         assert_eq!((md.uid(), md.gid()), (4242, 4343), "{f}");
     }
+}
+
+const PEM_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIPlantedKeyBytes0123456789abcdefghijkLMNOP\n-----END PRIVATE KEY-----";
+
+/// REQ: CLD-920, DSC-908 (ADR-1097 point 1, amended 2026-11-26) - a restore never applies a `pem`
+/// row or a row under a name the certificate issuer keeps for itself, whoever made the archive
+/// (the restoring node is standalone and cannot judge the cluster's gate, and a planted archive
+/// must not become a key a listener loads). It skips each one, restores everything else, and says
+/// how many were skipped and why; nothing planted is stored or printed.
+#[test]
+fn cld_920_restore_skips_pem_rows_and_issuer_names() {
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+    let mut export = export_of(&cfg, PASS);
+    for (name, kind, v) in [
+        ("loc.key", Kind::Pem, PEM_KEY),
+        ("cert.cluster.key", Kind::Text, "planted-text-1"),
+        ("acme.account", Kind::Text, "planted-text-2"),
+        ("cert.home.chain", Kind::Text, "planted-text-3"),
+    ] {
+        export.rows.push(ExportRow {
+            name: name.to_owned(),
+            kind: kind.as_str().to_owned(),
+            value: SecretValue::new(kind, Zeroizing::new(v.to_owned())).unwrap(),
+            updated: 1_700_000_000,
+            updated_by: "root".to_owned(),
+        });
+    }
+    let out = tmp.path().join("b.ttbk");
+    create_with(&files, &cfg, false, &out, Some(&export)).unwrap();
+    let new = tmp.path().join("new");
+    let none = env(&[]);
+    let r = restore_with(
+        &out,
+        Some(&new.join("data")),
+        Some(&new.join("etc")),
+        false,
+        &SecretsMode::Passphrase(Zeroizing::new(PASS.to_owned())),
+        &plain_keys(&*none),
+    )
+    .unwrap();
+    let s = r.secrets.expect("secrets restored");
+    assert_eq!(s.count, 2, "unifi and ntfy");
+    assert_eq!(
+        s.skipped,
+        StoreSkipped {
+            pem: 1,
+            reserved: 3
+        }
+    );
+    let said = s.skipped_warning().unwrap();
+    assert!(
+        said.contains("1 PEM secret(s)")
+            && said.contains("3 secret(s) under a name the certificate issuer"),
+        "{said}"
+    );
+    assert!(!said.contains("PlantedKeyBytes") && !said.contains("planted-text"));
+    let (_, cfg2) = config_in(&new, "");
+    let store = SecretStore::read_only(&cfg2, env(&[]));
+    store.load_now();
+    let names: Vec<String> = store
+        .export_rows()
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    for n in [
+        "loc.key",
+        "cert.cluster.key",
+        "acme.account",
+        "cert.home.chain",
+    ] {
+        assert!(!store.exists(n), "{n} must not be restored");
+    }
+}
+
+/// REQ: CLD-920 - the round trip of this build's own backup: a store holding a reserved-name text
+/// row (possible from v1.0.0, or forwarded by an older replica) and a `pem` row is exported
+/// without both, each counted and worded apart, and the archive restores in full.
+#[test]
+fn cld_920_backup_with_reserved_and_pem_rows_restores() {
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+    let store = SecretStore::with_env(&cfg, env(&[]), true, false);
+    for (n, k, v) in [
+        ("loc.key", Kind::Pem, PEM_KEY),
+        ("cert.cluster.key", Kind::Text, "planted-text-1"),
+    ] {
+        store
+            .put(
+                n,
+                k,
+                &SecretValue::new(k, Zeroizing::new(v.to_owned())).unwrap(),
+                0,
+                "root",
+                "local",
+                1_700_000_000,
+            )
+            .unwrap();
+    }
+    let e = export_of(&cfg, PASS);
+    assert_eq!(
+        (e.rows.len(), e.pem_kept, e.reserved_kept, e.unreadable),
+        (2, 1, 1, 0)
+    );
+    let out = tmp.path().join("b.ttbk");
+    let c = create_with(&files, &cfg, false, &out, Some(&e)).unwrap();
+    let said = c.warnings.join(" | ");
+    assert!(
+        said.contains("PEM secret(s)") && said.contains("issuer keeps for itself"),
+        "{said}"
+    );
+    assert!(!said.contains("couldn't be read"), "{said}");
+    let new = tmp.path().join("new");
+    let none = env(&[]);
+    let r = restore_with(
+        &out,
+        Some(&new.join("data")),
+        Some(&new.join("etc")),
+        false,
+        &SecretsMode::Passphrase(Zeroizing::new(PASS.to_owned())),
+        &plain_keys(&*none),
+    )
+    .unwrap();
+    let s = r.secrets.unwrap();
+    assert_eq!((s.count, s.skipped), (2, StoreSkipped::default()));
+    assert!(s.skipped_warning().is_none());
+}
+
+/// REQ: CLD-920 - a backup counts a `pem` secret it leaves out on purpose apart from the secrets
+/// it could not read: its own warning, and no "couldn't be read" for it.
+#[test]
+fn cld_920_backup_warning_separates_pem_kept_from_unreadable() {
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+    let store = SecretStore::with_env(&cfg, env(&[]), true, false);
+    store
+        .put(
+            "loc.key",
+            Kind::Pem,
+            &SecretValue::new(Kind::Pem, Zeroizing::new(PEM_KEY.to_owned())).unwrap(),
+            0,
+            "root",
+            "local",
+            1_700_000_000,
+        )
+        .unwrap();
+    let out = tmp.path().join("b.ttbk");
+    let c = create_with(&files, &cfg, false, &out, Some(&export_of(&cfg, PASS))).unwrap();
+    let said = c.warnings.join(" | ");
+    assert!(
+        said.contains("1 stored PEM secret(s)") && said.contains("never put in a backup"),
+        "{said}"
+    );
+    assert!(!said.contains("couldn't be read"), "{said}");
+    assert!(!said.contains("PlantedKeyBytes"), "{said}");
 }

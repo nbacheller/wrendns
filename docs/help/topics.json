@@ -1194,6 +1194,16 @@
       "docs": "stored-secrets"
     },
     {
+      "id": "pem-secret",
+      "title": "Store a certificate or a key on the node",
+      "term": "PEM secret",
+      "summary": "A certificate chain or a private key in PEM form (-----BEGIN ...----- to -----END ...-----), pasted or read from a .pem file, kept encrypted on this node and copied to every member of the cluster. Only WrenDNS's own listeners use it. It is never shown again, and no page, API call, MCP tool, command, backup or support package returns it. Only an admin can store one.",
+      "when": "A listener needs a certificate and key you made elsewhere, and you want them kept with the node's other secrets.",
+      "example": "Paste the wildcard certificate chain and its key as two PEM secrets, home.chain and home.key.",
+      "caution": "It waits until every cluster member runs a build that knows PEM secrets, and the refusal names the member to upgrade first. The names acme.account and cert.<name>.key, cert.<name>.chain are kept for WrenDNS's own certificate issuer. A backup leaves PEM secrets out: they stay on the node.",
+      "docs": "stored-secrets"
+    },
+    {
       "id": "secrets-members",
       "title": "Which nodes hold a stored secret",
       "term": "Secret held by every member",

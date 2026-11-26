@@ -1109,6 +1109,11 @@ async fn dns_902_a_fast_lame_server_stops_coming_first() {
             Zone {
                 origin: "example.com",
                 records: vec![("www.example.com", rtype::A, a([10, 0, 0, 1]))],
+                // The good server is slow, so the lame one is the fast one on any machine: a
+                // server not asked yet sorts by a random key under 20 ms, ahead of a known
+                // 60 ms. Without the delay a quick runner measured the good server in well
+                // under a millisecond and never tried the lame one at all.
+                delay_ms: Some(Arc::new(AtomicU64::new(60))),
                 ..Zone::default()
             },
         ));
