@@ -148,10 +148,10 @@ impl Applier for HttpRedirect {
 pub(crate) struct ListenAccess;
 
 /// One listener's line in a `listen-access` value.
-struct GateLine {
-    proto: wrendns_config::ListenProto,
-    addr: std::net::SocketAddr,
-    setting: Option<bool>,
+pub(super) struct GateLine {
+    pub(super) proto: wrendns_config::ListenProto,
+    pub(super) addr: std::net::SocketAddr,
+    pub(super) setting: Option<bool>,
 }
 
 impl GateLine {
@@ -189,7 +189,7 @@ fn setting_word(s: Option<bool>) -> &'static str {
 }
 
 impl ListenAccess {
-    fn lines(v: &Value) -> Result<Vec<GateLine>, Problem> {
+    pub(super) fn lines(v: &Value) -> Result<Vec<GateLine>, Problem> {
         let bad = |why: String| Problem::new(Code::InvalidConfig, format!("`listeners`: {why}"));
         let list = v
             .get("listeners")
@@ -571,6 +571,7 @@ pub(crate) mod test {
             host: Arc<dyn Host>,
             _node: String,
             value: Value,
+            _access: Option<Value>,
         ) -> BoxFuture<Result<Staged, Problem>> {
             Box::pin(async move {
                 let fail = value.get("fail").and_then(Value::as_bool) == Some(true);
@@ -630,6 +631,7 @@ pub(crate) mod test {
             host: Arc<dyn Host>,
             _node: String,
             value: Value,
+            _access: Option<Value>,
         ) -> BoxFuture<Result<Staged, Problem>> {
             Box::pin(async move {
                 let p = port(&value)?;
@@ -695,6 +697,7 @@ mod redirect_tests {
             options: &options,
             caller: &c,
             host: &super::super::host::StubHost::default(),
+            access: None,
         })
     }
 
@@ -847,6 +850,7 @@ pub(crate) mod listen_access_tests {
                 options: &options,
                 caller: &c,
                 host: &super::super::host::StubHost::default(),
+                access: None,
             })
         })
     }

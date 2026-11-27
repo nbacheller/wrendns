@@ -830,6 +830,66 @@ test('api_902 listener removal warns about clients', async () => {
   }
 });
 
+// REQ: API-902 (T27.14c review) — two listeners of one protocol and port on different addresses each show
+// their own probe; the same warning twice does not break the review step; the row buttons name their
+// listener; the copyable test command carries the listener's own DoH path.
+test('api_902 listener card keeps same-port rows apart and survives repeated warnings', async () => {
+  const phase = { v: 'idle' as 'idle' | 'pending' | 'rolled_back' | 'confirmed' };
+  const probes = { v: [{ listener: 'doh://192.168.1.2:8443', state: 'answered', otherHosts: 0 }] };
+  await stubListeners(phase, probes, {});
+  const errors: string[] = [];
+  const onError = (e: Error) => errors.push(e.message);
+  page.on('pageerror', onError);
+  await page.route('**/api/v1/system/info', async (route) => {
+    const res = await route.fetch();
+    const info = await res.json();
+    info.listenerAccess = [
+      { ...LISTEN_BASE, listener: 'udp://192.168.1.2:53' },
+      { ...LISTEN_BASE, listener: 'udp://10.0.0.1:53' },
+    ];
+    await route.fulfill({ response: res, json: info });
+  });
+  const probe = (target: string, ok: boolean, latencyMs: number) => ({ target, proto: 'udp', listener: true, ok, latencyMs, consecutiveFailures: ok ? 0 : 3, checkedUnixSeconds: 1 });
+  await page.route('**/api/v1/system/probes', (route) => route.fulfill({ json: { items: [probe('udp://192.168.1.2:53', true, 1.5), probe('udp://10.0.0.1:53', false, 0)] } }));
+  await page.route('**/api/v1/guarded/listen/preview', (route) => {
+    const w = 'Clients that send queries to 192.168.1.9 stop getting answers on a removed listener when you confirm.';
+    return route.fulfill({
+      json: {
+        previewId: 'stub', setting: 'listen', node: 'home-dns', nodes: ['home-dns'], mode: 'window', phrase: 'home-dns listen', effect: 'Adds a listener.', weakening: false,
+        needsRecentSignIn: false, restartRequired: false, setByFile: false, windowSecs: 30, checks: [], listeners: [], warnings: [w, w],
+      },
+    });
+  });
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const box = page.getByTestId('listeners-card');
+    const rows = box.getByTestId('listeners-row');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).getByTestId('listeners-status')).toHaveText('answering, 1.5 ms');
+    await expect(rows.nth(1).getByTestId('listeners-status')).toHaveText('no answer');
+    await expect(box.getByRole('button', { name: 'Remove udp://10.0.0.1:53' })).toBeVisible();
+    await expect(box.getByRole('button', { name: 'Edit udp://192.168.1.2:53' })).toBeVisible();
+    // The review step shows both warnings, whatever the data.
+    await box.getByTestId('listeners-add').click();
+    await rows.last().getByTestId('listeners-proto').selectOption('doh');
+    await rows.last().getByTestId('listeners-addr').fill('192.168.1.2:8443');
+    await rows.last().getByLabel('Certificate path').fill('/c');
+    await rows.last().getByLabel('Key path').fill('/k');
+    await rows.last().getByLabel('Path', { exact: true }).fill('/custom');
+    await box.getByTestId('guarded-start-listen').click();
+    await expect(box.getByTestId('guarded-warning')).toHaveCount(2);
+    await box.getByTestId('guarded-phrase-input').fill('home-dns listen');
+    await box.getByTestId('guarded-apply').click();
+    await expect(box.getByTestId('guarded-test-cmd')).toContainText('https://192.168.1.2:8443/custom?dns=');
+    expect(errors).toEqual([]);
+  } finally {
+    page.off('pageerror', onError);
+    await page.unroute('**/api/v1/system/probes');
+    await unstubListeners();
+  }
+});
+
 test('api_902 listener editor is read-only when set by file', async () => {
   await page.goto('/#/settings?tab=system');
   await page.reload();

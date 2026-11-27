@@ -64,6 +64,9 @@ pub(crate) struct Checked {
     pub(crate) disconnect_detail: Option<String>,
     /// REQ: API-902 (T27.14c) — a listener change's line-by-line diff, for the review step.
     pub(crate) listeners: Vec<GuardedListenerLine>,
+    /// REQ: API-902 (T27.14c) — the host facts the verdict was judged with; an apply whose check
+    /// reads other facts is `preview_stale`.
+    pub(crate) host_facts: Option<wrendns_config::HostFacts>,
 }
 
 /// What an [`Applier`] is given to check a value.
@@ -76,6 +79,9 @@ pub(crate) struct CheckCx<'a> {
     pub(crate) caller: &'a GuardedCaller,
     /// The node around the engine (the cluster's members, for the checks that name them).
     pub(crate) host: &'a dyn Host,
+    /// REQ: API-902 (T27.14c) — this node's stored `listen-access` value that is in force, for a
+    /// listener change to judge an address the node once gated (its lines outlive the listener).
+    pub(crate) access: Option<&'a Value>,
 }
 
 /// What staging a window change bound.
@@ -128,6 +134,7 @@ pub(crate) trait Applier: Send + Sync {
         _host: Arc<dyn Host>,
         _node: String,
         _value: Value,
+        _access: Option<Value>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         Box::pin(std::future::ready(Err(Problem::unavailable(
             "this setting has no confirmation window",
@@ -183,6 +190,8 @@ pub(crate) struct Preview {
     expires: Instant,
     phrase: String,
     weakening: bool,
+    /// The host facts the preview was judged with (`None` for a row that does not read them).
+    host_facts: Option<wrendns_config::HostFacts>,
     needs_recent: bool,
     acknowledgements: Vec<String>,
     /// For `restart-now`: the staged entries it listed.
@@ -722,6 +731,7 @@ impl Engine {
             .hint("Remove it from the file (and restart) to change it here."));
         }
         let cfg = self.host.running_config();
+        let access = self.stored_access();
         let (checked, before) = if row.id == RESTART_NOW {
             (self.restart_checked()?, Value::Null)
         } else {
@@ -732,6 +742,7 @@ impl Engine {
                 options: &req.options,
                 caller: c,
                 host: self.host.as_ref(),
+                access: access.as_ref(),
             };
             (def.applier.check(&cx)?, def.applier.current(&cfg))
         };
@@ -764,6 +775,7 @@ impl Engine {
                     expires: now + Duration::from_secs(PREVIEW_SECS),
                     phrase: phrase.clone(),
                     weakening,
+                    host_facts: checked.host_facts,
                     needs_recent,
                     acknowledgements: checked.acknowledgements.clone(),
                     staged_listed: if row.id == RESTART_NOW {
@@ -857,6 +869,17 @@ impl Engine {
             .map(|(e, _)| e)
             .filter(|e| !self.suppressed_entry(e))
             .collect()
+    }
+
+    /// This node's `listen-access` value that is in force (active or on probation), if it has one.
+    pub(crate) fn stored_access(&self) -> Option<Value> {
+        self.effective_entries()
+            .into_iter()
+            .find(|e| {
+                e.id == wrendns_config::guarded::LISTEN_ACCESS
+                    && matches!(e.state, EntryState::Active | EntryState::Probation)
+            })
+            .map(|e| e.value)
     }
 
     /// Whether a local clear is suppressing this replicated entry.
@@ -1064,6 +1087,7 @@ impl Engine {
             return self.restart_apply(c, &req, &pre).await;
         }
         let cfg = self.host.running_config();
+        let access = self.stored_access();
         // The same checks again: what was true at preview may not be now (ADR-956 §3).
         let cx = CheckCx {
             cfg: &cfg,
@@ -1072,8 +1096,19 @@ impl Engine {
             options: &req.options,
             caller: c,
             host: self.host.as_ref(),
+            access: access.as_ref(),
         };
         let checked = def.applier.check(&cx)?;
+        // REQ: API-902 (T27.14c, design 4) — what the admin reviewed no longer holds: the host's
+        // facts moved, or the change now weakens and the preview said it did not. Judged again
+        // from a fresh preview, never on the old one's gates and confirm requirements.
+        if checked.host_facts != pre.host_facts || (checked.weakening && !pre.weakening) {
+            return Err(Problem::new(
+                Code::PreviewStale,
+                "this host's addresses changed since the preview, so the review no longer holds",
+            )
+            .hint("Preview the change again."));
+        }
         if checked.would_disconnect {
             return Err(Problem::new(
                 Code::WouldDisconnectYou,
@@ -1298,7 +1333,12 @@ impl Engine {
         let row = def.row;
         let staged = match def
             .applier
-            .stage(Arc::clone(&self.host), self.node.clone(), req.value.clone())
+            .stage(
+                Arc::clone(&self.host),
+                self.node.clone(),
+                req.value.clone(),
+                self.stored_access(),
+            )
             .await
         {
             Ok(s) => s,

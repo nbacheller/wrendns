@@ -24,6 +24,7 @@ use wrendns_config::{
     Config, HostFacts, ListenProto, Listener, SafeString, TlsFiles, is_public_address, is_wildcard,
 };
 
+use super::appliers::ListenAccess;
 use super::dns_proof::{self, DnsProbe};
 use super::engine::{Applier, CheckCx, Checked, Staged, WindowGuard};
 use super::host::{Host, Member};
@@ -113,6 +114,15 @@ fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
         && (a.ip().to_canonical() == b.ip().to_canonical()
             || is_wildcard(a.ip())
             || is_wildcard(b.ip()))
+}
+
+/// Whether a listener bound to `bound` answers on `address`: the same address, or either a wildcard
+/// of the same family (the port is not part of the question).
+fn serves_address(bound: IpAddr, address: IpAddr) -> bool {
+    family(bound) == family(address)
+        && (bound.to_canonical() == address.to_canonical()
+            || is_wildcard(bound)
+            || is_wildcard(address))
 }
 
 // ---- the value ----------------------------------------------------------------------------
@@ -281,6 +291,20 @@ pub(crate) fn to_value(list: &[Listener]) -> Value {
 /// What `list` runs as: a listener the node already runs keeps its device key setting and its PROXY
 /// flag (they are not this row's); a new one starts on its default (design 4).
 pub(crate) fn merged(list: Vec<Listener>, running: &[Listener]) -> Vec<Listener> {
+    merged_with(list, running, None)
+}
+
+/// [`merged`], and a new listener on an address the node's stored `listen-access` value still has a
+/// line for takes that line's setting: the reload overlays the stored value after this row, so the
+/// preview, the probe and the result must judge the same gate (a removed listener leaves its line).
+pub(crate) fn merged_with(
+    list: Vec<Listener>,
+    running: &[Listener],
+    access: Option<&Value>,
+) -> Vec<Listener> {
+    let lines = access
+        .and_then(|v| ListenAccess::lines(v).ok())
+        .unwrap_or_default();
     list.into_iter()
         .map(|mut l| {
             if let Some(r) = running
@@ -289,6 +313,12 @@ pub(crate) fn merged(list: Vec<Listener>, running: &[Listener]) -> Vec<Listener>
             {
                 l.require_client_id = r.require_client_id;
                 l.proxy_protocol = r.proxy_protocol;
+            } else if l.proto.needs_tls()
+                && let Some(line) = lines
+                    .iter()
+                    .find(|x| x.proto == l.proto && x.addr == l.addr)
+            {
+                l.require_client_id = line.setting;
             }
             l
         })
@@ -399,12 +429,12 @@ pub(crate) fn weakening_reason(
         if has(new, o) {
             continue;
         }
-        let still_encrypted = new.iter().any(|n| {
-            n.proto.needs_tls() && n.addr.ip().to_canonical() == o.addr.ip().to_canonical()
-        });
-        let plain_stays = new.iter().any(|n| {
-            !n.proto.needs_tls() && n.addr.ip().to_canonical() == o.addr.ip().to_canonical()
-        });
+        let still_encrypted = new
+            .iter()
+            .any(|n| n.proto.needs_tls() && serves_address(n.addr.ip(), o.addr.ip()));
+        let plain_stays = new
+            .iter()
+            .any(|n| !n.proto.needs_tls() && serves_address(n.addr.ip(), o.addr.ip()));
         if plain_stays && !still_encrypted {
             return Some(format!(
                 "removes {} while plain DNS stays on {}: the address is served without encryption",
@@ -499,6 +529,7 @@ pub(crate) fn evaluate(
     members: &[Member],
     site: &str,
     env: &Env,
+    access: Option<&Value>,
 ) -> Result<Checked, Problem> {
     if members
         .iter()
@@ -510,7 +541,7 @@ pub(crate) fn evaluate(
         ));
     }
     let running = &cfg.listen;
-    let new = merged(parse(value)?, running);
+    let new = merged_with(parse(value)?, running, access);
     let host = env.host;
     let mut out = Checked::default();
     // The empty list, and the port-53 rule per family and transport (only where the node runs it).
@@ -796,7 +827,12 @@ pub(crate) fn evaluate(
     }
     effect.push_str("The node asks every new listener a test question itself before you can confirm; that proves it works on this machine, not that your devices can reach it.");
     out.effect = effect;
+    // The same sentence twice (UDP and TCP on one address that is not local, two pairs that share a
+    // certificate) is said once.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    warnings.retain(|w| seen.insert(w.clone()));
     out.warnings = warnings;
+    out.host_facts = Some(host);
     out.checks = checks;
     out.listeners = lines;
     out.weakening = weak.is_some();
@@ -816,6 +852,7 @@ impl Applier for Listen {
             &cx.host.members(),
             &cx.host.site(),
             &Env::read(),
+            cx.access,
         )
     }
 
@@ -829,10 +866,11 @@ impl Applier for Listen {
         host: Arc<dyn Host>,
         node: String,
         value: Value,
+        access: Option<Value>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         Box::pin(async move {
             let running = host.running_config();
-            let list = merged(parse(&value)?, &running.listen);
+            let list = merged_with(parse(&value)?, &running.listen, access.as_ref());
             let facts = crate::gate_host::read();
             let staged = host
                 .stage_listeners(list.clone())

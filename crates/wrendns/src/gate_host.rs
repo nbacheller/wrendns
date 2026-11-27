@@ -32,6 +32,12 @@ pub(crate) fn with_facts<T>(facts: HostFacts, f: impl FnOnce() -> T) -> T {
     out
 }
 
+/// Sets (or clears) this thread's facts for a test that has to change them between two awaits.
+#[cfg(test)]
+pub(crate) fn set_facts(facts: Option<HostFacts>) {
+    OVERRIDE.with(|o| o.set(facts));
+}
+
 /// Reads the interface list now. An unreadable list (or one with no address at all, which is what
 /// a platform without `getifaddrs` returns) fails closed: [`HostFacts::UNKNOWN`].
 pub(crate) fn read() -> HostFacts {

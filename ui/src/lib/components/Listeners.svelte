@@ -55,14 +55,21 @@
   const dirty = $derived(JSON.stringify(value.listeners) !== baseline);
 
   const stateOf = (d: D) => (d.gone ? 'to remove' : d.fresh ? 'new' : d.edit ? 'changed' : '');
+  // The probe of one listener: its protocol and the whole address it was asked on (a wildcard is asked on loopback).
+  const probeOf = (d: D) => {
+    const at = d.addr.replace(/^0\.0\.0\.0:/, '127.0.0.1:').replace(/^\[::\]:/, '[::1]:');
+    return probes.find((x) => {
+      const rest = x.target.replace(/^[a-z0-9]+:\/\//, '');
+      return x.listener && x.proto === d.proto && (rest === at || rest.startsWith(`${at}/`));
+    });
+  };
   const status = (d: D): string => {
     if (d.fresh) return 'not open yet';
-    const port = d.addr.slice(d.addr.lastIndexOf(':') + 1);
-    const p = probes.find((x) => x.listener && x.proto === d.proto && x.target.endsWith(`:${port}`));
+    const p = probeOf(d);
     return !p ? '-' : p.skipped ? `not probed: ${p.skipped}` : p.ok ? `answering${p.latencyMs != null ? `, ${p.latencyMs} ms` : ''}` : 'no answer';
   };
   const certText = (d: D) => {
-    const p = probes.find((x) => x.listener && x.proto === d.proto && x.target.endsWith(`:${d.addr.slice(d.addr.lastIndexOf(':') + 1)}`));
+    const p = probeOf(d);
     const name = d.cert.slice(d.cert.lastIndexOf('/') + 1);
     return name ? `${name}${p?.certDaysLeft != null ? `, ${p.certDaysLeft} days left` : ''}` : '';
   };
@@ -120,8 +127,8 @@
             <td class="small" data-testid="listeners-status">{stateOf(d) || status(d)}</td>
             {#if editable && !setByFile}
               <td>
-                {#if !d.edit}<button data-testid="listeners-edit" onclick={() => (d.edit = true)} disabled={d.gone}>Edit</button>{/if}
-                <button data-testid="listeners-remove" onclick={() => drop(d)}>{d.gone ? 'Keep' : 'Remove'}</button>
+                {#if !d.edit}<button data-testid="listeners-edit" aria-label="Edit {d.proto}://{d.addr}" onclick={() => (d.edit = true)} disabled={d.gone}>Edit</button>{/if}
+                <button data-testid="listeners-remove" aria-label="{d.gone ? 'Keep' : 'Remove'} {d.proto}://{d.addr}" onclick={() => drop(d)}>{d.gone ? 'Keep' : 'Remove'}</button>
               </td>
             {/if}
           </tr>

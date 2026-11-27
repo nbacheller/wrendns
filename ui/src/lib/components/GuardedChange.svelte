@@ -250,13 +250,16 @@
   });
   /** A command to run from a client, with the address filled in (T27.14c). */
   function testCmd(listener: string): string {
+    // The path the listener serves: the draft names it, a wildcard is probed on its loopback address.
+    const lst = (value as { listeners?: { proto: string; addr: string; path?: string | null }[] } | null)?.listeners ?? [];
+    const served = lst.find((x) => `${x.proto}://${x.addr.replace(/^0\.0\.0\.0:/, '127.0.0.1:').replace(/^\[::\]:/, '[::1]:')}` === listener)?.path || '/dns-query';
     const [proto, addr] = [listener.slice(0, listener.indexOf('://')), listener.slice(listener.indexOf('://') + 3)];
     const i = addr.lastIndexOf(':');
     const [ip, port] = [addr.slice(0, i).replace(/^\[|\]$/g, ''), addr.slice(i + 1)];
     if (proto === 'udp' || proto === 'tcp') return `dig @${ip} -p ${port}${proto === 'tcp' ? ' +tcp' : ''} example.com`;
     if (proto === 'dot') return `kdig +tls @${ip} -p ${port} example.com`;
     if (proto === 'doq') return `kdig +quic @${ip} -p ${port} example.com`;
-    return `curl -H 'accept: application/dns-message' 'https://${ip}:${port}/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'`;
+    return `curl -H 'accept: application/dns-message' 'https://${ip}:${port}${served}?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'`;
   }
   function probeText(p: S['GuardedProbeLine']): string {
     if (p.state === 'answered') return "the node's own test query was answered";
@@ -377,7 +380,7 @@
         </ul>
         <p class="small muted">You confirm this on this page, once the node's own test query to each new listener is answered. That proves the listener works on this machine, not that your devices can reach it: a firewall, your router or a container's published ports may still be in the way.</p>
       {/if}
-      {#each pv.warnings as w (w)}
+      {#each pv.warnings as w, i (i)}
         <div class="notice warn small" data-testid="guarded-warning">{w}</div>
       {/each}
       {#each pv.checks.filter((c) => !c.ok) as c (c.name)}

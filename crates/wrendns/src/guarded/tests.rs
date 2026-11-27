@@ -143,9 +143,14 @@ impl Applier for TApplier {
                 "needs a label, a port, proxies or probes",
             ));
         }
+        // A test that moves the host's facts between preview and apply (`gate_host::set_facts`).
+        let facts = crate::gate_host::read();
+        let weak_on_public = cx.value.get("weak_on_public").and_then(Value::as_bool) == Some(true);
         Ok(Checked {
             effect: format!("sets {} on {}", cx.value, cx.node),
             would_disconnect: cx.value.get("disconnect").and_then(Value::as_bool) == Some(true),
+            host_facts: weak_on_public.then_some(facts),
+            weakening: weak_on_public && facts.public_ipv4 == Some(true),
             ..Checked::default()
         })
     }
@@ -154,6 +159,7 @@ impl Applier for TApplier {
         host: Arc<dyn Host>,
         _node: String,
         value: Value,
+        _access: Option<Value>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         let (committed, aborted) = FLAGS.with(|f| {
             let f = f.borrow();

@@ -482,6 +482,7 @@ impl Applier for StaleApplier {
         _host: Arc<dyn Host>,
         _node: String,
         _value: Value,
+        _access: Option<Value>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         let guard = Arc::clone(&self.0);
         Box::pin(std::future::ready(Ok(Staged {
@@ -628,4 +629,65 @@ fn api_902_listen_guard_notices_changed_host_facts() {
         public,
     );
     assert!(g.stale().unwrap().contains("addresses changed"));
+}
+
+// REQ: API-902, DNS-901 (design 4) — the host gained a public address between the preview and the
+// apply: the apply is 409 `preview_stale` (the review said "no weakening" and the sign-in recency
+// was not asked for), and a fresh preview carries the red mark.
+#[tokio::test(start_paused = true)]
+async fn api_902_apply_stale_when_the_host_facts_moved_since_the_preview() {
+    use wrendns_config::HostFacts;
+    let facts = |public: bool| HostFacts {
+        public_ipv4: Some(public),
+        global_ipv6: false,
+    };
+    let n = solo();
+    let a = admin("alice", 5);
+    let v = json!({"label": "x", "weak_on_public": true});
+    crate::gate_host::set_facts(Some(facts(false)));
+    let p = preview(&n.engine, &a, "t-imm", v.clone()).await.unwrap();
+    assert!(!p.weakening);
+    crate::gate_host::set_facts(Some(facts(true)));
+    let e = n
+        .engine
+        .apply(&a, "t-imm", apply_req(&p, v.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale);
+    assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
+    // Previewed again under the new facts, it is judged as weakening and goes through.
+    let p = preview(&n.engine, &a, "t-imm", v.clone()).await.unwrap();
+    assert!(p.weakening);
+    assert!(n.engine.apply(&a, "t-imm", apply_req(&p, v)).await.is_ok());
+    crate::gate_host::set_facts(None);
+}
+
+// REQ: API-902 (T27.14c review) — the engine hands the check this node's stored `listen-access`
+// value that is in force, and nothing when it is only staged.
+#[tokio::test(start_paused = true)]
+async fn api_902_engine_reads_the_stored_listen_access_value() {
+    let n = solo();
+    assert!(n.engine.stored_access().is_none());
+    let v = json!({"listeners": [{"proto": "dot", "addr": "203.0.113.5:853", "require_client_id": false}]});
+    let put = |state, at: u64| {
+        store::put(
+            &n.engine.state,
+            &Stored {
+                node: "pi-a".into(),
+                id: "listen-access".into(),
+                value: v.clone(),
+                mode: "staged".into(),
+                state,
+                by: "alice".into(),
+                at,
+            },
+            1,
+            "alice",
+        )
+        .unwrap();
+    };
+    put(EntryState::Staged, 1);
+    assert!(n.engine.stored_access().is_none());
+    put(EntryState::Active, 2);
+    assert_eq!(n.engine.stored_access(), Some(v));
 }

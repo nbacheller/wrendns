@@ -13,7 +13,7 @@ use wrendns_config::{Config, HostFacts, ListenProto, Listener};
 
 use super::engine::Checked;
 use super::host::Member;
-use super::listen::{Env, evaluate, merged, parse, weakening_reason};
+use super::listen::{Env, evaluate, merged, merged_with, parse, weakening_reason};
 
 const PUBLIC4: HostFacts = HostFacts {
     public_ipv4: Some(true),
@@ -60,7 +60,7 @@ fn defaults() -> Vec<Value> {
 }
 
 fn run(cfg: &Config, v: &Value, host: HostFacts) -> Result<Checked, wrendns_api::problem::Problem> {
-    evaluate(cfg, "pi-a", v, &[], "", &env(host))
+    evaluate(cfg, "pi-a", v, &[], "", &env(host), None)
 }
 
 fn err(cfg: &Config, v: &Value) -> String {
@@ -313,6 +313,7 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         &[w],
         "home",
         &env(PRIVATE4),
+        None,
     )
     .unwrap_err();
     assert_eq!(e.code, Code::InvalidConfig);
@@ -333,6 +334,7 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         &[other(false)],
         "home",
         &env(PRIVATE4),
+        None,
     )
     .unwrap();
     assert!(
@@ -347,6 +349,7 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         &[other(true)],
         "home",
         &env(PRIVATE4),
+        None,
     )
     .unwrap();
     assert!(
@@ -374,7 +377,7 @@ fn api_902_listen_warnings_platform_and_interface() {
     // Docker and Kubernetes.
     let mut e = env(PRIVATE4);
     e.supervisor = "docker".to_owned();
-    let c = evaluate(&cfg, "pi-a", &with(vec![]), &[], "", &e).unwrap();
+    let c = evaluate(&cfg, "pi-a", &with(vec![]), &[], "", &e, None).unwrap();
     assert!(
         c.warnings
             .iter()
@@ -383,7 +386,7 @@ fn api_902_listen_warnings_platform_and_interface() {
     // An unreadable interface list says nothing about interfaces.
     let mut e = env(PRIVATE4);
     e.local = None;
-    let c = evaluate(&cfg, "pi-a", &v, &[], "", &e).unwrap();
+    let c = evaluate(&cfg, "pi-a", &v, &[], "", &e, None).unwrap();
     assert!(!c.warnings.iter().any(|w| w.contains("no interface")));
 }
 
@@ -515,8 +518,10 @@ fn api_902_listener_weakening_table() {
         !weak(&gated, &to_wild, PUBLIC4),
         "the wildcard is gated where the host is public"
     );
-    // Removing the gated listener without adding an ungated one is not (b).
-    assert!(!weak(&gated, &[l("udp", "0.0.0.0:53")], GLOBAL6));
+    // Removing the gated listener without adding an ungated one is not (b); it is (a), because the
+    // wildcard plain listener that stays serves that address without encryption.
+    assert!(weak(&gated, &[l("udp", "0.0.0.0:53")], GLOBAL6));
+    assert!(!weak(&gated, &[l("udp", "192.168.1.3:53")], GLOBAL6));
     // (a) the encrypted listener goes and plain DNS stays on the address.
     let enc = vec![l("udp", "192.168.1.2:53"), dot("192.168.1.2:853", c, k)];
     assert!(weak(&enc, &[l("udp", "192.168.1.2:53")], PRIVATE4));
@@ -535,6 +540,20 @@ fn api_902_listener_weakening_table() {
         PRIVATE4
     ));
     assert!(!weak(&enc, &[l("udp", "192.168.1.3:53")], PRIVATE4));
+    // (a) with a wildcard on either side: a specific encrypted address removed while a wildcard
+    // plain listener stays, and a wildcard encrypted listener removed while a plain listener on a
+    // specific address stays. A wildcard of the other family serves nothing there.
+    let spec = vec![l("udp", "0.0.0.0:53"), dot("192.168.1.2:853", c, k)];
+    assert!(weak(&spec, &[l("udp", "0.0.0.0:53")], PRIVATE4));
+    let wild = vec![l("udp", "192.168.1.2:53"), dot("0.0.0.0:853", c, k)];
+    assert!(weak(&wild, &[l("udp", "192.168.1.2:53")], PRIVATE4));
+    assert!(!weak(&wild, &[l("udp", "[::]:53")], PRIVATE4));
+    // ... and not when a wildcard encrypted listener still covers the address.
+    assert!(!weak(
+        &spec,
+        &[l("udp", "0.0.0.0:53"), dot("0.0.0.0:853", c, k)],
+        PRIVATE4
+    ));
 }
 
 // The weakening reaches the preview: the red mark, and the rule is named.
@@ -865,4 +884,73 @@ fn api_902_listen_overlay_order_is_listen_then_listen_access() {
     let mut cfg = Config::default();
     overlay_with(&mut cfg, &own, &[listen], None, &defs, "pi-a", false);
     assert_eq!(cfg.listen.len(), 4, "the file's list stays");
+}
+
+// REQ: API-902 (T27.14c review) — the same warning is said once: UDP and TCP added on one address
+// that is on no interface of this host, and two pairs that share a certificate.
+#[test]
+fn api_902_listen_warnings_are_not_repeated() {
+    let cfg = Config::default();
+    let v = with(vec![
+        l("udp", "192.168.1.9:5300"),
+        l("tcp", "192.168.1.9:5300"),
+    ]);
+    let c = run(&cfg, &v, PRIVATE4).unwrap();
+    let n = c
+        .warnings
+        .iter()
+        .filter(|w| w.contains("is on no interface"))
+        .count();
+    assert_eq!(n, 1, "{:?}", c.warnings);
+    let mut seen = std::collections::HashSet::new();
+    assert!(c.warnings.iter().all(|w| seen.insert(w.clone())));
+}
+
+// REQ: API-902, DNS-901 (T27.14c review) — a `listen-access` line outlives the listener it named; an
+// address added again takes it, so the preview, the probe and the result judge the gate the reload
+// will give it (a public DoT the admin once set off is not gated, and says so, and weakens).
+#[test]
+fn api_902_listen_readded_address_takes_the_stored_gate_line() {
+    let pki = Pki::new();
+    let (c, k) = pki.pair("a", &["dns.example"]);
+    let cfg = Config::default();
+    let v = with(vec![dot("203.0.113.5:853", &c, &k)]);
+    // Without the stored line: gated by default, no weakening.
+    let e = env(PRIVATE4);
+    let plain = evaluate(&cfg, "pi-a", &v, &[], "", &e, None).unwrap();
+    assert!(!plain.weakening);
+    // With the stored line off: not gated, the red mark, the gate sentence says it was set.
+    let stored = json!({"listeners": [
+        {"proto": "dot", "addr": "203.0.113.5:853", "require_client_id": false}
+    ]});
+    let off = evaluate(&cfg, "pi-a", &v, &[], "", &e, Some(&stored)).unwrap();
+    assert!(off.weakening, "{:?}", off.warnings);
+    let line = off
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://203.0.113.5:853")
+        .unwrap();
+    assert!(
+        line.gate
+            .as_deref()
+            .unwrap()
+            .contains("set under Listener access"),
+        "{:?}",
+        line.gate
+    );
+    // A stored `on` line gates a LAN address that the default would leave open.
+    let lan = with(vec![dot("192.168.1.2:853", &c, &k)]);
+    let on = json!({"listeners": [
+        {"proto": "dot", "addr": "192.168.1.2:853", "require_client_id": true}
+    ]});
+    let g = evaluate(&cfg, "pi-a", &lan, &[], "", &e, Some(&on)).unwrap();
+    assert!(g.listeners.iter().any(|x| {
+        x.gate
+            .as_deref()
+            .is_some_and(|s| s.contains("answers only a known device key"))
+    }));
+    // The listener the node runs keeps its own setting; the stored line is for new ones only.
+    let parsed = merged_with(parse(&v).unwrap(), &[], Some(&stored));
+    let dot_l = parsed.iter().find(|x| x.proto == ListenProto::Dot).unwrap();
+    assert_eq!(dot_l.require_client_id, Some(false));
 }
