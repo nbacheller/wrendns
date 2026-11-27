@@ -220,6 +220,40 @@
     }
   });
 
+  // The node's own test query to each DNS socket the change opened (T27.14b), read every 2 s while the
+  // window is open. A change with no probes (or one pending on another node) answers an empty list or a
+  // 404, and shows nothing.
+  let probes = $state<S['GuardedProbeLine'][]>([]);
+  const probeFailing = $derived(probes.some((p) => p.state === 'no_answer'));
+  $effect(() => {
+    const pid = step === 'pending' ? result?.pendingId : undefined;
+    if (!pid) {
+      probes = [];
+      return;
+    }
+    let alive = true;
+    const read = async () => {
+      try {
+        const v = await api.guardedPending(pid);
+        if (alive) probes = v.probes;
+      } catch {
+        if (alive) probes = [];
+      }
+    };
+    void read();
+    const t = setInterval(read, 2_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  });
+  function probeText(p: S['GuardedProbeLine']): string {
+    if (p.state === 'answered') return "the node's own test query was answered";
+    if (p.state === 'refused_by_gate') return "the node's own test query was refused by the device-key gate, as it should be";
+    if (p.state === 'no_answer') return `no answer to the node's own test query${p.error ? `: ${p.error}` : ''}`;
+    return 'waiting for the first test query';
+  }
+
   // Restart now: the node goes away and comes back; its outcome is read from the listing.
   $effect(() => {
     if (step !== 'restarting') return;
@@ -381,13 +415,23 @@
       <p>
         <strong data-testid="guarded-countdown">{secsLeft}</strong> seconds left. {result.message}
       </p>
+      {#if probes.length}
+        <ul class="probes small" data-testid="guarded-probes">
+          {#each probes as p, i (i)}
+            <li data-testid="guarded-probe" data-state={p.state}>
+              <code>{p.listener}</code>: {probeText(p)}.
+              <span class="muted" data-testid="guarded-evidence">{p.otherHosts > 0 ? `${p.otherHosts} other ${p.otherHosts === 1 ? 'host has' : 'hosts have'} used it.` : 'No other host has used it yet.'}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
       {#if confirmLink}
         <p>
           <a class="button primary" href={confirmLink} data-testid="guarded-confirm-link">Open the new address and confirm</a>
         </p>
         <p class="small muted">The link carries a one-time token in its #fragment, which is never sent to a server or a log. If you can't reach the new address, do nothing: the change rolls back.</p>
       {:else}
-        <button class="primary" disabled={busy} onclick={confirmHere} data-testid="guarded-confirm-here">{busy ? 'Working…' : 'Confirm'}</button>
+        <button class="primary" disabled={busy || probeFailing} onclick={confirmHere} data-testid="guarded-confirm-here">{busy ? 'Working…' : 'Confirm'}</button>
       {/if}
       <button disabled={busy} onclick={cancelPending} data-testid="guarded-cancel">Cancel the change</button>
       <ErrorNote {error} />
@@ -467,6 +511,10 @@
     gap: var(--space-1);
     margin: var(--space-2) 0;
     max-width: 460px;
+  }
+  .probes {
+    margin: var(--space-2) 0;
+    padding-left: var(--space-4);
   }
   .button {
     display: inline-block;

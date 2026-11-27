@@ -203,6 +203,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/access-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: DNS-014, API-901 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, the one list for
+         *     the whole cluster. Admins only; no agent token changes it.
+         * @description Who may use this resolver, and reach the web UI and the API. The list applies on every node within
+         *     seconds; a file that sets it wins. A list that leaves out the requester's own address is refused
+         *     (409 `would_disconnect_you`).
+         */
+        put: operations["put_access_settings"];
+        post?: never;
+        /**
+         * Removes the allowed networks the API set (the files' list, or the defaults, apply again).
+         * @description The list the configuration files give, or the built-in defaults (private ranges, CGNAT, link-local
+         *     and loopback), applies again on every node within seconds.
+         */
+        delete: operations["delete_access_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts": {
         parameters: {
             query?: never;
@@ -2584,6 +2612,32 @@ export interface paths {
          *     setting and the seconds left. `config:read` is enough, agent tokens included.
          */
         get: operations["guarded_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/pending/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads a pending window change: the seconds left and, for a change that binds DNS sockets, the
+         *     node's own probe of each (the last result and the time) and how many other hosts' queries have
+         *     reached it.
+         * @description The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the
+         *     same admin's session; another admin's session, a wrong token and an agent token are 403. It
+         *     names the staged addresses, which `GET /api/v1/guarded` never does. A wrong token or another
+         *     admin's session counts toward the failed-confirmation block like a wrong confirm; reading it
+         *     is not rate-limited. The evidence is shown, never required to confirm.
+         */
+        get: operations["guarded_pending"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8360,6 +8414,23 @@ export interface components {
             node: string;
             setting: string;
         };
+        /**
+         * @description The answer of `GET /api/v1/guarded/pending/{id}`: the window's seconds left and, for a change that
+         *     binds DNS sockets, the node's own probe of each. It names the staged addresses, so it is for the
+         *     admin who made the change (the confirm token or that admin's session), unlike the status listing.
+         */
+        GuardedPendingView: {
+            /**
+             * Format: int64
+             * @description Seconds left, measured on the node's monotonic clock.
+             */
+            deadlineSecs: number;
+            id: string;
+            node: string;
+            /** @description One line per staged socket; empty for a change that has no probes. */
+            probes: components["schemas"]["GuardedProbeLine"][];
+            setting: string;
+        };
         /** @description The dry run's answer. Nothing was changed. */
         GuardedPreview: {
             /** @description A second acknowledgement the change needs (`acknowledgeNoAdmins`, ...), when it does. */
@@ -8420,6 +8491,29 @@ export interface components {
              *     action such as `restart-now`.
              */
             value?: Record<string, never>;
+        };
+        /** @description One staged socket of a pending change, as `GET /api/v1/guarded/pending/{id}` shows it. */
+        GuardedProbeLine: {
+            /**
+             * Format: int64
+             * @description When the last probe finished (Unix seconds).
+             */
+            at?: number | null;
+            /** @description Why there was no answer. */
+            error?: string | null;
+            /** @description The socket, as `proto://address`. */
+            listener: string;
+            /**
+             * Format: int32
+             * @description Distinct other hosts whose queries reached this socket during the window (at most 64; IPv6
+             *     by /64; this node's own addresses left out). Shown, never required to confirm.
+             */
+            otherHosts: number;
+            /**
+             * @description `waiting` (no probe has finished yet), `answered`, `refused_by_gate` (the gate's own
+             *     refusal, the expected answer on a gated listener) or `no_answer`.
+             */
+            state: string;
         };
         /** @description The answer of a confirmation or a cancellation. */
         GuardedResult: {
@@ -13679,6 +13773,134 @@ export interface operations {
             };
         };
     };
+    put_access_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change; `warnings` names a public range). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the allowed networks; agents are refused. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, the list leaves out your own address (`would_disconnect_you`), or a cluster member's build does not know the allowed networks yet (`upgrade_required`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A network is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_access_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the allowed networks. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no allowed networks. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The list that would apply leaves out your own address (`would_disconnect_you`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     alerts_status: {
         parameters: {
             query?: never;
@@ -18738,6 +18960,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GuardedStatus"];
+                };
+            };
+        };
+    };
+    guarded_pending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pending change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedPendingView"];
+                };
+            };
+            /** @description Neither a session nor a token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The token is wrong, or another admin made the change. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing is pending under that ID on this node. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

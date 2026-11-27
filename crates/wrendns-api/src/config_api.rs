@@ -3325,6 +3325,71 @@ pub(crate) async fn delete_drill_settings(
     .await
 }
 
+/// REQ: DNS-014, API-901 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, the one list for
+/// the whole cluster. Admins only; no agent token changes it.
+///
+/// Who may use this resolver, and reach the web UI and the API. The list applies on every node within
+/// seconds; a file that sets it wins. A list that leaves out the requester's own address is refused
+/// (409 `would_disconnect_you`).
+#[utoipa::path(put, path = "/api/v1/access-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change; `warnings` names a public range)."),
+        (status = 403, body = Problem, description = "Only an admin can change the allowed networks; agents are refused."),
+        (status = 409, body = Problem, description = "`set_by_file`, the list leaves out your own address (`would_disconnect_you`), or a cluster member's build does not know the allowed networks yet (`upgrade_required`)."),
+        (status = 422, body = Problem, description = "A network is wrong."),
+    ))]
+pub(crate) async fn put_access_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Access,
+        "/access-settings/default",
+    )
+    .await
+}
+
+/// Removes the allowed networks the API set (the files' list, or the defaults, apply again).
+///
+/// The list the configuration files give, or the built-in defaults (private ranges, CGNAT, link-local
+/// and loopback), applies again on every node within seconds.
+#[utoipa::path(delete, path = "/api/v1/access-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change the allowed networks."),
+        (status = 409, body = Problem, description = "The list that would apply leaves out your own address (`would_disconnect_you`)."),
+        (status = 404, body = Problem, description = "The API sets no allowed networks."),
+    ))]
+pub(crate) async fn delete_access_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Access,
+        "DELETE /access-settings/default",
+    )
+    .await
+}
+
 /// REQ: DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2, T27.11, ADR-1006) — the
 /// per-node sections and the shared singletons added for the cache and the small settings. The
 /// operator role is required on the router (`lib.rs`); the plans check the rest (admins only for
@@ -3356,6 +3421,10 @@ pub(crate) fn node_settings_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -
         .route(
             "/api/v1/drill-settings/default",
             axum::routing::put(put_drill_settings).delete(delete_drill_settings),
+        )
+        .route(
+            "/api/v1/access-settings/default",
+            axum::routing::put(put_access_settings).delete(delete_access_settings),
         )
         .with_state((backend, auth))
 }
@@ -3516,6 +3585,7 @@ impl Op {
             Self::Managed(ManagedKind::Dnssec, _) => "dnssec",
             Self::Managed(ManagedKind::Filter, _) => "filter",
             Self::Managed(ManagedKind::Drill, _) => "drill",
+            Self::Managed(ManagedKind::Access, _) => "access",
             Self::Managed(ManagedKind::Slo, _) => "slo",
             Self::Managed(ManagedKind::Probe, _) => "probe",
             Self::Managed(ManagedKind::UpstreamCheck, _) => "upstream_check",
@@ -4037,6 +4107,47 @@ pub(crate) async fn delete_rule(
     .await
 }
 
+/// REQ: DNS-014, API-901 (T27.14h, owner question open: taken as the conservative option) — refuses an
+/// `allowed_networks` list, sent in `body`, that does not hold `client`, the requester's address (the
+/// forwarded one on a replica's behalf). A body without the list, one with an entry that does not
+/// parse (the backend says which), and an unknown address (no connection information) pass.
+pub fn lockout_guard(
+    body: &serde_json::Value,
+    client: std::net::IpAddr,
+    peer: Option<std::net::IpAddr>,
+) -> Result<(), Problem> {
+    let Some(list) = body.get("allowed_networks").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    let mut nets = Vec::new();
+    for v in list {
+        match v.as_str().map(wrendns_config::Cidr::parse) {
+            Some(Ok(c)) => nets.push(c),
+            _ => return Ok(()),
+        }
+    }
+    // The gate judges the TCP peer; behind a trusted proxy that is the proxy, not the client. Both
+    // must be in the list, or the proxy is refused and the whole UI with it.
+    for (ip, what) in [
+        (Some(client), "your own address"),
+        (peer, "the address your request reached this node from"),
+    ] {
+        let Some(ip) = ip.filter(|i| !i.is_unspecified()) else {
+            continue;
+        };
+        if !nets.iter().any(|n| n.contains(ip)) {
+            return Err(Problem::new(
+                Code::WouldDisconnectYou,
+                format!(
+                    "this list leaves out {what}, {ip}: once it applies, this web UI and API would refuse you"
+                ),
+            )
+            .hint("Add a network that holds your address, then save again. If you need the list without it, change it in the configuration file."));
+        }
+    }
+    Ok(())
+}
+
 /// REQ: API-002, API-010 (ADR-040) - a configuration write runs to its end (the audit record
 /// included) even when the client hangs up first, as a browser does when the page reloads right
 /// after Apply: stored but not applied is not a state a change may end in.
@@ -4161,6 +4272,57 @@ async fn write_inner(
         op.audit_kind(),
         if op.deleting() { "delete" } else { "put" }
     );
+    // REQ: DNS-014, API-901 (T27.14h) — the list also limits the web UI and the API (ADR-029): a list
+    // that leaves out the address this request came from is refused, a dry run included.
+    if let Op::Managed(ManagedKind::Access, body) = &op {
+        let client = remote(&auth, &ext, &headers);
+        let peer = if ext.get::<crate::auth::routes::OnBehalfOf>().is_some() {
+            None
+        } else {
+            ext.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0.ip())
+        };
+        // The check runs on the list that WOULD BE IN FORCE after the write (the backend's normalized
+        // result), whatever the body holds: a PUT without the key stores the built-in defaults, and a
+        // DELETE reverts to the file's list. A dry run that fails is its own answer: the real write
+        // would fail the same way, and a DELETE is never let through unjudged.
+        let judged = backend
+            .write_managed(ManagedWrite {
+                kind: ManagedKind::Access,
+                name: name.clone(),
+                body: body.clone(),
+                dry_run: true,
+                expect: None,
+                by: actor.name.clone(),
+                simulate: None,
+                role: Some(p.role),
+                agent: p.agent.as_ref().map(|a| a.token_name.clone()),
+            })
+            .await;
+        match judged {
+            Ok(c) => {
+                let Some(after) = c.after else {
+                    return Problem::internal("the dry run named no resulting list")
+                        .into_response();
+                };
+                if let Err(e) = lockout_guard(&after, client, peer) {
+                    return e.into_response();
+                }
+            }
+            Err(e) => {
+                // A list the backend cannot take (an empty one) that also cuts the requester off
+                // is answered as the lockout, the more useful word. Any other failure (a file that
+                // sets the list, a member that is too old) is its own answer, not the lockout.
+                if matches!(e.code, Code::InvalidConfig)
+                    && let Some(b) = body
+                    && let Err(lock) = lockout_guard(b, client, peer)
+                {
+                    return lock.into_response();
+                }
+                return crate::simulate_api::sanitize_problem(&p, e).into_response();
+            }
+        }
+    }
     let result: Result<serde_json::Value, Problem> = match op {
         Op::Client(input) => backend
             .write_client(ClientWrite {

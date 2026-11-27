@@ -1487,7 +1487,7 @@
       "id": "guarded-settings",
       "title": "Guarded settings",
       "term": "Guarded change",
-      "summary": "Some settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets or replace a node's configuration. They are changed in two steps: a review that says what the change does and gives a phrase, then the change itself once you type that phrase. A change to an address, a certificate or the trusted proxies is applied as pending and kept only if you confirm it through the new address within the window (120 seconds by default); otherwise it rolls back by itself. A change that weakens security also needs a sign-in from the last 10 minutes and is marked in red.",
+      "summary": "Some settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets or replace a node's configuration. They are changed in two steps: a review that says what the change does and gives a phrase, then the change itself once you type that phrase. A change to an address, a certificate or the trusted proxies is applied as pending and kept only if you confirm it through the new address within the window (120 seconds by default); otherwise it rolls back by itself. When a change opens DNS sockets, the node sends its own test query to each one while the countdown runs, and Confirm waits for every answer; queries from other machines are counted and shown, never required. A change that weakens security also needs a sign-in from the last 10 minutes and is marked in red.",
       "when": "Before changing a listener, the API address, TLS, trusted proxies, the secrets key or the cluster from the UI.",
       "example": "You move the API from port 8053 to 9000. The node opens 9000 beside 8053, gives you a link to the new address, and keeps the change only if you open it and press Confirm. If the new address is unreachable, do nothing: it rolls back and you are still where you were.",
       "caution": "Admins only, never AI agents or API tokens. A value set in the configuration file wins over the UI and locks the control (\"set by file\"). Restart now exists only where the node declares a supervisor that starts it again.",
@@ -1773,6 +1773,16 @@
       "example": "Address 0.0.0.0:80 with the UI on 443: typing http://dns.example.com in a browser lands on https://dns.example.com/. With the UI on 8053 the redirect adds the port: https://dns.example.com:8053/.",
       "caution": "Needs [api] tls, and takes effect at the next start (Restart now where the node has a supervisor). Port 80 needs CAP_NET_BIND_SERVICE: the systemd unit has it; in Docker and Kubernetes publish the port yourself. If it can't bind, only a log line says so: DNS and the UI are not affected. A value set in the configuration file wins and locks the control.",
       "docs": "https-without-a-proxy"
+    },
+    {
+      "id": "allowed-networks",
+      "title": "Allowed networks",
+      "term": "[access] allowed_networks",
+      "summary": "The one list, for the whole cluster, of the networks that may use this resolver: a client outside it gets REFUSED for DNS and is turned away from the web UI and the API too. It is saved once, applies on every node within seconds, and a configuration file that sets it wins.",
+      "when": "You add a VLAN, a VPN range or a branch office, or you narrow the list to fewer networks.",
+      "example": "10.20.0.0/24 is a new IoT VLAN: add it here and its devices are answered, with no restart on any node.",
+      "caution": "Adding a public range, such as 0.0.0.0/0, makes plain DNS (UDP and TCP) answer that range from the internet, because it carries no device key: you are warned before you save. A list that leaves out the address you are using now (or, behind a proxy, the proxy's address) is refused, and so is Revert to the file when the file's list would leave you out, so it cannot lock you out of this page. Only admins change it, and no agent token can. A known device key on an encrypted listener is answered from any address, whatever this list holds.",
+      "docs": "who-can-query-and-how-often"
     }
   ]
 }

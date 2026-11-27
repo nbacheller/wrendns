@@ -35,6 +35,7 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
         ManagedKind::Drill => "drill",
+        ManagedKind::Access => "access",
         ManagedKind::Slo => "slo",
         ManagedKind::Probe => "probe",
         ManagedKind::UpstreamCheck => "upstream_check",
@@ -85,6 +86,7 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
             | ManagedKind::Dnssec
             | ManagedKind::Filter
             | ManagedKind::Drill
+            | ManagedKind::Access
             | ManagedKind::Slo
             | ManagedKind::Probe
             | ManagedKind::UpstreamCheck
@@ -165,6 +167,7 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "ads_tier",
         ],
         ManagedKind::Drill => &["schedule", "nodes"],
+        ManagedKind::Access => &["allowed_networks"],
         ManagedKind::Slo => &[
             "enabled",
             "availability_target",
@@ -217,6 +220,7 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
         ManagedKind::Cmdb => CMDB_KEYS,
         // REQ: CLU-014 (T27.11, ADR-1006) - the drill schedule starts drills on the cluster's nodes.
         ManagedKind::Drill => &["schedule", "nodes"],
+        ManagedKind::Access => &["allowed_networks"],
         // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — every field of the telemetry sections.
         ManagedKind::TelemetryAnomaly
         | ManagedKind::TelemetryQlog
@@ -257,6 +261,7 @@ fn section_full(kind: ManagedKind, cfg: &Config) -> Value {
         ManagedKind::Dnssec => serde_json::to_value(&cfg.dnssec),
         ManagedKind::Filter => serde_json::to_value(&cfg.filter),
         ManagedKind::Drill => serde_json::to_value(&cfg.drill),
+        ManagedKind::Access => serde_json::to_value(&cfg.access),
         ManagedKind::Slo => serde_json::to_value(&cfg.slo),
         ManagedKind::Probe => serde_json::to_value(&cfg.probe),
         ManagedKind::UpstreamCheck => serde_json::to_value(&cfg.upstream_check),
@@ -279,6 +284,7 @@ fn set_section(cfg: &mut Config, kind: ManagedKind, v: Value) -> Result<(), Stri
         ManagedKind::Dnssec => cfg.dnssec = serde_json::from_value(v).map_err(bad)?,
         ManagedKind::Filter => cfg.filter = serde_json::from_value(v).map_err(bad)?,
         ManagedKind::Drill => cfg.drill = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::Access => cfg.access = serde_json::from_value(v).map_err(bad)?,
         _ => {}
     }
     Ok(())
@@ -311,7 +317,10 @@ pub(crate) fn restore_api_fields(cfg: &mut Config, own: &Config, kind: ManagedKi
             ManagedKind::UpstreamCheck => {
                 cfg.upstream_check = serde_json::from_value(full.clone()).map_err(bad)?;
             }
-            ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill => {
+            ManagedKind::Dnssec
+            | ManagedKind::Filter
+            | ManagedKind::Drill
+            | ManagedKind::Access => {
                 set_section(cfg, kind, full.clone())?;
             }
             _ => {}
@@ -327,6 +336,7 @@ pub(crate) fn restore_api_fields(cfg: &mut Config, own: &Config, kind: ManagedKi
             ManagedKind::Dnssec => cfg.dnssec = own.dnssec.clone(),
             ManagedKind::Filter => cfg.filter = own.filter.clone(),
             ManagedKind::Drill => cfg.drill = own.drill.clone(),
+            ManagedKind::Access => cfg.access = own.access.clone(),
             _ => {}
         }
     }
@@ -407,7 +417,8 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
         | ManagedKind::Updates
         | ManagedKind::Dnssec
         | ManagedKind::Filter
-        | ManagedKind::Drill => {
+        | ManagedKind::Drill
+        | ManagedKind::Access => {
             if let Value::Object(o) = body
                 && let Some(k) = o.keys().find(|k| !keys(kind).contains(&k.as_str()))
             {
@@ -504,6 +515,7 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Dnssec, &e.dnssec),
         (ManagedKind::Filter, &e.filter),
         (ManagedKind::Drill, &e.drill),
+        (ManagedKind::Access, &e.access),
         (ManagedKind::Slo, &e.slo),
         (ManagedKind::Probe, &e.probe),
         (ManagedKind::UpstreamCheck, &e.upstream_check),
@@ -589,7 +601,8 @@ pub(crate) fn overlay(
         | ManagedKind::Updates
         | ManagedKind::Dnssec
         | ManagedKind::Filter
-        | ManagedKind::Drill => {
+        | ManagedKind::Drill
+        | ManagedKind::Access => {
             let mut full = section_full(kind, cfg);
             if let (Value::Object(f), Value::Object(c)) = (&mut full, &cur) {
                 for k in keys(kind) {
@@ -603,6 +616,31 @@ pub(crate) fn overlay(
         }
     }
     Ok(())
+}
+
+/// The refusal of a non-admin's write to a section that is an admin's as a whole (the telemetry
+/// sections, and the allowed networks: REQ: DNS-014, T27.14h).
+fn admin_only_kind(kind: ManagedKind, role: Option<Role>) -> Problem {
+    match role {
+        None => Problem::new(
+            Code::UpgradeRequired,
+            format!("this change to the {} needs an admin, and the node it was made on is too old to say who made it", noun(kind)),
+        )
+        .hint("Upgrade that node first, or make the change on the primary."),
+        Some(_) => Problem::new(
+            Code::Forbidden,
+            format!(
+                "only an admin can change the {}: {}",
+                noun(kind),
+                if kind == ManagedKind::Access {
+                    "who may use this resolver, its web UI and its API is at stake"
+                } else {
+                    "privacy and retention are at stake"
+                }
+            ),
+        )
+        .hint("Ask an admin to make this change in the UI."),
+    }
 }
 
 /// The admin-only fields a change moves (ADR-914): `before` and `after` are the sections in
@@ -626,6 +664,7 @@ pub(crate) fn check_admin_fields(
                 | ManagedKind::Dnssec
                 | ManagedKind::Filter
                 | ManagedKind::Drill
+                | ManagedKind::Access
         )
     {
         return Err(Problem::new(
@@ -636,19 +675,13 @@ pub(crate) fn check_admin_fields(
     }
     // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the node-managed telemetry sections are
     // admin-only as a whole, so an operator's write is refused even when it changes no field.
-    if is_node_telemetry(kind) && agent.is_none() && role != Some(Role::Admin) {
-        return Err(match role {
-            None => Problem::new(
-                Code::UpgradeRequired,
-                format!("this change to the {} needs an admin, and the node it was made on is too old to say who made it", noun(kind)),
-            )
-            .hint("Upgrade that node first, or make the change on the primary."),
-            Some(_) => Problem::new(
-                Code::Forbidden,
-                format!("only an admin can change the {}: privacy and retention are at stake", noun(kind)),
-            )
-            .hint("Ask an admin to make this change in the UI."),
-        });
+    // REQ: DNS-014 (T27.14h) - the allowed networks are an admin's as a whole, likewise: the list also
+    // limits the web UI and the API.
+    if (is_node_telemetry(kind) || kind == ManagedKind::Access)
+        && agent.is_none()
+        && role != Some(Role::Admin)
+    {
+        return Err(admin_only_kind(kind, role));
     }
     if kind == ManagedKind::Clients && agent.is_some() {
         return Err(Problem::new(
@@ -689,6 +722,7 @@ pub(crate) fn check_admin_fields(
             "it makes every node that serves the console download a database from the internet"
         }
         ManagedKind::Drill => "the drill schedule starts failover drills on the cluster's nodes",
+        ManagedKind::Access => "it decides who may use every node's resolver, web UI and API",
         _ => "it is one name for the whole cluster, tied to every node's certificates",
     };
     if agent.is_some() {
@@ -756,6 +790,7 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::Dnssec => entries.dnssec.is_none(),
         ManagedKind::Filter => entries.filter.is_none(),
         ManagedKind::Drill => entries.drill.is_none(),
+        ManagedKind::Access => entries.access.is_none(),
         ManagedKind::Slo => entries.slo.is_none(),
         ManagedKind::Probe => entries.probe.is_none(),
         ManagedKind::UpstreamCheck => entries.upstream_check.is_none(),
@@ -776,6 +811,7 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::Dnssec => entries.dnssec = v,
         ManagedKind::Filter => entries.filter = v,
         ManagedKind::Drill => entries.drill = v,
+        ManagedKind::Access => entries.access = v,
         ManagedKind::Slo => entries.slo = v,
         ManagedKind::Probe => entries.probe = v,
         ManagedKind::UpstreamCheck => entries.upstream_check = v,
@@ -796,6 +832,7 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => "DNSSEC settings",
         ManagedKind::Filter => "list settings",
         ManagedKind::Drill => "drill schedule",
+        ManagedKind::Access => "allowed networks",
         ManagedKind::Slo => "objectives",
         ManagedKind::Probe => "listener checks",
         ManagedKind::UpstreamCheck => "second opinions",
@@ -824,6 +861,9 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         (ManagedKind::TelemetryQlog, false) => "The config file's query log settings (or the defaults) apply again: the privacy level within a few seconds, the rest after a restart.".into(),
         (ManagedKind::TelemetryMetrics, true) => "Applies on every node within a few seconds, with no restart: per-client series appear or go, up to the cap.".into(),
         (ManagedKind::TelemetryMetrics, false) => "The config file's per-client settings (or off) apply again within a few seconds.".into(),
+        // REQ: DNS-014 (T27.14h) - the list is read again on every node at the reload.
+        (ManagedKind::Access, true) => "Applies on every node within a few seconds, with no restart, to DNS, the web UI and the API: addresses outside the list are refused from then on.".into(),
+        (ManagedKind::Access, false) => "The config file's allowed networks apply again on every node within a few seconds, to DNS, the web UI and the API.".into(),
         (ManagedKind::Special, true) => "Applies on the next query, on every node, with no restart. Names the switches turn on or off answer differently from then on; answers already cached stay until they expire.".into(),
         (ManagedKind::Special, false) => "The config file's special-name settings (or the defaults) apply again from the next query.".into(),
         // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.

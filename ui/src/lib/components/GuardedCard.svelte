@@ -36,6 +36,7 @@
   let weaken = $state(false);
   let port = $state(0);
   let fail = $state(false);
+  let probeFail = $state(false);
   let redirect = $state('');
 
   const outcomeText = (o: { outcome: string; reason?: string | null }) =>
@@ -173,6 +174,9 @@
           {#if s.id === 'e2e-window'}
             <label class="small">Port <input type="number" bind:value={port} aria-label="Test port" disabled={s.setByFile} /></label>
             <GuardedChange id={s.id} label={s.label} value={{ port }} node={target} disabled={s.setByFile} />
+          {:else if s.id === 'e2e-probe'}
+            <label class="check small"><input type="checkbox" bind:checked={probeFail} disabled={s.setByFile} /> The test query fails</label>
+            <GuardedChange id={s.id} label={s.label} value={{ fail: probeFail }} node={target} disabled={s.setByFile} />
           {:else if s.id === 'e2e-staged'}
             <label class="small">Label <input bind:value={label} aria-label="Test label" disabled={s.setByFile} /></label>
             <label class="check small"><input type="checkbox" bind:checked={fail} disabled={s.setByFile} /> The next start fails</label>

@@ -258,6 +258,7 @@ fn strip_tuning(cfg: &mut Config, e: &Entry, own: &Config) {
         managed::DNSSEC => K::Dnssec,
         managed::FILTER => K::Filter,
         managed::DRILL => K::Drill,
+        managed::ACCESS => K::Access,
         managed::SLO => K::Slo,
         managed::PROBE => K::Probe,
         managed::UPSTREAM_CHECK => K::UpstreamCheck,
@@ -301,6 +302,7 @@ pub(crate) const ADOPTED_KINDS: &[&str] = &[
     managed::DNSSEC,
     managed::FILTER,
     managed::DRILL,
+    managed::ACCESS,
     managed::ZONE,
     managed::LOCATION,
     managed::SLO,
@@ -751,6 +753,7 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
         (managed::DNSSEC, wrendns_api::ManagedKind::Dnssec),
         (managed::FILTER, wrendns_api::ManagedKind::Filter),
         (managed::DRILL, wrendns_api::ManagedKind::Drill),
+        (managed::ACCESS, wrendns_api::ManagedKind::Access),
         (managed::SLO, wrendns_api::ManagedKind::Slo),
         (managed::PROBE, wrendns_api::ManagedKind::Probe),
         (
@@ -866,6 +869,7 @@ pub(crate) fn strip(cfg: &mut Config, entries: &[Entry], own: &Config) {
             | managed::DNSSEC
             | managed::FILTER
             | managed::DRILL
+            | managed::ACCESS
             | managed::SLO
             | managed::PROBE
             | managed::UPSTREAM_CHECK => strip_tuning(cfg, e, own),

@@ -222,6 +222,7 @@ fn explicit_keys(root: &Table) -> Vec<String> {
         "dnssec",
         "filter",
         "drill",
+        "access",
         "slo",
         "probe",
         "upstream_check",

@@ -618,6 +618,7 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
         ("dnssec", K::Dnssec),
         ("filter", K::Filter),
         ("drill", K::Drill),
+        ("access", K::Access),
         ("slo", K::Slo),
         ("probe", K::Probe),
         ("upstream_check", K::UpstreamCheck),
@@ -626,6 +627,12 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
         if k == K::Slo {
             // `latency_ms` is one of the histogram's bounds: change the switch instead.
             body["enabled"] = json!(!d.slo.enabled);
+        } else if k == K::Access {
+            // A list of networks, not names: one more network.
+            body["allowed_networks"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("198.51.100.0/24"));
         } else {
             body = perturbed(body);
         }

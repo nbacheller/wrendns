@@ -273,6 +273,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Dnssec => "dnssec",
                 ManagedKind::Filter => "filter",
                 ManagedKind::Drill => "drill",
+                ManagedKind::Access => "access",
                 ManagedKind::Slo => "slo",
                 ManagedKind::Probe => "probe",
                 ManagedKind::UpstreamCheck => "upstream_check",
@@ -619,6 +620,7 @@ fn settings_kinds_understood(
     cluster: &Cluster,
     primary: &str,
     kind: ManagedKind,
+    is_put: bool,
 ) -> Result<(), Problem> {
     if !matches!(
         kind,
@@ -635,8 +637,23 @@ fn settings_kinds_understood(
             | ManagedKind::TelemetryMetrics
             | ManagedKind::Map
             | ManagedKind::Filter
+            | ManagedKind::Access
     ) {
         return Ok(());
+    }
+    // REQ: DNS-014 (T27.14h, DSC-908) - the `access` kind is gated by the feature every member
+    // announces, not by a version number: a development build carries the same number as one
+    // that cannot read the kind.
+    if kind == ManagedKind::Access {
+        // A DELETE (back to the files) is never held: it is the way out.
+        if !is_put {
+            return Ok(());
+        }
+        return crate::upgrade_gate::enforce(Some(cluster), wrendns_cluster::gate::Feature::Access)
+            .map_err(|why| {
+                Problem::new(Code::UpgradeRequired, why)
+                    .hint("Upgrade the member named, then make this change again.")
+            });
     }
     let since = if matches!(kind, ManagedKind::Discovery | ManagedKind::Cmdb) {
         DISCOVERY_SINCE
@@ -675,7 +692,7 @@ pub(crate) async fn managed(
     let kind = w.kind;
     if let Some(p) = &primary {
         markers_understood(&cluster, p, kind, w.body.as_ref())?;
-        settings_kinds_understood(&cluster, p, kind)?;
+        settings_kinds_understood(&cluster, p, kind, w.body.is_some())?;
     }
     let mut c: ConfigChange = send(&cluster, primary, w.into()).await?;
     crate::redact::change(kind, &mut c);

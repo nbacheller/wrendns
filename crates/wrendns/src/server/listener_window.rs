@@ -20,14 +20,18 @@
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 use wrendns_config::{ListenProto, Listener};
 use wrendns_net::{UdpConfig, UdpListener};
 
+use super::evidence::{Evidence, Observed};
 use super::{Listeners, Stream, alt_svc, bound_form};
 
+#[cfg(test)]
+mod probe_tests;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +44,7 @@ pub(crate) const COMMIT_FAILED: &str = "commit_failed";
 pub(crate) const FILE_TOOK_OVER: &str = "the file now sets the listeners";
 
 /// One listener of a staged list, as stage answers it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct StagedListener {
     pub(crate) proto: ListenProto,
     /// The address the configuration names.
@@ -49,7 +53,10 @@ pub(crate) struct StagedListener {
     /// listener.
     pub(crate) bound: SocketAddr,
     /// `bound` is a proof port: the real address is bound at commit.
+    #[allow(dead_code)] // the `listen` row's preview reads it (T27.14c); the tests read it now
     pub(crate) proof: bool,
+    /// The queries other hosts sent to this socket during the window (T27.14b).
+    pub(crate) evidence: Arc<Evidence>,
 }
 
 /// A stage, commit or abort that did not work.
@@ -302,12 +309,13 @@ impl Listeners {
                 return Ok(None);
             }
             // SO_REUSEPORT: a specific address binds next to a wildcard on the same port.
-            let s = UdpListener::spawn(
-                &UdpConfig::new(l.addr, self.workers),
-                &self.handler,
-                &self.rt,
-            )
-            .map_err(|e| bind_error(l, &e))?;
+            let evidence = Evidence::new(Evidence::node_addresses());
+            let handler = Arc::new(Observed::new(
+                Arc::clone(&self.handler),
+                Arc::clone(&evidence),
+            ));
+            let s = UdpListener::spawn(&UdpConfig::new(l.addr, self.workers), &handler, &self.rt)
+                .map_err(|e| bind_error(l, &e))?;
             let bound = s.local_addr();
             set.udp.push((l.addr, s));
             return Ok(Some(StagedListener {
@@ -315,9 +323,15 @@ impl Listeners {
                 addr: l.addr,
                 bound,
                 proof: false,
+                evidence,
             }));
         }
         let form = bound_form(l, host);
+        let evidence = Evidence::new(Evidence::node_addresses());
+        let handler = Arc::new(Observed::new(
+            Arc::clone(&self.handler),
+            Arc::clone(&evidence),
+        ));
         let running = self
             .streams
             .iter()
@@ -360,8 +374,7 @@ impl Listeners {
             };
             let mut p = form;
             p.addr = proof_addr(l.addr);
-            let s = self
-                .bind_stream(&p, host, alt_svc(new).as_deref())
+            let s = Self::bind_stream_with(&p, host, alt_svc(new).as_deref(), handler)
                 .map_err(|e| bind_error(l, &e))?;
             let bound = s.local_addr();
             set.proofs.push(s);
@@ -371,10 +384,10 @@ impl Listeners {
                 addr: l.addr,
                 bound,
                 proof: true,
+                evidence,
             }));
         }
-        let s = self
-            .bind_stream(l, host, alt_svc(new).as_deref())
+        let s = Self::bind_stream_with(l, host, alt_svc(new).as_deref(), handler)
             .map_err(|e| bind_error(l, &e))?;
         let bound = s.local_addr();
         set.streams.push((form, s));
@@ -383,6 +396,7 @@ impl Listeners {
             addr: l.addr,
             bound,
             proof: false,
+            evidence,
         }))
     }
 

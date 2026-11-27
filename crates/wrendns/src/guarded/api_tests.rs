@@ -388,6 +388,85 @@ async fn api_902_window_over_http_confirms_with_token_on_new_socket() {
     let _ = &n;
 }
 
+// REQ: API-902, OBS-020 (T27.14b) — `GET /api/v1/guarded/pending/{id}`: the same admin's session or
+// the confirm token (header `X-Confirm-Token`) reads the pending change with its probe lines; a wrong
+// token, no credential, another token kind and an agent token do not; the listing still names no
+// address.
+#[tokio::test]
+async fn api_902_pending_read_over_http() {
+    let h = harness("");
+    let _n = install(&h);
+    let body = json!({"probes": [{"proto": "udp", "addr": "192.0.2.1:53"}]});
+    let (s, p) = json_of(
+        &h,
+        session_req(
+            &h,
+            5,
+            "POST",
+            "/api/v1/guarded/t-win/preview",
+            Some(&json!({"value": body})),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let apply = json!({"previewId": p["previewId"], "confirm": p["phrase"], "value": body});
+    let (s, a) = json_of(
+        &h,
+        session_req(&h, 5, "POST", "/api/v1/guarded/t-win", Some(&apply), None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{a}");
+    assert!(
+        a["newAddress"].is_null(),
+        "no socket to confirm through: {a}"
+    );
+    let (pid, tok) = (
+        a["pendingId"].as_str().unwrap().to_owned(),
+        a["confirmToken"].as_str().unwrap().to_owned(),
+    );
+    let uri = format!("/api/v1/guarded/pending/{pid}");
+    // The admin's session.
+    let (s, v) = json_of(&h, session_req(&h, 5, "GET", &uri, None, None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["setting"], "t-win");
+    assert_eq!(v["probes"][0]["listener"], "udp://192.0.2.1:53");
+    assert_eq!(v["probes"][0]["otherHosts"], 0);
+    // The token, with no session (the new-address case).
+    let mut req = unauthenticated("GET", &uri, None, None);
+    req.headers_mut()
+        .insert("x-confirm-token", tok.parse().unwrap());
+    let (s, v) = json_of(&h, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["id"], pid.as_str());
+    // A wrong token, and nothing at all.
+    let mut req = unauthenticated("GET", &uri, None, None);
+    req.headers_mut()
+        .insert("x-confirm-token", "wrong".parse().unwrap());
+    let (s, v) = json_of(&h, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = json_of(&h, unauthenticated("GET", &uri, None, None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    // An agent token (whatever its scopes) and another API token kind.
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot", Role::Admin, Some(&every.join(" ")));
+    let (s, _, v) = call_as(&h, &agent, "GET", &uri, None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _, v) = call_as(&h, &h.bearer.clone(), "GET", &uri, None, &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    // The listing names neither the token nor the staged address.
+    let (s, _, v) = h.call("GET", "/api/v1/guarded", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!v.to_string().contains(&tok) && !v.to_string().contains("192.0.2.1"));
+    // A pending change on this node only: another ID is 404.
+    let (s, v) = json_of(
+        &h,
+        session_req(&h, 5, "GET", "/api/v1/guarded/pending/nope", None, None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+}
+
 // REQ: API-902 (ADR-956 §2) — the reserved kind `guarded` is refused by the generic kind routes
 // (409 `guarded_only`), is not a kind a forwarded write can name, and never shows in a listing.
 #[tokio::test]

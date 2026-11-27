@@ -162,7 +162,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'cmdb-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'cmdb-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'access-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -359,6 +359,8 @@ export const api = {
   ) => post<S['GuardedApplied']>(`/guarded/${encodeURIComponent(id)}`, b),
   guardedConfirm: (pending: string, confirmToken?: string) =>
     post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/confirm`, confirmToken ? { confirmToken } : {}),
+  // The window's seconds left and the node's own probe of each staged DNS socket (T27.14b).
+  guardedPending: (pending: string) => get<S['GuardedPendingView']>(`/guarded/pending/${encodeURIComponent(pending)}`),
   guardedCancel: (pending: string) => post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/cancel`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),

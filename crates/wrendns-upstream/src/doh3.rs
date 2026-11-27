@@ -132,7 +132,7 @@ impl Doh3 {
         stream.finish().await.map_err(|e| io(&e))?;
         let resp = stream.recv_response().await.map_err(|e| io(&e))?;
         if resp.status() != http::StatusCode::OK {
-            return Err(ExchangeError::BadResponse);
+            return Err(io(&format!("HTTP {}", resp.status())));
         }
         let mut body = Vec::new();
         while let Some(mut chunk) = stream.recv_data().await.map_err(|e| io(&e))? {

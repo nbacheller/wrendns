@@ -32,14 +32,18 @@ use wrendns_config::guarded::{Mode, Proof, RESTART_NOW, Row, never};
 use wrendns_store::state::State;
 
 use super::assertion::{Assertion, Forwarded, ForwardedAnswer, ForwardedOp, Signed};
+use super::dns_proof::{DnsProbe, Kind};
 use super::engine::{Applier, CheckCx, Checked, Engine, NoOp, RowDef, Staged, WindowGuard};
 use super::host::{Host, Member, ProofSocket};
 use super::probation::{self, Sidecar};
 use super::store::{self, EntryState, Stored};
+use crate::server::Evidence;
 
 fn weaken_flag(_old: &Value, new: &Value) -> bool {
     new.get("weaken").and_then(Value::as_bool) == Some(true)
 }
+
+mod dns_proof_tests;
 
 macro_rules! row {
     ($id:literal, $paths:expr, $mode:expr, $proof:expr, $weak:expr) => {
@@ -117,6 +121,8 @@ impl WindowGuard for SockGuard {
 }
 
 thread_local! {
+    /// The evidence counters of the probes the last `probes` change staged.
+    static EVIDENCE: std::cell::RefCell<Vec<Arc<Evidence>>> = const { std::cell::RefCell::new(Vec::new()) };
     static FLAGS: std::cell::RefCell<(Arc<AtomicBool>, Arc<AtomicBool>)> =
         std::cell::RefCell::new((Arc::default(), Arc::default()));
 }
@@ -129,10 +135,11 @@ impl Applier for TApplier {
         if cx.value.get("label").and_then(Value::as_str).is_none()
             && cx.value.get("port").is_none()
             && cx.value.get("proxies").is_none()
+            && cx.value.get("probes").is_none()
         {
             return Err(Problem::new(
                 Code::InvalidConfig,
-                "needs a label, a port or proxies",
+                "needs a label, a port, proxies or probes",
             ));
         }
         Ok(Checked {
@@ -152,6 +159,40 @@ impl Applier for TApplier {
             (Arc::clone(&f.0), Arc::clone(&f.1))
         });
         Box::pin(async move {
+            // A change proved by the node's own probes: one per entry, `{proto, addr, gated?}`, with
+            // an evidence counter each (the tests read them back through `EVIDENCE`).
+            if let Some(list) = value.get("probes").and_then(Value::as_array) {
+                let sock = host
+                    .proof_socket(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+                    .await
+                    .map_err(|e| Problem::new(Code::Conflict, e))?;
+                let probes = list
+                    .iter()
+                    .map(|p| {
+                        let ev = Evidence::new(Vec::new());
+                        EVIDENCE.with(|e| e.borrow_mut().push(Arc::clone(&ev)));
+                        DnsProbe {
+                            proto: serde_json::from_value(p["proto"].clone()).unwrap(),
+                            addr: p["addr"].as_str().unwrap().parse().unwrap(),
+                            path: None,
+                            gated: p["gated"].as_bool() == Some(true),
+                            evidence: Some(ev),
+                        }
+                    })
+                    .collect();
+                return Ok(Staged {
+                    guard: Arc::new(SockGuard {
+                        sock,
+                        committed,
+                        aborted,
+                        commit_fails: false,
+                    }),
+                    proof_addr: None,
+                    new_address: None,
+                    pending_proxies: None,
+                    dns_probes: probes,
+                });
+            }
             if let Some(list) = value.get("proxies").and_then(Value::as_array) {
                 let proxies = list
                     .iter()
@@ -171,6 +212,7 @@ impl Applier for TApplier {
                     proof_addr: None,
                     new_address: None,
                     pending_proxies: Some(proxies),
+                    dns_probes: Vec::new(),
                 });
             }
             let port =
@@ -190,6 +232,7 @@ impl Applier for TApplier {
                 proof_addr: Some(addr),
                 new_address: Some(format!("http://{addr}/")),
                 pending_proxies: None,
+                dns_probes: Vec::new(),
             })
         })
     }
@@ -266,6 +309,10 @@ struct Fake {
     audit_ok: AtomicBool,
     restarts: AtomicUsize,
     bind_fails: AtomicBool,
+    /// What the node's own probe of a listener (`proto://addr`) answers; a listener not named
+    /// answers.
+    probe_answers: Mutex<HashMap<String, Result<Kind, String>>>,
+    probe_calls: AtomicUsize,
     sockets: Mutex<Vec<Arc<FakeSock>>>,
     next_port: AtomicUsize,
     /// A replica forwards nothing and signs nothing; the primary does.
@@ -431,6 +478,17 @@ impl Host for Fake {
         self.restarts.fetch_add(1, Ordering::SeqCst);
         Box::pin(std::future::ready(()))
     }
+    fn probe_dns(&self, probe: &DnsProbe) -> BoxFuture<Result<Kind, String>> {
+        self.probe_calls.fetch_add(1, Ordering::SeqCst);
+        let r = self
+            .probe_answers
+            .lock()
+            .unwrap()
+            .get(&probe.listener())
+            .cloned()
+            .unwrap_or(Ok(Kind::Answered));
+        Box::pin(std::future::ready(r))
+    }
     fn proof_socket(&self, addr: SocketAddr) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>> {
         if self.bind_fails.load(Ordering::SeqCst) {
             return Box::pin(std::future::ready(Err("address already in use".to_owned())));
@@ -499,6 +557,8 @@ fn node_on(
         audit_ok: AtomicBool::new(true),
         restarts: AtomicUsize::new(0),
         bind_fails: AtomicBool::new(false),
+        probe_answers: Mutex::default(),
+        probe_calls: AtomicUsize::new(0),
         sockets: Mutex::default(),
         next_port: AtomicUsize::new(0),
         can_sign,

@@ -42,6 +42,8 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         #[cfg(feature = "e2e")]
         "e2e-window" => Some(Arc::new(test::Window)),
         #[cfg(feature = "e2e")]
+        "e2e-probe" => Some(Arc::new(test::Probe)),
+        #[cfg(feature = "e2e")]
         "e2e-staged" => Some(Arc::new(test::StagedRow)),
         _ => None,
     }
@@ -527,6 +529,75 @@ pub(crate) mod test {
         }
     }
 
+    /// `e2e-probe`: `{fail?}`: nothing is bound; the node asks its own first UDP listener (or, with
+    /// `fail`, a closed port) the probe question, and the change is confirmed when that answers.
+    pub(crate) struct Probe;
+
+    struct NoSocket;
+    impl WindowGuard for NoSocket {
+        fn commit(&self) -> BoxFuture<Result<(), Problem>> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+        fn abort(&self) -> BoxFuture<()> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    impl Applier for Probe {
+        fn current(&self, _cfg: &Config) -> Value {
+            Value::Null
+        }
+        fn check(&self, cx: &CheckCx<'_>) -> Result<Checked, Problem> {
+            let fail = cx.value.get("fail").and_then(Value::as_bool) == Some(true);
+            Ok(Checked {
+                effect: format!(
+                    "Asks the node's own DNS listener a test question for the confirmation window{}.",
+                    if fail {
+                        " (aimed at a closed port, so it fails)"
+                    } else {
+                        ""
+                    }
+                ),
+                ..Checked::default()
+            })
+        }
+        fn stage(
+            &self,
+            host: Arc<dyn Host>,
+            _node: String,
+            value: Value,
+        ) -> BoxFuture<Result<Staged, Problem>> {
+            Box::pin(async move {
+                let fail = value.get("fail").and_then(Value::as_bool) == Some(true);
+                let addr = if fail {
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1)
+                } else {
+                    host.running_config()
+                        .listen
+                        .iter()
+                        .find(|l| l.proto == wrendns_config::ListenProto::Udp)
+                        .map(|l| crate::probes::reachable(l.addr))
+                        .ok_or_else(|| {
+                            Problem::new(Code::Conflict, "the node has no UDP listener")
+                        })?
+                };
+                Ok(Staged {
+                    guard: Arc::new(NoSocket),
+                    proof_addr: None,
+                    new_address: None,
+                    pending_proxies: None,
+                    dns_probes: vec![super::super::dns_proof::DnsProbe {
+                        proto: wrendns_config::ListenProto::Udp,
+                        addr,
+                        path: None,
+                        gated: false,
+                        evidence: None,
+                    }],
+                })
+            })
+        }
+    }
+
     fn port(v: &Value) -> Result<u16, Problem> {
         v.get("port")
             .and_then(Value::as_u64)
@@ -567,6 +638,7 @@ pub(crate) mod test {
                     proof_addr: Some(bound),
                     new_address: Some(format!("http://{bound}/")),
                     pending_proxies: None,
+                    dns_probes: Vec::new(),
                 })
             })
         }

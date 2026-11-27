@@ -24,7 +24,9 @@ use wrendns_upstream::Router;
 use crate::http;
 use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 
+mod evidence;
 mod listener_window;
+pub(crate) use evidence::Evidence;
 pub(crate) use listener_window::{ListenerCmd, ListenerHandle, StagedListener, WindowError};
 
 /// Loads and validates config from `files` + environment plus what the UI/API stored
@@ -707,11 +709,21 @@ impl Listeners {
         host: wrendns_config::HostFacts,
         alt_svc: Option<&str>,
     ) -> io::Result<Stream> {
+        Self::bind_stream_with(l, host, alt_svc, Arc::clone(&self.handler))
+    }
+
+    /// [`Listeners::bind_stream`] serving `handler` (a staged socket's has the evidence counter in
+    /// front of the shared one, `server/evidence.rs`).
+    fn bind_stream_with<H: wrendns_net::QueryHandler>(
+        l: &Listener,
+        host: wrendns_config::HostFacts,
+        alt_svc: Option<&str>,
+        handler: Arc<H>,
+    ) -> io::Result<Stream> {
         let store = match &l.tls {
             Some(t) => Some(CertStore::load(t.cert.as_str(), t.key.as_str())?),
             None => None,
         };
-        let handler = Arc::clone(&self.handler);
         // REQ: DNS-901 (ADR-1090 points 1 and 2) — an upgrade can turn the gate on for a listener
         // whose file never set it: say so, naming the listener, the setting and the rule.
         let gated = l.gated(host);
@@ -1475,7 +1487,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
         ))),
         rollout: Arc::default(),
         started: std::time::Instant::now(),
-        allowed: cfg.access.allowed_networks.clone(),
+        allowed: ArcSwap::from_pointee(cfg.access.allowed_networks.clone()),
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
@@ -1962,6 +1974,14 @@ pub(crate) fn reload_gate(
     crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new)
 }
 
+/// REQ: DNS-014, API-901 (T27.14h) - the list the web UI and the API gate on follows the configuration
+/// at each reload, as the DNS listeners' does.
+pub(crate) fn follow_allowed(sources: &http::Sources, cfg: &Config) {
+    sources
+        .allowed
+        .store(Arc::new(cfg.access.allowed_networks.clone()));
+}
+
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the
 /// running configuration.
 // Everything a reload swaps; grouping it would only rename the parameters.
@@ -2106,6 +2126,7 @@ async fn reload(
         .set_privacy(new.telemetry.qlog.privacy_level);
     config_marker(sources, current, &new);
     sources.config.store(Arc::new(new.clone()));
+    follow_allowed(sources, &new);
     sources.file_config.store(Arc::new(file));
     *current = new;
     // REQ: API-016 (T23.10, ADR-903 §7) — OIDC providers added, changed or removed (the files',

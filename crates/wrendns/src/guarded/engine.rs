@@ -18,8 +18,8 @@ use wrendns_api::BoxFuture;
 use wrendns_api::auth::Actor;
 use wrendns_api::guarded::{
     GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedCheck, GuardedNodeStatus,
-    GuardedOutcome, GuardedPending, GuardedPreview, GuardedPreviewRequest, GuardedResult,
-    GuardedSetting, GuardedStatus, Supervisor,
+    GuardedOutcome, GuardedPending, GuardedPendingView, GuardedPreview, GuardedPreviewRequest,
+    GuardedProbeLine, GuardedResult, GuardedSetting, GuardedStatus, Supervisor,
 };
 use wrendns_api::problem::{Code, Problem};
 use wrendns_config::Config;
@@ -29,6 +29,7 @@ use wrendns_store::state::State;
 use super::assertion::{
     ASSERTION_SECS, Assertion, Expect, Forwarded, ForwardedAnswer, ForwardedOp, Refusal, Signed,
 };
+use super::dns_proof::{self, DnsProbe, ProbeLoop, ProbeSet};
 use super::host::{Host, Member, ProofSocket};
 use super::store::{self, EntryState, Stored};
 use super::{PREVIEW_SECS, ct_eq, hex, random_id};
@@ -79,6 +80,10 @@ pub(crate) struct Staged {
     pub(crate) new_address: Option<String>,
     /// For a `proxy_list` proof: the list that applies only to the confirm route until confirmed.
     pub(crate) pending_proxies: Option<Vec<(std::net::IpAddr, u8)>>,
+    /// REQ: API-902, OBS-020 (T27.14b) — the DNS sockets the node asks itself while the window is
+    /// open. With probes and no `proof_addr`, "every probe answers" is the proof (no request has to
+    /// arrive on a socket); with both, both are needed.
+    pub(crate) dns_probes: Vec<DnsProbe>,
 }
 
 /// What stays open while a window change waits: it commits (closes the old sockets, keeps the new)
@@ -167,6 +172,17 @@ pub(crate) struct Preview {
     staged_listed: Vec<String>,
 }
 
+/// What a confirm reads from the pending change before it takes the operation lock: the setting, its
+/// proof, the admin, the token's hash, the proof socket and the DNS probes.
+type ConfirmSnapshot = (
+    String,
+    Option<Proof>,
+    String,
+    [u8; 32],
+    Option<SocketAddr>,
+    Option<Arc<ProbeSet>>,
+);
+
 /// A window change waiting to be confirmed (held in memory only, on the target node).
 struct Pending {
     id: String,
@@ -185,8 +201,22 @@ struct Pending {
     guard: Arc<dyn WindowGuard>,
     proof_addr: Option<SocketAddr>,
     proxies: Option<Vec<(std::net::IpAddr, u8)>>,
+    /// The node's own probes of the staged DNS sockets (T27.14b), when the change has any.
+    probes: Option<Arc<ProbeSet>>,
+    /// The task that runs them every few seconds; dropping it stops it.
+    probe_loop: Option<ProbeLoop>,
     /// The expiry task; dropped (aborted) when the change ends.
     expiry: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Pending {
+    /// The window ended: the probes stop and the evidence counters are dropped.
+    fn end_probes(&mut self) {
+        self.probe_loop = None;
+        if let Some(p) = &self.probes {
+            p.stop_evidence();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -212,6 +242,8 @@ pub(crate) struct Engine {
     inner: Mutex<Inner>,
     /// Tests and the end-to-end build set the window; production reads `[api] confirm_window_secs`.
     window_override: Mutex<Option<u64>>,
+    /// Milliseconds between the probes of a pending change (design 2.2: 5 seconds); tests shorten it.
+    probe_every_ms: std::sync::atomic::AtomicU64,
     /// The end-to-end build's simulated restart outcome (see `restart.rs`).
     pub(crate) now: fn() -> u64,
 }
@@ -319,8 +351,20 @@ impl Engine {
             // The end-to-end build shortens the window so a test can watch a rollback (a release
             // build has no such code: `[api] confirm_window_secs` is the only source).
             window_override: Mutex::new(e2e_window()),
+            probe_every_ms: std::sync::atomic::AtomicU64::new(
+                u64::try_from(dns_proof::EVERY.as_millis()).unwrap_or(5_000),
+            ),
             now: super::now_secs,
         })
+    }
+
+    /// Tests shorten the time between probes.
+    #[cfg(test)]
+    pub(crate) fn set_probe_every(&self, every: Duration) {
+        self.probe_every_ms.store(
+            u64::try_from(every.as_millis()).unwrap_or(5_000),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// The rows of this build (the registry's), each with the applier that does it here.
@@ -1246,6 +1290,22 @@ impl Engine {
         };
         let proof = row.proof;
         let new_address = staged.new_address.clone();
+        // REQ: API-902, OBS-020 (T27.14b) — the node's own probe of each staged DNS socket, at once
+        // and then every few seconds while the window is open.
+        let (probes, probe_loop) = if staged.dns_probes.is_empty() {
+            (None, None)
+        } else {
+            let set = Arc::new(ProbeSet::new(staged.dns_probes, self.now));
+            let every = self
+                .probe_every_ms
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let lp = ProbeLoop::spawn(
+                Arc::clone(&set),
+                Arc::clone(&self.host),
+                Duration::from_millis(every.max(10)),
+            );
+            (Some(set), Some(lp))
+        };
         {
             let mut g = lock(&self.inner);
             g.pending = Some(Pending {
@@ -1265,6 +1325,8 @@ impl Engine {
                 guard: staged.guard,
                 proof_addr: staged.proof_addr,
                 proxies: staged.pending_proxies,
+                probes,
+                probe_loop,
                 expiry: Some(expiry),
             });
         }
@@ -1327,7 +1389,7 @@ impl Engine {
                         p.admin.clone(),
                         p.token_hash,
                         p.proof_addr,
-                        p.proxies.is_some(),
+                        p.probes.clone(),
                     );
                     g.busy = true;
                     snap
@@ -1353,16 +1415,9 @@ impl Engine {
         pending_id: &str,
         token: Option<String>,
         key: &str,
-        snap: (
-            String,
-            Option<Proof>,
-            String,
-            [u8; 32],
-            Option<SocketAddr>,
-            bool,
-        ),
+        snap: ConfirmSnapshot,
     ) -> Result<GuardedResult, Problem> {
-        let (setting, proof, admin, token_hash, proof_addr, _has_proxies) = snap;
+        let (setting, proof, admin, token_hash, proof_addr, probes) = snap;
         // Who: the single-use token (bound to the admin, node and change), or a session of the
         // same admin. Another admin's session, or a token for another change, is refused.
         let token_ok = token
@@ -1392,12 +1447,16 @@ impl Engine {
             ));
         }
         // What: the request must prove it came through the new address (ADR-956 §3).
-        let proved = match proof {
-            Some(Proof::NewSocket) => proof_addr.is_some() && c.arrived_on == proof_addr,
-            Some(Proof::NewCert) => c.tls && proof_addr.is_some() && c.arrived_on == proof_addr,
-            Some(Proof::ProxyList) => c.remote_under_pending.is_some(),
-            None => true,
-        };
+        // A change with DNS probes and no proof socket is proved by "every probe answers" (judged
+        // below): no request has to arrive on a new socket (T27.14b, design 2.2).
+        let by_probe = probes.is_some() && proof_addr.is_none();
+        let proved = by_probe
+            || match proof {
+                Some(Proof::NewSocket) => proof_addr.is_some() && c.arrived_on == proof_addr,
+                Some(Proof::NewCert) => c.tls && proof_addr.is_some() && c.arrived_on == proof_addr,
+                Some(Proof::ProxyList) => c.remote_under_pending.is_some(),
+                None => true,
+            };
         if !proved {
             self.failed(key);
             return Err(self.refuse(
@@ -1410,15 +1469,19 @@ impl Engine {
                 .hint("The change is still pending; it rolls back when the window ends."),
             ));
         }
-        // The node's own probe of a new DNS listener must answer too.
-        if let (Some(Proof::NewSocket), Some(addr)) = (proof, proof_addr)
-            && setting == "listen"
-            && !self.host.probe_dns(addr).await
-        {
-            return Err(Problem::new(
-                Code::Forbidden,
-                "the node's own query to the new listener got no answer",
-            ));
+        // The node's own probe of every staged DNS socket must answer, now. A failing probe refuses
+        // the confirm and the window runs on; it is not counted toward the failure block, because
+        // the admin did nothing wrong (design 2.2).
+        if let Some(set) = &probes {
+            let failures = set.run(&self.host).await;
+            if !failures.is_empty() {
+                info!(setting = %setting, failures = ?failures, "guarded confirm refused: the node's own probe got no answer");
+                return Err(Problem::new(
+                    Code::Forbidden,
+                    format!("the node's own query to {}", failures.join("; ")),
+                )
+                .hint("The change is still pending; it rolls back when the window ends. Check the address and the certificate, then confirm again."));
+            }
         }
         // Commit: write the entry (through the primary on a replica), then keep the new sockets.
         let (value, before, weakening, guard, mode, actor, reason) = {
@@ -1474,10 +1537,11 @@ impl Engine {
         let seen = c.remote_under_pending.map(|a| a.to_string());
         {
             let mut g = lock(&self.inner);
-            if let Some(mut p) = g.pending.take()
-                && let Some(h) = p.expiry.take()
-            {
-                h.abort();
+            if let Some(mut p) = g.pending.take() {
+                p.end_probes();
+                if let Some(h) = p.expiry.take() {
+                    h.abort();
+                }
             }
         }
         let mut who = actor.clone();
@@ -1501,6 +1565,78 @@ impl Engine {
             outcome: "confirmed".to_owned(),
             reason: None,
             seen_client: seen,
+        })
+    }
+
+    /// REQ: API-902, OBS-020 (T27.14b) — `GET /api/v1/guarded/pending/{id}`: the seconds left and,
+    /// per staged DNS socket, the node's last probe and the evidence counter. The confirm route's own
+    /// who-checks apply (the single-use token, or the same admin's session; another admin and a
+    /// wrong token are refused and counted toward the failure block). Not rate-limited: the web UI
+    /// reads it every few seconds while the window is open.
+    pub(crate) fn pending_view(
+        &self,
+        c: &GuardedCaller,
+        pending_id: &str,
+        token: Option<&str>,
+    ) -> Result<GuardedPendingView, Problem> {
+        let key = Self::failure_key(c, pending_id);
+        self.blocked(&key)?;
+        let (setting, admin, token_hash, deadline, probes) = {
+            let g = lock(&self.inner);
+            match g.pending.as_ref().filter(|p| p.id == pending_id) {
+                Some(p) => (
+                    p.setting.clone(),
+                    p.admin.clone(),
+                    p.token_hash,
+                    p.deadline,
+                    p.probes.clone(),
+                ),
+                None => {
+                    return Err(Problem::not_found(
+                        "no change is pending under that ID on this node (it may have rolled back)",
+                    ));
+                }
+            }
+        };
+        let token_ok =
+            token.is_some_and(|t| ct_eq(blake3::hash(t.as_bytes()).as_bytes(), &token_hash));
+        if !c.username.is_empty() && c.username != admin {
+            self.failed(&key);
+            return Err(Problem::new(
+                Code::Forbidden,
+                "this change was made by another admin: only they can read it",
+            ));
+        }
+        if !token_ok && c.username.is_empty() {
+            self.failed(&key);
+            return Err(Problem::new(
+                Code::Forbidden,
+                "the confirmation token is wrong, and this isn't the admin's session",
+            ));
+        }
+        let probes = probes
+            .map(|set| {
+                set.lines()
+                    .into_iter()
+                    .map(|(p, last)| GuardedProbeLine {
+                        listener: p.listener(),
+                        state: last
+                            .as_ref()
+                            .map_or("waiting", |l| l.kind.as_str())
+                            .to_owned(),
+                        error: last.as_ref().and_then(|l| l.error.clone()),
+                        at: last.as_ref().map(|l| l.at),
+                        other_hosts: p.evidence.as_ref().map_or(0, |e| e.others()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(GuardedPendingView {
+            id: pending_id.to_owned(),
+            setting,
+            node: self.node.clone(),
+            deadline_secs: remaining(deadline),
+            probes,
         })
     }
 
@@ -1574,6 +1710,7 @@ impl Engine {
             }
         };
         let Some(mut p) = p else { return };
+        p.end_probes();
         if let Some(h) = p.expiry.take() {
             // The expiry task may be the caller: let it finish by not awaiting it.
             h.abort();

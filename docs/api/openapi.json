@@ -268,6 +268,176 @@
         ]
       }
     },
+    "/api/v1/access-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "REQ: DNS-014, API-901 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, the one list for\nthe whole cluster. Admins only; no agent token changes it.",
+        "description": "Who may use this resolver, and reach the web UI and the API. The list applies on every node within\nseconds; a file that sets it wins. A list that leaves out the requester's own address is refused\n(409 `would_disconnect_you`).",
+        "operationId": "put_access_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change; `warnings` names a public range).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the allowed networks; agents are refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`, the list leaves out your own address (`would_disconnect_you`), or a cluster member's build does not know the allowed networks yet (`upgrade_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A network is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Removes the allowed networks the API set (the files' list, or the defaults, apply again).",
+        "description": "The list the configuration files give, or the built-in defaults (private ranges, CGNAT, link-local\nand loopback), applies again on every node within seconds.",
+        "operationId": "delete_access_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the allowed networks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no allowed networks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The list that would apply leaves out your own address (`would_disconnect_you`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/alerts": {
       "get": {
         "tags": [
@@ -7147,6 +7317,69 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GuardedStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guarded/pending/{id}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Reads a pending window change: the seconds left and, for a change that binds DNS sockets, the\nnode's own probe of each (the last result and the time) and how many other hosts' queries have\nreached it.",
+        "description": "The confirm route's own checks apply: the single-use token (header `X-Confirm-Token`) or the\nsame admin's session; another admin's session, a wrong token and an agent token are 403. It\nnames the staged addresses, which `GET /api/v1/guarded` never does. A wrong token or another\nadmin's session counts toward the failed-confirmation block like a wrong confirm; reading it\nis not rate-limited. The evidence is shown, never required to confirm.",
+        "operationId": "guarded_pending",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The pending change's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pending change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedPendingView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Neither a session nor a token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is wrong, or another admin made the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing is pending under that ID on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -23392,6 +23625,41 @@
           }
         }
       },
+      "GuardedPendingView": {
+        "type": "object",
+        "description": "The answer of `GET /api/v1/guarded/pending/{id}`: the window's seconds left and, for a change that\nbinds DNS sockets, the node's own probe of each. It names the staged addresses, so it is for the\nadmin who made the change (the confirm token or that admin's session), unlike the status listing.",
+        "required": [
+          "id",
+          "setting",
+          "node",
+          "deadlineSecs",
+          "probes"
+        ],
+        "properties": {
+          "deadlineSecs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds left, measured on the node's monotonic clock.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "probes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedProbeLine"
+            },
+            "description": "One line per staged socket; empty for a change that has no probes."
+          },
+          "setting": {
+            "type": "string"
+          }
+        }
+      },
       "GuardedPreview": {
         "type": "object",
         "description": "The dry run's answer. Nothing was changed.",
@@ -23517,6 +23785,47 @@
           }
         },
         "additionalProperties": false
+      },
+      "GuardedProbeLine": {
+        "type": "object",
+        "description": "One staged socket of a pending change, as `GET /api/v1/guarded/pending/{id}` shows it.",
+        "required": [
+          "listener",
+          "state",
+          "otherHosts"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the last probe finished (Unix seconds).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there was no answer."
+          },
+          "listener": {
+            "type": "string",
+            "description": "The socket, as `proto://address`."
+          },
+          "otherHosts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Distinct other hosts whose queries reached this socket during the window (at most 64; IPv6\nby /64; this node's own addresses left out). Shown, never required to confirm.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`waiting` (no probe has finished yet), `answered`, `refused_by_gate` (the gate's own\nrefusal, the expected answer on a gated listener) or `no_answer`."
+          }
+        }
       },
       "GuardedResult": {
         "type": "object",

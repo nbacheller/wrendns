@@ -4151,6 +4151,8 @@ impl Backend for ApiBackend {
             (ManagedKind::Dnssec, "dnssec", e.dnssec.is_some()),
             (ManagedKind::Filter, "filter", e.filter.is_some()),
             (ManagedKind::Drill, "drill", e.drill.is_some()),
+            // REQ: DNS-014 (T27.14h) - `[access]`.
+            (ManagedKind::Access, "access", e.access.is_some()),
             // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007).
             (ManagedKind::Slo, "slo", e.slo.is_some()),
             (ManagedKind::Probe, "probe", e.probe.is_some()),
@@ -4447,6 +4449,21 @@ impl Backend for ApiBackend {
         Box::pin(async move {
             match src.guarded.get() {
                 Some(e) => e.confirm(&caller, &id, token).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_pending(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::guarded::GuardedPendingView, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.pending_view(&caller, &id, token.as_deref()),
                 None => Err(guarded_unavailable()),
             }
         })
@@ -5320,6 +5337,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => crate::managed::DNSSEC,
         ManagedKind::Filter => crate::managed::FILTER,
         ManagedKind::Drill => crate::managed::DRILL,
+        ManagedKind::Access => crate::managed::ACCESS,
         ManagedKind::Slo => crate::managed::SLO,
         ManagedKind::Probe => crate::managed::PROBE,
         ManagedKind::UpstreamCheck => crate::managed::UPSTREAM_CHECK,
@@ -6058,6 +6076,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
+            | ManagedKind::Access
             | ManagedKind::UpstreamCheck
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
@@ -6496,6 +6515,19 @@ fn plan_settings(
             return Err(problem);
         }
     }
+    // REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
+    // member's build announces the `access` kind (a feature, not a version number). A DELETE is
+    // never held. Dry runs too, so the answer is the same.
+    if w.kind == ManagedKind::Access
+        && w.body.is_some()
+        && let Err(why) = crate::upgrade_gate::enforce(
+            src.cluster.as_deref(),
+            wrendns_cluster::gate::Feature::Access,
+        )
+    {
+        return Err(Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then make this change again."));
+    }
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
@@ -6527,6 +6559,11 @@ fn plan_settings(
     if w.kind == ManagedKind::Filter {
         warnings.extend(filter_budget_check(src, &before_cfg, &merged)?);
     }
+    // REQ: DNS-014 (T27.14h, ADR-1090 point 1) - a public range added to the allowed networks makes
+    // plain DNS answer that range from the internet, with no device key.
+    if w.kind == ManagedKind::Access {
+        warnings.extend(public_range_warnings(&before_cfg, &merged));
+    }
     // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
     // says so here, as the dry run's answer does.
     if w.kind == ManagedKind::Clients && before != after {
@@ -6547,6 +6584,25 @@ fn plan_settings(
         candidate: merged,
         redirect: None,
     })
+}
+
+/// REQ: DNS-014 (T27.14h, ADR-1098 point 4) - one warning for each public range the change adds to
+/// `[access] allowed_networks` (a range with any address `is_public_address` calls public).
+fn public_range_warnings(
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> Vec<String> {
+    after
+        .access
+        .allowed_networks
+        .iter()
+        .filter(|n| n.includes_public() && !before.access.allowed_networks.contains(n))
+        .map(|n| {
+            format!(
+                "This lets every address in {n} use this resolver, from the internet too. Plain DNS (UDP and TCP) carries no device key, so this makes the resolver open to that range."
+            )
+        })
+        .collect()
 }
 
 /// REQ: FLT-901 (T24.29, ADR-994 item 5) — the budget check a change to `[filter] ads_tier` or
@@ -8227,6 +8283,7 @@ fn keep_in_git(
         ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
         ManagedKind::Drill => "drill",
+        ManagedKind::Access => "access",
         ManagedKind::Slo => "slo",
         ManagedKind::Probe => "probe",
         ManagedKind::UpstreamCheck => "upstream_check",
