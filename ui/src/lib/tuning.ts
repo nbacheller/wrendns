@@ -21,6 +21,8 @@ export type TuningSpec = {
   fields: Field[];
   /** A sentence under the fields (dnstap: the settings are read when a node starts). */
   note?: string;
+  /** The guarded row that takes a change the server refuses as `guarded_only` (dnstap: a widening). */
+  guardedId?: string;
   describe: (def: Record<string, unknown>) => string;
   /** The reason a draft is refused, or null (the server checks the same; this is the sooner check). */
   validate?: (values: Record<string, unknown>) => string | null;
@@ -171,7 +173,8 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     noun: 'dnstap settings',
     role: 'admin',
     summary: 'Change the dnstap output',
-    note: 'dnstap is read when a node starts: a saved change applies after a restart of every node. Turning it on, pointing it elsewhere or copying more needs a sign-in within the last 10 minutes.',
+    guardedId: 'dnstap-output',
+    note: 'dnstap is read when a node starts: a saved change takes effect after a restart of each node (restart needed). Turning it on, pointing it at another socket or address, copying more kinds of exchange or sampling more often copies more of the clients’ queries out of the process, so Check sends it to the review: a preview, a phrase you type and a sign-in from the last 10 minutes.',
     fields: [
       { key: 'socket', label: 'Unix socket of the reader', type: 'text', placeholder: '/run/dnstap.sock',
         help: 'Leave the socket and the address empty for no tap.' },

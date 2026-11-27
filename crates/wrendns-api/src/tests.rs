@@ -5484,11 +5484,13 @@ async fn dns_904_the_trace_route_returns_the_steps() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
 }
 
-/// REQ: OBS-007, API-905 (T40.13, review) - a dnstap write is judged on one version of the settings
-/// and the real write is pinned to it: a change made between the judgement and the write fails with
-/// 409 instead of being applied unjudged. A caller's own `If-Match` is the one judged.
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the judgement of a dnstap change (is it a
+/// widening, which the guarded flow takes) is the backend's own plan, made inside the one write that
+/// applies it, on the version the caller pinned: the route makes exactly one backend write per request
+/// and passes the caller's own `If-Match` on, so a change made in between fails with 409 instead of
+/// being applied unjudged.
 #[tokio::test]
-async fn obs_007_dnstap_write_is_pinned_to_the_version_it_was_judged_on() {
+async fn obs_007_dnstap_write_is_judged_in_the_one_write_that_applies_it() {
     let (app, fake) = app();
     let put = |extra: Option<&str>| {
         let mut b = Request::put("/api/v1/dnstap-settings/default")
@@ -5511,12 +5513,8 @@ async fn obs_007_dnstap_write_is_pinned_to_the_version_it_was_judged_on() {
         .filter(|x| x.starts_with("managed TelemetryDnstap"))
         .cloned()
         .collect();
-    // Each request: the judging dry run (the caller's expect), then the real write at version 7.
-    assert_eq!(w.len(), 4, "{w:?}");
+    // One write per request, the caller's own `If-Match` passed on as it is.
+    assert_eq!(w.len(), 2, "{w:?}");
     assert!(!w[0].contains("expect="), "{w:?}");
     assert!(w[1].ends_with(" expect=7"), "{w:?}");
-    assert!(
-        w[2].ends_with(" expect=7") && w[3].ends_with(" expect=7"),
-        "{w:?}"
-    );
 }

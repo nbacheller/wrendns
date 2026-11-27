@@ -264,6 +264,10 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN_ACCESS).unwrap(),
                 applier: Arc::new(super::appliers::ListenAccess),
             },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+                applier: Arc::new(super::dnstap::Dnstap),
+            },
         ])
         .collect()
 }

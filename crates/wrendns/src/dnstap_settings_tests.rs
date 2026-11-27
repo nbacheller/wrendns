@@ -149,36 +149,56 @@ async fn obs_007_dnstap_settings_are_an_admins_as_a_whole() {
     assert_eq!(merged(&h).telemetry.dnstap.buffer, 10_000);
 }
 
-/// REQ: OBS-007, API-905 (T40.13, AC1, ADR-914) - a change that weakens privacy (the tap turned
-/// on, a new target, a kind of exchange added, sampling more often) goes the guarded way: a sign-in
-/// within the last 10 minutes. A token never has one; a dry run says so; a change that copies no
-/// more (turning it off, a smaller queue) needs none.
+/// The guarded entry of the dnstap row for this node, active, as a confirmed change leaves it (the
+/// node's name is the one the guarded tests use).
+fn put_guarded(h: &Harness, value: Value, state: crate::guarded::store::EntryState) {
+    crate::guarded::set_this_node("pi-a");
+    let entry = crate::guarded::store::Stored {
+        node: "pi-a".to_owned(),
+        id: "dnstap-output".to_owned(),
+        value,
+        mode: "staged".to_owned(),
+        state,
+        by: "admin".to_owned(),
+        at: crate::guarded::now_secs(),
+    };
+    crate::guarded::store::put(h.auth.state(), &entry, entry.at, "admin").unwrap();
+}
+
+fn guarded_entries(h: &Harness) -> usize {
+    crate::guarded::store::all(h.auth.state())
+        .iter()
+        .filter(|e| e.id == "dnstap-output")
+        .count()
+}
+
+/// REQ: OBS-007, API-905 (T40.13, AC1, ADR-1107 point 4; owner decision, 2026-11-27) - a change that
+/// widens the copy (the tap turned on, a new target, a kind of exchange added, sampling more often) is
+/// not an ordinary write: it is refused, a dry run too, with 409 `guarded_only` and the server's own
+/// words, whatever the caller signed in with, and nothing is stored. A change that copies no more
+/// (the tap off, sampling less often, a feed off, a smaller queue) is still an ordinary admin write.
 #[tokio::test]
-async fn obs_007_dnstap_widening_needs_a_recent_sign_in() {
+#[allow(clippy::many_single_char_names)] // h, s, v, e, f: the harness and its answers
+async fn obs_007_dnstap_widening_is_the_guarded_flows() {
     let h = harness("");
     let dry = format!("{URL}?dryRun=true");
-    // The preview goes through and says what the write will need.
-    let (s, _, v) = h.call("PUT", &dry, Some(&on())).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    let warnings = v["warnings"].to_string();
-    assert!(warnings.contains("10 minutes"), "{v}");
-    assert!(warnings.contains("restart"), "{v}");
-    // A token (even an admin's) cannot do it.
-    let (s, _, v) = h.call("PUT", URL, Some(&on())).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
-    assert_eq!(v["code"], "reauth_required", "{v}");
-    // A session signed in 11 minutes ago cannot, one signed in 9 minutes ago can.
-    let (s, v) = session_call(&h, 11 * 60, "PUT", URL, Some(on())).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
-    assert_eq!(v["code"], "reauth_required", "{v}");
+    for target in [dry.as_str(), URL] {
+        let (s, _, v) = h.call("PUT", target, Some(&on())).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{target}: {v}");
+        assert_eq!(v["code"], "guarded_only", "{v}");
+        let detail = v["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("copies more") && detail.contains("phrase"),
+            "{v}"
+        );
+        // A fresh sign-in does not make it an ordinary write.
+        let (s, v) = session_call(&h, 0, "PUT", target, Some(on())).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{target}: {v}");
+        assert_eq!(v["code"], "guarded_only", "{v}");
+    }
     assert_eq!(h.auth.state().managed("dnstap_settings").unwrap().len(), 0);
-    let (s, v) = session_call(&h, 9 * 60, "PUT", URL, Some(on())).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(
-        merged(&h).telemetry.dnstap.socket.as_deref(),
-        Some("/run/dnstap.sock")
-    );
-    // Now every widening needs the sign-in again; the reverse does not.
+    assert!(merged(&h).telemetry.dnstap.socket.is_none());
+    // Every widening is refused alike: a new target, a feed on, sampling more often.
     let widen = |f: &dyn Fn(&mut Value)| {
         let mut b = on();
         f(&mut b);
@@ -190,44 +210,119 @@ async fn obs_007_dnstap_widening_needs_a_recent_sign_in() {
             b["socket"] = Value::Null;
             b["address"] = json!("tcp://192.0.2.5:6000");
         }),
-        widen(&|b| b["forwarder"] = json!(true)),
-        widen(&|b| b["resolver"] = json!(true)),
+        json!({ "forwarder": true, "socket": "/run/dnstap.sock" }),
+        json!({ "resolver": true, "socket": "/run/dnstap.sock" }),
         widen(&|b| b["sample_every"] = json!(1)),
     ] {
         let (s, _, v) = h.call("PUT", URL, Some(&b)).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{b}: {v}");
-        assert_eq!(v["code"], "reauth_required", "{b}: {v}");
+        assert_eq!(s, StatusCode::CONFLICT, "{b}: {v}");
+        assert_eq!(v["code"], "guarded_only", "{b}: {v}");
     }
+    // Narrowing is ordinary: a smaller queue, sampling less often (a field left out takes its
+    // default, so a body that lowers the sampling says so), the tap off.
     let (s, _, v) = h
         .call(
             "PUT",
             URL,
-            Some(&json!({ "socket": "/run/dnstap.sock", "sample_every": 100, "buffer": 9000 })),
+            Some(&json!({ "buffer": 9000, "sample_every": 100 })),
         )
         .await;
-    assert_eq!(s, StatusCode::OK, "sampling less and a bigger queue: {v}");
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        v["warnings"].to_string().contains("restart"),
+        "restart needed: {v}"
+    );
     let (s, _, v) = h.call("PUT", URL, Some(&json!({}))).await;
-    assert_eq!(s, StatusCode::OK, "the tap turned off: {v}");
-    assert!(merged(&h).telemetry.dnstap.socket.is_none());
-    // A DELETE that brings a file's tap back is a widening too.
-    let h = with_toml("[telemetry.dnstap]\nsocket = \"/run/file.sock\"\n");
-    let (s, _, _) = h
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // A DELETE that would bring a wider value back (the file's tap, sampling every query) is judged
+    // too: the way back to the file is not a way round the review.
+    let f = with_toml(
+        "[telemetry.dnstap]
+socket = \"/run/file.sock\"
+",
+    );
+    let (s, _, v) = f
         .call(
             "PUT",
             URL,
-            Some(&json!({ "socket": "/run/file.sock", "buffer": 500 })),
+            Some(&json!({ "socket": "/run/file.sock", "sample_every": 100 })),
         )
         .await;
-    assert_eq!(
-        s,
-        StatusCode::OK,
-        "same target as the file's, a smaller queue"
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = f.call("DELETE", URL, None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "guarded_only", "{v}");
+    // An operator is refused before any of it, as before.
+    let op = token(&h, "ops", Role::Operator, None);
+    let (s, _, _) = call_as(&h, &op, "PUT", URL, Some(&on()), &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the two entries of the section agree on
+/// which is in force: a guarded value that was confirmed is in force over the ordinary one, and an
+/// ordinary write that narrows removes the guarded entries (so the newer value wins, and a stale
+/// widening can never hide a narrowing); a staged guarded entry waits for the next start.
+#[tokio::test]
+#[allow(clippy::many_single_char_names)] // h, s, v, e, f: the harness and its answers
+async fn obs_007_dnstap_the_newer_of_the_two_entries_is_in_force() {
+    let h = harness("");
+    // Staged: waits for the next start, the section is what the ordinary entries say.
+    put_guarded(
+        &h,
+        json!({ "socket": "/run/dnstap.sock", "sample_every": 5, "forwarder": true }),
+        crate::guarded::store::EntryState::Staged,
     );
-    let (s, _, v) = h.call("DELETE", URL, None).await;
+    assert!(merged(&h).telemetry.dnstap.socket.is_none());
+    // Active (the node started with it): in force, over an older ordinary entry.
+    let (s, _, v) = h.call("PUT", URL, Some(&json!({ "buffer": 7000 }))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(guarded_entries(&h), 0, "an ordinary write replaces it");
+    put_guarded(
+        &h,
+        json!({ "socket": "/run/dnstap.sock", "sample_every": 5, "forwarder": true }),
+        crate::guarded::store::EntryState::Active,
+    );
+    let d = merged(&h).telemetry.dnstap;
+    assert_eq!(d.socket.as_deref(), Some("/run/dnstap.sock"));
+    assert!(d.forwarder);
+    assert_eq!(d.buffer, 10_000, "the guarded value is the whole section");
+    // The entry says the API (not the file) set it.
+    let (_, _, e) = h.call("GET", ENTRY, None).await;
+    assert_eq!(e["items"][0]["source"], "override", "{e}");
+    // A narrowing write, judged against what is in force, replaces it: the tap is off now.
+    let (s, _, v) = h.call("PUT", URL, Some(&json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(guarded_entries(&h), 0);
+    assert!(
+        merged(&h).telemetry.dnstap.socket.is_none(),
+        "{:?}",
+        merged(&h).telemetry.dnstap
+    );
+    // A dry run removes nothing.
+    put_guarded(
+        &h,
+        json!({ "socket": "/run/dnstap.sock", "sample_every": 5 }),
+        crate::guarded::store::EntryState::Active,
+    );
+    let (s, _, v) = h
+        .call("PUT", &format!("{URL}?dryRun=true"), Some(&json!({})))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(guarded_entries(&h), 1);
+    // A file's setting wins over a guarded entry.
+    let f = with_toml(
+        "[telemetry.dnstap]
+socket = \"/run/file.sock\"
+",
+    );
+    put_guarded(
+        &f,
+        json!({ "socket": "/run/dnstap.sock", "sample_every": 5 }),
+        crate::guarded::store::EntryState::Active,
+    );
     assert_eq!(
-        s,
-        StatusCode::OK,
-        "back to the file's own values: no change in the target: {v}"
+        merged(&f).telemetry.dnstap.socket.as_deref(),
+        Some("/run/file.sock")
     );
 }
 
@@ -275,9 +370,9 @@ async fn obs_007_dnstap_the_files_win() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], "set_by_file", "{v}");
     let (s, _, v) = h.call("PUT", URL, Some(&json!({ "resolver": true }))).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(
-        v["code"], "reauth_required",
+        v["code"], "guarded_only",
         "a widening, even with the file's target: {v}"
     );
     let (s, _, v) = h
@@ -300,9 +395,9 @@ async fn obs_007_dnstap_the_files_win() {
 }
 
 /// REQ: OBS-007, API-905 (T40.13, AC2) - the tap is read when a node starts, so a change is stored
-/// at once and the entry says "restart needed" until the node runs with it. End to end for
-/// `resolver` and `forwarder`: after the change the configuration a restart reads has both on; the
-/// entry then reads `restart_needed` false once the node started with that configuration.
+/// at once and the entry says "restart needed" until the node runs with it (owner decision,
+/// 2026-11-27: a saved change takes effect after a restart of each node, not on a reload); the entry
+/// then reads `restart_needed` false once the node started with that configuration.
 #[tokio::test]
 #[allow(clippy::many_single_char_names)] // h, s, v, e, c: the harness and its answers
 async fn obs_007_dnstap_a_change_needs_a_restart_and_says_so() {
@@ -317,8 +412,8 @@ async fn obs_007_dnstap_a_change_needs_a_restart_and_says_so() {
     let (_, _, e) = h.call("GET", ENTRY, None).await;
     assert_eq!(restart_needed(&e), json!(false), "{e}");
 
-    // Widening: a signed-in session; the answer says a restart is needed.
-    let body = json!({ "socket": "/run/file.sock", "forwarder": true, "resolver": true });
+    // A change that narrows: the answer says a restart is needed.
+    let body = json!({ "socket": "/run/file.sock", "sample_every": 100, "buffer": 4000 });
     let (s, v) = session_call(
         &h,
         0,
@@ -329,25 +424,32 @@ async fn obs_007_dnstap_a_change_needs_a_restart_and_says_so() {
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["impact"].as_str().unwrap().contains("restart"), "{v}");
+    assert!(v["warnings"].to_string().contains("restart needed"), "{v}");
     let (s, v) = session_call(&h, 0, "PUT", URL, Some(body)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let c = merged(&h);
-    assert!(c.telemetry.dnstap.forwarder && c.telemetry.dnstap.resolver);
+    assert_eq!(
+        (c.telemetry.dnstap.sample_every, c.telemetry.dnstap.buffer),
+        (100, 4000)
+    );
     // The tap the node runs has not changed: restart needed, and the card can say so.
     let (_, _, e) = h.call("GET", ENTRY, None).await;
     assert_eq!(restart_needed(&e), json!(true), "{e}");
-    assert_eq!(e["items"][0]["definition"]["forwarder"], json!(true), "{e}");
-    assert_eq!(e["items"][0]["definition"]["resolver"], json!(true), "{e}");
+    assert_eq!(
+        e["items"][0]["definition"]["sample_every"],
+        json!(100),
+        "{e}"
+    );
     // After the restart the node runs it: nothing pending.
     h.src.dnstap_started.store(Some(Arc::new(started(&h))));
     let (_, _, e) = h.call("GET", ENTRY, None).await;
     assert_eq!(restart_needed(&e), json!(false), "{e}");
-    // Taking the API's values away puts the file's back, and that needs a restart too.
+    // Taking the API's values away puts the file's back, and that needs a restart too; here the
+    // file samples every query, which copies more than the stored one did, so it is the review's.
     let (s, _, v) = h.call("DELETE", URL, None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    assert!(v["impact"].as_str().unwrap().contains("restart"), "{v}");
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "guarded_only", "{v}");
     let (_, _, e) = h.call("GET", ENTRY, None).await;
-    assert_eq!(restart_needed(&e), json!(true), "{e}");
     // The entry read back is accepted as a PUT body (the read-only field is dropped).
     let mut back = e["items"][0]["definition"].clone();
     back["buffer"] = json!(4000);
@@ -362,15 +464,19 @@ async fn obs_007_dnstap_a_change_needs_a_restart_and_says_so() {
 #[tokio::test]
 async fn obs_007_dnstap_start_up_reads_what_the_api_stored() {
     let h = harness("");
-    let body = json!({
-        "socket": "/run/wrendns-test-tap.sock",
-        "sample_every": 7,
-        "buffer": 200,
-        "forwarder": true,
-        "resolver": true,
-    });
-    let (s, v) = session_call(&h, 0, "PUT", URL, Some(body)).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
+    // What a confirmed guarded change leaves: the whole section, on probation after the start that
+    // read it (a staged entry is read at the next start, and the start moves it on).
+    put_guarded(
+        &h,
+        json!({
+            "socket": "/run/wrendns-test-tap.sock",
+            "sample_every": 7,
+            "buffer": 200,
+            "forwarder": true,
+            "resolver": true,
+        }),
+        crate::guarded::store::EntryState::Probation,
+    );
     // A node's own file: nothing about dnstap, the data directory the stored settings live in.
     let data = h.src.file_config.load_full().node.data_dir.to_string();
     let file = std::path::Path::new(&data).join("wrendns.toml");

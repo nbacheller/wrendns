@@ -5,10 +5,15 @@
   import ConfigEditor from './ConfigEditor.svelte';
   import HelpButton from './HelpButton.svelte';
   import { TUNING, type TuningKey } from '../tuning';
+  import { guarded, watchGuarded } from '../guarded.svelte';
 
   let { which }: { which: TuningKey } = $props();
   const spec = $derived(TUNING[which]);
   let open = $state(false);
+  // REQ: OBS-007, API-905 (T40.13) - a dnstap change confirmed through the guarded review is staged for
+  // the next start: the card says "restart needed" while the node lists it as pending a restart.
+  const restartNeeded = $derived(which === 'dnstap' && !!guarded.node?.pendingRestart.includes(spec.guardedId ?? ''));
+  $effect(() => (which === 'dnstap' && open ? watchGuarded(3_000) : undefined));
 </script>
 
 <details class="tuning" data-testid={`tuning-${which}`} ontoggle={(e) => (open = e.currentTarget.open)}>
@@ -33,8 +38,12 @@
       summary={spec.describe}
       note={spec.note ? () => spec.note! : undefined}
       role={spec.role}
+      guardedId={spec.guardedId}
       validate={spec.validate}
     />
+    {#if which === 'dnstap' && restartNeeded}
+      <p class="notice small" data-testid="dnstap-restart-needed">Restart needed: a dnstap change confirmed here is read when {guarded.node?.node ?? 'the node'} starts again.</p>
+    {/if}
   {/if}
 </details>
 

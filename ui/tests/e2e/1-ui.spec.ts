@@ -5005,8 +5005,9 @@ test('obs_020 form refuses a timeout longer than the interval', async () => {
 });
 
 // REQ: OBS-007, API-905 (T40.13, ADR-1107) — the dnstap card shows the section's values, an admin edits
-// `resolver` and `sample_every` and the row shows the result with "Restart needed" (the tap is read when
-// the node starts), a bad draft is refused in the form, and the revert brings the file's values back.
+// `resolver` and `sample_every` (a change that copies no more than before is an ordinary admin write) and the
+// row shows the result with "Restart needed" (the tap is read when the node starts), a bad draft is refused
+// in the form, and the revert brings the file's values back.
 test('obs_007 dnstap card edits the section and says a restart is needed', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/settings?tab=system');
@@ -5047,59 +5048,68 @@ test('obs_007 dnstap card edits the section and says a restart is needed', async
   await expect(row).not.toContainText('Restart needed');
 });
 
-// REQ: OBS-007, API-905 (T40.13, review) — a widening change the server holds to a sign-in from the last
-// 10 minutes (403 `reauth_required`) does not dead-end: the card asks for the password, signs in again
-// and makes the same change. The first real write is refused (stubbed); the retry reaches the server.
-test('obs_007 dnstap card asks for the password when the sign-in is too old', async () => {
+// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4; owner decision, 2026-11-27) — a change that copies more
+// out of the process (here: the tap turned on) is not the editor's Apply: the server refuses the ordinary
+// write (409 `guarded_only`), the card shows the server's own words and hands over to the review every
+// guarded setting uses. The review says "weakens security", Apply waits for the exact phrase, and the
+// change is staged (restart needed), not applied: the running tap and the ordinary entry stay as they were.
+test('obs_007 dnstap widening goes through the guarded review and the typed phrase', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/settings?tab=system');
   await page.reload();
   await page.getByTestId('tuning-dnstap').locator('summary').click();
   const row = page.getByTestId('editor-dnstap_settings').getByTestId('entry-row');
   await expect(row).toContainText('Off; upstream off, resolver off.');
-  let refused = 0;
-  await page.route('**/api/v1/dnstap-settings/default*', async (route) => {
-    const req = route.request();
-    if (req.method() === 'PUT' && !req.url().includes('dryRun=true') && refused === 0) {
-      refused++;
-      return route.fulfill({
-        status: 403,
-        contentType: 'application/problem+json',
-        body: JSON.stringify({
-          type: 'https://wrendns.com/problems/reauth_required',
-          title: 'Recent sign-in needed',
-          status: 403,
-          code: 'reauth_required',
-          detail: 'this needs a sign-in within the last 10 minutes; yours is older',
-        }),
-      });
-    }
-    return route.continue();
-  });
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
   try {
     await row.getByRole('button', { name: 'Edit' }).click();
-    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('/run/e2e-dnstap-reauth.sock');
+    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('/run/e2e-dnstap-guarded.sock');
     await page.getByRole('button', { name: 'Check', exact: true }).click();
-    await expect(page.getByTestId('entry-preview')).toContainText('restart');
-    await page.getByRole('button', { name: 'Apply' }).click();
-    const prompt = page.getByTestId('reauth');
-    await expect(prompt).toBeVisible();
-    await expect(prompt.getByTestId('reauth-go')).toBeDisabled();
-    await prompt.getByLabel('Your password').fill(ADMIN.pass);
-    await prompt.getByTestId('reauth-go').click();
-    await expect(row).toContainText('Restart needed');
-    expect(refused).toBe(1);
-    await expect(page.getByTestId('reauth')).toHaveCount(0);
+    // The server's refusal, in its own words, and no Apply of the generic editor.
+    await expect(page.getByTestId('entry-guarded')).toBeVisible();
+    await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1); // the expected refusal
+    await expect(page.getByRole('dialog')).toContainText('copies more of the clients');
+    await expect(page.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+    await page.getByTestId('guarded-start-dnstap-output').click();
+    await expect(page.getByTestId('guarded-weakens')).toBeVisible();
+    await expect(page.getByTestId('guarded-effect')).toContainText('/run/e2e-dnstap-guarded.sock');
+    const phrase = (await page.getByTestId('guarded-phrase').innerText()).trim();
+    expect(phrase).toMatch(/ dnstap-output$/);
+    // Apply waits for the exact phrase.
+    const apply = page.getByTestId('guarded-apply');
+    await expect(apply).toBeDisabled();
+    await page.getByTestId('guarded-phrase-input').fill('dnstap');
+    await expect(apply).toBeDisabled();
+    await page.getByTestId('guarded-phrase-input').fill(phrase);
+    await expect(apply).toBeEnabled();
+    await apply.click();
+    // A sign-in older than 10 minutes asks for the password here (the suite may have run that long).
+    const reauth = page.getByTestId('guarded-reauth');
+    const done = page.getByTestId('guarded-result');
+    await expect(reauth.or(done)).toBeVisible({ timeout: 30_000 });
+    if (await reauth.isVisible()) {
+      await page.getByTestId('guarded-reauth-password').fill(ADMIN.pass);
+      await page.getByTestId('guarded-reauth-go').click();
+    }
+    await expect(done).toContainText('staged');
+    await expect(page.getByTestId('guarded-pending-restart')).toBeVisible();
+    await expect(page.getByTestId('dnstap-restart-needed')).toBeVisible();
+    // Staged, not applied: the ordinary entry and the running tap are unchanged.
     const entry = (await (await page.request.get('/api/v1/config/entries?kind=dnstap_settings')).json()).items[0];
-    expect(entry.definition.socket).toBe('/run/e2e-dnstap-reauth.sock');
+    expect(entry.definition.socket ?? null).toBeNull();
+    const status = await (await page.request.get('/api/v1/guarded')).json();
+    expect(status.nodes[0].pendingRestart).toContain('dnstap-output');
   } finally {
-    await page.unroute('**/api/v1/dnstap-settings/default*');
     const close = page.getByRole('dialog').getByRole('button', { name: 'Close' });
     if (await close.count()) await close.click();
-    const revert = row.getByRole('button', { name: 'Revert to the file' });
-    if (await revert.count()) await revert.click();
+    // An ordinary write that narrows replaces the staged entry; handing it back leaves the file's values.
+    const headers = { 'x-csrf-token': csrf, 'content-type': 'application/json' };
+    await page.request.put('/api/v1/dnstap-settings/default', { headers, data: {} });
+    await page.request.delete('/api/v1/dnstap-settings/default', { headers });
   }
-  await expect(row).toContainText('Off; upstream off, resolver off.');
+  const status = await (await page.request.get('/api/v1/guarded')).json();
+  expect(status.nodes[0].pendingRestart).not.toContain('dnstap-output');
 });
 
 // REQ: OBS-007, API-905 (T40.13) — the dnstap settings are an admin's as a whole: an operator sees the

@@ -2287,12 +2287,13 @@ export interface paths {
         };
         get?: never;
         /**
-         * Set the dnstap output (`[telemetry.dnstap]`): where the copies go, how often, how many are held, and whether upstream and recursor exchanges are copied too. Admins only; no agent can change it.
+         * Narrow the dnstap output (`[telemetry.dnstap]`): the tap off, a feed off, sampling less often, a different queue size. Admins only; no agent can change it.
          * @description REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is
-         *     read when the node starts, so a change applies after a restart of every node (the answer says so). Turning the tap on,
-         *     pointing it at another socket or address, copying more kinds of exchange and sampling more often need a sign-in within the
-         *     last 10 minutes (403 `reauth_required` otherwise; tokens never have one). A file that sets a field wins (`set_by_file`).
-         *     Held until every cluster member announces the kind (409 `upgrade_required`).
+         *     read when the node starts, so a change applies after a restart of every node (the answer says so). A change that copies
+         *     more of the clients' queries out of the process (the tap on, another socket or address, upstream or recursor exchanges
+         *     added, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`/api/v1/guarded/dnstap-output`:
+         *     a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that
+         *     sets a field wins (`set_by_file`). Held until every cluster member announces the kind (409 `upgrade_required`).
          */
         put: operations["put_dnstap_settings"];
         post?: never;
@@ -18064,7 +18065,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Applied (or, with dryRun, what would change; `warnings` says when a sign-in is needed and that a restart is). */
+            /** @description Applied (or, with dryRun, what would change; `warnings` says that a restart is needed). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -18073,7 +18074,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
-            /** @description Not an admin, an agent, or a widening change without a sign-in in the last 10 minutes (`reauth_required`). */
+            /** @description Not an admin, or an agent. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18082,7 +18083,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `set_by_file`, or a cluster member's build does not know the dnstap settings yet (`upgrade_required`). */
+            /** @description `guarded_only` (the change copies more: use the guarded review), `set_by_file`, or a cluster member's build does not know the dnstap settings yet (`upgrade_required`). */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -15,6 +15,7 @@ const GUARDED_IDS: &[&str] = &[
     "api-tls",
     "api-http-redirect",
     "listen-access",
+    "dnstap-output",
     "trusted-proxies",
     "secret-file-dirs",
     "allow-secrets-over-http",

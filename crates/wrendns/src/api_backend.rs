@@ -4180,7 +4180,11 @@ impl Backend for ApiBackend {
             (
                 ManagedKind::TelemetryDnstap,
                 "dnstap_settings",
-                e.telemetry_dnstap.is_some(),
+                // A confirmed guarded value (a widening) is the API's setting too.
+                e.telemetry_dnstap.is_some()
+                    || e.guarded
+                        .iter()
+                        .any(|g| g.id == wrendns_config::guarded::DNSTAP),
             ),
         ] {
             if want(k) {
@@ -6539,22 +6543,7 @@ fn plan_settings(
             return Err(problem);
         }
     }
-    // REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
-    // member's build announces the `access` kind (a feature, not a version number). A DELETE is
-    // never held. Dry runs too, so the answer is the same.
-    // REQ: OBS-007, API-905 (T40.13) - and likewise the first write of the dnstap settings.
-    let gated_feature = match w.kind {
-        ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
-        ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
-        _ => None,
-    };
-    if let Some(feature) = gated_feature
-        && w.body.is_some()
-        && let Err(why) = crate::upgrade_gate::enforce(src.cluster.as_deref(), feature)
-    {
-        return Err(Problem::new(Code::UpgradeRequired, why)
-            .hint("Upgrade the member named, then make this change again."));
-    }
+    settings_feature_gate(src, w)?;
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
@@ -6578,6 +6567,13 @@ fn plan_settings(
         crate::settings_kinds::set_stored(&mut entries, w.kind, None);
         None
     };
+    // REQ: OBS-007, API-905 (T40.13) - an ordinary write of the dnstap section replaces the guarded
+    // entries of the row (they are removed with it), so what follows is judged without them.
+    if w.kind == ManagedKind::TelemetryDnstap {
+        entries
+            .guarded
+            .retain(|g| g.id != wrendns_config::guarded::DNSTAP);
+    }
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
     let after = crate::settings_kinds::section_json(w.kind, &merged);
@@ -6591,11 +6587,11 @@ fn plan_settings(
     if w.kind == ManagedKind::Access {
         warnings.extend(public_range_warnings(&before_cfg, &merged));
     }
-    // REQ: OBS-007, API-905 (T40.13) - the tap is read when the node starts: a change says so, and a
-    // change that sends more out of the process says what the write will need.
-    if w.kind == ManagedKind::TelemetryDnstap {
-        warnings.extend(dnstap_warnings(&before, &after));
-    }
+    let also = if w.kind == ManagedKind::TelemetryDnstap {
+        dnstap_plan(state, &before, &after, &mut warnings)?
+    } else {
+        Vec::new()
+    };
     // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
     // says so here, as the dry run's answer does.
     if w.kind == ManagedKind::Clients && before != after {
@@ -6612,28 +6608,75 @@ fn plan_settings(
         recent_queries,
         impact,
         warnings,
-        also: Vec::new(),
+        also,
         candidate: merged,
         redirect: None,
     })
 }
 
-/// REQ: OBS-007, API-905 (T40.13) - what a change to the dnstap settings says before it is applied: the
-/// tap is read when a node starts, and a change that copies more out of the process needs a recent
-/// sign-in.
-fn dnstap_warnings(before: &serde_json::Value, after: &serde_json::Value) -> Vec<String> {
-    let mut out = Vec::new();
-    if before != after {
-        out.push(
-            "The dnstap settings are read when a node starts: this takes effect after a restart of every node.".to_owned(),
-        );
-        if wrendns_config::guarded::dnstap_widened(before, after) {
-            out.push(
-                "This copies more of the clients' queries (their addresses and names) out of the process than before, so applying it needs an admin session signed in within the last 10 minutes.".to_owned(),
-            );
-        }
+/// REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
+/// member's build announces the `access` kind (a feature, not a version number). A DELETE is
+/// never held. Dry runs too, so the answer is the same.
+/// REQ: OBS-007, API-905 (T40.13) - and likewise the first write of the dnstap settings.
+fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem> {
+    let gated_feature = match w.kind {
+        ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
+        ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
+        _ => None,
+    };
+    if let Some(feature) = gated_feature
+        && w.body.is_some()
+        && let Err(why) = crate::upgrade_gate::enforce(src.cluster.as_deref(), feature)
+    {
+        return Err(Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then make this change again."));
     }
-    out
+    Ok(())
+}
+
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4; owner decision, 2026-11-27) - the ordinary write
+/// of the dnstap section. A change that copies more is the guarded flow's (preview, typed phrase,
+/// `settings.guarded` record): refused here, dry runs too, so the card learns it from the server. A
+/// change that only narrows is this write, says the tap is read when a node starts, and removes the
+/// guarded entries of the row (what it returns), so that the newer value is the one in force.
+fn dnstap_plan(
+    state: &wrendns_store::state::State,
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> Result<AlsoStored, Problem> {
+    if wrendns_config::guarded::dnstap_widened(before, after) {
+        return Err(Problem::new(
+            Code::GuardedOnly,
+            "this copies more of the clients' queries (their addresses and names) out of the process than before (the tap on, another socket or address, upstream or recursor exchanges added, or sampling more often), so it is changed from the guarded review: a preview, the phrase you type and a sign-in from the last 10 minutes",
+        )
+        .hint("Use Settings, System, dnstap output in the web UI, or POST /api/v1/guarded/dnstap-output/preview and then /apply."));
+    }
+    warnings.extend(dnstap_warnings(before, after));
+    Ok(crate::guarded::store::all(state)
+        .into_iter()
+        .filter(|e| {
+            e.id == wrendns_config::guarded::DNSTAP && !crate::guarded::store::is_local(&e.id)
+        })
+        .map(|e| {
+            (
+                crate::guarded::KIND,
+                crate::guarded::entry_name(&e.node, &e.id),
+                None,
+            )
+        })
+        .collect())
+}
+
+/// REQ: OBS-007, API-905 (T40.13) - what a change to the dnstap settings says before it is applied: the
+/// tap is read when a node starts.
+fn dnstap_warnings(before: &serde_json::Value, after: &serde_json::Value) -> Vec<String> {
+    if before == after {
+        return Vec::new();
+    }
+    vec![
+        "The dnstap settings are read when a node starts: this takes effect after a restart of every node (restart needed).".to_owned(),
+    ]
 }
 
 /// REQ: DNS-014 (T27.14h, ADR-1098 point 4) - one warning for each public range the change adds to

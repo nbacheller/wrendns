@@ -37,6 +37,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         guarded::RESTART_NOW => Some(Arc::new(NoOp)),
         guarded::API_HTTP_REDIRECT => Some(Arc::new(HttpRedirect)),
         guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
+        guarded::DNSTAP => Some(Arc::new(super::dnstap::Dnstap)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]

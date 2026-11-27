@@ -154,7 +154,25 @@ static REAL: &[Row] = &[
         weakens: never,
         test_only: false,
     },
+    // REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the dnstap output (`[telemetry.dnstap]`). It copies
+    // clients' addresses and names out of the process, so a change that copies more (the tap on, a new
+    // socket or address, the upstream or recursor exchanges, sampling more often) goes through the
+    // full guarded flow: the preview, the typed phrase, a sign-in within 10 minutes and the
+    // `settings.guarded` audit record (owner decision, 2026-11-27). `staged`: the tap and its writer are
+    // read once, when the node starts. A change that only narrows is an ordinary admin write.
+    Row {
+        id: DNSTAP,
+        label: "dnstap output",
+        paths: &["telemetry.dnstap"],
+        mode: Mode::Staged,
+        proof: None,
+        weakens: dnstap_widened,
+        test_only: false,
+    },
 ];
+
+/// The ID of the dnstap row (T40.13, ADR-1107).
+pub const DNSTAP: &str = "dnstap-output";
 
 /// The ID of the HTTP-to-HTTPS redirect row (T24.44, ADR-1053).
 pub const API_HTTP_REDIRECT: &str = "api-http-redirect";

@@ -54,7 +54,8 @@
   import { untrack } from 'svelte';
   import Picker from './Picker.svelte';
   import { api, ApiError, type S } from '../api';
-  import { can, session, signedIn } from '../session.svelte';
+  import GuardedChange from './GuardedChange.svelte';
+  import { can } from '../session.svelte';
   import { currentMode } from '../mode.svelte';
   import Drawer from './Drawer.svelte';
   import ErrorNote from './ErrorNote.svelte';
@@ -80,6 +81,7 @@
     draft = null,
     adminOnly,
     fileReadOnly = false,
+    guardedId,
     validate,
   }: {
     kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients' | 'sink' | 'map' | 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings' | 'dnstap_settings';
@@ -117,39 +119,15 @@
      *  removed here (the server refuses it, 409 `set_by_file`): its row says so instead of offering
      *  Edit (event sinks). */
     fileReadOnly?: boolean;
+    /** The guarded row that takes a change the server refuses as `guarded_only` (dnstap). */
+    guardedId?: string;
   } = $props();
-  // REQ: API-905 (T40.13, review) - a change the server holds to a sign-in from the last 10 minutes
-  // (403 `reauth_required`: the dnstap settings, widening) asks for the password here and then makes
-  // the same change again. Nothing typed is kept once it is sent.
-  let reauth = $state.raw<(() => Promise<void>) | null>(null);
-  let password = $state('');
-  let totp = $state('');
-  let needTotp = $state(false);
-  let reauthError = $state<unknown>(null);
-  const needsSignIn = (err: unknown) => err instanceof ApiError && err.code === 'reauth_required';
-  function cancelReauth() {
-    reauth = null;
-    password = totp = '';
-    needTotp = false;
-    reauthError = null;
-  }
-  async function signInAgain() {
-    const user = session.user?.username;
-    const retry = reauth;
-    if (!user || !retry) return;
-    busy = true;
-    reauthError = null;
-    try {
-      signedIn(await api.login({ username: user, password, totp: totp || undefined }));
-      cancelReauth();
-      busy = false;
-      await retry();
-    } catch (e) {
-      if (e instanceof ApiError && e.code === 'totp_required') needTotp = true;
-      else reauthError = e;
-      busy = false;
-    }
-  }
+  // REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - a setting that has a guarded row (`guardedId`): a
+  // change the server says is the guarded flow's (409 `guarded_only`: it widens what leaves the process)
+  // is not applied here. The server's own words are shown, and the same review the other guarded settings
+  // use takes over: the preview, the phrase to type, a sign-in from the last 10 minutes.
+  let guardedValue = $state.raw<Record<string, unknown> | null>(null);
+  const guardedOnly = (err: unknown) => !!guardedId && err instanceof ApiError && err.code === 'guarded_only';
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
     if (!formAction || !editing) return;
@@ -229,6 +207,7 @@
 
   function open(e?: S['ConfigEntry'], fill: Record<string, unknown> = {}, name = '') {
     preview = null;
+    guardedValue = null;
     result = null;
     formError = null;
     formOut = null;
@@ -311,6 +290,12 @@
   function sameNameError(): Error {
     return new Error(`A ${noun} called ${editing!.name.trim()} already exists. Pick another name.`);
   }
+  /** The server refused the draft as the guarded flow's: show its words and offer the review. */
+  function holdForReview(err: unknown) {
+    formError = err;
+    preview = null;
+    guardedValue = body();
+  }
   async function check(e: SubmitEvent) {
     e.preventDefault();
     if (!editing) return;
@@ -330,7 +315,8 @@
     try {
       preview = await api.putEntry(path, editing.name.trim(), body(), true);
     } catch (err) {
-      formError = err;
+      if (guardedOnly(err)) holdForReview(err);
+      else formError = err;
       preview = null;
     } finally {
       busy = false;
@@ -357,7 +343,7 @@
       // Saved and kept for Git: it exists now, so a second save is an update, not a new name.
       else if (editing) editing = { ...editing, isNew: false };
     } catch (err) {
-      if (needsSignIn(err)) reauth = apply;
+      if (guardedOnly(err)) holdForReview(err);
       else formError = err;
     } finally {
       busy = false;
@@ -372,8 +358,7 @@
       onchanged?.();
       if (result.keepInGit) editing = { name: e.name, isNew: false, values: {} };
     } catch (err) {
-      if (needsSignIn(err)) reauth = () => remove(e);
-      else error = err;
+      error = err;
     } finally {
       busy = false;
     }
@@ -388,33 +373,12 @@
   const toLines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 </script>
 
-{#snippet signIn()}
-  <div class="notice warn" role="alert" data-testid="reauth">
-    <strong>Confirm it's you.</strong> This change needs a sign-in from the last 10 minutes.
-    <label class="small">Password for {session.user?.username}
-      <input type="password" autocomplete="current-password" bind:value={password} aria-label="Your password" />
-    </label>
-    {#if needTotp}
-      <label class="small">Authenticator code
-        <input bind:value={totp} inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" />
-      </label>
-    {/if}
-    <ErrorNote error={reauthError} />
-    <div class="row">
-      <button type="button" class="primary" disabled={busy || !password} onclick={signInAgain} data-testid="reauth-go">Sign in again and apply</button>
-      <button type="button" disabled={busy} onclick={cancelReauth}>Cancel</button>
-    </div>
-    <span class="muted small">Signed in with a single sign-on provider? Sign out, sign in again, and retry.</span>
-  </div>
-{/snippet}
-
 <section class="card" data-testid={`editor-${kind}`}>
   <div class="head">
     <h2>{title}{#if help}<HelpButton id={help} />{:else}<HelpButton id="config-sources" />{/if}</h2>
     {#if writable && !singleton}<button onclick={() => open()}>Add {noun}</button>{/if}
   </div>
   <ErrorNote {error} />
-  {#if reauth && !editing}{@render signIn()}{/if}
   {#if entries.length === 0}
     <p class="empty">None yet.</p>
   {:else}
@@ -565,8 +529,20 @@
         {/each}
         {#if note}<p class="small" data-testid="editor-note">{note(editing.values)}</p>{/if}
         <ErrorNote error={formError} />
-        {#if reauth}{@render signIn()}{/if}
-        {#if preview}
+        {#if guardedValue && guardedId}
+          <div class="preview" data-testid="entry-guarded">
+            <GuardedChange
+              id={guardedId}
+              label={title}
+              value={guardedValue}
+              onDone={async () => {
+                await load();
+                onchanged?.();
+              }}
+            />
+            <div class="row"><button type="button" onclick={() => { guardedValue = null; formError = null; }}>Change it</button></div>
+          </div>
+        {:else if preview}
           <div class="preview" data-testid="entry-preview">
             <p><b>What this will do:</b> {preview.impact || 'Changes the configuration as shown.'}</p>
             {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}
