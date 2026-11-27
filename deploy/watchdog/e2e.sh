@@ -129,6 +129,8 @@ fi
 "$B" run -c "$E/t.toml" >> "$E/node2.log" 2>&1 & N_PID=$!
 for _ in $(seq 60); do [ "$(q 25901 a.wd.test)" = 10.0.0.1 ] && break; sleep 0.2; done
 [ "$(q 25901 a.wd.test)" = 10.0.0.1 ] || fail "the restarted node doesn't answer"
+# The listener answers before start-up reaches the watchdog's note, so poll for it as the checks below do.
+for _ in $(seq 40); do grep -q "the previous run was restarted by the watchdog" "$E/node2.log" && break; sleep 0.25; done
 grep -q "the previous run was restarted by the watchdog" "$E/node2.log" || { cp "$E/node2.log" "$E/node.log"; fail "the log doesn't say the previous run was restarted by the watchdog"; }
 for _ in $(seq 40); do
   # A here-string, not `echo | grep -q`: under pipefail, grep leaving at its first match fails the echo (EPIPE).
