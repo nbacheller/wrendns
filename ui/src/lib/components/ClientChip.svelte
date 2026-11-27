@@ -180,11 +180,16 @@
     return routerMatch ? [...kept, key] : kept;
   }
 
+  /** The device's own location pin, sent back so a rename, a regroup or a kind change keeps it (the write replaces the whole entry). */
+  function pin(): string | undefined {
+    return existing?.locationPinned && existing.location ? existing.location : undefined;
+  }
+
   async function simulateChange(): Promise<S['Simulation'] | null | undefined> {
     const n = newName.trim();
     const r = await api.putClient(
       existing?.name ?? n,
-      { name: n, match: matchKeys(), groups: chosen.length ? chosen : ['default'] },
+      { name: n, match: matchKeys(), groups: chosen.length ? chosen : ['default'], location: pin() },
       true,
       'true',
     );
@@ -207,6 +212,7 @@
         match: matchKeys(),
         groups: chosen.length ? chosen : ['default'],
         kind: kind || undefined,
+        location: pin(),
       });
       done =
         r.recentQueries > 0

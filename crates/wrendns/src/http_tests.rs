@@ -66,6 +66,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         lists: ArcSwapOption::empty(),
         qlog: None,
         file_config: ArcSwap::from_pointee(wrendns_config::Config::default()),
+        unheld: ArcSwapOption::empty(),
         config_files: Vec::new(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(false))),
         rollups: None,

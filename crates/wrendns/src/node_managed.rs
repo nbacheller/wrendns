@@ -79,6 +79,8 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     // REQ: DNS-010, OBS-016, OBS-020, OBS-019 (T27.5, T27.7, ADR-1007) — the zones and the SLO, probe
     // and upstream-check sections are shared too.
     crate::managed::ZONE,
+    // REQ: DSC-913 (T36.10a) - locations are shared too.
+    crate::managed::LOCATION,
     crate::managed::SLO,
     crate::managed::PROBE,
     crate::managed::UPSTREAM_CHECK,
@@ -183,6 +185,60 @@ fn rows_of(state: &State) -> Vec<(String, String, String)> {
     rows
 }
 
+/// REQ: DSC-908 (ADR-1104 point 5) - the kind that carries a device's `location` pin while the
+/// start-up hold stands, keyed by the device's name: the body is `{"location": slug}`. A build
+/// that does not know it skips the entry as any unknown kind (CLU-010), and a `client` row it
+/// reads has no field it would refuse.
+pub(crate) const LOCATION_PIN: &str = "location_pin";
+
+/// REQ: DSC-908 (ADR-1104 point 5) - `blob` as published while the start-up hold stands: the
+/// `location` rows stay (a build that does not know the kind skips them), and a pin moves from
+/// its `client` row into a `location_pin` entry of the same device, so a member that does not
+/// know the field never receives it on a row it parses, and a replica promoted during the hold
+/// adopts both (the stored rows are not touched).
+pub(crate) fn strip_held(blob: &[u8]) -> Vec<u8> {
+    let Ok(mut doc) = serde_json::from_slice::<Doc>(blob) else {
+        return blob.to_vec();
+    };
+    let mut pins = Vec::new();
+    for e in &mut doc.entries {
+        if e.kind == crate::managed::CLIENT
+            && let Some(o) = e.body.as_object_mut()
+            && let Some(pin) = o.remove("location")
+            && !pin.is_null()
+        {
+            pins.push(Entry {
+                kind: LOCATION_PIN.to_owned(),
+                name: e.name.clone(),
+                body: serde_json::json!({ "location": pin }),
+            });
+        }
+    }
+    doc.entries.extend(pins);
+    serde_json::to_vec(&doc).unwrap_or_else(|_| blob.to_vec())
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - puts each `location_pin` entry back on its device's `client`
+/// entry and drops the pin entries: the rows a promoted replica adopts are the operator's, pins
+/// included. A pin whose device is not among the entries is dropped.
+pub(crate) fn fold_pins(entries: Vec<Entry>) -> Vec<Entry> {
+    let (pins, mut rest): (Vec<Entry>, Vec<Entry>) =
+        entries.into_iter().partition(|e| e.kind == LOCATION_PIN);
+    for p in pins {
+        let Some(pin) = p.body.get("location").cloned() else {
+            continue;
+        };
+        if let Some(o) = rest
+            .iter_mut()
+            .find(|e| e.kind == crate::managed::CLIENT && e.name == p.name)
+            .and_then(|e| e.body.as_object_mut())
+        {
+            o.insert("location".to_owned(), pin);
+        }
+    }
+    rest
+}
+
 /// The blob to publish from `state`'s rows.
 pub(crate) fn export(state: &State) -> Vec<u8> {
     encode(&rows_of(state))
@@ -234,7 +290,7 @@ pub(crate) fn parse_shared(bytes: &[u8]) -> Result<Option<Vec<Entry>>, String> {
     Ok(Some(
         doc.entries
             .into_iter()
-            .filter(|e| SHARED_KINDS.contains(&e.kind.as_str()))
+            .filter(|e| SHARED_KINDS.contains(&e.kind.as_str()) || e.kind == LOCATION_PIN)
             .collect(),
     ))
 }
@@ -616,6 +672,61 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DSC-908 (ADR-1104 point 5) - the blob published during the start-up hold keeps the
+    /// `location` rows, carries each pin as a `location_pin` entry instead of a field of the
+    /// `client` row, and a build without those kinds reads every device from it; a promoted
+    /// replica folds the pins back onto the devices.
+    #[test]
+    fn dsc_908_strip_held_moves_pins_to_their_own_kind_and_keeps_the_rows() {
+        let rows = vec![
+            (
+                crate::managed::LOCATION.to_owned(),
+                "lab".to_owned(),
+                r#"{"networks":["192.0.2.0/24"]}"#.to_owned(),
+            ),
+            (
+                crate::managed::CLIENT.to_owned(),
+                "laptop".to_owned(),
+                r#"{"match":["192.0.2.9"],"location":"lab"}"#.to_owned(),
+            ),
+            (
+                crate::managed::CLIENT.to_owned(),
+                "tv".to_owned(),
+                r#"{"match":["192.0.2.10"]}"#.to_owned(),
+            ),
+        ];
+        let full = encode(&rows);
+        let held = strip_held(&full);
+        let got = parse_shared(&held).unwrap().unwrap();
+        assert!(
+            got.iter().any(|e| e.kind == crate::managed::LOCATION),
+            "the rows stay: {got:?}"
+        );
+        let dev = got
+            .iter()
+            .find(|e| e.name == "laptop" && e.kind == crate::managed::CLIENT)
+            .unwrap();
+        assert!(dev.body.get("location").is_none(), "{dev:?}");
+        assert!(dev.body.get("match").is_some(), "the device itself stays");
+        let pins: Vec<_> = got.iter().filter(|e| e.kind == LOCATION_PIN).collect();
+        assert_eq!(pins.len(), 1, "only the pinned device: {got:?}");
+        assert_eq!(pins[0].name, "laptop");
+        assert_eq!(pins[0].body["location"], "lab");
+        // A build that knows neither kind reads the devices and skips the rest.
+        let old = parse_kinds(&held, &[crate::managed::CLIENT]).unwrap();
+        assert!(old.iter().all(|e| e.kind == crate::managed::CLIENT));
+        // The promoted replica's rows have the pin back and no pin entries.
+        let folded = fold_pins(got);
+        assert!(folded.iter().all(|e| e.kind != LOCATION_PIN));
+        let dev = folded.iter().find(|e| e.name == "laptop").unwrap();
+        assert_eq!(dev.body["location"], "lab");
+        // The full blob still has them on the row (the stored rows are untouched).
+        let all = parse_shared(&full).unwrap().unwrap();
+        assert!(all.iter().any(|e| e.kind == crate::managed::LOCATION));
+        // A blob that is not a document is returned as it was.
+        assert_eq!(strip_held(b"nope"), b"nope".to_vec());
+    }
 
     fn provider_body(secret_ref: Option<&str>) -> String {
         let mut v = serde_json::json!({

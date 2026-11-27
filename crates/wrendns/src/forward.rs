@@ -241,6 +241,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Record => "record",
                 ManagedKind::Forward => "forward",
                 ManagedKind::Zone => "zone",
+                ManagedKind::Location => "location",
                 ManagedKind::Rule => "rule",
                 ManagedKind::Upstream => "upstream",
                 ManagedKind::UpstreamGroup => "upstream_group",

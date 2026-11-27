@@ -194,7 +194,7 @@ pub(crate) struct State<'a> {
     /// REQ: FLT-010 — which schedules are on right now.
     pub(crate) schedules: &'a ScheduleNow,
     /// REQ: DNS-023 — the device names answered in DNS (`None`: off).
-    pub(crate) devices: Option<&'a wrendns_policy::LocalData>,
+    pub(crate) devices: Option<&'a crate::device_dns::DeviceNames>,
 }
 
 /// Explains `req` against `st`, reading list sources through `source(list name)`.
@@ -665,6 +665,26 @@ fn special_key(q: &wrendns_proto::Query<'_>, s: Special, no_ddr: bool) -> Option
     })
 }
 
+/// REQ: DNS-023, DSC-909, DSC-911, DSC-916 (T36.10a) - what an answer from the device names says
+/// about itself, naming the location whose table answered.
+fn device_words(hit: crate::device_dns::Hit<'_>) -> String {
+    use crate::device_dns::Hit;
+    match hit {
+        Hit::Device => {
+            "answered from the devices WrenDNS knows by name ([local] device_domain)".to_owned()
+        }
+        Hit::Location(l) => format!(
+            "answered from the device names of location {l} ([[location]] {l}; a device on its networks is named under it)"
+        ),
+        Hit::Flat(l) => format!(
+            "answered from the flat device names kept for location {l} ([[location]] {l} flat_names)"
+        ),
+        Hit::NoSuchName(l) => format!(
+            "no such name: location {l} owns this subtree and no device, node or record of it has the name ([[location]] {l})"
+        ),
+    }
+}
+
 /// `spec/03` §3 steps 2–5 (access, ANY, special names, local records and zones): the outcome
 /// if one of them answers, else the special-name class to continue with. Rate limiting
 /// depends on the moment, not the name, so it isn't explained.
@@ -673,7 +693,7 @@ pub(crate) fn answered_early(
     q: &wrendns_proto::Query<'_>,
     client: IpAddr,
     groups: &[Box<str>],
-    devices: Option<&wrendns_policy::LocalData>,
+    devices: Option<&crate::device_dns::DeviceNames>,
 ) -> Result<Option<Special>, (Outcome, String)> {
     if !wrendns_policy::is_allowed(&policy.allowed, client) {
         return Err((
@@ -724,21 +744,21 @@ pub(crate) fn answered_early(
                     && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
             });
             // REQ: DNS-023 — a device name answers after a zone's own records, before its
-            // NXDOMAIN (the pipeline's `local_answer`).
+            // NXDOMAIN (the pipeline's `local_answer`). REQ: DSC-912 (T36.10a) - the words name the
+            // location whose table answered.
             let device = || {
                 policy
                     .device_dns
                     .as_ref()
                     .and(devices)
-                    .is_some_and(|d| d.answer(q, &mut [0u8; 4096], None).is_some())
+                    .and_then(|d| d.lookup(q, Some(client), &mut [0u8; 4096], None, true))
+                    .map(|(_, hit)| device_words(hit))
             };
             if let Some(z) = zone {
-                if z.data.answer(q, &mut out, None).is_none() && device() {
-                    return Err((
-                        Outcome::Local,
-                        "answered from the devices WrenDNS knows by name ([local] device_domain)"
-                            .into(),
-                    ));
+                if z.data.answer(q, &mut out, None).is_none()
+                    && let Some(words) = device()
+                {
+                    return Err((Outcome::Local, words));
                 }
                 return Err((
                     Outcome::Local,
@@ -748,12 +768,8 @@ pub(crate) fn answered_early(
                     ),
                 ));
             }
-            if device() {
-                return Err((
-                    Outcome::Local,
-                    "answered from the devices WrenDNS knows by name ([local] device_domain)"
-                        .into(),
-                ));
+            if let Some(words) = device() {
+                return Err((Outcome::Local, words));
             }
             return Ok(special);
         }

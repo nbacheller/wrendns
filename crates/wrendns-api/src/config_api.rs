@@ -100,6 +100,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         )
         // REQ: DNS-010 (T27.7) — authoritative zones made through the API or UI.
         .route("/api/v1/zones/{name}", put(put_zone).delete(delete_zone))
+        // REQ: DSC-913 (T36.10a) — locations made through the API or UI.
+        .route(
+            "/api/v1/locations/{slug}",
+            put(put_location).delete(delete_location),
+        )
         // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the tuning
         // sections (one entry each).
         .route(
@@ -920,6 +925,42 @@ async fn backup_response(
         }
         Err(e) => no_store(e.into_response()),
     }
+}
+
+/// REQ: DSC-913, DSC-910 (ADR-1104, the owner's decision of 2026-11-26) - an agent token that
+/// would set, change or remove a device's location pin needs `config:write:locations` as well as
+/// `config:write:clients`. A write that leaves the pin as it is (a rename or a regroup that keeps
+/// it) passes. `existing` is the device `name` names, if any (read off the runtime by the caller).
+fn pin_guard(
+    p: &crate::auth::Principal,
+    existing: Option<&crate::model::ClientInfo>,
+    op: &Op,
+) -> Result<(), Problem> {
+    let Some(a) = p.agent.as_ref() else {
+        return Ok(());
+    };
+    if a.scopes.contains("config:write:locations") {
+        return Ok(());
+    }
+    let Op::Client(input) = op else {
+        return Ok(());
+    };
+    let before = existing
+        .filter(|c| c.location_pinned)
+        .and_then(|c| c.location.as_deref());
+    let after = input
+        .as_ref()
+        .and_then(|i| i.location.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if before == after {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Forbidden,
+        "setting, changing or removing a device's location pin needs the `config:write:locations` scope as well as `config:write:clients`",
+    )
+    .hint("Create an agent token with both scopes (POST /api/v1/tokens with kind = agent), or leave the pin as it is."))
 }
 
 /// REQ: AGT-004 — an agent restricted to a group changes only that group's devices, and
@@ -3511,6 +3552,7 @@ impl Op {
             Self::Managed(ManagedKind::Record, _) => "record",
             Self::Managed(ManagedKind::Forward, _) => "forward",
             Self::Managed(ManagedKind::Zone, _) => "zone",
+            Self::Managed(ManagedKind::Location, _) => "location",
             Self::Managed(ManagedKind::Rule, _) => "rule",
             Self::Managed(ManagedKind::Upstream, _) => "upstream",
             Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",
@@ -3606,12 +3648,15 @@ fn json_of<T: serde::Serialize>(v: &T) -> String {
 /// Names devices across every view: the query log, live tail, charts, and history (names
 /// are resolved when read, so earlier queries are relabelled too). To rename, send the new
 /// `name` in the body. Devices defined in the config files are read-only here (409). Needs
-/// the operator role (or a `write` token).
+/// the operator role (or a `write` token). An agent token also needs `config:write:locations`
+/// when the write would set, change or remove the device's location pin; this is a full
+/// replace, so leaving `location` out removes the pin.
 #[utoipa::path(put, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's current name (or the name for a new one)."), DryRun),
     request_body = ClientInput,
     responses(
         (status = 200, body = ClientChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "An agent token without `config:write:locations` tried to set, change or remove the device's location pin."),
         (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused for another request."),
         (status = 412, body = Problem, description = "If-Match: the config changed since that version."),
         (status = 422, body = Problem, description = "The resulting configuration is invalid (e.g. an unknown group)."),
@@ -3646,11 +3691,13 @@ pub(crate) async fn put_client(
 ///
 /// Its queries, past and future, go back to showing the address, and it leaves its groups
 /// (the `default` group applies). Devices from the config files can't be deleted here (409).
-/// Needs the operator role (or a `write` token).
+/// Needs the operator role (or a `write` token). An agent token also needs
+/// `config:write:locations` when the device has a location pin (deleting it removes the pin).
 #[utoipa::path(delete, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's name."), DryRun),
     responses(
         (status = 200, body = ClientChange, description = "The result."),
+        (status = 403, body = Problem, description = "An agent token without `config:write:locations` tried to delete a device that has a location pin."),
         (status = 404, body = Problem, description = "No device by that name was created through the API."),
         (status = 409, body = Problem, description = "Defined in the config files."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
@@ -3832,6 +3879,87 @@ pub(crate) async fn put_zone(
         request,
         name,
         Op::Managed(ManagedKind::Zone, Some(v)),
+    )
+    .await
+}
+
+/// Create or replace a location (DSC-913, T36.10a, ADR-1081, ADR-1096).
+///
+/// A location is a part of the network with a device-name subtree of its own: a device on one of
+/// its `networks` answers as `<device>.<slug>.<domain>` (its PTR is that name), the old flat name
+/// keeps answering while `flatNames` is on, a `private` location's names answer only to clients in
+/// its networks, and a name in its subtree that is no device gets "no such name" locally. The
+/// fields left out take their defaults. A location the configuration files define is read-only
+/// here (409 `set_by_file`). The first location is refused (409 `upgrade_required`, dry runs too)
+/// while a cluster member's build does not know locations, naming the member. Needs the operator
+/// role (or the `config:write:locations` agent scope, with a reason).
+#[utoipa::path(put, path = "/api/v1/locations/{slug}", tag = "config",
+    params(("slug" = String, Path, description = "The location's slug (a DNS label, e.g. home)."), DryRun),
+    request_body = crate::model::LocationInput,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "Defined in the configuration files (`set_by_file`), or a cluster member does not know locations yet (`upgrade_required`)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "The slug, a network, the domain or the visibility is invalid, or two locations overlap."),
+    ))]
+pub(crate) async fn put_location(
+    State((backend, auth)): State<Ctx>,
+    Path(slug): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<crate::model::LocationInput>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /locations/{slug} {}", json_of(&input));
+    let v = serde_json::to_value(&input).unwrap_or_default();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        slug,
+        Op::Managed(ManagedKind::Location, Some(v)),
+    )
+    .await
+}
+
+/// Remove a location made through the API (DSC-913, T36.10a).
+///
+/// Its devices go back to the names they had without it (`<device>.<device_domain>`), and a device
+/// pinned to it (`[[client]] location`) must be unpinned first (422). A location the configuration
+/// files define can't be removed here (409).
+#[utoipa::path(delete, path = "/api/v1/locations/{slug}", tag = "config",
+    params(("slug" = String, Path, description = "The location's slug."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Not found."),
+        (status = 409, body = Problem, description = "Defined in the configuration files (`set_by_file`)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A device is pinned to it."),
+    ))]
+pub(crate) async fn delete_location(
+    State((backend, auth)): State<Ctx>,
+    Path(slug): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /locations/{slug}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        slug,
+        Op::Managed(ManagedKind::Location, None),
     )
     .await
 }
@@ -4074,7 +4202,12 @@ async fn write_inner(
     let simulate = simulate.filter(|_| crate::simulate_api::agent_may_simulate(&p, None).is_ok());
     // REQ: CLU-004 (upstream #7) — only a group-restricted agent's check reads the devices;
     // that read waits on the cluster on a replica, so it runs off the runtime.
-    let existing = if p.agent.as_ref().is_some_and(|a| a.group.is_some()) {
+    // REQ: DSC-913 - the pin check reads the device too (an agent without the locations scope).
+    let needs_device = matches!(op, Op::Client(_))
+        && p.agent
+            .as_ref()
+            .is_some_and(|a| a.group.is_some() || !a.scopes.contains("config:write:locations"));
+    let existing = if needs_device {
         let bk = Arc::clone(&backend);
         let device = name.clone();
         match blocking(move || Ok(bk.clients().into_iter().find(|c| c.name == device))).await {
@@ -4085,6 +4218,9 @@ async fn write_inner(
         None
     };
     if let Err(e) = group_guard(&p, existing.as_ref(), &name, &op) {
+        return e.into_response();
+    }
+    if let Err(e) = pin_guard(&p, existing.as_ref(), &op) {
         return e.into_response();
     }
     let expect = match expected_version(&headers) {

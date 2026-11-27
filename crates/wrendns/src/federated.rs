@@ -2940,6 +2940,11 @@ impl Backend for Federated {
             None => local,
         }
     }
+    // REQ: DSC-913 (T36.10a) — the locations are the shared configuration; the device names under
+    // them are this node's table.
+    fn locations(&self) -> wrendns_api::model::LocationList {
+        self.local.locations()
+    }
     // REQ: UPS-004 (T24.36) — the catalog is the same everywhere; the IPv6 route is this node's.
     fn upstream_presets(&self) -> wrendns_api::model::UpstreamPresets {
         self.local.upstream_presets()

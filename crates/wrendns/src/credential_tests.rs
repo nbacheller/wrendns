@@ -190,7 +190,13 @@ pub(crate) fn harness_toml(
             let ok = s2.auth.get().is_some_and(|a| {
                 let e = crate::managed::entries(a.state());
                 crate::managed::merge(&s2.file_config.load(), &e)
-                    .map(|c| {
+                    .map(|mut c| {
+                        // As the server's reload does while the start-up hold stands (a test
+                        // opts in by setting `unheld`): keep the build, strip the served one.
+                        if s2.unheld.load().is_some() {
+                            s2.unheld.store(Some(Arc::new(c.clone())));
+                            crate::upgrade_gate::HOLD.apply(&mut c);
+                        }
                         crate::server::follow_allowed(&s2, &c);
                         s2.config.store(Arc::new(c));
                     })

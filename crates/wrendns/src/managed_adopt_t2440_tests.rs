@@ -653,6 +653,13 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
         &json!({"name": "lab.example", "negative_ttl": 300,
             "record": [{"name": "www.lab.example", "type": "A", "value": "192.0.2.9"}]}),
     );
+    // REQ: DSC-913 (T36.10a) - a location by slug (it needs a domain: its own).
+    put_row(
+        &a,
+        "location",
+        "home",
+        &json!({"slug": "home", "networks": ["192.0.2.0/24"], "domain": "example.net"}),
+    );
     let file = crate::managed_adopt_tests::file_of(&a);
     let merged = crate::managed::merge(&file, &entries(a.auth.state())).unwrap();
     let derived = crate::managed_adopt::derive(&merged, &file);

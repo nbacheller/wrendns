@@ -46,6 +46,12 @@
         : `Health: ${words[level]?.toLowerCase() ?? level} (${h.reasons.length} reason${h.reasons.length === 1 ? '' : 's'})`,
   );
 
+  // Help for the reasons whose cause is not obvious from the summary.
+  const help: Record<string, string> = {
+    locations_held:
+      'This node started with locations (or device pins) in its configuration while the other cluster members had not all been heard from. It answers without them, and does not publish them, until every member is heard and knows locations. They are then applied without a restart and this reason clears. Upgrade a member that is named here.',
+  };
+
   function outside(e: MouseEvent) {
     const t = e.target as Node;
     if (open && wrap && !wrap.contains(t) && !panel?.contains(t)) open = false;
@@ -78,7 +84,7 @@
           {#each h.reasons as r, i (i)}
             <li class={r.level}>
               <span class="lvl" role="img" aria-label={r.level === 'severe' ? 'Severe' : 'Degraded'}><Icon name={`health-${r.level === 'severe' ? 'severe' : 'degraded'}`} size={16} /></span>
-              <span class="small grow">{#if r.node}<strong>{r.node}</strong>: {/if}{r.summary}</span>
+              <span class="small grow">{#if r.node}<strong>{r.node}</strong>: {/if}{r.summary}{#if help[r.code]}<br /><span class="muted" data-testid={`health-help-${r.code}`}>{help[r.code]}</span>{/if}</span>
               {#if r.link}<a class="small" href={r.link} onclick={() => (open = false)}>Look</a>{/if}
             </li>
           {/each}

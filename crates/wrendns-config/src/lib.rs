@@ -20,6 +20,7 @@ pub mod discovery;
 mod env;
 pub mod gate;
 pub mod guarded;
+pub mod location;
 pub mod mute;
 pub mod safesearch;
 pub mod schedule;
@@ -42,6 +43,7 @@ pub use discovery::{
 };
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use gate::{DefaultGate, HostFacts, default_gate, gate_warnings, is_wildcard};
+pub use location::{LocationConfig, LocationNet, LocationVisibility, device_label};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, SourceSpec, parse_rfc3339, parse_source};
 pub use validate::{

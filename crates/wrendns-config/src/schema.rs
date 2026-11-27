@@ -44,6 +44,10 @@ pub struct Config {
     pub group: Vec<GroupConfig>,
     /// REQ: FLT-010 (T7.10) — weekly schedules that groups use (`schedules` in a group).
     pub schedule: Vec<ScheduleConfig>,
+    /// REQ: DSC-908 (T36.10a, ADR-1081, ADR-1096) - locations: parts of the network with a device
+    /// name subtree of their own. Shared by the cluster; the first entry waits for every member's
+    /// build to know the table (the compatibility gate).
+    pub location: Vec<crate::location::LocationConfig>,
     /// REQ: OBS-038 (ADR-161) — kinds of anomaly finding muted for devices or groups. Shared by
     /// the cluster (the `[telemetry]` section is not), so one entry reaches every node.
     pub anomaly_mute: Vec<AnomalyMuteConfig>,
@@ -159,6 +163,7 @@ impl Default for Config {
             list: Vec::new(),
             group: Vec::new(),
             schedule: Vec::new(),
+            location: Vec::new(),
             anomaly_mute: Vec::new(),
             zone: Vec::new(),
             alerts: AlertsConfig::default(),
@@ -1788,6 +1793,10 @@ pub struct ClientConfig {
     /// over any guess; `unknown` stops the guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<DeviceClass>,
+    /// REQ: DSC-910 (T36.10a, ADR-1096) - pin the device to a location (a `[[location]]` slug),
+    /// whatever its address: the manual override of the location its network gives it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<SafeString>,
 }
 
 /// REQ: FLT-005, FLT-006 (T6.12, ADR-067) — a quick rule: allow or block a domain and its

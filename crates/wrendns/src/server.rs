@@ -1306,7 +1306,18 @@ fn start_guarded(
 /// Runs until SIGTERM/SIGINT. SIGHUP reloads config from `files`.
 // The startup sequence and the main loop read best in one place.
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
+pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()> {
+    // REQ: DSC-908 (T36.10a, ADR-1104 point 5) - a primary that starts with locations holds them
+    // out of what it serves and publishes until the members have been heard and all know them.
+    let primary = crate::replication::is_clustered_primary(&cfg);
+    let before_hold = cfg.clone();
+    let already = crate::replication::published_uses_locations(&cfg);
+    if crate::upgrade_gate::HOLD.at_start(&mut cfg, primary, already) {
+        warn!(
+            "locations: held until every cluster member is heard from and knows them; DNS is served without them"
+        );
+    }
+    let unheld_at_start = crate::upgrade_gate::HOLD.active().then_some(before_hold);
     // REQ: OPS-007 — before any listener binds: a SIGTERM that comes once the node answers is
     // held until the loop below and drained, instead of ending the process at once.
     let mut term = signal(SignalKind::terminate())?;
@@ -1480,6 +1491,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
+        unheld: ArcSwapOption::new(unheld_at_start.map(Arc::new)),
         file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| {
             // The origin labels (file / API) are only as good as this; say so loudly.
             warn!(
@@ -1691,6 +1703,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cfg.clients.mdns,
         http_stopped.clone(),
     ));
+    // REQ: DSC-908 (ADR-1104 point 5) - the start-up hold ends without a restart once the gate passes.
+    if crate::upgrade_gate::HOLD.active() {
+        crate::upgrade_gate::ensure_release_loop(&sources, &http_stopped);
+    }
     // REQ: T8.3 — device names from mDNS announcements (read at startup).
     if cfg.clients.mdns {
         tokio::spawn(crate::mdns::run(
@@ -1943,6 +1959,21 @@ fn save_cache(cfg: &Config, cache: &Cache) {
     }
 }
 
+/// REQ: DSC-908 (ADR-1096 point 5) - the compatibility gate a reload runs on a primary or a
+/// standalone node. A replica applies what its primary published (judged there).
+pub(crate) fn reload_gate(
+    sources: &http::Sources,
+    current: &Config,
+    new: &Config,
+) -> Result<(), String> {
+    let replica = crate::replication::follows_primary(new)
+        || sources.cluster.as_deref().is_some_and(|c| !c.is_primary());
+    if replica {
+        return Ok(());
+    }
+    crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new)
+}
+
 /// REQ: DNS-014, API-901 (T27.14h) - the list the web UI and the API gate on follows the configuration
 /// at each reload, as the DNS listeners' does.
 pub(crate) fn follow_allowed(sources: &http::Sources, cfg: &Config) {
@@ -1981,7 +2012,24 @@ async fn reload(
         error!("reload failed: configuration invalid; still serving the previous configuration");
         return false;
     };
-    let new = crate::replication::effective(&file);
+    let mut new = crate::replication::effective(&file);
+    // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the locations stay out;
+    // the build with them is kept for the API's read paths.
+    sources.unheld.store(
+        crate::upgrade_gate::HOLD
+            .active()
+            .then(|| Arc::new(new.clone())),
+    );
+    crate::upgrade_gate::HOLD.apply(&mut new);
+    // REQ: DSC-908 (T36.10a, ADR-1096 point 5) - the first location is held while a cluster member's
+    // build does not know the table: a reload that adds one is refused, the previous configuration
+    // keeps serving, and the refusal names the member. Every cause is judged here (SIGHUP, an API
+    // change, a Git commit): a Git commit is judged nowhere else, and a file it left behind is
+    // held on the next reload of any kind until the members are upgraded.
+    if let Err(why) = reload_gate(sources, current, &new) {
+        error!("reload refused: {why}; still serving the previous configuration");
+        return false;
+    }
     warn_ui_gates(&file, &new);
     // Unchanged upstream config keeps the running router: its health state, pooled
     // connections, and bootstrap cache survive the reload (T2.7).
@@ -2848,5 +2896,127 @@ own_lookups = true
                 "{bad}: {errs:?}"
             );
         }
+    }
+
+    /// REQ: DSC-908 (ADR-1096 point 5, ADR-1104 point 5) - `reload` itself, not only the check it
+    /// runs: a file that adds the first location is refused while a member's build does not know
+    /// the table (the running configuration stays); it is applied once every member announces the
+    /// feature; and while the start-up hold stands the same reload leaves the entries out.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn dsc_908_reload_applies_the_gate_and_the_start_up_hold() {
+        use crate::secrets_api_tests::{GATE, pair, pair_features};
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                crate::upgrade_gate::HOLD.clear();
+            }
+        }
+        let _turn = GATE.lock().await;
+        let _clear = Clear;
+        let dir = tempfile::tempdir().unwrap();
+        let base = format!(
+            "[node]
+data_dir = {:?}
+[local]
+device_domain = \"home.arpa\"
+",
+            dir.path()
+        );
+        let file = dir.path().join("wrendns.toml");
+        std::fs::write(&file, &base).unwrap();
+        let files = vec![file.clone()];
+        let with = format!(
+            "{base}[[location]]
+slug = \"home\"
+networks = [\"192.0.2.0/24\"]
+[[client]]
+name = \"tv\"
+match = [\"192.0.2.9\"]
+location = \"home\"
+"
+        );
+        let mut current = load_files(&files).unwrap();
+        let pipeline = crate::pipeline::tests_support::pipeline_from(&current);
+        let mut listeners = test_listeners();
+        let mut health = tokio::spawn(async {});
+        let mut lists = None;
+        let sources = |c: &Arc<wrendns_cluster::net::Cluster>| {
+            let (reload, _rx) = tokio::sync::mpsc::channel(1);
+            Arc::new(http::Sources {
+                reload,
+                cluster: Some(Arc::clone(c)),
+                ..crate::http::tests::sources_in(dir.path())
+            })
+        };
+
+        // An older member: refused, and the running configuration is untouched.
+        let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+        std::fs::write(&file, &with).unwrap();
+        let src = sources(&old.primary);
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(!ok && current.location.is_empty(), "refused: {ok}");
+        let _ = old.stop.send(true);
+
+        // Every member announces the feature, but the start-up hold stands: applied without them.
+        let new = pair("1.1.0", "1.1.0").await;
+        let src = sources(&new.primary);
+        let mut c = current.clone();
+        c.location = load_files(&files).unwrap().location;
+        assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(ok && current.location.is_empty(), "held out: {ok}");
+        assert!(
+            current.client.iter().all(|c| c.location.is_none()),
+            "no pin is served while held: {:?}",
+            current.client
+        );
+        assert!(
+            src.unheld
+                .load()
+                .as_ref()
+                .is_some_and(|c| !c.location.is_empty()),
+            "the build with the entries is kept for the API"
+        );
+        // The hold ends: the next reload applies them.
+        crate::upgrade_gate::HOLD.clear();
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(ok && current.location.len() == 1, "applied: {ok}");
+        assert!(
+            current.client.iter().any(|c| c.location.is_some()),
+            "the pin is back once the hold ends"
+        );
+        assert!(src.unheld.load().is_none());
+        let _ = new.stop.send(true);
     }
 }

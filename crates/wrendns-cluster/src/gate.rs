@@ -62,10 +62,10 @@ pub fn own_features() -> Vec<String> {
     ANNOUNCED.iter().map(|f| f.name().to_owned()).collect()
 }
 
-/// The features this build handles end to end. `Locations` and `DnsProviders` join the list in
-/// the commits that bring their tables (T36.10a, T36.10b): a build cut before then does not
-/// know them, and announcing them would let the gate pass a section such a member refuses.
-const ANNOUNCED: [Feature; 2] = [Feature::PemSecrets, Feature::Access];
+/// The features this build handles end to end. `DnsProviders` joins the list in the commit that
+/// brings its table (T36.10b): a build cut before then does not know it, and announcing it would
+/// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
+const ANNOUNCED: [Feature; 3] = [Feature::Locations, Feature::PemSecrets, Feature::Access];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
 /// field, or one that has not reported yet) knows none.
@@ -177,19 +177,27 @@ mod tests {
     #[test]
     fn dsc_908_a_peer_knows_what_it_announces_and_nothing_else() {
         assert!(knows(&own_features(), Feature::PemSecrets));
+        assert!(knows(&own_features(), Feature::Locations));
         assert!(knows(&feats(&[Feature::Locations]), Feature::Locations));
         assert!(!knows(&feats(&[Feature::Locations]), Feature::PemSecrets));
         assert!(!knows(&[], Feature::Locations));
     }
 
-    // REQ: DSC-908 - a build announces only what it handles: the tables of locations and DNS
-    // providers are not in this build, so it must not claim them (a member cut before the
-    // tables land would otherwise pass the gate and then refuse the section).
+    // REQ: DSC-908 - a build announces only what it handles: the table of DNS providers is not
+    // in this build, so it must not claim it (a member cut before the table lands would
+    // otherwise pass the gate and then refuse the section). Locations are in (T36.10a).
     #[test]
     fn dsc_908_a_build_announces_only_the_features_it_handles() {
         let own = own_features();
-        assert_eq!(own, vec!["pem_secrets".to_owned(), "access".to_owned()]);
-        assert!(!knows(&own, Feature::Locations));
+        assert_eq!(
+            own,
+            vec![
+                "locations".to_owned(),
+                "pem_secrets".to_owned(),
+                "access".to_owned()
+            ]
+        );
+        assert!(knows(&own, Feature::Locations));
         assert!(!knows(&own, Feature::DnsProviders));
     }
 

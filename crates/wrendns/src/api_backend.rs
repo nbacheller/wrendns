@@ -2294,6 +2294,7 @@ impl Backend for ApiBackend {
         let managed = managed_names(&self.src);
         let state = self.src.pipeline.current();
         let clients = &state.policy.clients;
+        let names = self.src.pipeline.device_names.load();
         // REQ: OBS-025 — what each named device looks like (its first address seen).
         let identities: std::collections::HashMap<String, wrendns_api::model::DeviceIdentity> =
             self.src
@@ -2302,10 +2303,11 @@ impl Backend for ApiBackend {
                 .into_iter()
                 .map(|i| (i.client.clone(), i))
                 .collect();
-        self.src
-            .config
-            .load()
-            .client
+        // REQ: DSC-908, DSC-910 (ADR-1104 point 5) - while the start-up hold stands the running
+        // configuration has no pins; the devices are read from the unheld one, so an edit that
+        // copies the entry back (the UI form, MCP) keeps the pin it has stored.
+        let cfg = unheld_config(&self.src);
+        cfg.client
             .iter()
             .map(|c| {
                 let mut info = client_info(c, &managed);
@@ -2316,6 +2318,12 @@ impl Backend for ApiBackend {
                 info.identity = device_addresses(c)
                     .into_iter()
                     .find_map(|a| identities.get(&a).cloned());
+                // REQ: DSC-910 (T36.10a) - the location in effect, and whether it is a pin.
+                if let Some((slug, name, pinned)) = crate::locations::client_location(c, &names) {
+                    info.location = Some(slug);
+                    info.location_name = Some(name);
+                    info.location_pinned = pinned;
+                }
                 info
             })
             .collect()
@@ -3018,6 +3026,12 @@ impl Backend for ApiBackend {
         // REQ: DSC-908, CLD-920 (ADR-1096 point 5) — a first use the upgrade gate is holding back.
         reasons.extend(crate::health::upgrade_gate_reasons(
             &crate::upgrade_gate::standing(self.src.cluster.as_deref()),
+        ));
+        // REQ: DSC-908 (ADR-1104 point 5) - locations held out since start-up until the members are checked.
+        reasons.extend(crate::health::locations_held_reasons(
+            crate::upgrade_gate::HOLD
+                .reason(self.src.cluster.as_deref())
+                .as_deref(),
         ));
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
@@ -3804,6 +3818,31 @@ impl Backend for ApiBackend {
     // REQ: API-011 — names on my network and domains sent elsewhere (ADR-042).
     fn local_names(&self) -> Vec<LocalName> {
         self.list_local_names()
+    }
+
+    // REQ: DSC-913 (T36.10a) — the locations, with this node's device names.
+    fn locations(&self) -> wrendns_api::model::LocationList {
+        // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the list is the
+        // configured table (not the stripped running one), marked held.
+        let held = crate::upgrade_gate::HOLD.active();
+        let cfg = if held {
+            unheld_config(&self.src)
+        } else {
+            self.src.config.load_full()
+        };
+        let file = self.src.file_config.load();
+        let names = self.src.pipeline.device_names.load();
+        let mut list = crate::locations::list(&cfg, &file, &names, crate::pipeline::unix_now());
+        if held {
+            list.held = true;
+            list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+            // REQ: DSC-908 - one location read on its own carries the marker too.
+            for l in &mut list.items {
+                l.held = true;
+                l.held_reason.clone_from(&list.held_reason);
+            }
+        }
+        list
     }
 
     // REQ: DNS-018 (T8.6) — the zones as loaded.
@@ -5010,6 +5049,9 @@ fn client_info(c: &wrendns_config::ClientConfig, managed: &[String]) -> ClientIn
         effective_groups: c.groups.iter().map(ToString::to_string).collect(),
         groups_from: "device".to_owned(),
         kind: c.kind.map(|k| k.as_str().to_owned()),
+        location: c.location.as_ref().map(ToString::to_string),
+        location_name: None,
+        location_pinned: c.location.is_some(),
         identity: None,
     }
 }
@@ -5156,6 +5198,18 @@ fn client_impact(
     (recent_queries, impact)
 }
 
+/// The configuration with the start-up hold's entries in it: the running one, except while the
+/// hold stands, when it is the build kept before the strip (never rebuilt on the request path).
+fn unheld_config(src: &Sources) -> Arc<wrendns_config::Config> {
+    if crate::upgrade_gate::HOLD.active()
+        && let Some(c) = src.unheld.load_full()
+    {
+        c
+    } else {
+        src.config.load_full()
+    }
+}
+
 /// Checks a device write against the running configuration (ADR-040): files win, names are
 /// unique, and the resulting configuration must validate.
 fn plan_client(
@@ -5169,7 +5223,10 @@ fn plan_client(
         .into_iter()
         .map(|m| m.name)
         .collect();
-    let cfg = src.config.load_full();
+    // REQ: DSC-908, DSC-910 (ADR-1104 point 5) - judged against the configuration the start-up hold
+    // keeps out of service: the stored pins and the location table are still the owner's, and a
+    // write must not lose them (nor refuse a pin to a location the files define).
+    let cfg = unheld_config(src);
     let is_managed = |n: &str| managed.iter().any(|m| m == n);
     let in_files = |n: &str| cfg.client.iter().any(|c| c.name.as_str() == n) && !is_managed(n);
     if in_files(&w.name) {
@@ -5208,7 +5265,7 @@ fn plan_client(
                 input.groups.clone()
             };
             // REQ: OBS-025 — `kind` overrides identification (a class name, or `unknown`).
-            let json = serde_json::json!({ "name": name, "match": input.matches, "groups": groups, "kind": input.kind });
+            let json = serde_json::json!({ "name": name, "match": input.matches, "groups": groups, "kind": input.kind, "location": input.location.as_deref().map(str::trim).filter(|s| !s.is_empty()) });
             let c: wrendns_config::ClientConfig = serde_json::from_value(json)
                 .map_err(|e| Problem::new(Code::InvalidConfig, format!("device: {e}")))?;
             Some(c)
@@ -5233,6 +5290,9 @@ fn plan_client(
         .hint("GET /api/v1/groups lists the groups a device can join.")
     })?;
     let (recent_queries, impact) = client_impact(src, &w.name, before.as_ref(), after.as_ref());
+    // What the node serves while the hold stands has the locations out: a simulation compares
+    // that with the same change made to it.
+    crate::upgrade_gate::HOLD.apply(&mut candidate);
     Ok(ClientPlan {
         before,
         after,
@@ -5240,7 +5300,7 @@ fn plan_client(
         impact,
         warnings,
         candidate: Arc::new(candidate),
-        baseline: cfg,
+        baseline: src.config.load_full(),
     })
 }
 
@@ -5250,6 +5310,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Record => crate::managed::RECORD,
         ManagedKind::Forward => crate::managed::FORWARD,
         ManagedKind::Zone => crate::managed::ZONE,
+        ManagedKind::Location => crate::managed::LOCATION,
         ManagedKind::Rule => crate::managed::RULE,
         ManagedKind::Upstream => crate::managed::UPSTREAM,
         ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
@@ -5708,6 +5769,75 @@ fn zone_of(v: &serde_json::Value, name: &str) -> Result<wrendns_config::ZoneConf
     })
 }
 
+/// REQ: DSC-908 (T36.10a) - 409 `upgrade_required`, naming the member, while the configuration
+/// `after` starts using locations and a cluster member's build does not know them.
+fn locations_gate(src: &Sources, after: &wrendns_config::Config) -> Result<(), Problem> {
+    let before = src.config.load();
+    crate::upgrade_gate::enforce_locations(src.cluster.as_deref(), &before, after).map_err(|why| {
+        Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then repeat the write. DNS is unaffected.")
+    })
+}
+
+/// REQ: DSC-913 (T36.10a) - an API location's body as it is stored: a `[[location]]` with the
+/// path's slug. Fields left out take their defaults (`visibility` shared, `flat_names` on).
+fn location_of(
+    v: &serde_json::Value,
+    slug: &str,
+) -> Result<wrendns_config::LocationConfig, Problem> {
+    use wrendns_config::{LocationConfig, LocationVisibility, SafeString};
+    let input: wrendns_api::model::LocationInput =
+        serde_json::from_value(v.clone()).map_err(|e| Problem::invalid(format!("body: {e}")))?;
+    let bad = |what: &str, text: &str, why: String| {
+        Problem::new(
+            Code::InvalidConfig,
+            format!("location `{slug}`: {what} `{text}`: {why}"),
+        )
+    };
+    let safe =
+        |what: &str, text: &str| SafeString::new(text.trim()).map_err(|e| bad(what, text, e));
+    let visibility = match input.visibility.as_deref().map(str::trim) {
+        None | Some("" | "shared") => LocationVisibility::Shared,
+        Some("private") => LocationVisibility::Private,
+        Some(other) => {
+            return Err(bad(
+                "visibility",
+                other,
+                "use `shared` or `private`".to_owned(),
+            ));
+        }
+    };
+    let mut networks = Vec::new();
+    for n in &input.networks {
+        networks.push(safe("network", n)?);
+    }
+    let mut nodes = Vec::new();
+    for n in &input.nodes {
+        nodes.push(safe("node", n)?);
+    }
+    Ok(LocationConfig {
+        slug: safe("slug", slug)?,
+        label: input
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| safe("label", s))
+            .transpose()?,
+        networks,
+        nodes,
+        domain: input
+            .domain
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| safe("domain", s))
+            .transpose()?,
+        visibility,
+        flat_names: input.flat_names.unwrap_or(true),
+    })
+}
+
 /// A zone as a change shows it, and as it is stored (a `[[zone]]` JSON without a file).
 fn zone_json(z: &wrendns_config::ZoneConfig) -> serde_json::Value {
     serde_json::to_value(z).unwrap_or(serde_json::Value::Null)
@@ -5863,6 +5993,13 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Zone, false) => format!(
             "Names under `{name}` go back to the upstreams (or the zone file, if the files define one); {recent_queries} queries for them in the last two hours (at least)."
         ),
+        // REQ: DSC-909, DSC-911 (T36.10a) - names are rebuilt from the router reads within 10 seconds.
+        (ManagedKind::Location, true) => {
+            "Applies on every node within 10 seconds, with no restart: the devices on its networks answer as <device>.<slug>.<domain> (the old flat name keeps answering while flat names are on), and the node answers no such name locally for any other name under <slug>.<domain>.".into()
+        }
+        (ManagedKind::Location, false) => {
+            "Within 10 seconds on every node its devices go back to the names they had without it; the names under it stop being answered here.".into()
+        }
         // The plans of the kinds added by T27.2 and T27.11 (ADR-1006) write their own impact.
         (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill, _) => String::new(), // rule_impact says it better
         (ManagedKind::Sink, _) => {
@@ -6031,6 +6168,7 @@ fn plan_managed(
             .iter()
             .any(|z| z.name.as_str().eq_ignore_ascii_case(&name)),
         ManagedKind::Rule => file.rule.iter().any(|r| r.id.eq_ignore_ascii_case(&name)),
+        ManagedKind::Location => file.location.iter().any(|l| l.slug.as_str() == name),
         _ => false,
     };
     if in_files {
@@ -6114,6 +6252,27 @@ fn plan_managed(
             };
             (before.map(|b| zone_json(&b)), after.map(|a| zone_json(&a)))
         }
+        // REQ: DSC-913 (T36.10a) - a location made through the API: the whole location is replaced.
+        ManagedKind::Location => {
+            let before = entries
+                .locations
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, l)| l.clone());
+            entries.locations.retain(|(n, _)| *n != name);
+            let after = match &w.body {
+                None => None,
+                Some(v) => {
+                    let l = location_of(v, &name)?;
+                    entries.locations.push((name.clone(), l.clone()));
+                    Some(l)
+                }
+            };
+            (
+                before.map(|b| serde_json::to_value(b).unwrap_or_default()),
+                after.map(|a| serde_json::to_value(a).unwrap_or_default()),
+            )
+        }
         ManagedKind::Rule => {
             let before = entries
                 .rules
@@ -6146,6 +6305,11 @@ fn plan_managed(
     }
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    // REQ: DSC-908 (T36.10a, ADR-1096 point 5) - the first location waits for every member's build
+    // to know the table (dry runs too, so the answer is the same).
+    if w.kind == ManagedKind::Location {
+        locations_gate(src, &merged)?;
+    }
     let warnings = wrendns_config::validate_config(&merged).unwrap_or_default();
     let body = match (w.kind, &after) {
         (_, None) => None,
@@ -8088,6 +8252,7 @@ fn keep_in_git(
         ManagedKind::Record => "record",
         ManagedKind::Forward => "route",
         ManagedKind::Zone => "zone",
+        ManagedKind::Location => "location",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",

@@ -621,6 +621,29 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: DSC-913 (T36.10a, ADR-1081, ADR-1096)
+        Tool {
+            name: "list_locations",
+            description: "Read-only. The locations (parts of the network with a device-name subtree of their own): each one's slug, label, networks as resolved now (a VLAN to the subnets the routers report, or \"no network reported\"), serving nodes, parent domain, visibility (shared, or private: answered only to clients in its networks), whether the old flat names still answer, how many queries those flat names answered over the last 7 days, the devices that answer under it with the names they answer as (and whether a device is pinned there by its own setting), and every name collision with the device that kept it. A device's location comes from the configured networks and its own `location` setting, never from the CMDB. Set one with plan_set_location. While `held` is true a cluster member's build does not know locations yet: the list is what is configured (do not recreate a location that shows here), `heldReason` says why, and DNS answers as without locations until the hold ends. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("locations".into(), "/api/v1/locations".into())]),
+        },
+        Tool {
+            name: "get_location",
+            description: "Read-only. One location by slug, with its resolved networks, the devices that answer under it (name, address, flat name, pinned) and its collisions. For a device's location, find the device in list_locations or read `location` in list_devices. During the start-up hold (`held` in list_locations) a configured location is read from the configuration, not served yet. Needs config:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "slug": {"type": "string", "description": "The location's slug (list_locations)."}
+            }, "required": ["slug"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let slug = need(a, "slug")?;
+                Ok(vec![(
+                    "location".into(),
+                    format!("/api/v1/locations/{}", enc(&slug)),
+                )])
+            },
+        },
         // REQ: OBS-015 (ADR-104)
         Tool {
             name: "health",
@@ -1138,7 +1161,7 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_rename_client",
-            description: "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. Needs the config:write:clients scope.",
+            description: "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. A device's location pin is kept; a rename never changes it. Needs the config:write:clients scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "The device's current name."},
@@ -1162,7 +1185,7 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_assign_client",
-            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
+            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). A device's location pin is kept (changing it is plan_set_device_location). Needs the config:write:clients scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "The device's name (new or existing), an IP, or a Kubernetes workload (namespace/kind/name)."},
@@ -1207,6 +1230,43 @@ pub fn write_tools() -> Vec<WriteTool> {
                     body: Some(Value::Object(body)),
                     summary: format!("Put the device {client} in {}", groups.join(", ")),
                     merge: Some(("client", client)),
+                })
+            },
+        },
+        // REQ: DSC-910, AGT-007 (T36.10a, ADR-1096) — a device's own location, as a plan.
+        WriteTool {
+            name: "plan_set_device_location",
+            description: "Plans a change (nothing changes until apply_plan). Pins a named device to a location (its slug from list_locations), whatever its address: it answers as <device>.<slug>.<domain> from then on, and the old flat name keeps answering while the location's flat names are on. An empty `location` takes the pin off, so the device's location is the one its address gives it. The device must already be named (plan_assign_client names one); its groups, addresses and kind are kept. Setting, changing or removing the pin needs BOTH config:write:clients and config:write:locations (a token with the devices scope alone is refused), and config:read to read the current device.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "device": {"type": "string", "description": "The device's name (list_devices)."},
+                "location": {"type": "string", "description": "The location's slug (list_locations); empty to remove the pin."},
+                "reason": reason_schema()
+            }, "required": ["device", "location", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let device = need(a, "device")?;
+                let location = a
+                    .get("location")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "`location` is required (a slug, or empty to remove the pin)".to_owned()
+                    })?
+                    .trim()
+                    .to_owned();
+                let summary = if location.is_empty() {
+                    format!("Take the device {device} off its pinned location")
+                } else {
+                    format!("Pin the device {device} to the location {location}")
+                };
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/clients/{}", enc(&device)),
+                    body: Some(json!({ "location": location })),
+                    summary,
+                    merge: Some(("client", device)),
                 })
             },
         },
@@ -1448,6 +1508,54 @@ pub fn write_tools() -> Vec<WriteTool> {
                     summary: format!("Set the schedule {name} ({action})"),
                     body: Some(Value::Object(body)),
                     merge: Some(("schedule", name)),
+                })
+            },
+        },
+        // REQ: DSC-913, AGT-007 (T36.10a, ADR-1096) — a location, as a plan.
+        WriteTool {
+            name: "plan_set_location",
+            description: "Plans a change (nothing changes until apply_plan). Makes or replaces a location: a part of the network with a device-name subtree of its own. A device on one of its `networks` answers as <device>.<slug>.<domain> (its PTR is that name), the old flat name <device>.<device_domain> keeps answering while `flat_names` is on (the default), a `private` location's names answer only to clients in its networks, and any other name under <slug>.<domain> gets \"no such name\" from this node. The whole location is replaced: send every field you want kept. Not for a device's own location setting, a certificate or a public name. Refused (409 upgrade_required, naming the member) while a cluster member's build does not know locations, and read-only when the config files define the location. Shared by the cluster. Needs config:write:locations.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "slug": {"type": "string", "description": "The location's DNS label: lowercase letters, digits and hyphens, 1 to 32 characters (e.g. home)."},
+                "label": {"type": "string", "description": "Display name (up to 64 characters)."},
+                "networks": {"type": "array", "items": {"type": "string"}, "description": "CIDRs (192.0.2.0/24) or vlan:<id> (1 to 4094); at least one; none may overlap another location's."},
+                "nodes": {"type": "array", "items": {"type": "string"}, "description": "The nodes that serve it, by node name; empty: every node."},
+                "domain": {"type": "string", "description": "The parent domain (default: [local] device_domain)."},
+                "visibility": {"type": "string", "enum": ["shared", "private"], "description": "Default shared."},
+                "flat_names": {"type": "boolean", "description": "Keep answering the old flat names for the location's devices (default true)."},
+                "reason": reason_schema()
+            }, "required": ["slug", "networks", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let slug = need(a, "slug")?;
+                let mut body = pick(
+                    a,
+                    &[
+                        ("label", "label"),
+                        ("networks", "networks"),
+                        ("nodes", "nodes"),
+                        ("domain", "domain"),
+                        ("visibility", "visibility"),
+                        ("flat_names", "flatNames"),
+                    ],
+                );
+                if body
+                    .get("networks")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+                {
+                    return Err("`networks`: at least one".into());
+                }
+                body.retain(|_, v| !v.is_null());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/locations/{}", enc(&slug)),
+                    summary: format!("Set the location {slug}"),
+                    body: Some(Value::Object(body)),
+                    merge: None,
                 })
             },
         },
@@ -2848,15 +2956,7 @@ impl Mcp {
                     })
                 });
             match found {
-                Some(d) => {
-                    for k in ["match", "groups"] {
-                        if !body.contains_key(k)
-                            && let Some(v) = d.get(k)
-                        {
-                            body.insert(k.into(), v.clone());
-                        }
-                    }
-                }
+                Some(d) => fill_from_device(body, d),
                 None if body.contains_key("name") => {
                     return Err(format!(
                         "no named device `{name}` (plan_assign_client names a new one)"
@@ -3547,6 +3647,25 @@ pub async fn post(
 }
 
 /// `GET /mcp`: no server-initiated stream (every answer comes with its request).
+/// Fills a device write's body from the device as it is now: its addresses, groups and kind,
+/// and its location pin (REQ: DSC-910: the write replaces the whole entry, so a regroup or a
+/// rename keeps the pin; a `location` in the body, even empty, wins).
+fn fill_from_device(body: &mut serde_json::Map<String, Value>, d: &Value) {
+    for k in ["match", "groups", "kind"] {
+        if !body.contains_key(k)
+            && let Some(v) = d.get(k)
+        {
+            body.insert(k.into(), v.clone());
+        }
+    }
+    if !body.contains_key("location")
+        && d.get("locationPinned").and_then(Value::as_bool) == Some(true)
+        && let Some(v) = d.get("location")
+    {
+        body.insert("location".into(), v.clone());
+    }
+}
+
 pub async fn get() -> Response {
     (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response()
 }
@@ -3793,5 +3912,79 @@ mod clu_014_tests {
             (r.calls)(&json!({"id": "d1-ab"})).unwrap()[0].1,
             "/api/v1/drills/d1-ab"
         );
+    }
+}
+
+#[cfg(test)]
+mod dsc_910_merge_tests {
+    use super::*;
+
+    // REQ: DSC-910 - a regroup, a rename or a pin change keeps the device's kind and its pin.
+    #[test]
+    fn dsc_910_merge_keeps_the_kind_and_the_pin() {
+        let d = json!({"name": "tv", "match": ["192.0.2.9"], "groups": ["iot"], "kind": "tv",
+            "location": "lab", "locationPinned": true});
+        for body in [json!({"groups": ["kids"]}), json!({"name": "tv2"})] {
+            let mut b = body.as_object().unwrap().clone();
+            fill_from_device(&mut b, &d);
+            assert_eq!(b["kind"], "tv");
+            assert_eq!(b["location"], "lab");
+            assert_eq!(b["match"], json!(["192.0.2.9"]));
+        }
+        // plan_set_device_location: the body's own location (even empty) wins; the kind is kept.
+        let mut b = json!({"location": ""}).as_object().unwrap().clone();
+        fill_from_device(&mut b, &d);
+        assert_eq!(
+            (b["location"].as_str(), b["kind"].as_str()),
+            (Some(""), Some("tv"))
+        );
+        // A location only the address gives is not a pin.
+        let d = json!({"location": "home", "locationPinned": false});
+        let mut b = serde_json::Map::new();
+        fill_from_device(&mut b, &d);
+        assert!(!b.contains_key("location"));
+    }
+
+    // REQ: DSC-910 - the three device plans (rename, regroup, pin) are merged with the device as
+    // it is now: rename and regroup keep the pin and the kind, and the pin plan keeps the kind.
+    #[test]
+    fn dsc_910_the_device_plans_merge_with_the_current_entry() {
+        let d = json!({"name": "tv", "match": ["192.0.2.9"], "groups": ["iot"], "kind": "tv",
+            "location": "lab", "locationPinned": true});
+        let plan = |tool: &str, args: Value| {
+            let t = write_tools().into_iter().find(|t| t.name == tool).unwrap();
+            (t.write)(&args).unwrap()
+        };
+        for w in [
+            plan(
+                "plan_rename_client",
+                json!({"client": "tv", "newName": "tv2", "reason": "r"}),
+            ),
+            plan(
+                "plan_assign_client",
+                json!({"client": "tv", "groups": ["kids"], "reason": "r"}),
+            ),
+            plan(
+                "plan_set_device_location",
+                json!({"device": "tv", "location": "home", "reason": "r"}),
+            ),
+        ] {
+            assert_eq!(
+                w.merge.as_ref().map(|m| m.0),
+                Some("client"),
+                "{}",
+                w.summary
+            );
+            let mut b = w.body.clone().unwrap().as_object().unwrap().clone();
+            fill_from_device(&mut b, &d);
+            assert_eq!(b["kind"], "tv", "{}", w.summary);
+            assert_eq!(b["match"], json!(["192.0.2.9"]), "{}", w.summary);
+            let want = if w.summary.contains("Pin the device") {
+                "home"
+            } else {
+                "lab"
+            };
+            assert_eq!(b["location"], want, "{}", w.summary);
+        }
     }
 }

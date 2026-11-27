@@ -292,6 +292,14 @@
         "hosts_files": []
       }
     },
+    "location": {
+      "description": "REQ: DSC-908 (T36.10a, ADR-1081, ADR-1096) - locations: parts of the network with a device\nname subtree of their own. Shared by the cluster; the first entry waits for every member's\nbuild to know the table (the compatibility gate).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/LocationConfig"
+      }
+    },
     "map": {
       "description": "REQ: OBS-901 (T26.2, ADR-958) — the live network map: its sampler and the health\nthresholds that colour it. Shared by the whole cluster.",
       "$ref": "#/$defs/MapConfig",
@@ -1419,6 +1427,14 @@
               "type": "null"
             }
           ]
+        },
+        "location": {
+          "description": "REQ: DSC-910 (T36.10a, ADR-1096) - pin the device to a location (a `[[location]]` slug),\nwhatever its address: the manual override of the location its network gives it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "match": {
           "description": "How to recognize it: an IP (`192.168.1.20`), a CIDR (`10.0.5.0/24`), a MAC\n(`aa:bb:cc:dd:ee:ff`), or a client ID from DoH/DoT (`id:kids-tablet`).",
@@ -2968,6 +2984,79 @@
         "name",
         "type",
         "value"
+      ]
+    },
+    "LocationConfig": {
+      "description": "A location: a named part of the network with its own device-name subtree.",
+      "type": "object",
+      "properties": {
+        "domain": {
+          "description": "The parent domain, lowercase without a trailing dot. Default: `[local] device_domain`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "flat_names": {
+          "description": "Keep answering the old `<device>.<device_domain>` names for the location's devices while\npeople move over (DSC-916). On by default.",
+          "type": "boolean",
+          "default": true
+        },
+        "label": {
+          "description": "Display name, at most 64 characters. Untrusted text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "networks": {
+          "description": "The networks that belong to it: CIDRs (IPv4 or IPv6), or `vlan:<id>` (1 to 4094) resolved\nthrough the router network reads and this node's own VLAN interfaces. At least one; no\nCIDR may overlap another location's.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "nodes": {
+          "description": "The nodes that serve the location, by node name. Empty: every node.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "slug": {
+          "description": "The DNS label (`home`, `lab`): lowercase letters, digits and hyphens, 1 to 32 characters,\nunique in the cluster. Devices answer as `<device>.<slug>.<domain>`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "visibility": {
+          "description": "`shared` (default) or `private`.",
+          "$ref": "#/$defs/LocationVisibility",
+          "default": "shared"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "slug",
+        "networks"
+      ]
+    },
+    "LocationVisibility": {
+      "description": "Who sees a location's device names (DSC-911).",
+      "oneOf": [
+        {
+          "description": "Every client `[access]` allows sees the names (today's behaviour).",
+          "type": "string",
+          "const": "shared"
+        },
+        {
+          "description": "Only a client whose source address is in one of the location's networks sees them.",
+          "type": "string",
+          "const": "private"
+        }
       ]
     },
     "LogExclusions": {

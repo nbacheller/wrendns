@@ -83,6 +83,8 @@ pub(crate) struct Policy {
     pub(crate) nsid: Option<Box<[u8]>>,
     /// REQ: DNS-023 (T22.1) — device names in DNS (`[local] device_domain`); `None`: off.
     pub(crate) device_dns: Option<crate::device_dns::Settings>,
+    /// REQ: DSC-908, DSC-912 (T36.10a) - the `[[location]]` table, compiled; empty without locations.
+    pub(crate) locations: Arc<crate::locations::Plan>,
 }
 
 /// REQ: DNS-018 (T7.22) — one authoritative zone.
@@ -128,6 +130,7 @@ impl Policy {
                 .then(|| crate::http::node_name(cfg).into_bytes().into_boxed_slice())
                 .filter(|n| !n.is_empty() && n.len() <= 255),
             device_dns: crate::device_dns::Settings::from_config(cfg),
+            locations: Arc::new(crate::locations::Plan::from_config(cfg)),
         }
     }
 
@@ -850,7 +853,7 @@ impl Pipeline {
             workloads: &self.workloads,
             pause: &self.pause,
             schedules: &schedules,
-            devices: Some(&devices.data),
+            devices: Some(&devices),
         };
         f(&st)
     }
@@ -872,7 +875,7 @@ impl Pipeline {
             workloads: &self.workloads,
             pause: &self.pause,
             schedules: &schedules,
-            devices: Some(&devices.data),
+            devices: Some(&devices),
         };
         crate::explain::explain(&st, req, source)
     }
@@ -1044,7 +1047,7 @@ impl Pipeline {
         // REQ: DNS-901 (ADR-1090 point 3) — a key sent in clear (DoT, DoQ) is treated as leaked:
         // public answers only, so no local, device, zone or inventory record is answered.
         if !public_only(meta)
-            && let Some(len) = self.local_answer(&q, &st.policy, ident, out)
+            && let Some(len) = self.local_answer(&q, &st.policy, ident, who.peer, out)
         {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
@@ -1129,6 +1132,7 @@ impl Pipeline {
         q: &Query<'_>,
         policy: &Policy,
         ident: Identity,
+        peer: IpAddr,
         out: &mut [u8],
     ) -> Option<usize> {
         if let Some(len) =
@@ -1149,15 +1153,18 @@ impl Pipeline {
         }
         let devices = self.device_names.load();
         if policy.zones.is_empty() {
-            return devices
-                .data
-                .answer(q, out, response_edns(q, self.settings.edns_payload, None));
+            return devices.answer(
+                q,
+                Some(peer),
+                out,
+                response_edns(q, self.settings.edns_payload, None),
+            );
         }
         self.zone_answer(
             q,
             policy.clients.group_names(ident),
             out,
-            Some(&devices.data),
+            Some((&devices, peer)),
         )
     }
 
@@ -1169,7 +1176,7 @@ impl Pipeline {
         q: &Query<'_>,
         groups: &[Box<str>],
         out: &mut [u8],
-        devices: Option<&LocalData>,
+        devices: Option<(&crate::device_dns::DeviceNames, IpAddr)>,
     ) -> Option<usize> {
         let st = self.state.load();
         let Some(z) = st.policy.zones.iter().find(|z| {
@@ -1177,7 +1184,13 @@ impl Pipeline {
                 && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
         }) else {
             // REQ: DNS-023 — no zone covers it: the device names may.
-            return devices?.answer(q, out, response_edns(q, self.settings.edns_payload, None));
+            let (d, peer) = devices?;
+            return d.answer(
+                q,
+                Some(peer),
+                out,
+                response_edns(q, self.settings.edns_payload, None),
+            );
         };
         let edns = response_edns(q, self.settings.edns_payload, None);
         // REQ: DNS-018 (T9.18) — the apex's SOA and NS.
@@ -1197,9 +1210,14 @@ impl Pipeline {
             return Some(len);
         }
         // REQ: DNS-023 — a device name inside a zone (the zone's own records won above).
-        if let Some(len) = devices
-            .and_then(|d| d.answer(q, out, response_edns(q, self.settings.edns_payload, None)))
-        {
+        if let Some(len) = devices.and_then(|(d, peer)| {
+            d.answer(
+                q,
+                Some(peer),
+                out,
+                response_edns(q, self.settings.edns_payload, None),
+            )
+        }) {
             return Some(len);
         }
         let exists = q.qname == z.apex || z.data.has_below(&q.qname);
@@ -4187,6 +4205,7 @@ groups = ["kids"]
             name: name.to_owned(),
             ip: Ipv4Addr::from(ip),
             v6: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -5951,6 +5970,361 @@ members = [\"u\"]
             Handler(Arc::clone(&p)).handle(&buf[..len], &meta(), &mut out),
             Response::Drop
         ));
+    }
+
+    // ---- REQ: DSC-908..DSC-912, DSC-916 (T36.10a) - locations on the query path ----
+
+    const LOCATIONS: &str = "[local]\ndevice_domain = \"home.arpa\"\n\
+        [[location]]\nslug = \"home\"\nnetworks = [\"10.1.1.0/24\"]\n\
+        [[location]]\nslug = \"lab\"\nnetworks = [\"10.2.2.0/24\"]\nvisibility = \"private\"\n\
+        [[client]]\nname = \"NAS\"\nmatch = [\"10.1.1.5\"]\n\
+        [[client]]\nname = \"Pi\"\nmatch = [\"10.2.2.5\"]\n\
+        [[client]]\nname = \"Laptop\"\nmatch = [\"10.1.1.9\"]\nlocation = \"lab\"\n";
+
+    fn lease_of(ip: [u8; 4], name: &str) -> (Ipv4Addr, crate::devices::Lease) {
+        let ip = Ipv4Addr::from(ip);
+        (
+            ip,
+            crate::devices::Lease {
+                mac: String::new(),
+                ip,
+                hostname: Some(name.into()),
+                expires: 0,
+                router: Some("udm".into()),
+                offline: false,
+                ipv6: Vec::new(),
+            },
+        )
+    }
+
+    /// A pipeline with `toml` (plus an unreachable upstream) whose device table is composed from
+    /// `leases` the way the 10-second task does.
+    fn located_pipeline(toml: &str, leases: &[([u8; 4], &str)]) -> Arc<Pipeline> {
+        pipeline_by(toml, leases, true)
+    }
+
+    /// The pipeline as `device_dns::run` builds it: with a plan that has locations, the located
+    /// table; with `located` false, `compose(.., None)` and `build`, the path every deployment
+    /// without `[[location]]` takes.
+    fn pipeline_by(toml: &str, leases: &[([u8; 4], &str)], located: bool) -> Arc<Pipeline> {
+        let cfg: wrendns_config::Config = wrendns_config::Loader::new()
+            .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let policy = Policy::from_config(&cfg, local);
+        let table: crate::devices::Leases = leases.iter().map(|(ip, n)| lease_of(*ip, n)).collect();
+        let empty = crate::devices::Leases::new();
+        let inputs = crate::device_dns::Inputs {
+            clients: &policy.clients,
+            routers: [&table, &empty],
+            mdns: [&empty, &empty],
+        };
+        let settings = policy.device_dns.clone().unwrap();
+        let plan = (*policy.locations).clone();
+        let resolved = crate::locations::Resolved::resolve(&plan, &[], &[]);
+        let names = if located {
+            let composed = crate::device_dns::compose(
+                &inputs,
+                &settings.domain,
+                Some(crate::device_dns::Located {
+                    plan: &plan,
+                    resolved: &resolved,
+                }),
+            );
+            let uses: Vec<Arc<crate::locations::FlatUse>> =
+                plan.locs.iter().map(|_| Arc::default()).collect();
+            crate::device_dns::build_located(composed, 60, &plan, &resolved, &uses)
+        } else {
+            let composed = crate::device_dns::compose(&inputs, &settings.domain, None);
+            crate::device_dns::build(&composed.named, 60)
+        };
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            policy,
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        p.device_names.store(Arc::new(names));
+        p
+    }
+
+    const LEASES: &[([u8; 4], &str)] = &[
+        ([10, 1, 1, 21], "Kitchen Tablet"),
+        ([10, 2, 2, 7], "scope"),
+        ([10, 9, 9, 4], "printer"),
+    ];
+
+    // REQ: DSC-909 - a device on a location's network answers as <label>.<slug>.<domain> with a PTR
+    // that matches; a device on no location's network keeps its flat name; DSC-916 - the old flat
+    // name keeps answering for a located device (A, no PTR) and is counted.
+    #[test]
+    fn dsc_909_located_devices_answer_under_their_location() {
+        let p = located_pipeline(LOCATIONS, LEASES);
+        let a = |name: &str| ask_from(&p, "192.168.9.5", name, rtype::A);
+        assert!(
+            contains(&a("nas.home.home.arpa"), &[10, 1, 1, 5]),
+            "composed name"
+        );
+        assert!(
+            contains(&a("kitchen-tablet.home.home.arpa"), &[10, 1, 1, 21]),
+            "a router's name under the location"
+        );
+        assert!(
+            contains(&a("printer.home.arpa"), &[10, 9, 9, 4]),
+            "no location: flat name"
+        );
+        let ptr = ask_from(&p, "192.168.9.5", "5.1.1.10.in-addr.arpa", rtype::PTR);
+        let composed = NameBuf::from_presentation("nas.home.home.arpa").unwrap();
+        assert!(
+            contains(&ptr, composed.as_wire()),
+            "the PTR is the location name"
+        );
+        // The flat name: an A, counted, and no PTR of its own.
+        assert!(
+            contains(&a("nas.home.arpa"), &[10, 1, 1, 5]),
+            "flat name still answers"
+        );
+        let names = p.device_names.load();
+        let home = names.locs.iter().find(|l| &*l.slug == "home").unwrap();
+        assert_eq!(home.flat_use.last_7_days(unix_now()), 1);
+        // Nothing else is flat-named by the PTR.
+        let flat = NameBuf::from_presentation("nas.home.arpa").unwrap();
+        assert!(!contains(&ptr, flat.as_wire()));
+    }
+
+    // REQ: DSC-910 - `[[client]] location` wins over the address (the laptop is on the home
+    // network and belongs to the lab); a pinned device is flagged.
+    #[test]
+    fn dsc_910_the_client_location_overrides_the_address() {
+        let p = located_pipeline(LOCATIONS, LEASES);
+        let names = p.device_names.load();
+        let laptop = names
+            .named
+            .iter()
+            .find(|n| n.name == "laptop.lab.home.arpa")
+            .expect("composed under lab");
+        assert!(laptop.pinned);
+        assert_eq!(laptop.ip, Ipv4Addr::new(10, 1, 1, 9));
+        assert!(
+            names
+                .named
+                .iter()
+                .all(|n| n.name != "laptop.home.home.arpa")
+        );
+    }
+
+    // REQ: DSC-911 - a private location's names, PTRs and flat names answer only to clients in its
+    // networks; to anyone else the subtree says no such name, as for an unknown name; the others
+    // are not answered locally at all (they fall through, as unknown names do).
+    #[test]
+    fn dsc_911_private_names_answer_only_to_the_locations_networks() {
+        let p = located_pipeline(LOCATIONS, LEASES);
+        let member = "10.2.2.50";
+        let outside = "192.168.9.5";
+        let name = "scope.lab.home.arpa";
+        let ok = ask_from(&p, member, name, rtype::A);
+        assert!(contains(&ok, &[10, 2, 2, 7]), "a member sees the name");
+        let nx = summarize(&ask_from(&p, outside, name, rtype::A)).unwrap();
+        assert_eq!(nx.rcode, rcode::NXDOMAIN, "an outsider gets no such name");
+        let unknown = ask_from(&p, outside, "nothing-here.lab.home.arpa", rtype::A);
+        let hidden = ask_from(&p, outside, name, rtype::A);
+        // A hidden name and an unknown one are answered alike: NXDOMAIN, authoritative, with the
+        // subtree's SOA.
+        let soa = NameBuf::from_presentation("lab.home.arpa").unwrap();
+        for r in [&unknown, &hidden] {
+            let s = summarize(r).unwrap();
+            assert_eq!((s.rcode, s.header.flags.aa()), (rcode::NXDOMAIN, true));
+            assert!(contains(r, soa.as_wire()), "the subtree's SOA");
+        }
+        // PTR: a member gets it, an outsider is not answered locally.
+        assert!(contains(
+            &ask_from(&p, member, "7.2.2.10.in-addr.arpa", rtype::PTR),
+            NameBuf::from_presentation(name).unwrap().as_wire()
+        ));
+        assert!(
+            !contains(
+                &ask_from(&p, outside, "7.2.2.10.in-addr.arpa", rtype::PTR),
+                NameBuf::from_presentation(name).unwrap().as_wire()
+            ),
+            "an outsider never gets the private PTR"
+        );
+        // Its flat name follows the private rule too.
+        assert!(contains(
+            &ask_from(&p, member, "scope.home.arpa", rtype::A),
+            &[10, 2, 2, 7]
+        ));
+        assert_eq!(ask_from(&p, outside, "scope.home.arpa", rtype::A).len(), 0);
+    }
+
+    // REQ: DSC-911 - a name in a location's subtree that no device holds gets NXDOMAIN locally,
+    // with the subtree's SOA (nothing forwarded: the upstream here is unreachable, so a forwarded
+    // query would not be Ready); the apex itself has no data.
+    #[test]
+    fn dsc_911_the_subtree_is_answered_locally() {
+        let p = located_pipeline(LOCATIONS, LEASES);
+        let nx = ask_from(&p, "192.168.9.5", "nope.home.home.arpa", rtype::A);
+        let s = summarize(&nx).unwrap();
+        assert_eq!(s.rcode, rcode::NXDOMAIN);
+        assert!(s.header.flags.aa());
+        let deep = summarize(&ask_from(
+            &p,
+            "192.168.9.5",
+            "x.y.nas.home.home.arpa",
+            rtype::A,
+        ))
+        .unwrap();
+        assert_eq!(deep.rcode, rcode::NXDOMAIN);
+        let apex = summarize(&ask_from(&p, "192.168.9.5", "home.home.arpa", rtype::A)).unwrap();
+        assert_eq!(apex.rcode, rcode::NOERROR);
+        assert_eq!(apex.answers, 0);
+    }
+
+    // REQ: DSC-909 - the explain output names the location whose table answered.
+    #[test]
+    fn dsc_912_explain_names_the_location() {
+        use crate::device_dns::Hit;
+        let p = located_pipeline(LOCATIONS, LEASES);
+        let names = p.device_names.load();
+        let ask = |n: &str, peer: &str| {
+            let b = query(n, rtype::A, false);
+            let pq = parse_query(&b).unwrap();
+            let mut out = [0u8; 1500];
+            names
+                .lookup(&pq, Some(peer.parse().unwrap()), &mut out, None, true)
+                .map(|(_, h)| h)
+        };
+        assert_eq!(
+            ask("nas.home.home.arpa", "192.168.9.5"),
+            Some(Hit::Location("home"))
+        );
+        assert_eq!(ask("nas.home.arpa", "192.168.9.5"), Some(Hit::Flat("home")));
+        assert_eq!(
+            ask("nope.home.home.arpa", "192.168.9.5"),
+            Some(Hit::NoSuchName("home"))
+        );
+        assert_eq!(ask("printer.home.arpa", "192.168.9.5"), Some(Hit::Device));
+        assert_eq!(
+            ask("scope.lab.home.arpa", "10.2.2.9"),
+            Some(Hit::Location("lab"))
+        );
+        // Explaining never counts a flat-name use.
+        let home = names.locs.iter().find(|l| &*l.slug == "home").unwrap();
+        assert_eq!(home.flat_use.last_7_days(unix_now()), 0);
+    }
+
+    // REQ: DSC-912, NFR-002 - the location paths on the query path (a private name, a flat name,
+    // the subtree's no-such-name, the shared table) allocate nothing in the steady state.
+    #[test]
+    fn dsc_912_location_paths_do_not_allocate() {
+        let p = located_pipeline(LOCATIONS, LEASES);
+        let h = Handler(Arc::clone(&p));
+        let mut out = [0u8; 4096];
+        let meta_for = |peer: &str| RequestMeta {
+            peer: format!("{peer}:1000").parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+            gated: false,
+        };
+        let cases = [
+            ("10.2.2.50", query("scope.lab.home.arpa", rtype::A, true)),
+            ("192.168.9.5", query("scope.lab.home.arpa", rtype::A, true)),
+            ("192.168.9.5", query("nas.home.arpa", rtype::A, true)),
+            ("192.168.9.5", query("nope.home.home.arpa", rtype::A, true)),
+            ("192.168.9.5", query("nas.home.home.arpa", rtype::A, true)),
+            (
+                "192.168.9.5",
+                query("5.1.1.10.in-addr.arpa", rtype::PTR, true),
+            ),
+        ];
+        // The metas are made before the count starts: building one allocates.
+        let metas: Vec<RequestMeta> = cases.iter().map(|(peer, _)| meta_for(peer)).collect();
+        for ((_, req), meta) in cases.iter().zip(&metas) {
+            assert!(matches!(h.handle(req, meta, &mut out), Response::Ready(_)));
+        }
+        let mut allocating: Vec<String> = Vec::new();
+        for (i, ((_, req), meta)) in cases.iter().zip(&metas).enumerate() {
+            let info = allocation_counter::measure(|| {
+                for _ in 0..1000 {
+                    assert!(matches!(h.handle(req, meta, &mut out), Response::Ready(_)));
+                }
+            });
+            if info.count_total != 0 {
+                allocating.push(format!("case {i}: {info:?}"));
+            }
+        }
+        assert!(allocating.is_empty(), "allocated: {allocating:?}");
+    }
+
+    // REQ: DSC-908 - with no `[[location]]` the table answers as it always did: a golden corpus
+    // is byte-identical between the table without locations and the located build of an empty plan.
+    #[test]
+    fn dsc_908_no_locations_answer_as_before() {
+        let toml = "[local]\ndevice_domain = \"home.arpa\"\n[[client]]\nname = \"NAS\"\nmatch = [\"10.1.1.5\"]\n";
+        let p = located_pipeline(toml, LEASES);
+        // What production runs when the plan is empty (no `[[location]]`).
+        let production = pipeline_by(toml, LEASES, false);
+        let plain = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(
+                Router::from_config(
+                    &wrendns_config::Loader::new()
+                        .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
+                        .env(Vec::<(String, String)>::new())
+                        .load()
+                        .unwrap()
+                        .config,
+                )
+                .unwrap(),
+            ),
+            Policy::from_config(
+                &wrendns_config::Loader::new()
+                    .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
+                    .env(Vec::<(String, String)>::new())
+                    .load()
+                    .unwrap()
+                    .config,
+                LocalData::default(),
+            ),
+        );
+        install_filter(
+            &plain,
+            "||nothing.example^\n",
+            wrendns_filter::matcher::Lookup::Indexed,
+        );
+        plain.device_names.store(Arc::new(crate::device_dns::build(
+            &[
+                named("nas.home.arpa", [10, 1, 1, 5]),
+                named("kitchen-tablet.home.arpa", [10, 1, 1, 21]),
+                named("scope.home.arpa", [10, 2, 2, 7]),
+                named("printer.home.arpa", [10, 9, 9, 4]),
+            ],
+            60,
+        )));
+        for (name, qtype) in [
+            ("nas.home.arpa", rtype::A),
+            ("kitchen-tablet.home.arpa", rtype::A),
+            ("scope.home.arpa", rtype::A),
+            ("printer.home.arpa", rtype::A),
+            ("5.1.1.10.in-addr.arpa", rtype::PTR),
+            ("21.1.1.10.in-addr.arpa", rtype::PTR),
+            ("nas.home.arpa", rtype::AAAA),
+        ] {
+            let a = ask_from(&p, "192.168.9.5", name, qtype);
+            let b = ask_from(&plain, "192.168.9.5", name, qtype);
+            let c = ask_from(&production, "192.168.9.5", name, qtype);
+            assert_eq!(a, b, "{name} {qtype}");
+            assert_eq!(c, b, "production path: {name} {qtype}");
+        }
     }
 }
 

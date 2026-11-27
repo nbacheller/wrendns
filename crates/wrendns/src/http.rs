@@ -63,6 +63,9 @@ pub(crate) struct Sources {
     pub(crate) config: ArcSwap<wrendns_config::Config>,
     /// The config files alone (what the API's entries are merged onto; ADR-040).
     pub(crate) file_config: ArcSwap<wrendns_config::Config>,
+    /// REQ: DSC-908 - the configuration as built before the start-up hold took the locations out
+    /// (`None` when no hold stands), so a read path never rebuilds it.
+    pub(crate) unheld: ArcSwapOption<wrendns_config::Config>,
     /// The config files' paths, for backups (ADR-063).
     pub(crate) config_files: Vec<std::path::PathBuf>,
     /// Update status from the signed release index (ADR-046).

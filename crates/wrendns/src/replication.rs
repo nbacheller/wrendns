@@ -52,6 +52,43 @@ pub(crate) fn last_applied(cfg: &Config) -> Option<ClusterManifest> {
     serde_json::from_slice(&std::fs::read(dir.join(APPLIED)).ok()?).ok()
 }
 
+/// REQ: DSC-908 (ADR-1104 point 5) - whether this node is a cluster's primary by its identity
+/// (a standalone node has none): the nodes whose locations wait for the members at start-up.
+pub(crate) fn is_clustered_primary(cfg: &Config) -> bool {
+    identity(cfg).is_some_and(|i| matches!(i.meta.role, Some(node::Role::Primary)))
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - whether the version this node last published already carried
+/// locations (a `[[location]]` entry or a client pin). Then every member knew the table when it
+/// was let in, and a restart does not hold it again. A promoted primary that has published
+/// nothing yet (no `published-config.json`) looks at the version it last applied as a replica
+/// instead: the cluster already runs locations when that one carried them.
+pub(crate) fn published_uses_locations(cfg: &Config) -> bool {
+    let path = node::dir_of(data_dir(cfg)).join("published-config.json");
+    if let Some(v) = std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    {
+        return shared_uses_locations(&v);
+    }
+    last_applied(cfg)
+        .and_then(|m| {
+            let bytes = BlobStore::open(data_dir(cfg)).ok()?.read(&m.config).ok()?;
+            serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+        })
+        .is_some_and(|v| shared_uses_locations(&v))
+}
+
+/// Whether a shared configuration (as JSON) has a `[[location]]` or a pinned client.
+fn shared_uses_locations(v: &serde_json::Value) -> bool {
+    let located = |k: &str| v.get(k).and_then(|a| a.as_array());
+    located("location").is_some_and(|a| !a.is_empty())
+        || located("client").is_some_and(|a| {
+            a.iter()
+                .any(|c| c.get("location").is_some_and(|l| !l.is_null()))
+        })
+}
+
 /// The manifest this node follows: a synced replica's, or an emergency primary's (ADR-048: it
 /// keeps the last authoritative version). `None` for a standalone node or a regular primary.
 pub(crate) fn applied(cfg: &Config) -> Option<ClusterManifest> {
@@ -484,8 +521,20 @@ async fn supervise(
         if !first {
             // The effective configuration and whether this node fetches lists depend on the
             // role: re-evaluate both now.
-            let (tx, _rx) = oneshot::channel();
-            let _ = reload.send(tx).await;
+            let (tx, rx) = oneshot::channel();
+            let applied = reload.send(tx).await.is_ok() && rx.await.unwrap_or(true);
+            // REQ: DSC-908 (ADR-1104 point 5) - a promotion during the hold: the adopted
+            // locations were refused (a member's build does not know them), so this node holds
+            // them too and applies them when the gate passes.
+            if !applied
+                && matches!(role, Role::Primary | Role::Emergency)
+                && crate::upgrade_gate::hold_after_refusal()
+            {
+                warn!("locations: held after the promotion until every member knows them");
+                let (tx, _rx) = oneshot::channel();
+                let _ = reload.send(tx).await;
+                crate::upgrade_gate::ensure_release_loop(&sources, &stop);
+            }
         }
         first = false;
         tokio::select! {
@@ -1393,7 +1442,17 @@ impl Primary {
             let h = export_node_managed(&self.sources, &mut self.nm_cache)
                 .await
                 .unwrap_or_default();
-            (self.nm_cache.as_ref().map(|(_, b, _)| b.clone()), h)
+            let blob = self.nm_cache.as_ref().map(|(_, b, _)| b.clone());
+            // REQ: DSC-908 (ADR-1104 point 5) - the start-up hold keeps the locations out of the
+            // blob too (the cache keeps the full export, so the release needs no new write).
+            match blob {
+                Some(b) if crate::upgrade_gate::HOLD.active() => {
+                    let held = crate::node_managed::strip_held(&b);
+                    let hh = hash(&held);
+                    (Some(held), hh)
+                }
+                b => (b, h),
+            }
         };
         let key = id_now.ca_key_pem().unwrap_or_else(|_| self.key.clone());
         Gather::Ready(Box::new(Gathered {
@@ -2517,6 +2576,83 @@ fn hit_permille(hits: u64, misses: u64) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DSC-908 (ADR-1104 point 5) - what a primary publishes while the start-up hold stands:
+    /// neither the shared configuration nor the node-managed blob carries a location or a pin, and
+    /// both do once the hold ends.
+    #[tokio::test]
+    #[allow(clippy::many_single_char_names)]
+    async fn dsc_908_gather_during_the_hold_publishes_no_locations() {
+        let _turn = crate::secrets_api_tests::GATE.lock().await;
+        let new = crate::secrets_api_tests::pair("1.1.0", "1.1.0").await;
+        let h = crate::credential_tests::harness_in(
+            "[local]
+device_domain = \"home.arpa\"
+",
+            Some(Arc::clone(&new.primary)),
+        );
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                "/api/v1/locations/lab",
+                Some(&serde_json::json!({"networks": ["198.51.100.0/24"]})),
+            )
+            .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "{v}");
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                "/api/v1/clients/laptop",
+                Some(&serde_json::json!({"match": ["192.0.2.9"], "kind": "tv", "location": "lab"})),
+            )
+            .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "{v}");
+        let mut c = (*h.src.config.load_full()).clone();
+        assert_eq!(c.location.len(), 1);
+        assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
+        h.src.config.store(Arc::new(c));
+        let mut p = Primary::open(Arc::clone(&new.primary), Arc::clone(&h.src), false).unwrap();
+        let Gather::Ready(g) = p.gather().await else {
+            panic!("nothing to publish");
+        };
+        let shared = String::from_utf8_lossy(&g.shared).into_owned();
+        assert!(!shared.contains("\"lab\""), "{shared}");
+        let blob = crate::node_managed::parse_shared(&g.node_managed.clone().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(
+            blob.iter().any(|e| e.kind == crate::managed::LOCATION),
+            "the rows travel as their own kind: {blob:?}"
+        );
+        let dev = blob
+            .iter()
+            .find(|e| e.name == "laptop" && e.kind == crate::managed::CLIENT)
+            .unwrap();
+        assert!(dev.body.get("location").is_none(), "{dev:?}");
+        assert!(
+            blob.iter()
+                .any(|e| e.kind == crate::node_managed::LOCATION_PIN && e.name == "laptop"),
+            "{blob:?}"
+        );
+        // The hold ends: the same blob carries them again.
+        crate::upgrade_gate::HOLD.clear();
+        let Gather::Ready(g) = p.gather().await else {
+            panic!("nothing to publish");
+        };
+        let blob = crate::node_managed::parse_shared(&g.node_managed.unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(
+            blob.iter()
+                .all(|e| e.kind != crate::node_managed::LOCATION_PIN),
+            "the pin is on its row again: {blob:?}"
+        );
+        assert!(
+            blob.iter().any(|e| e.kind == crate::managed::LOCATION),
+            "{blob:?}"
+        );
+        let _ = new.stop.send(true);
+    }
 
     /// REQ: CLU-008 (T6.14) — node and pod names from the chart's variables, the pod name from
     /// HOSTNAME in other pods, nothing outside Kubernetes.

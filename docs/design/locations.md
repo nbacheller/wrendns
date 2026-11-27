@@ -115,7 +115,9 @@ Validation runs when the files load and on every API write; a refused table name
 
 ### 2.6 Replication and rolling upgrades
 
-- `[[location]]` is a shared section. Because an older replica refuses unknown shared sections (§1, finding 1), the API and the file loader refuse the first location while any member's heartbeat reports a build that does not know the section, with "node X runs version Y, which does not know locations; upgrade it first". The same gate applies to the first `[[dns_provider]]` and the first secret of the `pem` kind. Decided (decision 5); DSC-908 is reworded.
+- `[[location]]` is a shared section. Because an older replica refuses unknown shared sections (§1, finding 1), the API and the file loader refuse the first location while any member's heartbeat reports a build that does not know the section (a reload is refused and the previous configuration keeps serving; start-up holds the locations instead, below), with "node X runs version Y, which does not know locations; upgrade it first". The same gate applies to the first `[[dns_provider]]` and the first secret of the `pem` kind. Decided (decision 5); DSC-908 is reworded.
+- **Start-up.** Owner decision, 2026-11-26 (through the question tool): a primary that starts with a location (or a client `location`) in its file while the gate cannot yet pass (members not heard, or one does not announce the feature) holds the entries out of what it serves and publishes, and starts. Health names the member or says it is waiting to hear from the members. When the gate passes the entries are applied without a restart; if that reload does not apply them the hold is put back and judged again. While the hold stands the API still reads and validates a device with its stored pin, so an edit keeps it. A standalone node is never held (ADR-1104 point 5).
+- **Node names under a location** wait for T36.10d. Owner decision, 2026-11-26 (through the question tool): this is the decided order (ADR-1104 point 2).
 - Locations are not node-local; `nodes` says which nodes serve a location, and each node reads its own membership from the shared table.
 
 ## 3. Certificates
@@ -361,6 +363,8 @@ Owner decision, 2026-11-26, on the eight questions this note asked through the q
 6. **The first providers.** Azure DNS, Cloudflare, Route 53 and RFC 2136 dynamic update with TSIG. GoDaddy is supported by delegation of the challenge name only, with no stored GoDaddy key. Azure DNS credentials are scoped to a single record set (Microsoft documents record-set-level role assignment: https://learn.microsoft.com/azure/dns/dns-protect-zones-recordsets). This amends ADR-1084 (§4.3, CLD-904).
 7. **The wildcard key.** A location's wildcard certificate key is not exportable at first: WrenDNS's own listeners only. A guarded, audited download is a later opt-in task (§3.4, CLD-920).
 8. **Public names.** A publicly published local name may not point at a private, CGNAT, link-local or reserved address (§5, DSC-917).
+9. **Who may pin a device (an agent).** Setting or changing a device's location pin by an agent needs both scopes, `config:write:clients` and `config:write:locations`, chosen over the device scope alone, so an existing device-writing token gains nothing (ADR-1104 point 4, DSC-913).
+10. **Order of the work.** The core (T36.10a) merges before the Locations page (T36.10c), which is built next; T36.10a stays unticked until the page lands and no release is cut in between (ADR-1104).
 
 Reading of decision 5: "its secret kind" is read as the new `pem` secret kind, which this note gated together with `[[dns_provider]]` (§2.6); the provider's own credential is an ordinary `text` secret, which every build already knows.
 

@@ -57,6 +57,9 @@ pub(crate) fn validate(
     categories(cfg, &mut r);
     schedules(cfg, &mut r);
     anomaly_mutes(cfg, &mut r);
+    for (path, msg) in crate::location::problems(cfg) {
+        r.err(path, msg);
+    }
     watchdog(cfg, &mut r);
     alerts(cfg, &mut r);
     slo(cfg, &mut r);

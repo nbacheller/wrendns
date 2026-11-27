@@ -203,6 +203,7 @@ pub(crate) fn plan(
                             .map_err(invalid)?,
                         groups: vec![SafeString::new(name.clone()).map_err(invalid)?],
                         kind: None,
+                        location: None,
                     };
                     // Where the new device lands today: its address's network group, else default.
                     let (was, _) =

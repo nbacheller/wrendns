@@ -53,6 +53,9 @@ mod key_gate;
 mod kubernetes;
 mod legacy;
 mod lists;
+mod locations;
+#[cfg(test)]
+mod locations_api_tests;
 mod maintenance;
 mod managed;
 mod managed_adopt;
