@@ -11,8 +11,15 @@ const ADMIN = { user: 'admin', pass: 'correct horse battery' };
 const VIEWER = { user: 'settings-vw', pass: 'viewer long password' };
 
 /** Signs in as `who` and opens the page at `hash`. */
-async function signedIn(browser: Browser, who: { user: string; pass: string }, hash: string): Promise<Page> {
+async function signedIn(
+  browser: Browser,
+  who: { user: string; pass: string },
+  hash: string,
+  // Runs on the new page before it loads, so a route mock is in place for the first request.
+  before?: (page: Page) => Promise<void>,
+): Promise<Page> {
   const page = await browser.newPage();
+  if (before) await before(page);
   await page.goto(`/#/${hash}`);
   await page.getByLabel('Username', { exact: true }).fill(who.user);
   await page.getByLabel('Password', { exact: true }).fill(who.pass);
@@ -154,6 +161,52 @@ test.describe('settings from T27.11', () => {
       await card.getByRole('button', { name: 'Apply' }).click();
       await expect(card.getByTestId('drill-schedule-values')).toContainText('once a month');
       await expect(card.getByTestId('drill-schedule-values')).toContainText('home-dns');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('dns_906 the card lists the root trust anchors and a key in hold-down', async ({ browser }) => {
+    // REQ: DNS-906 (T40.5) - every node's anchors with their RFC 5011 state; the answer is mocked (the
+    // e2e server has validation off and no root to read).
+    const day = 86_400;
+    const now = Math.floor(Date.now() / 1000);
+    // The mock goes in before the page loads and before the sign-in: a reload straight after the
+    // sign-in click raced it and landed on the sign-in page.
+    const mock = (p: Page) =>
+      p.route('**/api/v1/dnssec/anchors', (r) =>
+        r.fulfill({
+          json: {
+            items: [
+              {
+                node: 'pi-a',
+                mode: 'following',
+                lastReadingS: now - 3600,
+                keys: [
+                  { keyTag: 20326, algorithm: 8, flags: 257, state: 'valid' },
+                  { keyTag: 38696, algorithm: 8, flags: 257, state: 'valid' },
+                  { keyTag: 11111, algorithm: 8, flags: 257, state: 'add_pend', sinceS: now - 10 * day, trustedAtS: now + 20 * day },
+                ],
+              },
+              { node: 'pi-b', mode: 'file', keys: [] },
+              { node: 'pi-c', mode: 'unsupported', keys: [] },
+            ],
+          },
+        }),
+      );
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries', mock);
+    try {
+      const card = page.getByTestId('dnssec-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      const nodes = card.getByTestId('anchors-node');
+      await expect(nodes).toHaveCount(3);
+      await expect(nodes.nth(0).getByTestId('anchor-key')).toHaveCount(3);
+      const pending = nodes.nth(0).locator('[data-state="add_pend"]');
+      await expect(pending).toContainText('11111');
+      await expect(pending).toContainText('in hold-down');
+      await expect(pending).toContainText('trusted from');
+      await expect(nodes.nth(1)).toContainText('trust_anchors_file');
+      await expect(nodes.nth(2)).toContainText('older build');
     } finally {
       await page.context().close();
     }
