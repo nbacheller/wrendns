@@ -8591,6 +8591,12 @@ export interface components {
         };
         /** @description One guarded setting, as `GET /api/v1/guarded` lists it for this node. */
         GuardedSetting: {
+            /**
+             * @description A saved dnstap value that the config file displaces (it sets another reader, or a feed or a
+             *     sampling that would copy more than both): it stays saved but is not applied, and a restart
+             *     does not apply it, until the file changes back.
+             */
+            displacedByFile?: boolean;
             /** @description A guarded entry holds a value for it (confirmed, applied or staged). */
             hasEntry: boolean;
             id: string;

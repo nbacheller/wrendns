@@ -24108,6 +24108,10 @@
           "suppressed"
         ],
         "properties": {
+          "displacedByFile": {
+            "type": "boolean",
+            "description": "A saved dnstap value that the config file displaces (it sets another reader, or a feed or a\nsampling that would copy more than both): it stays saved but is not applied, and a restart\ndoes not apply it, until the file changes back."
+          },
           "hasEntry": {
             "type": "boolean",
             "description": "A guarded entry holds a value for it (confirmed, applied or staged)."

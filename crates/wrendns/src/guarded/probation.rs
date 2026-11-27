@@ -184,6 +184,35 @@ pub(crate) fn begin_for(
         if e.mode != super::dnstap::NARROWED {
             // A confirmed entry stays in the store: the overlay does not apply it while the files
             // displace it and brings it back when they stop. It is not waiting for probation now.
+            // Said once per change (an outcome and an audit record), so the card and the listing
+            // do not claim that a restart will apply it.
+            let seen = store::outcomes(&state).iter().any(|o| {
+                o.setting == e.id
+                    && o.node == node
+                    && o.outcome == "not_applied"
+                    && o.reason.as_deref() == Some("file_displaces")
+                    && o.at >= e.at
+            });
+            if !seen {
+                warn!(id = %e.id, "a confirmed dnstap entry is kept but not applied: the config file sets another reader or feed");
+                audit_system(
+                    &state,
+                    now,
+                    "settings.guarded_not_applied",
+                    &super::entry_name(&node, &e.id),
+                    &json!({"setting": e.id, "node": node, "reason": "file_displaces"}),
+                );
+                store::record_outcome(
+                    &state,
+                    GuardedOutcome {
+                        setting: e.id.clone(),
+                        node: node.clone(),
+                        outcome: "not_applied".to_owned(),
+                        reason: Some("file_displaces".to_owned()),
+                        at: now,
+                    },
+                );
+            }
             return false;
         }
         warn!(id = %e.id, "an unconfirmed dnstap entry would now copy more than the files do: it is not applied and is dropped");

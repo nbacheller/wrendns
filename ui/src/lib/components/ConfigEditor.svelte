@@ -548,7 +548,7 @@
         <ErrorNote error={formError} />
         {#if guardedValue && guardedId}
           <div class="preview" data-testid="entry-guarded">
-            {#if reviewingFile}<p class="small" data-testid="entry-guarded-file-note">This saves a value equal to the config file's values today. It is not a return to the file: the node then keeps that value, even if the file later changes. To follow the file again afterwards, remove the saved value.</p>{/if}
+            {#if reviewingFile}<p class="small" data-testid="entry-guarded-file-note">This saves a value equal to the config file's values today. It is not a return to the file. If the file later drops one of them, this node keeps the saved value. While the file sets a field, the file's value wins, and if that would copy more than both the saved value and the file alone, the saved value is not applied until the file changes back. To follow the file again, remove the saved value.</p>{/if}
             <GuardedChange
               id={guardedId}
               label={title}

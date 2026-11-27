@@ -624,6 +624,13 @@ impl Engine {
 
     // ---- status --------------------------------------------------------------------------
 
+    /// REQ: OBS-007, API-905 (T40.13) - a dnstap entry the config file displaces: a restart would not
+    /// apply it (the node runs the file's section), so it is not "pending a restart".
+    fn displaced(&self, e: &Stored) -> bool {
+        e.id == wrendns_config::guarded::DNSTAP
+            && super::dnstap::not_applied(&self.host.file_config(), &e.mode, &e.value)
+    }
+
     /// This node's guarded settings and what is pending. No value, preview ID or token.
     pub(crate) fn status_local(&self) -> GuardedNodeStatus {
         let entries = self.effective_entries();
@@ -644,7 +651,9 @@ impl Engine {
                     set_by_file: d.row.id != wrendns_config::guarded::DNSTAP
                         && self.set_by_file(&d.row),
                     has_entry: e.is_some(),
-                    pending_restart: e.is_some_and(|e| e.state == EntryState::Staged),
+                    pending_restart: e
+                        .is_some_and(|e| e.state == EntryState::Staged && !self.displaced(e)),
+                    displaced_by_file: e.is_some_and(|e| self.displaced(e)),
                     on_probation: e.is_some_and(|e| e.state == EntryState::Probation),
                     suppressed: suppressed.contains_key(d.row.id),
                 }
@@ -664,7 +673,7 @@ impl Engine {
             pending,
             pending_restart: entries
                 .iter()
-                .filter(|e| e.state == EntryState::Staged)
+                .filter(|e| e.state == EntryState::Staged && !self.displaced(e))
                 .map(|e| e.id.clone())
                 .collect(),
             outcomes: store::outcomes(&self.state),
@@ -803,7 +812,7 @@ impl Engine {
             let held = super::dnstap::file_fields(&self.host.file_config());
             if !held.is_empty() {
                 checked.warnings.push(format!(
-                    "The config file sets {} today. Confirming saves those values with the rest: this node then keeps them, even if the file later changes or drops them. To follow the file again afterwards, remove the saved value.",
+                    "The config file sets {} today. Confirming saves those values with the rest. If the file later drops one of them, this node keeps the saved value. While the file sets a field, the file's value wins, and if that would copy more than both the saved value and the file alone, the saved value is not applied until the file changes back. To follow the file again, remove the saved value.",
                     held.join(", ")
                 ));
             }

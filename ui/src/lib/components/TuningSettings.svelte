@@ -14,6 +14,8 @@
   // the next start: the card says "restart needed" while the node lists it as pending a restart.
   // The node this card is on is the first in the listing, not the one picked in the Guarded settings picker.
   const restartNeeded = $derived(which === 'dnstap' && !!guarded.nodes[0]?.pendingRestart.includes(spec.guardedId ?? ''));
+  // A saved value the config file displaces stays saved but a restart does not apply it.
+  const displaced = $derived(which === 'dnstap' && !!guarded.nodes[0]?.settings.find((s) => s.id === spec.guardedId)?.displacedByFile);
   $effect(() => (which === 'dnstap' && open ? watchGuarded(3_000) : undefined));
 </script>
 
@@ -44,6 +46,9 @@
     />
     {#if which === 'dnstap' && restartNeeded}
       <p class="notice small" data-testid="dnstap-restart-needed">Restart needed: a dnstap change confirmed here is read when {guarded.nodes[0]?.node ?? 'the node'} starts again.</p>
+    {/if}
+    {#if which === 'dnstap' && displaced}
+      <p class="notice small" data-testid="dnstap-displaced">Saved, not applied: the config file sets another reader or feed, so this node runs the file's dnstap settings. The saved value is applied again when the file changes back, or remove it to follow the file.</p>
     {/if}
   {/if}
 </details>
