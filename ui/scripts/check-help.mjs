@@ -24,6 +24,8 @@ function walk(dir) {
 walk(resolve(here, '../src'));
 
 const errors = [];
+// `npm run dev` must reach the node's glossary route, or every help panel fails in development.
+if (!/proxy:[^}]*'\/help'/.test(readFileSync(resolve(here, '../vite.config.ts'), 'utf8'))) errors.push("vite.config.ts dev proxy has no '/help' entry");
 for (const [id, where] of used) if (!ids.has(id)) errors.push(`unknown help id "${id}" in ${where.join(', ')}`);
 for (const t of topics) {
   if (!t.general && !used.has(t.id)) errors.push(`topic "${t.id}" isn't used in the UI (use it, or mark it general)`);
