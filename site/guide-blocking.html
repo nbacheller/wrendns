@@ -24,6 +24,7 @@
     <li><a href="#quick">Quick block and allow rules</a></li>
     <li><a href="#schedules">Bedtime and other schedules</a></li>
     <li><a href="#services">Blocked services and safe search</a></li>
+    <li><a href="#categories">Block a whole category</a></li>
     <li><a href="#shadow">Try a list first</a></li>
     <li><a href="#explain">Find out why</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
@@ -163,7 +164,7 @@ wrendns ctl rules                     # what's in effect; `ctl unrule &lt;id&gt;
     <li>A rule for the <b>device</b> beats one for its <b>group</b>, which beats one for <b>everyone</b>. Within those, the more specific site wins, then allow over block.</li>
     <li>A rule with an end time stops at that moment on every node. The query log shows <b>quick allow</b> or <b>quick block</b> with the rule's note.</li>
   </ul>
-  <p class="muted">Quick rules aren't parental controls: there's no screen time and no content categories. Before saving, <b>What would this have done?</b> replays recent queries with the change.</p>
+  <p class="muted">Quick rules are for single names. For hours, see <a href="#schedules">schedules</a>, and for whole kinds of site, <a href="#categories">categories</a>. Before saving, <b>What would this have done?</b> replays recent queries with the change.</p>
 </section>
 
 <section id="schedules">
@@ -230,6 +231,21 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]</code></pre>
     </div>
   </div>
   <p class="muted">Both apply only to the group's devices. The service catalog and safe-search table are part of the binary and change with updates.</p>
+</section>
+
+<section id="categories">
+  <h2>Block a whole category</h2>
+  <p>Instead of choosing lists by name, choose <b>what to block</b>: adult content, gambling, malware, social networks, newly registered domains, and more. Each category is backed by an open list that its maintainer publishes (HaGeZi, StevenBlack, Perflyst, and a bundle of AI services we make). The node that owns the lists downloads each one once, shares it with everything that uses it, and removes it when nothing does. <b>Lists → Categories</b> shows every category with its sources, size and licence. Nothing is selected until you choose.</p>
+  <ol class="guide">
+    <li>Open <b>Groups</b> and choose <b>New profile</b>. A profile is a group that says which categories apply to which devices and networks.</li>
+    <li>Pick a level: <b>basic</b> (adult content, malware, phishing and scams) or <b>enhanced</b> (exactly the categories you tick), and add <b>Ad Block</b> if you want it.</li>
+    <li>Choose the devices and networks it covers, and save.</li>
+  </ol>
+  <ul>
+    <li>A device in two profiles gets both. An allow rule, a quick rule or a group's own allow list beats a category block, and <b>Why?</b> names the category and the list.</li>
+    <li><b>DNS blocks names, not content.</b> A site on a name that is also used for something else (a CDN, a video host) is blocked or allowed with it. A browser using its own encrypted DNS, a VPN or a hard-coded resolver skips WrenDNS, and lists lag new sites by hours or days. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#content-categories-and-filter-profiles">Details</a>.</li>
+  </ul>
+  <p><b>Five more categories from blocklist.packettale.com</b> <span class="pill planned">Coming in 1.1</span>. The last group on the Categories view offers stalkerware, typosquatting, violence and gore, remote-access tools and push notifications, each marked "(packettale)". They are off until you tick them. Your node then downloads each list straight from <a href="https://blocklist.packettale.com/">blocklist.packettale.com</a> once a day, and WrenDNS ships and redistributes nothing. The site republishes other people's lists and each keeps its own terms; <b>Sources and licences</b> shows them, and lists with copyleft or non-commercial terms are not offered. Two come with a warning on their row: remote-access tools includes AnyDesk, and typosquatting can block a real site now and then.</p>
 </section>
 
 <section id="shadow">

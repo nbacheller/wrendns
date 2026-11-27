@@ -88,6 +88,7 @@ url = "recursive://"
 name = "default"
 members = ["recursive"]</code></pre>
       <p>No public resolver then sees your lookups. Each server is asked only as much of the name as it needs (so the root servers see <code>com</code>, not the whole name), answers can be checked with DNSSEC, and delegations are remembered, so only the first lookup in a new zone takes a few round trips.</p>
+      <p><span class="pill planned">Coming in 1.1</span> On main, it also never asks servers on your own machine or network, remembers which servers answer well, and can show the walk of one lookup under <b>Why?</b> (<b>Trace the lookup</b>). <a href="guide-encrypted.html#recursive">More</a>.</p>
       <p>The trade-off: the authoritative servers see your address, and your ISP still sees the traffic. You can mix it with a forwarder as a fallback in a failover group. Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#recursive-resolution-no-forwarder">recursive resolution</a>.</p>
     </dd>
 
@@ -119,6 +120,12 @@ upstream_group = "lan"</code></pre>
       <p>The same thing is a few clicks in <b>Send a domain to another server</b>.</p>
     </dd>
 
+    <dt id="q-flush">How do I clear the cache after changing a record or a delegation?</dt>
+    <dd>
+      <p>Open <b>Cache</b> and use <b>Look up and flush</b>: flush one name, everything under it, or everything. Blocked answers are never cached, so unblocking needs no flush. Flushing does not clear the devices' own caches.</p>
+      <p><span class="pill planned">Coming in 1.1</span> You can also flush by query type (for example only <code>AAAA</code> for a name), flush only the names that do not exist, or flush only failed lookups (SERVFAIL). With the built-in resolver, <b>Flush zone cuts</b> makes it forget the delegations and server addresses it learned, so the next lookup starts from the root again, and <b>Flush round-trip times</b> makes it forget how fast each server answered. Anything that could remove a lot asks first. From the shell: <code>wrendns ctl flush --type AAAA --name example.com</code>, <code>--kind negative</code> or <code>--recursor cuts</code>.</p>
+    </dd>
+
     <dt id="q-scripts">Can a script add DNS records, for example when a container starts?</dt>
     <dd>
       <p>Yes. The API takes a record per name:</p>
@@ -140,13 +147,8 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-categories">Can I block whole categories, such as adult content?</dt>
     <dd>
-      <p>Not with a single switch, and that is by design: WrenDNS never looks at page content, which keeps it fast. Categories come from the people who maintain category blocklists. You can get the same result for just the devices that need it:</p>
-      <ul>
-        <li>Add a category blocklist by URL and give it only to that group.</li>
-        <li>Send that group to a family-filtering upstream (the presets include several).</li>
-        <li>Turn on safe search for the group, and block specific services such as TikTok or Roblox with one setting.</li>
-      </ul>
-      <p>A group with no list setting uses <em>every</em> list, so give your other groups an explicit list of the ones they should use.</p>
+      <p>Yes. Pick what to block instead of picking lists: adult content, gambling, malware, social networks, newly registered domains and more. Each category is backed by an open list its maintainer publishes, downloaded once and shared. Make a <b>profile</b> under <b>Groups → New profile</b>, choose the categories, and choose the devices or networks it covers. Nothing is on until you choose.</p>
+      <p>WrenDNS never looks at page content, so a category blocks <em>names</em>. A site on a name shared with something else (a CDN, a video host) goes with it, and lists lag new sites. Turn on safe search for the group, and block services such as TikTok or Roblox with one setting. A group with no list setting uses <em>every</em> list, so give your other groups an explicit list. <a href="guide-blocking.html#categories">Block a whole category</a> has the steps. <span class="pill planned">Coming in 1.1</span> Five more opt-in categories (stalkerware, typosquatting, violence and gore, remote-access tools, push notifications) come from blocklist.packettale.com.</p>
     </dd>
   </dl>
 </section>
@@ -157,14 +159,15 @@ upstream_group = "lan"</code></pre>
     <dt id="q-perdevice">Can each device use DoH or DoT with its own identity?</dt>
     <dd>
       <p>Yes. Every encrypted listener (DoT, DoH, DoH over HTTP/3, and DoQ) takes a client ID: use <code>https://dns.example.com/dns-query/kids-tablet</code>, or the name <code>kids-tablet.dns.example.com</code> with a wildcard certificate. Match it in the configuration with <code>[[client]] match = ["id:kids-tablet"]</code>, and the device lands in a group with its own lists, schedule, safe search, and upstream. The ID follows the device, even on mobile data.</p>
-      <p>The ID names a device; it is not a password. Who may ask at all is decided by the sender's address (<code>[access] allowed_networks</code>). If you host it on the internet for phones, put it behind a VPN such as WireGuard or Tailscale (Tailscale's range is allowed by default) or open that setting deliberately. Details: <a href="guide-encrypted.html">Encrypted DNS and upstreams</a>.</p>
+      <p>The ID names a device; on a listener at home it is not a password. Who may ask at all is decided by the sender's address (<code>[access] allowed_networks</code>). If you host it on the internet for phones, put it behind a VPN such as WireGuard or Tailscale (Tailscale's range is allowed by default) or open that setting deliberately. Details: <a href="guide-encrypted.html">Encrypted DNS and upstreams</a>.</p>
+      <p><span class="pill planned">Coming in 1.1</span> A listener that is reachable from the internet is different on main: it answers only a device with a long random key, and a readable ID like <code>kids-tablet</code> is refused there. <a href="guide-encrypted.html#device-key">What changes, and how to keep your setup</a>.</p>
       <p>This is one of the newer areas, so reports from real setups are especially welcome.</p>
     </dd>
 
     <dt id="q-naming">How does it name my devices?</dt>
     <dd>
       <p>In order: names you give them, then your router's DHCP leases (UniFi and OPNsense, read through their APIs every few minutes), then the names devices announce over mDNS. <b>Clients → Discovered</b> lists everything found. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</p>
-      <p>Two things it doesn't do yet: look up a device's reverse (PTR) record to name it, and accept dynamic DNS updates (RFC 2136) from a DHCP server. Lease and mDNS names label devices in the interface and the query log; they are not served as DNS answers. If you need either, an issue describing your setup helps.</p>
+      <p>Two things it doesn't do yet: look up a device's reverse (PTR) record to name it, and accept dynamic DNS updates (RFC 2136) from a DHCP server. Names you give and names your router or Home Assistant knows can also be answered as DNS names under your home domain (<code>kitchen-tablet.home.arpa</code>), once you turn on <b>Device names in DNS</b> (<a href="guide-devices.html#local">how</a>). <span class="pill planned">Coming in 1.1</span> <a href="guide-devices.html#locations">Locations</a> give a site, a lab or a VLAN its own names. If you need either of the two things above, an issue describing your setup helps.</p>
     </dd>
 
     <dt id="q-masked">Every query shows the same client address. What's wrong?</dt>

@@ -48,7 +48,7 @@ wrendns presets show nextdns --param profile=abc123    # templated presets need 
     <div class="panel" id="choose-ui"><h3>Web UI</h3>
       <ol class="guide">
         <li>Open the <b>Upstreams</b> page. It holds both servers and upstream groups.</li>
-        <li>Add or edit an entry. Simple view shows the common fields; switch to Advanced for timeouts and TLS names.</li>
+        <li>The Simple view opens on a list of public resolvers (Cloudflare, Google, Quad9, AdGuard, Mullvad and others), each with a note on what it filters and what it does with your queries. Tick the ones you want, choose <b>Encrypted</b> or <b>Plain</b>, and choose IPv4, IPv6 or both. Saving makes one upstream per address and sets the <code>default</code> group to the <code>fastest</code> strategy over them. Switch to Advanced to add or edit an entry yourself, with timeouts and TLS names.</li>
         <li><b>Test it</b> asks the draft upstream for the root's NS records from this node, and shows the answer and the time, or the error (a bad URL, a TLS name that doesn't match, a timeout).</li>
         <li><b>Check</b> shows what the change will do and any warnings, such as a group that would lose its last member. Nothing is saved until <b>Apply</b>.</li>
       </ol>
@@ -154,7 +154,7 @@ url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFs
   <p>Phones, laptops, and browsers can reach WrenDNS over DNS over TLS (Android's "Private DNS"), DNS over HTTPS (browsers, iOS and macOS profiles), or DNS over QUIC, so nobody on the network path can read or change their lookups.</p>
   <ol class="steps">
     <li class="step"><b>Get a certificate</b> for the name devices will use, such as <code>dns.example.com</code> from Let's Encrypt (DNS-01 works for internal names): a PEM chain (leaf first) and its key. Both files are re-read within 10 seconds of changing, so renewals need no restart.</li>
-    <li class="step"><b>Add a listener</b> for each protocol you want, as shown below. DoT uses TCP 853 and DoQ uses UDP 853, so both fit.</li>
+    <li class="step"><b>Add a listener</b> for each protocol you want, as shown below. DoT uses TCP 853 and DoQ uses UDP 853, so both fit. <span class="pill planned">Coming in 1.1</span> You can also add one in <b>Settings → System → Listeners</b>, which tries it out before keeping it (<a href="guide-settings.html#guarded">how</a>).</li>
     <li class="step"><b>Point a device at it:</b> <code>dns.example.com</code> as Android's Private DNS, or <code>https://dns.example.com/dns-query</code> for DoH.</li>
   </ol>
       <div class="tabs">
@@ -213,6 +213,20 @@ tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }</code></pr
     <li><b>Connection limits</b> per listener: <code>max_connections</code> (default 1,024) and <code>max_connections_per_address</code> (default 32, <code>0</code> = no limit).</li>
     <li><b>Let devices find it by themselves</b> (Discovery of Designated Resolvers, RFC 9462): with <code>[special] ddr_name = "dns.example.com"</code>, a device that already uses WrenDNS over plain DNS (Windows 11, iOS 16 and macOS 13 and later, among others) asks <code>_dns.resolver.arpa</code> and learns these listeners, with their ports and DoH path. It switches to encrypted DNS only when the certificate also lists the address it reaches WrenDNS on (an IP SAN such as <code>192.168.1.2</code>). <code>resolver.arpa</code> is never forwarded, with or without <code>ddr_name</code>. In the UI the name is set under Settings → Query handling → Special names, by an admin only; the listener checks on that page say whether each listener's certificate covers the name.</li>
   </ul>
+  <div class="callout" id="device-key">
+    <p><b>A listener on a public address needs a device key.</b> <span class="pill planned">Coming in 1.1</span> In 1.0.0 an encrypted listener is limited only by <code>[access] allowed_networks</code>. On main, a DoT, DoH, DoH over HTTP/3 or DoQ listener that is reachable from the internet answers only a device that carries a known key, so it can't be used as an open resolver. This is on by default for a listener bound to a public address, and for one bound to every address (<code>0.0.0.0</code> or <code>[::]</code>) on a host that has a public IPv4 address. A Raspberry Pi behind a router, with a private address only, is not affected. Plain UDP and TCP listeners are not affected either.</p>
+    <ul>
+      <li><b>The key is a long random string,</b> not a readable name like <code>kids-tablet</code>: 26 or more characters from <code>a</code> to <code>z</code> and <code>2</code> to <code>7</code>. Make one with <code>head -c 16 /dev/urandom | base32 | tr A-Z a-z | head -c 26</code>, and match it on a device with <code>[[client]] match = ["id:&lt;key&gt;"]</code>. Treat it like a password.</li>
+      <li><b>Where it goes:</b> the end of the DoH path (<code>/dns-query/&lt;key&gt;</code>) or the first label of the DoT or DoQ name (<code>&lt;key&gt;.dns.example.com</code>). A key in a server name travels in clear, so a DoT or DoQ query answers public names only. A DoH key travels inside TLS and gets the device's full rules.</li>
+      <li><b>Without a known key</b> a DoH request gets a 404 and a DoT or DoQ query is refused. A known key works from any address.</li>
+      <li><b>On upgrade,</b> a listener that becomes gated this way starts refusing devices without a key. The node says so in its log and in its health, and counts the refusals in <code>wrendns_client_id_refused_total</code>. Set <code>require_client_id = true</code> on the listener to keep the gate, or <code>false</code> to leave it open (the node then warns), in the file or in <b>Settings → System → Listener access</b> (admins).</li>
+    </ul>
+<pre><code>[[listen]]
+proto = "dot"
+addr = "203.0.113.5:853"
+tls = { cert = "/etc/wrendns/tls.crt", key = "/etc/wrendns/tls.key" }
+require_client_id = true</code></pre>
+  </div>
   <p class="muted">Metrics, timeouts, and HTTP details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">Encrypted DNS for your devices in the docs</a>.</p>
 </section>
 
@@ -324,7 +338,12 @@ members = ["recursive"]
     <li><b>Worth turning on:</b> <code>case_randomization</code> (off by default) asks with a random mix of upper and lower case and accepts only answers that echo it, which adds about one bit per letter to what an off-path spoofer must guess.</li>
     <li><b>Fast after the first time:</b> a first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.</li>
     <li><b>Mix it in:</b> it's an upstream like any other. Use <code>strategy = "failover"</code> with a public resolver as the fallback, or route only some domains through it.</li>
+    <li><b>It never asks your own machine or network.</b> <span class="pill planned">Coming in 1.1</span> It does not send queries to a server on a loopback, link-local, multicast or broadcast address, and asks private addresses (such as <code>192.168.x.x</code>) only for a stub zone you set up. A public domain that points only at such addresses ends in SERVFAIL, and Why? names the rule. For a test setup, <code>allow_local_servers</code> or <code>allow_private_servers</code> lifts it.</li>
+    <li><b>It remembers its servers.</b> <span class="pill planned">Coming in 1.1</span> It keeps how quickly each server answered, and what it has shown, for 15 minutes. A server that has stopped answering is tried last (and once in a while, to notice it is back), a quick server that only answers REFUSED or a dead end no longer comes first, and a server that can't handle EDNS is asked without it. A server that stops answering over UDP is asked over TCP. None of this has a setting.</li>
+    <li><b>It limits expensive DNSSEC proofs.</b> <span class="pill planned">Coming in 1.1</span> A "no such name" answer proved with more than 50 NSEC3 hash rounds is accepted but not marked as validated; above 500 it is refused as bogus (RFC 9276).</li>
+    <li><b>You can watch it.</b> <span class="pill planned">Coming in 1.1</span> <code>wrendns_recursor_queries_total</code> counts the queries it sends by what came back, and its siblings count changed letter case, stray replies and cached delegations. Under <b>Why?</b>, <b>Trace the lookup</b> resolves the name again and lists every server it asked, with the answer and the time (the same as <code>wrendns ctl trace www.example.com</code>). With <code>resolver = true</code> under <code>[telemetry.dnstap]</code>, each query and answer is also sent to your dnstap reader; that one is set in the file only.</li>
   </ul>
+  <div class="callout"><p><b>Upgrading a recursive setup to 1.1.</b> <span class="pill planned">Coming in 1.1</span> A <code>recursive://</code> upstream with <code>ecs</code> set to anything but <code>strip</code> no longer loads (it never did anything). A stub zone whose servers are on this machine (loopback or link-local) needs <code>allow_local_servers = true</code>. The configuration check warns about both.</p></div>
   <p class="muted">Limits, root priming, and safety details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#recursive-resolution-no-forwarder">Recursive resolution in the docs</a>.</p>
 </section>
 

@@ -24,6 +24,7 @@
     <li><a href="#router">Names from your router and mDNS</a></li>
     <li><a href="#identify">What is this device?</a></li>
     <li><a href="#local">Names on your network</a></li>
+    <li><a href="#locations">Locations</a></li>
     <li><a href="#answers">Per-group answers</a></li>
     <li><a href="#reach">Real addresses, access, and rate limits</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
@@ -261,6 +262,50 @@ value = "10.10.0.5"</code></pre>
     </div>
   </div>
   <p class="muted">Details: <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#local-records">Local records</a> and <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#local-zones">Local zones</a>.</p>
+  <h3>Device names in DNS</h3>
+  <p>WrenDNS can answer for your devices' names too, without running DHCP. Devices you named, and devices your router or Home Assistant knows by name, answer under your home domain, so <code>ping kitchen-tablet.home.arpa</code> works and a reverse lookup of the address names the device. Turn it on with <b>Local DNS → Device names in DNS</b>, or <code>[local] device_domain = "home.arpa"</code>.</p>
+  <ul>
+    <li>A name becomes one label: <code>Kitchen Tablet</code> is <code>kitchen-tablet.home.arpa</code>. If two devices end up with the same label, the one you named keeps it, then a router's name, then an mDNS name, then the lower address.</li>
+    <li>Your own records win over a device name. Names follow the router's lists and appear within about 10 seconds of a read.</li>
+  </ul>
+</section>
+
+<section id="locations">
+  <h2>Locations: a site, a lab or a VLAN with its own names <span class="pill planned">Coming in 1.1</span></h2>
+  <p>One <code>device_domain</code> is enough for a house. If you have a second site, a lab, or a VLAN you want kept apart, a <b>location</b> gives that part of the network its own device-name subtree, so <code>nas.home.example.net</code> and <code>nas.lab.example.net</code> are two different devices.</p>
+  <figure class="figure">
+    <picture>
+      <source srcset="assets/shots/locations-dark.jpg" media="(prefers-color-scheme: dark)">
+      <img src="assets/shots/locations-light.jpg" alt="The Locations page: three locations, Home, Smart home and Office (marked private), each with its domain, its networks, the nodes that serve it, a device count, a flat-names switch and a collisions count" width="1280" height="860" loading="lazy">
+    </picture>
+    <figcaption>The Locations page: Devices → Locations (made-up network)</figcaption>
+  </figure>
+<pre><code>[local]
+device_domain = "example.net"
+
+[[location]]
+slug = "home"                              # the DNS label: devices answer as laptop.home.example.net
+label = "Home"
+networks = ["192.168.1.0/24", "vlan:30"]   # networks, or a VLAN your routers report
+# visibility = "private"                   # answered only to clients in its networks
+
+[[location]]
+slug = "lab"
+networks = ["192.168.20.0/24"]
+
+[[client]]
+name = "Lab laptop"
+match = ["192.168.1.9"]
+location = "lab"                           # pin one device to a location, whatever its address</code></pre>
+  <ul>
+    <li><b>Where a device is:</b> the location whose networks hold its address, as your config and your routers report it. The most specific network wins. If two locations claim the same network, neither applies until you change one. A device pinned with <code>location</code> stays there. A device that moves is renamed within about 10 seconds of the router read.</li>
+    <li><b>The old names keep working.</b> While a location's <b>flat names</b> switch is on (it is by default), <code>laptop.example.net</code> still answers beside <code>laptop.home.example.net</code>, so bookmarks and scripts survive. The Locations page counts the questions those old names answered over the last 7 days, so you know when to turn the switch off.</li>
+    <li><b>Private locations</b> answer their names only to a client whose address is in the location's networks, and everyone else gets "no such name". That keeps names tidy; it is not a security boundary, because the sender's address is the only test.</li>
+    <li><b>Two devices with the same name</b> in one place: the one you named keeps it, and the page lists the clash.</li>
+    <li><b>From the web UI and the API:</b> operators create and change locations on the page, with <b>Check</b> first; a location defined in a file is read-only there. The API is <code>/api/v1/locations</code>, and an AI agent can plan one with <code>plan_set_location</code> (see <a href="agents.html">AI agents</a>).</li>
+    <li><b>In a cluster,</b> the first location is held until every node is on a version that knows locations (<a href="guide-cluster.html#upgrade">why</a>).</li>
+    <li><b>Not yet:</b> certificates and DNS-provider names for a location, and node names under a location.</li>
+  </ul>
 </section>
 
 <section id="answers">
@@ -304,8 +349,15 @@ queries = 1000          # per client per window
 window_secs = 60
 action = "refused"      # or "drop"
 exempt = ["127.0.0.0/8", "::1/128"]</code></pre>
+  <figure class="figure">
+    <picture>
+      <source srcset="assets/shots/allowed-networks-dark.jpg" media="(prefers-color-scheme: dark)">
+      <img src="assets/shots/allowed-networks-light.jpg" alt="The Allowed networks card: the built-in private ranges, one added network (192.168.20.0/24) waiting to be applied, and a note of what applying will do" width="1280" height="860" loading="lazy">
+    </picture>
+    <figcaption>Allowed networks with 192.168.20.0/24 added, checked and not yet applied (made-up network)</figcaption>
+  </figure>
   <ul>
-    <li>Admins change the list in <b>Settings → System → Allowed networks</b>: one list for the whole cluster, applied on every node within seconds. Adding a public range warns first, because plain DNS carries no device key, and a list that leaves out your own address is refused. A file that sets <code>allowed_networks</code> wins.</li>
+    <li><span class="pill planned">Coming in 1.1</span> Admins change the list in <b>Settings → System → Allowed networks</b>: one list for the whole cluster, applied on every node within seconds, with no restart. <b>Check</b> says what the change does first. Adding a public range warns first, because plain DNS carries no device key, and a list that leaves out your own address is refused. The list limits who gets an answer and who can open the web UI and the API. Operators and viewers can read it; AI agents can't change it. A file that sets <code>allowed_networks</code> wins, and <b>Revert to the file</b> goes back to it. In 1.0.0 the list is set in the config file.</li>
     <li>A router or proxy that forwards for a whole network looks like one address and is refused above about 17 queries a second: add it to <code>exempt</code>, or raise <code>queries</code>.</li>
     <li>Change the rate limit in <b>Settings → Query handling → Rate limit</b>, or with <code>PUT /api/v1/ratelimit/default</code>. A change replaces the whole section, so keep <code>127.0.0.0/8</code> and <code>::1/128</code> in the exempt list. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#who-can-query-and-how-often">Details</a>.</li>
   </ul>
