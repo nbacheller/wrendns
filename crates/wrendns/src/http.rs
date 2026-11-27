@@ -52,7 +52,9 @@ pub(crate) struct Sources {
     /// it last reported.
     pub(crate) rollout: Arc<crate::rollout::Hub>,
     pub(crate) started: Instant,
-    pub(crate) allowed: Vec<Cidr>,
+    /// REQ: DNS-014 (T27.14h) — `[access] allowed_networks` for the web UI and the API, read again
+    /// at each reload (a change to the list applies without a restart, on every node).
+    pub(crate) allowed: ArcSwap<Vec<Cidr>>,
     /// The list fetcher and compiler, when this node handles lists.
     pub(crate) lists: ArcSwapOption<ListsShared>,
     /// Query-log write counters, when the query log is on.
@@ -225,7 +227,7 @@ pub(crate) async fn only_allowed(
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if wrendns_policy::is_allowed(&src.allowed, peer.ip()) {
+    if wrendns_policy::is_allowed(&src.allowed.load(), peer.ip()) {
         next.run(req).await
     } else {
         StatusCode::FORBIDDEN.into_response()

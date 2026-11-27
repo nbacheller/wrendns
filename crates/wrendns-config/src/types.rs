@@ -273,6 +273,49 @@ impl Cidr {
         }
     }
 
+    /// REQ: DNS-014 (T27.14h, ADR-1090 point 1) — true when any address in this network is public by
+    /// [`crate::is_public_address`]: so `0.0.0.0/0`, `::/0` and any range not wholly inside loopback,
+    /// RFC 1918, CGNAT, link-local or unique-local space. A single address is judged as itself.
+    #[must_use]
+    pub fn includes_public(&self) -> bool {
+        const PRIVATE: &[(&str, u8)] = &[
+            ("127.0.0.0", 8),
+            ("10.0.0.0", 8),
+            ("172.16.0.0", 12),
+            ("192.168.0.0", 16),
+            ("169.254.0.0", 16),
+            ("100.64.0.0", 10),
+            ("::1", 128),
+            ("fc00::", 7),
+            ("fe80::", 10),
+        ];
+        let canon = self.addr.to_canonical();
+        let max = if canon.is_ipv4() { 32 } else { 128 };
+        let prefix = if self.addr.is_ipv6() && canon.is_ipv4() {
+            self.prefix.saturating_sub(96)
+        } else {
+            self.prefix
+        };
+        if prefix >= max {
+            return crate::schema::is_public_address(canon);
+        }
+        let net = Self {
+            addr: canon,
+            prefix,
+        };
+        !PRIVATE.iter().any(|(a, p)| {
+            a.parse::<std::net::IpAddr>().is_ok_and(|a| {
+                (a.is_ipv4() == canon.is_ipv4())
+                    && prefix >= *p
+                    && Self {
+                        addr: a,
+                        prefix: *p,
+                    }
+                    .contains(net.addr)
+            })
+        })
+    }
+
     /// True if `ip` is inside this network (IPv4-mapped IPv6 addresses count as IPv4).
     pub fn contains(&self, ip: std::net::IpAddr) -> bool {
         use std::net::IpAddr;

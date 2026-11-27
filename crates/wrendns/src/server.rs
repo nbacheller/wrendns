@@ -1476,7 +1476,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         ))),
         rollout: Arc::default(),
         started: std::time::Instant::now(),
-        allowed: cfg.access.allowed_networks.clone(),
+        allowed: ArcSwap::from_pointee(cfg.access.allowed_networks.clone()),
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
@@ -1943,6 +1943,14 @@ fn save_cache(cfg: &Config, cache: &Cache) {
     }
 }
 
+/// REQ: DNS-014, API-901 (T27.14h) - the list the web UI and the API gate on follows the configuration
+/// at each reload, as the DNS listeners' does.
+pub(crate) fn follow_allowed(sources: &http::Sources, cfg: &Config) {
+    sources
+        .allowed
+        .store(Arc::new(cfg.access.allowed_networks.clone()));
+}
+
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the
 /// running configuration.
 // Everything a reload swaps; grouping it would only rename the parameters.
@@ -2070,6 +2078,7 @@ async fn reload(
         .set_privacy(new.telemetry.qlog.privacy_level);
     config_marker(sources, current, &new);
     sources.config.store(Arc::new(new.clone()));
+    follow_allowed(sources, &new);
     sources.file_config.store(Arc::new(file));
     *current = new;
     // REQ: API-016 (T23.10, ADR-903 §7) — OIDC providers added, changed or removed (the files',

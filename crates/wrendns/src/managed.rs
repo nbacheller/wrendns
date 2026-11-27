@@ -77,6 +77,8 @@ pub(crate) const DNSSEC: &str = "dnssec";
 pub(crate) const FILTER: &str = "filter";
 /// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`, one entry.
 pub(crate) const DRILL: &str = "drill";
+/// REQ: DNS-014 (T27.14h, ADR-1098 point 4) — `[access] allowed_networks`, one entry for the cluster.
+pub(crate) const ACCESS: &str = "access";
 /// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
 /// files define is read-only through the API (ADR-040), so these never override the files.
 pub(crate) const ROUTER: &str = "router";
@@ -276,6 +278,8 @@ pub(crate) struct Entries {
     pub(crate) dnssec: Option<serde_json::Value>,
     pub(crate) filter: Option<serde_json::Value>,
     pub(crate) drill: Option<serde_json::Value>,
+    /// REQ: DNS-014 (T27.14h) - the stored `[access]` section (the allowed networks), likewise.
+    pub(crate) access: Option<serde_json::Value>,
     /// REQ: OBS-016, OBS-020, OBS-019 (T27.5) — the stored `[slo]`, `[probe]` and
     /// `[upstream_check]` sections, likewise.
     pub(crate) slo: Option<serde_json::Value>,
@@ -511,6 +515,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         dnssec: single(state, DNSSEC),
         filter: single(state, FILTER),
         drill: single(state, DRILL),
+        access: single(state, ACCESS),
         slo: single(state, SLO),
         probe: single(state, PROBE),
         upstream_check: single(state, UPSTREAM_CHECK),
