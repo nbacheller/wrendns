@@ -30,6 +30,9 @@ pub(crate) struct View {
     pub(crate) file: Value,
     pub(crate) file_set: Vec<String>,
     pub(crate) pending: Value,
+    /// The time (`at`) of the replicated entry this node set aside after failed starts, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) set_aside_at: Option<u64>,
 }
 
 /// What a replica sends with a write it forwards: its files, and what it will run after its next
@@ -43,6 +46,10 @@ pub(crate) struct SentView {
     /// Absent from a sender that does not send it.
     #[serde(default)]
     pub(crate) pending: Option<Value>,
+    /// The time of the entry the node set aside (two failed starts): the primary then judges that
+    /// entry as what the node does not run, so the files alone are "before".
+    #[serde(default)]
+    pub(crate) set_aside_at: Option<u64>,
 }
 
 impl View {
@@ -52,6 +59,7 @@ impl View {
             file: self.file.clone(),
             file_set: self.file_set.clone(),
             pending: Some(self.pending.clone()),
+            set_aside_at: self.set_aside_at,
         }
     }
 }
@@ -79,8 +87,24 @@ pub(crate) fn own_view(src: &Sources, state: &State) -> (View, bool) {
         file: settings_kinds::section_json(KIND, &files),
         file_set: file_set_of(&files),
         pending: settings_kinds::section_json(KIND, &cfg),
+        set_aside_at: set_aside_at(src, state),
     };
     (view, has_entry)
+}
+
+/// The time of this node's replicated dnstap entry that it set aside (a local suppression the
+/// primary's copy has not changed since), for the primary to judge writes without it.
+fn set_aside_at(src: &Sources, state: &State) -> Option<u64> {
+    let me = crate::guarded::this_node()?;
+    let live = src.config.load();
+    let held = crate::guarded::store::suppressed(state)
+        .get(DNSTAP)
+        .cloned()?;
+    crate::guarded::store::effective(&live, state, &me)
+        .into_iter()
+        .map(|(e, _)| e)
+        .find(|e| e.id == DNSTAP && e.node == me && e.digest() == held)
+        .map(|e| e.at)
 }
 
 /// What this node will run after its next start (its files and its own entry of the guarded store,
@@ -234,7 +258,16 @@ fn entry_change(
     existing: Option<&Stored>,
     (in_force, node_differs): (bool, bool),
 ) -> crate::api_backend::AlsoStored {
-    let wanted = (after != file_section).then(|| entry_value(after, existing, in_force, file_n));
+    // A confirmed entry the result still keeps (the tap stays on its confirmed reader) is stored
+    // narrowed, even when the result equals the files: it holds the reader for the day the files drop it.
+    let keeps = |v: &(Value, &'static str)| {
+        w.body.is_some()
+            && existing.is_some_and(|e| e.mode != crate::guarded::dnstap::NARROWED)
+            && !reader(after).is_empty()
+            && v.1 != crate::guarded::dnstap::NARROWED
+    };
+    let value = entry_value(after, existing, in_force, file_n);
+    let wanted = (after != file_section || keeps(&value)).then_some(value);
     let have = existing.map(|e| normal(&e.value));
     match (&wanted, &have) {
         (None, None) => Vec::new(),
@@ -265,7 +298,6 @@ fn refuse_discarding(
     node: &str,
     file_n: &wrendns_config::Config,
     after: &Value,
-    file_section: &Value,
     existing: Option<&Stored>,
     in_force: bool,
 ) -> Result<(), Problem> {
@@ -277,15 +309,20 @@ fn refuse_discarding(
     if !crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value) && reader(after).is_empty() {
         return Ok(());
     }
-    let keeps = after != file_section
-        && entry_value(after, existing, in_force, file_n).1 != crate::guarded::dnstap::NARROWED;
+    let keeps =
+        entry_value(after, existing, in_force, file_n).1 != crate::guarded::dnstap::NARROWED;
     if keeps {
         return Ok(());
     }
+    let why = if crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value) {
+        "its config file sets a feed or sampling that copies more, or another reader, and displaces it"
+    } else {
+        "this write would remove the confirmed value"
+    };
     Err(Problem::new(
         Code::Conflict,
         format!(
-            "{node} holds a confirmed dnstap value that this write would drop (its config file sets another reader, or a feed or sampling that copies more); saving this would discard it, and it would not come back when the file changes"
+            "{node} holds a confirmed dnstap value that this write would drop ({why}); saving this would discard it, and it would not come back when the file changes"
         ),
     )
     .hint("Remove the saved value first (DELETE /api/v1/dnstap-settings/default, or Remove in the dnstap card), or change the config file."))
@@ -335,6 +372,26 @@ fn node_files(src: &Sources, sent: &SentView) -> Result<wrendns_config::Config, 
     Ok(file_n)
 }
 
+/// What the node will run after its next start: its files and the entry this primary holds for it,
+/// but not an entry the node says it set aside (two failed starts): that one is not run.
+fn pending_for(
+    sent: &SentView,
+    file_n: &wrendns_config::Config,
+    existing: Option<&Stored>,
+    node: &str,
+) -> wrendns_config::Config {
+    let mut cfg = file_n.clone();
+    let aside = sent
+        .set_aside_at
+        .is_some_and(|a| existing.is_some_and(|e| e.at == a));
+    if let Some(e) = existing.filter(|_| !aside) {
+        let mut e = e.clone();
+        e.state = EntryState::Active;
+        crate::guarded::appliers::overlay_for(&mut cfg, file_n, &[e], node);
+    }
+    cfg
+}
+
 /// The plan of one dnstap write: judged on the node it is for, stored as that node's entry.
 pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<ManagedPlan, Problem> {
     let noun = settings_kinds::noun(KIND);
@@ -357,12 +414,7 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
         .find(|e| e.id == DNSTAP && e.node == node);
     // What the node will run after its next start: its files and the entry this primary holds for it
     // (read here, authoritatively), whatever the replica's own copy of the store says.
-    let mut pending_cfg = file_n.clone();
-    if let Some(e) = &existing {
-        let mut e = e.clone();
-        e.state = EntryState::Active;
-        crate::guarded::appliers::overlay_for(&mut pending_cfg, &file_n, &[e], &node);
-    }
+    let pending_cfg = pending_for(&sent, &file_n, existing.as_ref(), &node);
     let stored = if let Some(v) = &w.body {
         Some(settings_kinds::prepare(KIND, v, &file_section, &file_n)?)
     } else {
@@ -417,14 +469,7 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
         (forced, node_differs(&sent, &after)),
     );
     if w.body.is_some() && !also.is_empty() {
-        refuse_discarding(
-            &node,
-            &file_n,
-            &after,
-            &file_section,
-            existing.as_ref(),
-            forced,
-        )?;
+        refuse_discarding(&node, &file_n, &after, existing.as_ref(), forced)?;
     }
     let (recent_queries, impact) =
         crate::api_backend::managed_impact(src, KIND, "default", w.body.is_some());

@@ -1409,3 +1409,63 @@ async fn obs_007_dnstap_only_turning_the_tap_off_ends_a_confirmed_entry() {
     let r = forwarded(&h, "pi-a", Some(none()), Some(v), false).await;
     assert_eq!(code(&r), "ok", "{r:?}");
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 13) - a narrowing whose result equals the files' section is an
+/// ordinary write even while the node holds a confirmed entry the file does not displace: the entry is
+/// kept (clamped, narrowed), not refused as a discard.
+#[tokio::test]
+async fn obs_007_dnstap_a_narrowing_to_the_files_values_keeps_the_confirmed_entry() {
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1, "forwarder": true }),
+    );
+    let file = tap("/run/a.sock", 1);
+    let mut running = file.clone();
+    running["forwarder"] = json!(true);
+    let v = view(file.clone(), &["socket"], running);
+    for dry in [true, false] {
+        let r = forwarded(&h, "pi-a", Some(file.clone()), Some(v.clone()), dry).await;
+        assert_eq!(code(&r), "ok", "{r:?}");
+    }
+    let e = entry_of(&h, "pi-a").expect("the entry stays");
+    assert_eq!(e.value["socket"], json!("/run/a.sock"), "{:?}", e.value);
+    assert_eq!(e.value["forwarder"], json!(false), "{:?}", e.value);
+    assert_eq!(e.mode, "staged");
+    // The same write again is no change.
+    let v = view(file.clone(), &["socket"], file.clone());
+    let r = forwarded(&h, "pi-a", Some(file), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 13) - an entry the node set aside (two failed starts) is not
+/// judged as what the node will run: removing it brings back nothing the node does not run already.
+#[tokio::test]
+async fn obs_007_dnstap_a_set_aside_entry_is_removed_without_the_phrase() {
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/f.sock", "sample_every": 10 }),
+    );
+    let at = entry_of(&h, "pi-a").unwrap().at;
+    let file = tap("/run/f.sock", 1);
+    let mut v = view(file.clone(), &["socket"], file.clone());
+    // Without the node's word the primary judges the held entry (sampling 10) against the files.
+    let r = forwarded(&h, "pi-a", None, Some(v.clone()), false).await;
+    assert_eq!(code(&r), "GuardedOnly", "{r:?}");
+    v["set_aside_at"] = json!(at);
+    let r = forwarded(&h, "pi-a", None, Some(v.clone()), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    assert!(entry_of(&h, "pi-a").is_none());
+    // A different time (a copy that lags) is still judged against the held entry.
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/f.sock", "sample_every": 10 }),
+    );
+    v["set_aside_at"] = json!(at.saturating_sub(5));
+    let r = forwarded(&h, "pi-a", None, Some(v), false).await;
+    assert_eq!(code(&r), "GuardedOnly", "{r:?}");
+}
