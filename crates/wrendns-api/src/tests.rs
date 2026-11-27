@@ -389,6 +389,13 @@ impl Backend for Fake {
             client_ips_masked: None,
             cluster: None,
             addresses: Vec::new(),
+            api: Some(crate::model::ApiInfo {
+                listen: "0.0.0.0:8053".into(),
+                scheme: "https".into(),
+                certificate: Some("self-signed".into()),
+                trusted_proxies: vec!["10.0.0.0/8".into()],
+                http_redirect: Some("0.0.0.0:80".into()),
+            }),
             build: crate::model::BuildInfo {
                 version: "0.1.0-edge.60".into(),
                 commit: "abc1234".into(),
@@ -5559,6 +5566,91 @@ async fn obs_007_dnstap_write_is_judged_in_the_one_write_that_applies_it() {
     assert_eq!(w.len(), 2, "{w:?}");
     assert!(!w[0].contains("expect="), "{w:?}");
     assert!(w[1].ends_with(" expect=7"), "{w:?}");
+}
+
+/// REQ: API-902 (T27.14f; owner decision, 2026-11-27) - the `api` block of `system/info` (the API's
+/// address, scheme, certificate name, trusted proxies and redirect) is an admin's own session's: a
+/// viewer, an operator, a read-scoped token, an agent token and a wall display get none of it.
+#[tokio::test]
+async fn api_902_api_block_is_for_admins_only() {
+    let (app, _) = app();
+    let info = |cookie: String| {
+        Request::get("/api/v1/system/info")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, info(app.cookie.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["api"]["listen"], "0.0.0.0:8053", "{v}");
+    assert_eq!(v["api"]["scheme"], "https");
+    assert_eq!(v["api"]["certificate"], "self-signed");
+    assert_eq!(v["api"]["trustedProxies"][0], "10.0.0.0/8");
+    assert_eq!(v["api"]["httpRedirect"], "0.0.0.0:80");
+    for (name, role) in [
+        ("olive3", auth::Role::Operator),
+        ("vic3", auth::Role::Viewer),
+    ] {
+        let u = app
+            .auth
+            .create_user(name, "a long enough password", role, false, NOW)
+            .unwrap();
+        let (cookie, _) = app.session_for(&u);
+        let (s, _, v) = send(&app, info(cookie)).await;
+        assert_eq!(s, StatusCode::OK, "{name}: {v}");
+        assert!(
+            v.get("api").is_none(),
+            "{name} must not see the api block: {v}"
+        );
+        assert!(v.get("listenerAccess").is_some(), "the rest stays: {v}");
+    }
+    // An admin's token cut to read scope.
+    let admin = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            admin.id,
+            "ro-api",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let req = Request::get("/api/v1/system/info")
+        .header("authorization", format!("Bearer tt_{tid}_{secret}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.get("api").is_none(), "{v}");
+    // The predicate itself: an agent grant or a display session is never an admin's own session,
+    // however high the role.
+    let principal = |agent: Option<auth::AgentGrant>, display: Option<&str>| {
+        let mut e = axum::http::Extensions::new();
+        e.insert(auth::Principal {
+            user_id: 1,
+            username: "root".into(),
+            role: auth::Role::Admin,
+            via: auth::Via::Token { id: "t".into() },
+            agent,
+            display: display.map(str::to_owned),
+        });
+        e
+    };
+    let grant = auth::AgentGrant {
+        token_name: "bot".into(),
+        scopes: std::collections::BTreeSet::new(),
+        group: None,
+        rate_per_minute: None,
+        client: None,
+    };
+    assert!(crate::is_admin_session(&principal(None, None)));
+    assert!(!crate::is_admin_session(&principal(Some(grant), None)));
+    assert!(!crate::is_admin_session(&principal(None, Some("wall"))));
+    assert!(!crate::is_admin_session(&axum::http::Extensions::new()));
 }
 
 /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — a listener's certificate and key paths, URL

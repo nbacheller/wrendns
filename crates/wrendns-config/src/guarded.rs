@@ -184,7 +184,24 @@ static REAL: &[Row] = &[
         weakens: dnstap_widened,
         test_only: false,
     },
+    // REQ: API-902, API-901 (T27.14f; ADR-914, ADR-956, ADR-977, ADR-1098) - `[api] trusted_proxies`, the
+    // value `{"proxies": ["10.0.0.0/8", ...]}`. `window`, proved by `proxy_list`: the new list applies
+    // only to the confirm route's own address evaluation until it is confirmed (no socket changes), and
+    // the confirm passes through the new list or, for a direct admin, when its peer is in neither list.
+    // An entry added weakens it: a trusted proxy's `X-Forwarded-For` is believed.
+    Row {
+        id: TRUSTED_PROXIES,
+        label: "Trusted proxies",
+        paths: &["api.trusted_proxies"],
+        mode: Mode::Window,
+        proof: Some(Proof::ProxyList),
+        weakens: proxies_added,
+        test_only: false,
+    },
 ];
+
+/// The ID of the trusted proxies row (T27.14f).
+pub const TRUSTED_PROXIES: &str = "trusted-proxies";
 
 /// The ID of the DNS listeners row (T27.14c).
 pub const LISTEN: &str = "listen";
@@ -336,12 +353,6 @@ pub static PLANNED: &[Planned] = &[
         id: "api-tls",
         mode: Mode::Window,
         paths: &["api.tls"],
-        task: Task::T27_14,
-    },
-    Planned {
-        id: "trusted-proxies",
-        mode: Mode::Window,
-        paths: &["api.trusted_proxies"],
         task: Task::T27_14,
     },
     Planned {
@@ -500,11 +511,28 @@ fn strings(v: &Value) -> Vec<&str> {
     }
 }
 
-/// An entry in `new` that `old` doesn't have: adding a directory to `secret_file_dirs`, or an
-/// entry to `trusted_proxies`.
+/// An entry in `new` that `old` doesn't have: adding a directory to `secret_file_dirs`.
 pub fn entry_added(old: &Value, new: &Value) -> bool {
     let old = strings(old);
     strings(new).into_iter().any(|n| !old.contains(&n))
+}
+
+/// REQ: API-902 (T27.14f) - the `trusted-proxies` value (`{"proxies": [...]}`, or the bare list) in `new`
+/// has a network that `old` does not: an entry added trusts one more source's `X-Forwarded-For`, so it
+/// weakens. Networks are compared as networks (`10.0.0.1/8` is `10.0.0.0/8`); removing entries, or
+/// writing the same list again, never weakens. An entry that is not an address or network is ignored
+/// (the applier's check refuses it).
+pub fn proxies_added(old: &Value, new: &Value) -> bool {
+    fn nets(v: &Value) -> Vec<crate::Cidr> {
+        let list = v.get("proxies").unwrap_or(v);
+        strings(list)
+            .into_iter()
+            .filter_map(|s| crate::Cidr::parse(s).ok())
+            .map(|c| c.network())
+            .collect()
+    }
+    let old = nets(old);
+    nets(new).into_iter().any(|n| !old.contains(&n))
 }
 
 /// A switch turned on (`allow_secrets_over_http`, `allow_insecure_basic`).
@@ -835,6 +863,30 @@ addr = \"127.0.0.1:5\"
         assert!(!(r.weakens)(&json!({}), &json!({"listeners": []})));
     }
 
+    // REQ: API-902 (T27.14f) - the `trusted-proxies` row is in the registry (it left the plan): a `window`
+    // row over `api.trusted_proxies` proved by the proxy list, weakening when an entry is added.
+    #[test]
+    fn api_902_trusted_proxies_row_is_real_and_agrees_with_the_plan() {
+        let r = row(TRUSTED_PROXIES).expect("the row exists");
+        assert_eq!(r.mode, Mode::Window);
+        assert_eq!(r.paths, ["api.trusted_proxies"]);
+        assert_eq!(r.proof, Some(Proof::ProxyList));
+        assert!(!r.test_only);
+        assert!(
+            PLANNED.iter().all(|p| p.id != TRUSTED_PROXIES),
+            "left the plan"
+        );
+        assert_eq!(covering("api.trusted_proxies"), Some(TRUSTED_PROXIES));
+        assert!((r.weakens)(
+            &json!({"proxies": []}),
+            &json!({"proxies": ["10.0.0.0/8"]})
+        ));
+        assert!(!(r.weakens)(
+            &json!({"proxies": ["10.0.0.0/8"]}),
+            &json!({"proxies": []})
+        ));
+    }
+
     // REQ: DNS-901, API-902 (T27.14) — the `listen-access` row is `immediate`, covers the listener
     // gate's path, and "weakens" exactly when a gate that was on is off afterwards.
     #[test]
@@ -923,9 +975,23 @@ addr = \"127.0.0.1:5\"
         assert!(turned_on(&json!(null), &json!(true)));
         assert!(!turned_on(&json!(true), &json!(true)));
         assert!(!turned_on(&json!(true), &json!(false)));
-        // Adding a trusted_proxies entry; removing one is not.
-        assert!(entry_added(&json!([]), &json!(["10.0.0.0/8"])));
-        assert!(!entry_added(&json!(["10.0.0.0/8"]), &json!([])));
+        // Adding a trusted_proxies entry; removing one is not (the value is `{"proxies": [...]}`).
+        assert!(proxies_added(
+            &json!({"proxies": []}),
+            &json!({"proxies": ["10.0.0.0/8"]})
+        ));
+        assert!(!proxies_added(
+            &json!({"proxies": ["10.0.0.0/8"]}),
+            &json!({"proxies": []})
+        ));
+        assert!(!proxies_added(
+            &json!({"proxies": ["10.0.0.0/8"]}),
+            &json!({"proxies": ["10.1.2.3/8"]})
+        ));
+        assert!(proxies_added(
+            &json!({"proxies": ["10.0.0.0/8"]}),
+            &json!({"proxies": ["10.0.0.0/8", "192.0.2.1"]})
+        ));
         // Turning off the watchdog.
         assert!(watchdog_turned_off(
             &json!({"enabled": true}),
