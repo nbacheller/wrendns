@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
@@ -5,8 +7,13 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 // `npm run dev` proxies the API to a local server (`wrendns run`, API on :8053).
 const api = process.env.WRENDNS_API ?? 'http://127.0.0.1:8053';
 
+// The glossary URL carries this content hash, so a cached copy from before an upgrade is never
+// used with the new UI (the node still sends it with a one-hour max-age).
+const helpVersion = createHash('sha256').update(readFileSync('../docs/help/topics.json')).digest('hex').slice(0, 12);
+
 export default defineConfig({
   plugins: [svelte()],
+  define: { __HELP_VERSION__: JSON.stringify(helpVersion) },
   base: '/',
   build: {
     outDir: 'dist',
@@ -18,7 +25,7 @@ export default defineConfig({
     assetsInlineLimit: 0,
   },
   server: {
-    proxy: { '/api': api, '/metrics': api },
+    proxy: { '/api': api, '/metrics': api, '/help': api },
     // The help glossary lives in docs/help/ (shared with the site).
     fs: { allow: ['..'] },
   },
