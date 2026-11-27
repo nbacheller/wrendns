@@ -1872,7 +1872,7 @@
       "type": "object",
       "properties": {
         "aggressive_nsec": {
-          "description": "REQ: DNS-011 (T9.16) — RFC 8198: answer names that validated NSEC records prove don't\nexist (or lack the type) from the cache, without asking upstream. On by default.",
+          "description": "REQ: DNS-011 (T9.16), DNS-907 (T40.6) — RFC 8198: answer names that validated NSEC or\nNSEC3 records prove don't exist (or lack the type) from the cache, without asking\nupstream. NSEC3 opt-out spans never deny a name. On by default.",
           "type": "boolean",
           "default": true
         },

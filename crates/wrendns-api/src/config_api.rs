@@ -3217,7 +3217,8 @@ pub(crate) async fn delete_updates_settings(
     .await
 }
 
-/// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+/// REQ: DNS-011 (T27.11, ADR-1006), DNS-907 (T40.6, ADR-1105) — `[dnssec]` `mode`,
+/// `negative_trust_anchors` and `aggressive_nsec`.
 ///
 /// The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
 #[utoipa::path(put, path = "/api/v1/dnssec-settings/default", tag = "config",
