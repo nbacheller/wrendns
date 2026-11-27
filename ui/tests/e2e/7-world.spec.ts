@@ -440,8 +440,9 @@ test('obs_902 operator sees geoip read-only', async ({ browser }) => {
 });
 
 test('obs_902 admin deletes the database', async ({ browser }) => {
-  // 13 s of this test are fixed waits (7 s and 6 s, to see that nothing is fetched again) and the rest took 19 s
-  // in total on CI, in the plain job and the OIDC job alike: a stall of 11 s on a shared runner passed the 30 s default.
+  // Headroom only, as a precaution: this test has never failed in the CI runs looked at. It took about 19 to 22 s there,
+  // in the plain job and the OIDC job alike, and 13 s of that are fixed waits (7 s and 6 s, to see that nothing is
+  // fetched again). That leaves less than 10 s under the 30 s default.
   test.setTimeout(90_000);
   const o = await card(browser);
   await expect(o.page.getByTestId('geoip-state')).toContainText('Ready');
