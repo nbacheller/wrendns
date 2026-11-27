@@ -113,7 +113,7 @@ impl Applier for TrustedProxies {
                 ));
             } else if !was && will {
                 warnings.push(format!(
-                    "This request's connection came from {peer}, which the new list trusts. That is either you or the proxy you came through. If it is the proxy, this is the change that makes the node see your real address, and the confirm passes when the proxy forwards your address in X-Forwarded-For. If it is you, connecting directly, the node would believe an X-Forwarded-For header from your own address, and the confirm passes only through a proxy that sets the header.""
+                    "This request's connection came from {peer}, which the new list trusts. That is either you or the proxy you came through. If it is the proxy, this is the change that makes the node see your real address, and the confirm passes when the proxy forwards your address in X-Forwarded-For. If it is you, connecting directly, the node would believe an X-Forwarded-For header from your own address, and the confirm passes only through a proxy that sets the header."
                 ));
             }
         }
@@ -345,7 +345,11 @@ mod tests {
         assert!(!c.warnings.iter().any(|w| w.contains("every host")));
         // The admin's own address inside the new list.
         let c = check(&empty, &json!({"proxies": ["192.168.1.0/24"]}), &direct).unwrap();
-        assert!(c.warnings.iter().any(|w| w.contains("either you or the proxy you came through")));
+        assert!(
+            c.warnings
+                .iter()
+                .any(|w| w.contains("either you or the proxy you came through"))
+        );
     }
 
     // REQ: API-902 (T27.14f) - the stored value enters the merged configuration; an unreadable one

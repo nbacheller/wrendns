@@ -154,6 +154,25 @@ test.describe('api_902 trusted proxies', () => {
     }
   });
 
+  // REQ: API-902 (T27.14f review fix) - a file that lists the same proxy twice gives the card a list with a
+  // repeated entry; it still renders, one row for each entry.
+  test('api_902 trusted proxy list with a repeated file entry renders', async ({ browser }) => {
+    const page = await adminPage(browser);
+    try {
+      await page.route('**/api/v1/system/info', async (route) => {
+        const res = await route.fetch();
+        const body = await res.json();
+        body.api = { ...(body.api ?? {}), trustedProxies: ['10.0.0.0/8', '10.0.0.0/8'] };
+        await route.fulfill({ response: res, json: body });
+      });
+      await page.reload();
+      const box = page.getByTestId('trusted-proxies');
+      await expect(box.getByTestId('trusted-proxies-row')).toHaveCount(2, { timeout: 30_000 });
+    } finally {
+      await page.close();
+    }
+  });
+
   test('api_902 trusted proxy list is an admin only', async ({ browser }) => {
     const page = await signedIn(browser, OPERATOR);
     try {
