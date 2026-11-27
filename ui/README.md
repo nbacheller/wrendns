@@ -26,16 +26,16 @@ npx playwright install --with-deps --only-shell chromium
 npm run test:e2e             # starts the real binary (tests/e2e/server.mjs) on 127.0.0.1:18054
                              # every e2e port is an offset from E2E_HTTP_PORT (default 18054), in
                              # tests/e2e/ports.ts; a run on another base keeps its data in .e2e-<base>/
-SHOTS=1 npm run test:e2e     # also refreshes the site's screenshots (../site/assets/shots/)
-                             # and saves every page to .shots/ for design review
+SHOTS=1 npm run test:e2e     # saves every page to .shots/ for design review (not the site's pictures)
 ```
 
-## Dashboard screenshots
+## Screenshots
 
-The README's and the site's dashboard pictures come from a made-up home network, so no real
+The README's and the site's pictures come from a made-up home network, so no real
 network ever shows up in them. `tests/demo/run.sh` starts two stub upstreams and a fresh server
 with `tests/demo/demo.toml`, sends about 14 minutes of synthetic traffic from invented devices,
-and then writes `../docs/images/dashboard-*.jpg` and `../site/assets/shots/dashboard-*.jpg`:
+and then writes `../docs/images/*-day|night.jpg` (`shots.spec.ts`) and `../site/assets/shots/*-light|dark.jpg`
+(`shots.spec.ts` and `site-shots.spec.ts`: 1280x860, JPEG quality 80):
 
 ```sh
 npm run build && cargo build -p wrendns     # the binary embeds the UI
