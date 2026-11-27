@@ -1496,3 +1496,38 @@ async fn obs_007_dnstap_a_write_never_revives_a_set_aside_entry() {
     );
     assert_eq!(e.value["sample_every"], json!(5));
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 14) - a buffer above the ceiling that the node will run
+/// because of its confirmed entry (its files dropped theirs) is no new setting: an ordinary narrowing
+/// that sends it back as read is accepted, as the guarded review accepts it. A different value above
+/// the ceiling is still refused.
+#[tokio::test]
+async fn obs_007_dnstap_a_confirmed_large_buffer_sent_back_is_no_new_setting() {
+    let h = node_a();
+    let mut pending = tap("/run/c.sock", 1);
+    pending["buffer"] = json!(2_000_000);
+    put_guarded_on(
+        "pi-c",
+        &h,
+        json!({ "socket": "/run/c.sock", "buffer": 2_000_000 }),
+    );
+    let v = view(none(), &[], pending);
+    let ok = forwarded(
+        &h,
+        "pi-c",
+        Some(json!({ "socket": "/run/c.sock", "buffer": 2_000_000, "sample_every": 10 })),
+        Some(v.clone()),
+        true,
+    )
+    .await;
+    assert_eq!(code(&ok), "ok", "{ok:?}");
+    let bigger = forwarded(
+        &h,
+        "pi-c",
+        Some(json!({ "socket": "/run/c.sock", "buffer": 3_000_000, "sample_every": 10 })),
+        Some(v),
+        true,
+    )
+    .await;
+    assert_eq!(code(&bigger), "InvalidParameter", "{bigger:?}");
+}

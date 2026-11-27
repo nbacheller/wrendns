@@ -416,7 +416,17 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
     // (read here, authoritatively), whatever the replica's own copy of the store says.
     let pending_cfg = pending_for(&sent, &file_n, existing.as_ref(), &node);
     let stored = if let Some(v) = &w.body {
-        Some(settings_kinds::prepare(KIND, v, &file_section, &file_n)?)
+        // A buffer above the ceiling that the node already runs (its files', or the confirmed
+        // entry's after the files dropped theirs) sent back as read is no new setting, as in the
+        // guarded review.
+        let mut exempt = file_section.clone();
+        let running = settings_kinds::section_json(KIND, &pending_cfg);
+        if let (Some(b), Some(o)) = (running.get("buffer"), exempt.as_object_mut())
+            && v.get("buffer") == Some(b)
+        {
+            o.insert("buffer".to_owned(), b.clone());
+        }
+        Some(settings_kinds::prepare(KIND, v, &exempt, &file_n)?)
     } else {
         if existing.is_none() {
             return Err(Problem::not_found(format!(

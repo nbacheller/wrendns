@@ -1960,7 +1960,7 @@ fn api_902_staged_entry_probation_drops_after_two_failed_starts() {
     let (dir, cfg) = dir_with(&[("t-stg", json!({"label": "x"}), EntryState::Staged)]);
     begin(&cfg);
     let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
-    let done = probation::mark_healthy(&state, "pi-a", dir.path(), 200);
+    let done = probation::mark_healthy(&cfg, &state, "pi-a", dir.path(), 200);
     assert_eq!(done, vec!["t-stg".to_owned()]);
     assert!(probation::read_sidecar(dir.path()).is_none());
     assert_eq!(entries_of(&cfg)[0].state, EntryState::Active);
@@ -3345,7 +3345,7 @@ fn api_902_staged_entry_takes_effect_on_a_replica() {
         "still no local row"
     );
     // Healthy: active, and the outcome is recorded.
-    let done = probation::mark_healthy_of(&state, &me, dir.path(), 200, eff);
+    let done = probation::mark_healthy_of(&cfg, &state, &me, dir.path(), 200, eff);
     assert_eq!(done, vec!["t-stg".to_owned()]);
     assert_eq!(
         store::effective(&cfg, &state, &me)[0].0.state,
@@ -3399,6 +3399,10 @@ fn api_902_replica_clear_queues_a_removal_for_the_primary() {
     let q = store::removals(&state);
     assert_eq!(q.len(), 1);
     assert_eq!((q[0].id.as_str(), q[0].by.as_str()), ("t-stg", "cli:alex"));
+    assert_eq!(
+        q[0].at, None,
+        "only the dnstap row's removal is time-checked"
+    );
     assert!(store::suppressed(&state).contains_key("t-stg"));
     // The removal the primary took (its own blob no longer has the entry): queue and suppression go.
     store::removal_done(&state, "t-stg").unwrap();
@@ -4206,6 +4210,28 @@ fn obs_007_dnstap_staged_entry_a_file_reader_displaces_is_recorded_not_pending()
         &held[0].mode,
         &held[0].value
     ));
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 14) - a confirmed entry on probation that the files displace
+// is not recorded as applied when the node proves healthy.
+#[test]
+fn obs_007_dnstap_displaced_probation_entry_is_not_marked_applied() {
+    let (dir, mut cfg) = dir_with(&[(
+        "dnstap-output",
+        json!({"socket": "/a", "forwarder": true}),
+        EntryState::Probation,
+    )]);
+    cfg.telemetry.dnstap.socket = Some("/b".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    let done = probation::mark_healthy(&cfg, &state, "pi-a", dir.path(), 200);
+    assert!(done.is_empty(), "{done:?}");
+    assert!(
+        !store::outcomes(&state)
+            .iter()
+            .any(|o| o.outcome == "applied")
+    );
+    assert_eq!(entries_of(&cfg)[0].state, EntryState::Probation);
 }
 
 // REQ: OBS-007, API-905 (T40.13, review 9) - the listing does not say "restart needed" for a staged

@@ -296,7 +296,7 @@ pub(crate) struct EntryWrite {
     pub(crate) entry: Option<Stored>,
     pub(crate) by: String,
     /// The time of the entry the replica saw when it wrote (`None`: none), checked for the dnstap
-    /// row only. A sender that does not send it (`check` false) is not checked.
+    /// row only (`wrendns guarded clear` sends it for that row alone). A sender that does not send it (`check` false) is not checked.
     #[serde(default)]
     pub(crate) check: bool,
     #[serde(default)]

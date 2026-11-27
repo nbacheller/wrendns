@@ -181,7 +181,12 @@ pub(crate) fn run_clear(
             suppressed.insert(e.id.clone(), e.digest());
             // The primary still holds the entry: a removal request waits for the node to be back
             // and connected, and is sent then (ADR-957 step 10).
-            if let Err(why) = store::queue_removal(&state, &e.id, &actor, Some(e.at)) {
+            if let Err(why) = store::queue_removal(
+                &state,
+                &e.id,
+                &actor,
+                (e.id == wrendns_config::guarded::DNSTAP).then_some(e.at),
+            ) {
                 eprintln!(
                     "warning: the removal request for `{}` couldn't be queued: {why}",
                     e.id

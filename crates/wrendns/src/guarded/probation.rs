@@ -263,7 +263,8 @@ pub(crate) fn begin_for(
     if attempts >= MAX_ATTEMPTS {
         // Two starts with these entries didn't become healthy: drop them and start from the file.
         for id in &listed {
-            let dropped = entries.iter().find(|e| e.id == *id);
+            // Looked up among all the entries, so a displaced replicated one is suppressed too.
+            let dropped = pairs.iter().map(|(e, _)| e).find(|e| e.id == *id);
             let replacement = dropped.filter(|d| !replicated(&d.id)).and_then(|d| {
                 defs.iter()
                     .find(|r| r.row.id == d.id)
@@ -376,16 +377,23 @@ pub(crate) fn dns_probes_ok(results: &[wrendns_api::model::ProbeResult]) -> bool
 
 /// The node proved healthy: entries on probation become active, the counter is deleted and the
 /// outcome is recorded (`applied`).
-pub(crate) fn mark_healthy(state: &State, node: &str, data_dir: &Path, now: u64) -> Vec<String> {
+pub(crate) fn mark_healthy(
+    files: &Config,
+    state: &State,
+    node: &str,
+    data_dir: &Path,
+    now: u64,
+) -> Vec<String> {
     let entries = store::for_node(state, node)
         .into_iter()
         .map(|e| (e, false))
         .collect();
-    mark_healthy_of(state, node, data_dir, now, entries)
+    mark_healthy_of(files, state, node, data_dir, now, entries)
 }
 
 /// [`mark_healthy`] over `entries` (each with whether the primary replicated it).
 pub(crate) fn mark_healthy_of(
+    files: &Config,
     state: &State,
     node: &str,
     data_dir: &Path,
@@ -394,6 +402,13 @@ pub(crate) fn mark_healthy_of(
 ) -> Vec<String> {
     let mut done = Vec::new();
     for (e, replicated) in entries {
+        // A confirmed dnstap entry the files displace is not in force: it was not applied, so it is
+        // not recorded as applied (it applies at once, as active, when the files stop displacing it).
+        if e.id == wrendns_config::guarded::DNSTAP
+            && super::dnstap::not_applied(files, &e.mode, &e.value)
+        {
+            continue;
+        }
         if e.state == EntryState::Probation
             && store::transition(state, &e, replicated, EntryState::Active, now, "system").is_ok()
         {
@@ -552,6 +567,7 @@ pub(crate) fn spawn_watch(
             };
             if h.healthy(needs_key) {
                 mark_healthy_of(
+                    &cfg,
                     &state,
                     &node,
                     &data_dir,
