@@ -1080,3 +1080,127 @@ async fn obs_007_dnstap_an_address_the_writer_cannot_use_is_refused() {
         assert_ne!(v["code"], "guarded_only", "{bad}: {v}");
     }
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 5) - an ordinary write stores no more than the phrase
+/// confirmed on the node. The phrase confirmed (a socket, `sample_every` 100); the files set `forwarder`
+/// and `sample_every` 1 (they win now). An ordinary narrowing keeps the confirmed reader, but its entry
+/// is clamped to the confirmed values, so when those two lines leave the file the node does not copy
+/// every query and the upstream exchanges that nobody confirmed.
+#[tokio::test]
+#[allow(clippy::many_single_char_names)] // h, s, v, e, d: the harness, the answers
+async fn obs_007_dnstap_an_ordinary_write_stores_no_more_than_was_confirmed() {
+    use crate::guarded::store::EntryState;
+    let h = with_toml("[telemetry.dnstap]\nforwarder = true\nsample_every = 1\n");
+    put_guarded(
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 100 }),
+        EntryState::Active,
+    );
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            URL,
+            Some(&json!({ "socket": "/run/a.sock", "buffer": 20000 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut e = entry_of(&h, "pi-a").expect("the node's entry");
+    assert_eq!(e.value["forwarder"], false, "{:?}", e.value);
+    assert_eq!(e.value["sample_every"], 100, "{:?}", e.value);
+    assert_eq!(e.value["buffer"], 20000);
+    // The start moved it on, and the files no longer set the two lines.
+    e.state = EntryState::Probation;
+    crate::guarded::store::put(h.auth.state(), &e, e.at, "admin").unwrap();
+    let cfg = crate::managed::merge(&Config::default(), &crate::managed::entries(h.auth.state()))
+        .expect("the merged configuration validates");
+    let d = cfg.telemetry.dnstap;
+    assert_eq!(d.socket.as_deref(), Some("/run/a.sock"));
+    assert!(!d.forwarder, "the upstream exchanges were never confirmed");
+    assert_eq!(d.sample_every, 100);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 5) - what a node will run is what it says it runs: an entry
+/// the replica set aside (two failed starts) is not in force there, whatever the primary still holds.
+/// A forwarded write that turns the tap on again is a widening on that node (409 `guarded_only`),
+/// though it looks like a narrowing of the primary's copy; nothing is stored.
+#[tokio::test]
+async fn obs_007_dnstap_a_set_aside_entry_is_not_what_the_node_runs() {
+    let h = node_a();
+    let held = json!({ "socket": "/run/b.sock", "sample_every": 1 });
+    put_guarded_on("pi-b", &h, held.clone());
+    // pi-b runs no tap (it dropped the entry locally); its card shows the tap off.
+    let v = view(none(), &[], none());
+    let again = json!({ "socket": "/run/b.sock", "sample_every": 2 });
+    for dry in [true, false] {
+        let r = forwarded(&h, "pi-b", Some(again.clone()), Some(v.clone()), dry).await;
+        assert_eq!(code(&r), "GuardedOnly", "{r:?}");
+    }
+    assert_eq!(entry_of(&h, "pi-b").unwrap().value, held, "nothing stored");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 5) - the files may never turn a confirmed entry into more
+/// copying than they give. A confirmed `resolver` with no reader copied nothing; when the files later
+/// set a socket, the resolver exchanges were never confirmed for it. The same when a file reader
+/// displaces the confirmed one: its feeds and sampling are not carried to the file's socket.
+#[tokio::test]
+async fn obs_007_dnstap_a_file_reader_does_not_inherit_a_confirmed_feed() {
+    use crate::guarded::store::EntryState;
+    let h = node_a();
+    let mut files = Config::default();
+    files.telemetry.dnstap.socket = Some(wrendns_config::SafeString::new("/run/f.sock").unwrap());
+    files.file_set.push("telemetry.dnstap.socket".to_owned());
+    put_guarded(&h, json!({ "resolver": true }), EntryState::Probation);
+    let cfg = crate::managed::merge(&files, &crate::managed::entries(h.auth.state()))
+        .expect("the merged configuration validates");
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/f.sock"));
+    assert!(
+        !cfg.telemetry.dnstap.resolver,
+        "never confirmed for the file's socket"
+    );
+    // A confirmed reader replaced by the file's.
+    put_guarded(
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1, "forwarder": true }),
+        EntryState::Probation,
+    );
+    let cfg = crate::managed::merge(&files, &crate::managed::entries(h.auth.state()))
+        .expect("the merged configuration validates");
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/f.sock"));
+    assert!(!cfg.telemetry.dnstap.forwarder);
+    // The confirmed reader stays while the files do not displace it: its feeds are its own.
+    let mut only_rate = Config::default();
+    only_rate.telemetry.dnstap.sample_every = 3;
+    only_rate
+        .file_set
+        .push("telemetry.dnstap.sample_every".to_owned());
+    let cfg = crate::managed::merge(&only_rate, &crate::managed::entries(h.auth.state()))
+        .expect("the merged configuration validates");
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/a.sock"));
+    assert!(cfg.telemetry.dnstap.forwarder);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 5) - an empty `socket` is no tap, not an error: a file that
+/// has it still loads (with a warning), and the ordinary write takes it as no reader.
+#[tokio::test]
+async fn obs_007_dnstap_an_empty_socket_is_no_tap() {
+    let loaded = wrendns_config::Loader::new()
+        .toml_str("t.toml", "[telemetry.dnstap]\nsocket = \"\"\n")
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .expect("the file loads");
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.socket")),
+        "{:?}",
+        loaded.warnings
+    );
+    let h = node_a();
+    let (s, _, v) = h.call("PUT", URL, Some(&json!({ "socket": "" }))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = h
+        .call("PUT", URL, Some(&json!({ "socket": "  ", "buffer": 5000 })))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}

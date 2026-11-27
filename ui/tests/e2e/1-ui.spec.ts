@@ -5150,6 +5150,7 @@ test('obs_007 dnstap revert that would copy more opens the review at the file va
   try {
     await row.getByRole('button', { name: 'Revert to the file' }).click();
     await expect(page.getByTestId('entry-guarded')).toBeVisible();
+    await expect(page.getByTestId('entry-guarded-file-note')).toContainText('not a return to the file');
     await expect(page.getByRole('dialog')).toContainText('this brings back values in the config file');
     await expect(page.getByTestId('guarded-start-dnstap-output')).toBeVisible();
     await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);

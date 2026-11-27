@@ -500,6 +500,16 @@ pub(crate) fn prepare(
     // read is fine, and it is never stored.
     if kind == ManagedKind::TelemetryDnstap {
         obj.remove("restart_needed");
+        // An empty reader is no reader (as the guarded review reads it), not an invalid path.
+        for k in ["socket", "address"] {
+            if obj
+                .get(k)
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.trim().is_empty())
+            {
+                obj.insert(k.to_owned(), Value::Null);
+            }
+        }
         // REQ: OBS-007, API-905 (T40.13) - the queue is allocated at its full size when the node
         // starts, so a `buffer` the API or the UI sets has a ceiling. The file's own validation only
         // warns (a file that predates the ceiling still loads), and the file's value sent back as

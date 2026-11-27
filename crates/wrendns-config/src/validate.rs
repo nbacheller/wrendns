@@ -741,10 +741,16 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     // path was valid) still loads, with a warning; the API and the web UI refuse one.
     if let Some(sock) = &d.socket {
         let t: &str = sock;
-        if t.trim().is_empty() || t.chars().any(char::is_control) {
+        if t.chars().any(char::is_control) {
             r.err(
                 "telemetry.dnstap.socket",
                 "a path (for example /run/dnstap.sock), with no control characters",
+            );
+        } else if t.trim().is_empty() {
+            // A file written before this check (an empty socket was valid, and meant no tap that
+            // could connect) still loads: the node must start after an upgrade.
+            r.warn(
+                "telemetry.dnstap.socket: is empty; there is no tap to write to (leave it out, or set a path such as /run/dnstap.sock)",
             );
         } else if !t.starts_with('/') {
             r.warn(format!(

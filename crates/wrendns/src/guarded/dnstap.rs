@@ -104,6 +104,23 @@ pub(crate) fn unconfirmed_widens(own: &Config, value: &Value) -> bool {
     )
 }
 
+/// REQ: OBS-007, API-905 (T40.13, review) - whether an entry of `mode` is not to be applied over
+/// `own`'s files as they are now. An ordinary narrowing is not applied while it would copy more than
+/// the files. A confirmed one (the phrase) confirmed its own reader: if the files now set a reader
+/// that displaces it (or the entry had none), what was confirmed for the feeds and the sampling was
+/// never confirmed for the file's reader, so it is not applied if it would copy more than the files.
+pub(crate) fn not_applied(own: &Config, mode: &str, value: &Value) -> bool {
+    if mode == NARROWED {
+        return unconfirmed_widens(own, value);
+    }
+    let Ok(d) = parse(value) else { return false };
+    let mut cfg = own.clone();
+    cfg.telemetry.dnstap = d.clone();
+    keep_file_fields(&mut cfg, own);
+    let reader = |c: &DnstapConfig| (c.socket.clone(), c.address.clone());
+    reader(&cfg.telemetry.dnstap) != reader(&d) && unconfirmed_widens(own, value)
+}
+
 /// REQ: OBS-007, API-905 (T40.13) - whether `value` changes a field the files set (a value that
 /// leaves the files' fields as they are is not locked by them).
 pub(crate) fn changes_file_field(file: &Config, value: &Value) -> bool {

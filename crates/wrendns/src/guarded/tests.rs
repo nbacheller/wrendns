@@ -3655,7 +3655,8 @@ async fn obs_007_dnstap_a_file_socket_locks_that_field_only() {
             .any(|s| s.id == "dnstap-output" && s.set_by_file),
         "the listing is not locked"
     );
-    // The stored value never overrides the file's socket.
+    // The stored value never overrides the file's socket, and a feed confirmed for another reader is
+    // not carried to it (T40.13, review 5): only an entry confirmed with the file's own reader keeps it.
     let defs = vec![RowDef {
         row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
         applier: Arc::new(super::dnstap::Dnstap),
@@ -3676,8 +3677,16 @@ async fn obs_007_dnstap_a_file_socket_locks_that_field_only() {
         Some("/run/file.sock")
     );
     assert!(
+        !cfg.telemetry.dnstap.forwarder,
+        "the feed was confirmed for another socket"
+    );
+    let mut same = e.clone();
+    same[0].value = json!({"socket": "/run/file.sock", "forwarder": true});
+    let mut cfg = file.clone();
+    super::appliers::overlay_with(&mut cfg, &file, &same, None, &defs, "pi-a", false);
+    assert!(
         cfg.telemetry.dnstap.forwarder,
-        "the feed is the stored value's"
+        "the feed is the stored value's, confirmed with the file's socket"
     );
 }
 
@@ -3760,7 +3769,10 @@ fn obs_007_dnstap_the_reader_is_one_field() {
             (file_field == "socket", file_field == "address"),
             "one reader, the file's: {d:?}"
         );
-        assert!(d.forwarder, "the entry's other fields stay");
+        assert!(
+            !d.forwarder,
+            "a feed confirmed for another reader is not carried to the file's"
+        );
         assert!(wrendns_config::validate_config(&cfg).is_ok(), "{d:?}");
         // A value that changes the reader the file does not name is still the file's field.
         assert!(
@@ -3811,8 +3823,12 @@ fn obs_007_dnstap_an_unconfirmed_entry_never_widens_the_files() {
     let d = run(&with_tap, &entry("narrowed", value.clone()));
     assert!(!d.resolver && d.sample_every == 1, "not applied: {d:?}");
     assert_eq!(d.socket.as_deref(), Some("/run/x.sock"));
-    // A reviewed entry is the owner's decision: it is applied.
-    assert!(run(&with_tap, &entry("staged", value)).resolver);
+    // A reviewed entry with no reader confirmed nothing for the file's socket (T40.13, review 5): it
+    // is not applied either.
+    assert!(!run(&with_tap, &entry("staged", value)).resolver);
+    // One that was confirmed with the file's own socket is applied.
+    let same = json!({"socket": "/run/x.sock", "resolver": true});
+    assert!(run(&with_tap, &entry("staged", same)).resolver);
 }
 
 // REQ: OBS-007, API-905 (T40.13, review) - the file had the tap on, an admin narrowed the sampling by

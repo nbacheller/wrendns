@@ -194,7 +194,7 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
       const kept = (k: string) => (setByFile ?? []).includes(k) || String(v[k] ?? '') === String(loaded?.[k] ?? '');
       if (given(v.socket) && given(v.address)) return 'Set a socket or an address, not both.';
       // eslint-disable-next-line no-control-regex
-      if (given(v.socket) && !kept('socket') && (!String(v.socket).startsWith('/') || /[ -]/.test(String(v.socket)))) return 'The socket is an absolute path, for example /run/dnstap.sock.';
+      if (given(v.socket) && !kept('socket') && (!String(v.socket).startsWith('/') || /[\u0000-\u001f\u007f]/.test(String(v.socket)))) return 'The socket is an absolute path, for example /run/dnstap.sock.';
       if (given(v.address) && !kept('address') && !/:\d{1,5}$/.test(String(v.address))) return 'The address is tcp://host:port.';
       if (given(v.sample_every) && !(Number.isInteger(Number(v.sample_every)) && Number(v.sample_every) >= 1)) return 'Copy one query in: a whole number, at least 1.';
       if (given(v.buffer) && !kept('buffer') && !(Number(v.buffer) >= 100 && Number(v.buffer) <= 1000000)) return 'Copies held: from 100 to 1,000,000.';

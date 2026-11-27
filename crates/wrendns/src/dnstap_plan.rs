@@ -32,13 +32,17 @@ pub(crate) struct View {
     pub(crate) pending: Value,
 }
 
-/// What a replica sends with a write it forwards: only its files. What the node will run is worked
-/// out by the primary from its own entry of that node, never from a value the replica sends (a
-/// replica's copy of the store can lag).
+/// What a replica sends with a write it forwards: its files, and what it will run after its next
+/// start. What the node will run is worked out by the primary from its own entry of that node too (a
+/// replica's copy of the store can lag); a change is refused as a widening if it widens against
+/// either, and the entry is kept as confirmed only if the replica says it is in force.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SentView {
     pub(crate) file: Value,
     pub(crate) file_set: Vec<String>,
+    /// Absent from a sender that does not send it.
+    #[serde(default)]
+    pub(crate) pending: Option<Value>,
 }
 
 impl View {
@@ -47,6 +51,7 @@ impl View {
         SentView {
             file: self.file.clone(),
             file_set: self.file_set.clone(),
+            pending: Some(self.pending.clone()),
         }
     }
 }
@@ -115,24 +120,42 @@ fn normal(v: &Value) -> Option<Value> {
         .and_then(|d| serde_json::to_value(d).ok())
 }
 
+/// The reader of a section: its socket and address, when set.
+fn reader(v: &Value) -> Vec<String> {
+    ["socket", "address"]
+        .iter()
+        .filter_map(|k| v.get(*k).and_then(Value::as_str).filter(|t| !t.is_empty()))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The value an entry stores, and the mode it is stored under. An ordinary write (no phrase) changes
 /// only what narrows: its entry is marked `narrowed` and carries no reader, a socket or address the
 /// files supplied or a reviewed entry holds being no part of what the admin set (so the files
 /// dropping the tap later leaves the node with none, and the entry is applied only while it copies
 /// no more than the files). The reviewed entry an admin narrows keeps its confirmed mode while the
-/// reader is still the one confirmed on this node.
-fn entry_value(after: &Value, existing: Option<&Stored>) -> (Value, &'static str) {
-    let reader = |v: &Value| {
-        ["socket", "address"]
-            .iter()
-            .filter_map(|k| v.get(*k).and_then(Value::as_str).filter(|t| !t.is_empty()))
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-    };
+/// reader is still the one confirmed on this node and that node runs the entry (`in_force`); what it
+/// stores is then clamped to what was confirmed (the feeds only if confirmed, sampling no more often),
+/// as the files' values in `after` were never confirmed with the phrase.
+fn entry_value(after: &Value, existing: Option<&Stored>, in_force: bool) -> (Value, &'static str) {
     let confirmed = existing.filter(|e| e.mode != crate::guarded::dnstap::NARROWED);
-    let keeps_confirmed =
-        confirmed.is_some_and(|e| !reader(after).is_empty() && reader(&e.value) == reader(after));
+    let keeps_confirmed = in_force
+        && confirmed
+            .is_some_and(|e| !reader(after).is_empty() && reader(&e.value) == reader(after));
     let mut v = after.clone();
+    if keeps_confirmed && let Some(c) = confirmed.and_then(|e| normal(&e.value)) {
+        let on = |x: &Value, k: &str| x.get(k).and_then(Value::as_bool) == Some(true);
+        let every = |x: &Value| x.get("sample_every").and_then(Value::as_u64).unwrap_or(1);
+        if let Some(o) = v.as_object_mut() {
+            for k in ["forwarder", "resolver"] {
+                o.insert(k.to_owned(), Value::Bool(on(after, k) && on(&c, k)));
+            }
+            o.insert(
+                "sample_every".to_owned(),
+                Value::from(every(after).max(every(&c))),
+            );
+        }
+    }
     if let Some(o) = v.as_object_mut() {
         o.retain(|k, x| {
             !(matches!(k.as_str(), "socket" | "address") && (x.is_null() || !keeps_confirmed))
@@ -169,8 +192,9 @@ fn entry_change(
     after: &Value,
     file_section: &Value,
     existing: Option<&Stored>,
+    in_force: bool,
 ) -> crate::api_backend::AlsoStored {
-    let wanted = (after != file_section).then(|| entry_value(after, existing));
+    let wanted = (after != file_section).then(|| entry_value(after, existing, in_force));
     let have = existing.map(|e| normal(&e.value));
     match (&wanted, &have) {
         (None, None) => Vec::new(),
@@ -293,7 +317,13 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
     settings_kinds::check_admin_fields(KIND, &before, &after, w.role, w.agent.as_deref())?;
     // What the node will run copies more than it will run now: the review's, never an ordinary write
     // (the way back to the files is no way round it).
-    if dnstap_widened(&before, &after) {
+    // The node's own word of what it will run counts too: an entry it has set aside (two failed starts)
+    // is not what it runs, whatever this primary still holds.
+    let widens_sent = sent
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.is_object() && dnstap_widened(p, &after));
+    if dnstap_widened(&before, &after) || widens_sent {
         return Err(guarded_only(w.body.is_none()));
     }
     if before != after {
@@ -301,7 +331,11 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
             "The dnstap settings are read when a node starts: this takes effect on {node} after a restart of that node (restart needed). Other nodes keep their own."
         ));
     }
-    let also = entry_change(w, &node, &after, &file_section, existing.as_ref());
+    let in_force = match (&sent.pending, &existing) {
+        (Some(p), Some(e)) if p.is_object() => reader(p) == reader(&e.value),
+        _ => true,
+    };
+    let also = entry_change(w, &node, &after, &file_section, existing.as_ref(), in_force);
     let (recent_queries, impact) =
         crate::api_backend::managed_impact(src, KIND, "default", w.body.is_some());
     Ok(ManagedPlan {

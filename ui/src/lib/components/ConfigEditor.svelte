@@ -128,6 +128,8 @@
   // is not applied here. The server's own words are shown, and the same review the other guarded settings
   // use takes over: the preview, the phrase to type, a sign-in from the last 10 minutes.
   let guardedValue = $state.raw<Record<string, unknown> | null>(null);
+  /** The review was opened with the file's values (a revert the server refused): it saves them, it does not remove the saved value. */
+  let reviewingFile = $state(false);
   const guardedOnly = (err: unknown) => !!guardedId && err instanceof ApiError && err.code === 'guarded_only';
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -209,6 +211,7 @@
   function open(e?: S['ConfigEntry'], fill: Record<string, unknown> = {}, name = '') {
     preview = null;
     guardedValue = null;
+    reviewingFile = false;
     result = null;
     formError = null;
     formOut = null;
@@ -360,6 +363,7 @@
     for (const f of fields) fill[f.key] = set.includes(f.key) ? def[f.key] : (f.initial ?? '');
     open(e, fill);
     holdForReview(err);
+    reviewingFile = true;
   }
   async function remove(e: S['ConfigEntry']) {
     busy = true;
@@ -544,6 +548,7 @@
         <ErrorNote error={formError} />
         {#if guardedValue && guardedId}
           <div class="preview" data-testid="entry-guarded">
+            {#if reviewingFile}<p class="small" data-testid="entry-guarded-file-note">This saves a value equal to the config file's values today. It is not a return to the file: the node then keeps that value, even if the file later changes. To follow the file again afterwards, remove the saved value.</p>{/if}
             <GuardedChange
               id={guardedId}
               label={title}

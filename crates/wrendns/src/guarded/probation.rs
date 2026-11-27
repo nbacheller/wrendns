@@ -177,8 +177,7 @@ pub(crate) fn begin_for(
     // node starts from the files) and the drop is audited.
     entries.retain(|e| {
         if e.id != wrendns_config::guarded::DNSTAP
-            || e.mode != super::dnstap::NARROWED
-            || !super::dnstap::unconfirmed_widens(cfg, &e.value)
+            || !super::dnstap::not_applied(cfg, &e.mode, &e.value)
         {
             return true;
         }

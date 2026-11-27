@@ -463,8 +463,7 @@ pub(crate) fn overlay_with(
         // REQ: OBS-007, API-905 (T40.13, review) - an ordinary narrowing was never confirmed with the
         // phrase: it is applied only while it still copies no more than the files do now.
         if e.id == wrendns_config::guarded::DNSTAP
-            && e.mode == super::dnstap::NARROWED
-            && super::dnstap::unconfirmed_widens(own, &e.value)
+            && super::dnstap::not_applied(own, &e.mode, &e.value)
         {
             continue;
         }
