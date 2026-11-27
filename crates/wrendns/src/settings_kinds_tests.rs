@@ -604,3 +604,88 @@ async fn obs_016_slo_settings_operator_and_bounds() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
     assert!(v.to_string().contains("window"), "{v}");
 }
+
+/// REQ: DNS-014, DSC-908 (T27.14h) - the `access` kind is gated by the feature every member
+/// announces, not by a version number: a primary that carries the same number as this build but
+/// announces no features (a development build of 1.1.0) is refused before forwarding (409
+/// `upgrade_required`, naming the node), nothing is sent; a primary that announces it gets the write.
+#[tokio::test(flavor = "multi_thread")]
+async fn dns_014_primary_without_the_access_feature_is_refused_before_forwarding() {
+    let url = "/api/v1/access-settings/default";
+    let body = json!({ "allowed_networks": ["127.0.0.0/8"] });
+    let (replica, older) = crate::credential_tests::older_primary_and_replica_features(
+        "1.1.0-edge.40",
+        Some(Vec::new()),
+        None,
+    )
+    .await;
+    let h = harness_in("", Some(replica));
+    let (s, _, v) = h.call("PUT", url, Some(&body)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "upgrade_required", "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("1.1.0-edge.40"),
+        "{v}"
+    );
+    assert_eq!(older.got.lock().unwrap().len(), 0, "not forwarded");
+    let _ = older.stop.send(true);
+
+    let (replica, current) = older_primary_and_replica("1.1.0").await;
+    let h = harness_in("", Some(replica));
+    let (s, _, v) = h.call("PUT", url, Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The primary judges the write twice: the dry run that the lockout check reads, then the write.
+    assert_eq!(current.got.lock().unwrap().len(), 2, "forwarded");
+    let _ = current.stop.send(true);
+}
+
+/// REQ: DNS-014, DSC-908 (T27.14h) - where the write is applied: a primary with a member that
+/// does not announce the `access` kind refuses the write (409 `upgrade_required`, dry run too,
+/// naming the member), stores nothing and leaves the list in force; a DELETE is not held; with
+/// every member announcing it, the write goes through.
+#[tokio::test(flavor = "multi_thread")]
+async fn dns_014_access_write_waits_for_every_members_build() {
+    let url = "/api/v1/access-settings/default";
+    let body = json!({ "allowed_networks": ["127.0.0.0/8"] });
+    let (replica, old) = crate::credential_tests::older_primary_and_replica_features(
+        "1.1.0",
+        None,
+        Some(Vec::new()),
+    )
+    .await;
+    let member = replica.identity.meta.node_id.clone();
+    let h = harness_in("", Some(Arc::clone(&old.primary)));
+    for dry in [true, false] {
+        let target = if dry {
+            format!("{url}?dryRun=true")
+        } else {
+            url.to_owned()
+        };
+        let (s, _, v) = h.call("PUT", &target, Some(&body)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "upgrade_required", "{v}");
+        let detail = v["detail"].as_str().unwrap();
+        assert!(detail.contains("allowed networks"), "{v}");
+        assert!(
+            detail.contains(&member),
+            "the refusal names the member: {v}"
+        );
+    }
+    // A DELETE is not held: nothing is stored, so it answers 404, not 409 upgrade_required.
+    let (s, _, v) = h.call("DELETE", url, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert_ne!(v["code"], "upgrade_required", "{v}");
+    assert_eq!(
+        h.auth.state().managed("access").unwrap().len(),
+        0,
+        "nothing stored"
+    );
+    let _ = old.stop.send(true);
+
+    let (_replica, new) = older_primary_and_replica("1.1.0").await;
+    let h = harness_in("", Some(Arc::clone(&new.primary)));
+    let (s, _, v) = h.call("PUT", url, Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(h.auth.state().managed("access").unwrap().len(), 1);
+    let _ = new.stop.send(true);
+}

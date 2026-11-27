@@ -305,6 +305,7 @@ window_secs = 60
 action = "refused"      # or "drop"
 exempt = ["127.0.0.0/8", "::1/128"]</code></pre>
   <ul>
+    <li>Admins change the list in <b>Settings → System → Allowed networks</b>: one list for the whole cluster, applied on every node within seconds. Adding a public range warns first, because plain DNS carries no device key, and a list that leaves out your own address is refused. A file that sets <code>allowed_networks</code> wins.</li>
     <li>A router or proxy that forwards for a whole network looks like one address and is refused above about 17 queries a second: add it to <code>exempt</code>, or raise <code>queries</code>.</li>
     <li>Change the rate limit in <b>Settings → Query handling → Rate limit</b>, or with <code>PUT /api/v1/ratelimit/default</code>. A change replaces the whole section, so keep <code>127.0.0.0/8</code> and <code>::1/128</code> in the exempt list. <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#who-can-query-and-how-often">Details</a>.</li>
   </ul>

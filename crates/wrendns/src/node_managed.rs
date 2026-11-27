@@ -75,6 +75,7 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     crate::managed::DNSSEC,
     crate::managed::FILTER,
     crate::managed::DRILL,
+    crate::managed::ACCESS,
     // REQ: DNS-010, OBS-016, OBS-020, OBS-019 (T27.5, T27.7, ADR-1007) — the zones and the SLO, probe
     // and upstream-check sections are shared too.
     crate::managed::ZONE,

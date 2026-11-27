@@ -8764,3 +8764,182 @@ test('dns_904 the trace shows the walk of a recursive lookup in Explain', async 
     await page.goto('/#/');
   }
 });
+
+// REQ: DNS-014, API-901 (T27.14h) — Settings → System → Allowed networks: an admin adds a network and
+// the check (before anything is saved) warns for a public range and not for a private one, a list that
+// leaves out the admin's own address is refused, and the Listener access card shows the list read-only
+// with a link to the card. Nothing is applied: the e2e node keeps its list.
+test('dns_014 allowed networks public range warns', async () => {
+  await page.goto('/#/settings?tab=system');
+  await page.reload(); // a same-hash goto does not reload
+  const card = page.getByTestId('allowed-networks-card');
+  await expect(card).toContainText('Allowed networks');
+  await expect(card.getByTestId('allowed-networks-list')).toContainText('127.0.0.0/8');
+  await card.getByTestId('allowed-networks-edit').click();
+  try {
+    const form = card.getByTestId('allowed-networks-form');
+    // A private range: the check says what it does and does not warn.
+    await form.getByTestId('allowed-networks-input').fill('10.20.0.0/24');
+    await form.getByTestId('allowed-networks-check').click();
+    await expect(card.getByTestId('allowed-networks-preview')).toContainText('What this will do');
+    await expect(card.getByTestId('allowed-networks-warning')).toHaveCount(0);
+    await card.getByRole('button', { name: 'Change it' }).click();
+    // A public range: the warning names it, and says plain DNS carries no device key.
+    await form.getByTestId('allowed-networks-input').fill('203.0.113.0/24');
+    await form.getByTestId('allowed-networks-check').click();
+    const warning = card.getByTestId('allowed-networks-warning');
+    await expect(warning).toHaveCount(1);
+    await expect(warning).toContainText('203.0.113.0/24');
+    await expect(warning).toContainText('no device key');
+    await card.getByRole('button', { name: 'Change it' }).click();
+    // A list without the browser's own address is refused (409), and nothing is saved.
+    for (const n of ['127.0.0.0/8', '::1/128', '169.254.0.0/16']) {
+      const rm = form.getByRole('button', { name: `Remove ${n}` });
+      if (await rm.count()) await rm.click();
+    }
+    await form.getByTestId('allowed-networks-input').fill('');
+    await form.getByTestId('allowed-networks-check').click();
+    await expect(form).toContainText(/leaves out your own address/);
+    await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    const cancel = card.getByRole('button', { name: 'Cancel' });
+    if (await cancel.count()) await cancel.click();
+  }
+  await expect(card.getByTestId('allowed-networks-list')).toContainText('127.0.0.0/8');
+  // The Listener access card shows it read-only and links to this card (the section shows when a
+  // listener is listed: stubbed, as the e2e server binds one loopback UDP listener).
+  await page.route('**/api/v1/system/info', async (route) => {
+    const res = await route.fetch();
+    const info = await res.json();
+    info.listenerAccess = [
+      { listener: 'dot://203.0.113.5:853', requireClientId: true, publicAddress: true, gatedByDefault: false, wildcardBind: false, canCarryKey: true, setting: 'true', defaultOn: false, defaultReason: 'off', publicExposure: false },
+    ];
+    await route.fulfill({ response: res, json: info });
+  });
+  try {
+    await page.reload();
+    const summary = page.getByTestId('allowed-networks-summary');
+    await expect(summary).toBeVisible();
+    await expect(summary).toContainText('127.0.0.0/8');
+    await summary.getByTestId('allowed-networks-link').click();
+    await expect(page.locator('#allowed-networks')).toBeInViewport();
+  } finally {
+    await page.unroute('**/api/v1/system/info');
+  }
+});
+
+// REQ: DNS-014, API-901 (T27.14h, review) — a list that holds a network twice (a file may) still renders:
+// the rows are keyed by position, not by the network.
+test('dns_014 allowed networks list with a repeated entry renders', async () => {
+  await page.route('**/api/v1/config/entries?kind=access', (route) =>
+    route.fulfill({
+      json: { items: [{ name: 'default', source: 'override', setByFile: [], definition: { allowed_networks: ['10.0.0.0/8', '10.0.0.0/8'] } }] },
+    }),
+  );
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const card = page.getByTestId('allowed-networks-card');
+    await expect(card.getByTestId('allowed-networks-row')).toHaveCount(2);
+    await card.getByTestId('allowed-networks-edit').click();
+    await expect(card.getByTestId('allowed-networks-draft-row')).toHaveCount(2);
+    await card.getByRole('button', { name: 'Cancel' }).click();
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=access');
+  }
+});
+
+// REQ: DNS-014, API-901 (T27.14h review) — removing one of two equal rows removes that row only.
+test('dns_014 allowed networks removes one of two equal rows', async () => {
+  await page.route('**/api/v1/config/entries?kind=access', (route) =>
+    route.fulfill({
+      json: { items: [{ name: 'default', source: 'override', setByFile: [], definition: { allowed_networks: ['10.0.0.0/8', '10.0.0.0/8'] } }] },
+    }),
+  );
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const card = page.getByTestId('allowed-networks-card');
+    await card.getByTestId('allowed-networks-edit').click();
+    await expect(card.getByTestId('allowed-networks-draft-row')).toHaveCount(2);
+    await card.getByTestId('allowed-networks-draft-row').first().getByRole('button', { name: 'Remove 10.0.0.0/8' }).click();
+    await expect(card.getByTestId('allowed-networks-draft-row')).toHaveCount(1);
+    await card.getByRole('button', { name: 'Cancel' }).click();
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=access');
+  }
+});
+
+// REQ: DNS-014, API-901 (T27.14h, final check) — the refusals keep the server's words on this card: an
+// older member is named (not the credential sentence), a refused Revert says it leaves out your own
+// address (not the listener sentence), and Apply saves and reloads. Stubbed: nothing persists.
+test('dns_014 allowed networks refusals name the member and the address, and Apply saves', async () => {
+  const stored = { items: [{ name: 'default', source: 'override', setByFile: [], definition: { allowed_networks: ['10.0.0.0/8'] } }] };
+  const problem = (code: string, detail: string) => ({ type: 'about:blank', title: 'Conflict', status: 409, detail, code });
+  let mode: 'old' | 'ok' = 'old';
+  await page.route('**/api/v1/config/entries?kind=access', (route) => route.fulfill({ json: stored }));
+  await page.route('**/api/v1/access-settings/default**', (route) => {
+    const m = route.request().method();
+    if (m === 'DELETE') {
+      return route.fulfill({ status: 409, json: problem('would_disconnect_you', 'the list that would apply leaves out your own address, 127.0.0.1') });
+    }
+    if (mode === 'old') {
+      return route.fulfill({ status: 409, json: problem('upgrade_required', 'node edge-b runs version 1.1.0, which does not know the allowed networks yet; upgrade it first') });
+    }
+    return route.fulfill({ json: { applied: !route.request().url().includes('dryRun=true'), impact: 'Changes the list as shown.', warnings: [], before: {}, after: {}, configVersion: 'x' } });
+  });
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const card = page.getByTestId('allowed-networks-card');
+    // Revert refused: the address sentence, not the listener one.
+    await card.getByTestId('allowed-networks-revert').click();
+    await expect(card).toContainText('leaves out your own address');
+    await expect(card).not.toContainText('no API or DNS listener');
+    // Check refused by an older member: its name shows.
+    await card.getByTestId('allowed-networks-edit').click();
+    await card.getByTestId('allowed-networks-input').fill('10.20.0.0/24');
+    await card.getByTestId('allowed-networks-check').click();
+    await expect(card.getByTestId('allowed-networks-form')).toContainText('edge-b');
+    await expect(card).not.toContainText('too old to send it to the primary');
+    // Checked and applied: the notice shows.
+    mode = 'ok';
+    await card.getByTestId('allowed-networks-check').click();
+    await expect(card.getByTestId('allowed-networks-preview')).toBeVisible();
+    await card.getByTestId('allowed-networks-apply').click();
+    await expect(card).toContainText('Saved. Every node applies it');
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=access');
+    await page.unroute('**/api/v1/access-settings/default**');
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  }
+});
+
+// REQ: DNS-014, API-901 (T27.14h) — an operator and a viewer see the list and no control, and the API
+// refuses their write.
+test('dns_014 operator sees allowed networks read only', async () => {
+  for (const [user, pass, role] of [
+    ['operator1', 'operator long password', 'operator'],
+    [VIEWER.user, VIEWER.pass, 'viewer'],
+  ] as const) {
+    const who = await operatorPage(user, pass, role);
+    try {
+      await expect(who.p.getByRole('heading', { name: 'Sign in' })).toHaveCount(0); // signed in before the page moves
+      await who.p.goto('/#/settings?tab=system');
+      await who.p.reload();
+      const card = who.p.getByTestId('allowed-networks-card');
+      await expect(card.getByTestId('allowed-networks-list')).toContainText('127.0.0.0/8');
+      await expect(card.getByTestId('allowed-networks-edit')).toHaveCount(0);
+      await expect(card.getByTestId('allowed-networks-revert')).toHaveCount(0);
+      const put = await who.p.request.put('/api/v1/access-settings/default', {
+        headers: { 'x-csrf-token': await csrfOf(who.p.request) },
+        data: { allowed_networks: ['127.0.0.0/8', '198.18.0.0/15'] },
+      });
+      expect(put.status()).toBe(403);
+      for (let i = problems.length - 1; i >= 0; i--) if (/status of 403 \(/.test(problems[i])) problems.splice(i, 1);
+    } finally {
+      await who.close();
+    }
+  }
+});
