@@ -236,7 +236,7 @@ test.describe('settings from T27.11', () => {
       const card = page.getByTestId('dnssec-card');
       await expect(card).toBeVisible({ timeout: 30_000 });
       await card.getByTestId('dnssec-edit').click();
-      const sw = card.getByLabel('Answer from proven ranges');
+      const sw = card.getByRole('checkbox', { name: 'Answer from proven ranges' });
       const original = await sw.isChecked();
       await sw.setChecked(!original);
       await card.getByRole('button', { name: 'Check' }).click();
