@@ -174,8 +174,15 @@
   let listError = $state<unknown>(null);
   let loadingList = $state(false);
 
+  // A fresh load asked for while one runs is not dropped: it runs again with the latest filter when
+  // the current one ends, so the rows always answer the filter now in the box.
+  let reloadList = false;
   async function loadList(more = false) {
-    if (loadingList || !status?.running) return;
+    if (!status?.running) return;
+    if (loadingList) {
+      if (!more) reloadList = true;
+      return;
+    }
     loadingList = true;
     try {
       const page = await api.cmdbCis({ type: type || undefined, q: q.trim() || undefined, after: more ? (next ?? undefined) : undefined, limit: 50 });
@@ -186,6 +193,10 @@
       listError = e;
     } finally {
       loadingList = false;
+      if (reloadList) {
+        reloadList = false;
+        void loadList();
+      }
     }
   }
   // REQ: DSC-914 (T36.10c) — each device CI's location (matched by its name or address, since a CI is never
