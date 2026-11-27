@@ -4959,6 +4959,9 @@ pub struct OtlpEntry {
     /// Trace settings (a file's; read at start).
     pub traces_sample_every: u32,
     pub traces_slow_ms: u32,
+    /// `none` or `gzip`: whether the metrics and traces requests are gzip compressed (the
+    /// encoding is JSON either way).
+    pub compression: String,
     /// Whether the export runs on this node.
     pub active: bool,
     /// Why it doesn't, when an endpoint is set.

@@ -756,6 +756,47 @@ mod tests {
         assert!(!wants_openmetrics(None));
     }
 
+    /// REQ: OBS-017, OBS-006 (issue #155) - the trace export reaches a local OTLP/HTTP receiver
+    /// at `/v1/traces`, plain and gzip, with the headers a collector expects and the resource
+    /// attributes the other signals carry.
+    #[tokio::test]
+    async fn obs_017_receiver_gets_traces_plain_and_gzip() {
+        use crate::otlp::receiver_tests::{
+            Receiver, assert_collector_headers, assert_resource, node_for,
+        };
+        for gzip in [false, true] {
+            let rx = Receiver::new();
+            let h = node_for(&rx, if gzip { "gzip" } else { "none" });
+            let cfg = h.src.config.load_full();
+            let mut query = ev(1_791_000_000_000_000, 30_000, 25_000, Status::Forwarded);
+            query.rcode = Some(2);
+            let qname = name("shop.example");
+            let traced = Traced {
+                e: query,
+                name: qname,
+                trace: trace_of(&query, &qname),
+            };
+            let names = Names {
+                node: "pi-a",
+                upstreams: &[(1, "quad9".to_owned())],
+                groups: &["lab".to_owned()],
+            };
+            let body = traces_body(&[traced], &names, &crate::otlp::resource("pi-a")).to_string();
+            let url = format!("{}/v1/traces", crate::otlp::endpoint(&cfg).unwrap());
+            let client = crate::otlp::client().unwrap();
+            crate::otlp::post(&client, &url, &cfg, body, &h.src.secrets)
+                .await
+                .unwrap();
+            let r = rx.one("/v1/traces");
+            assert_collector_headers(&r, gzip);
+            let v = r.json();
+            assert_resource(&v["resourceSpans"][0]["resource"]);
+            let spans = &v["resourceSpans"][0]["scopeSpans"][0]["spans"];
+            assert_eq!(spans.as_array().map(Vec::len), Some(2), "{gzip}");
+            assert_eq!(spans[0]["traceId"], event::trace_hex(&traced.trace));
+        }
+    }
+
     /// REQ: OBS-017 — a query becomes a server span (name, type, response code, client,
     /// group) and, when upstreams were asked, a client span for the wait, under one trace ID.
     #[test]

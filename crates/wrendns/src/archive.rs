@@ -30,6 +30,17 @@ fn u32_at(d: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(d.get(at..at + 4)?.try_into().ok()?))
 }
 
+/// REQ: OBS-006 (issue #155) - `data` as one gzip member (RFC 1952; deflate by `miniz_oxide`),
+/// for a request an OTLP receiver reads with `Content-Encoding: gzip`.
+pub(crate) fn gzip(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    out.extend(miniz_oxide::deflate::compress_to_vec(data, 6));
+    out.extend_from_slice(&crc32(data).to_le_bytes());
+    // ISIZE is the length modulo 2^32.
+    out.extend_from_slice(&u32::try_from(data.len() & 0xFFFF_FFFF).unwrap_or(0).to_le_bytes());
+    out
+}
+
 fn crc32(data: &[u8]) -> u32 {
     let mut table = [0u32; 256];
     for (i, t) in (0u32..).zip(table.iter_mut()) {
@@ -126,7 +137,7 @@ fn zip(d: &[u8], want: impl Fn(&str) -> bool) -> Result<Entries, String> {
 }
 
 /// A gzip member (RFC 1952), checked against its CRC-32.
-fn gunzip(d: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn gunzip(d: &[u8]) -> Result<Vec<u8>, String> {
     let bad = || "corrupt gzip data".to_string();
     if d.len() < 18 || d[2] != 8 {
         return Err(bad());
@@ -214,6 +225,21 @@ fn tar(d: &[u8], want: impl Fn(&str) -> bool) -> Result<Entries, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: OBS-006 (issue #155) - what `gzip` writes, `gunzip` reads (CRC and size checked), and
+    /// a flipped byte is refused.
+    #[test]
+    fn obs_006_gzip_round_trips() {
+        let data = br#"{"resourceMetrics":[]}"#.repeat(50);
+        let gz = gzip(&data);
+        assert!(gz.starts_with(&[0x1f, 0x8b, 8]));
+        assert!(gz.len() < data.len(), "repetitive JSON shrinks");
+        assert_eq!(gunzip(&gz).unwrap(), data);
+        let mut bad = gz;
+        let n = bad.len() - 6;
+        bad[n] ^= 1;
+        assert!(gunzip(&bad).is_err());
+    }
 
     #[test]
     fn api_007_crc32_matches_the_standard_check_value() {

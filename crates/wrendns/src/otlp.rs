@@ -121,7 +121,7 @@ fn attrs(labels: &[(String, String)]) -> Value {
 type HistogramParts = (Vec<(f64, f64)>, f64, f64);
 
 /// The OTLP `ResourceMetrics` JSON for `text` (Prometheus exposition).
-fn metrics_body(text: &str, resource: &Value, start_ns: u64, now_ns: u64) -> Value {
+pub(crate) fn metrics_body(text: &str, resource: &Value, start_ns: u64, now_ns: u64) -> Value {
     let (start, now) = (start_ns.to_string(), now_ns.to_string());
     let mut metrics = Vec::new();
     for f in parse(text) {
@@ -225,6 +225,9 @@ pub(crate) fn resource(node: &str) -> Value {
         {"key": "service.name", "value": {"stringValue": "wrendns"}},
         {"key": "service.version", "value": {"stringValue": crate::build_info::VERSION}},
         {"key": "host.name", "value": {"stringValue": node}},
+        // REQ: OBS-006 (issue #155) - one instance per node, so a backend (and Home Assistant's
+        // own signals, which carry `host.name` too) tells the nodes of a cluster apart.
+        {"key": "service.instance.id", "value": {"stringValue": node}},
     ]})
 }
 
@@ -323,7 +326,14 @@ pub(crate) async fn post(
             req = req.header(k.as_str(), v.expose());
         }
     }
-    let req = req.body(body.into_bytes()).map_err(|e| e.to_string())?;
+    // REQ: OBS-006 (issue #155) - `compression = "gzip"`: the same JSON, gzip-framed.
+    let body = if o.compression == wrendns_config::OtlpCompression::Gzip {
+        req = req.header("content-encoding", "gzip");
+        crate::archive::gzip(body.as_bytes())
+    } else {
+        body.into_bytes()
+    };
+    let req = req.body(body).map_err(|e| e.to_string())?;
     match tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024)).await {
         Ok(Ok(r)) if r.status().is_success() => Ok(()),
         Ok(Ok(r)) => Err(format!("HTTP {}", r.status())),
@@ -404,6 +414,10 @@ pub(crate) async fn run(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "otlp_receiver_tests.rs"]
+pub(crate) mod receiver_tests;
 
 #[cfg(test)]
 mod tests {

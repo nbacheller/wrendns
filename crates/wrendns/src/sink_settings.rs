@@ -392,6 +392,17 @@ fn plan_otlp(
         let o = parse_otlp(v)?;
         let redirect = otlp_references(src, &before_cfg, &o)?;
         let text = serde_json::to_string(&o).map_err(|e| Problem::internal(e.to_string()))?;
+        // REQ: OBS-006 (issue #155) - gzip waits until every member's build reads the field
+        // (the same feature gate as the dnstap settings; plain JSON is never held).
+        if o.compression != wrendns_config::OtlpCompression::None
+            && let Err(why) = crate::upgrade_gate::enforce(
+                src.cluster.as_deref(),
+                wrendns_cluster::gate::Feature::OtlpCompression,
+            )
+        {
+            return Err(Problem::new(Code::UpgradeRequired, why)
+                .hint("Upgrade the member named, then make this change again."));
+        }
         entries.otlp = Some(o);
         (Some(text), redirect)
     } else {
@@ -671,6 +682,7 @@ pub(crate) fn otlp_entry(src: &Sources) -> OtlpEntry {
         headers,
         traces_sample_every: o.traces_sample_every,
         traces_slow_ms: o.traces_slow_ms,
+        compression: o.compression.as_str().to_owned(),
         active,
         reason,
     }

@@ -2707,6 +2707,7 @@ impl TelemetryConfig {
                 o.endpoint.clone_from(&m.endpoint);
                 o.interval_secs = m.interval_secs;
                 o.header_refs.clone_from(&m.header_refs);
+                o.compression = m.compression;
                 std::borrow::Cow::Owned(o)
             }
             _ => std::borrow::Cow::Borrowed(&self.otlp),
@@ -2871,6 +2872,40 @@ pub struct OtlpConfig {
     pub traces_sample_every: u32,
     /// REQ: OBS-017 (T11.6) — also send every query that took at least this long (ms; 0: none).
     pub traces_slow_ms: u32,
+    /// REQ: OBS-006 (T7.17, issue #155) — whether the metrics and traces requests are gzip
+    /// compressed (`Content-Encoding: gzip`, which every OTLP/HTTP receiver accepts). The
+    /// encoding stays JSON. Left out of the stored form while `none`, so a node that does not
+    /// know the field keeps reading an entry that does not use it.
+    #[serde(skip_serializing_if = "OtlpCompression::is_none")]
+    pub compression: OtlpCompression,
+}
+
+/// REQ: OBS-006 (issue #155) — request compression of the OTLP export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpCompression {
+    /// Plain JSON.
+    #[default]
+    None,
+    /// gzip-compressed JSON.
+    Gzip,
+}
+
+impl OtlpCompression {
+    /// Whether requests go out uncompressed (the default).
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// The name used in the API and the files.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Gzip => "gzip",
+        }
+    }
 }
 
 impl Default for OtlpConfig {
@@ -2882,6 +2917,7 @@ impl Default for OtlpConfig {
             header_refs: BTreeMap::new(),
             traces_sample_every: 0,
             traces_slow_ms: 0,
+            compression: OtlpCompression::None,
         }
     }
 }

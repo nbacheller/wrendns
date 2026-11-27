@@ -1078,7 +1078,7 @@ fn deliver(
 }
 
 /// A webhook request body for `events`.
-fn webhook_body(c: &SinkConfig, events: &[String], host: &str) -> String {
+pub(crate) fn webhook_body(c: &SinkConfig, events: &[String], host: &str) -> String {
     match c.format {
         SinkFormat::JsonLines => {
             let mut s = events.join("\n");
@@ -1250,7 +1250,7 @@ impl Spill {
     }
 }
 
-async fn post(
+pub(crate) async fn post(
     client: &wrendns_filter::fetch::Client,
     c: &SinkConfig,
     body: String,

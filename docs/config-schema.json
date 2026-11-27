@@ -3472,10 +3472,29 @@
         "role"
       ]
     },
+    "OtlpCompression": {
+      "description": "REQ: OBS-006 (issue #155) — request compression of the OTLP export.",
+      "oneOf": [
+        {
+          "description": "Plain JSON.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "gzip-compressed JSON.",
+          "type": "string",
+          "const": "gzip"
+        }
+      ]
+    },
     "OtlpConfig": {
       "description": "REQ: OBS-006 (T7.17, `spec/06` §5) — OTLP/HTTP (JSON) metrics export.",
       "type": "object",
       "properties": {
+        "compression": {
+          "description": "REQ: OBS-006 (T7.17, issue #155) — whether the metrics and traces requests are gzip\ncompressed (`Content-Encoding: gzip`, which every OTLP/HTTP receiver accepts). The\nencoding stays JSON. Left out of the stored form while `none`, so a node that does not\nknow the field keeps reading an entry that does not use it.",
+          "$ref": "#/$defs/OtlpCompression"
+        },
         "endpoint": {
           "description": "The collector's OTLP/HTTP base URL (`http://otel-collector:4318`); metrics go to\n`<endpoint>/v1/metrics`. Unset: no export.",
           "type": [

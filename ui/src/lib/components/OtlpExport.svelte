@@ -36,6 +36,7 @@
   let editing = $state(false);
   let endpoint = $state('');
   let interval = $state<number | string>(60);
+  let compression = $state<'none' | 'gzip'>('none');
   let rows = $state<Row[]>([]);
   let formError = $state('');
   let busy = $state(false);
@@ -51,6 +52,7 @@
     dirty = {};
     endpoint = entry.endpoint ?? 'http://';
     interval = entry.intervalSecs;
+    compression = entry.compression === 'gzip' ? 'gzip' : 'none';
     rows = entry.headers.filter((h) => h.source === 'stored').map((h) => ({ header: h.name, ref: h.secret ?? undefined }));
   }
   function closeForm() {
@@ -71,7 +73,10 @@
   function bodyOf(): Record<string, unknown> {
     const refs: Record<string, string> = {};
     for (const r of rows) if (r.header.trim() && r.ref) refs[r.header.trim()] = r.ref;
-    return { endpoint: endpoint.trim(), interval_secs: Number(interval) || 60, header_refs: refs };
+    const body: Record<string, unknown> = { endpoint: endpoint.trim(), interval_secs: Number(interval) || 60, header_refs: refs };
+    // Plain stays out of the body: an unchanged export never needs a member that reads the field.
+    if (compression === 'gzip') body.compression = 'gzip';
+    return body;
   }
 
   async function save() {
@@ -145,7 +150,7 @@
     {#if entry.endpoint}
       <ul class="facts small">
         <li>Collector: <span class="mono" data-testid="otlp-endpoint">{entry.endpoint}</span> (metrics go to <span class="mono">/v1/metrics</span>)</li>
-        <li>Every {entry.intervalSecs} seconds</li>
+        <li>Every {entry.intervalSecs} seconds{#if entry.compression === 'gzip'}, <span data-testid="otlp-compression">gzip compressed</span>{/if}</li>
         <li>
           {#if entry.active}<span class="badge ok" data-testid="otlp-state">Exporting from this node</span>{:else}<span class="badge bad" data-testid="otlp-state">Not exporting from this node</span>{/if}
           {#if entry.reason}<span class="bad-text" data-testid="otlp-reason">{entry.reason}</span>{/if}
@@ -197,6 +202,13 @@
         <label>
           <span>Seconds between exports</span>
           <input type="number" min="5" bind:value={interval} aria-label="Seconds between exports" />
+        </label>
+        <label>
+          <span>Compression</span>
+          <select bind:value={compression} data-testid="otlp-compression-select" aria-label="Compression">
+            <option value="none">None (plain JSON)</option>
+            <option value="gzip">gzip</option>
+          </select>
         </label>
       </div>
       <h4>Headers</h4>
