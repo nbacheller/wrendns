@@ -2621,11 +2621,19 @@ device_domain = \"home.arpa\"
             .unwrap()
             .unwrap();
         assert!(
-            blob.iter().all(|e| e.kind != crate::managed::LOCATION),
+            blob.iter().any(|e| e.kind == crate::managed::LOCATION),
+            "the rows travel as their own kind: {blob:?}"
+        );
+        let dev = blob
+            .iter()
+            .find(|e| e.name == "laptop" && e.kind == crate::managed::CLIENT)
+            .unwrap();
+        assert!(dev.body.get("location").is_none(), "{dev:?}");
+        assert!(
+            blob.iter()
+                .any(|e| e.kind == crate::node_managed::LOCATION_PIN && e.name == "laptop"),
             "{blob:?}"
         );
-        let dev = blob.iter().find(|e| e.name == "laptop").unwrap();
-        assert!(dev.body.get("location").is_none(), "{dev:?}");
         // The hold ends: the same blob carries them again.
         crate::upgrade_gate::HOLD.clear();
         let Gather::Ready(g) = p.gather().await else {
@@ -2634,6 +2642,11 @@ device_domain = \"home.arpa\"
         let blob = crate::node_managed::parse_shared(&g.node_managed.unwrap())
             .unwrap()
             .unwrap();
+        assert!(
+            blob.iter()
+                .all(|e| e.kind != crate::node_managed::LOCATION_PIN),
+            "the pin is on its row again: {blob:?}"
+        );
         assert!(
             blob.iter().any(|e| e.kind == crate::managed::LOCATION),
             "{blob:?}"

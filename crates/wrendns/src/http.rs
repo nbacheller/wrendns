@@ -723,6 +723,7 @@ pub(crate) fn render(src: &Sources) -> String {
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
     render_upstream_quality(&mut w, &src.pipeline.quality, &state.router);
+    render_recursor(&mut w, &state.router);
     render_exported(&mut w, src, &state);
     if let Some(l) = src.lists.load_full() {
         render_lists(&mut w, &l.fetcher);
@@ -1286,6 +1287,60 @@ fn render_dnssec(w: &mut PromWriter, s: &wrendns_upstream::dnssec::Stats) {
         "Negative answers made from cached, validated NSEC ranges instead of asking upstream (RFC 8198).",
     )
     .sample("wrendns_dnssec_synthesized_total", &[], s.synthesized.load(Relaxed));
+}
+
+/// REQ: DNS-904, OBS-005 — what the built-in resolver's authoritative servers did, added up over
+/// every `recursive://` upstream. No server and no upstream is a label: the series stay few
+/// however many servers the Internet has.
+fn render_recursor(w: &mut PromWriter, router: &Router) {
+    let total = router
+        .upstreams()
+        .iter()
+        .filter_map(|u| u.recursor_stats())
+        .reduce(wrendns_upstream::RecursorStats::plus);
+    if let Some(s) = total {
+        render_recursor_stats(w, &s);
+    }
+}
+
+fn render_recursor_stats(w: &mut PromWriter, s: &wrendns_upstream::RecursorStats) {
+    let name = "wrendns_recursor_queries_total";
+    let f = w.family(
+        name,
+        "counter",
+        "Queries the built-in resolver sent to authoritative servers, by what came back.",
+    );
+    for (outcome, v) in [
+        ("answer", s.answer),
+        ("referral", s.referral),
+        ("nodata", s.nodata),
+        ("nxdomain", s.nxdomain),
+        ("lame", s.lame),
+        ("timeout", s.timeout),
+        ("error", s.error),
+    ] {
+        f.sample(name, &[("outcome", outcome)], v);
+    }
+    for (name, help, v) in [
+        (
+            "wrendns_recursor_case_mismatch_total",
+            "Replies from authoritative servers whose letter case came back changed (0x20).",
+            s.case_mismatch,
+        ),
+        (
+            "wrendns_recursor_unwanted_replies_total",
+            "Replies with the wrong ID or question that were ignored while the real one was awaited.",
+            s.unwanted,
+        ),
+    ] {
+        w.family(name, "counter", help).sample(name, &[], v);
+    }
+    w.family(
+        "wrendns_recursor_zone_cuts_cached",
+        "gauge",
+        "Zone cuts (delegations) the built-in resolver has cached.",
+    )
+    .sample("wrendns_recursor_zone_cuts_cached", &[], s.zone_cuts);
 }
 
 /// REQ: CLU-007 — query-log ship mode, sending and receiving.

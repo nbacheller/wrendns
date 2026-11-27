@@ -3578,12 +3578,15 @@ fn json_of<T: serde::Serialize>(v: &T) -> String {
 /// Names devices across every view: the query log, live tail, charts, and history (names
 /// are resolved when read, so earlier queries are relabelled too). To rename, send the new
 /// `name` in the body. Devices defined in the config files are read-only here (409). Needs
-/// the operator role (or a `write` token).
+/// the operator role (or a `write` token). An agent token also needs `config:write:locations`
+/// when the write would set, change or remove the device's location pin; this is a full
+/// replace, so leaving `location` out removes the pin.
 #[utoipa::path(put, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's current name (or the name for a new one)."), DryRun),
     request_body = ClientInput,
     responses(
         (status = 200, body = ClientChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "An agent token without `config:write:locations` tried to set, change or remove the device's location pin."),
         (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused for another request."),
         (status = 412, body = Problem, description = "If-Match: the config changed since that version."),
         (status = 422, body = Problem, description = "The resulting configuration is invalid (e.g. an unknown group)."),
@@ -3618,11 +3621,13 @@ pub(crate) async fn put_client(
 ///
 /// Its queries, past and future, go back to showing the address, and it leaves its groups
 /// (the `default` group applies). Devices from the config files can't be deleted here (409).
-/// Needs the operator role (or a `write` token).
+/// Needs the operator role (or a `write` token). An agent token also needs
+/// `config:write:locations` when the device has a location pin (deleting it removes the pin).
 #[utoipa::path(delete, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's name."), DryRun),
     responses(
         (status = 200, body = ClientChange, description = "The result."),
+        (status = 403, body = Problem, description = "An agent token without `config:write:locations` tried to delete a device that has a location pin."),
         (status = 404, body = Problem, description = "No device by that name was created through the API."),
         (status = 409, body = Problem, description = "Defined in the config files."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),

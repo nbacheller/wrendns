@@ -99,19 +99,38 @@ pub(crate) fn enforce_locations(
 /// the device pins out of the configuration it serves and publishes, and says why in health. When
 /// the members have been heard and all announce the feature the entries are applied without a
 /// restart. A node with no cluster is never held.
-pub(crate) struct Hold(AtomicBool);
+pub(crate) struct Hold {
+    /// The locations are held out.
+    active: AtomicBool,
+    /// A release reload is running: it builds the configuration with the entries, and the hold
+    /// stays on (the blob stays stripped) until that reload has applied them.
+    releasing: AtomicBool,
+    /// The last release reload did not apply the entries.
+    reload_failed: AtomicBool,
+    /// Why the entries were dropped, when the node stopped leading before they were published.
+    lost: Mutex<Option<String>>,
+}
 
 /// The hold of this process.
 pub(crate) static HOLD: Hold = Hold::new();
 
 impl Hold {
     pub(crate) const fn new() -> Self {
-        Self(AtomicBool::new(false))
+        Self {
+            active: AtomicBool::new(false),
+            releasing: AtomicBool::new(false),
+            reload_failed: AtomicBool::new(false),
+            lost: Mutex::new(None),
+        }
+    }
+
+    fn lost(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.lost.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Whether the locations are being held out now.
     pub(crate) fn active(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.active.load(Ordering::Relaxed)
     }
 
     /// At start-up: when `clustered_primary` and `cfg` uses locations, takes them out of `cfg`
@@ -128,50 +147,84 @@ impl Hold {
             return false;
         }
         strip_locations(cfg);
-        self.0.store(true, Ordering::Relaxed);
+        self.begin();
         true
+    }
+
+    /// Starts holding (a promotion whose reload the gate refused, or the start-up).
+    pub(crate) fn begin(&self) {
+        *self.lost() = None;
+        self.reload_failed.store(false, Ordering::Relaxed);
+        self.releasing.store(false, Ordering::Relaxed);
+        self.active.store(true, Ordering::Relaxed);
     }
 
     /// Puts the hold back after a release whose reload did not apply the entries.
     pub(crate) fn resume(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.releasing.store(false, Ordering::Relaxed);
+        self.reload_failed.store(true, Ordering::Relaxed);
+        self.active.store(true, Ordering::Relaxed);
+    }
+
+    /// Ends the hold once the release reload has applied the entries.
+    pub(crate) fn finish(&self) {
+        self.releasing.store(false, Ordering::Relaxed);
+        self.reload_failed.store(false, Ordering::Relaxed);
+        self.active.store(false, Ordering::Relaxed);
     }
 
     /// Tests only: ends the hold of the process.
     #[cfg(test)]
     pub(crate) fn clear(&self) {
-        self.0.store(false, Ordering::Relaxed);
+        self.finish();
+        *self.lost() = None;
     }
 
-    /// For every later configuration the node builds while the hold stands.
+    /// For every later configuration the node builds while the hold stands (a release reload
+    /// builds with the entries).
     pub(crate) fn apply(&self, cfg: &mut wrendns_config::Config) {
-        if self.active() {
+        if self.active() && !self.releasing.load(Ordering::Relaxed) {
             strip_locations(cfg);
         }
     }
 
     /// The words for health while the hold stands: the member that does not know the feature, or
-    /// that the members have not been heard from yet.
+    /// that the members have not been heard from yet; or, once the node stopped leading with the
+    /// entries unpublished, that they were dropped.
     pub(crate) fn reason(&self, cluster: Option<&Cluster>) -> Option<String> {
         if !self.active() {
-            return None;
+            return self.lost().clone();
         }
-        Some(
-            judge(cluster, Feature::Locations)
-                .err()
-                .map_or_else(|| RELOAD_FAILED.to_owned(), |r| hold_words(&r)),
-        )
+        Some(match judge(cluster, Feature::Locations) {
+            Err(r) => hold_words(&r),
+            Ok(()) if self.reload_failed.load(Ordering::Relaxed) => RELOAD_FAILED.to_owned(),
+            Ok(()) => READY_WORDS.to_owned(),
+        })
     }
 
-    /// Ends the hold when the gate passes now (or this node is no longer the primary): `true`
-    /// when it ended, and the caller reloads so the entries are applied.
-    pub(crate) fn release(&self, cluster: Option<&Cluster>) -> bool {
+    /// Decides whether the entries can be applied now (the gate passes, or this node is no longer
+    /// the primary): `true` when the caller should reload. The hold stays on until the reload has
+    /// applied the entries ([`Hold::finish`]), so nothing is published before. A node that no
+    /// longer leads never published them: that is logged with the entries (`held`) and kept in
+    /// health, and the hold ends without a reload (`false`), as a replica serves its primary's version.
+    pub(crate) fn release(&self, cluster: Option<&Cluster>, held: &str) -> bool {
         if !self.active() {
             return false;
         }
-        let follows = cluster.is_some_and(|c| !c.is_primary());
-        if follows || judge(cluster, Feature::Locations).is_ok() {
-            self.0.store(false, Ordering::Relaxed);
+        if cluster.is_some_and(|c| !c.is_primary()) {
+            tracing::error!(
+                entries = held,
+                "locations: this node stopped leading before the held entries were published; they are not part of the cluster's configuration"
+            );
+            *self.lost() = Some(format!(
+                "the held locations ({held}) were not published before this node stopped leading; enter them again on the new primary"
+            ));
+            self.finish();
+            return false;
+        }
+        if judge(cluster, Feature::Locations).is_ok() {
+            self.releasing.store(true, Ordering::Relaxed);
+            self.reload_failed.store(false, Ordering::Relaxed);
             return true;
         }
         false
@@ -180,6 +233,29 @@ impl Hold {
 
 /// Health's words when the gate passes but the reload that applies the held entries failed.
 pub(crate) const RELOAD_FAILED: &str = "the reload that applies them failed; see the log";
+
+/// Health's words when the gate passes and the entries have not been applied yet.
+pub(crate) const READY_WORDS: &str = "every member knows them; applying the held entries";
+
+/// The held entries, named: the `[[location]]` slugs and the pinned devices of `cfg` (the build
+/// with them in).
+pub(crate) fn describe_held(cfg: Option<&wrendns_config::Config>) -> String {
+    let Some(cfg) = cfg else {
+        return "none known".to_owned();
+    };
+    let slugs: Vec<&str> = cfg.location.iter().map(|l| l.slug.as_str()).collect();
+    let pins: Vec<&str> = cfg
+        .client
+        .iter()
+        .filter(|c| c.location.is_some())
+        .map(|c| c.name.as_str())
+        .collect();
+    format!(
+        "locations: {}; pinned devices: {}",
+        slugs.join(", "),
+        pins.join(", ")
+    )
+}
 
 /// Takes the `[[location]]` entries and the clients' `location` pins out of `cfg`.
 pub(crate) fn strip_locations(cfg: &mut wrendns_config::Config) {
@@ -231,7 +307,7 @@ pub(crate) fn hold_after_refusal() -> bool {
     if !held().contains(&Feature::Locations) {
         return false;
     }
-    HOLD.resume();
+    HOLD.begin();
     true
 }
 
@@ -250,11 +326,13 @@ async fn release_loop_inner(
             _ = stop.changed() => return,
             () = tokio::time::sleep(std::time::Duration::from_secs(wait)) => {}
         }
-        if HOLD.release(sources.cluster.as_deref()) {
+        let held = describe_held(sources.unheld.load_full().as_deref());
+        if HOLD.release(sources.cluster.as_deref(), &held) {
             tracing::info!("locations: every member knows them; applying the held entries");
             let (tx, rx) = tokio::sync::oneshot::channel();
             let applied = sources.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
             if applied {
+                HOLD.finish();
                 wait = next_wait(wait, true);
             } else {
                 tracing::warn!(

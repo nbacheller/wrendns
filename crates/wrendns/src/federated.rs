@@ -2879,6 +2879,13 @@ impl Backend for Federated {
     ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::AlertTest, Problem>> {
         self.local.alert_test(name)
     }
+    // REQ: DNS-904 — a trace runs on the node that was asked: the walk is that node's own.
+    fn recursor_trace(
+        &self,
+        p: &wrendns_api::model::RecursorTraceParams,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::model::RecursorTrace, Problem>> {
+        self.local.recursor_trace(p)
+    }
     // REQ: API-002 (T9.12) — checks run where the request landed.
     fn check_upstream(
         &self,

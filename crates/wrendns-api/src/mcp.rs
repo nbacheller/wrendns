@@ -252,6 +252,35 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: DNS-904 (T40.3)
+        Tool {
+            name: "trace_recursion",
+            description: "Read-only. How the built-in recursive resolver resolves a name, step by step: where the lookup began (the root, a stub zone, or a cached zone cut), then every query to every authoritative server with the zone asked, the name sent (cut down by QNAME minimization), the outcome (referral, answer, nodata, nxdomain, lame, timeout, error, case-mismatch), the delegation a referral points to, the transport and the time in microseconds. Use it for a name that is slow or fails (SERVFAIL) when a `recursive://` upstream resolves it: it shows which server timed out or answered lame. It really resolves the name, so zone cuts are cached afterwards; a name whose cuts are cached starts below the root. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The domain name to look up."},
+                "qtype": {"type": "string", "description": "Query type (default A)."},
+                "upstream": {"type": "string", "description": "The recursive:// upstream to ask (default: the first one)."}
+            }, "required": ["name"], "additionalProperties": false})
+            },
+            calls: |a| {
+                if s(a, "name").is_none() {
+                    return Err("`name` is required".into());
+                }
+                Ok(vec![(
+                    "trace".into(),
+                    query(
+                        "/api/v1/recursor/trace",
+                        a,
+                        &[
+                            ("name", "name"),
+                            ("qtype", "qtype"),
+                            ("upstream", "upstream"),
+                        ],
+                    ),
+                )])
+            },
+        },
         Tool {
             name: "get_client_profile",
             description: "Read-only. A device's profile: its identity, groups, the policy that applies to it (policy: the group and the key that matched, lists, services, schedules, rules; needs config:read), top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",

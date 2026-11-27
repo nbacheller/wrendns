@@ -524,6 +524,50 @@ impl Backend for Fake {
             ..crate::policy_api::ClientPolicy::default()
         })
     }
+    fn recursor_trace(
+        &self,
+        p: &crate::model::RecursorTraceParams,
+    ) -> crate::BoxFuture<Result<crate::model::RecursorTrace, Problem>> {
+        let p = p.clone();
+        Box::pin(async move {
+            if p.upstream.as_deref() == Some("forwarder") {
+                return Err(Problem::invalid("`upstream`: not a recursive:// upstream"));
+            }
+            Ok(crate::model::RecursorTrace {
+                name: p.name,
+                qtype: p.qtype.unwrap_or_else(|| "A".into()),
+                upstream: "recursive".into(),
+                rcode: Some("NOERROR".into()),
+                answers: 1,
+                error: None,
+                total_micros: 1200,
+                steps: vec![
+                    crate::model::RecursorTraceStep {
+                        kind: "start".into(),
+                        zone: ".".into(),
+                        server: None,
+                        qname: "www.example.com.".into(),
+                        qtype: "A".into(),
+                        outcome: "root".into(),
+                        detail: "13 servers".into(),
+                        transport: String::new(),
+                        micros: 0,
+                    },
+                    crate::model::RecursorTraceStep {
+                        kind: "query".into(),
+                        zone: ".".into(),
+                        server: Some("198.41.0.4".into()),
+                        qname: "com.".into(),
+                        qtype: "A".into(),
+                        outcome: "referral".into(),
+                        detail: "com.".into(),
+                        transport: "udp".into(),
+                        micros: 900,
+                    },
+                ],
+            })
+        })
+    }
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         if p.name.is_empty() {
             return Err(Problem::invalid("`name` is empty"));
@@ -2077,8 +2121,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 195 with DSC-901's /cmdb-settings/default and DSC-902's /cmdb/status, /cmdb/cis,
     // /cmdb/cis/{id}, /cmdb/proposals and DSC-903's /cmdb/cis/{id}/link, /unlink, /merge and /split
     // (T31.2).
-    // 197 with DSC-913's /locations and /locations/{slug} (T36.10a).
-    assert_eq!(paths.len(), 197);
+    // 198 with DSC-913's /locations and /locations/{slug} (T36.10a), after DNS-904's /recursor/trace (T40.3).
+    assert_eq!(paths.len(), 198);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -5395,4 +5439,28 @@ async fn flt_004_prune_lists_over_http() {
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, _, _) = send(&app, get("/api/v1/lists/prune-plan", &viewer)).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+/// REQ: DNS-904 (T40.3), AGT-001 — `GET /api/v1/recursor/trace` returns the lookup with its steps
+/// in camelCase JSON, and the backend's complaint about an upstream is a 400 with the problem.
+#[tokio::test]
+async fn dns_904_the_trace_route_returns_the_steps() {
+    let (app, _fake) = app();
+    let (status, _, v) = get(&app, "/api/v1/recursor/trace?name=www.example.com").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["upstream"], "recursive");
+    assert_eq!(v["rcode"], "NOERROR");
+    assert_eq!(v["totalMicros"], 1200);
+    assert_eq!(v["steps"][0]["kind"], "start");
+    assert_eq!(v["steps"][1]["server"], "198.41.0.4");
+    assert_eq!(v["steps"][1]["outcome"], "referral");
+    assert!(v.get("error").is_none(), "absent, not null: {v}");
+    let (status, _, _) = get(
+        &app,
+        "/api/v1/recursor/trace?name=a.example&upstream=forwarder",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = get(&app, "/api/v1/recursor/trace").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
 }

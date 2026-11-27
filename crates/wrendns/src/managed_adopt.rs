@@ -104,7 +104,7 @@ pub(crate) fn adopt(
         return Outcome::Failed;
     };
     let entries = match parse_shared(&bytes) {
-        Ok(Some(e)) => e,
+        Ok(Some(e)) => crate::node_managed::fold_pins(e),
         Ok(None) => return Outcome::NoRows,
         Err(why) => {
             warn!("the inherited cluster entries can't be adopted: {why}");

@@ -49,6 +49,11 @@ pub use upstream::{
     set_node_tag,
 };
 pub use wrendns_recursor::{is_local_address, is_private_address};
+// REQ: DNS-904 — what the recursor shows: counters, trace steps, and the tap for dnstap.
+pub use wrendns_recursor::{
+    Exchange as ResolverExchange, ExchangeTap as ResolverTap, StatsSnapshot as RecursorStats,
+    TraceStep as RecursorStep, set_exchange_observer as set_resolver_observer,
+};
 
 /// Total time budget per client query (`spec/02` §8.3).
 pub const DEFAULT_BUDGET: Duration = Duration::from_secs(2);

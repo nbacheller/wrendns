@@ -464,12 +464,22 @@ async fn dsc_908_held_at_start_with_an_older_member_released_when_it_announces()
             .contains("DNS answers as without locations")
     );
     // The older member keeps the hold.
-    assert!(!hold.release(Some(&old.primary)) && hold.active());
+    assert!(!hold.release(Some(&old.primary), "x") && hold.active());
     let _ = old.stop.send(true);
 
     // The member announces the feature: the hold ends, the reason clears, and a reload applies.
     let new = pair("1.1.0", "1.1.0").await;
-    assert!(hold.release(Some(&new.primary)));
+    assert!(hold.release(Some(&new.primary), "x"));
+    // The hold stands until the reload has applied them: nothing is published before, but the
+    // release reload itself builds with the entries.
+    assert!(hold.active());
+    let mut during = file.clone();
+    hold.apply(&mut during);
+    assert!(
+        !during.location.is_empty(),
+        "the release reload builds with them"
+    );
+    hold.finish();
     assert!(!hold.active() && hold.reason(Some(&new.primary)).is_none());
     assert!(crate::health::locations_held_reasons(None).is_empty());
     let mut released = file.clone();
@@ -523,7 +533,8 @@ async fn dsc_908_a_restart_of_an_established_cluster_does_not_hold() {
 }
 
 /// REQ: DSC-908 - when the gate passes but the reload that applies the held entries failed, the
-/// hold is back and health still says so (no silent `locations_held` gap).
+/// hold is back and health still says so (no silent `locations_held` gap); before any release
+/// attempt the words say the members are ready, not that a reload failed.
 #[tokio::test]
 async fn dsc_908_a_failed_release_reload_still_shows_in_health() {
     let _turn = GATE.lock().await;
@@ -531,14 +542,101 @@ async fn dsc_908_a_failed_release_reload_still_shows_in_health() {
     let hold = crate::upgrade_gate::Hold::new();
     let mut c = crate::credential_tests::config(HELD);
     assert!(hold.at_start(&mut c, true, false));
-    assert!(hold.release(Some(&new.primary)));
-    assert!(hold.reason(Some(&new.primary)).is_none());
+    // The gate passes but no release was tried: no reload has failed.
+    assert_eq!(
+        hold.reason(Some(&new.primary)).as_deref(),
+        Some(crate::upgrade_gate::READY_WORDS)
+    );
+    assert!(hold.release(Some(&new.primary), "x"));
+    assert!(hold.active(), "the hold stands until the reload applied");
+    assert_eq!(
+        hold.reason(Some(&new.primary)).as_deref(),
+        Some(crate::upgrade_gate::READY_WORDS)
+    );
     hold.resume();
     assert_eq!(
         hold.reason(Some(&new.primary)).as_deref(),
         Some(crate::upgrade_gate::RELOAD_FAILED)
     );
+    // The next attempt clears the flag.
+    assert!(hold.release(Some(&new.primary), "x"));
+    assert_eq!(
+        hold.reason(Some(&new.primary)).as_deref(),
+        Some(crate::upgrade_gate::READY_WORDS)
+    );
     let _ = new.stop.send(true);
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - a node that stops leading while it holds entries never
+/// published them: the hold ends without a reload, the entries are named, and health keeps
+/// saying so instead of clearing silently.
+#[tokio::test]
+async fn dsc_908_a_hold_that_ends_because_the_node_stopped_leading_says_so() {
+    let _turn = GATE.lock().await;
+    let pair = pair("1.1.0", "1.1.0").await;
+    let hold = crate::upgrade_gate::Hold::new();
+    let mut c = crate::credential_tests::config(HELD);
+    assert!(hold.at_start(&mut c, true, false));
+    let named = crate::upgrade_gate::describe_held(Some(&crate::credential_tests::config(HELD)));
+    assert!(named.contains("home"), "{named}");
+    // The replica side of the pair does not lead.
+    assert!(
+        !hold.release(Some(&pair.replica), &named),
+        "no reload to run"
+    );
+    assert!(!hold.active());
+    let why = hold.reason(Some(&pair.replica)).expect("a reason stays");
+    assert!(
+        why.contains("home") && why.contains("not published"),
+        "{why}"
+    );
+    assert_eq!(
+        crate::health::locations_held_reasons(Some(&why))[0].code,
+        "locations_held"
+    );
+    // A new hold forgets it.
+    let mut c = crate::credential_tests::config(HELD);
+    assert!(hold.at_start(&mut c, true, false));
+    assert!(
+        !hold
+            .reason(Some(&pair.primary))
+            .unwrap()
+            .contains("not published")
+    );
+    let _ = pair.stop.send(true);
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - a replica promoted during the hold adopts the `location`
+/// rows and the pins from the blob the held primary published, so its promotion reload carries
+/// them and the gate judges them (rule c).
+#[test]
+fn dsc_908_a_replica_promoted_during_the_hold_adopts_the_rows_and_the_pins() {
+    let rows = vec![
+        (
+            crate::managed::LOCATION.to_owned(),
+            "lab".to_owned(),
+            r#"{"networks":["198.51.100.0/24"]}"#.to_owned(),
+        ),
+        (
+            crate::managed::CLIENT.to_owned(),
+            "laptop".to_owned(),
+            r#"{"match":["192.0.2.9"],"location":"lab"}"#.to_owned(),
+        ),
+    ];
+    let held = crate::node_managed::strip_held(&crate::node_managed::encode(&rows));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let out = crate::managed_adopt::adopt(&path, "held-blob", || Some(held));
+    assert!(matches!(out, crate::managed_adopt::Outcome::Entries(_)));
+    let state = wrendns_store::state::State::open(&path).unwrap();
+    let locs = state.managed(crate::managed::LOCATION).unwrap();
+    assert_eq!(locs.len(), 1, "the location row is the new primary's now");
+    let devs = state.managed(crate::managed::CLIENT).unwrap();
+    let dev: Value = serde_json::from_str(&devs[0].body).unwrap();
+    assert_eq!(
+        dev["location"], "lab",
+        "the pin is back on the device: {dev}"
+    );
 }
 
 fn uses_both(c: &wrendns_config::Config) -> bool {
@@ -921,8 +1019,14 @@ async fn dsc_908_the_process_hold_shows_in_health_and_is_released_by_the_loop() 
     let task = tokio::spawn(crate::upgrade_gate::release_loop(src, stop));
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c2 = Arc::clone(&count);
+    // The hold must stand while the release reload runs (nothing is published before it applied).
+    let dropped_early = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let early = Arc::clone(&dropped_early);
     tokio::spawn(async move {
         while let Some(done) = reloads.recv().await {
+            if !crate::upgrade_gate::HOLD.active() {
+                early.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             let n = c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ = done.send(n >= 1);
         }
@@ -938,6 +1042,10 @@ async fn dsc_908_the_process_hold_shows_in_health_and_is_released_by_the_loop() 
         crate::upgrade_gate::HOLD.active()
     );
     let _ = task.await;
+    assert!(
+        !dropped_early.load(std::sync::atomic::Ordering::SeqCst),
+        "the hold was cleared before the reload applied the entries"
+    );
     assert_eq!(held_reasons(&h).await, 0, "the reason clears with the hold");
     let _ = new.stop.send(true);
 }
