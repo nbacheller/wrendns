@@ -1983,6 +1983,13 @@ async fn config_etag(b: &Shared) -> Result<String, Problem> {
     Ok(format!("\"{version}\""))
 }
 
+/// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — whether the caller is an admin's own
+/// session (not a viewer, an operator, an agent token, a wall display or an unknown principal).
+fn is_admin_session(ext: &axum::http::Extensions) -> bool {
+    ext.get::<auth::Principal>()
+        .is_some_and(|p| p.role == auth::Role::Admin && p.agent.is_none() && p.display.is_none())
+}
+
 /// Node and build information.
 ///
 /// Version, role, uptime, listeners, whether the query log is on, and the active filter
@@ -1994,10 +2001,7 @@ async fn system_info(State(b): State<Shared>, ext: axum::http::Extensions) -> Js
     // REQ: API-902 (T27.14c; owner decision, 2026-11-27) — each listener's certificate and key
     // paths, limits and options are for admins' own sessions; every other caller (viewer, operator,
     // an agent token, a wall display, or no known principal) gets the rest.
-    let admin = ext
-        .get::<auth::Principal>()
-        .is_some_and(|p| p.role == auth::Role::Admin && p.agent.is_none() && p.display.is_none());
-    if !admin {
+    if !is_admin_session(&ext) {
         for l in &mut info.listener_access {
             l.without_admin_fields();
         }
@@ -2037,10 +2041,18 @@ async fn system_health(State(b): State<Shared>) -> Result<Json<model::Health>, P
     responses((status = 200, body = Items<model::ProbeResult>, description = "Every probe, by node.")))]
 async fn system_probes(
     State(b): State<Shared>,
+    ext: axum::http::Extensions,
 ) -> Result<Json<Items<model::ProbeResult>>, Problem> {
     let b = request_backend(&b);
     let bk = Arc::clone(&b);
-    let items = blocking(move || Ok(bk.probes())).await?;
+    let mut items = blocking(move || Ok(bk.probes())).await?;
+    // REQ: API-902 (T27.14c; owner decision, 2026-11-27) — a listener's URL path and PROXY setting
+    // are for admins: every other caller gets the target without its path and a generic reason.
+    if !is_admin_session(&ext) {
+        for p in items.iter_mut().filter(|p| p.listener) {
+            p.without_admin_fields();
+        }
+    }
     Ok(Json(Items {
         missing_nodes: b.missing_nodes(),
         items,

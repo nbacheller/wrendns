@@ -125,6 +125,13 @@ fn serves_address(bound: IpAddr, address: IpAddr) -> bool {
             || is_wildcard(address))
 }
 
+/// Whether a listener bound to `bound` answers on every address `address` stood for: the same
+/// address, or `bound` a wildcard of the same family. A specific address never covers a wildcard.
+fn covers_address(bound: IpAddr, address: IpAddr) -> bool {
+    family(bound) == family(address)
+        && (bound.to_canonical() == address.to_canonical() || is_wildcard(bound))
+}
+
 // ---- the value ----------------------------------------------------------------------------
 
 /// The listeners a `listen` value names. A field that is not the row's is refused with a sentence
@@ -296,7 +303,8 @@ pub(crate) fn merged(list: Vec<Listener>, running: &[Listener]) -> Vec<Listener>
 
 /// [`merged`], and a new listener on an address the node's stored `listen-access` value still has a
 /// line for takes that line's setting: the reload overlays the stored value after this row, so the
-/// preview, the probe and the result must judge the same gate (a removed listener leaves its line).
+/// preview, the probe and the result must judge the same gate (a line left by a hand edit or a failed prune; a kept change drops the lines of the removed
+/// listeners).
 pub(crate) fn merged_with(
     list: Vec<Listener>,
     running: &[Listener],
@@ -431,7 +439,7 @@ pub(crate) fn weakening_reason(
         }
         let still_encrypted = new
             .iter()
-            .any(|n| n.proto.needs_tls() && serves_address(n.addr.ip(), o.addr.ip()));
+            .any(|n| n.proto.needs_tls() && covers_address(n.addr.ip(), o.addr.ip()));
         let plain_stays = new
             .iter()
             .any(|n| !n.proto.needs_tls() && serves_address(n.addr.ip(), o.addr.ip()));
@@ -867,11 +875,21 @@ impl Applier for Listen {
         node: String,
         value: Value,
         access: Option<Value>,
+        reviewed: Option<HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         Box::pin(async move {
             let running = host.running_config();
             let list = merged_with(parse(&value)?, &running.listen, access.as_ref());
+            // The gates are judged on the facts the review rested on: a host whose addresses moved
+            // between the check and the stage is reviewed again.
             let facts = crate::gate_host::read();
+            if reviewed.is_some_and(|r| r != facts) {
+                return Err(Problem::new(
+                    Code::PreviewStale,
+                    "this host's addresses changed since the preview, so the review no longer holds",
+                )
+                .hint("Preview the change again."));
+            }
             let staged = host
                 .stage_listeners(list.clone())
                 .await

@@ -160,6 +160,7 @@ impl Applier for TApplier {
         _node: String,
         value: Value,
         _access: Option<Value>,
+        _facts: Option<wrendns_config::HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         let (committed, aborted) = FLAGS.with(|f| {
             let f = f.borrow();

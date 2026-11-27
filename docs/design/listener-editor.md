@@ -504,9 +504,11 @@ which address the default is judged on, so the `listen` row has to take the defa
   address is the safer choice, because the new address may be public where the old one was not. A
   single commit that wrote two entries would also not be atomic across replication. The preview names
   each explicit setting that is dropped: "Listener access for dot://10.0.0.53:853 was set to off;
-  dot://10.0.0.54:853 starts on its default (off)". Stale lines in the `listen-access` entry are ignored
-  by its overlay, which matches by `proto://addr`. The next Listener access save sends the current list
-  and clears them.
+  dot://10.0.0.54:853 starts on its default (off)". After a kept `listen` change the stored
+  `listen-access` lines of the removed listeners are dropped (best effort: a failed write is logged and
+  the change is kept). A line that is still there (a hand edit, a failed prune) applies to a listener
+  added again at the same `proto://addr`, through the overlay that matches by `proto://addr`, and rule (c)
+  still judges it.
 - **Order of overlays.** `listen` is overlaid before `listen-access`, so the gate lines apply to the list
   the node runs. The overlay walks the registry rows in a fixed order with `listen` first, and is not
   left to the order of the stored entries.
@@ -866,12 +868,14 @@ the answer starts):
   may change the list (API-901 and the agent rules ask for agent-ready routes; the decision said admin
   only).
 
-**Decided 2026-11-27 (owner decisions through the question tool, T27.14c):**
+**Settled 2026-11-27 (T27.14c): items 6 and 9 are owner decisions through the question tool; item 7 is the owner's earlier decision (ADR-1090); item 8 is the design's own choice:**
 6. **Who sees a listener's files and settings.** Each listener's certificate and key file paths, its
    limits and its options (the DoH path, PROXY) are for admins only. `GET /api/v1/system/info` leaves
    them out of a viewer's, an operator's, an agent's and a wall display's answer; they still see the
    address, the protocol, the certificate's file name and expiry, and the device key. The card for
-   them is read-only and has no such fields. Chosen over showing them to every signed-in role.
+   them is read-only and has no such fields. `GET /api/v1/system/probes` follows the same rule: for
+   other callers a listener probe's target has no DoH path and a PROXY listener's skipped reason is the
+   generic "it is not probed". Chosen over showing them to every signed-in role.
 7. **A `[::]` wildcard on a host with only a global IPv6 address** stays as ADR-1090 has it, by the
    owner's earlier decision ("public IPv4 only"): it is not counted as reachable, so adding plain UDP
    on `[::]:53` there is not weakening. The preview and the Listener access page warn, as ADR-1090

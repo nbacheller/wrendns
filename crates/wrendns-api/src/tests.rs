@@ -313,6 +313,23 @@ impl Backend for Fake {
         };
         Box::pin(async move { r })
     }
+    fn probes(&self) -> Vec<crate::model::ProbeResult> {
+        let one = |target: &str, proto: &str, skipped: Option<&str>| crate::model::ProbeResult {
+            target: target.to_owned(),
+            proto: proto.to_owned(),
+            listener: true,
+            skipped: skipped.map(str::to_owned),
+            ..Default::default()
+        };
+        vec![
+            one("https://192.168.1.2:443/secret-doh-path", "doh", None),
+            one(
+                "tls://192.168.1.2:853",
+                "dot",
+                Some("it requires a PROXY protocol header, which probes don't send"),
+            ),
+        ]
+    }
     fn system_info(&self) -> SystemInfo {
         SystemInfo {
             version: "0.1.0".into(),
@@ -5535,6 +5552,38 @@ async fn api_902_listener_paths_limits_and_options_are_for_admins_only() {
         );
         assert_eq!(l["requireClientId"], false);
         assert_eq!(l["canCarryKey"], true);
+    }
+    // The probes carry the DoH path and the PROXY setting: admins see them, no one else does.
+    let probes = |cookie: String| {
+        Request::get("/api/v1/system/probes")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, probes(app.cookie.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["items"][0]["target"],
+        "https://192.168.1.2:443/secret-doh-path"
+    );
+    assert!(v["items"][1]["skipped"].as_str().unwrap().contains("PROXY"));
+    for (name, role) in [
+        ("olive2", auth::Role::Operator),
+        ("vic2", auth::Role::Viewer),
+    ] {
+        let u = app
+            .auth
+            .create_user(name, "a long enough password", role, false, NOW)
+            .unwrap();
+        let (cookie, _) = app.session_for(&u);
+        let (s, _, v) = send(&app, probes(cookie)).await;
+        assert_eq!(s, StatusCode::OK, "{name}: {v}");
+        assert_eq!(v["items"][0]["target"], "https://192.168.1.2:443", "{name}");
+        let text = v.to_string();
+        assert!(
+            !text.contains("secret-doh-path") && !text.contains("PROXY"),
+            "{name}: {text}"
+        );
     }
     // An admin's token cut to read scope is a viewer's.
     let admin = app.auth.state().user_by_name("root").unwrap().unwrap();

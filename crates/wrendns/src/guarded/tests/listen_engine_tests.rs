@@ -227,6 +227,64 @@ async fn api_902_listen_commit_failure_maps_the_reason() {
     }
 }
 
+// A second change whose commit fails puts back the entry the first change left, and does not
+// remove it (which would drop the node back onto the file's list).
+#[tokio::test(start_paused = true)]
+async fn api_902_listen_commit_failure_restores_the_previous_entry() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let first = value(&[l("udp", "127.0.0.1:5300")]);
+    let r = change(&n.engine, &a, "listen", first.clone())
+        .await
+        .unwrap();
+    let (pid, token) = ids(&r);
+    n.engine.confirm(&a, &pid, token).await.unwrap();
+    let r = change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5301")]),
+    )
+    .await
+    .unwrap();
+    let (pid, token) = ids(&r);
+    *n.host.commit_error.lock().unwrap() = Some(crate::server::WindowError {
+        reason: "commit_failed",
+        detail: "udp 127.0.0.1:5301: address in use".to_owned(),
+    });
+    assert!(n.engine.confirm(&a, &pid, token).await.is_err());
+    let e = store::for_node(&n.engine.state, "pi-a");
+    assert_eq!(e.len(), 1, "the first change's entry is still stored");
+    assert_eq!(e[0].id, "listen");
+    assert_eq!(e[0].value, first);
+}
+
+// The stage judges the gates on the facts the review rested on: a host whose facts moved between the
+// check and the stage is refused as `preview_stale`, and nothing is bound.
+#[tokio::test(start_paused = true)]
+async fn api_902_listen_stage_refuses_facts_that_moved_since_the_check() {
+    let n = solo();
+    let real = crate::gate_host::read();
+    let moved = wrendns_config::HostFacts {
+        global_ipv6: !real.global_ipv6,
+        ..real
+    };
+    let host: Arc<dyn super::super::host::Host> = n.host.clone();
+    let e = super::super::listen::Listen
+        .stage(
+            Arc::clone(&host),
+            "pi-a".to_owned(),
+            value(&[l("udp", "127.0.0.1:5300")]),
+            None,
+            Some(moved),
+        )
+        .await
+        .err()
+        .expect("refused");
+    assert_eq!(e.code, Code::PreviewStale);
+    assert!(n.host.staged_lists.lock().unwrap().is_empty());
+}
+
 // A reload that fails at commit keeps the old listeners and rolls back as commit_failed.
 #[tokio::test(start_paused = true)]
 async fn api_902_listen_failed_reload_at_commit_rolls_back() {
@@ -483,6 +541,7 @@ impl Applier for StaleApplier {
         _node: String,
         _value: Value,
         _access: Option<Value>,
+        _facts: Option<wrendns_config::HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         let guard = Arc::clone(&self.0);
         Box::pin(std::future::ready(Ok(Staged {

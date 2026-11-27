@@ -572,6 +572,7 @@ pub(crate) mod test {
             _node: String,
             value: Value,
             _access: Option<Value>,
+            _facts: Option<wrendns_config::HostFacts>,
         ) -> BoxFuture<Result<Staged, Problem>> {
             Box::pin(async move {
                 let fail = value.get("fail").and_then(Value::as_bool) == Some(true);
@@ -632,6 +633,7 @@ pub(crate) mod test {
             _node: String,
             value: Value,
             _access: Option<Value>,
+            _facts: Option<wrendns_config::HostFacts>,
         ) -> BoxFuture<Result<Staged, Problem>> {
             Box::pin(async move {
                 let p = port(&value)?;

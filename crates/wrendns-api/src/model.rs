@@ -3338,6 +3338,21 @@ pub struct ProbeResult {
     pub cert_self_signed: bool,
 }
 
+impl ProbeResult {
+    /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — drop what only an admin sees of a
+    /// listener's probe: the DoH path in the target, and the PROXY setting in the reason it was not
+    /// probed.
+    pub fn without_admin_fields(&mut self) {
+        if let Some((head, rest)) = self.target.split_once("://") {
+            let host = rest.split('/').next().unwrap_or(rest);
+            self.target = format!("{head}://{host}");
+        }
+        if self.skipped.as_deref().is_some_and(|s| s.contains("PROXY")) {
+            self.skipped = Some("it is not probed".to_owned());
+        }
+    }
+}
+
 /// REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast
 /// they're being spent, over every node's answers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

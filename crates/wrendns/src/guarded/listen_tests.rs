@@ -554,6 +554,16 @@ fn api_902_listener_weakening_table() {
         &[l("udp", "0.0.0.0:53"), dot("0.0.0.0:853", c, k)],
         PRIVATE4
     ));
+    // ... but a specific encrypted listener never covers a removed wildcard one: every other address
+    // of the host loses encryption while plain DNS keeps serving it.
+    let w4 = vec![l("udp", "0.0.0.0:53"), dot("0.0.0.0:853", c, k)];
+    let s4 = vec![l("udp", "0.0.0.0:53"), dot("192.168.1.5:853", c, k)];
+    let w6 = vec![l("udp", "[::]:53"), dot("[::]:853", c, k)];
+    let s6 = vec![l("udp", "[::]:53"), dot("[fd00::5]:853", c, k)];
+    for host in [PRIVATE4, GLOBAL6] {
+        assert!(weak(&w4, &s4, host), "v4 {host:?}");
+        assert!(weak(&w6, &s6, host), "v6 {host:?}");
+    }
 }
 
 // The weakening reaches the preview: the red mark, and the rule is named.

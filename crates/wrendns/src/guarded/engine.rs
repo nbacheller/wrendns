@@ -135,6 +135,7 @@ pub(crate) trait Applier: Send + Sync {
         _node: String,
         _value: Value,
         _access: Option<Value>,
+        _facts: Option<wrendns_config::HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         Box::pin(std::future::ready(Err(Problem::unavailable(
             "this setting has no confirmation window",
@@ -1390,6 +1391,7 @@ impl Engine {
                 self.node.clone(),
                 req.value.clone(),
                 self.stored_access(),
+                pre.host_facts,
             )
             .await
         {
@@ -1639,6 +1641,10 @@ impl Engine {
             ));
         }
         let def = self.row_def(&setting)?;
+        // The entry in force before this change: a failed commit puts it back (not removes it).
+        let previous = self.effective_entries().into_iter().find(|e| {
+            e.id == setting && matches!(e.state, EntryState::Active | EntryState::Probation)
+        });
         let entry = Stored {
             node: self.node.clone(),
             id: setting.clone(),
@@ -1664,7 +1670,7 @@ impl Engine {
             warn!(setting = %setting, "committing the new sockets failed: {e:?}");
             let removed = self
                 .host
-                .write_entry(&self.node, &setting, None, &admin)
+                .write_entry(&self.node, &setting, previous, &admin)
                 .await;
             // The reload puts the previous list back where the entry had already been applied.
             if removed.is_ok() {
