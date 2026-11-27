@@ -1469,3 +1469,30 @@ async fn obs_007_dnstap_a_set_aside_entry_is_removed_without_the_phrase() {
     let r = forwarded(&h, "pi-a", None, Some(v), false).await;
     assert_eq!(code(&r), "GuardedOnly", "{r:?}");
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 14) - an entry the node set aside is not what it runs, and a
+/// later ordinary write on that node never brings it back: the write is stored narrowed, with no
+/// reader, over the set-aside confirmed entry.
+#[tokio::test]
+async fn obs_007_dnstap_a_write_never_revives_a_set_aside_entry() {
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1 }),
+    );
+    let at = entry_of(&h, "pi-a").unwrap().at;
+    let file = tap("/run/f.sock", 1);
+    let mut v = view(file.clone(), &["socket"], file.clone());
+    v["set_aside_at"] = json!(at);
+    let r = forwarded(&h, "pi-a", Some(tap("/run/f.sock", 5)), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let e = entry_of(&h, "pi-a").expect("an entry for the narrowing");
+    assert_eq!(e.mode, "narrowed", "{:?}", e.value);
+    assert!(
+        e.value.get("socket").is_none_or(Value::is_null),
+        "{:?}",
+        e.value
+    );
+    assert_eq!(e.value["sample_every"], json!(5));
+}

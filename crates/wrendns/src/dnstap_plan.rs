@@ -255,18 +255,18 @@ fn entry_change(
     node: &str,
     after: &Value,
     file_section: &Value,
-    existing: Option<&Stored>,
+    (existing, live): (Option<&Stored>, Option<&Stored>),
     (in_force, node_differs): (bool, bool),
 ) -> crate::api_backend::AlsoStored {
     // A confirmed entry the result still keeps (the tap stays on its confirmed reader) is stored
     // narrowed, even when the result equals the files: it holds the reader for the day the files drop it.
     let keeps = |v: &(Value, &'static str)| {
         w.body.is_some()
-            && existing.is_some_and(|e| e.mode != crate::guarded::dnstap::NARROWED)
+            && live.is_some_and(|e| e.mode != crate::guarded::dnstap::NARROWED)
             && !reader(after).is_empty()
             && v.1 != crate::guarded::dnstap::NARROWED
     };
-    let value = entry_value(after, existing, in_force, file_n);
+    let value = entry_value(after, live, in_force, file_n);
     let wanted = (after != file_section || keeps(&value)).then_some(value);
     let have = existing.map(|e| normal(&e.value));
     match (&wanted, &have) {
@@ -458,18 +458,26 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
             "The dnstap settings are read when a node starts: this takes effect on {node} after a restart of that node (restart needed). Other nodes keep their own."
         ));
     }
-    let forced = in_force(&sent, existing.as_ref(), &file_n);
+    // An entry the node set aside (two failed starts) is not what it runs and was not confirmed
+    // again: it counts for nothing here (not in force, not kept, not refused as a loss), so a write
+    // never brings it back; it is replaced by a narrowed entry. `existing` stays for the
+    // comparison and the time floor.
+    let aside = sent
+        .set_aside_at
+        .is_some_and(|a| existing.as_ref().is_some_and(|e| e.at == a));
+    let live = existing.as_ref().filter(|_| !aside);
+    let forced = in_force(&sent, live, &file_n);
     let also = entry_change(
         w,
         &file_n,
         &node,
         &after,
         &file_section,
-        existing.as_ref(),
+        (existing.as_ref(), live),
         (forced, node_differs(&sent, &after)),
     );
     if w.body.is_some() && !also.is_empty() {
-        refuse_discarding(&node, &file_n, &after, existing.as_ref(), forced)?;
+        refuse_discarding(&node, &file_n, &after, live, forced)?;
     }
     let (recent_queries, impact) =
         crate::api_backend::managed_impact(src, KIND, "default", w.body.is_some());
