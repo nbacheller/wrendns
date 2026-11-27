@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
 use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
-use hickory_net::proto::dnssec::rdata::{DNSKEY, DNSSECRData, NSEC, NSEC3, RRSIG};
+use hickory_net::proto::dnssec::rdata::{DNSKEY, DNSSECRData, DS, NSEC, NSEC3, RRSIG};
+use hickory_net::proto::dnssec::{Algorithm, DigestType, Nsec3HashAlgorithm};
 use hickory_net::proto::dnssec::{DnssecSigner, PublicKey as _, SigningKey};
 use hickory_net::proto::op::{Message, OpCode, ResponseCode};
 use hickory_net::proto::rr::rdata::{A, CNAME, NS, SOA};
@@ -42,6 +42,86 @@ struct Zone {
     forge: AtomicBool,
     /// NFR-004 — milliseconds every answer is held back (a slow upstream).
     lag_ms: AtomicU64,
+    /// REQ: DNS-907 (T40.6) — set when the root is signed with an NSEC3 chain instead of NSEC.
+    nsec3: Option<Nsec3Fix>,
+}
+
+/// REQ: DNS-907 (T40.6) — the hash parameters of an NSEC3-signed test root.
+#[derive(Clone)]
+struct Nsec3Cfg {
+    iterations: u16,
+    salt: Vec<u8>,
+    /// Every NSEC3 record carries the opt-out flag and the unsigned delegation `u.` has none.
+    opt_out: bool,
+}
+
+/// The names of the NSEC3 root and what exists at each (the chain is made from them).
+const NSEC3_NAMES: [(&str, &[RecordType]); 5] = [
+    (
+        "z.",
+        &[
+            RecordType::NS,
+            RecordType::SOA,
+            RecordType::RRSIG,
+            RecordType::DNSKEY,
+        ],
+    ),
+    ("a.z.", &[RecordType::A, RecordType::RRSIG]),
+    ("b.a.z.", &[RecordType::A, RecordType::RRSIG]),
+    ("bad.z.", &[RecordType::A, RecordType::RRSIG]),
+    ("u.z.", &[RecordType::NS]),
+];
+
+/// The chain: NSEC3 owner hashes, sorted, with the owner names of their records.
+#[derive(Clone)]
+struct Nsec3Fix {
+    cfg: Nsec3Cfg,
+    chain: Vec<(Vec<u8>, Name)>,
+}
+
+impl Nsec3Fix {
+    fn hash(&self, name: &Name) -> Vec<u8> {
+        Nsec3HashAlgorithm::SHA1
+            .hash(&self.cfg.salt, name, self.cfg.iterations)
+            .unwrap()
+            .as_ref()
+            .to_vec()
+    }
+
+    /// The record owner whose hash is `h`.
+    fn matching(&self, h: &[u8]) -> Option<&Name> {
+        self.chain.iter().find(|(o, _)| o == h).map(|(_, n)| n)
+    }
+
+    /// The record owner whose span covers `h`: the greatest hash below it, or the last one.
+    fn covering(&self, h: &[u8]) -> &Name {
+        let (_, name) = self
+            .chain
+            .iter()
+            .rev()
+            .find(|(o, _)| o.as_slice() < h)
+            .unwrap_or_else(|| self.chain.last().unwrap());
+        name
+    }
+
+    /// A one-label name under `z.` (without the final dot) whose next closer proof uses the
+    /// same covering record as `like` (or, with `other`, one that is neither that record nor the
+    /// one that covers the wildcard `*.z.` or the apex's own, which the proof for `like` caches
+    /// as well).
+    fn name_like(&self, like: &Name, other: bool) -> String {
+        let want = self.covering(&self.hash(like)).clone();
+        let wild = self.covering(&self.hash(&n("*.z."))).clone();
+        (0..10_000)
+            .map(|i| format!("zz-{i}.z"))
+            .find(|l| {
+                let q = n(&format!("{l}."));
+                let c = self.covering(&self.hash(&q));
+                let cached =
+                    *c == want || *c == wild || Some(c) == self.matching(&self.hash(&n("z.")));
+                (cached != other) && q != *like
+            })
+            .unwrap()
+    }
 }
 
 /// REQ: DNS-902 — iteration counts of the NSEC3 fixtures: above the soft limit (50) and the
@@ -50,12 +130,17 @@ const NSEC3_ITERATIONS: [u16; 2] = [60, 600];
 
 /// The NSEC3 owner name that matches the root for `iterations` (empty salt, SHA-1).
 fn nsec3_owner(iterations: u16) -> Name {
-    const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
     let hash = Nsec3HashAlgorithm::SHA1
         .hash(&[], &n("."), iterations)
         .unwrap();
+    hash_owner(hash.as_ref(), "")
+}
+
+/// The NSEC3 owner name under `zone` (the root when empty) for a hash (base32hex).
+fn hash_owner(hash: &[u8], zone: &str) -> Name {
+    const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
     let mut label = String::new();
-    for chunk in hash.as_ref().chunks(5) {
+    for chunk in hash.chunks(5) {
         let mut block = [0u8; 8];
         block[3..3 + chunk.len()].copy_from_slice(chunk);
         let v = u64::from_be_bytes(block);
@@ -65,7 +150,7 @@ fn nsec3_owner(iterations: u16) -> Name {
             ));
         }
     }
-    n(&format!("{label}."))
+    n(&format!("{label}.{zone}"))
 }
 
 fn b64(data: &[u8]) -> String {
@@ -89,6 +174,10 @@ fn b64(data: &[u8]) -> String {
 }
 
 fn zone() -> Zone {
+    zone_with(None)
+}
+
+fn zone_with(nsec3_cfg: Option<Nsec3Cfg>) -> Zone {
     let pkcs8 = Ed25519SigningKey::generate_pkcs8().unwrap();
     let key = Ed25519SigningKey::from_pkcs8(&pkcs8).unwrap();
     let public = key.to_public_key().unwrap();
@@ -111,9 +200,12 @@ fn zone() -> Zone {
         600,
     );
     let rrsets: Vec<(Name, Vec<RData>)> = vec![
-        (n("."), vec![RData::SOA(soa)]),
+        (n("."), vec![RData::SOA(soa.clone())]),
         (n("."), vec![RData::NS(NS(n("ns.a.")))]),
-        (n("."), vec![RData::DNSSEC(DNSSECRData::DNSKEY(dnskey))]),
+        (
+            n("."),
+            vec![RData::DNSSEC(DNSSECRData::DNSKEY(dnskey.clone()))],
+        ),
         (
             n("."),
             vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
@@ -182,6 +274,101 @@ fn zone() -> Zone {
             )))],
         ));
     }
+    // REQ: DNS-907 (T40.6) — the secure child zone `z.`, signed with NSEC3 (hickory's NSEC3
+    // validation asserts, in debug builds, that the zone is not the root): a second key, a DS
+    // for it in the root, the root's NSEC chain with the delegation, and a signed NSEC3 chain
+    // over the names of `z.` that exist.
+    let mut nsec3_fix = None;
+    let mut child_signer = None;
+    if let Some(cfg) = nsec3_cfg {
+        let ckey =
+            Ed25519SigningKey::from_pkcs8(&Ed25519SigningKey::generate_pkcs8().unwrap()).unwrap();
+        let cdnskey = DNSKEY::new(true, true, false, ckey.to_public_key().unwrap());
+        let ds = DS::new(
+            cdnskey.calculate_key_tag().unwrap(),
+            Algorithm::ED25519,
+            DigestType::SHA256,
+            cdnskey
+                .to_digest(&n("z."), DigestType::SHA256)
+                .unwrap()
+                .as_ref()
+                .to_vec(),
+        );
+        child_signer = Some(DnssecSigner::new(
+            cdnskey.clone(),
+            Box::new(ckey),
+            n("z."),
+            Duration::from_hours(24),
+        ));
+        // The root's NSEC chain: u. now points at z., which points back at the root.
+        rrsets.retain(|(o, d)| {
+            !(*o == n("u.") && matches!(d[0], RData::DNSSEC(DNSSECRData::NSEC(_))))
+        });
+        rrsets.push((
+            n("u."),
+            vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
+                n("z."),
+                [RecordType::NS, RecordType::RRSIG, RecordType::NSEC],
+            )))],
+        ));
+        rrsets.push((
+            n("z."),
+            vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
+                n("."),
+                [
+                    RecordType::NS,
+                    RecordType::DS,
+                    RecordType::RRSIG,
+                    RecordType::NSEC,
+                ],
+            )))],
+        ));
+        rrsets.push((n("z."), vec![RData::DNSSEC(DNSSECRData::DS(ds))]));
+        rrsets.push((
+            n("z."),
+            vec![RData::SOA(SOA::new(
+                n("ns.a.z."),
+                n("admin.z."),
+                1,
+                1800,
+                900,
+                604_800,
+                600,
+            ))],
+        ));
+        rrsets.push((n("z."), vec![RData::NS(NS(n("ns.a.z.")))]));
+        rrsets.push((n("z."), vec![RData::DNSSEC(DNSSECRData::DNSKEY(cdnskey))]));
+        rrsets.push((n("a.z."), vec![RData::A(A::new(192, 0, 2, 1))]));
+        rrsets.push((n("b.a.z."), vec![RData::A(A::new(192, 0, 2, 7))]));
+        rrsets.push((n("bad.z."), vec![RData::A(A::new(192, 0, 2, 66))]));
+        let mut fix = Nsec3Fix {
+            cfg: cfg.clone(),
+            chain: Vec::new(),
+        };
+        let mut hashed: Vec<(Vec<u8>, &[RecordType])> = NSEC3_NAMES
+            .iter()
+            .filter(|(nm, _)| !(cfg.opt_out && *nm == "u.z."))
+            .map(|(nm, types)| (fix.hash(&n(nm)), *types))
+            .collect();
+        hashed.sort();
+        for (i, (h, types)) in hashed.iter().enumerate() {
+            let next = hashed[(i + 1) % hashed.len()].0.clone();
+            let owner = hash_owner(h, "z.");
+            rrsets.push((
+                owner.clone(),
+                vec![RData::DNSSEC(DNSSECRData::NSEC3(NSEC3::new(
+                    Nsec3HashAlgorithm::SHA1,
+                    cfg.opt_out,
+                    cfg.iterations,
+                    cfg.salt.clone(),
+                    next,
+                    types.iter().copied(),
+                )))],
+            ));
+            fix.chain.push((h.clone(), owner));
+        }
+        nsec3_fix = Some(fix);
+    }
     let mut sets = BTreeMap::new();
     for (name, datas) in rrsets {
         let rtype = datas[0].record_type();
@@ -193,7 +380,14 @@ fn zone() -> Zone {
         for r in &records {
             rs.insert(r.clone(), 0);
         }
-        let mut sig = RRSIG::from_rrset(&rs, DNSClass::IN, inception, &signer).unwrap();
+        // `z.`'s own records are signed by its key; the delegation's DS and NSEC by the root's.
+        let child = n("z.").zone_of(&name)
+            && !(name == n("z.") && matches!(rtype, RecordType::DS | RecordType::NSEC));
+        let sg = match &child_signer {
+            Some(c) if child => c,
+            _ => &signer,
+        };
+        let mut sig = RRSIG::from_rrset(&rs, DNSClass::IN, inception, sg).unwrap();
         if name == n("bad.") && rtype == RecordType::A {
             // A forged signature: the record set is bogus.
             let input = sig.input().clone();
@@ -230,6 +424,7 @@ fn zone() -> Zone {
         key: key_rdata,
         forge: AtomicBool::new(false),
         lag_ms: AtomicU64::new(0),
+        nsec3: nsec3_fix,
     }
 }
 
@@ -323,6 +518,33 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
                 m.metadata.response_code = ResponseCode::NXDomain;
                 m.add_authorities(z.sets[&(n("."), RecordType::SOA)].clone());
                 m.add_authorities(z.sets[&(nsec3_owner(iterations), RecordType::NSEC3)].clone());
+            } else if let Some(f) = z.nsec3.as_ref().filter(|_| n("z.").zone_of(&qn)) {
+                // REQ: DNS-907 (T40.6) — the NSEC3 root: NODATA from the record that matches
+                // the name, NXDOMAIN with the closest encloser proof (RFC 5155 §7.2).
+                m.add_authorities(z.sets[&(n("z."), RecordType::SOA)].clone());
+                let set = |owner: &Name| z.sets[&(owner.clone(), RecordType::NSEC3)].clone();
+                if let Some(o) = f.matching(&f.hash(&qn)) {
+                    m.add_authorities(set(o));
+                } else {
+                    m.metadata.response_code = ResponseCode::NXDomain;
+                    let mut enc = qn.base_name();
+                    while f.matching(&f.hash(&enc)).is_none() {
+                        enc = enc.base_name();
+                    }
+                    let next_closer = qn.trim_to(usize::from(enc.num_labels()) + 1);
+                    let wildcard = enc.prepend_label("*").unwrap();
+                    let mut owners = vec![
+                        f.matching(&f.hash(&enc)).unwrap().clone(),
+                        f.covering(&f.hash(&next_closer)).clone(),
+                        f.covering(&f.hash(&wildcard)).clone(),
+                    ];
+                    owners.dedup();
+                    owners.sort();
+                    owners.dedup();
+                    for o in owners {
+                        m.add_authorities(set(&o));
+                    }
+                }
             } else if z.sets.keys().any(|(o, _)| *o == qn) {
                 authority(&mut m, &qn);
             } else {
@@ -544,6 +766,183 @@ async fn dns_011_offline_aggressive_nsec() {
         .await
         .unwrap();
     assert!(asked.load(Ordering::Relaxed) > before);
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-907 (T40.6) — an NSEC3-signed root, and the names that are in one span of its chain.
+async fn nsec3_setup(
+    cfg: Nsec3Cfg,
+) -> (
+    Validator,
+    Arc<Group>,
+    Arc<AtomicUsize>,
+    Arc<Stats>,
+    tempfile::TempDir,
+    Nsec3Fix,
+) {
+    let z = zone_with(Some(cfg));
+    let fix = z.nsec3.clone().unwrap();
+    let (v, g, asked, stats, dir) = setup_zone(true, Arc::new(z)).await;
+    (v, g, asked, stats, dir, fix)
+}
+
+fn nsec3_cfg(iterations: u16, opt_out: bool) -> Nsec3Cfg {
+    Nsec3Cfg {
+        iterations,
+        salt: vec![0x12, 0x34],
+        opt_out,
+    }
+}
+
+/// REQ: DNS-907 (T40.6) — RFC 8198 with NSEC3: after one signed NXDOMAIN from a zone signed with
+/// NSEC3 (salted, 3 iterations), another name in the same span is answered from the cached
+/// records with the closest encloser proof, signed, with AD and no upstream query; a name in
+/// another span asks; a NODATA at an existing name is made for another type of the name.
+#[tokio::test]
+async fn dns_907_offline_aggressive_nsec3() {
+    let (v, g, asked, stats, _dir, fix) = nsec3_setup(nsec3_cfg(3, false)).await;
+    let budget = Duration::from_secs(5);
+    let q1 = n("zz-one.z.");
+    let r = v
+        .resolve(&g, question("zz-one.z", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, wrendns_proto::rcode::NXDOMAIN),
+        "the NSEC3 denial validates"
+    );
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
+    let before = asked.load(Ordering::Relaxed);
+    let same = fix.name_like(&q1, false);
+    let r = v
+        .resolve(&g, question(&same, rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, wrendns_proto::rcode::NXDOMAIN)
+    );
+    assert!(wrendns_proto::Header::parse(&r.bytes).unwrap().flags.ad());
+    assert_eq!(
+        asked.load(Ordering::Relaxed),
+        before,
+        "answered without asking upstream"
+    );
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 1);
+    // The answer carries its proof: the SOA and NSEC3 records with signatures.
+    let m = Message::from_vec(&r.bytes).unwrap();
+    let kinds: Vec<RecordType> = m.authorities.iter().map(Record::record_type).collect();
+    assert!(kinds.contains(&RecordType::SOA));
+    let proof = kinds.iter().filter(|t| **t == RecordType::NSEC3).count();
+    assert!(proof >= 2, "closest encloser, next closer and wildcard");
+    assert_eq!(
+        kinds.iter().filter(|t| **t == RecordType::RRSIG).count(),
+        proof + 1
+    );
+    // Another span: it asks.
+    let other = fix.name_like(&q1, true);
+    let r = v
+        .resolve(&g, question(&other, rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(rcode(&r.bytes), wrendns_proto::rcode::NXDOMAIN);
+    assert!(asked.load(Ordering::Relaxed) > before, "asked upstream");
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 1);
+    // NODATA: a. has no AAAA; once asked, its TXT is answered from the same record.
+    let r = v
+        .resolve(&g, question("a.z", rtype::AAAA), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, wrendns_proto::rcode::NOERROR)
+    );
+    let before = asked.load(Ordering::Relaxed);
+    let r = v
+        .resolve(&g, question("a.z", rtype::TXT), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, wrendns_proto::rcode::NOERROR)
+    );
+    assert_eq!(asked.load(Ordering::Relaxed), before, "NODATA from cache");
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 2);
+    // The type that exists is not denied.
+    let r = v
+        .resolve(&g, question("a.z", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(rcode(&r.bytes), wrendns_proto::rcode::NOERROR);
+    assert!(asked.load(Ordering::Relaxed) > before);
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 2);
+    // Flushing the ranges drops the NSEC3 ones too.
+    v.flush_ranges();
+    let before = asked.load(Ordering::Relaxed);
+    v.resolve(&g, question(&same, rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert!(asked.load(Ordering::Relaxed) > before);
+}
+
+/// REQ: DNS-907 (T40.6) — an opt-out span doesn't deny: with every NSEC3 record flagged opt-out
+/// (and the unsigned delegation `u.` left out of the chain), a second name in the span of the
+/// first is asked of the upstream, never answered from the cache.
+#[tokio::test]
+async fn dns_907_offline_nsec3_opt_out_span_is_not_used() {
+    let (v, g, asked, stats, _dir, fix) = nsec3_setup(nsec3_cfg(3, true)).await;
+    let budget = Duration::from_secs(5);
+    // A name whose next closer proof uses the span that covers the unsigned delegation `u.z.`
+    // (left out of the chain), so that span is cached by the first answer.
+    let u = n("u.z.");
+    let want = fix.covering(&fix.hash(&u)).clone();
+    let first = (0..10_000)
+        .map(|i| format!("zz-{i}.z"))
+        .find(|l| *fix.covering(&fix.hash(&n(&format!("{l}.")))) == want)
+        .unwrap();
+    let r = v
+        .resolve(&g, question(&first, rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, wrendns_proto::rcode::NXDOMAIN),
+        "the opt-out denial validates"
+    );
+    assert!(v.nsec3_range_count() > 0, "the cache learned the ranges");
+    // The delegation itself and a name below it are asked, never denied from the span.
+    for name in ["u.z", "www.u.z"] {
+        let before = asked.load(Ordering::Relaxed);
+        v.resolve(&g, question(name, rtype::A), budget, true, false)
+            .await
+            .unwrap();
+        assert!(
+            asked.load(Ordering::Relaxed) > before,
+            "{name} asked upstream"
+        );
+    }
+    assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
+}
+
+/// REQ: DNS-907 (T40.6) — records that hash with more iterations than the soft limit (60 > 50)
+/// are never cached: the answer is insecure (EDE 27) and a second name in the span asks again.
+#[tokio::test]
+async fn dns_907_offline_nsec3_over_the_limit_is_never_cached() {
+    let (v, g, asked, stats, _dir, fix) = nsec3_setup(nsec3_cfg(60, false)).await;
+    let budget = Duration::from_secs(5);
+    let q1 = n("zz-one.z.");
+    let r = v
+        .resolve(&g, question("zz-one.z", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Insecure);
+    let same = fix.name_like(&q1, false);
+    let before = asked.load(Ordering::Relaxed);
+    v.resolve(&g, question(&same, rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert!(asked.load(Ordering::Relaxed) > before, "asked upstream");
     assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
 }
 

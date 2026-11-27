@@ -229,6 +229,31 @@ test.describe('settings from T27.11', () => {
     }
   });
 
+  test('dns_907 switch aggressive NSEC off and back on', async ({ browser }) => {
+    // REQ: DNS-907 (T40.6, ADR-1105) — the aggressive_nsec switch is checked, saved, and put back.
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
+    try {
+      const card = page.getByTestId('dnssec-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('dnssec-edit').click();
+      const sw = card.getByRole('checkbox', { name: 'Answer from proven ranges' });
+      const original = await sw.isChecked();
+      await sw.setChecked(!original);
+      await card.getByRole('button', { name: 'Check' }).click();
+      await expect(card.getByTestId('dnssec-preview')).toBeVisible();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('dnssec-values')).toContainText(original ? 'off' : 'on');
+      await card.getByTestId('dnssec-edit').click();
+      await expect(sw).toBeChecked({ checked: !original });
+      await sw.setChecked(original);
+      await card.getByRole('button', { name: 'Check' }).click();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('dnssec-edit')).toBeVisible();
+    } finally {
+      await page.context().close();
+    }
+  });
+
   test('dns_011 change the DNSSEC validation mode', async ({ browser }) => {
     // REQ: DNS-011 (T27.11) — the validation mode is checked, applied, and then put back as it was.
     const page = await signedIn(browser, ADMIN, 'settings?tab=queries');

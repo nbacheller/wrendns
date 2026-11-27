@@ -342,6 +342,20 @@ async fn dns_011_dnssec_mode_and_trust_anchors() {
             .collect::<Vec<_>>(),
         ["lab.example"]
     );
+    // REQ: DNS-907 (T40.6, ADR-1105) - `aggressive_nsec` is set the same way, and the PUT replaces the
+    // section as a whole, so the card sends every field.
+    assert!(cfg.dnssec.aggressive_nsec);
+    let (s, _, out) = h
+        .call(
+            "PUT",
+            "/api/v1/dnssec-settings/default",
+            Some(&json!({"mode": "validate", "aggressive_nsec": false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let cfg = h.src.config.load_full();
+    assert!(!cfg.dnssec.aggressive_nsec);
+    assert_eq!(serde_json::to_value(cfg.dnssec.mode).unwrap(), "validate");
 }
 
 /// REQ: FLT-004 (T27.11, AC1) - `[filter]` refresh and stale settings, through the API; the other

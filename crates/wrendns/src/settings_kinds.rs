@@ -162,7 +162,7 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
         ManagedKind::Cache => CACHE_KEYS,
         ManagedKind::Support => &["persist_logs"],
         ManagedKind::Updates => &["check"],
-        ManagedKind::Dnssec => &["mode", "negative_trust_anchors"],
+        ManagedKind::Dnssec => &["mode", "negative_trust_anchors", "aggressive_nsec"],
         // REQ: FLT-004 (T27.11), FLT-901 (T24.29) - the list refresh settings and the two fields
         // that bound the category selection.
         ManagedKind::Filter => &[

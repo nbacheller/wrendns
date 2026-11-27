@@ -2545,8 +2545,9 @@ pub struct DnssecConfig {
     /// changes (RFC 5011); a file turns that off, and the file's keys are the anchors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_anchors_file: Option<SafeString>,
-    /// REQ: DNS-011 (T9.16) — RFC 8198: answer names that validated NSEC records prove don't
-    /// exist (or lack the type) from the cache, without asking upstream. On by default.
+    /// REQ: DNS-011 (T9.16), DNS-907 (T40.6) — RFC 8198: answer names that validated NSEC or
+    /// NSEC3 records prove don't exist (or lack the type) from the cache, without asking
+    /// upstream. NSEC3 opt-out spans never deny a name. On by default.
     pub aggressive_nsec: bool,
 }
 

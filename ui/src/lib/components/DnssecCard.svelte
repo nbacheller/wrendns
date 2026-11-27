@@ -15,6 +15,7 @@
   let editing = $state(false);
   let mode = $state('off');
   let anchors = $state('');
+  let aggressive = $state(true);
   let preview = $state<S['ConfigChange'] | null>(null);
   let formError = $state<unknown>(null);
   let busy = $state(false);
@@ -70,11 +71,12 @@
     notice = '';
     mode = typeof defs.mode === 'string' ? defs.mode : 'off';
     anchors = Array.isArray(defs.negative_trust_anchors) ? (defs.negative_trust_anchors as string[]).join('\n') : '';
+    aggressive = defs.aggressive_nsec !== false;
     editing = true;
   }
 
   function body(): Record<string, unknown> {
-    const all: Record<string, unknown> = { mode, negative_trust_anchors: lines(anchors) };
+    const all: Record<string, unknown> = { mode, negative_trust_anchors: lines(anchors), aggressive_nsec: aggressive };
     for (const k of fileSet) delete all[k];
     return all;
   }
@@ -133,6 +135,8 @@
       <dd>{defs.mode ?? 'off'}{#if fileSet.includes('mode')} <span class="muted">(set by file)</span>{/if}</dd>
       <dt>Not validated</dt>
       <dd class="mono">{Array.isArray(defs.negative_trust_anchors) && defs.negative_trust_anchors.length ? (defs.negative_trust_anchors as string[]).join(', ') : 'none'}</dd>
+      <dt>Answer from proven ranges<HelpButton id="aggressive-nsec" /></dt>
+      <dd>{defs.aggressive_nsec === false ? 'off' : 'on'}{#if fileSet.includes('aggressive_nsec')} <span class="muted">(set by file)</span>{/if}</dd>
     </dl>
     {#if writable && !editing}
       <div class="row">
@@ -181,6 +185,11 @@
         Domains not validated (negative trust anchors), one per line
         <textarea aria-label="Negative trust anchors" rows="3" bind:value={anchors} readonly={fileSet.includes('negative_trust_anchors')}></textarea>
         <span class="muted small">For a domain whose server isn't signed, such as an internal one.</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" aria-label="Answer from proven ranges" bind:checked={aggressive} disabled={fileSet.includes('aggressive_nsec')} />
+        Answer names a signed zone proved absent without asking upstream (RFC 8198)
+        <span class="muted small">Covers NSEC and NSEC3. Needs validation on; on by default.</span>
       </label>
       <ErrorNote error={formError} />
       {#if preview}
