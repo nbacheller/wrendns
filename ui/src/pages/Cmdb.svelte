@@ -533,7 +533,7 @@
               </tr>
             {/each}
             {:else}
-              <tr><td colspan="6" class="muted small">{loadingList ? 'Loading' : 'Nothing yet. The sources report once a minute.'}</td></tr>
+              <tr><td colspan="6" class="muted small">{loadingList ? 'Loading' : items.length > 0 ? 'No CI on this page is in that location.' : 'Nothing yet. The sources report once a minute.'}</td></tr>
             {/each}
           </tbody>
         </table>

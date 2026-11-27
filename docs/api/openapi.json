@@ -28527,6 +28527,13 @@
               "type": "string"
             }
           },
+          "ownDomain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The domain this location sets itself; absent when it follows `[local] device_domain`."
+          },
           "slug": {
             "type": "string"
           },

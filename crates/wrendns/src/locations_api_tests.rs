@@ -61,6 +61,10 @@ async fn dsc_913_a_location_is_created_read_replaced_and_removed() {
     assert_eq!(item["slug"], "home");
     assert_eq!(item["source"], "api");
     assert_eq!(item["domain"], "home.arpa");
+    assert!(
+        item.get("ownDomain").is_none(),
+        "a location with no domain of its own follows device_domain, and says so: {item}"
+    );
     assert_eq!(item["visibility"], "private");
     assert_eq!(item["flatNames"], false);
     assert_eq!(item["networks"][0]["resolved"][0], "192.0.2.0/24");
@@ -156,6 +160,8 @@ async fn dsc_908_a_bad_location_is_refused_and_changes_nothing() {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "a domain of its own is enough: {v}");
+    let (_, _, v) = bare.call("GET", "/api/v1/locations", None).await;
+    assert_eq!(v["items"][0]["ownDomain"], "example.net", "{v}");
 }
 
 /// A location the files define is read-only through the API (ADR-040): 409, and it is listed as

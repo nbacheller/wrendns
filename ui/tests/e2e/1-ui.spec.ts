@@ -7130,19 +7130,19 @@ test('dns_023 discovered devices show their DNS name', async () => {
 // ip6.arpa PTR under its DNS name); a device without any says none; a network's device list shows them too.
 test('dns_023 discovered device shows its ipv6 address', async () => {
   const items = [
-    { ip: '10.20.2.41', mac: 'aa:bb:cc:dd:ee:41', hostname: 'kitchen-tablet', dnsName: 'kitchen-tablet.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0, ipv6: ['2001:db8:1::41', 'fd00:2::41'] },
-    { ip: '10.20.2.42', mac: 'aa:bb:cc:dd:ee:42', hostname: 'printer', dnsName: 'printer.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+    { ip: '192.168.1.41', mac: 'aa:bb:cc:dd:ee:41', hostname: 'kitchen-tablet', dnsName: 'kitchen-tablet.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0, ipv6: ['2001:db8:1::41', 'fd00:2::41'] },
+    { ip: '192.168.1.42', mac: 'aa:bb:cc:dd:ee:42', hostname: 'printer', dnsName: 'printer.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
   ];
   await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
   await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
   try {
     await page.goto('/#/');
     await page.goto('/#/clients?tab=discovered');
-    const row = page.getByRole('row').filter({ hasText: '10.20.2.41' });
+    const row = page.getByRole('row').filter({ hasText: '192.168.1.41' });
     await expect(row.getByTestId('dns-name')).toContainText('kitchen-tablet.home.arpa');
     await expect(row.getByTestId('ipv6')).toContainText('2001:db8:1::41');
     await expect(row.getByTestId('ipv6')).toContainText('fd00:2::41');
-    await expect(page.getByRole('row').filter({ hasText: '10.20.2.42' }).getByTestId('ipv6')).toContainText('none');
+    await expect(page.getByRole('row').filter({ hasText: '192.168.1.42' }).getByTestId('ipv6')).toContainText('none');
     // The help topic opens from the column header.
     await page.getByRole('button', { name: "Help: See a device's IPv6 addresses" }).click();
     await expect(page.getByTestId('help-panel')).toContainText('ip6.arpa reverse name');
@@ -7150,8 +7150,8 @@ test('dns_023 discovered device shows its ipv6 address', async () => {
     // A network's device list shows them as well.
     await page.goto('/#/');
     await page.goto('/#/networks');
-    await page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('network-open').click();
-    const dev = page.getByTestId('network-devices').getByRole('row').filter({ hasText: '10.20.2.41' });
+    await page.getByRole('row').filter({ hasText: '192.168.1.0/24' }).getByTestId('network-open').click();
+    const dev = page.getByTestId('network-devices').getByRole('row').filter({ hasText: '192.168.1.41' });
     await expect(dev.getByTestId('network-ipv6')).toContainText('2001:db8:1::41, fd00:2::41');
   } finally {
     await page.unroute('**/api/v1/dhcp/leases');
@@ -7219,14 +7219,14 @@ test('api_012 discovered devices name the type of their router', async () => {
 // REQ: API-013 (T24.15) — the Networks page: each network's subnet, VLAN, DHCP pool, router, group,
 // size, how full it is and its addresses outside the pool; a network only a group reports is badged.
 const NETWORKS = [
-  { name: 'Home', subnet: '10.20.2.0/24', gateway: '10.20.2.1', dhcpStart: '10.20.2.100', dhcpEnd: '10.20.2.200', domain: 'home.arpa', purpose: 'corporate', source: 'router', router: 'udm', group: 'lab', addresses: 254, devices: 60, usedPercent: 24, outsidePool: 4 },
+  { name: 'Home', subnet: '192.168.1.0/24', gateway: '192.168.1.1', dhcpStart: '192.168.1.100', dhcpEnd: '192.168.1.200', domain: 'home.arpa', purpose: 'corporate', source: 'router', router: 'udm', group: 'lab', addresses: 254, devices: 60, usedPercent: 24, outsidePool: 4 },
   { name: 'IoT', subnet: '192.168.20.0/24', vlan: 20, gateway: '192.168.20.1', dhcpStart: '192.168.20.100', dhcpEnd: '192.168.20.200', purpose: 'iot', source: 'router', router: 'udm', addresses: 254, devices: 42, usedPercent: 17, outsidePool: 4 },
   { name: 'eth0.100', subnet: '198.51.100.0/24', vlan: 100, source: 'interface', addresses: 254, devices: 3, usedPercent: 1.2, outsidePool: 0 },
   { name: 'guests', subnet: '10.50.0.0/24', source: 'group', group: 'guests', addresses: 254, devices: 0, usedPercent: 0, outsidePool: 0 },
 ];
 const DEVICES_ON_NETWORKS = [
   { ip: '192.168.20.31', mac: 'aa:bb:cc:dd:ee:31', hostname: 'plug', dnsName: 'plug.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
-  { ip: '10.20.2.31', mac: 'aa:bb:cc:dd:ee:32', hostname: 'laptop', dnsName: 'laptop.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+  { ip: '192.168.1.31', mac: 'aa:bb:cc:dd:ee:32', hostname: 'laptop', dnsName: 'laptop.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
 ];
 
 test('api_013 networks page lists router networks', async () => {
@@ -7242,7 +7242,7 @@ test('api_013 networks page lists router networks', async () => {
     await expect(iot).toContainText('17%');
     await expect(iot.getByRole('img', { name: '17% used' })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: '10.50.0.0/24' }).getByTestId('group-only')).toHaveText('group only');
-    await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('group-only')).toHaveCount(0);
+    await expect(page.getByRole('row').filter({ hasText: '192.168.1.0/24' }).getByTestId('group-only')).toHaveCount(0);
     // REQ: API-013 (T24.32) — a network this node is directly on (a tagged VLAN interface) is badged, with its VLAN ID.
     const vlan = page.getByRole('row').filter({ hasText: '198.51.100.0/24' });
     await expect(vlan.getByTestId('this-node')).toHaveText('this node');
@@ -7287,7 +7287,7 @@ test('api_013 make a group from a network', async () => {
     // A network a group already covers has no such action.
     await page.keyboard.press('Escape');
     await page.goto('/#/networks');
-    await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('make-group')).toHaveCount(0);
+    await expect(page.getByRole('row').filter({ hasText: '192.168.1.0/24' }).getByTestId('make-group')).toHaveCount(0);
   } finally {
     await page.unroute('**/api/v1/networks');
   }
@@ -9061,19 +9061,19 @@ const LOCATIONS = {
   collisions: [{ name: 'printer.example.net', flat: true, keptAddress: '192.0.2.40', lostAddress: '198.51.100.40', lostLocation: 'lab' }],
   items: [
     {
-      slug: 'home', label: 'Home', domain: 'example.net', visibility: 'shared', flatNames: true, flatNameUses7d: 42, source: 'api', nodes: [],
+      slug: 'home', label: 'Home', domain: 'example.net', ownDomain: 'example.net', visibility: 'shared', flatNames: true, flatNameUses7d: 42, source: 'api', nodes: [],
       networks: [
-        { entry: '10.20.2.0/24', resolved: ['10.20.2.0/24'] },
+        { entry: '192.168.1.0/24', resolved: ['192.168.1.0/24'] },
         { entry: 'vlan:30', resolved: ['192.0.2.0/25'] },
       ],
       devices: [
         { address: '192.0.2.10', name: 'nas.home.example.net', flatName: 'nas.example.net', pinned: false },
-        { address: '10.20.2.31', name: 'laptop.home.example.net', flatName: 'laptop.example.net', pinned: true },
+        { address: '192.168.1.31', name: 'laptop.home.example.net', flatName: 'laptop.example.net', pinned: true },
       ],
       collisions: [{ name: 'nas.home.example.net', flat: false, keptAddress: '192.0.2.10', lostAddress: '192.0.2.11', lostLocation: 'home' }],
     },
     {
-      slug: 'lab', label: null, domain: 'example.net', visibility: 'private', flatNames: false, flatNameUses7d: 0, source: 'file', nodes: ['pi-a'],
+      slug: 'lab', label: null, domain: 'example.net', ownDomain: 'example.net', visibility: 'private', flatNames: false, flatNameUses7d: 0, source: 'file', nodes: ['pi-a'],
       networks: [{ entry: '198.51.100.0/24', resolved: ['198.51.100.0/24'] }],
       devices: [{ address: '198.51.100.7', name: 'bench.lab.example.net', pinned: false }],
       collisions: [],
@@ -9095,7 +9095,7 @@ test('dsc_914 the locations page lists locations, collisions and the flat-name c
     await page.goto('/#/locations');
     await expect(page.getByRole('heading', { name: 'Locations', level: 1 })).toBeVisible();
     const home = page.getByTestId('location-row').filter({ hasText: 'Home' });
-    await expect(home).toContainText('10.20.2.0/24, vlan:30');
+    await expect(home).toContainText('192.168.1.0/24, vlan:30');
     await expect(home.getByTestId('flat-use')).toContainText('on, 42 queries in 7 days');
     await expect(home.getByTestId('collision-count')).toHaveText('1');
     const lab = page.getByTestId('location-row').filter({ hasText: 'lab' });
@@ -9220,7 +9220,7 @@ test('dsc_914 turning flat names off asks for a reason, and the reason is sent',
     await page.getByTestId('location-edit').click();
     const form = page.getByTestId('location-form');
     // The edit form holds what the list showed, and no reason is asked while the names stay on.
-    await expect(form.getByLabel('Networks')).toHaveValue('10.20.2.0/24\nvlan:30');
+    await expect(form.getByLabel('Networks')).toHaveValue('192.168.1.0/24\nvlan:30');
     await expect(page.getByTestId('location-reason')).toHaveCount(0);
     await page.getByTestId('location-flat').uncheck();
     await expect(page.getByTestId('location-reason')).toBeVisible();
@@ -9231,6 +9231,42 @@ test('dsc_914 turning flat names off asks for a reason, and the reason is sent',
     await page.getByTestId('location-save').click();
     await expect(page.getByTestId('location-form')).toHaveCount(0);
     expect(seen[1]).toMatchObject({ dry: false, reason: 'Nothing has used them for a month', body: { flatNames: false, domain: 'example.net' } });
+    // The domain sent is the location's own setting, so the field held it.
+  } finally {
+    await page.unroute(/\/api\/v1\/locations\/home/);
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=local/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 a location that follows the device domain keeps following it when edited', async () => {
+  // No ownDomain: the location sets none, so the form must hold none (only the placeholder shows the domain in effect).
+  const follower = { ...LOCATIONS, items: [{ ...LOCATIONS.items[0], ownDomain: undefined }] };
+  await stubLocations(follower);
+  const seen: unknown[] = [];
+  await page.route(/\/api\/v1\/config\/entries\?kind=local/, (r) =>
+    r.fulfill({ json: { items: [{ kind: 'local', name: 'default', source: 'file', definition: { device_domain: 'example.net' } }] } }),
+  );
+  await page.route(/\/api\/v1\/locations\/home/, async (r) => {
+    const req = r.request();
+    if (req.method() !== 'PUT') return r.continue();
+    if (!req.url().includes('dryRun=true')) seen.push(req.postDataJSON());
+    await r.fulfill({ json: { applied: !req.url().includes('dryRun'), configVersion: 2, warnings: [], impact: 'Changes home.' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await page.getByTestId('location-row').filter({ hasText: 'Home' }).getByTestId('location-open').click();
+    await page.getByTestId('location-edit').click();
+    await expect(page.getByLabel('Parent domain')).toHaveValue('');
+    await expect(page.getByLabel('Parent domain')).toHaveAttribute('placeholder', 'example.net');
+    await page.getByTestId('location-form').getByLabel('Name', { exact: true }).fill('Home base');
+    await page.getByTestId('location-check').click();
+    await page.getByTestId('location-save').click();
+    await expect(page.getByTestId('location-form')).toHaveCount(0);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ domain: null, label: 'Home base' });
+    await page.keyboard.press('Escape');
   } finally {
     await page.unroute(/\/api\/v1\/locations\/home/);
     await page.unroute(/\/api\/v1\/config\/entries\?kind=local/);
@@ -9487,14 +9523,14 @@ test('dsc_914 the networks show a location badge, a filter, and each device’s 
   try {
     await page.goto('/#/');
     await page.goto('/#/networks');
-    const home = page.getByRole('row').filter({ hasText: '10.20.2.0/24' });
+    const home = page.getByRole('row').filter({ hasText: '192.168.1.0/24' });
     await expect(home.getByTestId('location-badge')).toHaveText('Home');
     await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('location-badge')).toHaveCount(0);
     await page.getByTestId('location-filter').selectOption('home');
     await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' })).toHaveCount(0);
     await expect(home).toBeVisible();
     await home.getByTestId('network-open').click();
-    const dev = page.getByTestId('network-devices').getByRole('row').filter({ hasText: '10.20.2.31' });
+    const dev = page.getByTestId('network-devices').getByRole('row').filter({ hasText: '192.168.1.31' });
     await expect(dev.getByTestId('location-badge')).toHaveText('Home (pinned)');
   } finally {
     await page.unroute('**/api/v1/networks');
@@ -9504,7 +9540,9 @@ test('dsc_914 the networks show a location badge, a filter, and each device’s 
 });
 
 test('dsc_914 the CMDB list shows a location badge, filters and groups by location', async () => {
-  await stubLocations();
+  // A third location no CI is in, so a filter on it matches nothing.
+  const attic = { slug: 'attic', label: 'Attic', domain: 'example.net', visibility: 'shared', flatNames: true, flatNameUses7d: 0, source: 'api', nodes: [], networks: [{ entry: '192.168.20.0/24', resolved: ['192.168.20.0/24'] }], devices: [], collisions: [] };
+  await stubLocations({ ...LOCATIONS, items: [...LOCATIONS.items, attic] });
   await page.route('**/api/v1/cmdb/status', (r) =>
     r.fulfill({ json: { enabled: true, running: true, designated: true, cis: [{ ty: 'device', count: 3 }], records: 3, recordsPresent: 3, proposalsOpen: 0, diskBytes: 1048576, sources: [], dropped: { ci: 0, record: 0, batch: 0 }, caps: {} } }),
   );
@@ -9522,6 +9560,10 @@ test('dsc_914 the CMDB list shows a location badge, filters and groups by locati
     await expect(page.getByTestId('cmdb-row').filter({ hasText: 'stray' }).getByTestId('location-badge')).toHaveCount(0);
     await page.getByTestId('location-filter').selectOption('lab');
     await expect(page.getByTestId('cmdb-row')).toHaveCount(1);
+    await page.getByTestId('location-filter').selectOption('attic');
+    await expect(page.getByTestId('cmdb-row')).toHaveCount(0);
+    await expect(page.getByTestId('cmdb-cis')).toContainText('No CI on this page is in that location.');
+    await expect(page.getByTestId('cmdb-cis')).not.toContainText('Nothing yet');
     await page.getByTestId('location-filter').selectOption('');
     await page.getByTestId('cmdb-by-location').check();
     await expect(page.getByTestId('cmdb-location-group')).toHaveText(['Home (1)', 'lab (1)', 'No location (1)']);

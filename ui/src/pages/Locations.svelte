@@ -65,7 +65,7 @@
     const dd = (d?.items[0]?.definition as Record<string, unknown> | undefined)?.device_domain;
     defaultDomain = typeof dd === 'string' ? dd : '';
     form = l
-      ? { isNew: false, slug: l.slug, label: l.label ?? '', domain: l.domain, visibility: l.visibility, networks: l.networks.map((n) => n.entry).join('\n'), nodes: [...l.nodes], flat: l.flatNames, wasFlat: l.flatNames }
+      ? { isNew: false, slug: l.slug, label: l.label ?? '', domain: l.ownDomain ?? '', visibility: l.visibility, networks: l.networks.map((n) => n.entry).join('\n'), nodes: [...l.nodes], flat: l.flatNames, wasFlat: l.flatNames }
       : { isNew: true, slug: '', label: '', domain: '', visibility: 'shared', networks: '', nodes: [], flat: true, wasFlat: true };
   }
 

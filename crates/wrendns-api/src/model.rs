@@ -1219,6 +1219,9 @@ pub struct LocationInfo {
     pub nodes: Vec<String>,
     /// The parent domain in effect; its names are `<device>.<slug>.<domain>`.
     pub domain: String,
+    /// The domain this location sets itself; absent when it follows `[local] device_domain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_domain: Option<String>,
     /// `shared` or `private`.
     pub visibility: String,
     pub flat_names: bool,
