@@ -1207,6 +1207,36 @@ fn obs_017_traces_need_an_endpoint() {
     assert_eq!(cfg.telemetry.otlp.traces_sample_every, 1000);
 }
 
+/// REQ: OBS-006 (issue #155) — which `compression` is in effect when a UI entry exists: the
+/// UI's over a file that sets no destination (as `interval_secs`), the file's whole when it
+/// sets one.
+#[test]
+fn obs_006_otlp_effective_compression_follows_the_destination_rule() {
+    use wrendns_config::{OtlpCompression, OtlpConfig};
+    let ui = OtlpConfig {
+        endpoint: Some("http://ui:4318".into()),
+        compression: OtlpCompression::Gzip,
+        ..OtlpConfig::default()
+    };
+    // The file sets only `compression = "none"` (the default spelled out): no destination, so
+    // the UI entry wins, compression included.
+    let mut cfg = load_str("[telemetry.otlp]\ncompression = \"none\"\n")
+        .unwrap()
+        .config;
+    cfg.telemetry.managed_otlp = Some(ui.clone());
+    let o = cfg.telemetry.otlp_effective();
+    assert_eq!(o.endpoint.as_deref(), Some("http://ui:4318"));
+    assert_eq!(o.compression, OtlpCompression::Gzip);
+    // The file sets a destination: it wins whole, so its compression does too.
+    let mut cfg = load_str("[telemetry.otlp]\nendpoint = \"http://file:4318\"\n")
+        .unwrap()
+        .config;
+    cfg.telemetry.managed_otlp = Some(ui);
+    let o = cfg.telemetry.otlp_effective();
+    assert_eq!(o.endpoint.as_deref(), Some("http://file:4318"));
+    assert_eq!(o.compression, OtlpCompression::None);
+}
+
 /// REQ: OBS-019 (T11.4) — second opinions: off by default; a reference group that exists; a
 /// warning when the sample adds noticeable traffic.
 #[test]

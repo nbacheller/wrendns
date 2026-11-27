@@ -48,6 +48,12 @@ pub struct Config {
     /// name subtree of their own. Shared by the cluster; the first entry waits for every member's
     /// build to know the table (the compatibility gate).
     pub location: Vec<crate::location::LocationConfig>,
+    /// REQ: CLD-904 (T36.10b, ADR-1084) - DNS providers: accounts at a DNS host the node may write
+    /// record sets in (ACME DNS-01, dynamic DNS). Shared by the cluster, admin only; the credential is
+    /// a stored secret named by `credential_ref`. The first entry waits for every member's build to
+    /// know the table (the compatibility gate). The table is stored and validated; nothing calls a
+    /// provider yet.
+    pub dns_provider: Vec<crate::dns_provider::DnsProviderConfig>,
     /// REQ: OBS-038 (ADR-161) — kinds of anomaly finding muted for devices or groups. Shared by
     /// the cluster (the `[telemetry]` section is not), so one entry reaches every node.
     pub anomaly_mute: Vec<AnomalyMuteConfig>,
@@ -164,6 +170,7 @@ impl Default for Config {
             group: Vec::new(),
             schedule: Vec::new(),
             location: Vec::new(),
+            dns_provider: Vec::new(),
             anomaly_mute: Vec::new(),
             zone: Vec::new(),
             alerts: AlertsConfig::default(),
@@ -1897,6 +1904,24 @@ pub enum ListMatch {
     Exact,
 }
 
+/// REQ: FLT-906 (T40.9, ADR-1110) - how a list's text is read. `auto` (the default) detects each
+/// line's syntax (hosts, domains, AdBlock, regex). `rpz` reads the whole text as a DNS response
+/// policy zone in master-file format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ListFormat {
+    #[default]
+    Auto,
+    Rpz,
+}
+
+impl ListFormat {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 /// A filter list (`spec/05` §1). Exactly one source: `url`, `path`, or `rules`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1915,6 +1940,11 @@ pub struct FilterList {
     pub rules: Vec<SafeString>,
     #[serde(default)]
     pub kind: ListKind,
+    /// REQ: FLT-906 (T40.9) - `auto` (the default: each line's syntax is detected) or `rpz` (the
+    /// text is a response policy zone). A list with `rpz` is held back in a cluster until every
+    /// member's build can read it.
+    #[serde(default, skip_serializing_if = "ListFormat::is_auto")]
+    pub format: ListFormat,
     /// `subtree` (default) or `exact`.
     #[serde(default, rename = "match")]
     pub match_mode: ListMatch,
@@ -2541,10 +2571,13 @@ pub struct DnssecConfig {
     /// (KSK-2017 and KSK-2024): DNSKEY records in zone-file form, as `dig DNSKEY . +noall
     /// +answer` prints them or Unbound's `root.key` holds. Read at start and on reload; a
     /// file that can't be read or has no keys leaves the built-in anchors in place (logged).
+    /// REQ: DNS-906 (T40.5) — without a file the built-in anchors follow the root's key
+    /// changes (RFC 5011); a file turns that off, and the file's keys are the anchors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_anchors_file: Option<SafeString>,
-    /// REQ: DNS-011 (T9.16) — RFC 8198: answer names that validated NSEC records prove don't
-    /// exist (or lack the type) from the cache, without asking upstream. On by default.
+    /// REQ: DNS-011 (T9.16), DNS-907 (T40.6) — RFC 8198: answer names that validated NSEC or
+    /// NSEC3 records prove don't exist (or lack the type) from the cache, without asking
+    /// upstream. NSEC3 opt-out spans never deny a name. On by default.
     pub aggressive_nsec: bool,
 }
 
@@ -2698,7 +2731,10 @@ impl TelemetryConfig {
     }
 
     /// The OTLP settings in effect: the files', or, when they set no destination, the UI's
-    /// `endpoint`, `interval_secs` and `header_refs` over the files' trace settings.
+    /// `endpoint`, `interval_secs`, `header_refs` and `compression` over the files' trace
+    /// settings. A file that sets only `compression` (or `interval_secs`) is not a destination,
+    /// so the UI entry's value wins over it; a file that sets a destination wins whole,
+    /// `compression` included.
     #[must_use]
     pub fn otlp_effective(&self) -> std::borrow::Cow<'_, OtlpConfig> {
         match &self.managed_otlp {

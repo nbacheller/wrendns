@@ -302,6 +302,10 @@ async fn api_016_otlp_put_header_refs_and_refusals() {
             json!({"endpoint": "http://c:4318", "header_refs": {"Content-Type": "x"}}),
         ),
         (
+            "reserved header, gzip's",
+            json!({"endpoint": "http://c:4318", "compression": "gzip", "header_refs": {"Content-Encoding": "x"}}),
+        ),
+        (
             "short interval",
             json!({"endpoint": "http://c:4318", "interval_secs": 1}),
         ),

@@ -39,9 +39,10 @@ const MAX_SINKS: usize = 16;
 const MAX_BUFFER: u32 = 100_000;
 /// The largest set of kept batches a sink made through the API may ask for.
 const MAX_SPILL: u64 = 1 << 30;
-/// Headers the export sets itself.
-const RESERVED_HEADERS: [&str; 6] = [
+/// Headers the export sets itself (`content-encoding` when `compression = "gzip"`).
+const RESERVED_HEADERS: [&str; 7] = [
     "content-type",
+    "content-encoding",
     "content-length",
     "host",
     "user-agent",
@@ -245,7 +246,9 @@ pub(crate) fn parse_otlp(body: &serde_json::Value) -> Result<OtlpConfig, Problem
         if RESERVED_HEADERS.contains(&h.to_ascii_lowercase().as_str()) {
             return Err(Problem::new(
                 Code::InvalidConfig,
-                format!("`header_refs.{h}`: the export sets this header itself"),
+                format!(
+                    "`header_refs.{h}`: the export sets this header itself (content-type, content-length, content-encoding when compression is gzip, host, user-agent, transfer-encoding and connection are reserved)"
+                ),
             ));
         }
     }
