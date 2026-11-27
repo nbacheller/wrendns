@@ -2372,7 +2372,13 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   mode = "validate"
   trust_anchors_file = "/etc/wrendns/root.key"
   ```
-  It replaces the built-in anchors; a file that can't be read or holds no key is logged and the built-in anchors stay. Automatic tracking of key changes (RFC 5011) isn't done (ADR-086).
+  It replaces the built-in anchors; a file that can't be read or holds no key is logged and the built-in anchors stay. A file also turns the automatic tracking below off: its keys are the anchors, and nothing changes them.
+- **Root key rollover (RFC 5011, DNS-906):** without a file, each node follows the root's key changes on its own, so a node left running for years still validates after the root changes its key-signing key. The node reads the root's DNSKEY set through its default upstream group (about once a day: half the records' lifetime, at least hourly and at most every 15 days; a failed reading is retried in an hour) and accepts it only if a key it already trusts signed it. Then:
+  - a **new key** is *pending*: it is not trusted until it has been seen for **30 days** in a row (the add hold-down; a pending key that disappears starts over);
+  - a key with the **revoke bit** that signed the set itself is *revoked* at once and never trusted again; a revoke bit that is not self-signed is ignored;
+  - a trusted key the last reading **did not list** is *missing* and stays trusted (a failed or odd reading never removes an anchor).
+
+  The state is kept in the data directory (`rfc5011.toml`), so a restart goes on where it left off. A file that can't be read is set aside as `rfc5011.toml.corrupt`, a warning is logged and the built-in anchors are used again. The 30 days are fixed, not a setting. Each node keeps its own state; nothing is copied between nodes. While a key is in its hold-down, or within 30 days of a revocation, the health summary shows a *degraded* reason (`dnssec_anchor_pending`, `dnssec_anchor_revoked`; DNS is unaffected). Settings → Query handling → **DNSSEC** lists each node's anchors, their states and when a pending key becomes trusted; the API is `GET /api/v1/dnssec/anchors` (one entry per node; a node on an older build shows `unsupported`) and the MCP tool is `dnssec_trust_anchors`. If the root revokes every anchor a node trusts at once, validation on that node fails until it is updated; the health summary says so.
 
 **The settings** (T27.11): Settings → Query handling shows the validation mode (`[dnssec] mode`: off, validate, or validate and count) and the negative trust anchors (domains not validated, one per line). The change applies on every node within seconds. API: `PUT` and `DELETE /api/v1/dnssec-settings/default`.
 

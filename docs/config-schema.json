@@ -2046,7 +2046,7 @@
           }
         },
         "trust_anchors_file": {
-          "description": "REQ: DNS-011 (T9.8) — root trust anchors from a file instead of the built-in ones\n(KSK-2017 and KSK-2024): DNSKEY records in zone-file form, as `dig DNSKEY . +noall\n+answer` prints them or Unbound's `root.key` holds. Read at start and on reload; a\nfile that can't be read or has no keys leaves the built-in anchors in place (logged).",
+          "description": "REQ: DNS-011 (T9.8) — root trust anchors from a file instead of the built-in ones\n(KSK-2017 and KSK-2024): DNSKEY records in zone-file form, as `dig DNSKEY . +noall\n+answer` prints them or Unbound's `root.key` holds. Read at start and on reload; a\nfile that can't be read or has no keys leaves the built-in anchors in place (logged).\nREQ: DNS-906 (T40.5) — without a file the built-in anchors follow the root's key\nchanges (RFC 5011); a file turns that off, and the file's keys are the anchors.",
           "type": [
             "string",
             "null"

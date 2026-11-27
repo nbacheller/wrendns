@@ -203,6 +203,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/explain"
             // REQ: DNS-904 — the recursor's lookup trace.
             | "/api/v1/recursor/trace"
+            // REQ: DNS-906 - the root trust anchors and how they are kept.
+            | "/api/v1/dnssec/anchors"
             | "/api/v1/cache/stats"
             | "/api/v1/cache/lookup"
             | "/api/v1/cache/entries"
@@ -938,6 +940,11 @@ mod tests {
         // REQ: DNS-904 — the recursor's lookup trace is analytics.
         assert_eq!(
             required(&Method::GET, "/api/v1/recursor/trace"),
+            Scope("analytics:read")
+        );
+        // REQ: DNS-906 - the trust anchor list is analytics.
+        assert_eq!(
+            required(&Method::GET, "/api/v1/dnssec/anchors"),
             Scope("analytics:read")
         );
         // T6.15 — the top entries are analytics too.

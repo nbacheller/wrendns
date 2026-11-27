@@ -197,6 +197,9 @@ enum Read {
     Annotations {
         filter: wrendns_api::model::AnnotationFilter,
     },
+    /// REQ: DNS-906 (T40.5) - the peer's own root trust anchors (older peers don't know it:
+    /// the API lists them as `unsupported`, by the `Rfc5011` gate feature).
+    TrustAnchors,
     /// REQ: OBS-019 — the peer's own upstream answer quality (older peers don't know it).
     UpstreamChecks,
     /// REQ: OBS-018 — the peer's own shadow-list counts and over-blocking suspects.
@@ -430,6 +433,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             path,
         } => serde_json::to_vec(&b.exemplars(from_us, to_us, path.as_deref())),
         Read::Annotations { filter } => serde_json::to_vec(&b.annotations(&filter)),
+        Read::TrustAnchors => serde_json::to_vec(&b.trust_anchors()),
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
@@ -3069,6 +3073,51 @@ impl Backend for Federated {
             parts.push(label(rows, &node));
         }
         wrendns_api::federation::merge_overblocking(parts, limit)
+    }
+    // REQ: DNS-906 (T40.5) - each node keeps its own root trust anchors: one entry per node. A
+    // member whose build does not announce `Rfc5011` is not asked (it would refuse the read and
+    // be listed as unreachable): it gets an entry of mode `unsupported`.
+    fn trust_anchors(&self) -> Vec<wrendns_api::model::TrustAnchorStatus> {
+        use wrendns_api::model::TrustAnchorStatus;
+        let own = self.own_label();
+        let mut rows: Vec<TrustAnchorStatus> = if self.with_me() {
+            self.local
+                .trust_anchors()
+                .into_iter()
+                .map(|mut r| {
+                    r.node = Some(own.clone());
+                    r
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let members = self.cluster.members();
+        let (asked, old): (Vec<String>, Vec<String>) = self.peers().into_iter().partition(|p| {
+            members.iter().any(|m| {
+                &m.node_id == p
+                    && wrendns_cluster::gate::knows(
+                        &m.features,
+                        wrendns_cluster::gate::Feature::Rfc5011,
+                    )
+            })
+        });
+        let reads = asked.into_iter().map(|p| (p, Read::TrustAnchors)).collect();
+        for (peer, body) in self.gather(reads) {
+            if let Ok(peer_rows) = serde_json::from_slice::<Vec<TrustAnchorStatus>>(&body) {
+                let label = self.label_of(&peer);
+                rows.extend(peer_rows.into_iter().map(|mut r| {
+                    r.node = Some(label.clone());
+                    r
+                }));
+            }
+        }
+        rows.extend(old.iter().map(|p| TrustAnchorStatus {
+            node: Some(self.label_of(p)),
+            mode: "unsupported".to_owned(),
+            ..TrustAnchorStatus::default()
+        }));
+        rows
     }
     // REQ: OBS-019 (ADR-108) — each node asks its own upstreams: one entry per node.
     fn upstream_checks(&self) -> Vec<wrendns_api::model::UpstreamChecks> {

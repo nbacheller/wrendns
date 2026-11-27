@@ -1625,6 +1625,16 @@
       "docs": "dnssec-validation"
     },
     {
+      "id": "trust-anchors",
+      "title": "Root trust anchors and key rollover",
+      "term": "Trust anchor (RFC 5011)",
+      "summary": "DNSSEC validation starts from the root's keys. The root changes its key now and then, and each node follows the change on its own: a new key is trusted only after it has been seen for 30 days, and a key the root revokes stops being trusted at once.",
+      "when": "The root has announced a key rollover and you want to see where each node stands, or a health reason says a key is in its hold-down or was revoked.",
+      "example": "A key marked 'new, in hold-down' with a date: from that day the node trusts it. Until then the old key keeps validating, so nothing changes for your devices.",
+      "caution": "A node that uses trust_anchors_file follows nothing: only the file's keys are trusted. A node on an older build can't report its anchors.",
+      "docs": "dnssec-validation"
+    },
+    {
       "id": "recursive-options",
       "title": "How a recursive upstream asks",
       "term": "QNAME minimisation, 0x20 and IPv6 (recursive upstream)",

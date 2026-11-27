@@ -25,16 +25,20 @@ pub enum Feature {
     Access,
     /// The `dnstap_settings` kind, the whole `[telemetry.dnstap]` section (OBS-007, API-905, T40.13).
     Dnstap,
+    /// The peer read of a node's root trust anchors (DNS-906, T40.5). Nothing is replicated: an
+    /// older member does not know the read, and is listed as not supporting it.
+    Rfc5011,
 }
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 5] = [
+    pub const ALL: [Feature; 6] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
         Self::Access,
         Self::Dnstap,
+        Self::Rfc5011,
     ];
 
     /// The name a build announces the feature under (wire: Hello `features`).
@@ -45,6 +49,7 @@ impl Feature {
             Self::PemSecrets => "pem_secrets",
             Self::Access => "access",
             Self::Dnstap => "dnstap",
+            Self::Rfc5011 => "rfc5011",
         }
     }
 
@@ -56,6 +61,7 @@ impl Feature {
             Self::PemSecrets => "secrets of the `pem` kind",
             Self::Access => "the allowed networks",
             Self::Dnstap => "the dnstap settings",
+            Self::Rfc5011 => "the trust anchor read",
         }
     }
 }
@@ -70,12 +76,13 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 5] = [
+const ANNOUNCED: [Feature; 6] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
     Feature::Access,
     Feature::Dnstap,
+    Feature::Rfc5011,
 ];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
@@ -207,7 +214,8 @@ mod tests {
                 "dns_providers".to_owned(),
                 "pem_secrets".to_owned(),
                 "access".to_owned(),
-                "dnstap".to_owned()
+                "dnstap".to_owned(),
+                "rfc5011".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));

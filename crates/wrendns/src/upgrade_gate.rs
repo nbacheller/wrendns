@@ -374,16 +374,21 @@ pub(crate) fn describe_held(cfg: Option<&wrendns_config::Config>) -> String {
         .map(|c| c.name.as_str())
         .collect();
     let providers: Vec<&str> = cfg.dns_provider.iter().map(|p| p.name.as_str()).collect();
-    let mut out = format!(
-        "locations: {}; pinned devices: {}",
-        slugs.join(", "),
-        pins.join(", ")
-    );
-    if !providers.is_empty() {
-        out.push_str("; DNS providers: ");
-        out.push_str(&providers.join(", "));
+    // Name only what is actually held: a list with nothing in it is left out.
+    let mut parts: Vec<String> = Vec::new();
+    if !slugs.is_empty() {
+        parts.push(format!("locations: {}", slugs.join(", ")));
     }
-    out
+    if !pins.is_empty() {
+        parts.push(format!("pinned devices: {}", pins.join(", ")));
+    }
+    if !providers.is_empty() {
+        parts.push(format!("DNS providers: {}", providers.join(", ")));
+    }
+    if parts.is_empty() {
+        return "none known".to_owned();
+    }
+    parts.join("; ")
 }
 
 /// Takes the `[[location]]` entries and the clients' `location` pins out of `cfg`.

@@ -141,7 +141,17 @@
       "reqs": [
         "DNS-011"
       ],
-      "summary": "Forwarded and recursive answers are validated from the root key down (with [dnssec] mode = \"validate\"; the 2017 and 2024 root keys are built in, or a trust anchors file): secure answers get AD, unsigned ones pass as they are, and bogus ones become SERVFAIL with EDE 6, or 7, 8, or 10 when the signatures show why.",
+      "summary": "Forwarded and recursive answers are validated from the root key down (with [dnssec] mode = \"validate\"; the 2017 and 2024 root keys are built in and follow the root's rollover unless a trust anchors file is set): secure answers get AD, unsigned ones pass as they are, and bogus ones become SERVFAIL with EDE 6, or 7, 8, or 10 when the signatures show why.",
+      "diagram": "rfc4033"
+    },
+    {
+      "rfc": "5011",
+      "title": "Automated updates of DNSSEC trust anchors",
+      "status": "supported",
+      "reqs": [
+        "DNS-906"
+      ],
+      "summary": "The root keys roll over on their own: a new key must be seen for 30 days before it is trusted, a key the root revokes (self-signed) is dropped at once, and a key that goes missing is kept rather than removed.",
       "diagram": "rfc4033"
     },
     {

@@ -9,6 +9,15 @@ const ADMIN = { user: 'admin', pass: 'correct horse battery' };
 const VIEWER = { user: 'viewer1', pass: 'another long password' };
 const SECRET = 'dns-e2e-credential-7731';
 
+// The secrets the tests store through the credential field (named dns.<provider>.credential). The
+// server is shared with the other spec files, so each test deletes what it stored when it ends.
+async function dropSecret(page: Page, name: string): Promise<void> {
+  const status = await page.request.get('/api/v1/auth/status');
+  const csrf = (await status.json()).csrfToken as string;
+  const res = await page.request.delete(`/api/v1/secrets/${name}`, { headers: { 'x-csrf-token': csrf } });
+  expect([200, 204, 404]).toContain(res.status());
+}
+
 async function signIn(browser: Browser, user: { user: string; pass: string }, wait = 'dnsproviders-tab'): Promise<Page> {
   const page = await browser.newPage();
   await page.goto('/#/settings?tab=dns-providers');
@@ -63,11 +72,12 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await page.reload();
       await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' })).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('body')).not.toContainText(SECRET);
-      // Remove it, then the secret it named is free to delete.
+      // Remove it; the secret it named is deleted in the finally below.
       await page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' }).getByTestId('dnsproviders-delete').click();
       await page.getByTestId('dnsproviders-delete-confirm').click();
       await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' })).toHaveCount(0, { timeout: 10_000 });
     } finally {
+      await dropSecret(page, 'dns.cf-e2e.credential');
       await page.close();
     }
   });
@@ -130,6 +140,7 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await page.unroute('**/api/v1/dns-providers');
       await page.unroute('**/api/v1/dns-providers/gated-e2e');
     } finally {
+      await dropSecret(page, 'dns.gated-e2e.credential');
       await page.close();
     }
   });
@@ -141,10 +152,14 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.getByLabel('Username', { exact: true })).toHaveCount(0, { timeout: 30_000 });
       await expect(page.getByTestId('dnsproviders-tab')).toHaveCount(0);
       await expect(page.getByRole('tab', { name: 'DNS providers' })).toHaveCount(0);
+      // With a valid CSRF token the refusal is the role's: exactly 403, not a sign-in or token error.
+      const csrf = ((await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string) ?? '';
+      expect(csrf).not.toBe('');
       const put = await page.request.put('/api/v1/dns-providers/x', {
+        headers: { 'x-csrf-token': csrf },
         data: { kind: 'cloudflare', zone: 'example.net', credential_ref: 'cf' },
       });
-      expect([401, 403]).toContain(put.status());
+      expect(put.status()).toBe(403);
     } finally {
       await page.close();
     }

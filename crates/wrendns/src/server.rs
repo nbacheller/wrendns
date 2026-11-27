@@ -371,6 +371,33 @@ fn spawn_neighbor_refresh(pipeline: Arc<Pipeline>, every: Duration) -> JoinHandl
     })
 }
 
+/// REQ: DNS-906 (T40.5) — reads the root's DNSKEY set through the default upstream group when a
+/// reading is due and the anchors are followed (validation on, no anchors file). Checked once a
+/// minute; the schedule itself is RFC 5011's (`Rollover::due`).
+async fn rollover_task(pipeline: Arc<Pipeline>, mut stop: tokio::sync::watch::Receiver<bool>) {
+    use wrendns_upstream::rfc5011::{Mode, unix_now};
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_secs(60)) => {}
+            _ = stop.changed() => return,
+        }
+        let r = &pipeline.rollover;
+        if r.mode() != Mode::Following {
+            continue;
+        }
+        let now = unix_now();
+        if !r.due(now) {
+            continue;
+        }
+        let Some(group) = pipeline.rollover_group() else {
+            continue;
+        };
+        if let Err(e) = r.read_through(&group, Duration::from_secs(10), now).await {
+            tracing::warn!(error = %e, "DNSSEC: reading the root DNSKEY set failed; trying again in an hour");
+        }
+    }
+}
+
 fn spawn_health_checks(router: &Router) -> JoinHandle<()> {
     tokio::spawn(wrendns_upstream::active_health_checks(
         router.upstreams().to_vec(),
@@ -998,6 +1025,9 @@ fn build_pipeline(
         ..Settings::default()
     };
     let p = Pipeline::new(settings, cache, router, policy);
+    // REQ: DNS-906 (T40.5) — the RFC 5011 state lives in the data directory.
+    p.rollover
+        .persist_to(std::path::Path::new(cfg.node.data_dir.as_str()));
     p.set_dnssec(cfg);
     // REQ: OBS-019 (T11.4)
     p.set_upstream_check(cfg);
@@ -1673,6 +1703,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
             http_stopped.clone(),
         ));
     }
+    // REQ: DNS-906 (T40.5) — follow the root's key changes (RFC 5011).
+    tokio::spawn(rollover_task(
+        Arc::clone(&sources.pipeline),
+        http_stopped.clone(),
+    ));
     // REQ: FLT-010 (T7.10) — schedules: which are on, every 15 s.
     tokio::spawn(schedule_ticker(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OBS-010 (T7.12)

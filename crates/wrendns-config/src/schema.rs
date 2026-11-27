@@ -2548,6 +2548,8 @@ pub struct DnssecConfig {
     /// (KSK-2017 and KSK-2024): DNSKEY records in zone-file form, as `dig DNSKEY . +noall
     /// +answer` prints them or Unbound's `root.key` holds. Read at start and on reload; a
     /// file that can't be read or has no keys leaves the built-in anchors in place (logged).
+    /// REQ: DNS-906 (T40.5) — without a file the built-in anchors follow the root's key
+    /// changes (RFC 5011); a file turns that off, and the file's keys are the anchors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_anchors_file: Option<SafeString>,
     /// REQ: DNS-011 (T9.16) — RFC 8198: answer names that validated NSEC records prove don't

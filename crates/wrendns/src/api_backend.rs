@@ -2825,6 +2825,11 @@ impl Backend for ApiBackend {
         self.src.shadow.suspects_view(limit)
     }
 
+    // REQ: DNS-906 (T40.5) - this node's root trust anchors.
+    fn trust_anchors(&self) -> Vec<wrendns_api::model::TrustAnchorStatus> {
+        vec![crate::anchors::status(&self.src.pipeline.rollover)]
+    }
+
     // REQ: OBS-019 (ADR-108)
     fn upstream_checks(&self) -> Vec<wrendns_api::model::UpstreamChecks> {
         let names: Vec<(u16, String)> = self
@@ -3045,6 +3050,13 @@ impl Backend for ApiBackend {
             crate::upgrade_gate::HOLD
                 .reason(self.src.cluster.as_deref())
                 .as_deref(),
+        ));
+        // REQ: DNS-906 (T40.5) — a root key in its hold-down, or a revoked trust anchor.
+        reasons.extend(crate::health::anchor_reasons(
+            self.src
+                .pipeline
+                .rollover
+                .reasons(wrendns_upstream::rfc5011::unix_now()),
         ));
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());

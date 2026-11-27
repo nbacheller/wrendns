@@ -583,6 +583,33 @@ impl Backend for Fake {
             ..crate::policy_api::ClientPolicy::default()
         })
     }
+    fn trust_anchors(&self) -> Vec<crate::model::TrustAnchorStatus> {
+        let key = |tag, state: &str, since, trusted_at| crate::model::TrustAnchorKey {
+            key_tag: tag,
+            algorithm: 8,
+            flags: 257,
+            state: state.into(),
+            since_s: since,
+            trusted_at_s: trusted_at,
+        };
+        let node = |name: &str, keys| crate::model::TrustAnchorStatus {
+            node: Some(name.into()),
+            mode: "following".into(),
+            keys,
+            last_reading_s: Some(1_800_000_000),
+            ..Default::default()
+        };
+        vec![
+            node(
+                "pi-a",
+                vec![
+                    key(20326, "valid", None, None),
+                    key(11111, "add_pend", Some(1_000), Some(1_000 + 2_592_000)),
+                ],
+            ),
+            node("pi-b", vec![key(20326, "valid", None, None)]),
+        ]
+    }
     fn recursor_trace(
         &self,
         p: &crate::model::RecursorTraceParams,
@@ -1399,6 +1426,18 @@ async fn agt_004_agent_tokens_over_http() {
         .await,
         StatusCode::OK
     );
+    // REQ: DNS-906 - the dnssec_trust_anchors tool's REST call works for an analytics:read agent.
+    assert_eq!(
+        status(call(
+            "GET",
+            "/api/v1/dnssec/anchors",
+            &agent,
+            null.clone(),
+            None
+        ))
+        .await,
+        StatusCode::OK
+    );
     assert_eq!(
         status(call("GET", "/api/v1/queries", &agent, null.clone(), None)).await,
         StatusCode::FORBIDDEN,
@@ -2183,8 +2222,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 200 with DNS-904's /recursor/trace (T40.3), DNS-014's /access-settings/default (T27.14h), API-902's GET
     // /guarded/pending/{id} (T27.14b) and DSC-913's /locations and /locations/{slug} (T36.10a).
     // 201 with OBS-007's /dnstap-settings/default (T40.13).
-    // 203 with CLD-904's /dns-providers and /dns-providers/{name} (T36.10b).
-    assert_eq!(paths.len(), 203);
+    // 202 with DNS-906's /dnssec/anchors (T40.5).
+    // 204 with CLD-904's /dns-providers and /dns-providers/{name} (T36.10b).
+    assert_eq!(paths.len(), 204);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -5525,6 +5565,27 @@ async fn dns_904_the_trace_route_returns_the_steps() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = get(&app, "/api/v1/recursor/trace").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
+}
+
+/// REQ: DNS-906 (T40.5, AC4), AGT-001 - `GET /api/v1/dnssec/anchors` lists every node's keys with
+/// their states in camelCase JSON; a viewer may read it, and an unchanged built-in key has no date.
+#[tokio::test]
+async fn dns_906_the_anchors_route_lists_every_node() {
+    let (app, _fake) = app();
+    let (status, _, v) = get(&app, "/api/v1/dnssec/anchors").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "one entry per node: {v}");
+    assert_eq!(items[0]["node"], "pi-a");
+    assert_eq!(items[0]["mode"], "following");
+    assert_eq!(items[0]["lastReadingS"], 1_800_000_000u64);
+    assert_eq!(items[0]["keys"][1]["state"], "add_pend");
+    assert_eq!(items[0]["keys"][1]["trustedAtS"], 1_000 + 2_592_000);
+    assert!(
+        items[0]["keys"][0].get("sinceS").is_none(),
+        "absent, not null: {v}"
+    );
+    assert_eq!(items[1]["keys"].as_array().unwrap().len(), 1);
 }
 
 /// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the judgement of a dnstap change (is it a

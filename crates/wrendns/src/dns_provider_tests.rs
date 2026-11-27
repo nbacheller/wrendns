@@ -677,3 +677,33 @@ async fn dsc_908_a_promoted_primary_holds_and_releases_locations_and_providers_t
     );
     let _ = new.stop.send(true);
 }
+
+/// REQ: DSC-908, CLD-904 - the words for what is held name only what is held: with only providers
+/// held there is no empty "locations: ; pinned devices:", and with only locations held there is no
+/// "DNS providers:".
+#[test]
+fn dsc_908_describe_held_names_only_what_is_held() {
+    let file = crate::credential_tests::config(&format!(
+        "[local]\ndevice_domain = \"home.arpa\"\n[[location]]\nslug = \"home\"\nnetworks = [\"192.0.2.0/24\"]\n{WITH}"
+    ));
+    let mut providers_only = file.clone();
+    providers_only.location.clear();
+    assert_eq!(
+        crate::upgrade_gate::describe_held(Some(&providers_only)),
+        "DNS providers: cf-home"
+    );
+
+    let mut locations_only = file.clone();
+    locations_only.dns_provider.clear();
+    let named = crate::upgrade_gate::describe_held(Some(&locations_only));
+    assert!(named.starts_with("locations: home"), "{named}");
+    assert!(!named.contains("DNS providers"), "{named}");
+
+    let mut nothing = file;
+    nothing.location.clear();
+    nothing.dns_provider.clear();
+    assert_eq!(
+        crate::upgrade_gate::describe_held(Some(&nothing)),
+        "none known"
+    );
+}

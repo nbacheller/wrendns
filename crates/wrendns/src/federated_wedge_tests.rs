@@ -42,6 +42,20 @@ async fn replica_of(
     tokio::sync::watch::Sender<bool>,
     (tempfile::TempDir, tempfile::TempDir),
 ) {
+    replica_of_announcing(handler, None).await
+}
+
+/// [`replica_of`] with a primary that announces `features` in its Hello instead of this build's
+/// (`Some(vec![])`: a build from before the gated features).
+async fn replica_of_announcing(
+    handler: wrendns_cluster::net::RpcHandler,
+    features: Option<Vec<String>>,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let addr = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -60,6 +74,9 @@ async fn replica_of(
         )
         .unwrap();
     let primary = Cluster::new(pid, crate::build_info::VERSION);
+    if let Some(f) = features {
+        primary.set_features(f);
+    }
     primary.set_rpc_handler(handler);
     let (stop_tx, stop) = tokio::sync::watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
@@ -879,4 +896,112 @@ fn api_015_t24_42_ahead_and_deleted_secrets_warn() {
         "{w}"
     );
     assert!(w.contains("node-b still holds `gone`"), "{w}");
+}
+
+/// A primary that answers the trust anchor read with one following node holding a key in its
+/// hold-down; every other read it refuses.
+fn anchors_handler() -> wrendns_cluster::net::RpcHandler {
+    Arc::new(|_peer, _kind, body| {
+        let known = String::from_utf8_lossy(&body).contains("trust_anchors");
+        Box::pin(async move {
+            if !known {
+                return Err("unknown read".to_owned());
+            }
+            let rows = vec![wrendns_api::model::TrustAnchorStatus {
+                node: None,
+                mode: "following".into(),
+                keys: vec![
+                    wrendns_api::model::TrustAnchorKey {
+                        key_tag: 20326,
+                        algorithm: 8,
+                        flags: 257,
+                        state: "valid".into(),
+                        since_s: None,
+                        trusted_at_s: None,
+                    },
+                    wrendns_api::model::TrustAnchorKey {
+                        key_tag: 11111,
+                        algorithm: 8,
+                        flags: 257,
+                        state: "add_pend".into(),
+                        since_s: Some(1_000),
+                        trusted_at_s: Some(1_000 + 2_592_000),
+                    },
+                ],
+                last_reading_s: Some(2_000),
+                next_reading_s: None,
+                last_error: None,
+            }];
+            serde_json::to_vec(&rows).map_err(|e| e.to_string())
+        })
+    })
+}
+
+/// `GET /api/v1/dnssec/anchors` on a replica whose primary runs `features`.
+fn anchors_read(features: Option<Vec<String>>) -> serde_json::Value {
+    finish_within(move || {
+        let rt = multi_thread_runtime(2);
+        let (replica, primary, stop, dirs) =
+            rt.block_on(replica_of_announcing(anchors_handler(), features));
+        let h = rt.block_on(async { harness_in("", Some(Arc::clone(&replica))) });
+        let v = rt.block_on(async {
+            let (status, _, text) = h
+                .send(h.request("GET", "/api/v1/dnssec/anchors", None))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        });
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        v
+    })
+}
+
+/// REQ: DNS-906 (T40.5 AC4) - each node keeps its own trust anchors, and the API shows every
+/// node's: this node's own entry and the primary's, each labelled with its node and its own
+/// keys (one has a key in hold-down; the other's list is this node's, with no peer's keys mixed in).
+#[test]
+fn dns_906_the_api_shows_every_nodes_anchors() {
+    let v = anchors_read(None);
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "this node and the primary: {v}");
+    assert!(items.iter().all(|i| i["node"].is_string()), "{v}");
+    let theirs = items
+        .iter()
+        .find(|i| i["keys"].as_array().is_some_and(|k| k.len() == 2))
+        .unwrap_or_else(|| panic!("the primary's keys are listed: {v}"));
+    assert_eq!(theirs["mode"], "following");
+    assert!(
+        theirs["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k["state"] == "add_pend" && k["keyTag"] == 11111),
+        "{v}"
+    );
+    let mine = items.iter().find(|i| !std::ptr::eq(*i, theirs)).unwrap();
+    assert_ne!(mine["node"], theirs["node"], "{v}");
+    assert!(v.get("missingNodes").is_none(), "{v}");
+}
+
+/// REQ: DNS-906 (T40.5), DSC-908 (the gate) - a mixed cluster: a member whose build does not
+/// announce the `rfc5011` feature is not asked (it would refuse the read), and is listed as
+/// `unsupported` instead of failing the whole read or being counted as missing.
+#[test]
+fn dns_906_an_older_member_is_listed_as_not_supported() {
+    let v = anchors_read(Some(Vec::new()));
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{v}");
+    let old = items.iter().find(|i| i["mode"] == "unsupported").unwrap();
+    assert_eq!(old["keys"].as_array().unwrap().len(), 0);
+    assert!(old["node"].is_string());
+    assert!(
+        items.iter().any(|i| i["mode"] != "unsupported"),
+        "this node still answers: {v}"
+    );
+    assert!(
+        v.get("missingNodes").is_none(),
+        "not missing, not failed: {v}"
+    );
 }

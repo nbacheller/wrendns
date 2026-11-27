@@ -394,6 +394,8 @@ export const api = {
   queries: (q: Query) => get<S['QueryPage']>('/queries', q),
   explain: (q: { name: string; client?: string; qtype?: string }) => get<S['Explanation']>('/explain', q),
   // REQ: DNS-904 — how the built-in resolver walks to an answer (a real lookup).
+  // REQ: DNS-906 — each node's root trust anchors and their RFC 5011 states.
+  trustAnchors: () => get<S['Items_TrustAnchorStatus']>('/dnssec/anchors'),
   recursorTrace: (q: { name: string; qtype?: string; upstream?: string }) => get<S['RecursorTrace']>('/recursor/trace', q),
   lists: () => get<S['Items_ListInfo']>('/lists'),
   // REQ: FLT-004 — "update lists now" (202: what was queued; `refreshing` in `lists()` follows it).
