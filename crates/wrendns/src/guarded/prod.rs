@@ -464,6 +464,16 @@ impl Host for ProdHost {
         self.proof_socket_with(addr, None)
     }
 
+    fn probe_dns(
+        &self,
+        probe: &super::dns_proof::DnsProbe,
+    ) -> BoxFuture<Result<super::dns_proof::Kind, String>> {
+        let (url, gated, ev) = (probe.url(), probe.gated, probe.evidence.clone());
+        Box::pin(async move {
+            crate::probes::ask_proof(&url, gated, ev.as_deref(), super::dns_proof::TIMEOUT).await
+        })
+    }
+
     fn stage_listeners(
         &self,
         list: Vec<wrendns_config::Listener>,

@@ -35,6 +35,26 @@ async function adminPage(browser: Browser): Promise<Page> {
 
 const csrfOf = async (page: Page) => (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
 
+// Guarded requests are limited per admin and per minute, and the file's other tests already use most of
+// the first admin's: the probe tests run as a second admin, so they neither starve nor are starved.
+const SECOND_ADMIN = { user: 'guarded-ad2', pass: 'second admin long password' };
+
+async function secondAdminPage(browser: Browser): Promise<Page> {
+  const first = await adminPage(browser);
+  try {
+    const made = await first.request.post('/api/v1/users', {
+      headers: { 'x-csrf-token': await csrfOf(first) },
+      data: { username: SECOND_ADMIN.user, password: SECOND_ADMIN.pass, role: 'admin' },
+    });
+    expect([200, 201, 409]).toContain(made.status());
+  } finally {
+    await first.close();
+  }
+  const page = await signedIn(browser, SECOND_ADMIN);
+  await expect(page.getByTestId('guarded-card')).toBeVisible({ timeout: 30_000 });
+  return page;
+}
+
 /** Reviews the change in `box` and types its phrase (it does not apply it). */
 async function review(box: ReturnType<Page['getByTestId']>, id: string) {
   await box.getByTestId(`guarded-start-${id}`).click();
@@ -44,6 +64,72 @@ async function review(box: ReturnType<Page['getByTestId']>, id: string) {
 }
 
 test.describe('api_902 guarded changes', () => {
+  // T27.14b: a window change proved by the node's own test query, with no new socket to confirm through.
+  test('api_902 dns probe proof confirms when the node own query is answered', async ({ browser }) => {
+    const page = await secondAdminPage(browser);
+    try {
+      const box = page.getByTestId('guarded-test-e2e-probe');
+      const phrase = await review(box, 'e2e-probe');
+      await box.getByTestId('guarded-phrase-input').fill(phrase);
+      await box.getByTestId('guarded-apply').click();
+      // No link to a new address: the proof is the node's own query, shown while the countdown runs.
+      await expect(box.getByTestId('guarded-countdown')).toBeVisible();
+      await expect(box.getByTestId('guarded-confirm-link')).toHaveCount(0);
+      const line = box.getByTestId('guarded-probe');
+      await expect(line).toHaveAttribute('data-state', 'answered', { timeout: 15_000 });
+      await expect(line).toContainText(`127.0.0.1:${PORTS.dns}`);
+      // The evidence from other hosts is shown and never required.
+      await expect(box.getByTestId('guarded-evidence')).toContainText('No other host has used it yet');
+      // The read of the pending change carries the line; the public status never names the address.
+      const status = await (await page.request.get('/api/v1/guarded')).json();
+      const pid = status.nodes[0].pending.id as string;
+      expect(JSON.stringify(status)).not.toContain(`127.0.0.1:${PORTS.dns}`);
+      const read = await page.request.get(`/api/v1/guarded/pending/${pid}`);
+      expect(read.status()).toBe(200);
+      const view = await read.json();
+      expect(view.probes[0].state).toBe('answered');
+      expect(view.probes[0].otherHosts).toBe(0);
+      // Confirm is enabled with no other host seen, and keeps the change.
+      await expect(box.getByTestId('guarded-confirm-here')).toBeEnabled();
+      await box.getByTestId('guarded-confirm-here').click();
+      await expect(box.getByTestId('guarded-result')).toContainText('confirmed and is kept', { timeout: 15_000 });
+      await expect(page.getByTestId('guarded-outcomes')).toContainText('e2e-probe: confirmed');
+    } finally {
+      await page.close();
+    }
+  });
+
+  test('api_902 dns probe proof refuses while the node own query gets no answer', async ({ browser }) => {
+    const page = await secondAdminPage(browser);
+    try {
+      const box = page.getByTestId('guarded-test-e2e-probe');
+      await box.getByLabel('The test query fails').check();
+      const phrase = await review(box, 'e2e-probe');
+      await box.getByTestId('guarded-phrase-input').fill(phrase);
+      await box.getByTestId('guarded-apply').click();
+      const line = box.getByTestId('guarded-probe');
+      await expect(line).toHaveAttribute('data-state', 'no_answer', { timeout: 15_000 });
+      await expect(line).toContainText('no answer to the node');
+      await expect(box.getByTestId('guarded-confirm-here')).toBeDisabled();
+      // The server refuses it too, naming the listener, and the window runs on.
+      const status = await (await page.request.get('/api/v1/guarded')).json();
+      const pid = status.nodes[0].pending.id as string;
+      const csrf = await csrfOf(page);
+      for (let i = 0; i < 6; i += 1) {
+        const r = await page.request.post(`/api/v1/guarded/pending/${pid}/confirm`, { headers: { 'x-csrf-token': csrf }, data: {} });
+        expect(r.status()).toBe(403);
+        expect(JSON.stringify(await r.json())).toContain('got no answer');
+      }
+      // Six refusals for a probe that fails did not count toward the block of five failed confirmations.
+      const again = await page.request.get(`/api/v1/guarded/pending/${pid}`);
+      expect(again.status()).toBe(200);
+      await box.getByTestId('guarded-cancel').click();
+      await expect(box.getByTestId('guarded-rolled-back')).toContainText('cancelled', { timeout: 10_000 });
+    } finally {
+      await page.close();
+    }
+  });
+
   test('api_902 guarded change asks for the phrase', async ({ browser }) => {
     const page = await adminPage(browser);
     try {

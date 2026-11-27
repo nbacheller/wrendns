@@ -109,6 +109,12 @@ fn api_902_guarded_routes_not_in_mcp_or_plans() {
         }
     }
     assert!(!never_for_agents(&Method::GET, "/api/v1/guarded"));
+    // The read of one pending change names the staged addresses: never for an agent (T27.14b).
+    assert!(never_for_agents(&Method::GET, "/api/v1/guarded/pending/p1"));
+    assert_eq!(
+        required(&Method::GET, "/api/v1/guarded/pending/p1"),
+        Need::Forbidden
+    );
     assert_eq!(
         required(&Method::GET, "/api/v1/guarded"),
         Need::Scope("config:read")

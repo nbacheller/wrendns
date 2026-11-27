@@ -171,6 +171,61 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
 
 /// Asks `url` the probe question once; the time it took, or why it failed.
 async fn ask(url: &str, timeout: Duration) -> Result<Duration, String> {
+    let start = Instant::now();
+    ask_raw(url, timeout).await.map(|_| start.elapsed())
+}
+
+/// REQ: API-902, OBS-020 (T27.14b; design 2.2) — the proof probe of a window change: the same
+/// client, once. On an ungated listener any well-formed answer counts (ADR-107). On a gated one the
+/// gate's refusal is the answer (HTTP 404 on DoH and DoH3, REFUSED with extended error 18 on the
+/// others, ADR-1090 point 4), and a normal answer means the gate is not on. A DoH 404 is also what
+/// a path the listener does not serve gets, so on a gated DoH or DoH3 listener it counts only when
+/// the node's own request got past the path check to the gate (`evidence.routed()` went up).
+pub(crate) async fn ask_proof(
+    url: &str,
+    gated: bool,
+    evidence: Option<&crate::server::Evidence>,
+    timeout: Duration,
+) -> Result<crate::guarded::dns_proof::Kind, String> {
+    use crate::guarded::dns_proof::Kind;
+    let routed_before = evidence.map(crate::server::Evidence::routed);
+    let answer = ask_raw(url, timeout).await;
+    if !gated {
+        let resp = answer?;
+        return wrendns_proto::summarize(&resp)
+            .map(|_| Kind::Answered)
+            .map_err(|_| "the answer was not a well-formed DNS message".to_owned());
+    }
+    match answer {
+        Err(e) if e.contains("HTTP 404") => {
+            if evidence.map(crate::server::Evidence::routed) > routed_before {
+                Ok(Kind::RefusedByGate)
+            } else {
+                Err(
+                    "HTTP 404, but not from the gate: the listener does not serve this path"
+                        .to_owned(),
+                )
+            }
+        }
+        Err(e) => Err(e),
+        Ok(resp) => {
+            let refused = wrendns_proto::summarize(&resp)
+                .is_ok_and(|s| s.rcode == wrendns_proto::rcode::REFUSED);
+            if refused && crate::upstream_checks::first_ede(&resp) == Some(GATE_EDE) {
+                Ok(Kind::RefusedByGate)
+            } else {
+                Err("it answered a query without a device key, so the gate is not on".to_owned())
+            }
+        }
+    }
+}
+
+/// The extended error code of the gate's refusal (ADR-1090 point 4: 18, Prohibited).
+const GATE_EDE: u16 = 18;
+
+/// [`ask`], with the answer: the response message, or why there was none (an HTTP status that is
+/// not 200 reads as `HTTP <status> ...`).
+async fn ask_raw(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
     use wrendns_upstream::{Endpoint, Question, TlsOptions, Upstream, UpstreamOptions};
     let ep = Endpoint::parse(url)?;
     let opts = UpstreamOptions {
@@ -192,14 +247,13 @@ async fn ask(url: &str, timeout: Duration) -> Result<Duration, String> {
         checking_disabled: false,
         client_subnet: 0,
     };
-    let start = Instant::now();
     match tokio::time::timeout(
         timeout + Duration::from_millis(500),
         up.exchange(&q, timeout),
     )
     .await
     {
-        Ok(Ok(_)) => Ok(start.elapsed()),
+        Ok(Ok(resp)) => Ok(resp),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("timed out".to_owned()),
     }

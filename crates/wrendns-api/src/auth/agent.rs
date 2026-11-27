@@ -398,6 +398,8 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
         .is_some_and(|g| !g.is_empty() && !g.contains('/'));
     ((secret || pihole) && write)
         || (guarded && *method != Method::GET && *method != Method::HEAD)
+        // The read of one pending change (T27.14b) names the staged addresses and probe errors.
+        || p.starts_with("/api/v1/guarded/pending/")
         || (prune && write)
         || (sources && write)
         || (*method == Method::POST

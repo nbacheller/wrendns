@@ -4415,6 +4415,21 @@ impl Backend for ApiBackend {
         })
     }
 
+    fn guarded_pending(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::guarded::GuardedPendingView, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.pending_view(&caller, &id, token.as_deref()),
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
     fn guarded_cancel(
         &self,
         caller: wrendns_api::guarded::GuardedCaller,

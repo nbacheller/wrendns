@@ -240,6 +240,16 @@ static TEST: &[Row] = &[
         weakens: never,
         test_only: true,
     },
+    // T27.14b: a window row proved by the node's own DNS probe, not by a request on a new socket.
+    Row {
+        id: "e2e-probe",
+        label: "Test setting (DNS probe proof)",
+        paths: &[],
+        mode: Mode::Window,
+        proof: Some(Proof::NewSocket),
+        weakens: never,
+        test_only: true,
+    },
     Row {
         id: "e2e-staged",
         label: "Test setting (needs a restart)",
@@ -897,7 +907,7 @@ addr = \"127.0.0.1:5\"
     #[test]
     fn api_902_test_rows_are_marked() {
         assert!(TEST_ROWS_COMPILED);
-        assert!(rows().iter().filter(|r| r.test_only).count() == 4);
+        assert!(rows().iter().filter(|r| r.test_only).count() == 5);
         let w = row("e2e-window").unwrap_or_else(|| unreachable!());
         assert_eq!(w.proof, Some(Proof::NewSocket));
     }

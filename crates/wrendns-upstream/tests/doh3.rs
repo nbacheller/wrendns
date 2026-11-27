@@ -108,3 +108,31 @@ async fn ups_002_doh3_upstream() {
     );
     server.shutdown().await;
 }
+
+/// REQ: UPS-002, UPS-006 — a DoH3 upstream that answers with an HTTP error status (here 503, the
+/// status the listener sends when the handler has nothing to answer) fails as the DoH client does:
+/// an `Io` error that names the status, counted as a network failure, never as `bad_response`.
+#[tokio::test]
+async fn ups_002_doh3_upstream_http_error_status_is_an_io_error() {
+    let handler = |_: &[u8], _: &RequestMeta, _: &mut [u8]| Response::Drop;
+    let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+    let cfg = Doh3Config::new("127.0.0.1:0".parse().unwrap(), store);
+    let server = Doh3Server::bind(&cfg, Arc::new(handler)).unwrap();
+    let addr = server.local_addr();
+    let trusted = TlsOptions {
+        extra_roots: vec![CertificateDer::from_pem_file(fixture("ca.crt")).unwrap()],
+    };
+    let ep = Endpoint::parse(&format!("h3://{addr}/dns-query")).unwrap();
+    let up = Upstream::build(5, "h3", ep, &opts("dns.test"), &trusted).unwrap();
+    let err = up
+        .exchange(&question(), Duration::from_secs(2))
+        .await
+        .unwrap_err();
+    match err {
+        wrendns_upstream::ExchangeError::Io(e) => {
+            assert!(e.to_string().contains("HTTP 503"), "{e}");
+        }
+        other => panic!("expected an Io error, got {other:?}"),
+    }
+    server.shutdown().await;
+}

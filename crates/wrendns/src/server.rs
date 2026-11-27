@@ -24,7 +24,9 @@ use wrendns_upstream::Router;
 use crate::http;
 use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 
+mod evidence;
 mod listener_window;
+pub(crate) use evidence::Evidence;
 pub(crate) use listener_window::{ListenerCmd, ListenerHandle, StagedListener, WindowError};
 
 /// Loads and validates config from `files` + environment plus what the UI/API stored
@@ -707,11 +709,21 @@ impl Listeners {
         host: wrendns_config::HostFacts,
         alt_svc: Option<&str>,
     ) -> io::Result<Stream> {
+        Self::bind_stream_with(l, host, alt_svc, Arc::clone(&self.handler))
+    }
+
+    /// [`Listeners::bind_stream`] serving `handler` (a staged socket's has the evidence counter in
+    /// front of the shared one, `server/evidence.rs`).
+    fn bind_stream_with<H: wrendns_net::QueryHandler>(
+        l: &Listener,
+        host: wrendns_config::HostFacts,
+        alt_svc: Option<&str>,
+        handler: Arc<H>,
+    ) -> io::Result<Stream> {
         let store = match &l.tls {
             Some(t) => Some(CertStore::load(t.cert.as_str(), t.key.as_str())?),
             None => None,
         };
-        let handler = Arc::clone(&self.handler);
         // REQ: DNS-901 (ADR-1090 points 1 and 2) — an upgrade can turn the gate on for a listener
         // whose file never set it: say so, naming the listener, the setting and the rule.
         let gated = l.gated(host);

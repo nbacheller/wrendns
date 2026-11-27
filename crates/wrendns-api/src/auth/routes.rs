@@ -421,10 +421,14 @@ pub async fn authenticate_confirm(
     let Ok(bytes) = axum::body::to_bytes(body, 8 * 1024).await else {
         return Problem::invalid("the request body is too large").into_response();
     };
-    let token = serde_json::from_slice::<serde_json::Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("confirmToken").map(serde_json::Value::is_string))
-        .unwrap_or(false);
+    // The pending read (a GET, T27.14b) carries the token in a header instead.
+    let token = parts
+        .headers
+        .contains_key(crate::guarded_api::CONFIRM_TOKEN_HEADER)
+        || serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("confirmToken").map(serde_json::Value::is_string))
+            .unwrap_or(false);
     // Only a session cookie is set aside: a bearer token or Basic credentials are still checked
     // (an agent's token is refused here as everywhere else).
     let (_, bearer, basic) = presented(&parts.headers);

@@ -3661,6 +3661,14 @@ impl Backend for Federated {
     ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
         self.local.guarded_confirm(caller, id, token)
     }
+    fn guarded_pending(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedPendingView, Problem>> {
+        self.local.guarded_pending(caller, id, token)
+    }
     fn guarded_cancel(
         &self,
         caller: wrendns_api::guarded::GuardedCaller,
