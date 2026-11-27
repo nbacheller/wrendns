@@ -62,3 +62,28 @@ export function locationOfName(name: string | null | undefined): Loc | undefined
   const n = name?.trim().toLowerCase();
   return n ? (byAddress.get(n) ?? byLabel.get(n.split('.')[0] ?? '') ?? undefined) : undefined;
 }
+
+const v4 = (ip: string) => {
+  const p = ip.split('.').map(Number);
+  return p.length === 4 && p.every((x) => Number.isInteger(x) && x >= 0 && x < 256) ? p.reduce((n, x) => n * 256 + x, 0) : null;
+};
+
+/** The location an address's own network gives, ignoring any pin: the most specific resolved network (IPv4) wins; an
+ *  address no network holds falls back to an unpinned device's location. */
+export function locationFromNetworks(address: string | null | undefined): Loc | undefined {
+  const a = address ? v4(address) : null;
+  let best: { l: S['LocationInfo']; bits: number } | undefined;
+  for (const l of locs.items)
+    for (const n of l.networks)
+      for (const r of n.resolved) {
+        const [net, b] = r.split('/');
+        const bits = Number(b);
+        const base = v4(net ?? '');
+        if (a === null || base === null || !(bits >= 0 && bits <= 32) || (best && best.bits >= bits)) continue;
+        const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+        if (((a & mask) >>> 0) === ((base & mask) >>> 0)) best = { l, bits };
+      }
+  if (best) return { slug: best.l.slug, label: labelOf(best.l), pinned: false };
+  const d = locationOfAddress(address);
+  return d && !d.pinned ? d : undefined;
+}

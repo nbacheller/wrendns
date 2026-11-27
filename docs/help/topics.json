@@ -294,7 +294,7 @@
       "summary": "By default a device is in the location whose networks hold its address. A pin puts it in a location whatever its address, and choosing From its address removes the pin.",
       "when": "A device roams between networks but belongs to one place, or its address is not in any location's networks.",
       "example": "A laptop that is sometimes on the lab VLAN stays in home.",
-      "caution": "The pin is part of the device's entry, so renaming or regrouping the device keeps it. An agent token needs both the clients and the locations write scopes to set or change a pin. A location can't be deleted while a device is pinned to it.",
+      "caution": "The pin is part of the device's entry, so renaming or regrouping the device keeps it. An agent token needs both the clients and the locations write scopes to set, change or remove a pin (deleting a pinned device removes it too). A location can't be deleted while a device is pinned to it.",
       "docs": "locations"
     },
     {

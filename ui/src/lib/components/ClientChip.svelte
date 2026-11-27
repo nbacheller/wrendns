@@ -12,7 +12,7 @@
   import Picker from './Picker.svelte';
   import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
   import { routerKey, routerLabel } from '../router-name';
-  import { labelOf, loadLocations, locationOfAddress, locs } from '../locations.svelte';
+  import { labelOf, loadLocations, locationFromNetworks, locs } from '../locations.svelte';
 
   let {
     ip,
@@ -334,7 +334,7 @@
           <label>
             Location<HelpButton id="location-pin" />
             <select bind:value={location} aria-label="Location" data-testid="device-location">
-              <option value="">From its address{locationOfAddress(ip) ? ` (${locationOfAddress(ip)?.label})` : ' (none)'}</option>
+              <option value="">From its address{locationFromNetworks(ip) ? ` (${locationFromNetworks(ip)?.label})` : ' (none)'}</option>
               {#each locs.items as l (l.slug)}<option value={l.slug}>{labelOf(l)}</option>{/each}
             </select>
           </label>

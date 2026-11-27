@@ -9143,7 +9143,7 @@ test('dsc_914 a location is created, with a dry run first', async () => {
 test('dsc_914 turning flat names off asks for a reason, and the reason is sent', async () => {
   await stubLocations();
   const seen: { dry: boolean; body: unknown; reason: string | undefined }[] = [];
-  // The node's device domain: a location on it keeps following it, so the edit form leaves the domain empty.
+  // The node's device domain: only a hint under the field; the form sends the domain it holds, never a guess.
   await page.route(/\/api\/v1\/config\/entries\?kind=local/, (r) =>
     r.fulfill({ json: { items: [{ kind: 'local', name: 'default', source: 'file', definition: { device_domain: 'example.net' } }] } }),
   );
@@ -9170,10 +9170,72 @@ test('dsc_914 turning flat names off asks for a reason, and the reason is sent',
     await expect(page.getByTestId('location-preview')).toContainText('The old names stop answering.');
     await page.getByTestId('location-save').click();
     await expect(page.getByTestId('location-form')).toHaveCount(0);
-    expect(seen[1]).toMatchObject({ dry: false, reason: 'Nothing has used them for a month', body: { flatNames: false, domain: null } });
+    expect(seen[1]).toMatchObject({ dry: false, reason: 'Nothing has used them for a month', body: { flatNames: false, domain: 'example.net' } });
   } finally {
     await page.unroute(/\/api\/v1\/locations\/home/);
     await page.unroute(/\/api\/v1\/config\/entries\?kind=local/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 a cleared parent domain is sent as null, and one Escape closes only the form', async () => {
+  await stubLocations();
+  const seen: unknown[] = [];
+  await page.route(/\/api\/v1\/locations\/home/, async (r) => {
+    const req = r.request();
+    if (req.method() !== 'PUT') return r.continue();
+    if (!req.url().includes('dryRun=true')) seen.push(req.postDataJSON());
+    await r.fulfill({ json: { applied: !req.url().includes('dryRun'), configVersion: 2, warnings: [], impact: 'Changes home.' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await page.getByTestId('location-row').filter({ hasText: 'Home' }).getByTestId('location-open').click();
+    await page.getByTestId('location-edit').click();
+    // The details drawer makes way for the form: one dialog, so one Escape closes one thing.
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(page.getByLabel('Parent domain')).toHaveValue('example.net');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('location-form')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await page.getByTestId('location-edit').click();
+    await page.getByLabel('Parent domain').fill('');
+    await page.getByTestId('location-check').click();
+    await expect(page.getByTestId('location-save')).toBeEnabled();
+    await page.getByTestId('location-save').click();
+    await expect(page.getByTestId('location-form')).toHaveCount(0);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ domain: null });
+    await page.keyboard.press('Escape');
+  } finally {
+    await page.unroute(/\/api\/v1\/locations\/home/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 a refused delete says why inside the drawer and keeps saying it after the next poll', async () => {
+  await stubLocations();
+  await page.route(/\/api\/v1\/locations\/home/, async (r) => {
+    if (r.request().method() !== 'DELETE') return r.continue();
+    await r.fulfill({ status: 422, contentType: 'application/problem+json', json: { type: 'about:blank', title: 'Unprocessable', status: 422, detail: 'device laptop is still pinned to home' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await page.getByTestId('location-row').filter({ hasText: 'Home' }).getByTestId('location-open').click();
+    await page.getByTestId('location-delete').click();
+    await page.getByTestId('location-delete-yes').click();
+    const drawer = page.getByRole('dialog');
+    await expect(drawer).toContainText('device laptop is still pinned to home');
+    await expect(page.getByTestId('location-delete-ask')).toBeVisible();
+    // A poll that succeeds must not wipe it (the page polls every 15 s; a reload of the list stands in).
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(500);
+    await expect(drawer).toContainText('device laptop is still pinned to home');
+    await page.keyboard.press('Escape');
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 422 \(/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute(/\/api\/v1\/locations\/home/);
     await unstubLocations();
   }
 });
@@ -9267,6 +9329,28 @@ test('dsc_910 the device form sets and clears a location override', async () => 
   } finally {
     await page.unroute(/\/api\/v1\/clients$/);
     await page.unroute(/\/api\/v1\/clients\/Pin%20test/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_910 the device form names the location its address gives, not the pin', async () => {
+  // 127.0.0.1 is on home's network; the device is pinned to lab, and the list has the pinned device under lab.
+  const body = JSON.parse(JSON.stringify(LOCATIONS));
+  body.items[0].networks.push({ entry: '127.0.0.0/8', resolved: ['127.0.0.0/8'] });
+  body.items[1].devices.push({ address: '127.0.0.1', name: 'pin.lab.example.net', pinned: true });
+  await stubLocations(body);
+  await page.route(/\/api\/v1\/clients$/, (r) =>
+    r.fulfill({ json: { items: [{ name: 'Pin test', match: ['127.0.0.1'], groups: ['default'], effectiveGroups: ['default'], source: 'api', location: 'lab', locationName: 'lab', locationPinned: true }] } }),
+  );
+  try {
+    await page.goto('/#/');
+    await listOf('Top clients').getByRole('button', { name: /Renamed laptop|127\.0\.0\.1/ }).first().click();
+    await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+    await expect(page.getByTestId('device-location')).toHaveValue('lab');
+    await expect(page.getByTestId('device-location').locator('option').first()).toHaveText('From its address (Home)');
+    await page.keyboard.press('Escape');
+  } finally {
+    await page.unroute(/\/api\/v1\/clients$/);
     await unstubLocations();
   }
 });

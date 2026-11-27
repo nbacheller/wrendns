@@ -44,6 +44,11 @@
   let busy = $state(false);
   let nodeNames = $state<string[]>([]);
   let defaultDomain = $state('');
+  let returnTo: string | null = null;
+  const closeForm = () => {
+    form = null;
+    open = returnTo;
+  };
   const snapshot = () => JSON.stringify([form, reason]);
   const previewCurrent = $derived(preview !== null && previewedWith === snapshot());
   // Turning the old names off is an audited write that says why (DSC-916).
@@ -51,13 +56,16 @@
 
   async function edit(l: Loc | null) {
     reason = '';
+    // One dialog at a time: the details drawer closes while the form is open and comes back with the form's end.
+    returnTo = l?.slug ?? null;
+    open = deleting = null;
     preview = previewedWith = formError = null;
     const [c, d] = await Promise.all([api.cluster().catch(() => null), api.configEntries('local').catch(() => null)]);
     nodeNames = (c?.nodes ?? []).map((n) => n.nodeId);
     const dd = (d?.items[0]?.definition as Record<string, unknown> | undefined)?.device_domain;
     defaultDomain = typeof dd === 'string' ? dd : '';
     form = l
-      ? { isNew: false, slug: l.slug, label: l.label ?? '', domain: l.domain === defaultDomain ? '' : l.domain, visibility: l.visibility, networks: l.networks.map((n) => n.entry).join('\n'), nodes: [...l.nodes], flat: l.flatNames, wasFlat: l.flatNames }
+      ? { isNew: false, slug: l.slug, label: l.label ?? '', domain: l.domain, visibility: l.visibility, networks: l.networks.map((n) => n.entry).join('\n'), nodes: [...l.nodes], flat: l.flatNames, wasFlat: l.flatNames }
       : { isNew: true, slug: '', label: '', domain: '', visibility: 'shared', networks: '', nodes: [], flat: true, wasFlat: true };
   }
 
@@ -83,7 +91,8 @@
         preview = r;
         previewedWith = asChecked;
       } else {
-        form = preview = null;
+        preview = null;
+        closeForm();
         await Promise.all([load(), loadLocations()]);
       }
     } catch (e) {
@@ -95,15 +104,17 @@
   }
 
   let deleting = $state<string | null>(null);
+  // A refused delete is shown beside the question, in the drawer, and stays until the next try.
+  let deleteError = $state<unknown>(null);
   async function remove(slug: string) {
     busy = true;
-    error = null;
+    deleteError = null;
     try {
       await api.deleteLocation(slug);
       deleting = open = null;
       await Promise.all([load(), loadLocations()]);
     } catch (e) {
-      error = e;
+      deleteError = e;
     } finally {
       busy = false;
     }
@@ -199,7 +210,7 @@
 
   {#if shown}
     {@const l = shown}
-    <Drawer title={`${labelOf(l)} · ${l.slug}`} onclose={() => (open = deleting = null)}>
+    <Drawer title={`${labelOf(l)} · ${l.slug}`} onclose={() => (open = deleting = deleteError = null)}>
       {#if l.held}<p class="notice warn small">{l.heldReason ?? 'Held: not served yet.'}</p>{/if}
       <h3>Networks</h3>
       <ul class="small" data-testid="location-networks">
@@ -241,6 +252,7 @@
           <p class="muted small">Defined in the configuration file: change it there.</p>
         {:else if deleting === l.slug}
           <p class="notice warn small" data-testid="location-delete-ask">Delete {labelOf(l)}? Its devices go back to <code>&lt;device&gt;.&lt;device_domain&gt;</code>. A device pinned to it must be unpinned first.</p>
+          <ErrorNote error={deleteError} />
           <div class="row">
             <button type="button" class="danger" disabled={busy} onclick={() => remove(l.slug)} data-testid="location-delete-yes">Delete</button>
             <button type="button" onclick={() => (deleting = null)}>Keep</button>
@@ -248,7 +260,7 @@
         {:else}
           <div class="row">
             <button type="button" class="primary" onclick={() => edit(l)} data-testid="location-edit">Edit</button>
-            <button type="button" onclick={() => (deleting = l.slug)} data-testid="location-delete">Delete</button>
+            <button type="button" onclick={() => ((deleting = l.slug), (deleteError = null))} data-testid="location-delete">Delete</button>
           </div>
         {/if}
       {/if}
@@ -257,7 +269,7 @@
 
   {#if form}
     {@const f = form}
-    <Drawer title={f.isNew ? 'New location' : `Edit ${f.slug}`} onclose={() => (form = null)}>
+    <Drawer title={f.isNew ? 'New location' : `Edit ${f.slug}`} onclose={closeForm}>
       <form class="stack" onsubmit={(e) => { e.preventDefault(); void submit(false); }} data-testid="location-form">
         <label>
           Slug (the DNS label)
@@ -274,6 +286,7 @@
         <label>
           Parent domain
           <input class="mono" bind:value={f.domain} placeholder={defaultDomain || 'example.net'} aria-label="Parent domain" />
+          <span class="muted small">Empty: follows the node's device domain{defaultDomain ? ` (${defaultDomain})` : ''}.</span>
         </label>
         <label>
           Who may resolve its names
@@ -305,7 +318,7 @@
         <div class="row">
           <button type="button" disabled={busy || !f.slug.trim() || (needsReason && !reason.trim())} onclick={() => submit(true)} data-testid="location-check">Check</button>
           <button type="submit" class="primary" disabled={busy || !previewCurrent} data-testid="location-save">Save</button>
-          <button type="button" onclick={() => (form = null)}>Cancel</button>
+          <button type="button" onclick={closeForm}>Cancel</button>
         </div>
       </form>
     </Drawer>
