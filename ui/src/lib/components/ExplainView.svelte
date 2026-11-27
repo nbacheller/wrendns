@@ -8,6 +8,7 @@
   import type { FlowPath } from '../help';
   import { href } from '../router.svelte';
   import PolicyLine from './PolicyLine.svelte';
+  import RecursorTrace from './RecursorTrace.svelte';
 
   let { x }: { x: S['Explanation'] } = $props();
 
@@ -160,6 +161,8 @@
     <section class="card">
       <h3>Route</h3>
       <p>Upstream group <strong>{x.route.group}</strong> {x.route.routed ? '(matched a route)' : '(default)'}</p>
+      <!-- REQ: DNS-904 (T40.3) — the built-in resolver's walk, only when asked for. -->
+      {#key `${x.name}/${x.qtype}`}<RecursorTrace name={x.name} qtype={x.qtype} />{/key}
     </section>
   {/if}
 

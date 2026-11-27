@@ -1,6 +1,8 @@
 //! dnstap output (REQ: OBS-007, `spec/06` §5; T7.18): client queries and responses as dnstap
 //! messages (`CLIENT_QUERY`, `CLIENT_RESPONSE`), and (T9.19, `forwarder = true`) queries to
 //! upstreams and their answers (`FORWARDER_QUERY`, `FORWARDER_RESPONSE`), over Frame Streams,
+//! (T40.3, `resolver = true`) the built-in recursive resolver's queries to authoritative
+//! servers and their answers (`RESOLVER_QUERY`, `RESOLVER_RESPONSE`), over Frame Streams,
 //! to a Unix socket or TCP
 //! (`dnstap-read`, `fstrm_capture`, Vector, Logstash and others read it).
 //!
@@ -34,6 +36,9 @@ const CLIENT_QUERY: u64 = 5;
 const CLIENT_RESPONSE: u64 = 6;
 const FORWARDER_QUERY: u64 = 7;
 const FORWARDER_RESPONSE: u64 = 8;
+/// REQ: DNS-904 — the recursive resolver's own queries to authoritative servers.
+const RESOLVER_QUERY: u64 = 3;
+const RESOLVER_RESPONSE: u64 = 4;
 
 /// Who the exchange was with.
 enum Side {
@@ -41,6 +46,11 @@ enum Side {
     Client { peer: IpAddr, transport: Transport },
     /// Our query to an upstream (its address, if known, and dnstap's `SocketProtocol`).
     Forwarder {
+        upstream: Option<std::net::SocketAddr>,
+        protocol: u64,
+    },
+    /// REQ: DNS-904 — our recursive resolver's query to an authoritative server.
+    Resolver {
         upstream: Option<std::net::SocketAddr>,
         protocol: u64,
     },
@@ -62,6 +72,8 @@ pub(crate) struct Tap {
     seen: AtomicU64,
     /// REQ: OBS-007 (T9.19) — upstream exchanges seen (sampled on their own count).
     seen_forwarder: AtomicU64,
+    /// REQ: DNS-904 — resolver exchanges seen (sampled on their own count).
+    seen_resolver: AtomicU64,
     tx: SyncSender<Copy>,
     /// Copies dropped: the queue was full, the reader couldn't be reached, or a write to it
     /// failed (`wrendns_dnstap_dropped_total`).
@@ -151,6 +163,38 @@ impl Tap {
     }
 }
 
+impl Tap {
+    /// REQ: DNS-904, OBS-007 — offers one exchange between the recursive resolver and an
+    /// authoritative server; copies it if sampled.
+    pub(crate) fn offer_resolver(&self, e: &wrendns_upstream::ResolverExchange<'_>) {
+        if !self
+            .seen_resolver
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(self.every)
+        {
+            return;
+        }
+        let sent_ns = e
+            .sent
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let c = Copy {
+            side: Side::Resolver {
+                upstream: Some(e.server),
+                // dnstap SocketProtocol: UDP 1, TCP 2.
+                protocol: if e.tcp { 2 } else { 1 },
+            },
+            query: e.query.to_vec(),
+            response: e.response.map(<[u8]>::to_vec),
+            query_ns: sent_ns,
+            response_ns: now_ns(),
+        };
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self.tx.try_send(c) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Starts the writer for `[telemetry.dnstap]`, if configured.
 pub(crate) fn start(cfg: &wrendns_config::Config) -> Option<std::sync::Arc<Tap>> {
     let d = &cfg.telemetry.dnstap;
@@ -175,6 +219,7 @@ pub(crate) fn start(cfg: &wrendns_config::Config) -> Option<std::sync::Arc<Tap>>
         every: u64::from(d.sample_every.max(1)),
         seen: AtomicU64::new(0),
         seen_forwarder: AtomicU64::new(0),
+        seen_resolver: AtomicU64::new(0),
         tx,
         dropped,
     });
@@ -182,6 +227,13 @@ pub(crate) fn start(cfg: &wrendns_config::Config) -> Option<std::sync::Arc<Tap>>
     if d.forwarder {
         let t = std::sync::Arc::clone(&tap);
         wrendns_upstream::set_exchange_observer(Box::new(move |e| t.offer_forwarder(e)));
+    }
+    // REQ: DNS-904, OBS-007 — the recursive resolver's exchanges too.
+    if d.resolver {
+        let t = std::sync::Arc::clone(&tap);
+        wrendns_upstream::set_resolver_observer(wrendns_upstream::ResolverTap::new(move |e| {
+            t.offer_resolver(e);
+        }));
     }
     Some(tap)
 }
@@ -306,9 +358,14 @@ fn writer(target: &Target, rx: &Receiver<Copy>, identity: &[u8], dropped: &Atomi
         let kinds = match c.side {
             Side::Client { .. } => [CLIENT_QUERY, CLIENT_RESPONSE],
             Side::Forwarder { .. } => [FORWARDER_QUERY, FORWARDER_RESPONSE],
+            Side::Resolver { .. } => [RESOLVER_QUERY, RESOLVER_RESPONSE],
         };
         for kind in kinds {
-            if matches!(kind, CLIENT_RESPONSE | FORWARDER_RESPONSE) && c.response.is_none() {
+            if matches!(
+                kind,
+                CLIENT_RESPONSE | FORWARDER_RESPONSE | RESOLVER_RESPONSE
+            ) && c.response.is_none()
+            {
                 continue;
             }
             let payload = dnstap(identity, version.as_bytes(), kind, &c);
@@ -388,7 +445,7 @@ fn dnstap(identity: &[u8], version: &[u8], kind: u64, c: &Copy) -> Vec<u8> {
             bytes(&mut m, 4, &addr);
         }
         // REQ: OBS-007 (T9.19) — the upstream is the responder: response_address/port.
-        Side::Forwarder { upstream, protocol } => {
+        Side::Forwarder { upstream, protocol } | Side::Resolver { upstream, protocol } => {
             if let Some(a) = upstream {
                 let (family, addr) = family_addr(a.ip());
                 uint(&mut m, 2, family);
@@ -405,8 +462,10 @@ fn dnstap(identity: &[u8], version: &[u8], kind: u64, c: &Copy) -> Vec<u8> {
     uint(&mut m, 8, secs(c.query_ns));
     fixed32(&mut m, 9, nanos(c.query_ns));
     bytes(&mut m, 10, &c.query);
-    if matches!(kind, CLIENT_RESPONSE | FORWARDER_RESPONSE)
-        && let Some(r) = &c.response
+    if matches!(
+        kind,
+        CLIENT_RESPONSE | FORWARDER_RESPONSE | RESOLVER_RESPONSE
+    ) && let Some(r) = &c.response
     {
         uint(&mut m, 12, secs(c.response_ns));
         fixed32(&mut m, 13, nanos(c.response_ns));
@@ -562,5 +621,68 @@ mod tests {
             assert_eq!(get(10).1, q);
             assert_eq!(inner.iter().any(|x| x.0 == 14), kind == FORWARDER_RESPONSE);
         }
+    }
+
+    /// REQ: DNS-904, OBS-007 — a resolver copy: `RESOLVER_QUERY`/`RESOLVER_RESPONSE` with the
+    /// authoritative server as the responder, over UDP or TCP, sampled on its own count; a
+    /// query with no response is only a query.
+    #[test]
+    fn dns_904_dnstap_resolver_messages() {
+        let q = b"          a   ".to_vec();
+        for (tcp, proto) in [(false, 1u64), (true, 2)] {
+            let c = Copy {
+                side: Side::Resolver {
+                    upstream: Some("198.41.0.4:53".parse().unwrap()),
+                    protocol: if tcp { 2 } else { 1 },
+                },
+                query: q.clone(),
+                response: Some(q.clone()),
+                query_ns: 1_700_000_000_000_000_000,
+                response_ns: 1_700_000_000_500_000_000,
+            };
+            for kind in [RESOLVER_QUERY, RESOLVER_RESPONSE] {
+                let top = fields(&dnstap(b"node", b"v", kind, &c));
+                let inner = fields(&top.iter().find(|x| x.0 == 14).unwrap().1);
+                let get = |f: u32| inner.iter().find(|x| x.0 == f).unwrap();
+                assert_eq!(get(1).2, kind);
+                assert_eq!((get(2).2, get(3).2), (1, proto));
+                assert_eq!(get(5).1, vec![198, 41, 0, 4], "the server answers");
+                assert_eq!(get(7).2, 53);
+                assert_eq!(get(10).1, q);
+                assert_eq!(inner.iter().any(|x| x.0 == 14), kind == RESOLVER_RESPONSE);
+            }
+        }
+        assert_eq!((RESOLVER_QUERY, RESOLVER_RESPONSE), (3, 4), "dnstap.proto");
+    }
+
+    /// REQ: DNS-904, OBS-007 — with `resolver = true`, one query and one response go out per
+    /// exchange, one exchange in `sample_every`; clients and forwarders keep their own counts.
+    #[test]
+    fn dns_904_dnstap_resolver_is_sampled_on_its_own_count() {
+        let (tx, rx) = sync_channel::<Copy>(16);
+        let tap = Tap {
+            every: 2,
+            seen: AtomicU64::new(0),
+            seen_forwarder: AtomicU64::new(0),
+            seen_resolver: AtomicU64::new(0),
+            tx,
+            dropped: std::sync::Arc::default(),
+        };
+        let q = b" ".to_vec();
+        let server: std::net::SocketAddr = "192.0.2.53:53".parse().unwrap();
+        for i in 0..4u8 {
+            tap.offer_resolver(&wrendns_upstream::ResolverExchange {
+                server,
+                tcp: false,
+                query: &q,
+                response: (i != 2).then_some(q.as_slice()),
+                sent: std::time::SystemTime::now(),
+            });
+        }
+        let got: Vec<Copy> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2, "one in two: exchanges 0 and 2");
+        assert!(got[0].response.is_some() && got[1].response.is_none());
+        assert!(matches!(got[0].side, Side::Resolver { .. }));
+        assert_eq!(tap.seen.load(Ordering::Relaxed), 0, "clients not counted");
     }
 }

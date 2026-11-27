@@ -25,6 +25,40 @@ use wrendns_upstream::health::Breaker;
 
 use crate::http::Sources;
 
+/// REQ: DNS-904 — how many recursor traces one node runs at once.
+static RECURSOR_TRACES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// REQ: DNS-904 — the time one recursor trace may take before it stops with what it has.
+const RECURSOR_TRACE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// REQ: DNS-904 — a response code as the trace words it.
+fn recursor_rcode(rc: u16) -> String {
+    match rc {
+        wrendns_proto::rcode::NOERROR => "NOERROR".to_owned(),
+        wrendns_proto::rcode::NXDOMAIN => "NXDOMAIN".to_owned(),
+        wrendns_proto::rcode::SERVFAIL => "SERVFAIL".to_owned(),
+        wrendns_proto::rcode::REFUSED => "REFUSED".to_owned(),
+        other => format!("RCODE{other}"),
+    }
+}
+
+/// REQ: DNS-904 — a query type as the trace words it (`A`, `NS`, `TYPE65`).
+fn recursor_qtype(t: u16) -> String {
+    use wrendns_proto::rtype;
+    match t {
+        rtype::A => "A".to_owned(),
+        rtype::NS => "NS".to_owned(),
+        rtype::CNAME => "CNAME".to_owned(),
+        rtype::SOA => "SOA".to_owned(),
+        rtype::MX => "MX".to_owned(),
+        rtype::TXT => "TXT".to_owned(),
+        rtype::AAAA => "AAAA".to_owned(),
+        rtype::DS => "DS".to_owned(),
+        rtype::DNSKEY => "DNSKEY".to_owned(),
+        other => format!("TYPE{other}"),
+    }
+}
+
 /// REQ: FLT-017, API-010 — the name of the device at `ip` (v4-mapped) when a query-log row from
 /// `ts_s` was made: a reused pod address is named by the workload that held it then. Every
 /// other address (and a pod address the history doesn't cover) is named as [`device_name`].
@@ -1804,6 +1838,95 @@ impl Backend for ApiBackend {
             });
         }
         Ok(page)
+    }
+
+    // REQ: DNS-904 (T40.3), FLT-013 — a real lookup through one of this node's `recursive://`
+    // upstreams, with the steps taken.
+    fn recursor_trace(
+        &self,
+        p: &wrendns_api::model::RecursorTraceParams,
+    ) -> BoxFuture<Result<wrendns_api::model::RecursorTrace, Problem>> {
+        let qtype_text = p.qtype.clone().unwrap_or_else(|| "A".to_owned());
+        let Some(qtype) = wrendns_proto::rtype::from_name(&qtype_text) else {
+            return Box::pin(async move {
+                Err(Problem::invalid(format!(
+                    "`qtype`: unknown type `{qtype_text}`"
+                )))
+            });
+        };
+        let Ok(name) = wrendns_proto::NameBuf::from_presentation(p.name.trim()) else {
+            return Box::pin(async {
+                Err(Problem::invalid("`name` is not a domain name")
+                    .hint("Give a name such as www.example.com."))
+            });
+        };
+        let router = Arc::clone(&self.src.pipeline.current().router);
+        let wanted = p.upstream.clone();
+        let shown = p.name.trim().to_owned();
+        Box::pin(async move {
+            let recursive: Vec<_> = router
+                .upstreams()
+                .iter()
+                .filter(|u| u.recursive_settings().is_some())
+                .collect();
+            let up = match &wanted {
+                Some(w) => recursive.iter().find(|u| &u.name == w).copied().ok_or_else(|| {
+                    Problem::invalid(format!("`upstream`: `{w}` is not a recursive:// upstream"))
+                        .hint("Use the name of an upstream whose url is recursive://.")
+                })?,
+                None => recursive.first().copied().ok_or_else(|| {
+                    Problem::invalid("no upstream resolves by itself (recursive://)")
+                        .hint("A trace shows the built-in resolver's walk; add a recursive:// upstream first.")
+                })?,
+            };
+            // REQ: DNS-904 — a trace sends real queries and sits outside the DNS rate limits, so
+            // few run at once and each has a fixed time budget.
+            let Ok(_permit) = RECURSOR_TRACES.try_acquire() else {
+                return Err(Problem::new(
+                    Code::RateLimited,
+                    "too many traces are running on this node",
+                )
+                .hint("Wait for a running trace to finish.")
+                .retry_after(RECURSOR_TRACE_BUDGET.as_secs()));
+            };
+            let t0 = std::time::Instant::now();
+            let (result, steps) = up
+                .trace_lookup(name, qtype, false, RECURSOR_TRACE_BUDGET)
+                .await
+                .ok_or_else(|| Problem::internal("the upstream is not a resolver"))?;
+            let total_micros = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let (rcode, answers, error) = match result {
+                Ok(r) => (
+                    Some(recursor_rcode(r.rcode)),
+                    u32::try_from(r.answer.len()).unwrap_or(u32::MAX),
+                    None,
+                ),
+                Err(e) => (None, 0, Some(e.to_string())),
+            };
+            Ok(wrendns_api::model::RecursorTrace {
+                name: shown,
+                qtype: recursor_qtype(qtype),
+                upstream: up.name.clone(),
+                rcode,
+                answers,
+                error,
+                total_micros,
+                steps: steps
+                    .into_iter()
+                    .map(|s| wrendns_api::model::RecursorTraceStep {
+                        kind: s.kind.to_owned(),
+                        zone: s.zone,
+                        server: s.server.map(|i| i.to_string()),
+                        qname: s.qname,
+                        qtype: recursor_qtype(s.qtype),
+                        outcome: s.outcome.to_owned(),
+                        detail: s.detail,
+                        transport: s.transport.to_owned(),
+                        micros: s.micros,
+                    })
+                    .collect(),
+            })
+        })
     }
 
     #[allow(clippy::too_many_lines)] // the explanation's fields, one by one
@@ -9443,7 +9566,7 @@ mod dhcp_lease_tests {
 /// REQ: API-007 (ADR-965 §8) — the 429 a backup with a passphrase gets while another derives.
 fn busy_problem() -> Problem {
     Problem::new(
-        wrendns_api::problem::Code::RateLimited,
+        Code::RateLimited,
         "another backup with a passphrase is running on this node",
     )
     .retry_after(2)
@@ -9661,6 +9784,82 @@ name = "printer"
 match = ["10.8.0.0/24"]
 groups = ["iot"]
 "#;
+
+    /// REQ: DNS-904 (T40.3) — a trace names what is wrong: an unknown type, a name that is not
+    /// a name, an upstream that does not resolve by itself, and a node with no `recursive://`
+    /// upstream at all (the walk itself is tested against a fixture tree in `wrendns-recursor`).
+    #[test]
+    fn dns_904_a_trace_says_what_is_wrong_with_the_request() {
+        use wrendns_api::model::RecursorTraceParams;
+        let api = api();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let ask = |name: &str, qtype: Option<&str>, upstream: Option<&str>| {
+            rt.block_on(api.recursor_trace(&RecursorTraceParams {
+                name: name.into(),
+                qtype: qtype.map(str::to_owned),
+                upstream: upstream.map(str::to_owned),
+            }))
+        };
+        let e = ask("www.example.com", Some("NOPE"), None).unwrap_err();
+        assert!(e.detail.contains("unknown type"), "{}", e.detail);
+        let e = ask("bad..name", None, None).unwrap_err();
+        assert!(e.detail.contains("not a domain name"), "{}", e.detail);
+        let e = ask("www.example.com", None, Some("nothing")).unwrap_err();
+        assert!(
+            e.detail.contains("not a recursive:// upstream"),
+            "{}",
+            e.detail
+        );
+        let e = ask("www.example.com", None, None).unwrap_err();
+        assert!(
+            e.detail.contains("no upstream resolves by itself"),
+            "{}",
+            e.detail
+        );
+    }
+
+    /// REQ: DNS-904 — traces are capped per node: with every slot taken, another is refused
+    /// with "rate limited" and a retry hint, and runs again once a slot is free.
+    #[test]
+    fn dns_904_traces_are_capped_per_node() {
+        use wrendns_api::model::RecursorTraceParams;
+        let api = api();
+        let cfg = wrendns_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[upstream]]
+name = \"r\"
+url = \"recursive://\"
+[[upstream_group]]
+name = \"default\"
+members = [\"r\"]
+",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = wrendns_policy::LocalData::from_config(&cfg);
+        api.src.pipeline.reload(
+            Arc::new(wrendns_upstream::Router::from_config(&cfg).unwrap()),
+            crate::pipeline::Policy::from_config(&cfg, local),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let p = RecursorTraceParams {
+            name: "www.example.com".into(),
+            qtype: None,
+            upstream: None,
+        };
+        let held = RECURSOR_TRACES.try_acquire_many(2).unwrap();
+        let e = rt.block_on(api.recursor_trace(&p)).unwrap_err();
+        assert_eq!(e.code, Code::RateLimited, "{}", e.detail);
+        drop(held);
+    }
 
     fn api() -> ApiBackend {
         let src = Arc::new(crate::http::tests::sources());

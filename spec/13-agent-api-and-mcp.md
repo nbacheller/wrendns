@@ -35,6 +35,7 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `top_items` | Top domains / blocked domains / clients / NXDOMAIN / upstreams for a window, optionally per client or group |
 | `search_queries` | Query-log search (client, group, qname pattern, status, qtype, rcode, upstream, min latency, node, time range; each of qname, client, status, qtype, and rcode can be negated with its `...Not` flag), paginated; or the one query a trace ID names (`trace`, OBS-017) |
 | `explain_decision` | `explain` for name + client + qtype: rules matched, winner, upstream route |
+| `trace_recursion` | How the built-in recursive resolver resolves a name, step by step: where it began, then each query to each authoritative server with its zone, the name asked, the outcome and the time (a real lookup; `analytics:read`; DNS-904) |
 | `get_client_profile` | Device profile: identity, groups, traffic, top/new domains, latency, protocols |
 | `latency_breakdown` | Percentiles by stage / upstream / client / qtype |
 | `upstream_health` | Per-upstream health, breaker history, latency percentiles |
