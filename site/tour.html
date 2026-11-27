@@ -17,7 +17,7 @@
   <p class="eyebrow">The web UI</p>
   <h1>Tour</h1>
   <p class="lede">The UI is built into the binary: nothing else to install. Light or dark, on a desktop or a phone.</p>
-  <p class="muted">These are captured by a Playwright script against a real server on an invented home network (<code>ui/tests/demo/run.sh</code>), so they match the code. The server is minutes old, so its charts are short.</p>
+  <p class="muted">These are captured by a Playwright script against a real server on an invented home network (<code>ui/tests/demo/run.sh</code>), so they match the code. The server is minutes old, so its charts are short. A few pages the demo cannot produce (the cluster, the lookup trace and the listener review) show example responses instead.</p>
 </section>
 
 <section id="see">
@@ -41,7 +41,7 @@
 <section id="run">
   <h2>Run it as one system</h2>
   <div class="shots">
-    <figure><img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site with a controller and three resolver pods on two nodes, and a Pi" width="1280" height="860" loading="lazy"><figcaption>Cluster topology (example data: the test server runs alone)</figcaption></figure>
+    <figure><img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site with a controller and three resolver pods on two nodes, and a Pi" width="1280" height="860" loading="lazy"><figcaption>Cluster topology (example data: the demo cluster is three nodes on one machine)</figcaption></figure>
     <figure><img src="assets/shots/cache-dark.jpg" alt="Cache page: hit rate, what the cache holds, settings, and the top entries, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Cache (dark theme)</figcaption></figure>
     <figure><img src="assets/shots/settings-dark.jpg" alt="Settings: API tokens for scripts and AI agents, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Settings: API and agent tokens (dark theme)</figcaption></figure>
     <figure><img src="assets/shots/queries-dark.jpg" alt="Query log with filters, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Query log (dark theme)</figcaption></figure>
@@ -64,7 +64,7 @@
         <source srcset="assets/shots/listeners-dark.jpg" media="(prefers-color-scheme: dark)">
         <img src="assets/shots/listeners-light.jpg" alt="The Listeners card: two plain DNS listeners answering in about a millisecond, a new DNS over TLS listener in the draft, and the review that says what is kept, what is added and that the node asks each new listener a test question" width="1280" height="860" loading="lazy">
       </picture>
-      <figcaption>Listeners: change where this node answers, with a review and a test query first</figcaption>
+      <figcaption>Listeners: change where this node answers, with a review and a test query first (an example node)</figcaption>
     </figure>
     <figure>
       <picture>
@@ -76,16 +76,16 @@
     <figure>
       <picture>
         <source srcset="assets/shots/why-trace-dark.jpg" media="(prefers-color-scheme: dark)">
-        <img src="assets/shots/why-trace-light.jpg" alt="The Why? page of a lookup for www.example.com with a Trace the lookup button, and the trace: it starts at the root servers, is sent on to com., then to example.com., and gets its answer, each step with the server asked and the time" width="1280" height="860" loading="lazy">
+        <img src="assets/shots/why-trace-light.jpg" alt="The Explain page (also under Why?) for a lookup of www.example.com with a Trace the lookup button, and the trace: it starts at the root servers, is sent on to com., then to example.com., and gets its answer, each step with the server asked and the time" width="1280" height="860" loading="lazy">
       </picture>
-      <figcaption>Why? with the lookup trace of the built-in resolver (an example walk)</figcaption>
+      <figcaption>Explain (also under Why?) with the lookup trace of the built-in resolver (an example walk)</figcaption>
     </figure>
     <figure>
       <picture>
         <source srcset="assets/shots/cache-flush-dark.jpg" media="(prefers-color-scheme: dark)">
         <img src="assets/shots/cache-flush-light.jpg" alt="The Cache page Look up and flush card: a name box, flush this name or everything, flush one query type, flush negative answers, flush failed lookups, and the recursive resolver's flush of zone cuts and round-trip times" width="1280" height="860" loading="lazy">
       </picture>
-      <figcaption>Cache: look up a name and flush by name, type or kind</figcaption>
+      <figcaption>Cache: look up and flush a name (the new flushes by type or kind are in 1.1)</figcaption>
     </figure>
   </div>
 </section>
