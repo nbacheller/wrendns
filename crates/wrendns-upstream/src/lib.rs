@@ -24,6 +24,7 @@ mod http1;
 mod nsec;
 /// REQ: UPS-011 (T7.16)
 mod plugin;
+pub mod rfc5011;
 pub mod presets;
 /// REQ: UPS-010 (T7.16)
 pub mod proxy;
