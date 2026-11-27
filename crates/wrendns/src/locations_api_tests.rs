@@ -289,8 +289,13 @@ async fn dsc_908_the_first_location_waits_for_every_members_build() {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    // The held set is one per process and the crate's tests share it, so this looks for its own
+    // feature's refusal and does not count the others.
     let holds = crate::upgrade_gate::standing(Some(&old.primary));
-    assert_eq!(holds.len(), 1, "{holds:?}");
+    assert!(
+        holds.iter().any(|h| h.contains("does not know locations")),
+        "{holds:?}"
+    );
     let _ = old.stop.send(true);
 
     let new = pair("1.1.0", "1.1.0").await;

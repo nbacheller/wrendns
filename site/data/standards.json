@@ -207,6 +207,16 @@
       "diagram": "rfc9156"
     },
     {
+      "rfc": "9276",
+      "title": "Guidance for NSEC3 parameter settings",
+      "status": "supported",
+      "reqs": [
+        "DNS-902"
+      ],
+      "summary": "The validator limits NSEC3 iterations: above 50 a denial is treated as insecure, above 500 as bogus, and an answer affected carries Extended DNS Error 27.",
+      "diagram": "rfc4033"
+    },
+    {
       "rfc": "8198",
       "title": "Aggressive use of DNSSEC-validated cache",
       "status": "partial",
