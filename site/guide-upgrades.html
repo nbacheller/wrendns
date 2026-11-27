@@ -27,16 +27,16 @@
     <li><a href="#movein">Move in from Pi-hole or Technitium</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
   </ul>
-  <div class="callout"><p><b>Read the release notes first.</b> Releases before 1.0 can still change configuration keys and APIs, and each release's notes call out every such change. They're on the <a href="https://github.com/nbacheller/wrendns/releases">releases page</a>.</p></div>
+  <div class="callout"><p><b>Read the release notes first.</b> A release can change a configuration key or an API, and its notes list every change that needs you to act under <b>Upgrading</b>. They're on the <a href="https://github.com/nbacheller/wrendns/releases">releases page</a>.</p></div>
 </section>
 
 <section id="version">
   <h2>Your version and channel</h2>
   <p>Every build says exactly what it is, the same way on every architecture:</p>
 <pre><code>$ wrendns --version
-wrendns 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)</code></pre>
+wrendns 1.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)</code></pre>
   <ul>
-    <li><b>Releases</b> are <code>0.1.0</code>. Builds of <code>main</code> (the <b>edge</b> channel) are <code>0.1.0-edge.&lt;run&gt;</code>. A local build is the crate version with a <code>-dev</code> suffix (for example <code>0.8.0-dev</code>) and its commit; its peers read it as that version.</li>
+    <li><b>Releases</b> are <code>1.0.0</code>. Builds of <code>main</code> (the <b>edge</b> channel) are <code>1.1.0-edge.&lt;run&gt;</code>, ahead of 1.0.0 and not yet a release. A local build is the crate version with a <code>-dev</code> suffix (for example <code>1.1.0-dev</code>) and its commit; its peers read it as that version.</li>
     <li><b>Where else it shows:</b> the web UI's sidebar, <b>Settings → System → Version and updates</b> (with how the node was installed: <code>native</code>, <code>container</code>, or <code>helm</code>), <code>GET /api/v1/system/info</code> (<code>build</code> and <code>update</code>), the metric <code>wrendns_build_info{version,commit,channel,target}</code>, and the <b>Cluster</b> page for every node.</li>
   </ul>
   <p>Each install type picks its channel its own way:</p>
@@ -45,7 +45,7 @@ wrendns 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge,
     <tbody>
       <tr><td>Native (<code>install.sh</code>)</td><td><code>sudo sh install.sh</code> (the latest release)</td><td><code>sudo sh install.sh --edge</code>, or <code>self-update --channel edge</code></td></tr>
       <tr><td>Container image</td><td><code>:latest</code> (the newest stable release), or <code>:X.Y.Z</code>, <code>:X.Y</code>, <code>:X</code></td><td><code>:edge</code>, built from every commit on <code>main</code></td></tr>
-      <tr><td>Helm chart</td><td>a release version</td><td><code>0.1.0-edge.&lt;n&gt;</code> chart versions, which follow <code>main</code></td></tr>
+      <tr><td>Helm chart</td><td>a release version</td><td><code>1.1.0-edge.&lt;n&gt;</code> chart versions, which follow <code>main</code></td></tr>
     </tbody>
   </table></div>
   <p class="muted">The edge channel publishes several builds a day.</p>
@@ -95,7 +95,7 @@ sudo wrendns self-update --channel edge --restart  # builds from main</code></pr
       <p>Run <code>helm upgrade</code> with the new chart version and the same values file you installed with, or bump the chart version in your GitOps values (Argo CD, Flux):</p>
 <pre><code>helm upgrade wrendns oci://ghcr.io/nbacheller/charts/wrendns --version &lt;version&gt; \
   -n wrendns -f my-values.yaml</code></pre>
-      <p class="muted">The chart is published with every release, plus <code>0.1.0-edge.&lt;n&gt;</code> builds that follow <code>main</code>. The chart's join secret for resolver pods is kept across upgrades. Every value is on <a href="helm-values.html">Helm values</a>; the rest of the chart is in <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
+      <p class="muted">The chart is published with every release, plus <code>1.1.0-edge.&lt;n&gt;</code> builds that follow <code>main</code>. The chart's join secret for resolver pods is kept across upgrades. Every value is on <a href="helm-values.html">Helm values</a>; the rest of the chart is in <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
     </div>
   </div>
 </section>

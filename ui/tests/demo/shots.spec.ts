@@ -6,7 +6,8 @@
 //     queries, cluster.
 //   Site (site/assets/shots/<page>-light.jpg and -dark.jpg, 1280x860): dashboard, traffic,
 //     queries, why.
-import { test, type Browser, type Page } from '@playwright/test';
+import { test, type Page } from '@playwright/test';
+import { capture } from './capture';
 import { resolve } from 'node:path';
 
 const repo = resolve(import.meta.dirname, '../../..');
@@ -16,41 +17,6 @@ const brandName = { light: 'day', dark: 'night' } as const;
 async function readmeShot(page: Page, name: string, theme: 'light' | 'dark') {
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${repo}/docs/images/${name}-${brandName[theme]}.jpg`, type: 'jpeg', quality: 72 });
-}
-
-async function capture(browser: Browser, theme: 'light' | 'dark', width: number, height: number, scale: number) {
-  const context = await browser.newContext({
-    baseURL: 'http://127.0.0.1:28053',
-    colorScheme: theme,
-    // Still pictures: the map and the charts settle at once instead of animating.
-    reducedMotion: 'reduce',
-    viewport: { width, height },
-    deviceScaleFactor: scale,
-  });
-  const page = await context.newPage();
-  // The demo's devices are on loopback, which reads as masked client IPs (OPS-003): keep that
-  // banner out of the pictures.
-  await page.route('**/api/v1/system/info', async (route) => {
-    const res = await route.fetch();
-    const info = await res.json();
-    delete info.clientIpsMasked;
-    await route.fulfill({ response: res, json: info });
-  });
-  // The demo network is minutes old, so the period before it has a few stray queries and the
-  // dashboard's change arrows read as nonsense ("up 14,099%"). The pictures leave them out: the
-  // request for the previous period fails, and the page shows no change.
-  await page.route('**/api/v1/stats/summary*', async (route) => {
-    if (new URL(route.request().url()).searchParams.has('to')) await route.abort();
-    else await route.continue();
-  });
-  await page.goto('/');
-  await page.getByLabel('Username', { exact: true }).fill('admin');
-  await page.getByLabel('Password', { exact: true }).fill('correct horse battery');
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
-  await page.getByRole('button', { name: '15 min' }).click();
-  await page.waitForTimeout(3000);
-  return { page, context };
 }
 
 for (const theme of ['light', 'dark'] as const) {
@@ -89,6 +55,8 @@ for (const theme of ['light', 'dark'] as const) {
     await readmeShot(readme.page, 'queries', theme);
     await readme.context.close();
     await site.page.goto('/#/queries?status=blocked');
+    // Wait for the filtered log: the first "Why?" must be on a blocked query.
+    await site.page.waitForTimeout(2500);
     await site.page.getByRole('button', { name: 'Why?' }).first().click();
     await site.page.waitForTimeout(600);
     await site.page.screenshot({ path: `${repo}/site/assets/shots/why-${theme}.jpg`, type: 'jpeg', quality: 80 });

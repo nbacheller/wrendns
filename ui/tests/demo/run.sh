@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # REQ: DOC-002 — the screenshots of the README (docs/images/, Day and Night: the dashboard, the
 # network map, a device in the CMDB, the query log and the cluster) and of the site
-# (site/assets/shots/: dashboard, traffic, queries, why), all on one made-up network, so no real
+# (site/assets/shots/: dashboard, traffic, queries, why from shots.spec.ts; lists, settings, cache,
+# cache-flush, cluster, locations, listeners, allowed-networks and why-trace from site-shots.spec.ts),
+# all on one made-up network, so no real
 # network ever appears in them. It starts two stub upstreams (stub.py), a stub UniFi gateway
 # (unifi.py), a three-node cluster on loopback (pi-01 from demo.toml creates it; pi-02 and k8s-a
-# join with a token), sends synthetic traffic (traffic.py) and runs shots.spec.ts. Nothing here is
+# join with a token), sends synthetic traffic (traffic.py) and runs both specs (shots.spec.ts and site-shots.spec.ts). Nothing here is
 # real: every device, name, MAC and address is invented, and the only key is a throwaway string.
 #
 # One command, from the repository root (it builds nothing itself):

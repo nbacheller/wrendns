@@ -17,7 +17,7 @@
   <p class="eyebrow">The web UI</p>
   <h1>Tour</h1>
   <p class="lede">The UI is built into the binary: nothing else to install. Light or dark, on a desktop or a phone.</p>
-  <p class="muted">These are captured by the Playwright suite against a real server (<code>SHOTS=1 npx playwright test</code>), so they always match the code. The test server is minutes old, so its charts are short.</p>
+  <p class="muted">These are captured by a Playwright script against a real server on an invented home network (<code>ui/tests/demo/run.sh</code>), so they match the code. The server is minutes old, so its charts are short. A few pages the demo cannot produce (the cluster, the lookup trace and the listener review) show example responses instead.</p>
 </section>
 
 <section id="see">
@@ -26,7 +26,7 @@
     <figure><img src="assets/shots/dashboard-light.jpg" alt="Dashboard: the numbers that matter with their change, one chart of queries and blocked over time, and the sidebar" width="1280" height="860" loading="lazy"><figcaption>Dashboard: queries, blocked share, cache hits, latency, one chart that gives exact figures on hover, and the top lists (a made-up demo network)</figcaption></figure>
     <figure><img src="assets/shots/dashboard-dark.jpg" alt="Dashboard in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Dashboard (dark theme)</figcaption></figure>
     <figure><img src="assets/shots/queries-light.jpg" alt="Query log with filters" width="1280" height="860" loading="lazy"><figcaption>Query log: every question, filterable, with timings</figcaption></figure>
-    <figure><img src="assets/shots/why-light.jpg" alt="Why was this blocked: the list, its line number, and the rule" width="1280" height="860" loading="lazy"><figcaption>"Why?": the list and line behind every decision</figcaption></figure>
+    <figure><img src="assets/shots/why-light.jpg" alt="Why was this blocked: the list and the group behind the block, and a diagram of where the question went" width="1280" height="860" loading="lazy"><figcaption>"Why?": the list and rule behind every decision</figcaption></figure>
   </div>
 </section>
 
@@ -41,10 +41,52 @@
 <section id="run">
   <h2>Run it as one system</h2>
   <div class="shots">
-    <figure><img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site with a controller and three resolver pods on two nodes, and a Pi" width="1280" height="860" loading="lazy"><figcaption>Cluster topology (example data: the test server runs alone)</figcaption></figure>
+    <figure><img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site with a controller and three resolver pods on two nodes, and a Pi" width="1280" height="860" loading="lazy"><figcaption>Cluster topology (example data: the demo cluster is three nodes on one machine)</figcaption></figure>
     <figure><img src="assets/shots/cache-dark.jpg" alt="Cache page: hit rate, what the cache holds, settings, and the top entries, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Cache (dark theme)</figcaption></figure>
     <figure><img src="assets/shots/settings-dark.jpg" alt="Settings: API tokens for scripts and AI agents, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Settings: API and agent tokens (dark theme)</figcaption></figure>
     <figure><img src="assets/shots/queries-dark.jpg" alt="Query log with filters, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Query log (dark theme)</figcaption></figure>
+  </div>
+</section>
+
+<section id="new">
+  <h2>New on main <span class="pill planned">Coming in 1.1</span></h2>
+  <p class="muted">These pages are in builds of <code>main</code> (the <code>edge</code> channel), not in the 1.0.0 release. <a href="download.html#coming">What is coming in 1.1</a>. Everything shows made-up devices and example addresses.</p>
+  <div class="shots">
+    <figure>
+      <picture>
+        <source srcset="assets/shots/locations-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img src="assets/shots/locations-light.jpg" alt="The Locations page: three locations, Home, Smart home and Office (marked private), each with its domain, its networks, the nodes that serve it, a device count, a flat-names switch and a collisions count" width="1280" height="860" loading="lazy">
+      </picture>
+      <figcaption>Locations: parts of the network with a device-name subtree of their own</figcaption>
+    </figure>
+    <figure>
+      <picture>
+        <source srcset="assets/shots/listeners-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img src="assets/shots/listeners-light.jpg" alt="The Listeners card: two plain DNS listeners answering in about a millisecond, a new DNS over TLS listener in the draft, and the review that says what is kept, what is added and that the node asks each new listener a test question" width="1280" height="860" loading="lazy">
+      </picture>
+      <figcaption>Listeners: change where this node answers, with a review and a test query first (an example node)</figcaption>
+    </figure>
+    <figure>
+      <picture>
+        <source srcset="assets/shots/allowed-networks-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img src="assets/shots/allowed-networks-light.jpg" alt="The Allowed networks card: the built-in private ranges, one added network (192.168.20.0/24) waiting to be applied, and a note of what applying will do" width="1280" height="860" loading="lazy">
+      </picture>
+      <figcaption>Allowed networks: one list for the whole cluster, checked before it is applied</figcaption>
+    </figure>
+    <figure>
+      <picture>
+        <source srcset="assets/shots/why-trace-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img src="assets/shots/why-trace-light.jpg" alt="The Explain page (also under Why?) for a lookup of www.example.com with a Trace the lookup button, and the trace: it starts at the root servers, is sent on to com., then to example.com., and gets its answer, each step with the server asked and the time" width="1280" height="860" loading="lazy">
+      </picture>
+      <figcaption>Explain (also under Why?) with the lookup trace of the built-in resolver (an example walk)</figcaption>
+    </figure>
+    <figure>
+      <picture>
+        <source srcset="assets/shots/cache-flush-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img src="assets/shots/cache-flush-light.jpg" alt="The Cache page Look up and flush card: a name box, flush this name or everything, flush one query type, flush negative answers, flush failed lookups, and the recursive resolver's flush of zone cuts and round-trip times" width="1280" height="860" loading="lazy">
+      </picture>
+      <figcaption>Cache: look up and flush a name (the new flushes by type or kind are in 1.1)</figcaption>
+    </figure>
   </div>
 </section>
 

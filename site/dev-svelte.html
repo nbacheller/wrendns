@@ -58,7 +58,7 @@ form-action 'self'; frame-ancestors 'none'</code></pre>
       <tr><td><code>npm run check</code></td><td>svelte-check with warnings as failures: type errors, and accessibility warnings (a control with no label, a click handler on a non-interactive element), and unused CSS selectors.</td></tr>
       <tr><td><code>npm run check:help</code></td><td>Every <code>&lt;HelpButton id="…"&gt;</code> has a topic in <code>docs/help/topics.json</code>, and every topic not marked <code>general</code> is used somewhere (API-011).</td></tr>
       <tr><td><code>npm run types</code></td><td>Regenerates <code>ui/src/lib/api-types.ts</code> from <code>docs/api/openapi.json</code>. CI fails if the committed file differs. Don't hand-write a type for something the API returns; the few exceptions are commented.</td></tr>
-      <tr><td><code>npm run build</code></td><td>The 400 KiB gzipped budget for the whole of <code>ui/dist</code>, lazy chunks included. See <a href="dev-budgets.html#ui">Size and performance budgets</a>.</td></tr>
+      <tr><td><code>npm run build</code></td><td>The 512 KiB gzipped budget for the whole of <code>ui/dist</code>, lazy chunks included. See <a href="dev-budgets.html#ui">Size and performance budgets</a>.</td></tr>
       <tr><td><code>npm run test:e2e</code></td><td>The Playwright suite, which also fails on any page error or console error. See <a href="dev-ui-tests.html">Write UI tests</a>.</td></tr>
     </tbody>
   </table></div>
