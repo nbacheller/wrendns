@@ -334,6 +334,9 @@ struct CompiledMod {
     /// What a rewrite does (none for an exception's `$dnsrewrite`).
     action: Option<crate::rewrite::RewriteAction>,
     allow: bool,
+    /// REQ: FLT-906 - the rule comes from a response policy zone, where only the most specific
+    /// trigger for a name applies (see [`Matcher::rewrite_hits`]).
+    rpz: bool,
 }
 
 fn scope_of(t: ScopeTag) -> Scope {
@@ -360,6 +363,7 @@ impl CompiledMod {
             rewrite: m.dnsrewrite.is_some(),
             action: m.dnsrewrite.as_deref().and_then(crate::rewrite::parse),
             allow: m.allow,
+            rpz: false,
         }
     }
 
@@ -796,7 +800,16 @@ impl Matcher {
     pub fn with_lookup(snapshot: Option<Arc<Snapshot>>, lookup: Lookup) -> Result<Self, String> {
         let (mods, regexes, index) = match &snapshot {
             Some(s) => (
-                s.modrules.iter().map(CompiledMod::new).collect(),
+                s.modrules
+                    .iter()
+                    .map(|m| {
+                        let mut c = CompiledMod::new(m);
+                        c.rpz = s.manifest.lists.get(usize::from(m.list)).is_some_and(|l| {
+                            l.format == wrendns_config::ListFormat::Rpz
+                        });
+                        c
+                    })
+                    .collect(),
                 RegexSets::new(s.regexes.clone())?,
                 match lookup {
                     // A snapshot beyond the index's limits still works, just via the walk.
@@ -948,7 +961,8 @@ impl Matcher {
                 && scope_applies(m.scope, labels, name.total)
                 && m.applies_to(name.key(), qtype, client)
         };
-        let mut found: Vec<usize> = Vec::new();
+        // Each hit with the label count of the trigger it matched (deeper = more specific).
+        let mut found: Vec<(usize, usize)> = Vec::new();
         if let Some(s) = &self.snapshot {
             let mods = &self.mods;
             walk(
@@ -962,14 +976,40 @@ impl Matcher {
                     {
                         for (i, m) in mods.iter().enumerate().skip(start).take(count) {
                             if take(m, labels) {
-                                found.push(i);
+                                found.push((i, labels));
                             }
                         }
                     }
                 },
             );
         }
-        Some(found)
+        // REQ: FLT-906 - within one response policy zone the most specific trigger wins: an
+        // exact name beats `*.parent`, a deeper wildcard beats a shallower one. Other lists'
+        // rules (AdGuard `$dnsrewrite`) all apply together, as before.
+        let mut deepest: Vec<(u16, usize)> = Vec::new();
+        for &(i, labels) in &found {
+            let Some(m) = self.mods.get(i).filter(|m| m.rpz) else {
+                continue;
+            };
+            match deepest.iter_mut().find(|(l, _)| *l == m.list) {
+                Some((_, d)) => *d = (*d).max(labels),
+                None => deepest.push((m.list, labels)),
+            }
+        }
+        Some(
+            found
+                .into_iter()
+                .filter(|&(i, labels)| {
+                    self.mods.get(i).is_none_or(|m| {
+                        !m.rpz
+                            || deepest
+                                .iter()
+                                .any(|&(l, d)| l == m.list && d == labels)
+                    })
+                })
+                .map(|(i, _)| i)
+                .collect(),
+        )
     }
 
     /// REQ: FLT-906 (T40.9), FLT-013 - the rewrite rules (and exceptions) that apply to this

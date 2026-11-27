@@ -664,6 +664,53 @@ lists = ["policy"]
     }
 }
 
+/// REQ: FLT-906 (T40.9) - within one RPZ the most specific trigger decides: an exact name beats
+/// `*.parent` whichever actions they carry, and Explain names the record that was applied.
+#[test]
+fn flt_906_rpz_exact_trigger_beats_wildcard() {
+    let extra = r#"
+[[list]]
+name = "policy"
+format = "rpz"
+rules = [
+  "*.example.com CNAME .",
+  "x.example.com A 192.0.2.1",
+  "*.other.example A 192.0.2.2",
+  "y.other.example CNAME *.",
+  "*.corp.example CNAME rpz-passthru.",
+  "bad.corp.example CNAME .",
+  "*.deep.example CNAME .",
+  "*.a.deep.example CNAME rpz-passthru.",
+]
+
+[[group]]
+name = "home"
+networks = ["10.0.0.128/25"]
+lists = ["policy"]
+"#;
+    let (p, sources) = setup_with(extra);
+    let home = "10.0.0.130";
+    let rc = |name: &str| served(&p, name, home).map(|a| a[3] & 0x0F);
+    // (a) the local address, not the wildcard's NXDOMAIN
+    let e = ask(&p, &sources, "x.example.com", home);
+    assert!(e.summary.contains("192.0.2.1"), "{}", e.summary);
+    let rules = &e.filter.as_ref().unwrap().rules;
+    let winner = rules.iter().find(|r| r.winner).unwrap();
+    assert_eq!(winner.lines[0].text, "x.example.com A 192.0.2.1");
+    assert!(contains(&served(&p, "x.example.com", home).unwrap(), &[192, 0, 2, 1]));
+    assert_eq!(rc("z.example.com"), Some(3), "the wildcard still covers the rest");
+    // (b) NODATA, not the wildcard's address
+    let a = served(&p, "y.other.example", home).unwrap();
+    assert_eq!((a[3] & 0x0F, a[7]), (0, 0), "NODATA: no answer");
+    assert!(contains(&served(&p, "z.other.example", home).unwrap(), &[192, 0, 2, 2]));
+    // (c) the exact block beats the wildcard's passthru
+    assert_eq!(rc("bad.corp.example"), Some(3));
+    assert_ne!(rc("fine.corp.example"), Some(3), "passthru wildcard");
+    // a deeper wildcard passthru beats the shallower block
+    assert_eq!(rc("q.deep.example"), Some(3));
+    assert_ne!(rc("q.a.deep.example"), Some(3));
+}
+
 /// REQ: DNS-019 (ADR-904) — iCloud Private Relay, resolver.arpa, and (switched on)
 /// single-label names are explained as special answers, and the pipeline answers them the
 /// same way without forwarding; switched off, they resolve normally in both.
