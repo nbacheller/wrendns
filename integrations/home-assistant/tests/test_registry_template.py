@@ -154,7 +154,12 @@ device_domain = "home.arpa"
 
         jar = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-        setup = (tmp / "data" / "setup-token").read_text().strip()
+        # The node may log its first router read before it has written the setup token: wait for the file.
+        token_file = tmp / "data" / "setup-token"
+        deadline = time.monotonic() + 20
+        while not token_file.exists() and time.monotonic() < deadline:
+            await _sleep(hass, 0.2)
+        setup = token_file.read_text().strip()
         req = urllib.request.Request(
             "http://127.0.0.1:36993/api/v1/auth/setup",
             data=json.dumps({"setupToken": setup, "username": "admin", "password": "ha-src-pass-1"}).encode(),
