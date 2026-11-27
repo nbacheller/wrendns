@@ -43,6 +43,7 @@ fn judge(cluster: Option<&Cluster>, f: Feature) -> Result<(), gate::Refusal> {
 pub(crate) fn enforce(cluster: Option<&Cluster>, f: Feature) -> Result<(), String> {
     match judge(cluster, f) {
         Ok(()) => {
+            #[cfg(not(test))] // see `standing`: the tests of the crate share the set
             held().remove(&f);
             Ok(())
         }
@@ -61,6 +62,11 @@ pub(crate) fn standing(cluster: Option<&Cluster>) -> Vec<String> {
     for f in features {
         match judge(cluster, f) {
             Ok(()) => {
+                // The set is one per process. The tests of a whole crate share it, and any of them
+                // reading the health of a cluster that knows the feature would take the entry away
+                // from a test that is still asserting on it, so a test build leaves it in place
+                // (the answer does not depend on the removal: each entry is judged again above).
+                #[cfg(not(test))]
                 held().remove(&f);
             }
             Err(r) => out.push(r.to_string()),
