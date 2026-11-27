@@ -37,6 +37,22 @@ pub struct ListenerAccess {
     pub public_exposure: bool,
     /// The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`).
     pub can_carry_key: bool,
+    /// REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the
+    /// files' contents are never returned), so the Listeners card can show and re-send them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
+    /// The URL path of a DoH or DoH3 listener, when one is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The connection limits, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_address: Option<u32>,
+    /// The listener accepts PROXY protocol v2 (set in the configuration file only).
+    pub proxy_protocol: bool,
 }
 
 /// Node and build information.
