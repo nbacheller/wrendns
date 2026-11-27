@@ -52,6 +52,24 @@
   <p class="muted">Each release also publishes <code>SHA256SUMS</code> and its signature, a signed <code>releases.json</code>, a CycloneDX SBOM per binary and the release notes, on the <a href="https://github.com/nbacheller/wrendns/releases/latest">latest release</a> page. Builds of <code>main</code> are on the <code>edge</code> channel. To check what you downloaded, see <a href="guide-upgrades.html">Upgrades, backups, and moving in</a>.</p>
 </section>
 
+<section id="coming">
+  <h2>What's new in 1.1 <span class="pill planned">In development</span></h2>
+  <p>The release you download above is <b>1.0.0</b>. The next version, 1.1, is being built on <code>main</code>, and builds of <code>main</code> (the <code>edge</code> channel, installed with <code>install.sh --edge</code> or the <code>:edge</code> image) already carry the items below. Each one is marked <span class="pill planned">Coming in 1.1</span> where it is described on this site, so a page never promises a feature that 1.0.0 lacks. There is no release date yet. Edge builds change often and are not for a network you rely on.</p>
+  <ul>
+    <li><b>A public listener answers only a device key.</b> An encrypted listener on a public address now refuses a device that does not carry its key, so it cannot be used as an open resolver. This changes what happens when you upgrade: <a href="guide-encrypted.html#device-key">read this first</a>.</li>
+    <li><b>Change listeners from the web UI.</b> Add, edit or remove where a node answers. The new listener opens next to the old ones, the node asks it a test question, and the change rolls back unless you confirm. <a href="guide-settings.html#guarded">How</a>.</li>
+    <li><b>Allowed networks in the web UI.</b> One list for the whole cluster, checked before it is applied. <a href="guide-devices.html#reach">How</a>.</li>
+    <li><b>Locations.</b> Give a site, a lab or a VLAN its own device names (<code>laptop.lab.example.net</code>), with a Locations page and a pin for a single device. <a href="guide-devices.html#locations">How</a>.</li>
+    <li><b>A stricter, easier to watch built-in resolver.</b> It no longer asks servers on your own machine or network, limits expensive DNSSEC proofs (RFC 9276), remembers how fast and how well each server answers, counts what it asks, and can show the walk of one lookup under Why?. <a href="guide-encrypted.html#recursive">How</a>.</li>
+    <li><b>Flush the cache by type or kind,</b> and flush the built-in resolver's memory of servers. <a href="faq.html#q-flush">How</a>.</li>
+    <li><b>Five opt-in category lists</b> from <code>blocklist.packettale.com</code>: stalkerware, typosquatting, violence and gore, remote-access tools and push notifications. <a href="guide-blocking.html#categories">How</a>.</li>
+    <li><b>Syslog over TCP or TLS keeps events</b> while the collector is down, instead of losing them. <a href="guide-monitoring.html#export">How</a>.</li>
+    <li><b>Safer upgrades of a cluster.</b> A new kind of shared setting is held back until every node can read it. <a href="guide-cluster.html#upgrade">How</a>.</li>
+    <li><b>A smaller web UI.</b> The help text is fetched from the node when you first open a "?".</li>
+  </ul>
+  <p class="muted">Not in 1.1 yet: dnstap is still set in the configuration file only. Every change that needs you to act on upgrade is listed under <b>Upgrading</b> in the release notes.</p>
+</section>
+
 <!-- @support -->
 
 </div>
