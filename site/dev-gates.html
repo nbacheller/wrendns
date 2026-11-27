@@ -48,11 +48,11 @@
       <tr><td><code>deny</code></td><td><code>cargo-deny</code>: advisories, licences, banned crates, sources. An advisory can be ignored in <code>deny.toml</code> only with a reason written beside it, and only for something that is not a vulnerability to us (an unmaintained crate we use only to read tokens, say).</td></tr>
       <tr><td><code>bench-smoke</code></td><td>The benchmark harness, end to end (<code>make bench-smoke</code>). Hosted runners are too noisy for the 5% regression gate, which needs a fixed machine, so CI fails only on lost queries or errors: judging speed is your job. See <a href="dev-budgets.html">Size and performance budgets</a>.</td></tr>
       <tr><td><code>site</code></td><td>This site builds, every link and asset resolves, and the pages generated from the repo (the configuration reference, the architecture page) agree with it. The same job checks that the Grafana dashboard is current, and that every P0 requirement has a test or evidence and <code>docs/v1-requirements.md</code> is current (<code>spec/trace.py --check</code>).</td></tr>
-      <tr><td><code>ui</code>, <code>oidc</code></td><td>The UI's API types match the OpenAPI document (a diff fails), the OpenAPI document passes the agent-readiness lint (<code>.spectral.yaml</code>), svelte-check with warnings failing, every "?" in the UI has a help topic, the build stays within the 400 KiB budget, and the Playwright suite passes against the real binary. <code>oidc</code> runs the suite against real Keycloak and Authentik. See <a href="dev-ui-tests.html">Write UI tests</a>.</td></tr>
+      <tr><td><code>ui</code>, <code>oidc</code></td><td>The UI's API types match the OpenAPI document (a diff fails), the OpenAPI document passes the agent-readiness lint (<code>.spectral.yaml</code>), svelte-check with warnings failing, every "?" in the UI has a help topic, the build stays within the 512 KiB budget, and the Playwright suite passes against the real binary. <code>oidc</code> runs the suite against real Keycloak and Authentik. See <a href="dev-ui-tests.html">Write UI tests</a>.</td></tr>
       <tr><td><code>helm</code></td><td>The chart lints and installs on kind (amd64) and k3d (arm64), DNS works through a LoadBalancer with the client's address in the query log, and the alert rules fire on bad values and stay quiet on good ones.</td></tr>
       <tr><td><code>native</code></td><td>The Pi and Linux paths on a disposable runner (the Compose bundle, the installer and its systemd unit), and the end-to-end cluster scripts under <code>deploy/cluster/</code> on real processes. See <a href="dev-cluster.html">Extend the cluster protocol</a>.</td></tr>
       <tr><td><code>migration</code></td><td>The importers against the real Pi-hole and Technitium images, backup and restore across two nodes, agent tokens, and the MCP server end to end.</td></tr>
-      <tr><td><code>image</code> (own workflow)</td><td>Builds every platform, enforces the 15 MiB size limit, runs a smoke test of each image, then publishes <code>edge</code>.</td></tr>
+      <tr><td><code>image</code> (own workflow)</td><td>Builds every platform, enforces the 25 MiB size limit, runs a smoke test of each image, then publishes <code>edge</code>.</td></tr>
       <tr><td><code>codeql</code>, <code>fuzz</code>, <code>pages</code></td><td>Code scanning, the nightly fuzzers, and the publishing of this site.</td></tr>
     </tbody>
   </table></div>
@@ -67,7 +67,7 @@ make bench-smoke                # before you finish a change to the DNS path
 cd ui
 npm run check                   # svelte-check, warnings fail
 npm run check:help              # every help button has a topic, and the reverse
-npm run build                   # also enforces the 400 KiB budget
+npm run build                   # also enforces the 512 KiB budget
 npm run test:e2e                # the Playwright suite (needs a built binary)</code></pre>
   <div class="callout"><p><b>Run the heavy parts on a build machine.</b> A full workspace test and the Playwright suite take real memory and minutes. Use whatever fast Linux box you have for them; the repository does not assume one.</p></div>
 </section>
