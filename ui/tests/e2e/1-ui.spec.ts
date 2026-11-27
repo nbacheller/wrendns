@@ -531,6 +531,78 @@ test('dns_007 cache tile: one number, split in the Advanced view', async () => {
   await page.unroute('**/api/v1/stats/summary*');
 });
 
+// REQ: DNS-007 — the Cache page's percentage chart does not add up percentages: each node's legend
+// figure is its hits over its lookups for the hour. REQ: DNS-001 — the merged top names never show a
+// negative time left: a node holding an entry past its time is counted as stale, not as "-9s".
+test('dns_007 cache page: percent legend from counts, no negative time left in the merged range', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const now = Date.now();
+  const history = (pct: number, lookups: number) =>
+    Array.from({ length: 6 }, (_, i) => ({
+      at: new Date(now - (5 - i) * 15_000).toISOString(), answeredPercent: pct, hitPercent: pct, lookups,
+      bytes: 1, entries: 1, evictions: 0, prefetches: 0, staleServed: 0,
+    }));
+  const node = (name: string, pct: number, lookups: number) => ({
+    node: name, bytes: 1, entries: 1, evictions: 0, hits: 1, inserts: 1, misses: 1, prefetches: 0, staleServed: 0, uncacheable: 0,
+    answeredPercent: pct, hitPercent: pct, history: history(pct, lookups),
+  });
+  const entry = (name: string, ttlLeftSeconds: number) => ({
+    name, qtype: 'A', rcode: 'NOERROR', answers: 1, authentic: false, dnssecOk: false, ttlLeftSeconds, ageSeconds: 5, bytes: 64, hits: 3,
+  });
+  const makeup = { positive: 1, nxdomain: 0, nodata: 0, servfail: 0, stale: 0, validated: 0 };
+  await page.route('**/api/v1/cache/stats', (route) =>
+    route.fulfill({ json: { items: [node('node-a', 50, 100), node('node-b', 80, 300)] } }),
+  );
+  await page.route('**/api/v1/cache/entries*', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { node: 'node-a', makeup, entries: [entry('mix.example.test', -9), entry('gone.example.test', -4), entry('live.example.test', 30)] },
+          { node: 'node-b', makeup, entries: [entry('mix.example.test', 17), entry('gone.example.test', -70), entry('live.example.test', 12)] },
+        ],
+      },
+    }),
+  );
+  await page.goto('/#/cache');
+  await page.reload();
+  // 6 points x 100 lookups at 50% = 300 hits of 600; node-b 80% of 300 each = 1440 of 1800.
+  const legend = page.locator('section.chart', { hasText: 'Answered from the cache' }).locator('.u-legend .u-value');
+  await expect(legend.nth(1)).toHaveText('50.0%');
+  await expect(legend.nth(2)).toHaveText('80.0%');
+  const top = page.getByTestId('cache-top');
+  await expect(top).toContainText('mix.example.test');
+  await expect(top).not.toContainText(/-\d+[smhd]/);
+  const rows = top.locator('tbody tr');
+  await expect(rows.filter({ hasText: 'mix.example.test' })).toContainText('17s left (stale on 1)');
+  await expect(rows.filter({ hasText: 'gone.example.test' })).toContainText('stale on 2 nodes');
+  await expect(rows.filter({ hasText: 'live.example.test' })).toContainText('12s to 30s left');
+  // The invented nodes have no settings on the server: the page's two 404s are expected.
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 404/.test(problems[i])) problems.splice(i, 1);
+  await page.unroute('**/api/v1/cache/stats');
+  await page.unroute('**/api/v1/cache/entries*');
+});
+
+// REQ: FLT-004 — with every enabled list inline there is no download to confirm, so the page does
+// not say "Some enabled lists have never downloaded".
+test('flt_004 lists page: no never-downloaded notice when every enabled list is inline', async () => {
+  // The e2e server's lists are all inline; the second pass makes one of them a download never made.
+  let remote = false;
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const body = await r.json();
+    const items = remote ? body.items.map((l: { source: string }, i: number) => (i === 0 ? { ...l, source: 'https://lists.example.test/x.txt', lastSuccessUnixSeconds: null } : l)) : body.items;
+    await route.fulfill({ response: r, json: { ...body, items } });
+  });
+  await page.goto('/#/lists');
+  await page.reload();
+  await expect(page.getByText('e2e-block', { exact: true }).first()).toBeVisible();
+  await expect(page.getByTestId('lists-refresh-status')).toHaveCount(0);
+  remote = true;
+  await page.reload();
+  await expect(page.getByTestId('lists-refresh-status')).toContainText('Some enabled lists have never downloaded.');
+  await page.unroute('**/api/v1/lists');
+});
+
 // REQ: OBS-020 — Settings → System lists the listener probes: the e2e server's UDP listener
 // answers its own probe (every 5 s there), and probe queries stay out of the query log.
 test('obs_020 listener checks', async () => {

@@ -12,6 +12,9 @@
     /** A CSS variable name (`--s-blocked`) or a color. */
     color: string;
     values: number[];
+    /** The legend's figure when not hovering. Left out: the sum of the values (counts). A percentage
+     *  cannot be summed: give the figure worked out from the counts underneath, or null for none. */
+    overall?: number | null;
   }
 
   let {
@@ -108,6 +111,8 @@
   // another line and pushed the plot up or down under the cursor. Each value keeps room for
   // its longest text instead (`ch` wide, tabular digits): the time's longest form, the
   // series' total; one that's longer still (another `format`) makes room once.
+  const overallText = (s: Series) =>
+    s.overall !== undefined ? (s.overall === null ? '–' : format(s.overall)) : format(s.values.reduce((a, v) => a + (v ?? 0), 0));
   let legendChars: number[] = [];
   function holdLegend(u: uPlot, init = false) {
     u.root.querySelectorAll<HTMLElement>('.u-legend .u-value').forEach((v, i) => {
@@ -148,7 +153,7 @@
     // In legend order (after the stacked reverse).
     legendChars = [
       Math.max('total'.length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
-      ...order.map((i) => format(series[i].values.reduce((a, v) => a + (v ?? 0), 0)).length),
+      ...order.map((i) => overallText(series[i]).length),
     ];
     const opts: uPlot.Options = {
       width,
@@ -201,7 +206,7 @@
             points: { show: !bars && times.length < 3 },
             value: (_u: uPlot, _v: number | null, _si: number, idx: number | null) =>
               // Not hovering: the total over the shown range.
-              format(idx == null ? series[i].values.reduce((a, v) => a + (v ?? 0), 0) : (series[i].values[idx] ?? 0)),
+              idx == null ? overallText(series[i]) : format(series[i].values[idx] ?? 0),
           } satisfies uPlot.Series;
         }),
       ],

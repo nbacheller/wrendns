@@ -73,9 +73,6 @@ for (const theme of ['light', 'dark'] as const) {
     await page.goto('/#/cache');
     await page.getByRole('heading', { name: 'Cache' }).first().waitFor();
     await page.waitForTimeout(1500);
-    // The chart legend under the cards adds up the nodes' percentages ("6111.6%"), which says nothing:
-    // the picture leaves that row out until the page is fixed.
-    await page.locator('.u-legend').evaluateAll((els) => els.forEach((el) => (el as HTMLElement).style.setProperty('visibility', 'hidden')));
     await page.mouse.move(0, 0);
     await siteShot(page, 'cache', theme);
     // The look-up and flush controls.
