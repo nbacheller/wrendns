@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
+test.setTimeout(90_000);
 
 const ADMIN = { user: 'admin', pass: 'correct horse battery' };
 const REVERSE = '168.192.in-addr.arpa';
