@@ -48,6 +48,12 @@ pub struct Config {
     /// name subtree of their own. Shared by the cluster; the first entry waits for every member's
     /// build to know the table (the compatibility gate).
     pub location: Vec<crate::location::LocationConfig>,
+    /// REQ: CLD-904 (T36.10b, ADR-1084) - DNS providers: accounts at a DNS host the node may write
+    /// record sets in (ACME DNS-01, dynamic DNS). Shared by the cluster, admin only; the credential is
+    /// a stored secret named by `credential_ref`. The first entry waits for every member's build to
+    /// know the table (the compatibility gate). The table is stored and validated; nothing calls a
+    /// provider yet.
+    pub dns_provider: Vec<crate::dns_provider::DnsProviderConfig>,
     /// REQ: OBS-038 (ADR-161) — kinds of anomaly finding muted for devices or groups. Shared by
     /// the cluster (the `[telemetry]` section is not), so one entry reaches every node.
     pub anomaly_mute: Vec<AnomalyMuteConfig>,
@@ -164,6 +170,7 @@ impl Default for Config {
             group: Vec::new(),
             schedule: Vec::new(),
             location: Vec::new(),
+            dns_provider: Vec::new(),
             anomaly_mute: Vec::new(),
             zone: Vec::new(),
             alerts: AlertsConfig::default(),

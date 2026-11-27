@@ -60,6 +60,9 @@ pub(crate) fn validate(
     for (path, msg) in crate::location::problems(cfg) {
         r.err(path, msg);
     }
+    for (path, msg) in crate::dns_provider::problems(cfg) {
+        r.err(path, msg);
+    }
     watchdog(cfg, &mut r);
     alerts(cfg, &mut r);
     slo(cfg, &mut r);

@@ -1315,6 +1315,53 @@ pub struct LocationList {
     pub held_reason: Option<String>,
 }
 
+/// REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings
+/// (the credential as a stored secret's name, never a value), where it comes from, and its state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderEntry {
+    pub name: String,
+    /// `azure_dns`, `cloudflare`, `route53` or `rfc2136`.
+    pub kind: String,
+    /// The zone the provider serves.
+    pub zone: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    /// The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the
+    /// name of a stored secret.
+    pub definition: serde_json::Value,
+    /// Whether it only computes changes and records them (`dry_run`).
+    pub dry_run: bool,
+    /// The name of the stored secret that holds the credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+    /// Whether this node stores a secret by that name (the value is never shown).
+    pub credential_present: bool,
+    /// `not_used`: the table stores and validates the entry; nothing calls the provider yet.
+    pub state: String,
+    /// The sentence that goes with `state`.
+    pub detail: String,
+    /// True while the start-up hold keeps the entry out of what this node serves and publishes (a
+    /// cluster member's build does not know DNS providers yet).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+}
+
+/// REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderList {
+    pub items: Vec<DnsProviderEntry>,
+    /// True while the start-up hold keeps the providers out of the answers this node serves: the
+    /// list is what is configured.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    /// Why they are held (the member that does not know them, or that the members are not heard
+    /// from yet); set with `held`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_reason: Option<String>,
+}
+
 /// REQ: FLT-012 (T7.9) — a blockable service.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

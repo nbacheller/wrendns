@@ -15,6 +15,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::Forward => "forward",
         ManagedKind::Zone => "zone",
         ManagedKind::Location => "location",
+        ManagedKind::DnsProvider => "dns_provider",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",

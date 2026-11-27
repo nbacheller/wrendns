@@ -64,6 +64,10 @@ A secret is of the kind `text` (one line, the default) or `pem`: one or more PEM
 
 **Upgrade gate.** A released build refuses a secret kind it does not know, so the first `pem` secret is refused (409 `upgrade_required`, dry runs too) while any member does not announce the kind in its Hello (a build older than the announcement, a development build of the same version number, and a registered member not heard from since this node started all count as not knowing it). The answer names the member and its version ("node X runs version Y, which does not know secrets of the `pem` kind; upgrade it first"), and health shows `upgrade_gate_holding` until the member is upgraded. Once every member knows the kind, the gate no longer applies. A node that joins with a `pem` row while the gate refuses keeps the row (it stays on the joiner, unshared) and health shows it as a conflict until every member knows the kind. The same gate holds the first `[[location]]` and the first `[[dns_provider]]` when those tables arrive (ADR-1096 point 5).
 
+## Credentials of DNS providers
+
+A DNS provider (`[[dns_provider]]`, CLD-904; `docs/running.md`, DNS providers) keeps its credential here, as an ordinary `text` secret: a client secret, an API token, an access key pair written `id:secret`, or a TSIG key. The provider's `credential_ref` names it. The table has no inline credential and no credential file, so the value is in no configuration file, API answer, audit record, support package or MCP result; the provider's card shows the secret's name and whether this node stores it. The secret cannot be deleted while a provider names it. Enter it with the form's secret field (named `dns.<provider>.credential` by default); the value is write-only, like every stored secret. The credential is meant to be limited to one record name or one zone at the provider, and the form shows how before you enter it. Nothing reads the secret yet: providers are stored and validated only in this release.
+
 ## Rotation
 
 **The data-directory key** (`secrets.key`): stop WrenDNS, then

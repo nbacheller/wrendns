@@ -346,6 +346,19 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("routers".into(), "/api/v1/routers".into())]),
         },
+        // REQ: CLD-904 (T36.10b, ADR-1084 point 4) - the DNS providers' status and settings, the
+        // credential by name only; no tool adds, changes or plans one (admin-only, no agent scope).
+        Tool {
+            name: "list_dns_providers",
+            description: "Read-only. The DNS providers in the configuration (Azure DNS, Cloudflare, Route 53, RFC 2136): each one's name, kind and zone, its settings with the stored secret that holds the credential named (never its value), whether this node stores a secret by that name, whether the configuration files define it, whether it only computes changes (`dry_run`), and its state. Providers are stored and validated but not used yet, so every entry reads `not_used`. While `held` is true a cluster member's build does not know DNS providers yet: the list is what is configured, and the node serves and publishes without them until the hold ends. There is no tool to add, change, test or remove a provider, and no plan tool: an admin does that in Settings, DNS providers. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "dnsProviders".into(),
+                    "/api/v1/dns-providers".into(),
+                )])
+            },
+        },
         // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export, tokens by name only; no
         // tool sets one (admin-only, no agent scope).
         Tool {

@@ -6,7 +6,7 @@
 //! The rule itself is `wrendns_cluster::gate`; nothing here is on the query path.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use wrendns_cluster::gate::{self, Feature};
@@ -131,16 +131,76 @@ pub(crate) fn enforce_locations(
     enforce(cluster, Feature::Locations)
 }
 
+/// REQ: DSC-908, CLD-904 (T36.10b; ADR-1096 point 5) - whether a configuration uses the table of DNS
+/// providers, which an older replica refuses to read (`deny_unknown_fields`).
+pub(crate) fn uses_dns_providers(cfg: &wrendns_config::Config) -> bool {
+    !cfg.dns_provider.is_empty()
+}
+
+/// REQ: DSC-908, CLD-904 (T36.10b) - the gate for the first DNS provider: `Ok` unless `after`
+/// starts using the table (`before` did not) while a member's build does not know it. Used by the
+/// API write path (dry runs too) and by the file loader on a reload, as [`enforce_locations`] is.
+pub(crate) fn enforce_dns_providers(
+    cluster: Option<&Cluster>,
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> Result<(), String> {
+    if !uses_dns_providers(after) || uses_dns_providers(before) {
+        return Ok(());
+    }
+    enforce(cluster, Feature::DnsProviders)
+}
+
+/// The gated tables a start-up hold can keep out: locations (with the clients' pins) and DNS
+/// providers. A node holds the set of them its configuration uses.
+pub(crate) const HOLDABLE: [Feature; 2] = [Feature::Locations, Feature::DnsProviders];
+
+/// Whether `cfg` uses the gated table of `f` (only the [`HOLDABLE`] ones).
+pub(crate) fn uses(cfg: &wrendns_config::Config, f: Feature) -> bool {
+    match f {
+        Feature::Locations => uses_locations(cfg),
+        Feature::DnsProviders => uses_dns_providers(cfg),
+        _ => false,
+    }
+}
+
+/// The holdable features `cfg` uses.
+pub(crate) fn features_used(cfg: &wrendns_config::Config) -> Vec<Feature> {
+    HOLDABLE.into_iter().filter(|f| uses(cfg, *f)).collect()
+}
+
+/// Takes the entries of `f` out of `cfg`.
+pub(crate) fn strip(cfg: &mut wrendns_config::Config, f: Feature) {
+    match f {
+        Feature::Locations => strip_locations(cfg),
+        Feature::DnsProviders => cfg.dns_provider.clear(),
+        _ => {}
+    }
+}
+
+/// A [`HOLDABLE`] feature as a bit (locations 1, DNS providers 2).
+const fn bit(f: Feature) -> u8 {
+    match f {
+        Feature::Locations => 1,
+        Feature::DnsProviders => 2,
+        _ => 0,
+    }
+}
+
 /// REQ: DSC-908 (T36.10a; ADR-1104 point 5, the owner's decision of 2026-11-26) - the locations a
-/// primary holds out until the gate can pass. A primary (or a standalone node made a primary)
+/// primary holds out until the gate can pass. REQ: CLD-904 (T36.10b) - generalised to a set of
+/// features: the DNS providers are held the same way (they change no DNS answer, so the hold only
+/// strips them from what is served and published). A primary (or a standalone node made a primary)
 /// that starts with a file holding a location, or a client pin, does not know yet whether every
 /// member announces the feature: it starts and serves DNS, but leaves the location entries and
 /// the device pins out of the configuration it serves and publishes, and says why in health. When
 /// the members have been heard and all announce the feature the entries are applied without a
 /// restart. A node with no cluster is never held.
 pub(crate) struct Hold {
-    /// The locations are held out.
+    /// Entries are held out.
     active: AtomicBool,
+    /// The features held out, as bits (see [`bit`]); meaningful while `active`.
+    features: AtomicU8,
     /// A release reload is running: it builds the configuration with the entries, and the hold
     /// stays on (the blob stays stripped) until that reload has applied them.
     releasing: AtomicBool,
@@ -157,6 +217,7 @@ impl Hold {
     pub(crate) const fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
+            features: AtomicU8::new(0),
             releasing: AtomicBool::new(false),
             reload_failed: AtomicBool::new(false),
             lost: Mutex::new(None),
@@ -167,34 +228,81 @@ impl Hold {
         self.lost.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The gate for every held feature: the first one a member does not know is the refusal.
+    fn judge_held(&self, cluster: Option<&Cluster>) -> Result<(), gate::Refusal> {
+        for f in self.held_features() {
+            judge(cluster, f)?;
+        }
+        Ok(())
+    }
+
     /// Whether the locations are being held out now.
     pub(crate) fn active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
     }
 
-    /// At start-up: when `clustered_primary` and `cfg` uses locations, takes them out of `cfg`
-    /// and starts holding. Returns whether it did. `already_published`: the version the cluster
-    /// last got already carried locations, so every member knew them when it was let in and a
-    /// restart holds nothing (ADR-1096 point 5; ADR-1104 point 5).
+    /// The features held out now (empty when no hold stands).
+    pub(crate) fn held_features(&self) -> Vec<Feature> {
+        if !self.active() {
+            return Vec::new();
+        }
+        let bits = self.features.load(Ordering::Relaxed);
+        HOLDABLE
+            .into_iter()
+            .filter(|f| bits & bit(*f) != 0)
+            .collect()
+    }
+
+    /// At start-up: when `clustered_primary` and `cfg` uses locations or DNS providers, takes
+    /// them out of `cfg` and starts holding. Returns whether it did. `already_published`: the
+    /// version the cluster last got already carried them, so every member knew the tables when it
+    /// was let in and a restart holds nothing (ADR-1096 point 5; ADR-1104 point 5).
+    #[cfg(test)] // the server calls `at_start_for` with what was published per feature
     pub(crate) fn at_start(
         &self,
         cfg: &mut wrendns_config::Config,
         clustered_primary: bool,
         already_published: bool,
     ) -> bool {
-        if !clustered_primary || !uses_locations(cfg) || already_published {
+        let published: &[Feature] = if already_published { &HOLDABLE } else { &[] };
+        self.at_start_for(cfg, clustered_primary, published)
+    }
+
+    /// [`Hold::at_start`] with the features the last published version already carried named
+    /// one by one: a cluster that runs locations has not yet run DNS providers, so the first
+    /// provider in a file is held although the locations are not.
+    pub(crate) fn at_start_for(
+        &self,
+        cfg: &mut wrendns_config::Config,
+        clustered_primary: bool,
+        already_published: &[Feature],
+    ) -> bool {
+        if !clustered_primary {
             return false;
         }
-        strip_locations(cfg);
-        self.begin();
+        let held: Vec<Feature> = features_used(cfg)
+            .into_iter()
+            .filter(|f| !already_published.contains(f))
+            .collect();
+        if held.is_empty() {
+            return false;
+        }
+        for f in &held {
+            strip(cfg, *f);
+        }
+        self.begin_with(&held);
         true
     }
 
-    /// Starts holding (a promotion whose reload the gate refused, or the start-up).
-    pub(crate) fn begin(&self) {
+    /// Starts holding `features`.
+    pub(crate) fn begin_with(&self, features: &[Feature]) {
         *self.lost() = None;
         self.reload_failed.store(false, Ordering::Relaxed);
         self.releasing.store(false, Ordering::Relaxed);
+        self.features.store(
+            features.iter().fold(0, |b, f| b | bit(*f)),
+            Ordering::Relaxed,
+        );
         self.active.store(true, Ordering::Relaxed);
     }
 
@@ -210,6 +318,7 @@ impl Hold {
         self.releasing.store(false, Ordering::Relaxed);
         self.reload_failed.store(false, Ordering::Relaxed);
         self.active.store(false, Ordering::Relaxed);
+        self.features.store(0, Ordering::Relaxed);
     }
 
     /// Tests only: ends the hold of the process.
@@ -223,7 +332,9 @@ impl Hold {
     /// builds with the entries).
     pub(crate) fn apply(&self, cfg: &mut wrendns_config::Config) {
         if self.active() && !self.releasing.load(Ordering::Relaxed) {
-            strip_locations(cfg);
+            for f in self.held_features() {
+                strip(cfg, f);
+            }
         }
     }
 
@@ -234,7 +345,7 @@ impl Hold {
         if !self.active() {
             return self.lost().clone();
         }
-        Some(match judge(cluster, Feature::Locations) {
+        Some(match self.judge_held(cluster) {
             Err(r) => hold_words(&r),
             Ok(()) if self.reload_failed.load(Ordering::Relaxed) => RELOAD_FAILED.to_owned(),
             Ok(()) => READY_WORDS.to_owned(),
@@ -261,7 +372,7 @@ impl Hold {
             self.finish();
             return false;
         }
-        if judge(cluster, Feature::Locations).is_ok() {
+        if self.judge_held(cluster).is_ok() {
             self.releasing.store(true, Ordering::Relaxed);
             self.reload_failed.store(false, Ordering::Relaxed);
             return true;
@@ -276,8 +387,8 @@ pub(crate) const RELOAD_FAILED: &str = "the reload that applies them failed; see
 /// Health's words when the gate passes and the entries have not been applied yet.
 pub(crate) const READY_WORDS: &str = "every member knows them; applying the held entries";
 
-/// The held entries, named: the `[[location]]` slugs and the pinned devices of `cfg` (the build
-/// with them in).
+/// The held entries, named: the `[[location]]` slugs, the pinned devices and the
+/// `[[dns_provider]]` names of `cfg` (the build with them in).
 pub(crate) fn describe_held(cfg: Option<&wrendns_config::Config>) -> String {
     let Some(cfg) = cfg else {
         return "none known".to_owned();
@@ -289,11 +400,22 @@ pub(crate) fn describe_held(cfg: Option<&wrendns_config::Config>) -> String {
         .filter(|c| c.location.is_some())
         .map(|c| c.name.as_str())
         .collect();
-    format!(
-        "locations: {}; pinned devices: {}",
-        slugs.join(", "),
-        pins.join(", ")
-    )
+    let providers: Vec<&str> = cfg.dns_provider.iter().map(|p| p.name.as_str()).collect();
+    // Name only what is actually held: a list with nothing in it is left out.
+    let mut parts: Vec<String> = Vec::new();
+    if !slugs.is_empty() {
+        parts.push(format!("locations: {}", slugs.join(", ")));
+    }
+    if !pins.is_empty() {
+        parts.push(format!("pinned devices: {}", pins.join(", ")));
+    }
+    if !providers.is_empty() {
+        parts.push(format!("DNS providers: {}", providers.join(", ")));
+    }
+    if parts.is_empty() {
+        return "none known".to_owned();
+    }
+    parts.join("; ")
 }
 
 /// Takes the `[[location]]` entries and the clients' `location` pins out of `cfg`.
@@ -339,14 +461,18 @@ pub(crate) fn ensure_release_loop(
 }
 
 /// REQ: DSC-908 (ADR-1104 point 5) - after a role change to primary: whether the reload was
-/// refused by the locations gate (a promoted replica adopted entries an older member cannot
+/// refused by the locations or DNS providers gate (a promoted replica adopted entries an older member cannot
 /// read). Then the hold begins on this node as well, the entries stay out of what it serves, and
 /// the release loop applies them once the gate passes.
 pub(crate) fn hold_after_refusal() -> bool {
-    if !held().contains(&Feature::Locations) {
+    let refused: Vec<Feature> = {
+        let h = held();
+        HOLDABLE.into_iter().filter(|f| h.contains(f)).collect()
+    };
+    if refused.is_empty() {
         return false;
     }
-    HOLD.begin();
+    HOLD.begin_with(&refused);
     true
 }
 
@@ -367,7 +493,9 @@ async fn release_loop_inner(
         }
         let held = describe_held(sources.unheld.load_full().as_deref());
         if HOLD.release(sources.cluster.as_deref(), &held) {
-            tracing::info!("locations: every member knows them; applying the held entries");
+            tracing::info!(
+                "locations and DNS providers: every member knows them; applying the held entries"
+            );
             let (tx, rx) = tokio::sync::oneshot::channel();
             let applied = sources.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
             if applied {
@@ -375,7 +503,7 @@ async fn release_loop_inner(
                 wait = next_wait(wait, true);
             } else {
                 tracing::warn!(
-                    "locations: the reload did not apply the held entries; holding them and trying again"
+                    "the reload did not apply the held locations and DNS providers; holding them and trying again"
                 );
                 HOLD.resume();
                 wait = next_wait(wait, false);

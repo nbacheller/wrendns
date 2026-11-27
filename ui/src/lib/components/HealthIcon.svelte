@@ -49,7 +49,7 @@
   // Help for the reasons whose cause is not obvious from the summary.
   const help: Record<string, string> = {
     locations_held:
-      'This node started with locations (or device pins) in its configuration while the other cluster members had not all been heard from. It answers without them, and does not publish them, until every member is heard and knows locations. They are then applied without a restart and this reason clears. Upgrade a member that is named here.',
+      'This node started with locations, device pins or DNS providers in its configuration while the other cluster members had not all been heard from. It answers without them, and does not publish them, until every member is heard and knows them. They are then applied without a restart and this reason clears. Upgrade a member that is named here.',
   };
 
   function outside(e: MouseEvent) {
