@@ -7642,7 +7642,7 @@
           "config"
         ],
         "summary": "The dry run of a guarded change: what it would do, and the phrase to type.",
-        "description": "Changes nothing. The preview is bound to you, the node, the setting, the value and the\nconfiguration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin\nsession only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.",
+        "description": "Changes nothing. The preview is bound to you, the node, the setting, the value and the\nconfiguration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin\nsession only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.\n\nFor `listen` the `value` is a `ListenValue` (the node's whole DNS listener list, replaced as a\nlist), and the answer carries a `listeners` diff with each listener's gate sentence. A value that\nwould leave the node without a DNS listener, or without UDP or TCP on port 53 for a family it\nanswers on today, is 409 `would_disconnect_you`; `proxyProtocol` and `requireClientId` are refused\nwith a sentence naming where each is set. No MCP tool and no plan changes it (409 `guarded_only`).",
         "operationId": "guarded_preview",
         "parameters": [
           {
@@ -23490,6 +23490,54 @@
         },
         "additionalProperties": false
       },
+      "GuardedListenerLine": {
+        "type": "object",
+        "description": "REQ: API-902 (T27.14c) — one line of a listener change's diff, as the review step shows it.",
+        "required": [
+          "change",
+          "listener"
+        ],
+        "properties": {
+          "certificate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The certificate's names and expiry (the file's contents are never returned)."
+          },
+          "change": {
+            "type": "string",
+            "description": "`added`, `removed`, `changed` or `kept`."
+          },
+          "gate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What its device key gate will be, and why (not for a removed line or plain UDP and TCP)."
+          },
+          "listener": {
+            "type": "string",
+            "description": "The listener, as `proto://address`."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What else the line says (an explicit device key setting that is dropped, a removed address)."
+          },
+          "proofPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For a changed or overlapping line: the port its new settings are tried on during the window.",
+            "minimum": 0
+          }
+        }
+      },
       "GuardedNodeStatus": {
         "type": "object",
         "description": "`GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or\nconfirmation token is ever in it.",
@@ -23697,6 +23745,13 @@
           "effect": {
             "type": "string",
             "description": "What the change does, in words."
+          },
+          "listeners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedListenerLine"
+            },
+            "description": "A listener change's diff, one line per listener (empty for any other setting)."
           },
           "mode": {
             "type": "string"
@@ -28161,6 +28216,91 @@
                   "type": "string"
                 }
               }
+            }
+          }
+        }
+      },
+      "ListenEntry": {
+        "type": "object",
+        "description": "One listener in a [`ListenValue`].",
+        "required": [
+          "proto",
+          "addr"
+        ],
+        "properties": {
+          "addr": {
+            "type": "string",
+            "description": "The address and port, such as `203.0.113.9:853` or `[::]:853`."
+          },
+          "maxConnections": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Connections open at once (not for `udp`).",
+            "minimum": 0
+          },
+          "maxConnectionsPerAddress": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Connections open at once from one client address (not for `udp`).",
+            "minimum": 0
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The URL path of `doh` and `doh3` (default `/dns-query`)."
+          },
+          "proto": {
+            "type": "string",
+            "description": "`udp`, `tcp`, `dot`, `doh`, `doh3` or `doq`."
+          },
+          "tls": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ListenTls",
+                "description": "Certificate and key as absolute paths of regular files on the node (not symlinks); required\nfor `dot`, `doh`, `doh3` and `doq`, refused for `udp` and `tcp`. Their contents are never\nreturned."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ListenTls": {
+        "type": "object",
+        "description": "The certificate and key paths of a [`ListenEntry`].",
+        "required": [
+          "cert",
+          "key"
+        ],
+        "properties": {
+          "cert": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        }
+      },
+      "ListenValue": {
+        "type": "object",
+        "description": "REQ: API-902, DNS-001 (T27.14c) — the `value` of a `listen` change (`POST /api/v1/guarded/listen`\nand its preview): the node's whole DNS listener list, replaced as a list. An unknown field is\nrefused, and so are `proxyProtocol` and `requireClientId`: each names where it is set (the\nconfiguration file; Settings → System → Listener access).",
+        "required": [
+          "listeners"
+        ],
+        "properties": {
+          "listeners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListenEntry"
             }
           }
         }

@@ -155,6 +155,12 @@ pub(crate) async fn guarded_status(
 /// Changes nothing. The preview is bound to you, the node, the setting, the value and the
 /// configuration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin
 /// session only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.
+///
+/// For `listen` the `value` is a `ListenValue` (the node's whole DNS listener list, replaced as a
+/// list), and the answer carries a `listeners` diff with each listener's gate sentence. A value that
+/// would leave the node without a DNS listener, or without UDP or TCP on port 53 for a family it
+/// answers on today, is 409 `would_disconnect_you`; `proxyProtocol` and `requireClientId` are refused
+/// with a sentence naming where each is set. No MCP tool and no plan changes it (409 `guarded_only`).
 #[utoipa::path(post, path = "/api/v1/guarded/{id}/preview", tag = "config",
     params(("id" = String, Path, description = "The setting (`listen`, `restart-now`, ...).")),
     request_body = GuardedPreviewRequest,

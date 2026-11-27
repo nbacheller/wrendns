@@ -48,6 +48,19 @@ pub fn is_guarded_path(path: &str) -> bool {
     p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/")
 }
 
+/// REQ: API-902 (ADR-977 point 12; T27.14c) — whether a plan step names the `listen` setting or a path
+/// inside it (`listen`, `listen.addr`, `listen.tls.cert`): in its REST path (any segment) or as a key
+/// of its body. The DNS listeners are changed only through the guarded form, so such a step is
+/// refused with `guarded_only` and never stored or replayed.
+pub fn names_listen_setting(path: &str, body: Option<&Value>) -> bool {
+    let named = |k: &str| k == "listen" || k.starts_with("listen.");
+    let p = path.split('?').next().unwrap_or(path);
+    p.split('/').any(named)
+        || body
+            .and_then(Value::as_object)
+            .is_some_and(|o| o.keys().any(|k| named(k)))
+}
+
 /// What the request arrived on, when it wasn't the main API listener: the confirmation window's
 /// temporary listener tags every request it serves with this (an extension), so the confirm route
 /// can tell which socket the admin reached the node through. Nothing a client sends can set it.
