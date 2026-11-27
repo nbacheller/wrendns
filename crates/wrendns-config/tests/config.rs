@@ -2110,13 +2110,20 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
 #[test]
 fn obs_007_dnstap_socket_is_a_clean_path() {
     let toml = |sock: &str| format!("[telemetry.dnstap]\nsocket = \"{sock}\"\n");
-    for bad in ["  ", "/run/a\\u0007b"] {
-        let errs = load_str(&toml(bad)).unwrap_err();
-        assert!(
-            paths(&errs).contains(&"telemetry.dnstap.socket"),
-            "{bad}: {errs:?}"
-        );
-    }
+    // An empty or blank socket loads, with a warning (it meant no tap; review 5).
+    assert!(
+        load_str(&toml("  "))
+            .expect("loads")
+            .warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.socket") && w.contains("empty"))
+    );
+    let bad = "/run/a\\u0007b";
+    let errs = load_str(&toml(bad)).unwrap_err();
+    assert!(
+        paths(&errs).contains(&"telemetry.dnstap.socket"),
+        "{bad}: {errs:?}"
+    );
     let rel = load_str(&toml("dnstap.sock")).expect("still loads");
     assert!(
         rel.warnings

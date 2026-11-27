@@ -381,6 +381,42 @@ impl Host for Fake {
         };
         Box::pin(std::future::ready(r.map_err(Problem::internal)))
     }
+    fn write_entry_expecting(
+        &self,
+        node: &str,
+        id: &str,
+        entry: Option<Stored>,
+        by: &str,
+        expect_at: Option<u64>,
+    ) -> BoxFuture<Result<(), Problem>> {
+        if !self.is_primary() {
+            let target = self
+                .net
+                .primary_state
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&self.state));
+            let held = store::for_node(&target, node)
+                .into_iter()
+                .find(|e| e.id == id);
+            let w = super::prod::EntryWrite {
+                node: node.to_owned(),
+                id: id.to_owned(),
+                entry: entry.clone(),
+                by: by.to_owned(),
+                check: true,
+                expect_at,
+            };
+            if super::prod::entry_stale(held.as_ref(), &w) {
+                return Box::pin(std::future::ready(Err(Problem::new(
+                    Code::PreviewStale,
+                    "the entry changed",
+                ))));
+            }
+        }
+        self.write_entry(node, id, entry, by)
+    }
     fn wait_applied(&self, _node: &str, _id: &str, _digest: Option<String>) -> BoxFuture<bool> {
         Box::pin(std::future::ready(
             self.is_primary() || self.arrives.load(Ordering::SeqCst),
@@ -2901,6 +2937,8 @@ fn api_902_two_nodes_in_one_site_have_their_own_names() {
         id: "t-imm".to_owned(),
         entry: None,
         by: "alice".to_owned(),
+        check: false,
+        expect_at: None,
     };
     assert!(super::prod::entry_allowed(&names[0], &w(&names[0])));
     assert!(
@@ -3865,4 +3903,133 @@ fn obs_007_dnstap_restart_drops_an_unconfirmed_entry_the_files_now_widen() {
         .unwrap();
     assert_eq!(audits.len(), 1);
     assert!(audits[0].detail.contains("would_widen"));
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 7) - the files never widen a confirmed entry: a file that
+// adds a feed or a faster sampling (no reader) after the entry was confirmed does not turn them on
+// for the entry's reader.
+#[test]
+fn obs_007_dnstap_a_file_edit_never_widens_a_confirmed_entry() {
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let e = vec![Stored {
+        node: "pi-a".into(),
+        id: "dnstap-output".into(),
+        value: json!({"socket": "/a", "sample_every": 10}),
+        mode: "staged".into(),
+        state: EntryState::Active,
+        by: "alice".into(),
+        at: 1,
+    }];
+    let mut file = Config::default();
+    file.telemetry.dnstap.forwarder = true;
+    file.telemetry.dnstap.sample_every = 1;
+    file.file_set.push("telemetry.dnstap.forwarder".to_owned());
+    file.file_set
+        .push("telemetry.dnstap.sample_every".to_owned());
+    let mut cfg = file.clone();
+    super::appliers::overlay_with(&mut cfg, &file, &e, None, &defs, "pi-a", false);
+    let d = &cfg.telemetry.dnstap;
+    assert!(
+        d.socket.is_none() && !(d.forwarder && d.socket.is_some()),
+        "nothing is copied to /a that was not confirmed: {d:?}"
+    );
+    // A file that only repeats what was confirmed leaves the entry applied.
+    let mut same = Config::default();
+    same.telemetry.dnstap.sample_every = 10;
+    same.file_set
+        .push("telemetry.dnstap.sample_every".to_owned());
+    let mut cfg = same.clone();
+    super::appliers::overlay_with(&mut cfg, &same, &e, None, &defs, "pi-a", false);
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/a"));
+    assert_eq!(cfg.telemetry.dnstap.sample_every, 10);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 7) - a start never deletes a confirmed entry: a file reader
+// that displaces it only keeps it from being applied, and it comes back when the file stops.
+#[test]
+fn obs_007_dnstap_restart_keeps_a_confirmed_entry_a_file_reader_displaces() {
+    let (_dir, mut cfg) = dir_with(&[(
+        "dnstap-output",
+        json!({"socket": "/a", "forwarder": true}),
+        EntryState::Active,
+    )]);
+    let files = cfg.clone();
+    cfg.telemetry.dnstap.socket = Some("/f".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let b = begin(&cfg);
+    assert!(b.on_probation.is_empty(), "{b:?}");
+    assert_eq!(entries_of(&cfg).len(), 1, "the confirmed entry stays");
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    assert!(
+        state
+            .audit_page(None, 10, Some("settings.guarded_rolled_back"), None)
+            .unwrap()
+            .is_empty()
+    );
+    // The file reader goes away: the entry is applied again.
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let mut back = files.clone();
+    super::appliers::overlay_with(
+        &mut back,
+        &files,
+        &entries_of(&files),
+        None,
+        &defs,
+        "pi-a",
+        false,
+    );
+    assert_eq!(back.telemetry.dnstap.socket.as_deref(), Some("/a"));
+    assert!(back.telemetry.dnstap.forwarder);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 7) - a replica's phrase-confirmed write is refused with
+// `preview_stale` when the primary holds an entry the replica had not seen (an ordinary narrowing
+// answered with success meanwhile), and goes through when it saw the same one.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirmed_write_does_not_overwrite_an_unseen_narrowing() {
+    let (a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let v = json!({"socket": "/a"});
+    let p = preview_for(&b.engine, &alice, "pi-b", "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    // Meanwhile an ordinary write stored an entry on the primary.
+    store::put(
+        &a.host.state,
+        &Stored {
+            node: "pi-b".into(),
+            id: "dnstap-output".into(),
+            value: json!({"sample_every": 5}),
+            mode: "narrowed".into(),
+            state: EntryState::Staged,
+            by: "bob".into(),
+            at: 7,
+        },
+        7,
+        "bob",
+    )
+    .unwrap();
+    let e = apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+    let held = store::for_node(&a.host.state, "pi-b");
+    assert_eq!(held[0].mode, "narrowed", "the narrowing is still there");
+    let w = |expect_at| super::prod::EntryWrite {
+        node: "pi-b".into(),
+        id: "dnstap-output".into(),
+        entry: None,
+        by: "x".into(),
+        check: true,
+        expect_at,
+    };
+    assert!(super::prod::entry_stale(held.first(), &w(None)));
+    assert!(!super::prod::entry_stale(held.first(), &w(Some(7))));
+    assert!(!super::prod::entry_stale(None, &w(None)));
 }

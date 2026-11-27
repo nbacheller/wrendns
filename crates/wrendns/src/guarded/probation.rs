@@ -181,6 +181,11 @@ pub(crate) fn begin_for(
         {
             return true;
         }
+        if e.mode != super::dnstap::NARROWED {
+            // A confirmed entry stays in the store: the overlay does not apply it while the files
+            // displace it and brings it back when they stop. It is not waiting for probation now.
+            return false;
+        }
         warn!(id = %e.id, "an unconfirmed dnstap entry would now copy more than the files do: it is not applied and is dropped");
         let dropped = if replicated(&e.id) {
             store::drop_entry(&state, e, true)

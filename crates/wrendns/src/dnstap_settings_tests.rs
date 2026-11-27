@@ -1090,7 +1090,9 @@ async fn obs_007_dnstap_an_address_the_writer_cannot_use_is_refused() {
 #[allow(clippy::many_single_char_names)] // h, s, v, e, d: the harness, the answers
 async fn obs_007_dnstap_an_ordinary_write_stores_no_more_than_was_confirmed() {
     use crate::guarded::store::EntryState;
-    let h = with_toml("[telemetry.dnstap]\nforwarder = true\nsample_every = 1\n");
+    // Files that set these two lines over a confirmed entry are not applied with it at all (review 7);
+    // here the lines come later, after the entry was stored.
+    let h = node_a();
     put_guarded(
         &h,
         json!({ "socket": "/run/a.sock", "sample_every": 100 }),
@@ -1100,7 +1102,7 @@ async fn obs_007_dnstap_an_ordinary_write_stores_no_more_than_was_confirmed() {
         .call(
             "PUT",
             URL,
-            Some(&json!({ "socket": "/run/a.sock", "buffer": 20000 })),
+            Some(&json!({ "socket": "/run/a.sock", "sample_every": 100, "buffer": 20000 })),
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -1117,6 +1119,20 @@ async fn obs_007_dnstap_an_ordinary_write_stores_no_more_than_was_confirmed() {
     assert_eq!(d.socket.as_deref(), Some("/run/a.sock"));
     assert!(!d.forwarder, "the upstream exchanges were never confirmed");
     assert_eq!(d.sample_every, 100);
+    // The files then set the two lines: the confirmed reader gets neither.
+    let mut files = Config::default();
+    files.telemetry.dnstap.forwarder = true;
+    files.file_set.push("telemetry.dnstap.forwarder".to_owned());
+    files
+        .file_set
+        .push("telemetry.dnstap.sample_every".to_owned());
+    let cfg = crate::managed::merge(&files, &crate::managed::entries(h.auth.state()))
+        .expect("the merged configuration validates");
+    let d = cfg.telemetry.dnstap;
+    assert!(
+        d.socket.is_none() && d.address.is_none(),
+        "no target: {d:?}"
+    );
 }
 
 /// REQ: OBS-007, API-905 (T40.13, review 5) - what a node will run is what it says it runs: an entry
@@ -1203,4 +1219,37 @@ async fn obs_007_dnstap_an_empty_socket_is_no_tap() {
         .call("PUT", URL, Some(&json!({ "socket": "  ", "buffer": 5000 })))
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 7) - on a replica whose node set the primary's entry aside, an
+/// ordinary write that wants the value the primary already holds is stored again (a new time), so the
+/// node stops ignoring it: the answer of success is not a no-op.
+#[tokio::test]
+async fn obs_007_dnstap_a_write_the_node_ignored_is_stored_again() {
+    let h = node_a();
+    let held = crate::guarded::store::Stored {
+        node: "pi-b".to_owned(),
+        id: "dnstap-output".to_owned(),
+        value: json!({ "sample_every": 5, "buffer": 10000, "forwarder": true, "resolver": false }),
+        mode: "narrowed".to_owned(),
+        state: crate::guarded::store::EntryState::Staged,
+        by: "admin".to_owned(),
+        at: 1,
+    };
+    let before = held.digest();
+    crate::guarded::store::put(h.auth.state(), &held, 1, "admin").unwrap();
+    // The node runs its files (every query, the feed on): it set the entry aside.
+    let mut file = tap("/run/a.sock", 1);
+    file["forwarder"] = json!(true);
+    let v = view(file.clone(), &["socket", "forwarder"], file);
+    let want = json!({ "socket": "/run/a.sock", "forwarder": true, "sample_every": 5 });
+    let r = forwarded(&h, "pi-b", Some(want), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let e = entry_of(&h, "pi-b").unwrap();
+    assert!(e.at > 1, "written again");
+    assert_ne!(
+        e.digest(),
+        before,
+        "so a local suppression no longer matches"
+    );
 }

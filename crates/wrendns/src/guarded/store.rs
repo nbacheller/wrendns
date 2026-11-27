@@ -55,7 +55,13 @@ pub(crate) struct Stored {
 impl Stored {
     /// A hash of the value, for "the primary's copy changed" (ADR-957).
     pub(crate) fn digest(&self) -> String {
-        let bytes = serde_json::to_vec(&self.value).unwrap_or_default();
+        let mut bytes = serde_json::to_vec(&self.value).unwrap_or_default();
+        // REQ: OBS-007, API-905 (T40.13, review) - the dnstap entry is also written by ordinary admin
+        // writes: one that stores the same value again (the node set it aside, and the admin asks for
+        // it once more) must not stay suppressed, so the time of the write is part of its digest.
+        if self.id == wrendns_config::guarded::DNSTAP {
+            bytes.extend_from_slice(&self.at.to_le_bytes());
+        }
         super::hex(blake3::hash(&bytes).as_bytes())
     }
 }

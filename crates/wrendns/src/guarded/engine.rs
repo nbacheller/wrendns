@@ -1255,9 +1255,22 @@ impl Engine {
         before: Value,
     ) -> Result<GuardedApplied, Problem> {
         let entry = self.stored(row, req, EntryState::Staged, &c.username);
-        self.host
-            .write_entry(&self.node, row.id, Some(entry), &c.username)
-            .await?;
+        if row.id == wrendns_config::guarded::DNSTAP {
+            // REQ: OBS-007, API-905 (T40.13, review) - this row shares its entry with the ordinary
+            // write: the primary refuses when the entry it holds is not the one this node saw (an
+            // ordinary narrowing was answered with success meanwhile).
+            let seen = store::effective(&self.host.running_config(), &self.state, &self.node)
+                .into_iter()
+                .find(|(e, _)| e.id == row.id)
+                .map(|(e, _)| e.at);
+            self.host
+                .write_entry_expecting(&self.node, row.id, Some(entry), &c.username, seen)
+                .await?;
+        } else {
+            self.host
+                .write_entry(&self.node, row.id, Some(entry), &c.username)
+                .await?;
+        }
         self.finish_audit(c, row, req, &before, "staged", pre.weakening);
         Ok(self.applied(
             "staged",

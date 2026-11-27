@@ -71,6 +71,22 @@ pub(crate) trait Host: Send + Sync + 'static {
         entry: Option<Stored>,
         by: &str,
     ) -> BoxFuture<Result<(), Problem>>;
+    /// REQ: OBS-007, API-905 (T40.13, review) - [`write_entry`](Self::write_entry) for an entry an
+    /// ordinary write shares (the dnstap row): the write is refused with `preview_stale` when the
+    /// entry the primary holds is not the one this node saw (`expect_at`: the time of its entry, or
+    /// `None` for no entry), so a confirmed value never overwrites an ordinary change that was
+    /// answered with success meanwhile. The default writes without the check.
+    fn write_entry_expecting(
+        &self,
+        node: &str,
+        id: &str,
+        entry: Option<Stored>,
+        by: &str,
+        expect_at: Option<u64>,
+    ) -> BoxFuture<Result<(), Problem>> {
+        let _ = expect_at;
+        self.write_entry(node, id, entry, by)
+    }
     /// Whether this node is the primary (a standalone node is its own).
     fn is_primary(&self) -> bool;
     /// After [`write_entry`](Self::write_entry): waits until this node has the entry it just wrote

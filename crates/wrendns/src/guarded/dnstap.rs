@@ -106,9 +106,10 @@ pub(crate) fn unconfirmed_widens(own: &Config, value: &Value) -> bool {
 
 /// REQ: OBS-007, API-905 (T40.13, review) - whether an entry of `mode` is not to be applied over
 /// `own`'s files as they are now. An ordinary narrowing is not applied while it would copy more than
-/// the files. A confirmed one (the phrase) confirmed its own reader: if the files now set a reader
-/// that displaces it (or the entry had none), what was confirmed for the feeds and the sampling was
-/// never confirmed for the file's reader, so it is not applied if it would copy more than the files.
+/// the files. A confirmed one (the phrase) confirmed only what it says: the files lay their own
+/// fields over it (`keep_file_fields`), and files never widen a confirmed entry. So it is not applied
+/// when the merged section copies more than the entry confirmed AND more than the files alone do
+/// (a file reader that displaces the entry's, or a feed or a sampling the file added).
 pub(crate) fn not_applied(own: &Config, mode: &str, value: &Value) -> bool {
     if mode == NARROWED {
         return unconfirmed_widens(own, value);
@@ -117,8 +118,9 @@ pub(crate) fn not_applied(own: &Config, mode: &str, value: &Value) -> bool {
     let mut cfg = own.clone();
     cfg.telemetry.dnstap = d.clone();
     keep_file_fields(&mut cfg, own);
-    let reader = |c: &DnstapConfig| (c.socket.clone(), c.address.clone());
-    reader(&cfg.telemetry.dnstap) != reader(&d) && unconfirmed_widens(own, value)
+    let merged = json_of(&cfg.telemetry.dnstap);
+    wrendns_config::guarded::dnstap_widened(&json_of(&d), &merged)
+        && wrendns_config::guarded::dnstap_widened(&json_of(&own.telemetry.dnstap), &merged)
 }
 
 /// REQ: OBS-007, API-905 (T40.13) - whether `value` changes a field the files set (a value that

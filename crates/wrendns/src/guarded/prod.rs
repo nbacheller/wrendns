@@ -52,6 +52,76 @@ pub(crate) struct ProdHost {
 }
 
 impl ProdHost {
+    /// The write of [`Host::write_entry`]; `check` makes the primary compare the time of the entry
+    /// it holds with `expect_at`, the one the node saw (the dnstap row).
+    fn write_entry_checked(
+        &self,
+        node: &str,
+        id: &str,
+        entry: Option<Stored>,
+        by: &str,
+        check: bool,
+        expect_at: Option<u64>,
+    ) -> BoxFuture<Result<(), Problem>> {
+        let (state, cluster) = (Arc::clone(&self.state), self.cluster().cloned());
+        let (node, id, by) = (node.to_owned(), id.to_owned(), by.to_owned());
+        Box::pin(async move {
+            let local = |state: &State| -> Result<(), Problem> {
+                let now = super::now_secs();
+                match &entry {
+                    Some(e) => store::put(state, e, now, &by),
+                    None => store::delete(state, &node, &id),
+                }
+                .map_err(|e| Problem::internal(format!("the guarded entry can't be stored: {e}")))
+            };
+            // The data-dir pointer is local to the node and never replicated.
+            if store::is_local(&id) {
+                return local(&state);
+            }
+            match cluster {
+                Some(c) if !c.is_primary() => {
+                    // A node never runs a guarded value that no one will replicate: through the
+                    // primary, or not at all.
+                    let Some(primary) = c.reachable_primary() else {
+                        return Err(Problem::new(
+                            Code::PrimaryUnreachable,
+                            "this node can't reach the primary to record the change",
+                        ));
+                    };
+                    let body = serde_json::to_vec(&EntryWrite {
+                        node: node.clone(),
+                        id: id.clone(),
+                        entry,
+                        by: by.clone(),
+                        check,
+                        expect_at,
+                    })
+                    .map_err(|e| Problem::internal(e.to_string()))?;
+                    let answer = c
+                        .call(&primary, KIND_ENTRY, body, Duration::from_secs(10))
+                        .await
+                        .map_err(|e| {
+                            Problem::new(
+                                Code::PrimaryUnreachable,
+                                format!("the primary didn't take the entry: {e}"),
+                            )
+                        })?;
+                    match serde_json::from_slice::<Option<String>>(&answer) {
+                        Ok(None) => Ok(()),
+                        Ok(Some(why)) if why == STALE => Err(Problem::new(
+                            Code::PreviewStale,
+                            "the node's dnstap settings changed since the preview",
+                        )
+                        .hint("Preview the change again.")),
+                        Ok(Some(why)) => Err(Problem::new(Code::PrimaryUnreachable, why)),
+                        Err(e) => Err(Problem::internal(format!("bad answer: {e}"))),
+                    }
+                }
+                _ => local(&state),
+            }
+        })
+    }
+
     pub(crate) fn new(src: Arc<Sources>, app: HttpRouter, auth: &Arc<Auth>) -> Arc<Self> {
         Arc::new(Self {
             src,
@@ -209,7 +279,22 @@ pub(crate) struct EntryWrite {
     pub(crate) id: String,
     pub(crate) entry: Option<Stored>,
     pub(crate) by: String,
+    /// The time of the entry the replica saw when it wrote (`None`: none), checked for the dnstap
+    /// row only. A sender that does not send it (`check` false) is not checked.
+    #[serde(default)]
+    pub(crate) check: bool,
+    #[serde(default)]
+    pub(crate) expect_at: Option<u64>,
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review) - whether the entry the primary holds is not the one the
+/// replica saw when it was asked for the phrase.
+pub(crate) fn entry_stale(held: Option<&Stored>, w: &EntryWrite) -> bool {
+    w.check && held.map(|e| e.at) != w.expect_at
+}
+
+/// What the primary answers a replica whose guarded write found the entry changed.
+pub(crate) const STALE: &str = "preview_stale: the node's entry changed since the preview";
 
 /// Whether the node `peer` (authenticated by its certificate: a node ID, never a site label) may
 /// write `w`: only its own entries, under its own ID, and only the entry it names.
@@ -258,56 +343,18 @@ impl Host for ProdHost {
         entry: Option<Stored>,
         by: &str,
     ) -> BoxFuture<Result<(), Problem>> {
-        let (state, cluster) = (Arc::clone(&self.state), self.cluster().cloned());
-        let (node, id, by) = (node.to_owned(), id.to_owned(), by.to_owned());
-        Box::pin(async move {
-            let local = |state: &State| -> Result<(), Problem> {
-                let now = super::now_secs();
-                match &entry {
-                    Some(e) => store::put(state, e, now, &by),
-                    None => store::delete(state, &node, &id),
-                }
-                .map_err(|e| Problem::internal(format!("the guarded entry can't be stored: {e}")))
-            };
-            // The data-dir pointer is local to the node and never replicated.
-            if store::is_local(&id) {
-                return local(&state);
-            }
-            match cluster {
-                Some(c) if !c.is_primary() => {
-                    // A node never runs a guarded value that no one will replicate: through the
-                    // primary, or not at all.
-                    let Some(primary) = c.reachable_primary() else {
-                        return Err(Problem::new(
-                            Code::PrimaryUnreachable,
-                            "this node can't reach the primary to record the change",
-                        ));
-                    };
-                    let body = serde_json::to_vec(&EntryWrite {
-                        node: node.clone(),
-                        id: id.clone(),
-                        entry,
-                        by: by.clone(),
-                    })
-                    .map_err(|e| Problem::internal(e.to_string()))?;
-                    let answer = c
-                        .call(&primary, KIND_ENTRY, body, Duration::from_secs(10))
-                        .await
-                        .map_err(|e| {
-                            Problem::new(
-                                Code::PrimaryUnreachable,
-                                format!("the primary didn't take the entry: {e}"),
-                            )
-                        })?;
-                    match serde_json::from_slice::<Option<String>>(&answer) {
-                        Ok(None) => Ok(()),
-                        Ok(Some(why)) => Err(Problem::new(Code::PrimaryUnreachable, why)),
-                        Err(e) => Err(Problem::internal(format!("bad answer: {e}"))),
-                    }
-                }
-                _ => local(&state),
-            }
-        })
+        self.write_entry_checked(node, id, entry, by, false, None)
+    }
+
+    fn write_entry_expecting(
+        &self,
+        node: &str,
+        id: &str,
+        entry: Option<Stored>,
+        by: &str,
+        expect_at: Option<u64>,
+    ) -> BoxFuture<Result<(), Problem>> {
+        self.write_entry_checked(node, id, entry, by, true, expect_at)
     }
 
     fn wait_applied(&self, node: &str, id: &str, digest: Option<String>) -> BoxFuture<bool> {
@@ -549,6 +596,12 @@ fn entry_write(src: &Sources, cluster: &Cluster, peer: &str, body: &[u8]) -> Opt
     let state = auth.state();
     let now = super::now_secs();
     let by = format!("{} via {}", w.by, w.node);
+    let held = store::for_node(state, &w.node)
+        .into_iter()
+        .find(|e| e.id == w.id);
+    if entry_stale(held.as_ref(), &w) {
+        return Some(STALE.to_owned());
+    }
     let done = match &w.entry {
         Some(e) => store::put(state, e, now, &by),
         None => store::delete(state, &w.node, &w.id),

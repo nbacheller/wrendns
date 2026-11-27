@@ -184,6 +184,22 @@ fn guarded_only(deleting: bool) -> Problem {
     .hint("Use Settings, System, dnstap output in the web UI, or POST /api/v1/guarded/dnstap-output/preview, then POST /api/v1/guarded/dnstap-output with the previewId and the phrase.")
 }
 
+/// Whether the node runs the reader of the entry the primary holds for it.
+fn in_force(sent: &SentView, existing: Option<&Stored>) -> bool {
+    match (&sent.pending, existing) {
+        (Some(p), Some(e)) if p.is_object() => reader(p) == reader(&e.value),
+        _ => true,
+    }
+}
+
+/// Whether the node runs something else than `after` (it set the entry aside): the write is then
+/// stored again, with a new time, so that the node stops ignoring it.
+fn node_differs(sent: &SentView, after: &Value) -> bool {
+    sent.pending
+        .as_ref()
+        .is_some_and(|p| p.is_object() && p != after)
+}
+
 /// The write of the node's entry the change needs: none when the files say as much as the section
 /// does, else the whole section; nothing when the entry already holds it.
 fn entry_change(
@@ -192,13 +208,13 @@ fn entry_change(
     after: &Value,
     file_section: &Value,
     existing: Option<&Stored>,
-    in_force: bool,
+    (in_force, node_differs): (bool, bool),
 ) -> crate::api_backend::AlsoStored {
     let wanted = (after != file_section).then(|| entry_value(after, existing, in_force));
     let have = existing.map(|e| normal(&e.value));
     match (&wanted, &have) {
         (None, None) => Vec::new(),
-        (Some((a, _)), Some(h)) if normal(a) == *h => Vec::new(),
+        (Some((a, _)), Some(h)) if normal(a) == *h && !node_differs => Vec::new(),
         _ => {
             let name = crate::guarded::entry_name(node, DNSTAP);
             let body = wanted.map(|(value, mode)| {
@@ -209,7 +225,7 @@ fn entry_change(
                     mode: mode.to_owned(),
                     state: EntryState::Staged,
                     by: w.by.clone(),
-                    at: crate::guarded::now_secs(),
+                    at: crate::guarded::now_secs().max(existing.map_or(0, |e| e.at + 1)),
                 };
                 serde_json::to_string(&entry).unwrap_or_default()
             });
@@ -319,11 +335,8 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
     // (the way back to the files is no way round it).
     // The node's own word of what it will run counts too: an entry it has set aside (two failed starts)
     // is not what it runs, whatever this primary still holds.
-    let widens_sent = sent
-        .pending
-        .as_ref()
-        .is_some_and(|p| p.is_object() && dnstap_widened(p, &after));
-    if dnstap_widened(&before, &after) || widens_sent {
+    let sent_wider = |p: &Value| p.is_object() && dnstap_widened(p, &after);
+    if dnstap_widened(&before, &after) || sent.pending.as_ref().is_some_and(sent_wider) {
         return Err(guarded_only(w.body.is_none()));
     }
     if before != after {
@@ -331,11 +344,17 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
             "The dnstap settings are read when a node starts: this takes effect on {node} after a restart of that node (restart needed). Other nodes keep their own."
         ));
     }
-    let in_force = match (&sent.pending, &existing) {
-        (Some(p), Some(e)) if p.is_object() => reader(p) == reader(&e.value),
-        _ => true,
-    };
-    let also = entry_change(w, &node, &after, &file_section, existing.as_ref(), in_force);
+    let also = entry_change(
+        w,
+        &node,
+        &after,
+        &file_section,
+        existing.as_ref(),
+        (
+            in_force(&sent, existing.as_ref()),
+            node_differs(&sent, &after),
+        ),
+    );
     let (recent_queries, impact) =
         crate::api_backend::managed_impact(src, KIND, "default", w.body.is_some());
     Ok(ManagedPlan {
