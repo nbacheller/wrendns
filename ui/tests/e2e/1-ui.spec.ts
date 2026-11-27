@@ -1886,6 +1886,36 @@ test('api_011 help panels, diagrams, and simple/advanced', async () => {
   await page.getByRole('button', { name: 'Simple', exact: true }).click();
 });
 
+// REQ: API-011 (ADR-1020 amendment) — the glossary is fetched from the node, not bundled: a failed
+// fetch gives a plain message and a retry in the panel, never a broken page; the retry works.
+test('api_011 help glossary load failure shows a message and a retry', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const url = '**/help/topics.json';
+  try {
+    await page.route(url, (r) => r.abort());
+    await page.goto('/#/lists');
+    await page.reload();
+    const btn = page.locator('[data-help="lists"]').first();
+    await expect(btn).toHaveAttribute('aria-label', 'Help');
+    await btn.click();
+    const panel = page.getByTestId('help-panel');
+    await expect(panel).toContainText('could not be loaded');
+    await page.unroute(url);
+    await panel.getByRole('button', { name: 'Retry' }).click();
+    await expect(panel).toContainText('When you');
+    await expect(btn).toHaveAttribute('aria-label', 'Help: Block or allow whole categories of sites');
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+  } finally {
+    await page.unroute(url).catch(() => {});
+    // The aborted fetch is the point of this test: the browser logs it as a resource error.
+    const keep = problems.filter((p) => !/net::ERR_FAILED/.test(p));
+    problems.splice(0, problems.length, ...keep);
+    await page.goto('/#/');
+    await page.reload();
+  }
+});
+
 // REQ: API-011 (T3.12 AC) — a novice creates nas.home.arpa and sends corp.example elsewhere through
 // the wizards, without docs; DNS answers at once; the API does the same with dry-run.
 test('api_011 names on your network: wizards, DNS, and the API', async () => {

@@ -2,31 +2,49 @@
   // REQ: API-011, ADR-036 — the "?" beside a setting: opens a side panel with the topic in a
   // fixed order (summary, diagram, when, example, caution, term, docs). It never blocks the
   // form underneath (Escape or ✕ closes it).
-  import { docsUrl, topic } from '../help';
+  import { docsUrl, loadTopics, topic, type Topic } from '../help';
   import Drawer from './Drawer.svelte';
   import FlowDiagram from './FlowDiagram.svelte';
 
   let { id }: { id: string } = $props();
-  const t = $derived(topic(id));
+  // The glossary is fetched from the node once, when the first "?" mounts (ADR-1020 amendment).
+  let all = $state<Map<string, Topic>>();
+  let failed = $state(false);
+  const t = $derived(all ? (topic(all, id) ?? { id, title: id, term: '', summary: 'No help text for this yet.', when: '', example: '', caution: '' }) : undefined);
   let open = $state(false);
+
+  function load() {
+    failed = false;
+    loadTopics().then((m) => (all = m), () => (failed = true));
+  }
+  $effect(load);
 </script>
 
 <button
   type="button"
   class="help-btn"
-  aria-label={`Help: ${t.title}`}
-  title={t.title}
+  aria-label={t ? `Help: ${t.title}` : 'Help'}
+  title={t?.title ?? 'Help'}
   data-help={id}
   onclick={(e) => {
     e.preventDefault();
     e.stopPropagation();
     open = true;
+    if (failed) load();
   }}>?</button
 >
 
 {#if open}
-  <Drawer title={t.title} onclose={() => (open = false)}>
+  <Drawer title={t?.title ?? 'Help'} onclose={() => (open = false)}>
     <div class="help" data-testid="help-panel">
+      {#if !t}
+        {#if failed}
+          <p class="notice warn" role="alert">The help text could not be loaded.</p>
+          <button type="button" onclick={load}>Retry</button>
+        {:else}
+          <p class="muted" role="status">Loading help…</p>
+        {/if}
+      {:else}
       <p class="lead">{t.summary}</p>
       {#if t.diagram}<FlowDiagram highlight={t.diagram} />{/if}
       {#if t.when}<h3>When you'd use it</h3><p>{t.when}</p>{/if}
@@ -40,6 +58,7 @@
       {/if}
       {#if t.term}<p class="muted small">The DNS term for this is <b>{t.term}</b>.</p>{/if}
       {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">Full documentation</a></p>{/if}
+      {/if}
     </div>
   </Drawer>
 {/if}

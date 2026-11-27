@@ -151,3 +151,7 @@ The brotli first-load figure is an estimate: of the 432 KiB first load, the thre
 4. **If headroom under the 512 KiB budget is the goal,** the glossary on demand (idea 1, -46.9 KiB) lowers the first load for every client on every transport and needs no server coding, so it does not depend on this question.
 
 Nothing here is open after that decision. If brotli is looked at again, the questions are the ones above: (b) or (c), what the UI budget measures afterwards, and a measurement on the real image build.
+
+## Implemented: the glossary on demand (2026-11-26)
+
+Idea 1 was built, not as a lazy chunk (the gate counts every file in `ui/dist`, so that would save nothing) but as data fetched from the node: the glossary is embedded in the server outside `ui/dist` and served at `/help/topics.json`. Gate: 508.0 KiB before, 459.2 KiB after (-48.8 KiB). See the ADR-1020 amendment in `spec/11-decisions.md`. The first load still fetches the file (about 141 KB raw, not gzipped on the wire), after first paint and once per page load, because the "?" tooltips need the titles.
