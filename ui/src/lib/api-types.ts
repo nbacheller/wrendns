@@ -10382,8 +10382,8 @@ export interface components {
             maxConnectionsPerAddress?: number | null;
             /** @description The URL path of a DoH or DoH3 listener, when one is set. */
             path?: string | null;
-            /** @description The listener accepts PROXY protocol v2 (set in the configuration file only). */
-            proxyProtocol: boolean;
+            /** @description The listener accepts PROXY protocol v2 (set in the configuration file only). Admin only. */
+            proxyProtocol?: boolean | null;
             /**
              * @description Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
              *     wildcard bind is not public).
@@ -10401,8 +10401,16 @@ export interface components {
             /**
              * @description REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the
              *     files' contents are never returned), so the Listeners card can show and re-send them.
+             *
+             *     Admin only (owner decision, 2026-11-27): absent from every other role's answer, with the path,
+             *     the limits and `proxy_protocol` below.
              */
             tlsCert?: string | null;
+            /**
+             * @description The certificate's file name, without its directory: every signed-in role sees it (the paths
+             *     above are admin only).
+             */
+            tlsCertName?: string | null;
             tlsKey?: string | null;
             /** @description Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`). */
             wildcardBind: boolean;

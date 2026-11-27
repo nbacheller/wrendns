@@ -865,10 +865,18 @@ the answer starts):
 - **Agents and the allowed-networks control** (before T27.14h). Whether an agent token, or an MCP tool,
   may change the list (API-901 and the agent rules ask for agent-ready routes; the decision said admin
   only).
-- **A `[::]` wildcard on a host with only a global IPv6 address** (before T27.14c). ADR-1090's wildcard
-  rule looks at public IPv4 only, so under decision 2 adding plain UDP on `[::]:53` on such a host is
-  not weakening, although the host can be reached from the internet over IPv6. The preview warns, as
-  ADR-1090 point 9(b) does for the gate; whether it should also count as weakening is open.
-- **Rule (c) and `allowed_networks`** (before T27.14c). This note reads decision 2 as judged on the
-  socket alone, so a public UDP listener weakens even when `allowed_networks` would refuse the
-  internet. The owner's wording supports that reading; it is listed so the owner can confirm it.
+
+**Decided 2026-11-27 (owner decisions through the question tool, T27.14c):**
+6. **Who sees a listener's files and settings.** Each listener's certificate and key file paths, its
+   limits and its options (the DoH path, PROXY) are for admins only. `GET /api/v1/system/info` leaves
+   them out of a viewer's, an operator's, an agent's and a wall display's answer; they still see the
+   address, the protocol, the certificate's file name and expiry, and the device key. The card for
+   them is read-only and has no such fields. Chosen over showing them to every signed-in role.
+7. **A `[::]` wildcard on a host with only a global IPv6 address** stays as ADR-1090 has it, by the
+   owner's earlier decision ("public IPv4 only"): it is not counted as reachable, so adding plain UDP
+   on `[::]:53` there is not weakening. The preview and the Listener access page warn, as ADR-1090
+   point 9(b) does.
+8. **Rule (c) and `allowed_networks`** is judged on the socket alone: it ignores
+   `[access] allowed_networks`. This is the design's conservative choice (the records were silent),
+   not the owner's words.
+9. **"Use the web UI's certificate"** stays out until T27.14e, in the card and its help.

@@ -73,17 +73,17 @@ fn with(extra: Vec<Value>) -> Value {
     value(&all)
 }
 
-struct Pki {
+pub(super) struct Pki {
     dir: tempfile::TempDir,
 }
 
 impl Pki {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             dir: tempfile::tempdir().unwrap(),
         }
     }
-    fn pair(&self, name: &str, names: &[&str]) -> (String, String) {
+    pub(super) fn pair(&self, name: &str, names: &[&str]) -> (String, String) {
         let ck = rcgen::generate_simple_self_signed(
             names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
         )
@@ -118,7 +118,7 @@ impl Pki {
     }
 }
 
-fn dot(addr: &str, cert: &str, key: &str) -> Value {
+pub(super) fn dot(addr: &str, cert: &str, key: &str) -> Value {
     json!({"proto": "dot", "addr": addr, "tls": {"cert": cert, "key": key}})
 }
 

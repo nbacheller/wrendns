@@ -1989,8 +1989,20 @@ async fn config_etag(b: &Shared) -> Result<String, Problem> {
 /// snapshot. Cheap; suitable for health dashboards.
 #[utoipa::path(get, path = "/api/v1/system/info", tag = "system",
     responses((status = 200, body = SystemInfo, description = "The result.")))]
-async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
-    Json(b.system_info())
+async fn system_info(State(b): State<Shared>, ext: axum::http::Extensions) -> Json<SystemInfo> {
+    let mut info = b.system_info();
+    // REQ: API-902 (T27.14c; owner decision, 2026-11-27) — each listener's certificate and key
+    // paths, limits and options are for admins' own sessions; every other caller (viewer, operator,
+    // an agent token, a wall display, or no known principal) gets the rest.
+    let admin = ext
+        .get::<auth::Principal>()
+        .is_some_and(|p| p.role == auth::Role::Admin && p.agent.is_none() && p.display.is_none());
+    if !admin {
+        for l in &mut info.listener_access {
+            l.without_admin_fields();
+        }
+    }
+    Json(info)
 }
 
 /// How WrenDNS is doing: healthy, degraded, or severe, and why.

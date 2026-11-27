@@ -39,6 +39,9 @@ pub struct ListenerAccess {
     pub can_carry_key: bool,
     /// REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the
     /// files' contents are never returned), so the Listeners card can show and re-send them.
+    ///
+    /// Admin only (owner decision, 2026-11-27): absent from every other role's answer, with the path,
+    /// the limits and `proxy_protocol` below.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_cert: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,8 +54,27 @@ pub struct ListenerAccess {
     pub max_connections: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections_per_address: Option<u32>,
-    /// The listener accepts PROXY protocol v2 (set in the configuration file only).
-    pub proxy_protocol: bool,
+    /// The listener accepts PROXY protocol v2 (set in the configuration file only). Admin only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_protocol: Option<bool>,
+    /// The certificate's file name, without its directory: every signed-in role sees it (the paths
+    /// above are admin only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert_name: Option<String>,
+}
+
+impl ListenerAccess {
+    /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — drop what only an admin sees: the
+    /// certificate and key paths, the URL path, the limits and the PROXY setting. The address, the
+    /// protocol, the certificate's file name and the gate stay.
+    pub fn without_admin_fields(&mut self) {
+        self.tls_cert = None;
+        self.tls_key = None;
+        self.path = None;
+        self.max_connections = None;
+        self.max_connections_per_address = None;
+        self.proxy_protocol = None;
+    }
 }
 
 /// Node and build information.

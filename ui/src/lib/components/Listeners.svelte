@@ -4,7 +4,7 @@
   // node's DNS listeners as a table with the probe status, and a draft the admin edits (add, edit, remove)
   // that goes to the review step (`GuardedChange`, id `listen`) as the whole list. Nothing reaches the server
   // before Review. A change that adds and removes offers "Add only" first. Operators and viewers read the
-  // table. A file that sets `[[listen]]` locks the card. The device key (gate) and PROXY are read-only here.
+  // table. A file that sets `[[listen]]` locks the card. Certificate and key paths, limits and options are an admin's: the others see the address, the protocol, the certificate's name and its expiry. The device key (gate) and PROXY are read-only here.
   import { onMount } from 'svelte';
   import type { S } from '../api';
   import { guarded, refreshGuarded } from '../guarded.svelte';
@@ -70,7 +70,8 @@
   };
   const certText = (d: D) => {
     const p = probeOf(d);
-    const name = d.cert.slice(d.cert.lastIndexOf('/') + 1);
+    // The name comes from the file name every role sees; the path itself is an admin's (owner decision, 2026-11-27).
+    const name = d.from?.tlsCertName ?? d.cert.slice(d.cert.lastIndexOf('/') + 1);
     return name ? `${name}${p?.certDaysLeft != null ? `, ${p.certDaysLeft} days left` : ''}` : '';
   };
   const setProto = (d: D, p: string) => {

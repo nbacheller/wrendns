@@ -882,6 +882,58 @@ impl Engine {
             .map(|e| e.value)
     }
 
+    /// REQ: API-902, DNS-901 (T27.14c) — after a `listen` change is kept, this node's stored
+    /// `listen-access` loses the lines of the listeners that are gone, so a listener added again on
+    /// the same protocol and address starts on its default gate and not on a setting the admin made
+    /// for the listener that was removed. A failed write is logged: the change itself is kept.
+    async fn prune_gate_lines(&self, listen: &Value, by: &str) {
+        let Ok(kept) = super::listen::parse(listen) else {
+            return;
+        };
+        let Some(entry) = self.effective_entries().into_iter().find(|e| {
+            e.id == wrendns_config::guarded::LISTEN_ACCESS
+                && matches!(e.state, EntryState::Active | EntryState::Probation)
+        }) else {
+            return;
+        };
+        let Ok(lines) = super::appliers::ListenAccess::lines(&entry.value) else {
+            return;
+        };
+        let Some(all) = entry.value.get("listeners").and_then(Value::as_array) else {
+            return;
+        };
+        let left: Vec<Value> = all
+            .iter()
+            .zip(&lines)
+            .filter(|(_, line)| {
+                kept.iter()
+                    .any(|l| l.proto == line.proto && l.addr == line.addr)
+            })
+            .map(|(v, _)| v.clone())
+            .collect();
+        if left.len() == all.len() {
+            return;
+        }
+        let pruned = Stored {
+            value: json!({"listeners": left}),
+            by: by.to_owned(),
+            at: (self.now)(),
+            ..entry
+        };
+        if let Err(e) = self
+            .host
+            .write_entry(
+                &self.node,
+                wrendns_config::guarded::LISTEN_ACCESS,
+                Some(pruned),
+                by,
+            )
+            .await
+        {
+            warn!("dropping the device key lines of removed listeners failed: {e:?}");
+        }
+    }
+
     /// Whether a local clear is suppressing this replicated entry.
     fn suppressed_entry(&self, e: &Stored) -> bool {
         store::suppressed(&self.state)
@@ -1626,6 +1678,9 @@ impl Engine {
             ));
         }
         let _ = def;
+        if setting == wrendns_config::guarded::LISTEN {
+            self.prune_gate_lines(&value, &admin).await;
+        }
         let seen = c.remote_under_pending.map(|a| a.to_string());
         {
             let mut g = lock(&self.inner);

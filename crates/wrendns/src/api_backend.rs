@@ -901,7 +901,14 @@ impl Backend for ApiBackend {
                         path: l.path.as_ref().map(|p| p.as_str().to_owned()),
                         max_connections: l.max_connections,
                         max_connections_per_address: l.max_connections_per_address,
-                        proxy_protocol: l.proxy_protocol,
+                        proxy_protocol: Some(l.proxy_protocol),
+                        tls_cert_name: l.tls.as_ref().and_then(|t| {
+                            t.cert
+                                .as_str()
+                                .rsplit(['/', '\\'])
+                                .next()
+                                .map(str::to_owned)
+                        }),
                     }
                 })
                 .collect(),

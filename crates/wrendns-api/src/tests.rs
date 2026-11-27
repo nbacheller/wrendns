@@ -323,7 +323,25 @@ impl Backend for Fake {
             starts: 1,
             unclean_starts: 0,
             listeners: vec!["udp://0.0.0.0:53".into()],
-            listener_access: Vec::new(),
+            listener_access: vec![crate::model::ListenerAccess {
+                listener: "doh://192.168.1.2:443".into(),
+                require_client_id: false,
+                setting: "unset".into(),
+                gated_by_default: false,
+                public_address: false,
+                wildcard_bind: false,
+                default_on: false,
+                default_reason: "off, because it binds a private address".into(),
+                public_exposure: false,
+                can_carry_key: true,
+                tls_cert: Some("/etc/wrendns/tls/dns.pem".into()),
+                tls_key: Some("/etc/wrendns/tls/dns.key".into()),
+                path: Some("/dns-query".into()),
+                max_connections: Some(512),
+                max_connections_per_address: Some(16),
+                proxy_protocol: Some(true),
+                tls_cert_name: Some("dns.pem".into()),
+            }],
             query_log: true,
             filter_snapshot: Some(3),
             filter_names: 42,
@@ -5464,4 +5482,80 @@ async fn dns_904_the_trace_route_returns_the_steps() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = get(&app, "/api/v1/recursor/trace").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
+}
+
+/// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — a listener's certificate and key paths, URL
+/// path, limits and PROXY setting are an admin's: a viewer's and an operator's `system/info` carries
+/// none of them, and an admin's token cut to read scope gets none either; the address, the protocol,
+/// the certificate's file name and the gate stay for every role.
+#[tokio::test]
+async fn api_902_listener_paths_limits_and_options_are_for_admins_only() {
+    let (app, _) = app();
+    let info = |cookie: String| {
+        Request::get("/api/v1/system/info")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let hidden = [
+        "tlsCert",
+        "tlsKey",
+        "path",
+        "maxConnections",
+        "maxConnectionsPerAddress",
+        "proxyProtocol",
+    ];
+    // Admin: everything.
+    let (s, _, v) = send(&app, info(app.cookie.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let l = &v["listenerAccess"][0];
+    assert_eq!(l["tlsCert"], "/etc/wrendns/tls/dns.pem", "{l}");
+    assert_eq!(l["tlsKey"], "/etc/wrendns/tls/dns.key");
+    assert_eq!(l["path"], "/dns-query");
+    assert_eq!(l["maxConnections"], 512);
+    assert_eq!(l["maxConnectionsPerAddress"], 16);
+    assert_eq!(l["proxyProtocol"], true);
+    // Operator and viewer: the rest, none of those.
+    for (name, role) in [("olive", auth::Role::Operator), ("vic", auth::Role::Viewer)] {
+        let u = app
+            .auth
+            .create_user(name, "a long enough password", role, false, NOW)
+            .unwrap();
+        let (cookie, _) = app.session_for(&u);
+        let (s, _, v) = send(&app, info(cookie)).await;
+        assert_eq!(s, StatusCode::OK, "{name}: {v}");
+        let l = &v["listenerAccess"][0];
+        for k in hidden {
+            assert!(l.get(k).is_none(), "{name} must not see {k}: {l}");
+        }
+        assert_eq!(l["listener"], "doh://192.168.1.2:443");
+        assert_eq!(
+            l["tlsCertName"], "dns.pem",
+            "the certificate's name stays: {l}"
+        );
+        assert_eq!(l["requireClientId"], false);
+        assert_eq!(l["canCarryKey"], true);
+    }
+    // An admin's token cut to read scope is a viewer's.
+    let admin = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            admin.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let req = Request::get("/api/v1/system/info")
+        .header("authorization", format!("Bearer tt_{tid}_{secret}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["listenerAccess"][0].get("tlsCert").is_none(), "{v}");
 }

@@ -914,6 +914,12 @@ test('api_902 operator sees listeners without controls', async () => {
     await expect(box.getByTestId('listeners-add')).toHaveCount(0);
     await expect(box.getByTestId('listeners-edit')).toHaveCount(0);
     await expect(box.getByTestId('guarded-start-listen')).toHaveCount(0);
+    // The listener files and settings are an admin's (owner decision, 2026-11-27): the operator's answer has none of them.
+    const read = (p: Page) => p.evaluate(async () => ((await (await fetch('/api/v1/system/info')).json()) as { listenerAccess: Record<string, unknown>[] }).listenerAccess);
+    const mine = await read(who.p);
+    expect(mine.length).toBeGreaterThan(0);
+    for (const l of mine) for (const k of ['tlsCert', 'tlsKey', 'path', 'maxConnections', 'maxConnectionsPerAddress', 'proxyProtocol']) expect(l).not.toHaveProperty(k);
+    expect((await read(page)).every((l) => 'proxyProtocol' in l)).toBe(true);
   } finally {
     await who.close();
   }

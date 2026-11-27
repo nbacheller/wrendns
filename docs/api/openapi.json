@@ -28318,8 +28318,7 @@
           "defaultOn",
           "defaultReason",
           "publicExposure",
-          "canCarryKey",
-          "proxyProtocol"
+          "canCarryKey"
         ],
         "properties": {
           "canCarryKey": {
@@ -28367,8 +28366,11 @@
             "description": "The URL path of a DoH or DoH3 listener, when one is set."
           },
           "proxyProtocol": {
-            "type": "boolean",
-            "description": "The listener accepts PROXY protocol v2 (set in the configuration file only)."
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The listener accepts PROXY protocol v2 (set in the configuration file only). Admin only."
           },
           "publicAddress": {
             "type": "boolean",
@@ -28391,7 +28393,14 @@
               "string",
               "null"
             ],
-            "description": "REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the\nfiles' contents are never returned), so the Listeners card can show and re-send them."
+            "description": "REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the\nfiles' contents are never returned), so the Listeners card can show and re-send them.\n\nAdmin only (owner decision, 2026-11-27): absent from every other role's answer, with the path,\nthe limits and `proxy_protocol` below."
+          },
+          "tlsCertName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The certificate's file name, without its directory: every signed-in role sees it (the paths\nabove are admin only)."
           },
           "tlsKey": {
             "type": [

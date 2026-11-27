@@ -691,3 +691,122 @@ async fn api_902_engine_reads_the_stored_listen_access_value() {
     put(EntryState::Active, 2);
     assert_eq!(n.engine.stored_access(), Some(v));
 }
+
+/// The node's running list after a reload: the file's list with the stored entries laid over it, as
+/// the real reload does.
+fn reload_into_the_fake(n: &Node) {
+    let mut cfg = Config::default();
+    let own = Config::default();
+    let entries = store::for_node(&n.engine.state, "pi-a");
+    super::super::appliers::overlay_with(
+        &mut cfg,
+        &own,
+        &entries,
+        None,
+        &defs(true),
+        "pi-a",
+        false,
+    );
+    *n.host.cfg.lock().unwrap() = Arc::new(cfg);
+}
+
+/// A `listen` change, proved and confirmed, then the reload.
+async fn keep_listen(n: &Node, a: &GuardedCaller, v: Value) {
+    let p = preview(&n.engine, a, "listen", v.clone()).await.unwrap();
+    let r = n.engine.apply(a, "listen", apply_req(&p, v)).await.unwrap();
+    let (pid, token) = ids(&r);
+    tokio::task::yield_now().await;
+    let done = n.engine.confirm(a, &pid, token).await.unwrap();
+    assert_eq!(done.outcome, "confirmed");
+    reload_into_the_fake(n);
+}
+
+// REQ: API-902, DNS-901 (T27.14c) — end to end: the device key set off on a DoT listener, the
+// listener removed and the same protocol and address added back, each kept: the listener added again
+// starts on the default gate (here on, for a public address), not on the setting its predecessor had,
+// and the removal leaves no stale line in the stored `listen-access`.
+#[tokio::test(start_paused = true)]
+async fn api_902_listen_readded_listener_gets_the_default_gate_not_the_stale_off() {
+    crate::gate_host::set_facts(Some(wrendns_config::HostFacts::UNKNOWN));
+    let pki = super::super::listen_tests::Pki::new();
+    let (cert, key) = pki.pair("dns", &["dns.example"]);
+    let dot = super::super::listen_tests::dot("203.0.113.5:853", &cert, &key);
+    let n = solo();
+    let a = admin("alice", 5);
+    reload_into_the_fake(&n);
+    // 1. The listener is added; unset, a public address is gated by default.
+    keep_listen(&n, &a, value(std::slice::from_ref(&dot))).await;
+    let ran = n.host.running_config();
+    let first = ran.listen.iter().find(|x| x.addr.port() == 853).unwrap();
+    assert_eq!(first.require_client_id, None, "unset after the add");
+    // 2. Its device key is set off (a weakening change: the admin acknowledges it).
+    let lines: Vec<Value> = ran
+        .listen
+        .iter()
+        .map(|x| {
+            let off = x.addr.port() == 853;
+            json!({"proto": format!("{:?}", x.proto).to_lowercase(), "addr": x.addr.to_string(),
+                   "require_client_id": if off { json!(false) } else { Value::Null }})
+        })
+        .collect();
+    let off = json!({"listeners": lines});
+    let r = change(&n.engine, &a, "listen-access", off).await.unwrap();
+    assert_eq!(r.status, "applied");
+    reload_into_the_fake(&n);
+    let ran = n.host.running_config();
+    assert_eq!(
+        ran.listen
+            .iter()
+            .find(|x| x.addr.port() == 853)
+            .unwrap()
+            .require_client_id,
+        Some(false),
+        "the stored line is in force"
+    );
+    // 3. The listener is removed and the removal kept.
+    keep_listen(&n, &a, value(&[])).await;
+    let access = n.engine.stored_access().expect("the entry stays");
+    assert!(
+        !access.to_string().contains("203.0.113.5"),
+        "the removed listener's line is gone: {access}"
+    );
+    // 4. The same protocol and address, added back: the preview, the staged socket and the result
+    // all have the default.
+    let p = preview(&n.engine, &a, "listen", value(std::slice::from_ref(&dot)))
+        .await
+        .unwrap();
+    assert!(
+        !p.weakening,
+        "a gated listener on a public address is not weakening"
+    );
+    let r = n
+        .engine
+        .apply(
+            &a,
+            "listen",
+            apply_req(&p, value(std::slice::from_ref(&dot))),
+        )
+        .await
+        .unwrap();
+    let staged = n.host.staged_lists.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        staged
+            .iter()
+            .find(|x| x.addr.port() == 853)
+            .unwrap()
+            .require_client_id,
+        None,
+        "staged on the default"
+    );
+    let (pid, token) = ids(&r);
+    tokio::task::yield_now().await;
+    n.engine.confirm(&a, &pid, token).await.unwrap();
+    reload_into_the_fake(&n);
+    let ran = n.host.running_config();
+    let back = ran.listen.iter().find(|x| x.addr.port() == 853).unwrap();
+    assert_eq!(
+        back.require_client_id, None,
+        "the default gate, not the stale off"
+    );
+    crate::gate_host::set_facts(None);
+}
