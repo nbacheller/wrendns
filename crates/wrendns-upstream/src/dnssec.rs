@@ -213,6 +213,17 @@ impl Validator {
         self.nsec.lock().clear();
     }
 
+    /// Test support: how many NSEC3 ranges the cache holds (to show that a denial was learned).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn nsec3_range_count(&self) -> usize {
+        self.nsec
+            .lock()
+            .values()
+            .map(crate::nsec::Ranges::nsec3_len)
+            .sum()
+    }
+
     /// REQ: DNS-011 (T9.8) — root trust anchors from `path` (DNSKEY records in zone-file
     /// form) instead of the built-in ones. A file that can't be read or holds no key keeps the
     /// built-in anchors (and says so).

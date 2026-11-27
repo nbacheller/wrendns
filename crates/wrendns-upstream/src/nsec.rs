@@ -314,6 +314,10 @@ impl Ranges {
         }
     }
 
+    pub(crate) fn nsec3_len(&self) -> usize {
+        self.nsec3.len()
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.by_owner.len() + self.nsec3.len()

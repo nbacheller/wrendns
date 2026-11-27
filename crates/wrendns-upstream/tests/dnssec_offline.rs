@@ -893,18 +893,35 @@ async fn dns_907_offline_aggressive_nsec3() {
 async fn dns_907_offline_nsec3_opt_out_span_is_not_used() {
     let (v, g, asked, stats, _dir, fix) = nsec3_setup(nsec3_cfg(3, true)).await;
     let budget = Duration::from_secs(5);
-    let q1 = n("zz-one.z.");
-    v.resolve(&g, question("zz-one.z", rtype::A), budget, true, false)
-        .await
+    // A name whose next closer proof uses the span that covers the unsigned delegation `u.z.`
+    // (left out of the chain), so that span is cached by the first answer.
+    let u = n("u.z.");
+    let want = fix.covering(&fix.hash(&u)).clone();
+    let first = (0..10_000)
+        .map(|i| format!("zz-{i}.z"))
+        .find(|l| *fix.covering(&fix.hash(&n(&format!("{l}.")))) == want)
         .unwrap();
-    let same = fix.name_like(&q1, false);
-    let before = asked.load(Ordering::Relaxed);
     let r = v
-        .resolve(&g, question(&same, rtype::A), budget, true, false)
+        .resolve(&g, question(&first, rtype::A), budget, true, false)
         .await
         .unwrap();
-    assert_eq!(rcode(&r.bytes), wrendns_proto::rcode::NXDOMAIN);
-    assert!(asked.load(Ordering::Relaxed) > before, "asked upstream");
+    assert_eq!(
+        (r.verdict, rcode(&r.bytes)),
+        (Verdict::Secure, wrendns_proto::rcode::NXDOMAIN),
+        "the opt-out denial validates"
+    );
+    assert!(v.nsec3_range_count() > 0, "the cache learned the ranges");
+    // The delegation itself and a name below it are asked, never denied from the span.
+    for name in ["u.z", "www.u.z"] {
+        let before = asked.load(Ordering::Relaxed);
+        v.resolve(&g, question(name, rtype::A), budget, true, false)
+            .await
+            .unwrap();
+        assert!(
+            asked.load(Ordering::Relaxed) > before,
+            "{name} asked upstream"
+        );
+    }
     assert_eq!(stats.synthesized.load(Ordering::Relaxed), 0);
 }
 
