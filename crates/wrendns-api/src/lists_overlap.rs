@@ -535,6 +535,7 @@ pub(crate) async fn prune(
             role: Some(p.role),
             agent: None,
             origin: None,
+            node_view: None,
         };
         match backend.write_managed(w).await {
             Ok(c) => {

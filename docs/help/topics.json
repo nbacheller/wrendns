@@ -442,7 +442,7 @@
       "summary": "Where WrenDNS sends copies of the queries and answers it handles (a dnstap reader on a Unix socket or a TCP address), how many are copied, and whether the queries to upstreams and to authoritative servers are copied too.",
       "when": "You feed a network-security monitor, Vector or Logstash with the DNS messages themselves, or you want to see what the built-in recursive resolver sends to authoritative servers.",
       "example": "A socket of /run/dnstap.sock with one query in 10 copies a tenth of the queries; turning on the resolver switch adds the recursor's queries and their answers.",
-      "caution": "The copies carry client addresses and names, so only an admin changes this, no agent can, and turning it on, pointing it at another reader or copying more goes through the same review as the other guarded settings (a preview, a phrase you type and a sign-in from the last 10 minutes), while turning it off or copying less is an ordinary change. dnstap is read when a node starts: a saved change takes effect after a restart of each node, and the card says Restart needed until then.",
+      "caution": "The copies carry client addresses and names, so only an admin changes this, no agent can, and turning it on, pointing it at another reader or copying more goes through the same review as the other guarded settings (a preview, a phrase you type and a sign-in from the last 10 minutes), while turning it off or copying less is an ordinary change. The settings are each node's own: a change on this node's card is for this node, and it is read when that node starts, so it takes effect after that node restarts and the card says Restart needed until then.",
       "diagram": "local",
       "docs": "dnstap"
     },

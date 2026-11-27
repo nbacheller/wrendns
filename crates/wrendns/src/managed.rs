@@ -102,7 +102,8 @@ pub(crate) const UPSTREAM_CHECK: &str = "upstream_check";
 pub(crate) const ANOMALY_SETTINGS: &str = "anomaly_settings";
 pub(crate) const QLOG_SETTINGS: &str = "qlog_settings";
 pub(crate) const METRICS_SETTINGS: &str = "metrics_settings";
-/// REQ: OBS-007, API-905 (T40.13) - `[telemetry.dnstap]`, likewise node-managed and admin-only.
+/// REQ: OBS-007, API-905 (T40.13) - `[telemetry.dnstap]` has no row of its own: each node's value is
+/// its `dnstap-output` entry of the guarded store. The name is the kind's API name.
 pub(crate) const DNSTAP_SETTINGS: &str = "dnstap_settings";
 /// REQ: API-016 (T23.11, ADR-984) — the OTLP export (one row, named `default`): a node-managed
 /// kind, admin-only; the files win when they set a destination.
@@ -296,7 +297,6 @@ pub(crate) struct Entries {
     pub(crate) telemetry_anomaly: Option<serde_json::Value>,
     pub(crate) telemetry_qlog: Option<serde_json::Value>,
     pub(crate) telemetry_metrics: Option<serde_json::Value>,
-    pub(crate) telemetry_dnstap: Option<serde_json::Value>,
     /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
     pub(crate) guarded: Vec<crate::guarded::store::Stored>,
 }
@@ -531,7 +531,6 @@ pub(crate) fn entries(state: &State) -> Entries {
         telemetry_anomaly: single(state, ANOMALY_SETTINGS),
         telemetry_qlog: single(state, QLOG_SETTINGS),
         telemetry_metrics: single(state, METRICS_SETTINGS),
-        telemetry_dnstap: single(state, DNSTAP_SETTINGS),
         guarded: crate::guarded::store::all(state),
     }
 }
@@ -725,11 +724,9 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
         }
     }
     let mut errs = crate::settings_kinds::apply_stored(&mut cfg, own, e);
-    // REQ: OBS-007, API-905 (T40.13) - the dnstap section has an ordinary entry (a change that only
-    // narrows) and a guarded one (a widening, confirmed with the phrase). A confirmed guarded value of
-    // this node is laid over the ordinary row, as a replica lays its node-managed entries over the
-    // shared part; `dnstap_plan` rewrites or removes only the entries an ordinary write narrows, so a
-    // guarded value can be in force over a newer ordinary row.
+    // REQ: OBS-007, API-905 (T40.13) - the dnstap section is this node's own entry of the guarded
+    // store (a reviewed widening, or a narrowing written by an ordinary admin change): laid over the
+    // files' section field by field, as a replica lays its node-managed entries over the shared part.
     crate::guarded::appliers::overlay(&mut cfg, own, &e.guarded, None);
     for (name, recs) in &e.records {
         if file

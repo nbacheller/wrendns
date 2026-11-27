@@ -39,7 +39,6 @@ pub(crate) const KINDS: &[&str] = &[
     crate::managed::ANOMALY_SETTINGS,
     crate::managed::QLOG_SETTINGS,
     crate::managed::METRICS_SETTINGS,
-    crate::managed::DNSTAP_SETTINGS,
     crate::guarded::KIND,
 ];
 /// REQ: CLU-015 (T24.37, ADR-1016) — the kinds of the shared configuration that the API stores:
@@ -474,23 +473,8 @@ pub(crate) fn overlay_blob(cfg: &mut Config, bytes: &[u8]) {
     overlay_otlp(cfg, otlp_ok);
     // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's per-node sections.
     crate::node_settings::overlay_blob(cfg, &entries);
-    overlay_dnstap(cfg, &entries);
     // REQ: API-902 (T27.13, ADR-956 §2) — this node's guarded entries, under its own files.
     overlay_guarded(cfg, &entries);
-}
-
-/// REQ: OBS-007, API-905 (T40.13) - the ordinary dnstap row of the blob, laid over this node's files
-/// only where it narrows what they copy (`settings_kinds::overlay_dnstap`).
-fn overlay_dnstap(cfg: &mut Config, entries: &[Entry]) {
-    let own = cfg.clone();
-    for e in entries
-        .iter()
-        .filter(|e| e.kind == crate::managed::DNSTAP_SETTINGS && e.name == "default")
-    {
-        if let Err(why) = crate::settings_kinds::overlay_dnstap(cfg, &own, &e.body) {
-            warn_once("the dnstap settings", &why);
-        }
-    }
 }
 
 /// REQ: API-902 (T27.13) — the guarded entries of `entries` that name this node, as stored
@@ -586,7 +570,6 @@ pub(crate) fn overlay_own(cfg: &mut Config, state_path: &Path) {
     overlay_otlp(cfg, otlp_ok);
     // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections it holds.
     crate::node_settings::overlay_blob(cfg, &entries);
-    overlay_dnstap(cfg, &entries);
 }
 
 /// A promoted primary's seeding (ADR-903 §6): the entries of the blob it inherited that it has no

@@ -174,7 +174,7 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     role: 'admin',
     summary: 'Change the dnstap output',
     guardedId: 'dnstap-output',
-    note: 'dnstap is read when a node starts: a saved change takes effect after a restart of each node (restart needed). Turning it on, pointing it at another socket or address, copying more kinds of exchange or sampling more often copies more of the clients’ queries out of the process, so Check sends it to the review: a preview, a phrase you type and a sign-in from the last 10 minutes. A saved narrowing is read by each node only where it narrows that node’s own settings; a node’s own tap is confirmed on that node.',
+    note: 'dnstap is read when a node starts: a saved change takes effect after a restart of each node (restart needed). Turning it on, pointing it at another socket or address, copying more kinds of exchange or sampling more often copies more of the clients’ queries out of the process, so Check sends it to the review: a preview, a phrase you type and a sign-in from the last 10 minutes. The settings are each node’s own: a change here is for the node you are on, and judged against what that node will run. Going back to the file’s values when they copy more is the review’s too.',
     fields: [
       { key: 'socket', label: 'Unix socket of the reader', type: 'text', placeholder: '/run/dnstap.sock',
         help: 'Leave the socket and the address empty for no tap.' },

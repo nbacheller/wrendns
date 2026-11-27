@@ -259,6 +259,7 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
         also: Vec::new(),
         candidate: merged,
         redirect: None,
+        node: None,
     })
 }
 

@@ -2867,10 +2867,12 @@ pub(crate) async fn delete_metrics_settings(
 /// Narrow the dnstap output (`[telemetry.dnstap]`): the tap off, a feed off, sampling less often, a different queue size. Admins only; no agent can change it.
 ///
 /// REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is
-/// read when the node starts, so a change applies after a restart of every node (the answer says so). A change that copies
+/// read when the node starts, so a change applies after a restart of that node (the answer says so). The settings are each node's own: a
+/// write is for one node (the replica it came from, else this one), judged on what that node will run (its files and its own
+/// entry) and stored as that node's `dnstap-output` entry. A change that copies
 /// more of the clients' queries out of the process (the tap on, another socket or address, upstream or recursor exchanges
-/// added, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`/api/v1/guarded/dnstap-output`:
-/// a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that
+/// added, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`POST /api/v1/guarded/dnstap-output/preview`,
+/// then `POST /api/v1/guarded/dnstap-output`: a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that
 /// sets a field wins (`set_by_file`). Held until every cluster member announces the kind (409 `upgrade_required`).
 #[utoipa::path(put, path = "/api/v1/dnstap-settings/default", tag = "config",
     params(DryRun),
@@ -2903,14 +2905,16 @@ pub(crate) async fn put_dnstap_settings(
 
 /// Go back to the configuration file's `[telemetry.dnstap]` settings (OBS-007).
 ///
-/// Removes what the API stored, so the file's settings (or the defaults: no tap) apply again on every node after a restart.
-/// Never held for an old member: it is the way out.
+/// Removes what the API stored for this node (the replica it came from, else this one), so the file's settings (or the defaults: no tap) apply
+/// again on that node after its restart. Judged like a change: back to file values that copy more than the node will run is the guarded
+/// review's (409 `guarded_only`). Never held for an old member: it is the way out.
 #[utoipa::path(delete, path = "/api/v1/dnstap-settings/default", tag = "config",
     params(DryRun),
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 403, body = Problem, description = "Not an admin, or an agent."),
-        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API for this node: the file's settings are in effect already."),
+        (status = 409, body = Problem, description = "`guarded_only`: the file's values copy more than the node will run, so going back to them is the guarded review's."),
     ))]
 pub(crate) async fn delete_dnstap_settings(
     State((backend, auth)): State<Ctx>,
@@ -4369,6 +4373,7 @@ async fn write_inner(
                 role: Some(p.role),
                 agent: p.agent.as_ref().map(|a| a.token_name.clone()),
                 origin: None,
+                node_view: None,
             })
             .await;
         match judged {
@@ -4420,6 +4425,7 @@ async fn write_inner(
                 role: Some(p.role),
                 agent: p.agent.as_ref().map(|a| a.token_name.clone()),
                 origin: None,
+                node_view: None,
             })
             .await
             .map(|c| serde_json::to_value(c).unwrap_or_default()),
@@ -4432,12 +4438,12 @@ async fn write_inner(
     if let Ok(c) = &result
         && c["applied"].as_bool() == Some(true)
     {
-        auth.record(
-            &actor,
-            &action,
-            &name,
-            &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
-        );
+        let mut detail = serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] });
+        // REQ: OBS-007, API-905 (T40.13) - a per-node change (the dnstap settings) names its node.
+        if let Some(node) = c.get("node").filter(|n| !n.is_null()) {
+            detail["node"] = node.clone();
+        }
+        auth.record(&actor, &action, &name, &detail);
     }
     if let (Some(k), Some(f)) = (&key, fingerprint)
         && status.is_success()

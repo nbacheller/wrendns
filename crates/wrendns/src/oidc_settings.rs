@@ -179,6 +179,7 @@ pub(crate) fn plan(
         also: Vec::new(),
         candidate: merged,
         redirect,
+        node: None,
     })
 }
 

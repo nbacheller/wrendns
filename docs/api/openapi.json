@@ -5992,7 +5992,7 @@
           "config"
         ],
         "summary": "Narrow the dnstap output (`[telemetry.dnstap]`): the tap off, a feed off, sampling less often, a different queue size. Admins only; no agent can change it.",
-        "description": "REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is\nread when the node starts, so a change applies after a restart of every node (the answer says so). A change that copies\nmore of the clients' queries out of the process (the tap on, another socket or address, upstream or recursor exchanges\nadded, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`/api/v1/guarded/dnstap-output`:\na preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that\nsets a field wins (`set_by_file`). Held until every cluster member announces the kind (409 `upgrade_required`).",
+        "description": "REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is\nread when the node starts, so a change applies after a restart of that node (the answer says so). The settings are each node's own: a\nwrite is for one node (the replica it came from, else this one), judged on what that node will run (its files and its own\nentry) and stored as that node's `dnstap-output` entry. A change that copies\nmore of the clients' queries out of the process (the tap on, another socket or address, upstream or recursor exchanges\nadded, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`POST /api/v1/guarded/dnstap-output/preview`,\nthen `POST /api/v1/guarded/dnstap-output`: a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that\nsets a field wins (`set_by_file`). Held until every cluster member announces the kind (409 `upgrade_required`).",
         "operationId": "put_dnstap_settings",
         "parameters": [
           {
@@ -6081,7 +6081,7 @@
           "config"
         ],
         "summary": "Go back to the configuration file's `[telemetry.dnstap]` settings (OBS-007).",
-        "description": "Removes what the API stored, so the file's settings (or the defaults: no tap) apply again on every node after a restart.\nNever held for an old member: it is the way out.",
+        "description": "Removes what the API stored for this node (the replica it came from, else this one), so the file's settings (or the defaults: no tap) apply\nagain on that node after its restart. Judged like a change: back to file values that copy more than the node will run is the guarded\nreview's (409 `guarded_only`). Never held for an old member: it is the way out.",
         "operationId": "delete_dnstap_settings",
         "parameters": [
           {
@@ -6134,7 +6134,17 @@
             }
           },
           "404": {
-            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "description": "Nothing was changed through the API for this node: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`guarded_only`: the file's values copy more than the node will run, so going back to them is the guarded review's.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20851,6 +20861,13 @@
               "null"
             ],
             "description": "REQ: API-002 (T7.5, ADR-069) — on a node whose configuration comes from Git: the TOML\nto add to (or the block to remove from) the repository or the Helm values' `config:` to\nmake this change permanent there. Changes made through the API live in this node's\n`state.db`, not in Git. Absent on other nodes."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-007, API-905 (T40.13) - the node a per-node change was made for (the dnstap\nsettings: the node whose own entry `before` and `after` describe). Absent for the rest."
           },
           "recentQueries": {
             "type": "integer",

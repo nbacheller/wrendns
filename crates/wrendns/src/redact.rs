@@ -153,7 +153,13 @@ pub(crate) fn audit_detail(kind: ManagedKind, c: &serde_json::Value) -> serde_js
     for v in [&mut before, &mut after] {
         credentials::redact_entry(api_kind(kind), v);
     }
-    serde_json::json!({ "before": before, "after": after, "configVersion": c["configVersion"] })
+    let mut detail = serde_json::json!({ "before": before, "after": after, "configVersion": c["configVersion"] });
+    // REQ: OBS-007, API-905 (T40.13) - a per-node change (the dnstap settings) names the node whose
+    // own entry `before` and `after` describe: a write forwarded from a replica is that replica's.
+    if let Some(node) = c.get("node").filter(|n| !n.is_null()) {
+        detail["node"] = node.clone();
+    }
+    detail
 }
 
 #[cfg(test)]

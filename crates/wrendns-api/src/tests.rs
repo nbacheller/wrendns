@@ -201,6 +201,7 @@ impl Backend for Fake {
                     warnings: Vec::new(),
                     keep_in_git: None,
                     simulation: None,
+                    node: None,
                 })
             });
         }
@@ -218,6 +219,7 @@ impl Backend for Fake {
                     warnings: Vec::new(),
                     keep_in_git: None,
                     simulation: None,
+                    node: None,
                 })
             });
         }
@@ -235,6 +237,7 @@ impl Backend for Fake {
                     warnings: Vec::new(),
                     keep_in_git: None,
                     simulation: None,
+                    node: None,
                 })
             });
         }

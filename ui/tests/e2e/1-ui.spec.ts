@@ -5100,9 +5100,11 @@ test('obs_007 dnstap widening goes through the guarded review and the typed phra
     await expect(done).toContainText('staged');
     await expect(page.getByTestId('guarded-pending-restart')).toBeVisible();
     await expect(page.getByTestId('dnstap-restart-needed')).toBeVisible();
-    // Staged, not applied: the ordinary entry and the running tap are unchanged.
+    // Staged, not applied: the card shows what the node will run (the staged tap, restart needed), and the
+    // running tap is the one the node started with.
     const entry = (await (await page.request.get('/api/v1/config/entries?kind=dnstap_settings')).json()).items[0];
-    expect(entry.definition.socket ?? null).toBeNull();
+    expect(entry.definition.socket).toBe('/run/e2e-dnstap-guarded.sock');
+    expect(entry.definition.restart_needed).toBe(true);
     const status = await (await page.request.get('/api/v1/guarded')).json();
     expect(status.nodes[0].pendingRestart).toContain('dnstap-output');
   } finally {
@@ -5115,6 +5117,49 @@ test('obs_007 dnstap widening goes through the guarded review and the typed phra
   }
   const status = await (await page.request.get('/api/v1/guarded')).json();
   expect(status.nodes[0].pendingRestart).not.toContain('dnstap-output');
+});
+
+// REQ: OBS-007, API-905 (T40.13, review 4) — a way back to the file's values that would copy more than the node
+// will run is the review's: the card does not stop at a bare refusal that points at the card the admin is on,
+// it opens the review with this node's file values. (The refusal is staged here: the e2e node's file has no tap.)
+test('obs_007 dnstap revert that would copy more opens the review at the file values', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const headers = { 'x-csrf-token': csrf, 'content-type': 'application/json' };
+  await page.request.put('/api/v1/dnstap-settings/default', { headers, data: { sample_every: 5 } });
+  await page.reload();
+  await page.getByTestId('tuning-dnstap').locator('summary').click();
+  const row = page.getByTestId('editor-dnstap_settings').getByTestId('entry-row');
+  await expect(row).toContainText('overrides the file');
+  await page.route('**/api/v1/dnstap-settings/default', async (route) => {
+    if (route.request().method() !== 'DELETE') return route.continue();
+    return route.fulfill({
+      status: 409,
+      contentType: 'application/problem+json',
+      body: JSON.stringify({
+        type: 'about:blank',
+        title: 'Guarded only',
+        status: 409,
+        code: 'guarded_only',
+        detail: 'this brings back values in the config file that copy more of the queries out of the process than this node will run, so it is changed from the guarded review',
+      }),
+    });
+  });
+  try {
+    await row.getByRole('button', { name: 'Revert to the file' }).click();
+    await expect(page.getByTestId('entry-guarded')).toBeVisible();
+    await expect(page.getByRole('dialog')).toContainText('this brings back values in the config file');
+    await expect(page.getByTestId('guarded-start-dnstap-output')).toBeVisible();
+    await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1); // the staged refusal
+  } finally {
+    await page.unroute('**/api/v1/dnstap-settings/default');
+    const close = page.getByRole('dialog').getByRole('button', { name: 'Close' });
+    if (await close.count()) await close.click();
+    await page.request.delete('/api/v1/dnstap-settings/default', { headers });
+  }
 });
 
 // REQ: OBS-007, API-905 (T40.13) — the dnstap settings are an admin's as a whole: an operator sees the

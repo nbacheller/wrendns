@@ -349,6 +349,17 @@
       busy = false;
     }
   }
+  /** REQ: OBS-007, API-905 (T40.13, review) - the way back to the file would copy more than this node will
+   *  run, so it is the review's: the form opens at this node's file values (a field the files set keeps
+   *  the file's value, the others take their defaults) and hands them to the review. */
+  function reviewFileValues(e: S['ConfigEntry'], err: unknown) {
+    const def = (e.definition ?? {}) as Record<string, unknown>;
+    const set = e.setByFile ?? [];
+    const fill: Record<string, unknown> = {};
+    for (const f of fields) fill[f.key] = set.includes(f.key) ? def[f.key] : (f.initial ?? '');
+    open(e, fill);
+    holdForReview(err);
+  }
   async function remove(e: S['ConfigEntry']) {
     busy = true;
     error = null;
@@ -358,7 +369,8 @@
       onchanged?.();
       if (result.keepInGit) editing = { name: e.name, isNew: false, values: {} };
     } catch (err) {
-      error = err;
+      if (guardedOnly(err)) reviewFileValues(e, err);
+      else error = err;
     } finally {
       busy = false;
     }

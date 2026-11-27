@@ -4180,11 +4180,8 @@ impl Backend for ApiBackend {
             (
                 ManagedKind::TelemetryDnstap,
                 "dnstap_settings",
-                // A confirmed guarded value (a widening) is the API's setting too.
-                e.telemetry_dnstap.is_some()
-                    || e.guarded
-                        .iter()
-                        .any(|g| g.id == wrendns_config::guarded::DNSTAP),
+                // This node's own reviewed or narrowed value is the API's setting.
+                self.dnstap_view_of().is_some_and(|(_, own)| own),
             ),
         ] {
             if want(k) {
@@ -4205,6 +4202,14 @@ impl Backend for ApiBackend {
                 // `hosts_files` is the files' (read-only here until T27.17), shown beside the
                 // fields; `answering` counts the device names in DNS now.
                 let mut definition = crate::settings_kinds::section_json(mk, &cfg);
+                // REQ: OBS-007, API-905 (T40.13) - what this node will run after its next start (its
+                // files and its own entry, a staged one included): the card shows that, not the
+                // section a staged value has not reached yet.
+                if mk == ManagedKind::TelemetryDnstap
+                    && let Some((v, _)) = self.dnstap_view_of()
+                {
+                    definition = v.pending;
+                }
                 let answering = (mk == ManagedKind::Local)
                     // LOW 4: the card says "names answered", so count distinct names, not addresses.
                     .then(|| {
@@ -4821,6 +4826,11 @@ impl Backend for ApiBackend {
         Ok(())
     }
 
+    fn dnstap_view(&self) -> Option<serde_json::Value> {
+        let (v, _) = self.dnstap_view_of()?;
+        serde_json::to_value(v).ok()
+    }
+
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
         if let Some(p) = self.replica_read_only() {
             return Box::pin(async move { Err(p) });
@@ -5423,6 +5433,7 @@ pub(crate) fn spawn_rule_sweep(
                     role: Some(wrendns_api::auth::Role::Admin),
                     agent: None,
                     origin: None,
+                    node_view: None,
                 };
                 match backend.write_managed(w).await {
                     Ok(c) if c.applied => auth.record(
@@ -5715,6 +5726,9 @@ pub(crate) struct ManagedPlan {
     /// REQ: API-014 (T23.2) — an admin changes where a credential goes: the
     /// `credential.redirect` audit detail.
     pub(crate) redirect: Option<serde_json::Value>,
+    /// REQ: OBS-007, API-905 (T40.13) - the node a per-node change was judged and stored for (the
+    /// dnstap settings): the answer and both audit records name it.
+    pub(crate) node: Option<String>,
 }
 
 /// Parses a records body into stored form.
@@ -5986,7 +6000,12 @@ fn forward_of(
 /// AGT-002 impact of a local-name or forward change: recent queries for the name (or names
 /// under the domain), and a sentence.
 #[allow(clippy::too_many_lines)] // one sentence per kind of entry
-fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -> (u64, String) {
+pub(crate) fn managed_impact(
+    src: &Sources,
+    kind: ManagedKind,
+    name: &str,
+    setting: bool,
+) -> (u64, String) {
     let agg = src.pipeline.telemetry.aggregates();
     let under = format!(".{name}");
     let recent_queries: u64 = [HourSel::Current, HourSel::Previous]
@@ -6144,6 +6163,10 @@ fn plan_managed(
     // REQ: FLT-902 (T24.29) - who a group applies to: the group and its devices, one change.
     if w.kind == ManagedKind::GroupSources {
         return crate::group_sources::plan(src, state, w);
+    }
+    // REQ: OBS-007, API-905 (T40.13) - the dnstap settings are one node's own: judged on that node.
+    if w.kind == ManagedKind::TelemetryDnstap {
+        return crate::dnstap_plan::plan(src, state, w);
     }
     if crate::settings_kinds::is_settings(w.kind) {
         return plan_settings(src, state, w);
@@ -6373,6 +6396,7 @@ fn plan_managed(
         also: Vec::new(),
         candidate: merged,
         redirect: None,
+        node: None,
     })
 }
 
@@ -6549,11 +6573,6 @@ fn plan_settings(
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
-    // REQ: OBS-007, API-905 (T40.13) - the row this write replaces or removes: what the other nodes
-    // read of it is judged against it (`dnstap_plan`), as the primary cannot see their files.
-    let old_row = (w.kind == ManagedKind::TelemetryDnstap)
-        .then(|| entries.telemetry_dnstap.clone())
-        .flatten();
     let stored = if let Some(v) = &w.body {
         let s = crate::settings_kinds::prepare(w.kind, v, &file_section, &file)?;
         // REQ: DSC-004 (review of T25.6, ADR-903 §4) - an SNMP credential's files are held to the
@@ -6574,14 +6593,8 @@ fn plan_settings(
         crate::settings_kinds::set_stored(&mut entries, w.kind, None);
         None
     };
-    // REQ: OBS-007, API-905 (T40.13) - an ordinary write of the dnstap section is judged as asked
-    // for, without the guarded entries (`dnstap_plan` says which it narrows or replaces).
-    let merged = if w.kind == ManagedKind::TelemetryDnstap {
-        dnstap_candidate(&file, &mut entries)?
-    } else {
-        crate::managed::merge(&file, &entries)
-            .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?
-    };
+    let merged = crate::managed::merge(&file, &entries)
+        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
     let after = crate::settings_kinds::section_json(w.kind, &merged);
     crate::settings_kinds::check_admin_fields(w.kind, &before, &after, w.role, w.agent.as_deref())?;
     let mut warnings = wrendns_config::validate_config(&merged).unwrap_or_default();
@@ -6593,17 +6606,6 @@ fn plan_settings(
     if w.kind == ManagedKind::Access {
         warnings.extend(public_range_warnings(&before_cfg, &merged));
     }
-    let also = if w.kind == ManagedKind::TelemetryDnstap {
-        dnstap_plan_of(
-            src,
-            state,
-            w,
-            (&before, &after, old_row.as_ref()),
-            &mut warnings,
-        )?
-    } else {
-        Vec::new()
-    };
     // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
     // says so here, as the dry run's answer does.
     if w.kind == ManagedKind::Clients && before != after {
@@ -6620,48 +6622,18 @@ fn plan_settings(
         recent_queries,
         impact,
         warnings,
-        also,
+        also: Vec::new(),
         candidate: merged,
         redirect: None,
+        node: None,
     })
-}
-
-/// REQ: OBS-007, API-905 (T40.13) - the configuration the dnstap write would give: the value as asked
-/// for, laid over the files. A stored row is read by each node only where it narrows that node's own
-/// section (`settings_kinds::overlay_dnstap`), so the judgement is made on the raw value, not on what
-/// one node would keep of it; the guarded entries are left out, so the value asked for is what is
-/// judged (they are not deleted here: `dnstap_plan` says which are replaced).
-fn dnstap_candidate(
-    file: &wrendns_config::Config,
-    entries: &mut crate::managed::Entries,
-) -> Result<wrendns_config::Config, Problem> {
-    entries
-        .guarded
-        .retain(|g| g.id != wrendns_config::guarded::DNSTAP);
-    let row = entries.telemetry_dnstap.take();
-    let mut merged = crate::managed::merge(file, entries)
-        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
-    if let Some(v) = &row {
-        crate::settings_kinds::overlay(&mut merged, file, ManagedKind::TelemetryDnstap, v)
-            .map_err(|why| Problem::new(Code::InvalidConfig, why))?;
-    }
-    if let Err(errs) = wrendns_config::validate_config(&merged) {
-        return Err(Problem::new(
-            Code::InvalidConfig,
-            errs.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; "),
-        ));
-    }
-    Ok(merged)
 }
 
 /// REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
 /// member's build announces the `access` kind (a feature, not a version number). A DELETE is
 /// never held. Dry runs too, so the answer is the same.
 /// REQ: OBS-007, API-905 (T40.13) - and likewise the first write of the dnstap settings.
-fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem> {
+pub(crate) fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem> {
     let gated_feature = match w.kind {
         ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
         ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
@@ -6675,175 +6647,6 @@ fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem>
             .hint("Upgrade the member named, then make this change again."));
     }
     Ok(())
-}
-
-/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4; owner decision, 2026-11-27) - the ordinary write
-/// of the dnstap section. A change that copies more is the guarded flow's (preview, typed phrase,
-/// `settings.guarded` record): refused here, dry runs too, so the card learns it from the server. A
-/// change that only narrows is this write and says the tap is read when a node starts.
-///
-/// The write is judged against the section of the node that takes it (`before`, the primary's) and
-/// against the confirmed value of each node that has one (the guarded entries): a replica forwards its
-/// narrowing here, so the node whose tap it narrows is the one whose confirmed value it is compared to.
-/// The node a write is "of" is the one it came from (`ManagedWrite::origin`: the replica that forwarded
-/// it), else this one: a tap turned off on a replica's card removes that replica's confirmed entry and
-/// never the primary's. The stored row is judged against the row it replaces too, as the other nodes'
-/// files are not visible here: in a cluster the old row is not taken away while it holds something back.
-/// Each node applies the stored value only where it narrows that node's own section
-/// (`settings_kinds::overlay_dnstap`), so no node starts a tap or widens one because of it. The
-/// guarded entries a change narrows are rewritten to the narrower value (a confirmed value is laid
-/// over the ordinary one, so it must not hide the narrowing); an entry it does not narrow, a node's
-/// own confirmed tap included, is left as it is.
-fn dnstap_plan(
-    state: &wrendns_store::state::State,
-    w: &DnstapWrite<'_>,
-    warnings: &mut Vec<String>,
-) -> Result<AlsoStored, Problem> {
-    let DnstapWrite {
-        before,
-        after,
-        old_row,
-        node,
-        others,
-        deleting,
-        ..
-    } = *w;
-    // The row is taken away, and the files' values come back on the nodes that applied it. The primary
-    // cannot see a replica's files: in a cluster a row that holds something back is not taken away by
-    // an ordinary write (a replacement can never copy more than a node's own files, as each node reads
-    // a row only where it narrows them, and one that copies more than the primary runs is refused
-    // below).
-    if let Some(old) = old_row
-        && deleting
-        && others
-        && dnstap_row_narrows(old)
-    {
-        return Err(Problem::new(
-            Code::GuardedOnly,
-            "this takes back a narrowing that other nodes may have applied to their own dnstap settings, so it could copy more of the clients' queries (their addresses and names) than they do now: that is changed from the guarded review, node by node, with a preview, the phrase you type and a sign-in from the last 10 minutes",
-        )
-        .hint("Use Settings, System, dnstap output on each node in the web UI, or POST /api/v1/guarded/dnstap-output/preview and then /apply. A saved narrowing stays until then."));
-    }
-    let entries: Vec<_> = crate::guarded::store::all(state)
-        .into_iter()
-        .filter(|e| {
-            e.id == wrendns_config::guarded::DNSTAP && !crate::guarded::store::is_local(&e.id)
-        })
-        .collect();
-    let widens = |from: &serde_json::Value| wrendns_config::guarded::dnstap_widened(from, after);
-    if widens(before) && entries.iter().all(|e| widens(&e.value)) {
-        return Err(Problem::new(
-            Code::GuardedOnly,
-            "this copies more of the clients' queries (their addresses and names) out of the process than before (the tap on, another socket or address, upstream or recursor exchanges added, or sampling more often), so it is changed from the guarded review: a preview, the phrase you type and a sign-in from the last 10 minutes",
-        )
-        .hint("Use Settings, System, dnstap output in the web UI, or POST /api/v1/guarded/dnstap-output/preview and then /apply. To go back to the config file's values after a narrowing, review them there too."));
-    }
-    warnings.extend(dnstap_warnings(before, after));
-    // The node taking the write turns its own tap off or narrows it with it; another node's confirmed
-    // tap is narrowed only by a write that names its target, never wiped by one that names none (a
-    // different buffer on this node, say).
-    let target = |v: &serde_json::Value| {
-        let s = |k: &str| {
-            v.get(k)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        };
-        (s("socket"), s("address"))
-    };
-    // `node` is the node the write came from (the replica that forwarded it, or this one).
-    let this = node.map(str::to_owned);
-    Ok(entries
-        .into_iter()
-        .filter(|e| e.value != *after && !widens(&e.value))
-        .filter(|e| this.as_deref() == Some(e.node.as_str()) || target(&e.value) == target(after))
-        .map(|mut e| {
-            let name = crate::guarded::entry_name(&e.node, &e.id);
-            // A write that names no tap, on this node: the ordinary row (no tap) is the value in
-            // force there, over the files' (a node reads it where it narrows them): the entry goes.
-            if target(after) == (None, None) {
-                return (crate::guarded::KIND, name, None);
-            }
-            // As a guarded value is laid out: a reader that is not there is left out.
-            let mut v = after.clone();
-            if let Some(o) = v.as_object_mut() {
-                o.retain(|k, x| !(matches!(k.as_str(), "socket" | "address") && x.is_null()));
-            }
-            e.value = v;
-            (crate::guarded::KIND, name, serde_json::to_string(&e).ok())
-        })
-        .collect())
-}
-
-/// REQ: OBS-007, API-905 (T40.13) - [`dnstap_plan`] for a write: the node it came from (the replica
-/// that forwarded it, else this one) and whether the cluster has other members.
-fn dnstap_plan_of(
-    src: &Sources,
-    state: &wrendns_store::state::State,
-    w: &ManagedWrite,
-    (before, after, old_row): (
-        &serde_json::Value,
-        &serde_json::Value,
-        Option<&serde_json::Value>,
-    ),
-    warnings: &mut Vec<String>,
-) -> Result<AlsoStored, Problem> {
-    let others = src
-        .cluster
-        .as_deref()
-        .is_some_and(|c| !c.members().is_empty());
-    let node = w.origin.clone().or_else(crate::guarded::this_node);
-    dnstap_plan(
-        state,
-        &DnstapWrite {
-            before,
-            after,
-            old_row,
-            node: node.as_deref(),
-            others,
-            deleting: w.body.is_none(),
-        },
-        warnings,
-    )
-}
-
-/// REQ: OBS-007, API-905 (T40.13) - what `dnstap_plan` judges: the section before and after, the row
-/// this write replaces or removes, the node it came from, and whether the cluster has
-/// other members (whose files the primary cannot see).
-#[derive(Clone, Copy)]
-struct DnstapWrite<'a> {
-    before: &'a serde_json::Value,
-    after: &'a serde_json::Value,
-    old_row: Option<&'a serde_json::Value>,
-    node: Option<&'a str>,
-    others: bool,
-    deleting: bool,
-}
-
-/// Whether a stored dnstap row holds something back from a node whose files copy more: no tap, a
-/// sampling rate below every query, or a feed (`forwarder`, `resolver`) left off.
-fn dnstap_row_narrows(row: &serde_json::Value) -> bool {
-    let set = |k: &str| {
-        row.get(k)
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|s| !s.is_empty())
-    };
-    let on = |k: &str| row.get(k).and_then(serde_json::Value::as_bool) == Some(true);
-    let every = row
-        .get("sample_every")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
-    !(set("socket") || set("address")) || every > 1 || !on("forwarder") || !on("resolver")
-}
-
-/// REQ: OBS-007, API-905 (T40.13) - what a change to the dnstap settings says before it is applied: the
-/// tap is read when a node starts.
-fn dnstap_warnings(before: &serde_json::Value, after: &serde_json::Value) -> Vec<String> {
-    if before == after {
-        return Vec::new();
-    }
-    vec![
-        "The dnstap settings are read when a node starts: this takes effect after a restart of every node (restart needed). A node applies it only where it narrows that node's own settings.".to_owned(),
-    ]
 }
 
 /// REQ: DNS-014 (T27.14h, ADR-1098 point 4) - one warning for each public range the change adds to
@@ -6973,6 +6776,7 @@ fn plan_singleton(
         also: Vec::new(),
         candidate: change.merged,
         redirect: None,
+        node: None,
     })
 }
 
@@ -7654,6 +7458,7 @@ pub(crate) fn plan_override(
         also,
         candidate: merged,
         redirect,
+        node: None,
     })
 }
 
@@ -8290,6 +8095,7 @@ impl ApiBackend {
                     warnings: plan.warnings.clone(),
                     keep_in_git: keep_in_git.clone(),
                     simulation: None,
+                    node: plan.node.clone(),
                 };
                 // REQ: API-014 — the answer, and so both audit records and the stored
                 // idempotency response, carry no credential.
@@ -8346,13 +8152,28 @@ impl ApiBackend {
                         }
                         return state.put_managed_batch(&rows, expect, now, &w.by);
                     }
+                    let mut last = None;
                     for (k, n, b) in &also {
                         let r = match b {
                             Some(b) => state.put_managed(k, n, b, None, expect, now, &w.by),
                             None => state.delete_managed(k, n, expect),
                         };
-                        r?;
+                        last = Some(r?);
                         expect = None;
+                    }
+                    // REQ: OBS-007, API-905 (T40.13) - the dnstap settings have no row of their own: the
+                    // node's entry (in `also`) is the whole change, and a change that leaves it as it
+                    // is writes nothing.
+                    if w.kind == ManagedKind::TelemetryDnstap {
+                        return match last {
+                            Some(v) => Ok(v),
+                            None => match state.config_version() {
+                                Ok(v) if w.expect.is_some_and(|e| e != v) => {
+                                    Err(ManagedError::VersionConflict { current: v })
+                                }
+                                other => other.map_err(ManagedError::State),
+                            },
+                        };
                     }
                     match &body {
                         Some(b) => state.put_managed(kind, &name, b, None, expect, now, &w.by),
@@ -8449,6 +8270,12 @@ mod palette_tests {
 }
 
 impl ApiBackend {
+    /// REQ: OBS-007, API-905 (T40.13) - this node's own dnstap view, and whether it has an entry.
+    fn dnstap_view_of(&self) -> Option<(crate::dnstap_plan::View, bool)> {
+        let state = self.src.auth.get().map(|a| Arc::clone(a.state()))?;
+        Some(crate::dnstap_plan::own_view(&self.src, &state))
+    }
+
     /// `Ok` when `name` is a configured group (pauses are kept by name, so a typo would pause
     /// nobody without saying so).
     fn known_group(&self, name: &str) -> Result<(), Problem> {
@@ -10549,6 +10376,7 @@ mod group_content_marker_tests {
             role: None,
             agent: agent.map(str::to_owned),
             origin: None,
+            node_view: None,
         };
         let e = plan_override(&src, &state, &write(Some("bot")))
             .err()

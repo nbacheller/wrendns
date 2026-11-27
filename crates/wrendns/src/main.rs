@@ -32,6 +32,7 @@ mod device_dns;
 mod devices;
 mod discovery;
 mod dnstap;
+mod dnstap_plan;
 #[cfg(test)]
 mod dnstap_settings_tests;
 mod drill;

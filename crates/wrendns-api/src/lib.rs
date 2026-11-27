@@ -703,6 +703,12 @@ pub trait Backend: Send + Sync + 'static {
         let _ = kind;
         Vec::new()
     }
+    /// REQ: OBS-007, API-905 (T40.13) - this node's own dnstap view: `{file, file_set, pending}`, the
+    /// section its files give, the fields they set, and the section it will run after its next start
+    /// (files plus its own reviewed entry). A replica sends it with a dnstap write it forwards.
+    fn dnstap_view(&self) -> Option<serde_json::Value> {
+        None
+    }
     /// REQ: FLT-009 (T7.1) — each node's active pauses.
     fn blocking_state(&self) -> Vec<crate::model::BlockingNode> {
         Vec::new()
@@ -1388,6 +1394,11 @@ pub struct ManagedWrite {
     /// starts here. A change that is the node's own (the dnstap settings' confirmed tap) is read as
     /// that node's.
     pub origin: Option<String>,
+    /// REQ: OBS-007, API-905 (T40.13) - with `origin`: the sending node's own dnstap view (its files
+    /// and the section it will run after its next start), which the primary cannot see. A replica fills
+    /// it in when it forwards a dnstap write (`Backend::dnstap_view`); the primary judges the write
+    /// against it, never against its own files. `None` for a write that starts here.
+    pub node_view: Option<serde_json::Value>,
 }
 
 /// REQ: API-007 (T24.18, ADR-940) — an uploaded Pi-hole export to preview.

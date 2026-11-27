@@ -404,6 +404,7 @@ async fn api_014_write_response_and_audit_redacted() {
             "# Add to the configuration in Git.\n[[upstream]]\nname = \"nextdns\"\nurl = \"https://me:{URL_PASSWORD}@doh.example/\"\n"
         )),
         simulation: None,
+        node: None,
     };
     crate::redact::change(wrendns_api::ManagedKind::Upstream, &mut answer);
     let text = serde_json::to_string(&answer).unwrap();

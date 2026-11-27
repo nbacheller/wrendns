@@ -3377,16 +3377,27 @@ impl Backend for Federated {
         self.local.rules()
     }
     // REQ: CLU-002 — a replica forwards configuration writes to the primary (T5.7).
-    fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
+    fn write_managed(&self, mut w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
         match self.write_route() {
-            WriteRoute::Primary(primary) => Box::pin(crate::forward::managed(
-                Arc::clone(&self.cluster),
-                primary,
-                w,
-            )),
+            WriteRoute::Primary(primary) => {
+                // REQ: OBS-007, API-905 (T40.13) - the dnstap settings are this node's own: it sends its
+                // files and what it will run, as the primary cannot see them.
+                if w.kind == wrendns_api::ManagedKind::TelemetryDnstap {
+                    w.node_view = self.dnstap_view();
+                }
+                Box::pin(crate::forward::managed(
+                    Arc::clone(&self.cluster),
+                    primary,
+                    w,
+                ))
+            }
             WriteRoute::Here => self.local.write_managed(w),
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
+    }
+    // REQ: OBS-007, API-905 (T40.13) - the dnstap view is this node's own, never the primary's.
+    fn dnstap_view(&self) -> Option<serde_json::Value> {
+        self.local.dnstap_view()
     }
     fn config_version(&self) -> u64 {
         // A replica's ETags are the primary's version, so If-Match works through any node.
@@ -3406,7 +3417,8 @@ impl Backend for Federated {
     fn config_entries(&self, kind: Option<&str>) -> Vec<wrendns_api::model::ConfigEntry> {
         // REQ: API-016 (T23.11) - sinks are node-managed: the files' sinks are this node's own (the
         // primary's would be another node's), and every member holds the UI's.
-        if kind == Some("sink") {
+        // REQ: OBS-007, API-905 (T40.13) - and so are the dnstap settings: every node's own.
+        if kind == Some("sink") || kind == Some("dnstap_settings") {
             return self.local.config_entries(kind);
         }
         if !self.cluster.is_primary()
@@ -3418,8 +3430,19 @@ impl Backend for Federated {
                 },
                 VERSION_DEADLINE,
             )
-            && let Some(v) = entries_from_primary(&body)
+            && let Some(mut v) = entries_from_primary(&body)
         {
+            // REQ: OBS-007, API-905 (T40.13) - the dnstap entry is this node's own in the full list too.
+            if kind.is_none()
+                && let Some(mine) = self
+                    .local
+                    .config_entries(Some("dnstap_settings"))
+                    .into_iter()
+                    .next()
+            {
+                v.retain(|e| e.kind != "dnstap_settings");
+                v.push(mine);
+            }
             return v;
         }
         self.local.config_entries(kind)

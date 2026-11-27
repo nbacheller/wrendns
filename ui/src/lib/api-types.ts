@@ -2289,18 +2289,21 @@ export interface paths {
         /**
          * Narrow the dnstap output (`[telemetry.dnstap]`): the tap off, a feed off, sampling less often, a different queue size. Admins only; no agent can change it.
          * @description REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is
-         *     read when the node starts, so a change applies after a restart of every node (the answer says so). A change that copies
+         *     read when the node starts, so a change applies after a restart of that node (the answer says so). The settings are each node's own: a
+         *     write is for one node (the replica it came from, else this one), judged on what that node will run (its files and its own
+         *     entry) and stored as that node's `dnstap-output` entry. A change that copies
          *     more of the clients' queries out of the process (the tap on, another socket or address, upstream or recursor exchanges
-         *     added, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`/api/v1/guarded/dnstap-output`:
-         *     a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that
+         *     added, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`POST /api/v1/guarded/dnstap-output/preview`,
+         *     then `POST /api/v1/guarded/dnstap-output`: a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that
          *     sets a field wins (`set_by_file`). Held until every cluster member announces the kind (409 `upgrade_required`).
          */
         put: operations["put_dnstap_settings"];
         post?: never;
         /**
          * Go back to the configuration file's `[telemetry.dnstap]` settings (OBS-007).
-         * @description Removes what the API stored, so the file's settings (or the defaults: no tap) apply again on every node after a restart.
-         *     Never held for an old member: it is the way out.
+         * @description Removes what the API stored for this node (the replica it came from, else this one), so the file's settings (or the defaults: no tap) apply
+         *     again on that node after its restart. Judged like a change: back to file values that copy more than the node will run is the guarded
+         *     review's (409 `guarded_only`). Never held for an old member: it is the way out.
          */
         delete: operations["delete_dnstap_settings"];
         options?: never;
@@ -7157,6 +7160,11 @@ export interface components {
              *     `state.db`, not in Git. Absent on other nodes.
              */
             keepInGit?: string | null;
+            /**
+             * @description REQ: OBS-007, API-905 (T40.13) - the node a per-node change was made for (the dnstap
+             *     settings: the node whose own entry `before` and `after` describe). Absent for the rest.
+             */
+            node?: string | null;
             /**
              * Format: int64
              * @description Queries in the current and previous hour for the name (or names under the domain)
@@ -18145,8 +18153,17 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            /** @description Nothing was changed through the API for this node: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `guarded_only`: the file's values copy more than the node will run, so going back to them is the guarded review's. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
