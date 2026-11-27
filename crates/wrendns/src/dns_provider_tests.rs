@@ -645,3 +645,35 @@ async fn dsc_908_a_provider_write_is_not_forwarded_to_a_primary_that_does_not_kn
     let _ = current.stop.send(true);
     crate::upgrade_gate::forget_held();
 }
+
+/// REQ: DSC-908, CLD-904 - a promoted primary whose adopted entries use locations and providers
+/// while an older member is in the cluster: the reload gate records both refusals, the hold covers
+/// both, and both are released together once every member knows them.
+#[tokio::test]
+async fn dsc_908_a_promoted_primary_holds_and_releases_locations_and_providers_together() {
+    use wrendns_cluster::gate::Feature;
+    let _turn = GATE.lock().await;
+    let _clear = ClearHold;
+    crate::upgrade_gate::forget_held();
+    let none = crate::credential_tests::config("[local]\ndevice_domain = \"home.arpa\"\n");
+    let both = crate::credential_tests::config(&format!(
+        "[local]\ndevice_domain = \"home.arpa\"\n[[location]]\nslug = \"home\"\nnetworks = [\"192.0.2.0/24\"]\n{WITH}"
+    ));
+    let old = pair_features("1.1.0", "1.1.0-edge.40", Some(Vec::new())).await;
+    let ph = harness_in("", Some(Arc::clone(&old.primary)));
+    assert!(crate::server::reload_gate(&ph.src, &none, &both).is_err());
+    assert!(crate::upgrade_gate::hold_after_refusal());
+    assert_eq!(
+        crate::upgrade_gate::HOLD.held_features(),
+        vec![Feature::Locations, Feature::DnsProviders]
+    );
+    let _ = old.stop.send(true);
+    let new = pair("1.1.0", "1.1.0").await;
+    assert!(crate::upgrade_gate::HOLD.release(Some(&new.primary), "x"));
+    crate::upgrade_gate::HOLD.finish();
+    assert_eq!(
+        crate::upgrade_gate::HOLD.held_features(),
+        Vec::<Feature>::new()
+    );
+    let _ = new.stop.send(true);
+}
