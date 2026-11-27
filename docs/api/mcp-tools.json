@@ -951,6 +951,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The dnstap output settings ([telemetry.dnstap]): the Unix socket or TCP address the copies go to (none: the tap is off), sample_every (1 = every query), buffer (copies held while the reader is slow), forwarder (also copy queries to upstreams and their answers), resolver (also copy the built-in recursive resolver's exchanges), the fields the configuration files set (setByFile), whether the API or UI changed them (source override), and restart_needed (the tap is read when a node starts, so a change waits for a restart of each node; this is this node's answer). Agents can read these but not change them: an admin does it in the UI.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "get_dnstap_settings"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Is DNS meeting its service-level objectives? For availability (answers that aren't SERVFAIL) and latency (answers within the configured threshold): the target, the share of good answers and the error budget left over the window (30 days by default), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly the budget), and whether it burns fast enough to alert (fast, slow) or to look at soon (ticket). Covers every node.",
     "inputSchema": {
       "additionalProperties": false,

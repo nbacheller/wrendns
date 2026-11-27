@@ -45,9 +45,11 @@ const READABLE: Record<string, (detail: string) => string> = {
   // The compatibility gate names the member (`node X runs version V, which does not know ...`).
   upgrade_required: (d) => {
     const m = /^node (\S+) .*which does not know secrets of the `pem` kind/.exec(d);
-    return m
-      ? `node ${m[1]} does not know PEM secrets yet; upgrade it first. DNS is unaffected.`
-      : 'This change touches a credential, and this node is too old to send it to the primary. Upgrade this node, or make the change on the primary.';
+    if (m) return `node ${m[1]} does not know PEM secrets yet; upgrade it first. DNS is unaffected.`;
+    // REQ: API-905 (T40.13, review) - a feature gate (dnstap, access ...) names the member and the
+    // setting itself: the server's words are the sentence.
+    if (/^node \S+ .*does not know /.test(d)) return d;
+    return 'This change touches a credential, and this node is too old to send it to the primary. Upgrade this node, or make the change on the primary.';
   },
   secret_missing: (d) =>
     `A reference names a secret this node doesn't store${fieldIn(d)}. Store the secret first under Settings → Integrations & secrets, or pick one that exists.`,
@@ -162,7 +164,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'cmdb-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'access-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'cmdb-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'access-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings' | 'dnstap-settings';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };

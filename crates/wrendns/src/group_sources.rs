@@ -327,6 +327,7 @@ pub(crate) fn plan(
         also: rows,
         candidate: merged,
         redirect: None,
+        node: None,
     })
 }
 
@@ -453,6 +454,8 @@ match = ["10.0.9.9"]
             simulate: None,
             role: None,
             agent: None,
+            origin: None,
+            node_view: None,
         }
     }
 

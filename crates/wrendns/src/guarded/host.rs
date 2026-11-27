@@ -44,6 +44,12 @@ pub(crate) trait Host: Send + Sync + 'static {
     fn running_config(&self) -> Arc<Config>;
     /// The configuration files alone (what "set by file" is judged against).
     fn file_config(&self) -> Arc<Config>;
+    /// REQ: OBS-007, API-905 (T40.13, review) - what the node will run after its next start (the files
+    /// and its own entries, a staged one included): the baseline a dnstap change is judged against,
+    /// as the ordinary write judges it. The running configuration by default.
+    fn pending_config(&self) -> Arc<Config> {
+        self.running_config()
+    }
     /// Re-reads the files and `state.db` and applies them, as the API does after a change (ADR-040);
     /// answers whether it worked. A failed reload keeps the previous configuration (CLU-004).
     fn reload(&self) -> BoxFuture<bool>;
@@ -65,6 +71,22 @@ pub(crate) trait Host: Send + Sync + 'static {
         entry: Option<Stored>,
         by: &str,
     ) -> BoxFuture<Result<(), Problem>>;
+    /// REQ: OBS-007, API-905 (T40.13, review) - [`write_entry`](Self::write_entry) for an entry an
+    /// ordinary write shares (the dnstap row): the write is refused with `preview_stale` when the
+    /// entry the primary holds is not the one this node saw (`expect_at`: the time of its entry, or
+    /// `None` for no entry), so a confirmed value never overwrites an ordinary change that was
+    /// answered with success meanwhile. The default writes without the check.
+    fn write_entry_expecting(
+        &self,
+        node: &str,
+        id: &str,
+        entry: Option<Stored>,
+        by: &str,
+        expect_at: Option<u64>,
+    ) -> BoxFuture<Result<(), Problem>> {
+        let _ = expect_at;
+        self.write_entry(node, id, entry, by)
+    }
     /// Whether this node is the primary (a standalone node is its own).
     fn is_primary(&self) -> bool;
     /// After [`write_entry`](Self::write_entry): waits until this node has the entry it just wrote

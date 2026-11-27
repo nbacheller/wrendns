@@ -4193,6 +4193,13 @@ impl Backend for ApiBackend {
                 "metrics_settings",
                 e.telemetry_metrics.is_some(),
             ),
+            // REQ: OBS-007, API-905 (T40.13) - `[telemetry.dnstap]`.
+            (
+                ManagedKind::TelemetryDnstap,
+                "dnstap_settings",
+                // This node's own reviewed or narrowed value is the API's setting.
+                self.dnstap_view_of().is_some_and(|(_, own)| own),
+            ),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4212,6 +4219,14 @@ impl Backend for ApiBackend {
                 // `hosts_files` is the files' (read-only here until T27.17), shown beside the
                 // fields; `answering` counts the device names in DNS now.
                 let mut definition = crate::settings_kinds::section_json(mk, &cfg);
+                // REQ: OBS-007, API-905 (T40.13) - what this node will run after its next start (its
+                // files and its own entry, a staged one included): the card shows that, not the
+                // section a staged value has not reached yet.
+                if mk == ManagedKind::TelemetryDnstap
+                    && let Some((v, _)) = self.dnstap_view_of()
+                {
+                    definition = v.pending;
+                }
                 let answering = (mk == ManagedKind::Local)
                     // LOW 4: the card says "names answered", so count distinct names, not addresses.
                     .then(|| {
@@ -4228,6 +4243,22 @@ impl Backend for ApiBackend {
                     d.insert(
                         "hosts_files".into(),
                         serde_json::to_value(&cfg.local.hosts_files).unwrap_or_default(),
+                    );
+                }
+                // REQ: OBS-007, API-905 (T40.13) - `restart_needed` is read-only, as `hosts_files`
+                // is: true while the settings in effect differ from the ones the running tap started
+                // with (the tap is read once, at start). It is this node's own answer.
+                if mk == ManagedKind::TelemetryDnstap
+                    && let Some(d) = definition.as_object_mut()
+                {
+                    let started = self.src.dnstap_started.load();
+                    d.insert(
+                        "restart_needed".into(),
+                        serde_json::Value::Bool(
+                            started
+                                .as_deref()
+                                .is_some_and(|s| *s != serde_json::Value::Object(d.clone())),
+                        ),
                     );
                 }
                 // `mdns_port` likewise: the file's, shown read-only.
@@ -4812,6 +4843,11 @@ impl Backend for ApiBackend {
         Ok(())
     }
 
+    fn dnstap_view(&self) -> Option<serde_json::Value> {
+        let (v, _) = self.dnstap_view_of()?;
+        serde_json::to_value(v.sent()).ok()
+    }
+
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
         if let Some(p) = self.replica_read_only() {
             return Box::pin(async move { Err(p) });
@@ -5361,6 +5397,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::TelemetryAnomaly => crate::managed::ANOMALY_SETTINGS,
         ManagedKind::TelemetryQlog => crate::managed::QLOG_SETTINGS,
         ManagedKind::TelemetryMetrics => crate::managed::METRICS_SETTINGS,
+        ManagedKind::TelemetryDnstap => crate::managed::DNSTAP_SETTINGS,
         ManagedKind::Router => crate::managed::ROUTER,
         ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
         ManagedKind::Sink => crate::managed::SINK,
@@ -5412,6 +5449,8 @@ pub(crate) fn spawn_rule_sweep(
                     // The node itself: a quick rule holds no credential.
                     role: Some(wrendns_api::auth::Role::Admin),
                     agent: None,
+                    origin: None,
+                    node_view: None,
                 };
                 match backend.write_managed(w).await {
                     Ok(c) if c.applied => auth.record(
@@ -5704,6 +5743,9 @@ pub(crate) struct ManagedPlan {
     /// REQ: API-014 (T23.2) — an admin changes where a credential goes: the
     /// `credential.redirect` audit detail.
     pub(crate) redirect: Option<serde_json::Value>,
+    /// REQ: OBS-007, API-905 (T40.13) - the node a per-node change was judged and stored for (the
+    /// dnstap settings): the answer and both audit records name it.
+    pub(crate) node: Option<String>,
 }
 
 /// Parses a records body into stored form.
@@ -5975,7 +6017,12 @@ fn forward_of(
 /// AGT-002 impact of a local-name or forward change: recent queries for the name (or names
 /// under the domain), and a sentence.
 #[allow(clippy::too_many_lines)] // one sentence per kind of entry
-fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -> (u64, String) {
+pub(crate) fn managed_impact(
+    src: &Sources,
+    kind: ManagedKind,
+    name: &str,
+    setting: bool,
+) -> (u64, String) {
     let agg = src.pipeline.telemetry.aggregates();
     let under = format!(".{name}");
     let recent_queries: u64 = [HourSel::Current, HourSel::Previous]
@@ -6097,7 +6144,8 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             | ManagedKind::UpstreamCheck
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
-            | ManagedKind::TelemetryMetrics,
+            | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap,
             put,
         ) => crate::settings_kinds::impact(kind, put),
         (ManagedKind::KubernetesMap, true) => {
@@ -6132,6 +6180,10 @@ fn plan_managed(
     // REQ: FLT-902 (T24.29) - who a group applies to: the group and its devices, one change.
     if w.kind == ManagedKind::GroupSources {
         return crate::group_sources::plan(src, state, w);
+    }
+    // REQ: OBS-007, API-905 (T40.13) - the dnstap settings are one node's own: judged on that node.
+    if w.kind == ManagedKind::TelemetryDnstap {
+        return crate::dnstap_plan::plan(src, state, w);
     }
     if crate::settings_kinds::is_settings(w.kind) {
         return plan_settings(src, state, w);
@@ -6361,6 +6413,7 @@ fn plan_managed(
         also: Vec::new(),
         candidate: merged,
         redirect: None,
+        node: None,
     })
 }
 
@@ -6491,6 +6544,7 @@ fn singleton_change(
 /// field: 409 `set_by_file` for one the files set to another value); `DELETE` removes what the
 /// API stored. The admin-only fields are checked here (403 naming the field); the merged
 /// configuration must validate.
+#[allow(clippy::too_many_lines)] // one branch per settings kind
 fn plan_settings(
     src: &Sources,
     state: &wrendns_store::state::State,
@@ -6532,19 +6586,7 @@ fn plan_settings(
             return Err(problem);
         }
     }
-    // REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
-    // member's build announces the `access` kind (a feature, not a version number). A DELETE is
-    // never held. Dry runs too, so the answer is the same.
-    if w.kind == ManagedKind::Access
-        && w.body.is_some()
-        && let Err(why) = crate::upgrade_gate::enforce(
-            src.cluster.as_deref(),
-            wrendns_cluster::gate::Feature::Access,
-        )
-    {
-        return Err(Problem::new(Code::UpgradeRequired, why)
-            .hint("Upgrade the member named, then make this change again."));
-    }
+    settings_feature_gate(src, w)?;
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
@@ -6600,7 +6642,28 @@ fn plan_settings(
         also: Vec::new(),
         candidate: merged,
         redirect: None,
+        node: None,
     })
+}
+
+/// REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
+/// member's build announces the `access` kind (a feature, not a version number). A DELETE is
+/// never held. Dry runs too, so the answer is the same.
+/// REQ: OBS-007, API-905 (T40.13) - and likewise the first write of the dnstap settings.
+pub(crate) fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem> {
+    let gated_feature = match w.kind {
+        ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
+        ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
+        _ => None,
+    };
+    if let Some(feature) = gated_feature
+        && w.body.is_some()
+        && let Err(why) = crate::upgrade_gate::enforce(src.cluster.as_deref(), feature)
+    {
+        return Err(Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then make this change again."));
+    }
+    Ok(())
 }
 
 /// REQ: DNS-014 (T27.14h, ADR-1098 point 4) - one warning for each public range the change adds to
@@ -6730,6 +6793,7 @@ fn plan_singleton(
         also: Vec::new(),
         candidate: change.merged,
         redirect: None,
+        node: None,
     })
 }
 
@@ -7411,6 +7475,7 @@ pub(crate) fn plan_override(
         also,
         candidate: merged,
         redirect,
+        node: None,
     })
 }
 
@@ -8047,6 +8112,7 @@ impl ApiBackend {
                     warnings: plan.warnings.clone(),
                     keep_in_git: keep_in_git.clone(),
                     simulation: None,
+                    node: plan.node.clone(),
                 };
                 // REQ: API-014 — the answer, and so both audit records and the stored
                 // idempotency response, carry no credential.
@@ -8091,6 +8157,11 @@ impl ApiBackend {
                     // REQ: API-002 (T9.22) — what the change also needs, first; the version
                     // check applies to the first write.
                     let mut expect = w.expect;
+                    // REQ: OBS-007, API-905 (T40.13, review) - the node's entry is replaced or removed
+                    // only if nothing was stored since the plan read it.
+                    if w.kind == ManagedKind::TelemetryDnstap && expect.is_none() {
+                        expect = Some(current);
+                    }
                     // REQ: FLT-902 (T24.29): a group and its devices go in one transaction, so
                     // the version moves once and nothing is half-applied.
                     if w.kind == ManagedKind::GroupSources {
@@ -8103,13 +8174,28 @@ impl ApiBackend {
                         }
                         return state.put_managed_batch(&rows, expect, now, &w.by);
                     }
+                    let mut last = None;
                     for (k, n, b) in &also {
                         let r = match b {
                             Some(b) => state.put_managed(k, n, b, None, expect, now, &w.by),
                             None => state.delete_managed(k, n, expect),
                         };
-                        r?;
+                        last = Some(r?);
                         expect = None;
+                    }
+                    // REQ: OBS-007, API-905 (T40.13) - the dnstap settings have no row of their own: the
+                    // node's entry (in `also`) is the whole change, and a change that leaves it as it
+                    // is writes nothing.
+                    if w.kind == ManagedKind::TelemetryDnstap {
+                        return match last {
+                            Some(v) => Ok(v),
+                            None => match state.config_version() {
+                                Ok(v) if w.expect.is_some_and(|e| e != v) => {
+                                    Err(ManagedError::VersionConflict { current: v })
+                                }
+                                other => other.map_err(ManagedError::State),
+                            },
+                        };
                     }
                     match &body {
                         Some(b) => state.put_managed(kind, &name, b, None, expect, now, &w.by),
@@ -8206,6 +8292,12 @@ mod palette_tests {
 }
 
 impl ApiBackend {
+    /// REQ: OBS-007, API-905 (T40.13) - this node's own dnstap view, and whether it has an entry.
+    fn dnstap_view_of(&self) -> Option<(crate::dnstap_plan::View, bool)> {
+        let state = self.src.auth.get().map(|a| Arc::clone(a.state()))?;
+        Some(crate::dnstap_plan::own_view(&self.src, &state))
+    }
+
     /// `Ok` when `name` is a configured group (pauses are kept by name, so a typo would pause
     /// nobody without saying so).
     fn known_group(&self, name: &str) -> Result<(), Problem> {
@@ -8307,6 +8399,7 @@ fn keep_in_git(
         ManagedKind::TelemetryAnomaly => "telemetry.anomaly",
         ManagedKind::TelemetryQlog => "telemetry.qlog",
         ManagedKind::TelemetryMetrics => "telemetry.metrics",
+        ManagedKind::TelemetryDnstap => "telemetry.dnstap",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -8350,6 +8443,7 @@ fn keep_in_git(
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
             | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap
             | ManagedKind::Filter
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
@@ -10303,6 +10397,8 @@ mod group_content_marker_tests {
             simulate: None,
             role: None,
             agent: agent.map(str::to_owned),
+            origin: None,
+            node_view: None,
         };
         let e = plan_override(&src, &state, &write(Some("bot")))
             .err()

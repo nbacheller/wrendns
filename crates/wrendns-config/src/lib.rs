@@ -47,8 +47,8 @@ pub use location::{LocationConfig, LocationNet, LocationVisibility, device_label
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, SourceSpec, parse_rfc3339, parse_source};
 pub use validate::{
-    MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, addrs_clash, otlp_errors, probe_target,
-    provider_errors as oidc_provider_errors, sink_errors, valid_list_name,
+    MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, addrs_clash, dnstap_address_ok, otlp_errors,
+    probe_target, provider_errors as oidc_provider_errors, sink_errors, valid_list_name,
 };
 
 /// A config problem located by its key path (e.g. `upstream[1].url`, `cache.bogus`).
@@ -233,7 +233,7 @@ fn explicit_keys(root: &Table) -> Vec<String> {
     }
     // REQ: OBS-013, OBS-003, OBS-020 (T27.5, ADR-1007) — the node-managed parts of `[telemetry]`.
     if let Some(Value::Table(tel)) = root.get("telemetry") {
-        for section in ["anomaly", "qlog", "metrics"] {
+        for section in ["anomaly", "qlog", "metrics", "dnstap"] {
             if let Some(Value::Table(t)) = tel.get(section) {
                 keys.extend(t.keys().map(|k| format!("telemetry.{section}.{k}")));
             }

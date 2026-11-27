@@ -2067,6 +2067,14 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
             "[telemetry.qlog]\nflush_interval_secs = 3601\n",
             "telemetry.qlog.flush_interval_secs",
         ),
+        (
+            "[telemetry.dnstap]\nbuffer = 99\n",
+            "telemetry.dnstap.buffer",
+        ),
+        (
+            "[telemetry.dnstap]\nsample_every = 0\n",
+            "telemetry.dnstap.sample_every",
+        ),
     ] {
         let errs = load(toml).unwrap_err();
         assert!(
@@ -2075,8 +2083,107 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
             paths(&errs)
         );
     }
-    let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n";
+    let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n[telemetry.dnstap]\nbuffer = 1000000\n";
     assert!(load(ok).is_ok(), "the bounds themselves are accepted");
+    // REQ: OBS-007, API-905 (T40.13, review) - a file whose dnstap `buffer` is above the API's
+    // ceiling still loads (it was valid before the ceiling), with a warning.
+    let big = load("[telemetry.dnstap]\nbuffer = 2000000\n").expect("a large buffer still loads");
+    assert!(
+        big.warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.buffer") && w.contains("2000000")),
+        "{:?}",
+        big.warnings
+    );
+    assert!(
+        !load(ok)
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|w| w.contains("dnstap")),
+        "no warning at the ceiling"
+    );
+}
+
+/// REQ: OBS-007, API-905 (T40.13) - the dnstap socket is a path with no control characters; a
+/// relative path in a file written before the check still loads, with a warning.
+#[test]
+fn obs_007_dnstap_socket_is_a_clean_path() {
+    let toml = |sock: &str| format!("[telemetry.dnstap]\nsocket = \"{sock}\"\n");
+    // An empty or blank socket loads, with a warning (it meant no tap; review 5).
+    assert!(
+        load_str(&toml("  "))
+            .expect("loads")
+            .warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.socket") && w.contains("empty"))
+    );
+    let bad = "/run/a\\u0007b";
+    let errs = load_str(&toml(bad)).unwrap_err();
+    assert!(
+        paths(&errs).contains(&"telemetry.dnstap.socket"),
+        "{bad}: {errs:?}"
+    );
+    let rel = load_str(&toml("dnstap.sock")).expect("still loads");
+    assert!(
+        rel.warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.socket") && w.contains("absolute")),
+        "{:?}",
+        rel.warnings
+    );
+    assert!(
+        !load_str(&toml("/run/dnstap.sock"))
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|w| w.contains("dnstap"))
+    );
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - a dnstap address is `[tcp://]host:port` with a host name
+/// or IP address; another scheme or a host with white space still loads from a file (it was valid
+/// before the check) with a warning, and the API's check (`dnstap_address_ok`) refuses it.
+#[test]
+fn obs_007_dnstap_address_is_tcp_host_port() {
+    for ok in [
+        "tcp://192.0.2.5:6000",
+        "192.0.2.5:6000",
+        "collector.example.net:6000",
+        "tcp://[2001:db8::5]:6000",
+    ] {
+        assert!(wrendns_config::dnstap_address_ok(ok), "{ok}");
+        let toml = format!(
+            "[telemetry.dnstap]
+address = \"{ok}\"
+"
+        );
+        assert!(
+            !load_str(&toml)
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|w| w.contains("telemetry.dnstap.address")),
+            "{ok}"
+        );
+    }
+    for bad in ["udp://h:53", "http://h:80", "bad host:53", "tcp://h /x:53"] {
+        assert!(!wrendns_config::dnstap_address_ok(bad), "{bad}");
+        let toml = format!(
+            "[telemetry.dnstap]
+address = \"{bad}\"
+"
+        );
+        let loaded = load_str(&toml).expect("a file written before the check still loads");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.contains("telemetry.dnstap.address")),
+            "{bad}: {:?}",
+            loaded.warnings
+        );
+    }
 }
 
 /// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or

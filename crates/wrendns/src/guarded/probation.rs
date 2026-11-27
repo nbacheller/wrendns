@@ -170,8 +170,79 @@ pub(crate) fn begin_for(
     };
     // REQ: API-902 — on a replica the staged entry is the primary's, in the blob it applied.
     let pairs = store::effective(cfg, &state, &node);
-    let entries: Vec<Stored> = pairs.iter().map(|(e, _)| e.clone()).collect();
+    let mut entries: Vec<Stored> = pairs.iter().map(|(e, _)| e.clone()).collect();
     let replicated = |id: &str| pairs.iter().any(|(e, r)| *r && e.id == id);
+    // REQ: OBS-007, API-905 (T40.13, review) - an ordinary dnstap narrowing was never confirmed with the
+    // phrase: if the files changed so that it would now copy more than they do, it is dropped (the
+    // node starts from the files) and the drop is audited.
+    entries.retain(|e| {
+        if e.id != wrendns_config::guarded::DNSTAP
+            || !super::dnstap::not_applied(cfg, &e.mode, &e.value)
+        {
+            return true;
+        }
+        if e.mode != super::dnstap::NARROWED {
+            // A confirmed entry stays in the store: the overlay does not apply it while the files
+            // displace it and brings it back when they stop. It is not waiting for probation now.
+            // Said once per change (an outcome and an audit record), so the card and the listing
+            // do not claim that a restart will apply it.
+            let seen = store::outcomes(&state).iter().any(|o| {
+                o.setting == e.id
+                    && o.node == node
+                    && o.outcome == "not_applied"
+                    && o.reason.as_deref() == Some("file_displaces")
+                    && o.at >= e.at
+            });
+            if !seen {
+                warn!(id = %e.id, "a confirmed dnstap entry is kept but not applied: the config file sets another reader or feed");
+                audit_system(
+                    &state,
+                    now,
+                    "settings.guarded_not_applied",
+                    &super::entry_name(&node, &e.id),
+                    &json!({"setting": e.id, "node": node, "reason": "file_displaces"}),
+                );
+                store::record_outcome(
+                    &state,
+                    GuardedOutcome {
+                        setting: e.id.clone(),
+                        node: node.clone(),
+                        outcome: "not_applied".to_owned(),
+                        reason: Some("file_displaces".to_owned()),
+                        at: now,
+                    },
+                );
+            }
+            return false;
+        }
+        warn!(id = %e.id, "an unconfirmed dnstap entry would now copy more than the files do: it is not applied and is dropped");
+        let dropped = if replicated(&e.id) {
+            store::drop_entry(&state, e, true)
+        } else {
+            store::delete(&state, &node, &e.id)
+        };
+        if let Err(err) = dropped {
+            warn!(id = %e.id, "the unconfirmed dnstap entry can't be dropped: {err}");
+        }
+        audit_system(
+            &state,
+            now,
+            "settings.guarded_rolled_back",
+            &super::entry_name(&node, &e.id),
+            &json!({"setting": e.id, "node": node, "reason": "would_widen"}),
+        );
+        store::record_outcome(
+            &state,
+            GuardedOutcome {
+                setting: e.id.clone(),
+                node: node.clone(),
+                outcome: "rolled_back".to_owned(),
+                reason: Some("would_widen".to_owned()),
+                at: now,
+            },
+        );
+        false
+    });
     let waiting: Vec<&Stored> = entries
         .iter()
         .filter(|e| matches!(e.state, EntryState::Staged | EntryState::Probation))
@@ -192,7 +263,8 @@ pub(crate) fn begin_for(
     if attempts >= MAX_ATTEMPTS {
         // Two starts with these entries didn't become healthy: drop them and start from the file.
         for id in &listed {
-            let dropped = entries.iter().find(|e| e.id == *id);
+            // Looked up among all the entries, so a displaced replicated one is suppressed too.
+            let dropped = pairs.iter().map(|(e, _)| e).find(|e| e.id == *id);
             let replacement = dropped.filter(|d| !replicated(&d.id)).and_then(|d| {
                 defs.iter()
                     .find(|r| r.row.id == d.id)
@@ -305,16 +377,23 @@ pub(crate) fn dns_probes_ok(results: &[wrendns_api::model::ProbeResult]) -> bool
 
 /// The node proved healthy: entries on probation become active, the counter is deleted and the
 /// outcome is recorded (`applied`).
-pub(crate) fn mark_healthy(state: &State, node: &str, data_dir: &Path, now: u64) -> Vec<String> {
+pub(crate) fn mark_healthy(
+    files: &Config,
+    state: &State,
+    node: &str,
+    data_dir: &Path,
+    now: u64,
+) -> Vec<String> {
     let entries = store::for_node(state, node)
         .into_iter()
         .map(|e| (e, false))
         .collect();
-    mark_healthy_of(state, node, data_dir, now, entries)
+    mark_healthy_of(files, state, node, data_dir, now, entries)
 }
 
 /// [`mark_healthy`] over `entries` (each with whether the primary replicated it).
 pub(crate) fn mark_healthy_of(
+    files: &Config,
     state: &State,
     node: &str,
     data_dir: &Path,
@@ -323,6 +402,13 @@ pub(crate) fn mark_healthy_of(
 ) -> Vec<String> {
     let mut done = Vec::new();
     for (e, replicated) in entries {
+        // A confirmed dnstap entry the files displace is not in force: it was not applied, so it is
+        // not recorded as applied (it applies at once, as active, when the files stop displacing it).
+        if e.id == wrendns_config::guarded::DNSTAP
+            && super::dnstap::not_applied(files, &e.mode, &e.value)
+        {
+            continue;
+        }
         if e.state == EntryState::Probation
             && store::transition(state, &e, replicated, EntryState::Active, now, "system").is_ok()
         {
@@ -481,6 +567,7 @@ pub(crate) fn spawn_watch(
             };
             if h.healthy(needs_key) {
                 mark_healthy_of(
+                    &cfg,
                     &state,
                     &node,
                     &data_dir,

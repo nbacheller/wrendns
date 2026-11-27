@@ -567,7 +567,8 @@ fn api_902_test_row_absent_in_release() {
             "restart-now",
             "api-http-redirect",
             "listen-access",
-            "listen"
+            "listen",
+            "dnstap-output"
         ],
         "only the real rows have appliers"
     );
@@ -844,4 +845,130 @@ async fn dns_901_gate_routes_admin_only_validation_and_audit() {
     let audit = h.audit_text();
     assert!(audit.contains("settings.guarded"), "{audit}");
     assert!(audit.contains("listen-access"), "{audit}");
+}
+
+// REQ: OBS-007, API-905, API-902 (T40.13; ADR-1107 point 4, ADR-914, ADR-956 §3; owner decision,
+// 2026-11-27) - a widening dnstap change through the guarded routes: only an admin's session gets a
+// preview (the phrase names the node and the setting, the mode is `staged`, it weakens), a value the
+// section refuses is 422 before anything is written, a wrong phrase and a sign-in older than 10
+// minutes cannot apply it, a fresh one stages it for the next start, and the audit log records it.
+#[tokio::test]
+async fn obs_007_dnstap_widening_goes_through_the_guarded_flow() {
+    let h = harness("");
+    let _n = install(&h);
+    let value = json!({"socket": "/run/dnstap.sock", "sample_every": 10, "buffer": 5000});
+    let body = json!({ "value": value });
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot", Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive", Role::Operator, None);
+    for uri in [
+        "/api/v1/guarded/dnstap-output/preview",
+        "/api/v1/guarded/dnstap-output",
+    ] {
+        let (s, _, v) = call_as(&h, &agent, "POST", uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("agent_not_allowed")),
+            "{uri}: {v}"
+        );
+        let (s, _, v) = call_as(&h, &op, "POST", uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("forbidden")),
+            "{uri}: {v}"
+        );
+        let (s, _, v) = call_as(&h, &h.bearer, "POST", uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("reauth_required")),
+            "{uri}: {v}"
+        );
+    }
+    // The ordinary route refuses the same change and says where it goes.
+    let (s, _, v) = h
+        .call("PUT", "/api/v1/dnstap-settings/default", Some(&value))
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("guarded_only")),
+        "{v}"
+    );
+    let preview = |b: Value| {
+        session_req(
+            &h,
+            5,
+            "POST",
+            "/api/v1/guarded/dnstap-output/preview",
+            Some(&b),
+            None,
+        )
+    };
+    let (s, p) = json_of(&h, preview(body.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["phrase"], "pi-a dnstap-output");
+    assert_eq!(p["mode"], "staged");
+    assert_eq!(p["weakening"], true, "{p}");
+    assert_eq!(p["needsRecentSignIn"], true, "{p}");
+    assert_eq!(p["restartRequired"], true, "{p}");
+    assert!(p["effect"].as_str().unwrap().contains("/run/dnstap.sock"));
+    // A value the section refuses is 422 and nothing is written.
+    for bad in [
+        json!({"socket": "/a", "address": "tcp://192.0.2.5:6000"}),
+        json!({"socket": "/a", "buffer": 1_000_001}),
+        json!({"socket": "/a", "sample_every": 0}),
+        json!({"colour": "red"}),
+    ] {
+        let (s, v) = json_of(&h, preview(json!({ "value": bad }))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {v}");
+        assert_eq!(v["code"], "invalid_config", "{bad}: {v}");
+    }
+    let stored = || {
+        crate::guarded::store::for_node(h.auth.state(), "pi-a")
+            .into_iter()
+            .find(|e| e.id == "dnstap-output")
+    };
+    let apply = |age: u64, confirm: &str| {
+        let b = json!({"previewId": p["previewId"], "confirm": confirm, "value": value, "reason": "test"});
+        session_req(
+            &h,
+            age,
+            "POST",
+            "/api/v1/guarded/dnstap-output",
+            Some(&b),
+            None,
+        )
+    };
+    // A wrong phrase, and a sign-in 11 minutes old, cannot apply it.
+    let (s, v) = json_of(&h, apply(5, "pi-a restart")).await;
+    assert_ne!(s, StatusCode::OK, "{v}");
+    assert!(stored().is_none());
+    let (s, v) = json_of(&h, apply(11 * 60, "pi-a dnstap-output")).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauth_required")),
+        "{v}"
+    );
+    assert!(stored().is_none());
+    // A fresh one stages it for the next start, and the audit log records it.
+    let (s, v) = json_of(&h, apply(5, "pi-a dnstap-output")).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(v["status"], "staged", "{v}");
+    let e = stored().expect("the staged entry");
+    assert_eq!(e.state, crate::guarded::store::EntryState::Staged);
+    assert_eq!(e.value["socket"], "/run/dnstap.sock");
+    let audit = h.audit_text();
+    assert!(audit.contains("settings.guarded"), "{audit}");
+    assert!(audit.contains("dnstap"), "{audit}");
+    // The running tap has not changed: the node reads it at its next start.
+    assert!(
+        crate::managed::merge(
+            &h.src.file_config.load_full(),
+            &crate::managed::entries(h.auth.state())
+        )
+        .unwrap()
+        .telemetry
+        .dnstap
+        .socket
+        .is_none()
+    );
 }

@@ -276,6 +276,10 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
                 applier: Arc::new(super::listen::Listen),
             },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+                applier: Arc::new(super::dnstap::Dnstap),
+            },
         ])
         .collect()
 }
@@ -333,6 +337,8 @@ struct Fake {
     audit_to_state: AtomicBool,
     /// Whether a replica's entry reaches it in time (`Host::wait_applied`).
     arrives: AtomicBool,
+    /// What the node will run after its next start, when it differs from `cfg` (a staged entry).
+    pending: Mutex<Option<Arc<Config>>>,
     /// T27.14c: the lists `stage_listeners` was given, and what the staged sockets are made to do.
     staged_lists: Mutex<Vec<Vec<wrendns_config::Listener>>>,
     stage_error: Mutex<Option<crate::server::WindowError>>,
@@ -354,6 +360,10 @@ impl Host for Fake {
     }
     fn file_config(&self) -> Arc<Config> {
         Arc::clone(&self.file_cfg.lock().unwrap())
+    }
+    fn pending_config(&self) -> Arc<Config> {
+        let p = self.pending.lock().unwrap().clone();
+        p.unwrap_or_else(|| self.running_config())
     }
     fn reload(&self) -> BoxFuture<bool> {
         self.reloads.fetch_add(1, Ordering::SeqCst);
@@ -397,6 +407,42 @@ impl Host for Fake {
             None => store::delete(&target, node, id),
         };
         Box::pin(std::future::ready(r.map_err(Problem::internal)))
+    }
+    fn write_entry_expecting(
+        &self,
+        node: &str,
+        id: &str,
+        entry: Option<Stored>,
+        by: &str,
+        expect_at: Option<u64>,
+    ) -> BoxFuture<Result<(), Problem>> {
+        if !self.is_primary() {
+            let target = self
+                .net
+                .primary_state
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&self.state));
+            let held = store::for_node(&target, node)
+                .into_iter()
+                .find(|e| e.id == id);
+            let w = super::prod::EntryWrite {
+                node: node.to_owned(),
+                id: id.to_owned(),
+                entry: entry.clone(),
+                by: by.to_owned(),
+                check: true,
+                expect_at,
+            };
+            if super::prod::entry_stale(held.as_ref(), &w) {
+                return Box::pin(std::future::ready(Err(Problem::new(
+                    Code::PreviewStale,
+                    "the entry changed",
+                ))));
+            }
+        }
+        self.write_entry(node, id, entry, by)
     }
     fn wait_applied(&self, _node: &str, _id: &str, _digest: Option<String>) -> BoxFuture<bool> {
         Box::pin(std::future::ready(
@@ -630,6 +676,7 @@ fn node_on(
         can_sign,
         audit_to_state: AtomicBool::new(false),
         arrives: AtomicBool::new(true),
+        pending: Mutex::new(None),
         staged_lists: Mutex::default(),
         stage_error: Mutex::default(),
         commit_error: Mutex::default(),
@@ -1913,7 +1960,7 @@ fn api_902_staged_entry_probation_drops_after_two_failed_starts() {
     let (dir, cfg) = dir_with(&[("t-stg", json!({"label": "x"}), EntryState::Staged)]);
     begin(&cfg);
     let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
-    let done = probation::mark_healthy(&state, "pi-a", dir.path(), 200);
+    let done = probation::mark_healthy(&cfg, &state, "pi-a", dir.path(), 200);
     assert_eq!(done, vec!["t-stg".to_owned()]);
     assert!(probation::read_sidecar(dir.path()).is_none());
     assert_eq!(entries_of(&cfg)[0].state, EntryState::Active);
@@ -2963,6 +3010,8 @@ fn api_902_two_nodes_in_one_site_have_their_own_names() {
         id: "t-imm".to_owned(),
         entry: None,
         by: "alice".to_owned(),
+        check: false,
+        expect_at: None,
     };
     assert!(super::prod::entry_allowed(&names[0], &w(&names[0])));
     assert!(
@@ -3296,7 +3345,7 @@ fn api_902_staged_entry_takes_effect_on_a_replica() {
         "still no local row"
     );
     // Healthy: active, and the outcome is recorded.
-    let done = probation::mark_healthy_of(&state, &me, dir.path(), 200, eff);
+    let done = probation::mark_healthy_of(&cfg, &state, &me, dir.path(), 200, eff);
     assert_eq!(done, vec!["t-stg".to_owned()]);
     assert_eq!(
         store::effective(&cfg, &state, &me)[0].0.state,
@@ -3350,6 +3399,10 @@ fn api_902_replica_clear_queues_a_removal_for_the_primary() {
     let q = store::removals(&state);
     assert_eq!(q.len(), 1);
     assert_eq!((q[0].id.as_str(), q[0].by.as_str()), ("t-stg", "cli:alex"));
+    assert_eq!(
+        q[0].at, None,
+        "only the dnstap row's removal is time-checked"
+    );
     assert!(store::suppressed(&state).contains_key("t-stg"));
     // The removal the primary took (its own blob no longer has the entry): queue and suppression go.
     store::removal_done(&state, "t-stg").unwrap();
@@ -3358,6 +3411,48 @@ fn api_902_replica_clear_queues_a_removal_for_the_primary() {
     assert!(store::suppressed(&state).contains_key("t-stg"));
     store::prune_suppressed(&state, &[]);
     assert!(store::suppressed(&state).is_empty());
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 11) - a removal an offline clear queued on a replica is sent
+// against the entry it cleared: the primary deletes it only while it still holds that entry, so a
+// newer write that landed in the gap survives and the moot removal is dropped from the queue.
+#[tokio::test]
+async fn api_902_a_queued_removal_does_not_delete_a_newer_entry() {
+    let (a, b, _c) = cluster();
+    let entry = |at: u64, v: Value| Stored {
+        node: "pi-b".to_owned(),
+        id: "t-stg".to_owned(),
+        value: v,
+        mode: "staged".to_owned(),
+        state: EntryState::Staged,
+        by: "alex".to_owned(),
+        at,
+    };
+    let held = |a: &Node| {
+        store::for_node(&a.host.state, "pi-b")
+            .into_iter()
+            .find(|e| e.id == "t-stg")
+    };
+    // The entry the clear removed (time 5) is replaced by a newer one (time 6) before the removal is sent.
+    store::put(
+        &a.host.state,
+        &entry(6, json!({"label": "newer"})),
+        6,
+        "alex",
+    )
+    .unwrap();
+    store::queue_removal(&b.host.state, "t-stg", "cli:alex", Some(5)).unwrap();
+    super::prod::send_removals(&*b.host, &b.host.state, "pi-b").await;
+    assert_eq!(held(&a).expect("the newer entry stays").at, 6);
+    assert!(
+        store::removals(&b.host.state).is_empty(),
+        "the moot removal is dropped"
+    );
+    // The entry it was for is removed.
+    store::queue_removal(&b.host.state, "t-stg", "cli:alex", Some(6)).unwrap();
+    super::prod::send_removals(&*b.host, &b.host.state, "pi-b").await;
+    assert!(held(&a).is_none());
+    assert!(store::removals(&b.host.state).is_empty());
 }
 
 // REQ: API-902 (ADR-956 §3) — a replica's immediate change isn't answered `applied` until the
@@ -3734,4 +3829,703 @@ async fn dns_901_gate_file_wins_over_the_stored_value() {
     assert_eq!(cfg.listen[0].require_client_id, None, "the file wins");
     super::appliers::overlay_with(&mut cfg, &Config::default(), &e, None, &defs, "pi-a", false);
     assert_eq!(cfg.listen[0].require_client_id, Some(false));
+}
+
+// REQ: OBS-007, API-905 (T40.13; owner decision, 2026-11-27) - the dnstap row is locked per field
+// by the files, not as a whole: with the reader's socket in the file, the feeds and the sampling
+// still go through the preview and the phrase (the file's socket stays, whatever the value says), and a
+// value that changes the file's socket is 409 `set_by_file`.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_file_socket_locks_that_field_only() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/run/file.sock".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file.clone());
+    *n.host.cfg.lock().unwrap() = Arc::new(file.clone());
+    // Another socket: the file wins.
+    assert_eq!(
+        code(
+            preview(
+                &n.engine,
+                &a,
+                "dnstap-output",
+                json!({"socket": "/run/other.sock"})
+            )
+            .await
+        ),
+        Code::SetByFile
+    );
+    // The file's socket with a feed turned on: a weakening review, and it applies.
+    let v = json!({"socket": "/run/file.sock", "forwarder": true});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(p.weakening, "{p:?}");
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+    assert!(
+        !n.engine
+            .status_local()
+            .settings
+            .iter()
+            .any(|s| s.id == "dnstap-output" && s.set_by_file),
+        "the listing is not locked"
+    );
+    // The stored value never overrides the file's socket, and a feed confirmed for another reader is
+    // not carried to it (T40.13, review 5): only an entry confirmed with the file's own reader keeps it.
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let e = vec![Stored {
+        node: "pi-a".into(),
+        id: "dnstap-output".into(),
+        value: json!({"socket": "/run/other.sock", "forwarder": true}),
+        mode: "staged".into(),
+        state: EntryState::Active,
+        by: "alice".into(),
+        at: 1,
+    }];
+    let mut cfg = file.clone();
+    super::appliers::overlay_with(&mut cfg, &file, &e, None, &defs, "pi-a", false);
+    assert_eq!(
+        cfg.telemetry.dnstap.socket.as_deref(),
+        Some("/run/file.sock")
+    );
+    assert!(
+        !cfg.telemetry.dnstap.forwarder,
+        "the feed was confirmed for another socket"
+    );
+    let mut same = e.clone();
+    same[0].value = json!({"socket": "/run/file.sock", "forwarder": true});
+    let mut cfg = file.clone();
+    super::appliers::overlay_with(&mut cfg, &file, &same, None, &defs, "pi-a", false);
+    assert!(
+        cfg.telemetry.dnstap.forwarder,
+        "the feed is the stored value's, confirmed with the file's socket"
+    );
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - the review judges "widening" against what the node will run
+// after its next start, as the ordinary write does: the tap is on at /a, an ordinary write staged
+// "off", and a review that sets /a again turns the tap on at the next start, so it weakens (a recent
+// sign-in, the warning, `weakening` in the preview).
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_review_is_judged_on_what_the_node_will_run() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut running = Config::default();
+    running.telemetry.dnstap.socket = Some("/a".into());
+    *n.host.cfg.lock().unwrap() = Arc::new(running);
+    let v = json!({"socket": "/a"});
+    // Judged on the running tap alone, the same value changes nothing.
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(!p.weakening, "nothing changes from the running tap");
+    // A staged "off": the next start has no tap, so /a again turns it on.
+    *n.host.pending.lock().unwrap() = Some(Arc::new(Config::default()));
+    let p = preview(&n.engine, &a, "dnstap-output", v).await.unwrap();
+    assert!(p.weakening, "{p:?}");
+    assert!(p.needs_recent_sign_in, "{p:?}");
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - the reader is one field: a file that sets the address
+// takes the entry's socket away (and the other way round), so the merged section has one reader and
+// validates; the node does not fall back to its files alone.
+#[test]
+fn obs_007_dnstap_the_reader_is_one_field() {
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let entry = |value: Value| {
+        vec![Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value,
+            mode: "staged".into(),
+            state: EntryState::Active,
+            by: "alice".into(),
+            at: 1,
+        }]
+    };
+    for (file_field, file_value, entry_value) in [
+        (
+            "address",
+            "tcp://192.0.2.5:6000",
+            json!({"socket": "/run/a.sock", "forwarder": true}),
+        ),
+        (
+            "socket",
+            "/run/f.sock",
+            json!({"address": "tcp://192.0.2.9:6000", "forwarder": true}),
+        ),
+    ] {
+        let mut file = Config::default();
+        if file_field == "address" {
+            file.telemetry.dnstap.address = Some(file_value.into());
+        } else {
+            file.telemetry.dnstap.socket = Some(file_value.into());
+        }
+        file.file_set.push(format!("telemetry.dnstap.{file_field}"));
+        let mut cfg = file.clone();
+        super::appliers::overlay_with(
+            &mut cfg,
+            &file,
+            &entry(entry_value),
+            None,
+            &defs,
+            "pi-a",
+            false,
+        );
+        let d = &cfg.telemetry.dnstap;
+        assert_eq!(
+            (d.socket.is_some(), d.address.is_some()),
+            (file_field == "socket", file_field == "address"),
+            "one reader, the file's: {d:?}"
+        );
+        assert!(
+            !d.forwarder,
+            "a feed confirmed for another reader is not carried to the file's"
+        );
+        assert!(wrendns_config::validate_config(&cfg).is_ok(), "{d:?}");
+        // A value that changes the reader the file does not name is still the file's field.
+        assert!(
+            super::dnstap::changes_file_field(&file, &json!({"socket": "/run/zzz.sock"}))
+                || file_field == "socket"
+        );
+        assert!(
+            super::dnstap::changes_file_field(&file, &json!({"address": "tcp://192.0.2.77:1"}))
+                || file_field == "address"
+        );
+    }
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - an entry an ordinary write stored (`narrowed`, never
+// confirmed with the phrase) is applied only while it copies no more than the files: when the files
+// have dropped the tap or added a feed since, it is not applied.
+#[test]
+fn obs_007_dnstap_an_unconfirmed_entry_never_widens_the_files() {
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let entry = |mode: &str, value: Value| {
+        vec![Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value,
+            mode: mode.into(),
+            state: EntryState::Active,
+            by: "alice".into(),
+            at: 1,
+        }]
+    };
+    let run = |file: &Config, e: &[Stored]| {
+        let mut cfg = file.clone();
+        super::appliers::overlay_with(&mut cfg, file, e, None, &defs, "pi-a", false);
+        cfg.telemetry.dnstap
+    };
+    // The entry as an ordinary write leaves it: a sampling change and a feed, no reader.
+    let value = json!({"sample_every": 5, "resolver": true});
+    // The files have no tap: a feed with no target copies nothing, so it is applied.
+    let none = Config::default();
+    assert!(run(&none, &entry("narrowed", value.clone())).resolver);
+    // The files then add a socket: the feed would copy exchanges nobody confirmed.
+    let mut with_tap = Config::default();
+    with_tap.telemetry.dnstap.socket = Some("/run/x.sock".into());
+    with_tap.file_set.push("telemetry.dnstap.socket".to_owned());
+    let d = run(&with_tap, &entry("narrowed", value.clone()));
+    assert!(!d.resolver && d.sample_every == 1, "not applied: {d:?}");
+    assert_eq!(d.socket.as_deref(), Some("/run/x.sock"));
+    // A reviewed entry with no reader confirmed nothing for the file's socket (T40.13, review 5): it
+    // is not applied either.
+    assert!(!run(&with_tap, &entry("staged", value)).resolver);
+    // One that was confirmed with the file's own socket is applied.
+    let same = json!({"socket": "/run/x.sock", "resolver": true});
+    assert!(run(&with_tap, &entry("staged", same)).resolver);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - the file had the tap on, an admin narrowed the sampling by
+// an ordinary write (an entry with no reader, `narrowed`), then the file took the tap out and added a
+// feed: at the next start nothing is applied that copies more than the files (no tap, no feed), the
+// entry is dropped, and the drop is audited as a rollback.
+#[test]
+fn obs_007_dnstap_restart_drops_an_unconfirmed_entry_the_files_now_widen() {
+    let (_dir, mut cfg) = dir_with(&[]);
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    store::put(
+        &state,
+        &Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value: json!({"sample_every": 5, "buffer": 10000, "forwarder": false, "resolver": true}),
+            mode: "narrowed".into(),
+            state: EntryState::Staged,
+            by: "alice".into(),
+            at: 1,
+        },
+        1,
+        "alice",
+    )
+    .unwrap();
+    // The files now set a socket: the entry's feed would copy what nobody confirmed.
+    cfg.telemetry.dnstap.socket = Some("/run/x.sock".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let b = begin(&cfg);
+    assert!(b.on_probation.is_empty(), "{b:?}");
+    assert!(entries_of(&cfg).is_empty(), "dropped");
+    let audits = state
+        .audit_page(None, 10, Some("settings.guarded_rolled_back"), None)
+        .unwrap();
+    assert_eq!(audits.len(), 1);
+    assert!(audits[0].detail.contains("would_widen"));
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 7) - the files never widen a confirmed entry: a file that
+// adds a feed or a faster sampling (no reader) after the entry was confirmed does not turn them on
+// for the entry's reader.
+#[test]
+fn obs_007_dnstap_a_file_edit_never_widens_a_confirmed_entry() {
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let e = vec![Stored {
+        node: "pi-a".into(),
+        id: "dnstap-output".into(),
+        value: json!({"socket": "/a", "sample_every": 10}),
+        mode: "staged".into(),
+        state: EntryState::Active,
+        by: "alice".into(),
+        at: 1,
+    }];
+    let mut file = Config::default();
+    file.telemetry.dnstap.forwarder = true;
+    file.telemetry.dnstap.sample_every = 1;
+    file.file_set.push("telemetry.dnstap.forwarder".to_owned());
+    file.file_set
+        .push("telemetry.dnstap.sample_every".to_owned());
+    let mut cfg = file.clone();
+    super::appliers::overlay_with(&mut cfg, &file, &e, None, &defs, "pi-a", false);
+    let d = &cfg.telemetry.dnstap;
+    assert!(
+        d.socket.is_none() && !(d.forwarder && d.socket.is_some()),
+        "nothing is copied to /a that was not confirmed: {d:?}"
+    );
+    // A file that only repeats what was confirmed leaves the entry applied.
+    let mut same = Config::default();
+    same.telemetry.dnstap.sample_every = 10;
+    same.file_set
+        .push("telemetry.dnstap.sample_every".to_owned());
+    let mut cfg = same.clone();
+    super::appliers::overlay_with(&mut cfg, &same, &e, None, &defs, "pi-a", false);
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/a"));
+    assert_eq!(cfg.telemetry.dnstap.sample_every, 10);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 7) - a start never deletes a confirmed entry: a file reader
+// that displaces it only keeps it from being applied, and it comes back when the file stops.
+#[test]
+fn obs_007_dnstap_restart_keeps_a_confirmed_entry_a_file_reader_displaces() {
+    let (_dir, mut cfg) = dir_with(&[(
+        "dnstap-output",
+        json!({"socket": "/a", "forwarder": true}),
+        EntryState::Active,
+    )]);
+    let files = cfg.clone();
+    cfg.telemetry.dnstap.socket = Some("/f".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let b = begin(&cfg);
+    assert!(b.on_probation.is_empty(), "{b:?}");
+    assert_eq!(entries_of(&cfg).len(), 1, "the confirmed entry stays");
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    assert!(
+        state
+            .audit_page(None, 10, Some("settings.guarded_rolled_back"), None)
+            .unwrap()
+            .is_empty()
+    );
+    // The file reader goes away: the entry is applied again.
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let mut back = files.clone();
+    super::appliers::overlay_with(
+        &mut back,
+        &files,
+        &entries_of(&files),
+        None,
+        &defs,
+        "pi-a",
+        false,
+    );
+    assert_eq!(back.telemetry.dnstap.socket.as_deref(), Some("/a"));
+    assert!(back.telemetry.dnstap.forwarder);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 9) - a confirmed entry that is still Staged and that the
+// file displaces at the start is not "pending a restart": an outcome and an audit record say it was
+// kept but not applied, and the listing marks it displaced.
+#[test]
+fn obs_007_dnstap_staged_entry_a_file_reader_displaces_is_recorded_not_pending() {
+    let (_dir, mut cfg) = dir_with(&[(
+        "dnstap-output",
+        json!({"socket": "/a", "forwarder": true}),
+        EntryState::Staged,
+    )]);
+    cfg.telemetry.dnstap.socket = Some("/b".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let b = begin(&cfg);
+    assert!(b.on_probation.is_empty(), "{b:?}");
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    let outs = store::outcomes(&state);
+    assert!(
+        outs.iter().any(|o| o.setting == "dnstap-output"
+            && o.outcome == "not_applied"
+            && o.reason.as_deref() == Some("file_displaces")),
+        "{outs:?}"
+    );
+    assert_eq!(
+        state
+            .audit_page(None, 10, Some("settings.guarded_not_applied"), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    // A second start says it once.
+    begin(&cfg);
+    assert_eq!(store::outcomes(&state).len(), outs.len());
+    // The entry stays, and the engine does not list it as pending a restart.
+    let held = entries_of(&cfg);
+    assert_eq!(held.len(), 1);
+    assert!(super::dnstap::not_applied(
+        &cfg,
+        &held[0].mode,
+        &held[0].value
+    ));
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 14) - a confirmed entry on probation that the files displace
+// is not recorded as applied when the node proves healthy.
+#[test]
+fn obs_007_dnstap_displaced_probation_entry_is_not_marked_applied() {
+    let (dir, mut cfg) = dir_with(&[(
+        "dnstap-output",
+        json!({"socket": "/a", "forwarder": true}),
+        EntryState::Probation,
+    )]);
+    cfg.telemetry.dnstap.socket = Some("/b".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    let done = probation::mark_healthy(&cfg, &state, "pi-a", dir.path(), 200);
+    assert!(done.is_empty(), "{done:?}");
+    assert!(
+        !store::outcomes(&state)
+            .iter()
+            .any(|o| o.outcome == "applied")
+    );
+    assert_eq!(entries_of(&cfg)[0].state, EntryState::Probation);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 9) - the listing does not say "restart needed" for a staged
+// dnstap entry the file displaces.
+#[tokio::test]
+async fn obs_007_dnstap_displaced_staged_entry_is_not_listed_pending_restart() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let v = json!({"socket": "/a", "forwarder": true});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+    assert_eq!(
+        n.engine.status_local().pending_restart,
+        vec!["dnstap-output".to_owned()]
+    );
+    // The file gains another reader before the restart.
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/b".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file);
+    let st = n.engine.status_local();
+    assert!(st.pending_restart.is_empty(), "{st:?}");
+    let s = st
+        .settings
+        .iter()
+        .find(|s| s.id == "dnstap-output")
+        .unwrap();
+    assert!(s.displaced_by_file && !s.pending_restart && s.has_entry);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 10) - an ordinary (narrowed) dnstap entry the file outgrows is
+// dropped at the next start, so the status says that and not "displaced" (kept until the file changes
+// back), and does not list it as pending a restart.
+#[tokio::test]
+async fn obs_007_dnstap_a_narrowed_entry_the_file_outgrows_is_dropped_not_displaced() {
+    let n = solo();
+    store::put(
+        &n.host.state,
+        &Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value: json!({"sample_every": 10, "forwarder": true}),
+            mode: "narrowed".into(),
+            state: EntryState::Staged,
+            by: "bob".into(),
+            at: 7,
+        },
+        7,
+        "bob",
+    )
+    .unwrap();
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/f".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file);
+    let st = n.engine.status_local();
+    assert!(st.pending_restart.is_empty(), "{st:?}");
+    let s = st
+        .settings
+        .iter()
+        .find(|s| s.id == "dnstap-output")
+        .unwrap();
+    assert!(
+        s.dropped_at_next_start && !s.displaced_by_file && !s.pending_restart && s.has_entry,
+        "{s:?}"
+    );
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 7) - a replica's phrase-confirmed write is refused with
+// `preview_stale` when the primary holds an entry the replica had not seen (an ordinary narrowing
+// answered with success meanwhile), and goes through when it saw the same one.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirmed_write_does_not_overwrite_an_unseen_narrowing() {
+    let (a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let v = json!({"socket": "/a"});
+    let p = preview_for(&b.engine, &alice, "pi-b", "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    // Meanwhile an ordinary write stored an entry on the primary.
+    store::put(
+        &a.host.state,
+        &Stored {
+            node: "pi-b".into(),
+            id: "dnstap-output".into(),
+            value: json!({"sample_every": 5}),
+            mode: "narrowed".into(),
+            state: EntryState::Staged,
+            by: "bob".into(),
+            at: 7,
+        },
+        7,
+        "bob",
+    )
+    .unwrap();
+    let e = apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+    let held = store::for_node(&a.host.state, "pi-b");
+    assert_eq!(held[0].mode, "narrowed", "the narrowing is still there");
+    let w = |expect_at| super::prod::EntryWrite {
+        node: "pi-b".into(),
+        id: "dnstap-output".into(),
+        entry: None,
+        by: "x".into(),
+        check: true,
+        expect_at,
+    };
+    assert!(super::prod::entry_stale(held.first(), &w(None)));
+    assert!(!super::prod::entry_stale(held.first(), &w(Some(7))));
+    assert!(!super::prod::entry_stale(None, &w(None)));
+}
+
+fn dnstap_entry(node: &str, value: Value, at: u64) -> Stored {
+    Stored {
+        node: node.into(),
+        id: "dnstap-output".into(),
+        value,
+        mode: "staged".into(),
+        state: EntryState::Active,
+        by: "bob".into(),
+        at,
+    }
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 11) - a confirmed write of the shared entry gets a time later
+// than the entry it saw (an ordinary write may have moved it ahead of the clock, or both fall in one
+// second), so a second confirm that saw the same entry is refused as stale.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirmed_write_moves_the_entry_time_forward() {
+    let (a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let ahead = super::now_secs() + 1000;
+    let e1 = dnstap_entry("pi-b", json!({"socket": "/a"}), ahead);
+    store::put(&a.host.state, &e1, ahead, "bob").unwrap();
+    store::put(&b.host.state, &e1, ahead, "bob").unwrap();
+    let v = json!({"socket": "/b"});
+    let p = preview_for(&b.engine, &alice, "pi-b", "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v.clone())
+        .await
+        .unwrap();
+    let held = store::for_node(&a.host.state, "pi-b");
+    assert_eq!(held[0].value, v);
+    assert_eq!(held[0].at, ahead + 1, "{:?}", held[0]);
+    // A second confirm that saw the first entry is stale.
+    let e = apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 8) - a review is judged on the node's entry as the admin saw
+// it: when that entry is deleted by an ordinary narrowing (answered with success) after the preview,
+// the confirm is `preview_stale` even though the replica's own version did not move and the section
+// the node will run is the same, and the stored entry is not rewritten.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirm_after_the_entry_was_removed_is_stale() {
+    let (a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let e1 = dnstap_entry("pi-b", json!({"socket": "/a"}), 100);
+    store::put(&a.host.state, &e1, 100, "bob").unwrap();
+    store::put(&b.host.state, &e1, 100, "bob").unwrap();
+    let mut pending = Config::default();
+    pending.telemetry.dnstap.socket = Some("/a".into());
+    *b.host.pending.lock().unwrap() = Some(Arc::new(pending));
+    let v = json!({"socket": "/a"});
+    let p = preview_for(&b.engine, &alice, "pi-b", "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(!p.weakening, "the same tap: no widening at preview");
+    // An ordinary narrowing removes the entry meanwhile; the section the node runs is unchanged here.
+    store::delete(&a.host.state, "pi-b", "dnstap-output").unwrap();
+    store::delete(&b.host.state, "pi-b", "dnstap-output").unwrap();
+    let e = apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+    assert!(store::for_node(&a.host.state, "pi-b").is_empty());
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 8) - the same for the section the node will run (a file edit
+// and reload do not move the version): a confirm after it changed is `preview_stale`, also when it
+// still widens.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirm_after_the_pending_section_changed_is_stale() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let v = json!({"socket": "/a"});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(p.weakening);
+    let mut now = Config::default();
+    now.telemetry.dnstap.socket = Some("/b".into());
+    *n.host.pending.lock().unwrap() = Some(Arc::new(now));
+    let e = n
+        .engine
+        .apply(&a, "dnstap-output", apply_req(&p, v.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+    // A fresh review on the new state goes through.
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 8) - the review of a widening that carries a field the files
+// set says the node keeps the saved values whatever the file later does; and a confirmed entry that
+// holds the file's reader keeps it when the file drops its section (pinned: it was named in the
+// phrase the admin typed).
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_review_names_the_file_values_it_saves() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/run/f.sock".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file.clone());
+    *n.host.cfg.lock().unwrap() = Arc::new(file.clone());
+    let v = json!({"socket": "/run/f.sock", "forwarder": true});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(
+        p.warnings
+            .iter()
+            .any(|w| w.contains("config file sets socket") && w.contains("the file's value wins")),
+        "{:?}",
+        p.warnings
+    );
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+    // After the restart the staged entry is in force.
+    let mut held = store::for_node(&n.host.state, "pi-a");
+    assert_eq!(held.len(), 1);
+    held[0].state = EntryState::Active;
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    // The file drops its section: the node keeps what was confirmed with the phrase.
+    let none = Config::default();
+    let mut cfg = none.clone();
+    super::appliers::overlay_with(&mut cfg, &none, &held, None, &defs, "pi-a", false);
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/f.sock"));
+    assert!(cfg.telemetry.dnstap.forwarder);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 9) - the warning says the file's value wins while the
+/// file sets a field: after the file changes the socket, the node runs the file's socket and no
+/// forwarder (the confirmed entry would copy more than both sides), not the confirmed values.
+#[tokio::test]
+async fn obs_007_dnstap_file_value_wins_over_a_confirmed_entry_when_the_file_changes() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/run/f.sock".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file.clone());
+    *n.host.cfg.lock().unwrap() = Arc::new(file.clone());
+    let v = json!({"socket": "/run/f.sock", "forwarder": true});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+    let mut held = store::for_node(&n.host.state, "pi-a");
+    held[0].state = EntryState::Active;
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let mut changed = Config::default();
+    changed.telemetry.dnstap.socket = Some("/run/g.sock".into());
+    changed.file_set.push("telemetry.dnstap.socket".to_owned());
+    let mut cfg = changed.clone();
+    super::appliers::overlay_with(&mut cfg, &changed, &held, None, &defs, "pi-a", false);
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/g.sock"));
+    assert!(!cfg.telemetry.dnstap.forwarder);
 }

@@ -26,6 +26,7 @@ pub(crate) mod appliers;
 pub(crate) mod assertion;
 pub(crate) mod cli;
 pub(crate) mod dns_proof;
+pub(crate) mod dnstap;
 #[cfg(feature = "e2e")]
 pub(crate) mod e2e;
 pub(crate) mod engine;

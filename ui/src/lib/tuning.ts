@@ -5,13 +5,13 @@
 // and `validate` repeats the server's checks that a single bound can't say (REQ: API-901).
 import type { Field } from './components/ConfigEditor.svelte';
 
-export type TuningKey = 'slo' | 'probe' | 'upstream_check' | 'anomaly' | 'qlog' | 'metrics';
+export type TuningKey = 'slo' | 'probe' | 'upstream_check' | 'anomaly' | 'qlog' | 'metrics' | 'dnstap';
 
 export type TuningSpec = {
   /** The kind the server lists the entry under (`GET /config/entries?kind=`). */
-  kind: 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings';
+  kind: 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings' | 'dnstap_settings';
   /** The entry path (`PUT /{path}/default`). */
-  path: 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
+  path: 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings' | 'dnstap-settings';
   title: string;
   noun: string;
   /** Who may change it: the telemetry sections are an admin's (ADR-1007). */
@@ -19,9 +19,13 @@ export type TuningSpec = {
   /** The one-line summary of the disclosure, before it is opened. */
   summary: string;
   fields: Field[];
+  /** A sentence under the fields (dnstap: the settings are read when a node starts). */
+  note?: string;
+  /** The guarded row that takes a change the server refuses as `guarded_only` (dnstap: a widening). */
+  guardedId?: string;
   describe: (def: Record<string, unknown>) => string;
   /** The reason a draft is refused, or null (the server checks the same; this is the sooner check). */
-  validate?: (values: Record<string, unknown>) => string | null;
+  validate?: (values: Record<string, unknown>, loaded?: Record<string, unknown>, setByFile?: string[]) => string | null;
 };
 
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0));
@@ -159,5 +163,42 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
         help: 'The rest are counted as “other”.' },
     ],
     describe: (d) => (d.per_client ? `Per device, up to ${num(d.per_client_cap)} devices.` : 'Off.'),
+  },
+  // REQ: OBS-007, API-905 (T40.13) — the whole [telemetry.dnstap] section. It is read when a node starts,
+  // so the row says "Restart needed" while the running tap differs (`restart_needed`, this node's answer).
+  dnstap: {
+    kind: 'dnstap_settings',
+    path: 'dnstap-settings',
+    title: 'dnstap output',
+    noun: 'dnstap settings',
+    role: 'admin',
+    summary: 'Change the dnstap output',
+    guardedId: 'dnstap-output',
+    note: 'dnstap is read when a node starts: a saved change takes effect after the node it was made on restarts (restart needed). Turning it on, pointing it at another socket or address, copying more kinds of exchange or sampling more often copies more of the clients’ queries out of the process, so Check sends it to the review: a preview, a phrase you type and a sign-in from the last 10 minutes. The settings are each node’s own: a change here is for the node you are on, and judged against what that node will run. Going back to the file’s values when they copy more is the review’s too.',
+    fields: [
+      { key: 'socket', label: 'Unix socket of the reader', type: 'text', placeholder: '/run/dnstap.sock',
+        help: 'Leave the socket and the address empty for no tap.' },
+      { key: 'address', label: 'Or a TCP reader', type: 'text', placeholder: 'tcp://host:port' },
+      { key: 'sample_every', label: 'Copy one query in', type: 'number', min: 1, initial: 1, help: '1 copies every query.' },
+      { key: 'buffer', label: 'Copies held while the reader is slow', type: 'number', min: 100, initial: 10000,
+        help: 'From 100 to 1,000,000 (a file may hold more).' },
+      { key: 'forwarder', label: 'Also copy queries to upstreams and their answers', type: 'bool', initial: false },
+      { key: 'resolver', label: 'Also copy the recursive resolver’s queries and answers', type: 'bool', initial: false },
+    ],
+    describe: (d) =>
+      `${d.socket || d.address ? `Copying to ${String(d.socket || d.address)}, one query in ${num(d.sample_every)}` : 'Off'}; upstream ${d.forwarder ? 'on' : 'off'}, resolver ${d.resolver ? 'on' : 'off'}.${d.restart_needed ? ' Restart needed.' : ''}`,
+    // A value left as the node reads it (or a field a file sets) is no new setting: the server judges it
+    // (a file's own relative socket or buffer above the ceiling still loads, with a warning), so the
+    // checks here are for what the admin changed.
+    validate: (v, loaded, setByFile) => {
+      const kept = (k: string) => (setByFile ?? []).includes(k) || String(v[k] ?? '') === String(loaded?.[k] ?? '');
+      if (given(v.socket) && given(v.address)) return 'Set a socket or an address, not both.';
+      // eslint-disable-next-line no-control-regex
+      if (given(v.socket) && !kept('socket') && (!String(v.socket).startsWith('/') || /[\u0000-\u001f\u007f]/.test(String(v.socket)))) return 'The socket is an absolute path, for example /run/dnstap.sock.';
+      if (given(v.address) && !kept('address') && !/:\d{1,5}$/.test(String(v.address))) return 'The address is tcp://host:port.';
+      if (given(v.sample_every) && !(Number.isInteger(Number(v.sample_every)) && Number(v.sample_every) >= 1)) return 'Copy one query in: a whole number, at least 1.';
+      if (given(v.buffer) && !kept('buffer') && !(Number(v.buffer) >= 100 && Number(v.buffer) <= 1000000)) return 'Copies held: from 100 to 1,000,000.';
+      return null;
+    },
   },
 };

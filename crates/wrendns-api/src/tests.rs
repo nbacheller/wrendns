@@ -201,6 +201,7 @@ impl Backend for Fake {
                     warnings: Vec::new(),
                     keep_in_git: None,
                     simulation: None,
+                    node: None,
                 })
             });
         }
@@ -218,6 +219,25 @@ impl Backend for Fake {
                     warnings: Vec::new(),
                     keep_in_git: None,
                     simulation: None,
+                    node: None,
+                })
+            });
+        }
+        // REQ: OBS-007, API-905 - the dnstap settings: the plan is at version 7, nothing widens.
+        if w.kind == crate::ManagedKind::TelemetryDnstap {
+            let applied = !w.dry_run;
+            return Box::pin(async move {
+                Ok(crate::model::ConfigChange {
+                    applied,
+                    config_version: 7,
+                    before: Some(serde_json::json!({})),
+                    after: Some(serde_json::json!({})),
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                    node: None,
                 })
             });
         }
@@ -2162,7 +2182,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // (T31.2).
     // 200 with DNS-904's /recursor/trace (T40.3), DNS-014's /access-settings/default (T27.14h), API-902's GET
     // /guarded/pending/{id} (T27.14b) and DSC-913's /locations and /locations/{slug} (T36.10a).
-    assert_eq!(paths.len(), 200);
+    // 201 with OBS-007's /dnstap-settings/default (T40.13).
+    assert_eq!(paths.len(), 201);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -5503,6 +5524,41 @@ async fn dns_904_the_trace_route_returns_the_steps() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = get(&app, "/api/v1/recursor/trace").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the judgement of a dnstap change (is it a
+/// widening, which the guarded flow takes) is the backend's own plan, made inside the one write that
+/// applies it, on the version the caller pinned: the route makes exactly one backend write per request
+/// and passes the caller's own `If-Match` on, so a change made in between fails with 409 instead of
+/// being applied unjudged.
+#[tokio::test]
+async fn obs_007_dnstap_write_is_judged_in_the_one_write_that_applies_it() {
+    let (app, fake) = app();
+    let put = |extra: Option<&str>| {
+        let mut b = Request::put("/api/v1/dnstap-settings/default")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json");
+        if let Some(v) = extra {
+            b = b.header("if-match", v);
+        }
+        b.body(Body::from(r#"{"buffer":5000}"#)).unwrap()
+    };
+    let (s, _, v) = send(&app, put(None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = send(&app, put(Some("\"7\""))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let w: Vec<String> = fake
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|x| x.starts_with("managed TelemetryDnstap"))
+        .cloned()
+        .collect();
+    // One write per request, the caller's own `If-Match` passed on as it is.
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(!w[0].contains("expect="), "{w:?}");
+    assert!(w[1].ends_with(" expect=7"), "{w:?}");
 }
 
 /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — a listener's certificate and key paths, URL

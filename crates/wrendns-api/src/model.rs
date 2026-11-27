@@ -2563,6 +2563,10 @@ pub struct ConfigChange {
     /// the queries in the query log. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simulation: Option<Simulation>,
+    /// REQ: OBS-007, API-905 (T40.13) - the node a per-node change was made for (the dnstap
+    /// settings: the node whose own entry `before` and `after` describe). Absent for the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// REQ: OBS-024 (T13.1, ADR-115) — what a configuration change would have done to the queries

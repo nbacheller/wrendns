@@ -784,6 +784,18 @@ pub fn tools() -> Vec<Tool> {
                 Ok(vec![("node_settings".into(), path)])
             },
         },
+        // REQ: OBS-007, API-905 (T40.13, ADR-1107) - read only: no agent changes the dnstap settings.
+        Tool {
+            name: "get_dnstap_settings",
+            description: "Read-only. The dnstap output settings ([telemetry.dnstap]): the Unix socket or TCP address the copies go to (none: the tap is off), sample_every (1 = every query), buffer (copies held while the reader is slow), forwarder (also copy queries to upstreams and their answers), resolver (also copy the built-in recursive resolver's exchanges), the fields the configuration files set (setByFile), whether the API or UI changed them (source override), and restart_needed (the tap is read when a node starts, so a change waits for a restart of each node; this is this node's answer). Agents can read these but not change them: an admin does it in the UI.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "dnstap_settings".into(),
+                    "/api/v1/config/entries?kind=dnstap_settings".into(),
+                )])
+            },
+        },
         // REQ: OBS-016 (ADR-105)
         Tool {
             name: "slo_status",
