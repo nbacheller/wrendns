@@ -364,6 +364,11 @@ impl Caches {
         e
     }
 
+    /// The smoothed round-trip estimate of `ip`, in microseconds.
+    pub(crate) fn srtt_us(&self, ip: IpAddr) -> Option<u32> {
+        self.rtt.lock().get(&ip).map(|x| x.srtt_us)
+    }
+
     /// Folds in an answer about `zone` after `rtt` (over TCP when `tcp`). A server that was
     /// timing out for `zone`, or is new, takes this answer's time as its estimate, so a
     /// recovered server is first again.

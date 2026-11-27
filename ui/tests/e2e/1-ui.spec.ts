@@ -8692,3 +8692,75 @@ test('ui_901 a single-choice picker: search, keyboard, help text, clear (Query l
     await page.unroute(logRoute);
   }
 });
+
+// REQ: DNS-904 (T40.3), FLT-013 — "Why?" can trace the built-in resolver's walk for the name: the
+// button asks for it (nothing is requested before), the steps list the servers with their outcome
+// and time, and a node with no recursive upstream says so. The answers are mocked: the e2e
+// server forwards to a fake and has no recursive upstream of its own.
+test('dns_904 the trace shows the walk of a recursive lookup in Explain', async () => {
+  let asks = 0;
+  const trace = '**/api/v1/recursor/trace*';
+  await page.route(trace, (r) => {
+    asks += 1;
+    const url = new URL(r.request().url());
+    if (url.searchParams.get('name') === 'none.e2e.test') {
+      return r.fulfill({
+        status: 400,
+        contentType: 'application/problem+json',
+        json: {
+          type: 'about:blank',
+          title: 'Invalid parameter',
+          status: 400,
+          code: 'invalid_parameter',
+          detail: 'no upstream resolves by itself (recursive://)',
+          hint: 'A trace shows the built-in resolver\'s walk; add a recursive:// upstream first.',
+        },
+      });
+    }
+    const step = (server: string, qname: string, zone: string, outcome: string, detail: string, micros: number) => ({
+      kind: 'query', zone, server, qname, qtype: 'A', outcome, detail, transport: 'udp', micros,
+    });
+    return r.fulfill({
+      json: {
+        name: url.searchParams.get('name'),
+        qtype: 'A',
+        upstream: 'recursive',
+        rcode: 'NOERROR',
+        answers: 1,
+        totalMicros: 4200,
+        steps: [
+          { kind: 'start', zone: '.', qname: 'www.sub.e2e.test.', qtype: 'A', outcome: 'root', detail: '13 servers', transport: '', micros: 0 },
+          step('198.41.0.4', 'test.', '.', 'referral', 'test.', 900),
+          step('192.0.2.3', 'e2e.test.', 'test.', 'referral', 'e2e.test.', 1200),
+          step('192.0.2.4', 'sub.e2e.test.', 'e2e.test.', 'referral', 'sub.e2e.test.', 1100),
+          step('192.0.2.5', 'www.sub.e2e.test.', 'sub.e2e.test.', 'answer', '', 1000),
+        ],
+      },
+    });
+  });
+  try {
+    await page.goto('/#/explain?name=www.sub.e2e.test&client=127.0.0.1');
+    await page.reload();
+    await expect(page.locator('.explain')).toContainText('Route');
+    expect(asks, 'nothing is traced until it is asked for').toBe(0);
+    await page.getByTestId('trace-run').click();
+    await expect(page.getByTestId('trace-summary')).toContainText('NOERROR');
+    await expect(page.getByTestId('trace-step')).toHaveCount(5);
+    const outcomes = page.getByTestId('trace-outcome');
+    await expect(outcomes).toHaveText(['referral → test.', 'referral → e2e.test.', 'referral → sub.e2e.test.', 'answer']);
+    await expect(page.getByTestId('trace-step').nth(1)).toContainText('198.41.0.4');
+    await expect(page.getByTestId('trace-step').nth(0)).toContainText('from the root');
+    expect(asks).toBe(1);
+    // Another name: a fresh trace panel, with the refusal explained.
+    await page.goto('/#/explain?name=none.e2e.test&client=127.0.0.1');
+    await page.reload();
+    await expect(page.getByTestId('trace-step')).toHaveCount(0);
+    await page.getByTestId('trace-run').click();
+    await expect(page.getByTestId('recursor-trace')).toContainText('no upstream resolves by itself');
+    // The 400 is the expected refusal; the browser logs it as a resource error.
+    for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 400')) problems.splice(i, 1);
+  } finally {
+    await page.unroute(trace);
+    await page.goto('/#/');
+  }
+});

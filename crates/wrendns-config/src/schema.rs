@@ -2821,6 +2821,10 @@ pub struct DnstapConfig {
     /// REQ: OBS-007 (T9.19) — also copy queries to upstreams and their answers
     /// (`FORWARDER_QUERY`, `FORWARDER_RESPONSE`), sampled the same way.
     pub forwarder: bool,
+    /// REQ: DNS-904, OBS-007 — also copy the built-in recursive resolver's queries to
+    /// authoritative servers and their answers (`RESOLVER_QUERY`, `RESOLVER_RESPONSE`),
+    /// sampled the same way.
+    pub resolver: bool,
 }
 
 impl Default for DnstapConfig {
@@ -2831,6 +2835,7 @@ impl Default for DnstapConfig {
             sample_every: 1,
             buffer: 10_000,
             forwarder: false,
+            resolver: false,
         }
     }
 }

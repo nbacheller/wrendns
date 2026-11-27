@@ -3879,6 +3879,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recursor/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trace a recursive lookup.
+         * @description Resolves `name` through the built-in recursive resolver (`recursive://` upstream `upstream`,
+         *     else the first) and shows how it went: where the lookup began (`start`: the root, a stub zone
+         *     or a cached zone cut), then every query to every authoritative server with its zone, the name
+         *     asked (cut down by QNAME minimization), the outcome (`referral`, `answer`, `nodata`,
+         *     `nxdomain`, `lame`, `timeout`, `error`, `case-mismatch`), the delegation a referral points to,
+         *     the transport and the time. A name whose zone cuts are cached starts below the root; flush the
+         *     resolver's cuts (`POST /api/v1/cache/flush` with `recursor`) to see the whole walk. The lookup
+         *     is real: answers are not stored in the answer cache, but the resolver's zone cuts and server
+         *     timings are updated. Example: `GET /api/v1/recursor/trace?name=www.example.com`.
+         */
+        get: operations["trace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/routers": {
         parameters: {
             query?: never;
@@ -11422,6 +11450,59 @@ export interface components {
         /** @description Single-use recovery codes, shown once. */
         RecoveryCodes: {
             codes: string[];
+        };
+        /** @description How a recursive lookup went, step by step (`GET /api/v1/recursor/trace`, REQ: DNS-904). */
+        RecursorTrace: {
+            /**
+             * Format: int32
+             * @description Records in the answer section.
+             */
+            answers: number;
+            /** @description Why the lookup failed (answered SERVFAIL to a client), when it did. */
+            error?: string | null;
+            name: string;
+            qtype: string;
+            /** @description The answer's code (`NOERROR`, `NXDOMAIN`); absent when the lookup failed. */
+            rcode?: string | null;
+            /** @description The steps, in order. At most 128. */
+            steps: components["schemas"]["RecursorTraceStep"][];
+            /**
+             * Format: int64
+             * @description From the first step to the last, in microseconds.
+             */
+            totalMicros: number;
+            /** @description The `recursive://` upstream that resolved it. */
+            upstream: string;
+        };
+        /** @description One line of a recursive lookup's trace (REQ: DNS-904). */
+        RecursorTraceStep: {
+            /**
+             * @description The zone a referral delegates to, the target of a CNAME answer, or how many servers a
+             *     start had; empty otherwise.
+             */
+            detail: string;
+            /** @description `start` (where the lookup began) or `query` (one query to one server). */
+            kind: string;
+            /**
+             * Format: int64
+             * @description Time spent, in microseconds.
+             */
+            micros: number;
+            /**
+             * @description A query: `referral`, `answer`, `nodata`, `nxdomain`, `lame`, `timeout`, `error` or
+             *     `case-mismatch`. A start: `cache`, `stub` or `root`.
+             */
+            outcome: string;
+            /** @description The name asked: a prefix of the full name while the name is being cut down (RFC 9156). */
+            qname: string;
+            /** @description The type asked, as text (`A`, `NS`). */
+            qtype: string;
+            /** @description The server's address (none for `start`). */
+            server?: string | null;
+            /** @description `udp` or `tcp` (empty for `start`). */
+            transport: string;
+            /** @description The zone whose servers were asked (`start`: the zone the lookup began at). */
+            zone: string;
         };
         /** @description A group's rewrite: `domain` (or `*.domain`) answered with `answer`. */
         RewriteInfo: {
@@ -21582,6 +21663,54 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    trace: {
+        parameters: {
+            query: {
+                /**
+                 * @description The name to look up.
+                 * @example www.example.com
+                 */
+                name: string;
+                /** @description Query type. Default: `A`. */
+                qtype?: string;
+                /** @description The `recursive://` upstream to ask. Default: the first one. */
+                upstream?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The lookup and its steps. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecursorTrace"];
+                };
+            };
+            /** @description Not a domain name, an unknown type or upstream, or no `recursive://` upstream. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Tracing isn't available on this node. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

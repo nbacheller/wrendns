@@ -451,6 +451,7 @@
         "dnstap": {
           "buffer": 10000,
           "forwarder": false,
+          "resolver": false,
           "sample_every": 1
         },
         "metrics": {
@@ -1924,6 +1925,11 @@
         },
         "forwarder": {
           "description": "REQ: OBS-007 (T9.19) — also copy queries to upstreams and their answers\n(`FORWARDER_QUERY`, `FORWARDER_RESPONSE`), sampled the same way.",
+          "type": "boolean",
+          "default": false
+        },
+        "resolver": {
+          "description": "REQ: DNS-904, OBS-007 — also copy the built-in recursive resolver's queries to\nauthoritative servers and their answers (`RESOLVER_QUERY`, `RESOLVER_RESPONSE`),\nsampled the same way.",
           "type": "boolean",
           "default": false
         },
@@ -4670,6 +4676,7 @@
           "default": {
             "buffer": 10000,
             "forwarder": false,
+            "resolver": false,
             "sample_every": 1
           }
         },

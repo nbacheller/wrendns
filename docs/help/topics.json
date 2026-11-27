@@ -1564,6 +1564,16 @@
       "docs": "recursive-resolution-no-forwarder"
     },
     {
+      "id": "recursor-trace",
+      "title": "Trace a recursive lookup",
+      "term": "Lookup trace (recursive upstream)",
+      "summary": "Resolves the name again with the built-in resolver and lists every query it sent: the server, the name it asked, what came back (a referral to the next zone, an answer, no data, no such name, a lame or timed-out server) and how long it took.",
+      "when": "A name is slow or fails with SERVFAIL and a recursive:// upstream resolves it: the trace shows which server timed out or answered lame, and which zone it delegated to.",
+      "example": "Three referrals (root, com, example.com) then an answer from example.com's own server: the walk of a first lookup.",
+      "caution": "It is a real lookup, so it sends queries to authoritative servers and warms the resolver's zone cuts: a name whose zone cuts are cached starts below the root. Empty the resolver's memory on the Cache page to see the whole walk. Without a recursive:// upstream it says so.",
+      "docs": "recursive-resolution-no-forwarder"
+    },
+    {
       "id": "recursive-server-addresses",
       "title": "Which server addresses a recursive upstream asks",
       "term": "Loopback, link-local and private servers (recursive upstream)",

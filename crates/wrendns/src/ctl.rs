@@ -157,6 +157,18 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         client: Option<String>,
     },
+    /// REQ: DNS-904 (T40.3) — how the built-in recursive resolver resolves a name: where it
+    /// began, then each query to each authoritative server, with the outcome and time. Really
+    /// resolves the name (the resolver's zone cuts are cached afterwards).
+    Trace {
+        name: String,
+        /// The query type (default A).
+        #[arg(long = "type")]
+        qtype: Option<String>,
+        /// The `recursive://` upstream to ask (default: the first one).
+        #[arg(long)]
+        upstream: Option<String>,
+    },
     /// Filter lists, with download state, unique names, and hits; `lists refresh` downloads
     /// them again now.
     Lists {
@@ -714,6 +726,51 @@ fn table(head: &[&str], rows: &[Vec<String>]) -> String {
     line(head.iter().map(|h| (*h).to_owned()).collect(), &mut out);
     for r in rows {
         line(r.clone(), &mut out);
+    }
+    out
+}
+
+/// REQ: DNS-904 — the text of a recursive lookup's trace: one line per step.
+fn trace_text(v: &Value) -> String {
+    let mut out = format!(
+        "{} {} via {}: {}",
+        s(v, "name"),
+        s(v, "qtype"),
+        s(v, "upstream"),
+        match (v.get("rcode").and_then(Value::as_str), v.get("error")) {
+            (Some(rc), _) => format!("{rc}, {} records", s(v, "answers")),
+            (None, Some(e)) if !e.is_null() => format!("failed: {}", s(v, "error")),
+            _ => "no answer".to_owned(),
+        }
+    );
+    let _ = writeln!(out, " ({} us)", s(v, "totalMicros"));
+    for st in v
+        .get("steps")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+    {
+        if s(st, "kind") == "start" {
+            let _ = writeln!(
+                out,
+                "  start at {} from the {} ({})",
+                s(st, "zone"),
+                s(st, "outcome"),
+                s(st, "detail")
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "  {} {} -> ask {} {} of {}: {} {} ({} us)",
+                s(st, "server"),
+                s(st, "transport"),
+                s(st, "qname"),
+                s(st, "qtype"),
+                s(st, "zone"),
+                s(st, "outcome"),
+                s(st, "detail"),
+                s(st, "micros")
+            );
+        }
     }
     out
 }
@@ -1314,6 +1371,22 @@ pub(crate) async fn run(
             ))
             .await?,
             Some(Box::new(|v: &Value| format!("{}\n", s(v, "summary")))),
+        ),
+        CtlCommand::Trace {
+            name,
+            qtype,
+            upstream,
+        } => (
+            api.get(&format!(
+                "recursor/trace{}",
+                query(&[
+                    ("name", Some(name)),
+                    ("qtype", qtype),
+                    ("upstream", upstream)
+                ])
+            ))
+            .await?,
+            Some(Box::new(trace_text)),
         ),
         CtlCommand::Lists { cmd: None } => (api.get("lists").await?, Some(Box::new(lists_text))),
         // REQ: FLT-004 — "update lists now".
@@ -1971,6 +2044,36 @@ mod tests {
         assert!(parse_duration("2w").is_err() && parse_duration("h").is_err());
         assert_eq!(path_segment("wrendns-0"), "wrendns-0");
         assert_eq!(path_segment("a/b c"), "a%2Fb%20c");
+    }
+
+    /// REQ: DNS-904 — the trace's text has the answer, the start and one line per query.
+    #[test]
+    fn dns_904_ctl_trace_text() {
+        let v = json!({"name": "www.example.com", "qtype": "A", "upstream": "recursive",
+            "rcode": "NOERROR", "answers": 1, "totalMicros": 1500,
+            "steps": [
+                {"kind": "start", "zone": ".", "outcome": "root", "detail": "13 servers",
+                 "qname": "www.example.com.", "qtype": "A", "transport": "", "micros": 0},
+                {"kind": "query", "zone": ".", "server": "198.41.0.4", "qname": "com.",
+                 "qtype": "A", "outcome": "referral", "detail": "com.", "transport": "udp",
+                 "micros": 900}]});
+        let t = trace_text(&v);
+        assert!(
+            t.starts_with("www.example.com A via recursive: NOERROR, 1 records (1500 us)"),
+            "{t}"
+        );
+        assert!(t.contains("start at . from the root (13 servers)"), "{t}");
+        assert!(
+            t.contains("198.41.0.4 udp -> ask com. A of .: referral com. (900 us)"),
+            "{t}"
+        );
+        let f = json!({"name": "x.test", "qtype": "A", "upstream": "r", "error": "no server for test. answered usefully",
+            "answers": 0, "totalMicros": 5, "steps": []});
+        assert!(
+            trace_text(&f).contains("failed: no server for test."),
+            "{}",
+            trace_text(&f)
+        );
     }
 
     /// REQ: DNS-905 (T40.4) — `wrendns ctl flush` sends only the flags given.
