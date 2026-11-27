@@ -31,6 +31,8 @@ use super::evidence::{Evidence, Observed};
 use super::{Listeners, Stream, alt_svc, bound_form};
 
 #[cfg(test)]
+mod engine_tests;
+#[cfg(test)]
 mod probe_tests;
 #[cfg(test)]
 mod tests;

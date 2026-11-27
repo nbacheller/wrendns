@@ -896,6 +896,19 @@ impl Backend for ApiBackend {
                         default_reason: l.default_gate(host).describe().to_owned(),
                         public_exposure: l.default_gate(host).public_exposure(),
                         can_carry_key: l.proto.needs_tls(),
+                        tls_cert: l.tls.as_ref().map(|t| t.cert.as_str().to_owned()),
+                        tls_key: l.tls.as_ref().map(|t| t.key.as_str().to_owned()),
+                        path: l.path.as_ref().map(|p| p.as_str().to_owned()),
+                        max_connections: l.max_connections,
+                        max_connections_per_address: l.max_connections_per_address,
+                        proxy_protocol: Some(l.proxy_protocol),
+                        tls_cert_name: l.tls.as_ref().and_then(|t| {
+                            t.cert
+                                .as_str()
+                                .rsplit(['/', '\\'])
+                                .next()
+                                .map(str::to_owned)
+                        }),
                     }
                 })
                 .collect(),

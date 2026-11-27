@@ -143,7 +143,12 @@ impl Plans {
     /// REQ: API-902 (ADR-956 §7) — a plan for a guarded path is never kept: it comes back
     /// `discarded`, so nothing can approve or replay it.
     pub fn add(&self, mut plan: Plan) -> Plan {
-        if crate::guarded::is_guarded_path(&plan.path) {
+        if crate::guarded::is_guarded_path(&plan.path)
+            || crate::guarded::names_listen_setting(
+                &plan.path,
+                plan.write_body.as_ref().or(plan.body.as_ref()),
+            )
+        {
             "discarded".clone_into(&mut plan.state);
             plan.write_body = None;
             return plan;

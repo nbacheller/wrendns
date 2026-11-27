@@ -331,7 +331,7 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
                 "probe_failing",
                 format!(
                     "{what} {} doesn't answer its probe ({} in a row: {})",
-                    p.target,
+                    p.public_target(),
                     p.consecutive_failures,
                     p.error.as_deref().unwrap_or("no answer")
                 ),
@@ -351,14 +351,18 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
                 "cert_expired",
                 format!(
                     "the certificate of {} expired {} day(s) ago: {who}",
-                    p.target, -d
+                    p.public_target(),
+                    -d
                 ),
                 "#/settings?tab=system",
             )),
             Some(d) if d < i64::from(l.cert_warn_days) => out.push(reason(
                 DEGRADED,
                 "cert_expiring",
-                format!("the certificate of {} expires in {d} day(s)", p.target),
+                format!(
+                    "the certificate of {} expires in {d} day(s)",
+                    p.public_target()
+                ),
                 "#/settings?tab=system",
             )),
             _ => {}
@@ -1149,6 +1153,22 @@ mod tests {
                 .iter()
                 .any(|r| r.code == "cert_expiring" && r.summary.contains("8053"))
         );
+    }
+
+    // REQ: API-902 (owner decision, 2026-11-27) — health is read by every role and agent: its
+    // reasons never carry a DoH path.
+    #[test]
+    fn api_902_health_reasons_carry_no_doh_path() {
+        let ps = [
+            probe("https://192.168.1.2:443/secret-doh-path", true, 3, Some(5)),
+            probe("https://192.168.1.2:444/secret-doh-path", true, 0, Some(-2)),
+            probe("https://192.168.1.2:445/secret-doh-path", true, 0, Some(5)),
+        ];
+        let mut l = local(&[], &[]);
+        l.probes = &ps;
+        let text = format!("{:?}", local_reasons(&l));
+        assert!(text.contains("192.168.1.2:443"), "{text}");
+        assert!(!text.contains("secret-doh-path"), "{text}");
     }
 
     fn codes(h: &Health) -> Vec<(&str, &str)> {

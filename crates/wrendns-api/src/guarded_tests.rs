@@ -133,6 +133,45 @@ fn api_902_guarded_routes_not_in_mcp_or_plans() {
     assert!(!is_guarded_path("/api/v1/guardedx") && !is_guarded_path("/api/v1/rules/guarded"));
 }
 
+// REQ: API-902 (ADR-977 point 12; T27.14c) — a plan step that names `listen`, or a path inside it, in
+// its REST path or as a key of its body is refused: discarded, never stored or replayed. A step that
+// only has the word inside another name is not.
+#[test]
+fn api_902_plan_naming_listen_is_refused() {
+    use crate::guarded::names_listen_setting as names;
+    assert!(names("/api/v1/config/listen", None));
+    assert!(names("/api/v1/config/listen/0/addr?x=1", None));
+    assert!(names("/api/v1/config/listen.tls", None));
+    assert!(names(
+        "/api/v1/x",
+        Some(&json!({"listen": [{"proto": "udp"}]}))
+    ));
+    assert!(names(
+        "/api/v1/x",
+        Some(&json!({"listen.addr": "0.0.0.0:53"}))
+    ));
+    assert!(!names("/api/v1/clients/listening", None));
+    assert!(!names(
+        "/api/v1/config/entries/upstream",
+        Some(&json!({"listening": 1}))
+    ));
+    assert!(!names("/api/v1/x", Some(&json!([{"listen": 1}]))));
+    let plans = crate::plans::Plans::default();
+    for (path, body) in [
+        ("/api/v1/config/listen", None),
+        ("/api/v1/config/x", Some(json!({"listen": []}))),
+    ] {
+        let mut p = crate::plans::tests_plan("l1", "token:a", "ready", crate::plans::now() + 600);
+        p.method = "PUT".into();
+        p.path = path.into();
+        p.write_body = body;
+        let out = plans.add(p);
+        assert_eq!(out.state, "discarded", "{path}");
+        assert!(out.write_body.is_none());
+        assert!(plans.get("l1").is_none(), "nothing was stored");
+    }
+}
+
 // REQ: API-902 (ADR-956 §3) — a pending `trusted-proxies` list changes the address the confirm
 // route sees and nothing else: `remote` (break-glass networks, rate limits, the audit source,
 // loopback checks) keeps the list in force.

@@ -37,6 +37,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         guarded::RESTART_NOW => Some(Arc::new(NoOp)),
         guarded::API_HTTP_REDIRECT => Some(Arc::new(HttpRedirect)),
         guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
+        guarded::LISTEN => Some(Arc::new(super::listen::Listen)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
@@ -147,10 +148,10 @@ impl Applier for HttpRedirect {
 pub(crate) struct ListenAccess;
 
 /// One listener's line in a `listen-access` value.
-struct GateLine {
-    proto: wrendns_config::ListenProto,
-    addr: std::net::SocketAddr,
-    setting: Option<bool>,
+pub(super) struct GateLine {
+    pub(super) proto: wrendns_config::ListenProto,
+    pub(super) addr: std::net::SocketAddr,
+    pub(super) setting: Option<bool>,
 }
 
 impl GateLine {
@@ -188,7 +189,7 @@ fn setting_word(s: Option<bool>) -> &'static str {
 }
 
 impl ListenAccess {
-    fn lines(v: &Value) -> Result<Vec<GateLine>, Problem> {
+    pub(super) fn lines(v: &Value) -> Result<Vec<GateLine>, Problem> {
         let bad = |why: String| Problem::new(Code::InvalidConfig, format!("`listeners`: {why}"));
         let list = v
             .get("listeners")
@@ -426,7 +427,11 @@ pub(crate) fn overlay_with(
         return;
     }
     let suppressed = state.map(store::suppressed).unwrap_or_default();
-    for e in entries.iter().filter(|e| e.node == me) {
+    // REQ: API-902 (T27.14c, design 4) — `listen` is overlaid before `listen-access`, whatever order
+    // the entries are stored in, so the gate lines apply to the list the node runs.
+    let mut mine: Vec<&Stored> = entries.iter().filter(|e| e.node == me).collect();
+    mine.sort_by_key(|e| e.id != guarded::LISTEN);
+    for e in mine {
         if !matches!(e.state, EntryState::Active | EntryState::Probation) {
             continue;
         }
@@ -566,6 +571,8 @@ pub(crate) mod test {
             host: Arc<dyn Host>,
             _node: String,
             value: Value,
+            _access: Option<Value>,
+            _facts: Option<wrendns_config::HostFacts>,
         ) -> BoxFuture<Result<Staged, Problem>> {
             Box::pin(async move {
                 let fail = value.get("fail").and_then(Value::as_bool) == Some(true);
@@ -625,6 +632,8 @@ pub(crate) mod test {
             host: Arc<dyn Host>,
             _node: String,
             value: Value,
+            _access: Option<Value>,
+            _facts: Option<wrendns_config::HostFacts>,
         ) -> BoxFuture<Result<Staged, Problem>> {
             Box::pin(async move {
                 let p = port(&value)?;
@@ -689,6 +698,8 @@ mod redirect_tests {
             value,
             options: &options,
             caller: &c,
+            host: &super::super::host::StubHost::default(),
+            access: None,
         })
     }
 
@@ -840,6 +851,8 @@ pub(crate) mod listen_access_tests {
                 value: v,
                 options: &options,
                 caller: &c,
+                host: &super::super::host::StubHost::default(),
+                access: None,
             })
         })
     }

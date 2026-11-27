@@ -44,6 +44,7 @@ fn weaken_flag(_old: &Value, new: &Value) -> bool {
 }
 
 mod dns_proof_tests;
+mod listen_engine_tests;
 
 macro_rules! row {
     ($id:literal, $paths:expr, $mode:expr, $proof:expr, $weak:expr) => {
@@ -142,9 +143,14 @@ impl Applier for TApplier {
                 "needs a label, a port, proxies or probes",
             ));
         }
+        // A test that moves the host's facts between preview and apply (`gate_host::set_facts`).
+        let facts = crate::gate_host::read();
+        let weak_on_public = cx.value.get("weak_on_public").and_then(Value::as_bool) == Some(true);
         Ok(Checked {
             effect: format!("sets {} on {}", cx.value, cx.node),
             would_disconnect: cx.value.get("disconnect").and_then(Value::as_bool) == Some(true),
+            host_facts: weak_on_public.then_some(facts),
+            weakening: weak_on_public && facts.public_ipv4 == Some(true),
             ..Checked::default()
         })
     }
@@ -153,6 +159,8 @@ impl Applier for TApplier {
         host: Arc<dyn Host>,
         _node: String,
         value: Value,
+        _access: Option<Value>,
+        _facts: Option<wrendns_config::HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         let (committed, aborted) = FLAGS.with(|f| {
             let f = f.borrow();
@@ -264,6 +272,10 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN_ACCESS).unwrap(),
                 applier: Arc::new(super::appliers::ListenAccess),
             },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
+                applier: Arc::new(super::listen::Listen),
+            },
         ])
         .collect()
 }
@@ -321,6 +333,15 @@ struct Fake {
     audit_to_state: AtomicBool,
     /// Whether a replica's entry reaches it in time (`Host::wait_applied`).
     arrives: AtomicBool,
+    /// T27.14c: the lists `stage_listeners` was given, and what the staged sockets are made to do.
+    staged_lists: Mutex<Vec<Vec<wrendns_config::Listener>>>,
+    stage_error: Mutex<Option<crate::server::WindowError>>,
+    commit_error: Mutex<Option<crate::server::WindowError>>,
+    commits: AtomicUsize,
+    aborts: AtomicUsize,
+    /// Once a commit has failed, writing an entry fails too (the primary went away).
+    writes_down: AtomicBool,
+    writes_down_after_commit_error: AtomicBool,
 }
 
 fn key_of(node: &str) -> [u8; 32] {
@@ -349,6 +370,12 @@ impl Host for Fake {
         entry: Option<Stored>,
         by: &str,
     ) -> BoxFuture<Result<(), Problem>> {
+        if self.writes_down.load(Ordering::SeqCst) {
+            return Box::pin(std::future::ready(Err(Problem::new(
+                Code::PrimaryUnreachable,
+                "no primary",
+            ))));
+        }
         let target = if self.is_primary() || store::is_local(id) {
             Arc::clone(&self.state)
         } else {
@@ -489,6 +516,45 @@ impl Host for Fake {
             .unwrap_or(Ok(Kind::Answered));
         Box::pin(std::future::ready(r))
     }
+    fn stage_listeners(
+        &self,
+        list: Vec<wrendns_config::Listener>,
+    ) -> BoxFuture<Result<Vec<crate::server::StagedListener>, crate::server::WindowError>> {
+        if let Some(e) = self.stage_error.lock().unwrap().clone() {
+            return Box::pin(std::future::ready(Err(e)));
+        }
+        let running = self.running_config();
+        let staged = list
+            .iter()
+            .filter(|l| {
+                !running
+                    .listen
+                    .iter()
+                    .any(|r| r.proto == l.proto && r.addr == l.addr)
+            })
+            .map(|l| crate::server::StagedListener {
+                proto: l.proto,
+                addr: l.addr,
+                bound: l.addr,
+                proof: false,
+                evidence: Evidence::new(Vec::new()),
+            })
+            .collect();
+        self.staged_lists.lock().unwrap().push(list);
+        Box::pin(std::future::ready(Ok(staged)))
+    }
+    fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        let r = self.commit_error.lock().unwrap().clone();
+        if r.is_some() && self.writes_down_after_commit_error.load(Ordering::SeqCst) {
+            self.writes_down.store(true, Ordering::SeqCst);
+        }
+        Box::pin(std::future::ready(r.map_or(Ok(()), Err)))
+    }
+    fn abort_listeners(&self) -> BoxFuture<()> {
+        self.aborts.fetch_add(1, Ordering::SeqCst);
+        Box::pin(std::future::ready(()))
+    }
     fn proof_socket(&self, addr: SocketAddr) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>> {
         if self.bind_fails.load(Ordering::SeqCst) {
             return Box::pin(std::future::ready(Err("address already in use".to_owned())));
@@ -564,6 +630,13 @@ fn node_on(
         can_sign,
         audit_to_state: AtomicBool::new(false),
         arrives: AtomicBool::new(true),
+        staged_lists: Mutex::default(),
+        stage_error: Mutex::default(),
+        commit_error: Mutex::default(),
+        commits: AtomicUsize::new(0),
+        aborts: AtomicUsize::new(0),
+        writes_down: AtomicBool::new(false),
+        writes_down_after_commit_error: AtomicBool::new(false),
     });
     let engine = Engine::new(
         name.to_owned(),
@@ -3077,6 +3150,69 @@ fn api_902_bind_failure_at_start_runs_again_on_the_files_value() {
         },
     );
     assert!(r.is_err() && calls.get() == 1);
+    probation::reset_fallbacks();
+}
+
+// REQ: API-902, CLU-004 (T27.14c; ADR-956 §4, design 2.5 `failed_start`) — with the real `listen` row:
+// a confirmed listener list that can't bind at start (a VIP the other node holds, an interface that
+// isn't up) falls back for that start only to the file's listeners; the entry stays, and the next
+// start tries it again.
+#[test]
+fn api_902_confirmed_listener_bind_failure_falls_back_at_start_with_the_listen_row() {
+    let _g = FALLBACK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    probation::reset_fallbacks();
+    super::set_this_node("pi-a");
+    let stored = json!({"listeners": [
+        {"proto": "udp", "addr": "0.0.0.0:53"}, {"proto": "tcp", "addr": "0.0.0.0:53"},
+        {"proto": "udp", "addr": "[::]:53"}, {"proto": "tcp", "addr": "[::]:53"},
+        {"proto": "udp", "addr": "198.51.100.7:53"},
+    ]});
+    let (_dir, cfg) = dir_with(&[("listen", stored, EntryState::Active)]);
+    let rows = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
+        applier: Arc::new(super::listen::Listen),
+    }];
+    let build = || {
+        let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+        let mut c = cfg.clone();
+        super::appliers::overlay_with(
+            &mut c,
+            &cfg,
+            &store::for_node(&state, "pi-a"),
+            None,
+            &rows,
+            "pi-a",
+            false,
+        );
+        c
+    };
+    assert_eq!(build().listen.len(), 5, "the entry is overlaid");
+    let seen = std::cell::RefCell::new(Vec::new());
+    let r = super::serve_with_fallback(
+        build(),
+        || Some(build()),
+        || Some(cfg.clone()),
+        &rows,
+        |c| {
+            seen.borrow_mut().push(c.listen.len());
+            if seen.borrow().len() == 1 {
+                Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(
+        *seen.borrow(),
+        vec![5, 4],
+        "the second start runs the file's listeners"
+    );
+    assert_eq!(probation::fallbacks(), vec!["listen".to_owned()]);
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    assert_eq!(store::for_node(&state, "pi-a").len(), 1, "the entry stays");
     probation::reset_fallbacks();
 }
 

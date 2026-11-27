@@ -563,7 +563,12 @@ fn api_902_test_row_absent_in_release() {
         .collect();
     assert_eq!(
         ids,
-        ["restart-now", "api-http-redirect", "listen-access"],
+        [
+            "restart-now",
+            "api-http-redirect",
+            "listen-access",
+            "listen"
+        ],
         "only the real rows have appliers"
     );
     assert!(wrendns_config::guarded::rows().iter().all(|r| !r.test_only));

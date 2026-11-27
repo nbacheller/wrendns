@@ -154,7 +154,25 @@ static REAL: &[Row] = &[
         weakens: never,
         test_only: false,
     },
+    // REQ: API-902, DNS-001, DNS-901, CLU-004 (T27.14c; ADR-914, ADR-956, ADR-1090, ADR-1098) — the
+    // node's DNS listeners, the whole list replaced as a list. `window`: a new listener is bound next
+    // to the running ones and kept only when the node's own test query to it is answered and the admin
+    // confirms. It never touches an API socket. Weakening depends on the host's address facts, which a
+    // pure `fn(old, new)` cannot see, so the applier's `check` sets it (design 4, rules a to c). It is
+    // listed after `listen-access`, so `covering("listen.require_client_id")` finds that row first.
+    Row {
+        id: LISTEN,
+        label: "Listeners",
+        paths: &["listen"],
+        mode: Mode::Window,
+        proof: Some(Proof::NewSocket),
+        weakens: never,
+        test_only: false,
+    },
 ];
+
+/// The ID of the DNS listeners row (T27.14c).
+pub const LISTEN: &str = "listen";
 
 /// The ID of the HTTP-to-HTTPS redirect row (T24.44, ADR-1053).
 pub const API_HTTP_REDIRECT: &str = "api-http-redirect";
@@ -290,12 +308,6 @@ pub struct Planned {
 
 /// Every setting ADR-914 calls guarded, with the paths it covers (ADR-956 §1).
 pub static PLANNED: &[Planned] = &[
-    Planned {
-        id: "listen",
-        mode: Mode::Window,
-        paths: &["listen"],
-        task: Task::T27_14,
-    },
     Planned {
         id: "api-address",
         mode: Mode::Window,
@@ -713,6 +725,24 @@ addr = \"127.0.0.1:5\"
         }
         assert!(FILE_ONLY.contains(&"auth.oidc.disable_local_login"));
         assert!(FILE_ONLY.contains(&"auth.oidc.allowed_admin_networks"));
+    }
+
+    // REQ: API-902 (T27.14c) — the `listen` row is in the registry (it left the plan): a `window`
+    // row over `listen` proved by the new socket, whose weakening is the applier's, not a pure rule.
+    #[test]
+    fn api_902_listen_row_is_real_and_agrees_with_the_plan() {
+        let r = row(LISTEN).expect("the row exists");
+        assert_eq!(r.mode, Mode::Window);
+        assert_eq!(r.paths, ["listen"]);
+        assert_eq!(r.proof, Some(Proof::NewSocket));
+        assert!(!r.test_only);
+        assert!(PLANNED.iter().all(|p| p.id != LISTEN), "left the plan");
+        assert_eq!(covering("listen"), Some(LISTEN));
+        assert_eq!(covering("listen.addr"), Some(LISTEN));
+        assert_eq!(covering("listen.tls"), Some(LISTEN));
+        // The gate stays the other row's.
+        assert_eq!(covering("listen.require_client_id"), Some(LISTEN_ACCESS));
+        assert!(!(r.weakens)(&json!({}), &json!({"listeners": []})));
     }
 
     // REQ: DNS-901, API-902 (T27.14) — the `listen-access` row is `immediate`, covers the listener
