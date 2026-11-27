@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 
 use crate::Shared;
-use crate::model::{RecursorTrace, RecursorTraceParams};
+use crate::model::{Items, RecursorTrace, RecursorTraceParams, TrustAnchorStatus};
 use crate::problem::Problem;
 
 /// Trace a recursive lookup.
@@ -32,4 +32,28 @@ pub(crate) async fn trace(
     Query(p): Query<RecursorTraceParams>,
 ) -> Result<Json<RecursorTrace>, Problem> {
     b.recursor_trace(&p).await.map(Json)
+}
+
+/// The root trust anchors of every node.
+///
+/// DNSSEC validation starts from the root's keys. The root changes its key-signing key now and
+/// then, and each node follows the change on its own (RFC 5011): a new key the root publishes is
+/// trusted only after it has been seen for a 30-day hold-down, and a key the root revokes stops
+/// being trusted at once. One entry per node: the keys with their states (`valid`, `add_pend`,
+/// `missing`, `revoked`), when each entered its state, when a pending key becomes trusted, and
+/// when the root was last read. A node that uses `trust_anchors_file` shows `mode: file` and
+/// follows nothing. A node that runs an older build shows `mode: unsupported`. Example:
+/// `GET /api/v1/dnssec/anchors`.
+#[utoipa::path(get, path = "/api/v1/dnssec/anchors", tag = "stats",
+    responses((status = 200, body = Items<TrustAnchorStatus>, description = "One entry per node.")))]
+pub(crate) async fn anchors(
+    State(b): State<Shared>,
+) -> Result<Json<Items<TrustAnchorStatus>>, Problem> {
+    let b = crate::request_backend(&b);
+    let bk = std::sync::Arc::clone(&b);
+    let items = crate::blocking(move || Ok(bk.trust_anchors())).await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
 }

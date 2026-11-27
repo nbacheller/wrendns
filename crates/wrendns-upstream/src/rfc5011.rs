@@ -142,9 +142,19 @@ pub fn apply(keys: &mut Vec<KeyEntry>, seen: &[Seen], now: u64) -> Vec<Change> {
             .cloned();
         let from = k.state;
         let drop_it = match (k.state, &s) {
+            // A trusted key the root revoked (self-signed) stops being trusted at once.
+            (KeyState::Valid | KeyState::Missing, Some(s)) if s.revoked => {
+                k.state = KeyState::Revoked;
+                k.flags = s.flags;
+                k.since = now;
+                false
+            }
             // A revoked key stays revoked, and stays on file so a later build that still
-            // carries it as a built-in anchor can never trust it again.
-            (KeyState::Revoked, _) => false,
+            // carries it as a built-in anchor can never trust it again. A valid key that is
+            // listed, and a missing one that still is not, keep their state.
+            (KeyState::Revoked, _) | (KeyState::Valid, Some(_)) | (KeyState::Missing, None) => {
+                false
+            }
             // Pending keys that vanish or are revoked are forgotten (RFC 5011 §4.2).
             (KeyState::AddPend, None) => true,
             (KeyState::AddPend, Some(s)) if s.revoked => true,
@@ -155,13 +165,6 @@ pub fn apply(keys: &mut Vec<KeyEntry>, seen: &[Seen], now: u64) -> Vec<Change> {
                 }
                 false
             }
-            (KeyState::Valid | KeyState::Missing, Some(s)) if s.revoked => {
-                k.state = KeyState::Revoked;
-                k.flags = s.flags;
-                k.since = now;
-                false
-            }
-            (KeyState::Valid, Some(_)) => false,
             (KeyState::Valid, None) => {
                 k.state = KeyState::Missing;
                 k.since = now;
@@ -172,7 +175,6 @@ pub fn apply(keys: &mut Vec<KeyEntry>, seen: &[Seen], now: u64) -> Vec<Change> {
                 k.since = now;
                 false
             }
-            (KeyState::Missing, None) => false,
         };
         if drop_it {
             changes.push(Change {
@@ -259,9 +261,7 @@ pub fn read_answer(
         .answers
         .iter()
         .filter(|r| {
-            r.record_type() == RecordType::DNSKEY
-                && r.name == root
-                && r.dns_class == DNSClass::IN
+            r.record_type() == RecordType::DNSKEY && r.name == root && r.dns_class == DNSClass::IN
         })
         .collect();
     if keys.is_empty() {
@@ -272,7 +272,9 @@ pub fn read_answer(
         .iter()
         .filter(|r| r.name == root)
         .filter_map(|r| match &r.data {
-            RData::DNSSEC(DNSSECRData::RRSIG(s)) if s.input().type_covered == RecordType::DNSKEY => {
+            RData::DNSSEC(DNSSECRData::RRSIG(s))
+                if s.input().type_covered == RecordType::DNSKEY =>
+            {
                 Some(s)
             }
             _ => None,
@@ -706,7 +708,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 || !s.is_ascii() {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
         return None;
     }
     (0..s.len())
@@ -782,7 +784,10 @@ mod tests {
     }
 
     fn ksk() -> Ksk {
-        let pkcs8 = Ed25519SigningKey::generate_pkcs8().unwrap().secret_pkcs8_der().to_vec();
+        let pkcs8 = Ed25519SigningKey::generate_pkcs8()
+            .unwrap()
+            .secret_pkcs8_der()
+            .to_vec();
         let key = Ed25519SigningKey::from_pkcs8(&der(&pkcs8)).unwrap();
         let dnskey = DNSKEY::new(true, true, false, key.to_public_key().unwrap());
         Ksk { pkcs8, dnskey }
@@ -878,7 +883,7 @@ mod tests {
         assert_eq!(state_of(&r, &new), Some(KeyState::AddPend));
         assert!(!trusts(&r, &new));
         // The health reason names the hold-down while it runs (only while following).
-        assert!(r.reasons(t).is_empty());
+        assert_eq!(r.reasons(t).len(), 0);
         r.set_mode(Mode::Following);
         assert_eq!(r.reasons(t)[0].0, "dnssec_anchor_pending");
         // 30 days: trusted, and the trusted set changed.
@@ -891,7 +896,7 @@ mod tests {
             r.current().0 > g,
             "validators drop what they built on the old set"
         );
-        assert!(r.reasons(t).is_empty());
+        assert_eq!(r.reasons(t).len(), 0);
     }
 
     /// REQ: DNS-906 - a pending key that disappears starts over (it is forgotten).
@@ -927,7 +932,7 @@ mod tests {
         assert!(!trusts(&r, &a) && trusts(&r, &b));
         assert_eq!(r.reasons(T0 + DAY)[0].0, "dnssec_anchor_revoked");
         // The notice ends after 30 days; the entry stays so it is never trusted again.
-        assert!(r.reasons(T0 + 31 * DAY).is_empty());
+        assert_eq!(r.reasons(T0 + 31 * DAY).len(), 0);
         assert_eq!(state_of(&r, &a), Some(KeyState::Revoked));
     }
 
@@ -965,11 +970,8 @@ mod tests {
         assert!(trusts(&r, &a));
         // Listed again: valid again.
         let t = T0 + DAY;
-        r.ingest(
-            &answer(&[(&a, false), (&b, false)], &[(&b, false)], t),
-            t,
-        )
-        .unwrap();
+        r.ingest(&answer(&[(&a, false), (&b, false)], &[(&b, false)], t), t)
+            .unwrap();
         assert_eq!(state_of(&r, &a), Some(KeyState::Valid));
     }
 
@@ -1087,13 +1089,13 @@ mod tests {
                 revoked,
             }]
         };
-        assert!(apply(&mut keys, &seen(false), T0).is_empty());
+        assert_eq!(apply(&mut keys, &seen(false), T0).len(), 0);
         let c = apply(&mut keys, &[], T0 + 1);
         assert_eq!(c[0].to, Some(KeyState::Missing));
         let c = apply(&mut keys, &seen(true), T0 + 2);
         assert_eq!(c[0].to, Some(KeyState::Revoked));
         // Revoked is final.
-        assert!(apply(&mut keys, &seen(false), T0 + 3).is_empty());
+        assert_eq!(apply(&mut keys, &seen(false), T0 + 3).len(), 0);
         assert_eq!(keys[0].state, KeyState::Revoked);
         assert_eq!(keys[0].flags, 385);
     }

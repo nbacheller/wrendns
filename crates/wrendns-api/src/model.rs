@@ -5090,3 +5090,49 @@ pub struct RecursorTrace {
     /// The steps, in order. At most 128.
     pub steps: Vec<RecursorTraceStep>,
 }
+
+/// One root trust anchor a node tracks (`GET /api/v1/dnssec/anchors`, REQ: DNS-906).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustAnchorKey {
+    /// The RFC 4034 key tag.
+    pub key_tag: u16,
+    /// The DNSSEC algorithm number (8 RSA/SHA-256, 13 ECDSA P-256, 15 Ed25519).
+    pub algorithm: u8,
+    /// The DNSKEY flags (257 a key-signing key, 385 once revoked).
+    pub flags: u16,
+    /// `valid` (a trust anchor), `add_pend` (seen, in its hold-down, not trusted yet),
+    /// `missing` (trusted, but the last reading did not list it) or `revoked` (never trusted).
+    pub state: String,
+    /// When the key entered this state (Unix seconds); absent for a built-in anchor never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_s: Option<u64>,
+    /// For a pending key: when its hold-down ends and it becomes a trust anchor (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_at_s: Option<u64>,
+}
+
+/// One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,
+/// REQ: DNS-906).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustAnchorStatus {
+    /// The node (cluster nodes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// `following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of
+    /// `trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`
+    /// (the node runs a build that does not know this read).
+    pub mode: String,
+    /// The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`.
+    pub keys: Vec<TrustAnchorKey>,
+    /// When the root's keys were last read (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reading_s: Option<u64>,
+    /// When the next reading is due (Unix seconds), while following.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_reading_s: Option<u64>,
+    /// Why the last reading failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}

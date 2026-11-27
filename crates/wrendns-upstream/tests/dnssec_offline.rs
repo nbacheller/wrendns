@@ -733,7 +733,11 @@ async fn dns_906_offline_validator_follows_the_rollover_set() {
         .resolve(&group, question("a", rtype::A), budget, true, false)
         .await
         .unwrap();
-    assert_eq!(r.verdict, Verdict::Secure, "validated from the rollover's keys");
+    assert_eq!(
+        r.verdict,
+        Verdict::Secure,
+        "validated from the rollover's keys"
+    );
 
     // A reading of the root's keys: the set is signed by the trusted key, nothing changes.
     let now = std::time::SystemTime::now()

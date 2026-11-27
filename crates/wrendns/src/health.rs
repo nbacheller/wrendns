@@ -257,6 +257,15 @@ pub(crate) fn locations_held_reasons(held: Option<&str>) -> Vec<HealthReason> {
     .collect()
 }
 
+/// REQ: DNS-906 (T40.5) - a root key in its add hold-down, or a trust anchor the root revoked:
+/// degraded, DNS unaffected. `items` are `Rollover::reasons`.
+pub(crate) fn anchor_reasons(items: Vec<(&'static str, String)>) -> Vec<HealthReason> {
+    items
+        .into_iter()
+        .map(|(code, text)| reason(DEGRADED, code, text, "#/settings"))
+        .collect()
+}
+
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
         level: level.to_owned(),
