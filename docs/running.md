@@ -4271,6 +4271,7 @@ tls = { self_signed = true }                 # a certificate made on first start
   - **Docker Compose and Helm:** there is no default port 80 mapping. Publish it yourself (Compose: `ports: ["80:80"]` with `http_redirect = "0.0.0.0:80"` in the file; Helm: add a container port and a Service or ingress rule for it) if you want it.
 - **Settings → System → Listener checks** shows the web UI's certificate: self-signed or yours, the names it covers, its SHA-256 fingerprint (compare it with your browser's before trusting it), and for your own, the days left, with the same health level and alerts as the DNS listeners' certificates ([Listener checks](#listener-checks)).
 
+<a id="behind-a-reverse-proxy-or-ingress"></a>
 **Behind a reverse proxy or ingress,** tell WrenDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
 ```toml
 [api]

@@ -16,9 +16,11 @@
 
   onMount(() => void refreshGuarded());
   const target = $derived(targetNode());
-  const setting = (id: string) => (guarded.nodes[0] ?? guarded.node)?.settings.find((s) => s.id === id);
-  const redirectRow = $derived(setting('api-http-redirect'));
-  const proxiesRow = $derived(setting('trusted-proxies'));
+  const setting = (n: typeof guarded.node, id: string) => n?.settings.find((s) => s.id === id);
+  // The redirect form acts on the picked node (as the guarded card did), so its lock and label come from that
+  // node; the trusted-proxies list acts on this node only (the first listed), so its lock comes from this node.
+  const redirectRow = $derived(setting(guarded.node, 'api-http-redirect'));
+  const proxiesRow = $derived(setting(guarded.nodes[0] ?? guarded.node, 'trusted-proxies'));
 
   let redirect = $state('');
   const inForce = $derived(JSON.stringify(web?.trustedProxies ?? []));
@@ -59,7 +61,8 @@
   {/if}
   <div data-testid="guarded-http-redirect" data-setting="api.http_redirect">
     <h3>{redirectRow?.label ?? 'HTTP to HTTPS redirect'}<HelpButton id="api-http-redirect" />{#if redirectRow?.setByFile} <span class="muted small" data-testid="guarded-set-by-file">(set by file)</span>{/if}</h3>
-    {#if web?.httpRedirect}<p class="small">Now: <span class="mono">{web.httpRedirect}</span></p>{/if}
+    {#if target}<p class="small muted" data-testid="redirect-other">This form acts on {target}; the value it runs now is not shown here.</p>
+    {:else if web?.httpRedirect}<p class="small">Now: <span class="mono">{web.httpRedirect}</span></p>{/if}
     <label class="small">Address (empty: off)
       <input bind:value={redirect} placeholder="0.0.0.0:80" aria-label="HTTP redirect address" disabled={redirectRow?.setByFile} />
     </label>
@@ -70,7 +73,7 @@
       <h3>Trusted proxies<HelpButton id="trusted-proxies" />{#if proxiesRow?.setByFile} <span class="muted small" data-testid="trusted-proxies-file">(set by file)</span>{/if}</h3>
       <p class="small muted">Hosts whose <code>X-Forwarded-For</code> the node believes: it takes the client's address from there (sign-in lockouts, the break-glass networks and the audit log). List only your own proxy or ingress.</p>
       <ul class="plain mono">
-        {#each draft as n, i (n)}
+        {#each draft as n, i (i)}
           <li data-testid="trusted-proxies-row">{n}{#if !proxiesRow?.setByFile} <button class="link" aria-label="Remove {n}" data-testid="trusted-proxies-remove" onclick={() => (draft = draft.filter((_, j) => j !== i))}>Remove</button>{/if}</li>
         {/each}
         {#if !draft.length}<li class="muted">none: the connection's address is the client</li>{/if}
