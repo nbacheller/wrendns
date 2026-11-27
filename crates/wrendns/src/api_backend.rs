@@ -839,6 +839,35 @@ impl ApiBackend {
     }
 }
 
+/// REQ: API-902 (T27.14f) - how the web UI and API are served, as `system/info` reports it to admins.
+fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiInfo {
+    wrendns_api::model::ApiInfo {
+        listen: cfg.api.listen.to_string(),
+        scheme: if cfg.api.tls.is_some() {
+            "https"
+        } else {
+            "http"
+        }
+        .to_owned(),
+        certificate: cfg.api.tls.as_ref().map(|t| match &t.cert {
+            Some(c) if !t.self_signed => c
+                .as_str()
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+            _ => "self-signed".to_owned(),
+        }),
+        trusted_proxies: cfg
+            .api
+            .trusted_proxies
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        http_redirect: cfg.api.http_redirect.map(|a| a.to_string()),
+    }
+}
+
 impl Backend for ApiBackend {
     fn system_info(&self) -> SystemInfo {
         let cfg = self.src.config.load();
@@ -929,6 +958,8 @@ impl Backend for ApiBackend {
             cluster: self.src.cluster.as_deref().map(crate::cluster::info),
             // REQ: UPS-013 (T24.31) — the addresses an upstream's `source` can name.
             addresses: node_addresses(),
+            // REQ: API-902 (T27.14f) - how the web UI and API are served (stripped for non-admins).
+            api: Some(api_info(&cfg)),
             // REQ: OPS-010 — the web UI's banner when this node is in maintenance.
             maintenance: {
                 let now = crate::maintenance::now_ms();

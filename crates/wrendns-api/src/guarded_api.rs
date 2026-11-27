@@ -16,10 +16,11 @@
 //! window, the audit) is the node's (`wrendns/src/guarded/`), because it must hold for a request
 //! the primary forwarded as well.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -110,7 +111,7 @@ async fn caller(
     let signed_in_at = blocking(move || Ok(a2.sign_in_time(&p2))).await?;
     let under = backend
         .guarded_pending_proxies()
-        .and_then(|list| remote_under_proven(auth, ext, headers, &list));
+        .and_then(|list| remote_under_proven(auth, ext, headers, &list, &auth.trusted_proxies()));
     Ok(GuardedCaller {
         actor: auth.actor(p, ip, reason(headers)),
         username: p.username.clone(),
@@ -119,6 +120,7 @@ async fn caller(
         arrived_on: ext.get::<ArrivedOn>().map(|a| a.0),
         remote: Some(ip),
         remote_under_pending: under,
+        peer: ext.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()),
         tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
     })
 }
@@ -297,9 +299,10 @@ async fn confirm_caller(
         signed_in_at: None,
         arrived_on: ext.get::<ArrivedOn>().map(|a| a.0),
         remote: Some(ip),
-        remote_under_pending: backend
-            .guarded_pending_proxies()
-            .and_then(|list| remote_under_proven(auth, ext, headers, &list)),
+        peer: ext.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()),
+        remote_under_pending: backend.guarded_pending_proxies().and_then(|list| {
+            remote_under_proven(auth, ext, headers, &list, &auth.trusted_proxies())
+        }),
         tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
     })
 }

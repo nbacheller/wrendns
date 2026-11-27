@@ -35,6 +35,10 @@ pub struct GuardedCaller {
     /// differs from the peer): only the confirm route computes it, and a `proxy_list` proof needs
     /// it set (it is also what the result shows as the client now seen).
     pub remote_under_pending: Option<std::net::IpAddr>,
+    /// REQ: API-902 (T27.14f) - the connection's own peer address (the proxy's, when the request came
+    /// through one), before any `X-Forwarded-For` is read: what the `trusted-proxies` review compares with
+    /// the lists. `None` for a request relayed by the primary.
+    pub peer: Option<std::net::IpAddr>,
     /// Whether the request came over TLS (and which certificate answered it: the connection's
     /// marker; `new_cert` proofs read it).
     pub tls: bool,
@@ -299,6 +303,10 @@ pub struct GuardedPreview {
     /// For a window change that needs a temporary parallel listener (a TLS-only change): its port.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof_port: Option<u16>,
+    /// For a `trusted-proxies` change: the client address the node sees for this request today
+    /// (what the new list would change), when the request reached the node itself.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub seen_client: Option<String>,
     /// A second acknowledgement the change needs (`acknowledgeNoAdmins`, ...), when it does.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub acknowledgements: Vec<String>,

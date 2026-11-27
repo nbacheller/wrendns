@@ -2160,6 +2160,15 @@ async fn reload(
         a.agents()
             .set(new.agents.enabled, new.agents.rate_per_minute);
         a.agents().set_require_approval(new.agents.require_approval);
+        // REQ: API-902 (T27.14f) - `[api] trusted_proxies` follows the configuration (the files', or a
+        // confirmed guarded entry), without a restart.
+        a.set_trusted_proxies(
+            new.api
+                .trusted_proxies
+                .iter()
+                .map(|c| (c.addr, c.prefix))
+                .collect(),
+        );
     }
     sources
         .pipeline
@@ -2937,6 +2946,82 @@ own_lookups = true
                 "{bad}: {errs:?}"
             );
         }
+    }
+
+    /// REQ: API-902 (T27.14f) - `[api] trusted_proxies` is not a restart-only setting, and a reload puts
+    /// the merged configuration's list in force in the running `Auth` (the files', or a confirmed
+    /// guarded entry), so a confirmed change is live without a restart and a list taken away is gone.
+    #[tokio::test]
+    async fn api_902_reload_swaps_the_trusted_proxies_without_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = format!(
+            "[node]
+data_dir = {:?}
+",
+            dir.path()
+        );
+        let file = dir.path().join("wrendns.toml");
+        std::fs::write(&file, &base).unwrap();
+        let files = vec![file.clone()];
+        let mut current = load_files(&files).unwrap();
+        let pipeline = crate::pipeline::tests_support::pipeline_from(&current);
+        let mut listeners = test_listeners();
+        let mut health = tokio::spawn(async {});
+        let mut lists = None;
+        let (reload_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let src = Arc::new(http::Sources {
+            reload: reload_tx,
+            ..crate::http::tests::sources_in(dir.path())
+        });
+        let auth = Arc::new(wrendns_api::auth::Auth::new(
+            Arc::new(wrendns_store::state::State::in_memory().unwrap()),
+            wrendns_api::auth::Settings::default(),
+        ));
+        assert!(src.auth.set(Arc::clone(&auth)).is_ok());
+        assert!(auth.trusted_proxies().is_empty());
+        // The file names a proxy: the reload applies it, and says nothing needs a restart for it.
+        let with = format!(
+            "{base}[api]
+trusted_proxies = [\"10.0.0.0/8\", \"192.0.2.7\"]
+"
+        );
+        std::fs::write(&file, &with).unwrap();
+        let next = load_files(&files).unwrap();
+        assert_eq!(restart_only_changes(&current, &next), Vec::<&str>::new());
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(ok);
+        assert_eq!(
+            *auth.trusted_proxies(),
+            vec![
+                ("10.0.0.0".parse().unwrap(), 8),
+                ("192.0.2.7".parse().unwrap(), 32)
+            ]
+        );
+        // The file drops it: the list in force is empty again.
+        std::fs::write(&file, &base).unwrap();
+        let ok = reload(
+            &files,
+            &mut current,
+            &mut listeners,
+            &mut health,
+            &pipeline,
+            &src,
+            &mut lists,
+            false,
+        )
+        .await;
+        assert!(ok);
+        assert!(auth.trusted_proxies().is_empty());
     }
 
     /// REQ: DSC-908 (ADR-1096 point 5, ADR-1104 point 5) - `reload` itself, not only the check it

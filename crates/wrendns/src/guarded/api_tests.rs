@@ -568,7 +568,8 @@ fn api_902_test_row_absent_in_release() {
             "api-http-redirect",
             "listen-access",
             "listen",
-            "dnstap-output"
+            "dnstap-output",
+            "trusted-proxies"
         ],
         "only the real rows have appliers"
     );
@@ -677,9 +678,10 @@ async fn api_902_confirm_token_is_not_failed_by_a_stale_cookie() {
     assert_eq!(v["outcome"], "confirmed");
 }
 
-// REQ: API-902 (ADR-956 §3) — a `proxy_list` proof is a real one: the request has to pass under the
-// new list (its peer is one of the new proxies, and the client address it shows is not the peer's).
-// A request with no forwarded address, or from a peer outside the new list, proves nothing.
+// REQ: API-902 (ADR-956 §3, ADR-977 point 7 as amended 2026-11-27) — a `proxy_list` proof is a real
+// one: the request has to pass under the new list (its peer is one of the new proxies, and the client
+// address it shows is not the peer's), or be a direct one (its peer is in neither list). A request
+// with no forwarded address from a new proxy, or from the proxy being removed, proves nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn api_902_proxy_list_proof_needs_a_real_forwarded_client() {
     let h = harness("");
@@ -735,10 +737,34 @@ async fn api_902_proxy_list_proof_needs_a_real_forwarded_client() {
     let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["seenClient"], "203.0.113.7");
-    // A list that doesn't name the peer: the request can't pass under it, whatever it claims.
+    // A list that doesn't name the peer, when the peer is in no list either (a direct admin adding a
+    // proxy; the owner's amendment of 2026-11-27): the change doesn't touch how the request is seen,
+    // so it passes, and the header it carries is not believed (the peer is the client).
+    let pid = start(json!(["198.51.100.1"])).await;
+    let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["seenClient"], "127.0.0.1");
+    // A peer that is in the list in force and not in the new one (the proxy it came through is being
+    // removed) proves nothing: the node would see the proxy, not the admin.
+    h.auth
+        .set_trusted_proxies(vec![("127.0.0.1".parse().unwrap(), 32)]);
     let pid = start(json!(["198.51.100.1"])).await;
     let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let cancel = session_req(
+        &h,
+        5,
+        "POST",
+        &format!("/api/v1/guarded/pending/{pid}/cancel"),
+        Some(&json!({})),
+        None,
+    );
+    assert_eq!(json_of(&h, cancel).await.0, StatusCode::OK);
+    // A removal that keeps it passes, with the client behind it.
+    let pid = start(json!(["127.0.0.1", "198.51.100.1"])).await;
+    let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["seenClient"], "203.0.113.7");
 }
 
 // REQ: DNS-901, API-902, AGT-004 (T27.14; ADR-914, ADR-956 §3) — the listener gate through the

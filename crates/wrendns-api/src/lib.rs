@@ -2030,6 +2030,8 @@ async fn system_info(State(b): State<Shared>, ext: axum::http::Extensions) -> Js
         for l in &mut info.listener_access {
             l.without_admin_fields();
         }
+        // REQ: API-902 (T27.14f) - the API's own address, certificate and proxy list, likewise.
+        info.api = None;
     }
     Json(info)
 }

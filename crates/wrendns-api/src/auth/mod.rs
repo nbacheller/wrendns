@@ -250,7 +250,9 @@ pub struct Settings {
     /// Then a request that carries forwarding headers from an untrusted peer is never
     /// break-glass: it may be a proxied client that arrived as loopback (ADR-944).
     pub break_glass_default: bool,
-    /// Proxies (ingress, reverse proxy) whose `X-Forwarded-For` names the real client.
+    /// Proxies (ingress, reverse proxy) whose `X-Forwarded-For` names the real client. This is the
+    /// list the service starts with; a reload or a confirmed guarded `trusted-proxies` change swaps
+    /// it ([`Auth::set_trusted_proxies`]), and every reader asks [`Auth::trusted_proxies`].
     pub trusted_proxies: Vec<(IpAddr, u8)>,
 }
 
@@ -315,6 +317,9 @@ struct Failures {
 pub struct Auth {
     state: Arc<State>,
     settings: Settings,
+    /// REQ: API-902 (T27.14f) — `[api] trusted_proxies` as in force now: swapped when a reload or a
+    /// confirmed guarded change brings another list, read per request.
+    trusted_proxies: arc_swap::ArcSwap<Vec<(IpAddr, u8)>>,
     /// The one-time first-run token, while no user exists.
     setup_token: Mutex<Option<String>>,
     failures: Mutex<HashMap<String, Failures>>,
@@ -418,6 +423,7 @@ impl Auth {
         Self {
             pihole: crate::pihole_api::PiholeCompat::load(Arc::clone(&state)),
             state,
+            trusted_proxies: arc_swap::ArcSwap::from_pointee(settings.trusted_proxies.clone()),
             settings,
             setup_token: Mutex::new(None),
             failures: Mutex::new(HashMap::new()),
@@ -490,6 +496,18 @@ impl Auth {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// REQ: API-902 (T27.14f) — the proxies whose `X-Forwarded-For` names the client, as in force now.
+    pub fn trusted_proxies(&self) -> Arc<Vec<(IpAddr, u8)>> {
+        self.trusted_proxies.load_full()
+    }
+
+    /// REQ: API-902 (T27.14f) — puts a new list in force (a reload, or a confirmed guarded change).
+    /// The list a guarded change is waiting to have confirmed is never passed here: it reaches only
+    /// the confirm route's own address evaluation.
+    pub fn set_trusted_proxies(&self, list: Vec<(IpAddr, u8)>) {
+        self.trusted_proxies.store(Arc::new(list));
     }
 
     /// Password sign-in (and HTTP Basic) may be tried from `ip`: always, unless local
