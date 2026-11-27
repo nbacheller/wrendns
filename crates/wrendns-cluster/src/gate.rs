@@ -82,7 +82,7 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 6] = [
+const ANNOUNCED: [Feature; 7] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
