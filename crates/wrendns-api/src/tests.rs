@@ -2183,7 +2183,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 200 with DNS-904's /recursor/trace (T40.3), DNS-014's /access-settings/default (T27.14h), API-902's GET
     // /guarded/pending/{id} (T27.14b) and DSC-913's /locations and /locations/{slug} (T36.10a).
     // 201 with OBS-007's /dnstap-settings/default (T40.13).
-    assert_eq!(paths.len(), 201);
+    // 203 with CLD-904's /dns-providers and /dns-providers/{name} (T36.10b).
+    assert_eq!(paths.len(), 203);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

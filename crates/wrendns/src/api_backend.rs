@@ -3250,6 +3250,11 @@ impl Backend for ApiBackend {
             .map(|r| router_entry(&self.src, r, &file, status.get(r.name.as_str())))
             .collect()
     }
+    // REQ: CLD-904 (T36.10b) - the DNS providers in effect, and whether the start-up hold keeps them
+    // out of what this node serves.
+    fn dns_providers(&self) -> wrendns_api::model::DnsProviderList {
+        crate::dns_provider_settings::list(&self.src)
+    }
     // REQ: API-016 (T23.10) — the providers (settings are the node-managed entries every member
     // holds; the status is this node's).
     fn oidc_provider_entries(&self) -> wrendns_api::model::OidcProviderList {
@@ -3837,7 +3842,9 @@ impl Backend for ApiBackend {
     fn locations(&self) -> wrendns_api::model::LocationList {
         // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the list is the
         // configured table (not the stripped running one), marked held.
-        let held = crate::upgrade_gate::HOLD.active();
+        let held = crate::upgrade_gate::HOLD
+            .held_features()
+            .contains(&wrendns_cluster::gate::Feature::Locations);
         let cfg = if held {
             unheld_config(&self.src)
         } else {
@@ -3856,8 +3863,11 @@ impl Backend for ApiBackend {
             }
         } else {
             // REQ: DSC-908 (ADR-1104 rule c) - a node that stopped leading with held entries says
-            // so where the hold shows: not held now, but the reason stays (`held` stays false).
-            list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+            // so where the hold shows: not held now, but the reason stays (`held` stays false). A
+            // hold of DNS providers alone says nothing about the locations.
+            if !crate::upgrade_gate::HOLD.active() {
+                list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+            }
         }
         list
     }
@@ -5364,6 +5374,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Forward => crate::managed::FORWARD,
         ManagedKind::Zone => crate::managed::ZONE,
         ManagedKind::Location => crate::managed::LOCATION,
+        ManagedKind::DnsProvider => crate::managed::DNS_PROVIDER,
         ManagedKind::Rule => crate::managed::RULE,
         ManagedKind::Upstream => crate::managed::UPSTREAM,
         ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
@@ -6075,6 +6086,10 @@ pub(crate) fn managed_impact(
         (ManagedKind::OidcProvider, _) => {
             "Applied on every node within seconds, without a restart: its sign-in button appears or goes (a node without public_url shows it as inactive), and the sessions of a removed provider end.".into()
         }
+        // REQ: CLD-904 (T36.10b) - stored and validated only; nothing calls a provider yet.
+        (ManagedKind::DnsProvider, _) => {
+            "Stored and shared by the cluster with no restart. Nothing calls a DNS provider yet, so no DNS answer changes; the entry is checked and kept for the certificate and dynamic-DNS work that uses it.".into()
+        }
         (ManagedKind::Router, _) => {
             "Polled by this node at its interval (by the primary, for a stored credential); the names it reports reach DNS after the next poll.".into()
         }
@@ -6191,6 +6206,10 @@ fn plan_managed(
     // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections.
     if crate::settings_kinds::is_node_kind(w.kind) {
         return crate::node_settings::plan(src, state, w);
+    }
+    // REQ: CLD-904 (T36.10b) - DNS providers: admin-only, shared, files win, secrets by reference.
+    if w.kind == ManagedKind::DnsProvider {
+        return crate::dns_provider_settings::plan(src, state, w);
     }
     // REQ: API-016 (T23.7, ADR-921) — routers have their own plan (admin-only, file-read-only).
     if w.kind == ManagedKind::Router {
@@ -8362,6 +8381,7 @@ fn keep_in_git(
         ManagedKind::Forward => "route",
         ManagedKind::Zone => "zone",
         ManagedKind::Location => "location",
+        ManagedKind::DnsProvider => "dns_provider",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",

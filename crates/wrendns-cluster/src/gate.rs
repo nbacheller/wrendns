@@ -67,11 +67,12 @@ pub fn own_features() -> Vec<String> {
     ANNOUNCED.iter().map(|f| f.name().to_owned()).collect()
 }
 
-/// The features this build handles end to end. `DnsProviders` joins the list in the commit that
-/// brings its table (T36.10b): a build cut before then does not know it, and announcing it would
+/// The features this build handles end to end. `DnsProviders` joined the list in the commit that
+/// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 4] = [
+const ANNOUNCED: [Feature; 5] = [
     Feature::Locations,
+    Feature::DnsProviders,
     Feature::PemSecrets,
     Feature::Access,
     Feature::Dnstap,
@@ -193,9 +194,9 @@ mod tests {
         assert!(!knows(&[], Feature::Locations));
     }
 
-    // REQ: DSC-908 - a build announces only what it handles: the table of DNS providers is not
-    // in this build, so it must not claim it (a member cut before the table lands would
-    // otherwise pass the gate and then refuse the section). Locations are in (T36.10a).
+    // REQ: DSC-908, CLD-904 - a build announces what it handles, and only that: the tables of
+    // locations (T36.10a) and DNS providers (T36.10b) are in this build, so it claims them; a member
+    // cut before they landed announces neither and is counted as not knowing them.
     #[test]
     fn dsc_908_a_build_announces_only_the_features_it_handles() {
         let own = own_features();
@@ -203,13 +204,15 @@ mod tests {
             own,
             vec![
                 "locations".to_owned(),
+                "dns_providers".to_owned(),
                 "pem_secrets".to_owned(),
                 "access".to_owned(),
                 "dnstap".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));
-        assert!(!knows(&own, Feature::DnsProviders));
+        assert!(knows(&own, Feature::DnsProviders));
+        assert!(Feature::ALL.iter().all(|f| knows(&own, *f)));
     }
 
     #[test]

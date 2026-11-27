@@ -150,6 +150,16 @@ pub fn references(cfg: &Config) -> Vec<Reference> {
         );
         add("router", &r.name, "password_ref", r.password_ref.as_ref());
     }
+    // REQ: CLD-904 (T36.10b) - a DNS provider's credential is a reference only (no inline value and
+    // no file), so it has no row in `STORED_FIELDS`.
+    for p in &cfg.dns_provider {
+        add(
+            "dns_provider",
+            &p.name,
+            "credential_ref",
+            p.credential_ref.as_ref(),
+        );
+    }
     for d in &cfg.alerts.destination {
         add(
             "alert_destination",

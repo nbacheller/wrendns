@@ -2945,6 +2945,11 @@ impl Backend for Federated {
     fn locations(&self) -> wrendns_api::model::LocationList {
         self.local.locations()
     }
+    // REQ: CLD-904 (T36.10b) - the DNS providers are the shared configuration; whether this node
+    // stores the credential's secret is this node's.
+    fn dns_providers(&self) -> wrendns_api::model::DnsProviderList {
+        self.local.dns_providers()
+    }
     // REQ: UPS-004 (T24.36) — the catalog is the same everywhere; the IPv6 route is this node's.
     fn upstream_presets(&self) -> wrendns_api::model::UpstreamPresets {
         self.local.upstream_presets()

@@ -22,6 +22,7 @@ pub mod cmdb_api;
 pub mod compare;
 pub mod config_api;
 pub mod discovery_api;
+pub mod dns_providers_api;
 pub mod drill_api;
 pub mod federation;
 pub mod flow;
@@ -601,6 +602,11 @@ pub trait Backend: Send + Sync + 'static {
     /// answer under each and the collisions (this node's device table).
     fn locations(&self) -> model::LocationList {
         model::LocationList::default()
+    }
+    /// REQ: CLD-904 (T36.10b) - the DNS providers in the configuration (the credential as a stored
+    /// secret's name, never a value), with whether this node holds them out.
+    fn dns_providers(&self) -> model::DnsProviderList {
+        model::DnsProviderList::default()
     }
     /// REQ: API-016 (T23.7, T23.8) — the router integrations in the configuration, with each one's
     /// status on this node.
@@ -1273,6 +1279,11 @@ pub enum ManagedKind {
     /// network with a device-name subtree of its own, shared by the cluster; a location the files
     /// define is read-only here. The first one waits for every member's build to know the table.
     Location,
+    /// REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - a DNS provider (`/dns-providers/{name}`): an
+    /// account at a DNS host the node may one day write record sets in. Admin-only (an agent is
+    /// refused), shared by the cluster, the credential only a stored secret's name; a provider the
+    /// files define is read-only here. The first one waits for every member's build to know the table.
+    DnsProvider,
     /// A domain sent to other servers (`/forwards/{domain}`).
     Forward,
     /// A quick rule (`/rules/{id}`, T6.12).
@@ -1615,6 +1626,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(routers_api::read_routes(Arc::clone(&backend)))
         // REQ: DSC-913 (T36.10a) — the locations and the names each composes.
         .merge(locations_api::read_routes(Arc::clone(&backend)))
+        // REQ: CLD-904 (T36.10b) - the DNS providers (the credential as a name, never a value).
+        .merge(dns_providers_api::read_routes(Arc::clone(&backend)))
         // REQ: OBS-901 (T26.2, ADR-958) — the live network map: snapshot, stream, world, health.
         .merge(map_api::read_routes(Arc::clone(&backend)))
         // REQ: API-016 (T23.10) — OIDC providers and their status (admin-only, by the handler).
@@ -1844,7 +1857,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, locations_api::list_locations, locations_api::get_location, config_api::put_location, config_api::delete_location, config_api::put_alert_destination,
+        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, locations_api::list_locations, locations_api::get_location, config_api::put_location, config_api::delete_location, dns_providers_api::list_dns_providers, dns_providers_api::get_dns_provider, config_api::put_dns_provider, config_api::delete_dns_provider, config_api::put_alert_destination,
         config_api::put_slo_settings, config_api::delete_slo_settings, config_api::put_probe_settings, config_api::delete_probe_settings,
         config_api::put_upstream_check_settings, config_api::delete_upstream_check_settings, config_api::put_anomaly_settings, config_api::delete_anomaly_settings,
         config_api::put_qlog_settings, config_api::delete_qlog_settings, config_api::put_metrics_settings, config_api::delete_metrics_settings, config_api::put_dnstap_settings, config_api::delete_dnstap_settings,
@@ -1854,7 +1867,7 @@ async fn fallback(
     components(schemas(
         guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult, guarded::GuardedPendingView, guarded::GuardedProbeLine, guarded::GuardedListenerLine, guarded::ListenValue, guarded::ListenEntry, guarded::ListenTls,
         map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, model::GeoipStatus, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
-        model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
+        model::DnsProviderEntry, model::DnsProviderList, model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::RecursorTrace, model::RecursorTraceStep, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,

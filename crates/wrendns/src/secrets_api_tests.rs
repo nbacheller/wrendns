@@ -35,7 +35,7 @@ fn put_body(v: &str) -> Value {
 }
 
 /// A request as `bearer` from `peer`.
-fn req_from(
+pub(crate) fn req_from(
     bearer: &str,
     peer: [u8; 4],
     method: &str,
@@ -53,13 +53,21 @@ fn req_from(
         .unwrap()
 }
 
-async fn json_of(h: &Harness, r: Request<Body>) -> (StatusCode, axum::http::HeaderMap, Value) {
+pub(crate) async fn json_of(
+    h: &Harness,
+    r: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, Value) {
     let (s, hd, t) = h.send(r).await;
     (s, hd, serde_json::from_str(&t).unwrap_or(Value::String(t)))
 }
 
 /// A token for a new user of `role`; with `agent_scopes`, an agent token.
-fn token(h: &Harness, user: &str, role: auth::Role, agent_scopes: Option<&str>) -> String {
+pub(crate) fn token(
+    h: &Harness,
+    user: &str,
+    role: auth::Role,
+    agent_scopes: Option<&str>,
+) -> String {
     let now = crate::pipeline::unix_now();
     let u = h
         .auth

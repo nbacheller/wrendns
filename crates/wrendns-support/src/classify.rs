@@ -107,6 +107,20 @@ const TABLE: &[(&str, Class)] = &[
     ("cluster.name", Name(C::Cluster)),
     ("cluster.rollout.canaries[]", Name(C::Node)),
     ("cluster.site", Name(C::Cluster)),
+    // REQ: CLD-904 (T36.10b) - a DNS provider names an account and a zone; the credential is a
+    // stored secret's name (`credential_ref`), never a value, and the table has no `_file`.
+    ("dns_provider[].algorithm", Plain),
+    ("dns_provider[].client_id", Scan),
+    ("dns_provider[].credential_ref", Plain),
+    ("dns_provider[].delegated_to", Scan),
+    ("dns_provider[].hosted_zone_id", Scan),
+    ("dns_provider[].key_name", Scan),
+    ("dns_provider[].name", Plain),
+    ("dns_provider[].resource_group", Scan),
+    ("dns_provider[].server", Scan),
+    ("dns_provider[].subscription", Scan),
+    ("dns_provider[].tenant", Scan),
+    ("dns_provider[].zone", Scan),
     // REQ: DSC-002 — the designated node is a node name; a subnet is an address range.
     ("discovery.node", Name(C::Node)),
     ("discovery.subnet[].cidr", Scan),
