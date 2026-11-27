@@ -1977,7 +1977,9 @@ pub(crate) fn reload_gate(
     if replica {
         return Ok(());
     }
-    crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new)
+    crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new)?;
+    // REQ: FLT-906 (T40.9) - an RPZ list waits for every member's build to read the format.
+    crate::upgrade_gate::enforce_rpz(sources.cluster.as_deref(), current, new)
 }
 
 /// REQ: DNS-014, API-901 (T27.14h) - the list the web UI and the API gate on follows the configuration

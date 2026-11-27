@@ -93,6 +93,7 @@ fn compile_all(cfg: &Config, out: &Path) -> Arc<Matcher> {
                 options: ListOptions {
                     kind: l.kind,
                     match_mode: l.match_mode,
+                    format: l.format,
                 },
                 source_hash: wrendns_filter::fetch::content_hash(text.as_bytes()),
                 size: text.len() as u64,

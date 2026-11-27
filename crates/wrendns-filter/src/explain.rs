@@ -180,6 +180,7 @@ fn attach_lines(
             let options = ListOptions {
                 kind: meta.kind,
                 match_mode: meta.match_mode,
+                format: meta.format,
             };
             parse_list(&src, options, |line, rule| {
                 let Pattern::Domain { name, scope } = &rule.pattern else {

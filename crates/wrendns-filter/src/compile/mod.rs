@@ -255,7 +255,10 @@ fn plan(inputs: Vec<ListInput>, threads: usize) -> io::Result<Vec<Vec<Unit>>> {
     let mut units = Vec::new();
     for (id, input) in inputs.into_iter().enumerate() {
         let options = input.options;
-        if threads == 1 || input.size <= share {
+        // REQ: FLT-906 - a response policy zone is never cut: its records depend on the lines
+        // before them (`$ORIGIN`, an owner left out, a record spread over lines).
+        if threads == 1 || input.size <= share || options.format == wrendns_config::ListFormat::Rpz
+        {
             units.push(Unit {
                 id,
                 options,
@@ -731,6 +734,7 @@ fn manifest_lists(inputs: &[ListMeta]) -> Vec<ManifestList> {
             source_hash: l.source_hash.clone(),
             kind: l.options.kind,
             match_mode: l.options.match_mode,
+            format: l.options.format,
         })
         .collect()
 }

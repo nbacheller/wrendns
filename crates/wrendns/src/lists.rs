@@ -107,6 +107,7 @@ fn compile_specs(cfg: &Config) -> Vec<CompileSpec> {
             options: ListOptions {
                 kind: l.kind,
                 match_mode: l.match_mode,
+                format: l.format,
             },
         })
         .collect()
@@ -892,6 +893,7 @@ pub(crate) fn check(
         let opts = ListOptions {
             kind: list.kind,
             match_mode: list.match_mode,
+            format: list.format,
         };
         let mut rules = Vec::new();
         let stats = parse_list(&data, opts, |line, rule| {

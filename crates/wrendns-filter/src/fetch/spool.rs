@@ -43,6 +43,8 @@ pub(crate) struct Spooled {
 
 pub(crate) struct Spool {
     path: PathBuf,
+    /// REQ: FLT-906 - how each block of the body is checked.
+    format: wrendns_config::ListFormat,
     enc: Option<Encoder<'static, BufWriter<File>>>,
     hasher: blake3::Hasher,
     bytes: u64,
@@ -58,9 +60,10 @@ pub(crate) struct Spool {
 
 impl Spool {
     /// A spool writing `<path>` (a `.tmp` next to the stored source).
-    pub(crate) fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf, format: wrendns_config::ListFormat) -> Self {
         Self {
             path,
+            format,
             enc: None,
             hasher: blake3::Hasher::new(),
             bytes: 0,
@@ -76,7 +79,11 @@ impl Spool {
     }
 
     fn check_block(&mut self, complete: &[u8]) {
-        let s = parse_list(complete, ListOptions::default(), |_, _| {});
+        let opts = ListOptions {
+            format: self.format,
+            ..ListOptions::default()
+        };
+        let s = parse_list(complete, opts, |_, _| {});
         self.rules += s.rules;
         self.invalid += s.invalid;
         if self.first_invalid.is_empty()
@@ -127,7 +134,7 @@ impl Spool {
 
 impl BodySink for Spool {
     fn reset(&mut self) -> Result<(), String> {
-        *self = Self::new(std::mem::take(&mut self.path));
+        *self = Self::new(std::mem::take(&mut self.path), self.format);
         let file = File::create(&self.path).map_err(|e| format!("cannot store source: {e}"))?;
         let enc = Encoder::new(BufWriter::new(file), ZSTD_LEVEL)
             .map_err(|e| format!("cannot store source: {e}"))?;
@@ -182,7 +189,7 @@ mod tests {
     fn flt_901_fetch_streams_to_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("big.src.zst.tmp");
-        let mut spool = Spool::new(path.clone());
+        let mut spool = Spool::new(path.clone(), wrendns_config::ListFormat::Auto);
         spool.reset().unwrap();
         let mut body = Vec::new();
         let mut i = 0u64;
@@ -228,7 +235,7 @@ mod tests {
     fn flt_004_spool_counts_and_discards() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("x.tmp");
-        let mut spool = Spool::new(path.clone());
+        let mut spool = Spool::new(path.clone(), wrendns_config::ListFormat::Auto);
         spool.reset().unwrap();
         spool
             .chunk(

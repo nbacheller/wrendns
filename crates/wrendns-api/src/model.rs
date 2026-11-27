@@ -910,6 +910,10 @@ pub struct ExplainRoute {
     pub routed: bool,
 }
 
+fn auto_format() -> String {
+    "auto".to_owned()
+}
+
 /// A filter list and its download state.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -917,6 +921,10 @@ pub struct ListInfo {
     pub name: String,
     /// `block` or `allow`.
     pub kind: String,
+    /// REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or
+    /// `rpz` (a response policy zone).
+    #[serde(default = "auto_format")]
+    pub format: String,
     pub enabled: bool,
     /// REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are
     /// at `GET /analytics/shadow-lists`).
@@ -936,6 +944,10 @@ pub struct ListInfo {
     /// REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
     /// leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
     pub regex_skipped: u64,
+    /// REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:
+    /// cosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.
+    #[serde(default)]
+    pub unsupported: u64,
     /// Queries it blocked (or allowed, for an allow list) since each node started; in a
     /// cluster, every node's added up.
     pub hits: u64,

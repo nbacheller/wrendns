@@ -88,6 +88,33 @@ pub(crate) fn uses_locations(cfg: &wrendns_config::Config) -> bool {
     !cfg.location.is_empty() || cfg.client.iter().any(|c| c.location.is_some())
 }
 
+/// REQ: FLT-906 (T40.9) - the RPZ lists `after` holds that `before` did not hold as they are now
+/// (new, or changed): a member whose build does not know the format refuses a `format` field in
+/// the replicated lists, so these wait for every member to announce `rpz_lists`.
+pub(crate) fn new_rpz_lists(
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> bool {
+    after
+        .list
+        .iter()
+        .filter(|l| l.format == wrendns_config::ListFormat::Rpz)
+        .any(|l| !before.list.iter().any(|b| b == l))
+}
+
+/// REQ: FLT-906 (T40.9) - `Ok` unless `after` holds a new or changed RPZ list while a member's
+/// build does not know the format. Used by the API write path (dry runs too) and the file loader.
+pub(crate) fn enforce_rpz(
+    cluster: Option<&Cluster>,
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> Result<(), String> {
+    if !new_rpz_lists(before, after) {
+        return Ok(());
+    }
+    enforce(cluster, Feature::RpzLists)
+}
+
 /// REQ: DSC-908 (T36.10a) - the gate for the first location: `Ok` unless `after` starts using
 /// locations (`before` did not) while a member's build does not know them. Used by the API write
 /// path (dry runs too) and by the file loader on a reload; once the table is in use, every

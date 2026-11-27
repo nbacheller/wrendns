@@ -105,6 +105,7 @@ fn setup_with(extra: &str) -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
                 options: ListOptions {
                     kind: l.kind,
                     match_mode: l.match_mode,
+                    format: l.format,
                 },
                 source_hash: wrendns_filter::fetch::content_hash(text.as_bytes()),
                 size: text.len() as u64,
@@ -583,6 +584,83 @@ answer = "cdn.example"
         let e = ask(&p, &sources, name, "10.0.0.9");
         assert_eq!(e.outcome, Outcome::Resolved, "{name}: {}", e.summary);
         assert!(served(&p, name, "10.0.0.9").is_none(), "{name}");
+    }
+}
+
+/// REQ: FLT-906 (T40.9), FLT-013 - a list in the RPZ format: Explain names the record that
+/// decided (its list and line), the DROP is answered REFUSED, a passthru is the exception to a
+/// wildcard, and each outcome agrees with what the pipeline does with the same query.
+#[test]
+fn flt_906_rpz_rules_are_named_in_the_explanation() {
+    let extra = r#"
+[[list]]
+name = "policy"
+format = "rpz"
+rules = [
+  "nx.example CNAME .",
+  "drop.example CNAME rpz-drop.",
+  "*.wild.example CNAME .",
+  "ok.wild.example CNAME rpz-passthru.",
+  "walled.example A 192.0.2.7",
+]
+
+[[group]]
+name = "home"
+networks = ["10.0.0.128/25"]
+lists = ["policy"]
+"#;
+    let (p, sources) = setup_with(extra);
+    let home = "10.0.0.130";
+    for (name, text, line, record, bytes) in [
+        ("nx.example", "NXDOMAIN", 1, "nx.example CNAME .", &[][..]),
+        (
+            "drop.example",
+            "REFUSED",
+            2,
+            "drop.example CNAME rpz-drop.",
+            &[][..],
+        ),
+        (
+            "a.wild.example",
+            "NXDOMAIN",
+            3,
+            "*.wild.example CNAME .",
+            &[][..],
+        ),
+        (
+            "walled.example",
+            "192.0.2.7",
+            5,
+            "walled.example A 192.0.2.7",
+            &[192, 0, 2, 7][..],
+        ),
+    ] {
+        let e = ask(&p, &sources, name, home);
+        assert_eq!(e.outcome, Outcome::Local, "{name}: {}", e.summary);
+        assert!(e.summary.contains(text), "{name}: {}", e.summary);
+        let rules = &e.filter.as_ref().unwrap().rules;
+        let winner = rules.iter().find(|r| r.winner).unwrap();
+        assert_eq!(winner.list, "policy", "{name}");
+        assert_eq!(winner.lines[0].line, line, "{name}: {:?}", winner.lines);
+        assert_eq!(winner.lines[0].text, record, "{name}");
+        let a = served(&p, name, home).unwrap();
+        assert!(bytes.is_empty() || contains(&a, bytes), "{name}");
+    }
+    assert_eq!(
+        served(&p, "drop.example", home).unwrap()[3] & 0x0F,
+        5,
+        "REFUSED"
+    );
+    assert_eq!(
+        served(&p, "nx.example", home).unwrap()[3] & 0x0F,
+        3,
+        "NXDOMAIN"
+    );
+    // The apex of the wildcard and the passthru name are not rewritten: both go on.
+    for name in ["wild.example", "ok.wild.example"] {
+        let e = ask(&p, &sources, name, home);
+        assert_ne!(e.outcome, Outcome::Local, "{name}: {}", e.summary);
+        assert!(served(&p, name, home).is_none(), "{name}");
     }
 }
 

@@ -910,20 +910,47 @@ impl Matcher {
         client: &ClientCtx<'_>,
         mask: &ListMask,
     ) -> Option<(crate::rewrite::ListRewrite, u16)> {
+        let mut hits: Vec<&CompiledMod> = self
+            .rewrite_hits(qname, qtype, client, mask)?
+            .into_iter()
+            .filter_map(|i| self.mods.get(i))
+            .collect();
+        // An exception (`@@…$dnsrewrite`) turns rewrites off.
+        if hits.is_empty() || hits.iter().any(|m| m.allow) {
+            return None;
+        }
+        // Important rules first, then the most specific (exact, deeper) as listed.
+        hits.sort_by_key(|m| std::cmp::Reverse(matches!(m.tier, Tier::ImportantBlock)));
+        let actions: Vec<&crate::rewrite::RewriteAction> =
+            hits.iter().filter_map(|m| m.action.as_ref()).collect();
+        if actions.is_empty() {
+            return None;
+        }
+        Some((crate::rewrite::combine(&actions, qtype), hits[0].list))
+    }
+
+    /// The indexes (into `mods`) of the rewrite rules, and exceptions to them, that apply to
+    /// this name for this client; `None` when no list has rewrites.
+    fn rewrite_hits(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+    ) -> Option<Vec<usize>> {
         if !self.has_rewrites {
             return None;
         }
         let name = Name::from_wire(qname)?;
-        let mut hits: Vec<&CompiledMod> = Vec::new();
         let take = |m: &'_ CompiledMod, labels: usize| {
             m.rewrite
                 && mask.contains(m.list)
                 && scope_applies(m.scope, labels, name.total)
                 && m.applies_to(name.key(), qtype, client)
         };
+        let mut found: Vec<usize> = Vec::new();
         if let Some(s) = &self.snapshot {
             let mods = &self.mods;
-            let mut found: Vec<usize> = Vec::new();
             walk(
                 s.modrules_index.as_fst(),
                 &name,
@@ -941,20 +968,42 @@ impl Matcher {
                     }
                 },
             );
-            hits.extend(found.into_iter().filter_map(|i| mods.get(i)));
         }
-        // An exception (`@@…$dnsrewrite`) turns rewrites off.
-        if hits.is_empty() || hits.iter().any(|m| m.allow) {
-            return None;
-        }
-        // Important rules first, then the most specific (exact, deeper) as listed.
-        hits.sort_by_key(|m| std::cmp::Reverse(matches!(m.tier, Tier::ImportantBlock)));
-        let actions: Vec<&crate::rewrite::RewriteAction> =
-            hits.iter().filter_map(|m| m.action.as_ref()).collect();
-        if actions.is_empty() {
-            return None;
-        }
-        Some((crate::rewrite::combine(&actions, qtype), hits[0].list))
+        Some(found)
+    }
+
+    /// REQ: FLT-906 (T40.9), FLT-013 - the rewrite rules (and exceptions) that apply to this
+    /// name, as matches, so Explain can name their lists and lines. They are not part of
+    /// [`Matcher::matches`], which is the blocking decision. Allocates: never the query path.
+    pub fn rewrite_matches(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+    ) -> Vec<Match> {
+        let mut out: Vec<(Tier, usize)> = self
+            .rewrite_hits(qname, qtype, client, mask)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|i| self.mods.get(i).map(|m| (m.tier, i)))
+            .collect();
+        out.sort_by_key(|(t, i)| (*t, *i));
+        out.into_iter()
+            .filter_map(|(tier, i)| {
+                let m = self.mods.get(i)?;
+                Some(Match {
+                    attribution: Attribution {
+                        list: m.list,
+                        tier,
+                        rule: RuleRef::ModRule {
+                            index: u32::try_from(i).unwrap_or(u32::MAX),
+                        },
+                    },
+                    enabled: mask.contains(m.list),
+                })
+            })
+            .collect()
     }
 
     /// Every rule in every list that matches `qname` for this client and

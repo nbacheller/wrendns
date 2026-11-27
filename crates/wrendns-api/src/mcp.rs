@@ -1428,13 +1428,14 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_add_list",
-            description: "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+            description: "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax, or a response policy zone with format rpz) or inline rules; block or allow. A format rpz list waits (409 upgrade_required) until every cluster member's build reads it. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "An ID: lowercase letters, digits, - and _."},
                 "url": {"type": "string", "description": "Where to download it (https)."},
                 "rules": {"type": "array", "items": {"type": "string"}, "description": "Or inline rules, one per item."},
-                "kind": {"type": "string", "enum": ["block", "allow"], "description": "Default block."},
+                "kind": {"type": "string", "enum": ["block", "allow"], "description": "Default block. An rpz list is always a block list."},
+                "format": {"type": "string", "enum": ["auto", "rpz"], "description": "auto (default): each line's syntax is detected. rpz: the text is a response policy zone (QNAME triggers with NXDOMAIN, NODATA, passthru, drop answered REFUSED, and local CNAME, A and AAAA data; other triggers are counted as unsupported)."},
                 "enabled": {"type": "boolean", "description": "Default true."},
                 "reason": reason_schema()
             }, "required": ["name", "reason"], "additionalProperties": false})
@@ -1449,6 +1450,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("url", "url"),
                         ("rules", "rules"),
                         ("kind", "kind"),
+                        ("format", "format"),
                         ("enabled", "enabled"),
                     ],
                 );
@@ -2235,7 +2237,7 @@ pub fn write_tools() -> Vec<WriteTool> {
             description: "Changes nothing (audited). Checks a filter list before you add it: this node downloads the URL (with the configured size limit and timeout), or takes inline rules, and parses it as the compiler would. Returns ok, how many rules it found, up to 10 lines it couldn't use and why, and the time. Use it before plan_add_list. Needs the config:write:lists scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
-                "list": {"type": "object", "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match."},
+                "list": {"type": "object", "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow), match, and format (auto|rpz)."},
                 "reason": reason_schema()
             }, "required": ["list", "reason"], "additionalProperties": false})
             },

@@ -661,6 +661,8 @@ impl Backend for Fake {
         let list = |name: &str| ListInfo {
             name: name.into(),
             kind: "block".into(),
+            format: "auto".into(),
+            unsupported: 0,
             enabled: true,
             mode: "enforce".into(),
             source: "inline".into(),

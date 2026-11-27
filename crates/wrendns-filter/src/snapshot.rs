@@ -103,6 +103,9 @@ pub struct ManifestList {
     pub kind: wrendns_config::ListKind,
     #[serde(rename = "match")]
     pub match_mode: wrendns_config::ListMatch,
+    /// REQ: FLT-906 (T40.9) - how the list was read; Explain reads it the same way.
+    #[serde(default, skip_serializing_if = "wrendns_config::ListFormat::is_auto")]
+    pub format: wrendns_config::ListFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

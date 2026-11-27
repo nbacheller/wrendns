@@ -12,6 +12,7 @@ fn input(name: &str, kind: ListKind, text: &str) -> ListInput {
         options: ListOptions {
             kind,
             match_mode: ListMatch::Subtree,
+            ..ListOptions::default()
         },
         data: ListData::Bytes(text.as_bytes().to_vec()),
         source_hash: crate::fetch::content_hash(text.as_bytes()),
