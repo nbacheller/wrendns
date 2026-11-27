@@ -1625,6 +1625,16 @@
       "docs": "dnssec-validation"
     },
     {
+      "id": "aggressive-nsec",
+      "title": "Answer from proven ranges (aggressive NSEC)",
+      "term": "Aggressive NSEC (RFC 8198)",
+      "summary": "When a signed zone proves that a whole range of names does not exist, WrenDNS remembers the range and answers later questions inside it itself, without asking upstream. It works for zones signed with NSEC and with NSEC3.",
+      "when": "You see many lookups for made-up names (printer.lan, wpad.home) reaching upstream, or you want to rule this cache out while chasing a wrong answer.",
+      "example": "After one proven 'no such name' for a made-up top-level name, other made-up names in the same range get NXDOMAIN at once.",
+      "caution": "Only proofs that validated as secure are used, so it does nothing while DNSSEC validation is off. Switching it off only means more questions go upstream.",
+      "docs": "dnssec-validation"
+    },
+    {
       "id": "trust-anchors",
       "title": "Root trust anchors and key rollover",
       "term": "Trust anchor (RFC 5011)",

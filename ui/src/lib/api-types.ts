@@ -2324,7 +2324,8 @@ export interface paths {
         };
         get?: never;
         /**
-         * REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+         * REQ: DNS-011 (T27.11, ADR-1006), DNS-907 (T40.6, ADR-1105) — `[dnssec]` `mode`,
+         *     `negative_trust_anchors` and `aggressive_nsec`.
          * @description The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
          */
         put: operations["put_dnssec_settings"];
