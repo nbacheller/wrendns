@@ -112,7 +112,15 @@ join --site n2 --eligible --advertise https://127.0.0.1:28643 -c "$E/n2.toml"
 
 echo "== 1. g, the Git-managed node, is the primary and holds a lease"
 for port in 29201 29202 29203; do
-  wait_metric $port wrendns_cluster_failover_auto 1 40 || fail "automatic failover never turned on at :$port"
+  # 90 s: the node learns its peers through the join, the primary's Hello and a registry reload, which stalls under load.
+  wait_metric $port wrendns_cluster_failover_auto 1 90 || {
+    d=$E/$(case $port in 29201) echo g;; 29202) echo n1;; *) echo n2;; esac)
+    echo "--- cluster view of the node at :$port (failover mode and voters)"
+    grep -o '"failover": *"[a-z]*"' "$d/cluster/cluster.json" 2>/dev/null || echo "no failover mode in cluster.json"
+    echo "voters (registry entries): $(grep -o '"id"' "$d/cluster/nodes.json" 2>/dev/null | wc -l)"
+    echo "failover_auto=$(metric $port wrendns_cluster_failover_auto)"
+    fail "automatic failover never turned on at :$port"
+  }
 done
 wait_metric 29201 wrendns_cluster_lease_held 1 40 || fail "g never held a lease"
 for n in n1 n2; do

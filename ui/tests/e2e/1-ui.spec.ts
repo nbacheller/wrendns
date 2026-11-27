@@ -56,8 +56,13 @@ async function signInSent(user: string, pass: string) {
   await expect(name, 'the username field holds what was typed').toHaveValue(user);
   await expect(word, 'the password field holds what was typed').toHaveValue(pass);
   const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/auth/login'), { timeout: 15_000 });
+  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/api/v1/auth/login'), { timeout: 15_000 });
   await page.getByRole('button', { name: 'Sign in' }).click();
   await sent;
+  // A 503 (password checks busy) or 429 (locked out) is reported by its status, not as a stall.
+  const res = await answered.catch(() => null);
+  const verdict = res === null ? 'no response within 15 s' : res.status() >= 500 || res.status() === 429 ? `status ${res.status()}` : 'answered';
+  expect(verdict, 'the sign-in request was answered').toBe('answered');
 }
 
 // REQ: API-005 (ADR-157) — the dashboard's top lists are plain sections, found by their heading.
