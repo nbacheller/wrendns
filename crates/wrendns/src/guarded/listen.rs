@@ -132,6 +132,18 @@ fn covers_address(bound: IpAddr, address: IpAddr) -> bool {
         && (bound.to_canonical() == address.to_canonical() || is_wildcard(bound))
 }
 
+/// A QUIC listener on the IPv6 wildcard also answers IPv4 (the QUIC sockets don't set `IPV6_V6ONLY`).
+fn quic_dual_stack(l: &Listener) -> bool {
+    matches!(l.proto, ListenProto::Doq | ListenProto::Doh3)
+        && is_wildcard(l.addr.ip())
+        && family(l.addr.ip()) == 6
+}
+
+/// Whether the encrypted listener `l` answers on every address `address` stood for.
+fn encrypted_covers(l: &Listener, address: IpAddr) -> bool {
+    covers_address(l.addr.ip(), address) || (quic_dual_stack(l) && family(address) == 4)
+}
+
 // ---- the value ----------------------------------------------------------------------------
 
 /// The listeners a `listen` value names. A field that is not the row's is refused with a sentence
@@ -437,18 +449,29 @@ pub(crate) fn weakening_reason(
         if has(new, o) {
             continue;
         }
-        let still_encrypted = new
-            .iter()
-            .any(|n| n.proto.needs_tls() && covers_address(n.addr.ip(), o.addr.ip()));
-        let plain_stays = new
-            .iter()
-            .any(|n| !n.proto.needs_tls() && serves_address(n.addr.ip(), o.addr.ip()));
-        if plain_stays && !still_encrypted {
-            return Some(format!(
-                "removes {} while plain DNS stays on {}: the address is served without encryption",
-                name(o),
-                o.addr.ip()
-            ));
+        // Each address the removed listener answered on; a QUIC listener on the IPv6 wildcard also
+        // answers IPv4 (its socket is not IPv6-only).
+        let mut served = vec![o.addr.ip()];
+        if quic_dual_stack(o) {
+            served.push(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        }
+        for a in served {
+            for p in new
+                .iter()
+                .filter(|n| !n.proto.needs_tls() && serves_address(n.addr.ip(), a))
+            {
+                // The more specific of the two is what plain DNS is served on.
+                let at = if is_wildcard(a) { p.addr.ip() } else { a };
+                let still_encrypted = new
+                    .iter()
+                    .any(|n| n.proto.needs_tls() && encrypted_covers(n, at));
+                if !still_encrypted {
+                    return Some(format!(
+                        "removes {} while plain DNS stays on {at}: the address is served without encryption",
+                        name(o),
+                    ));
+                }
+            }
         }
     }
     // (b) a gated encrypted listener removed, and an ungated one of its protocol added.

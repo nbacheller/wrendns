@@ -447,6 +447,7 @@ fn weak(running: &[Value], new: &[Value], host: HostFacts) -> bool {
 // REQ: API-902, DNS-901 (design 4; owner decision 2026-11-26) — rules (a), (b) and (c) over the host
 // facts: public IPv4, private only, global IPv6 only, and an unreadable interface list.
 #[test]
+#[allow(clippy::too_many_lines)] // one table
 fn api_902_listener_weakening_table() {
     let base = defaults();
     let add = |x: Value| {
@@ -548,6 +549,33 @@ fn api_902_listener_weakening_table() {
     let wild = vec![l("udp", "192.168.1.2:53"), dot("0.0.0.0:853", c, k)];
     assert!(weak(&wild, &[l("udp", "192.168.1.2:53")], PRIVATE4));
     assert!(!weak(&wild, &[l("udp", "[::]:53")], PRIVATE4));
+    // A wildcard encrypted listener narrowed to the one address plain DNS serves removes no
+    // encryption: that address is still encrypted.
+    assert!(!weak(
+        &wild,
+        &[l("udp", "192.168.1.2:53"), dot("192.168.1.2:853", c, k)],
+        PRIVATE4
+    ));
+    // A QUIC listener on the IPv6 wildcard also answers IPv4 (its socket isn't IPv6-only): removing
+    // it while plain IPv4 DNS stays is weakening, as is removing a DoT one only when families match.
+    let quic6 = |p: &str| json!({"proto": p, "addr": "[::]:853", "tls": {"cert": c, "key": k}});
+    for p in ["doq", "doh3"] {
+        let running = vec![l("udp", "0.0.0.0:53"), quic6(p)];
+        assert!(weak(&running, &[l("udp", "0.0.0.0:53")], PRIVATE4), "{p}");
+        assert!(
+            !weak(
+                &running,
+                &[
+                    l("udp", "0.0.0.0:53"),
+                    json!({"proto": p, "addr": "0.0.0.0:853", "tls": {"cert": c, "key": k}})
+                ],
+                PRIVATE4
+            ),
+            "{p}: an IPv4 wildcard of the same protocol still covers it"
+        );
+    }
+    let dot6 = vec![l("udp", "0.0.0.0:53"), dot("[::]:853", c, k)];
+    assert!(!weak(&dot6, &[l("udp", "0.0.0.0:53")], PRIVATE4));
     // ... and not when a wildcard encrypted listener still covers the address.
     assert!(!weak(
         &spec,

@@ -178,7 +178,8 @@ async fn api_902_listen_bind_failure_changes_nothing() {
 }
 
 // A commit the node could not keep (the file took the listeners over, or a swap failed) rolls back
-// under the reason the server gave, removes the entry, and reloads so the previous list is put back.
+// under the reason the server gave, writes back the entry in force before (removes it when there
+// was none), and reloads so the previous list is put back.
 #[tokio::test(start_paused = true)]
 async fn api_902_listen_commit_failure_maps_the_reason() {
     for (reason, detail) in [
@@ -225,6 +226,38 @@ async fn api_902_listen_commit_failure_maps_the_reason() {
             "{reason}: nothing confirmed"
         );
     }
+}
+
+// If the previous entry cannot be written back after a failed commit, the new entry stands: the
+// outcome is never `rolled_back`.
+#[tokio::test(start_paused = true)]
+async fn api_902_listen_commit_failure_with_entry_kept_is_not_rolled_back() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let r = change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
+    let (pid, token) = ids(&r);
+    *n.host.commit_error.lock().unwrap() = Some(crate::server::WindowError {
+        reason: "commit_failed",
+        detail: "udp 127.0.0.1:5300: address in use".to_owned(),
+    });
+    n.host
+        .writes_down_after_commit_error
+        .store(true, Ordering::SeqCst);
+    let e = n.engine.confirm(&a, &pid, token).await.unwrap_err();
+    assert_eq!(e.code, Code::PrimaryUnreachable);
+    assert!(n.engine.status_local().pending.is_none());
+    assert!(n.audits("settings.guarded_rolled_back").is_empty());
+    assert_eq!(n.audits("settings.guarded_commit_failed").len(), 1);
+    let o = store::outcomes(&n.engine.state);
+    assert_eq!(o[0].outcome, "commit_failed_entry_kept");
+    assert!(n.audits("settings.guarded").is_empty());
 }
 
 // A second change whose commit fails puts back the entry the first change left, and does not

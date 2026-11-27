@@ -1672,10 +1672,16 @@ impl Engine {
                 .host
                 .write_entry(&self.node, &setting, previous, &admin)
                 .await;
-            // The reload puts the previous list back where the entry had already been applied.
-            if removed.is_ok() {
-                let _ = self.host.reload().await;
+            if let Err(e) = removed {
+                // The new entry still stands (here, or on the primary and replicated), and the
+                // reload may already have applied it: never report this as rolled back.
+                warn!(setting = %setting, "putting the previous entry back failed: {e:?}");
+                return Err(self
+                    .commit_failed_entry_kept(pending_id, &setting, guard.failure_reason())
+                    .await);
             }
+            // The reload puts the previous list back where the entry had already been applied.
+            let _ = self.host.reload().await;
             self.rollback_locked(pending_id, guard.failure_reason())
                 .await;
             return Err(Problem::new(
@@ -1853,6 +1859,46 @@ impl Engine {
     }
 
     /// [`Engine::rollback`] when the caller already holds the operation lock.
+    /// A commit failed and the previous entry could not be written back: the new entry stands, so
+    /// the outcome is `commit_failed_entry_kept`, never `rolled_back`.
+    async fn commit_failed_entry_kept(
+        &self,
+        pending_id: &str,
+        setting: &str,
+        reason: &'static str,
+    ) -> Problem {
+        let p = {
+            let mut g = lock(&self.inner);
+            if g.pending.as_ref().is_some_and(|p| p.id == pending_id) {
+                g.pending.take()
+            } else {
+                None
+            }
+        };
+        if let Some(mut p) = p {
+            p.end_probes();
+            if let Some(h) = p.expiry.take() {
+                h.abort();
+            }
+            p.guard.abort().await;
+            self.audit_best_effort(
+                &p.actor,
+                "settings.guarded_commit_failed",
+                &self.target_name(setting),
+                &json!({
+                    "setting": setting, "node": self.node, "reason": reason,
+                    "outcome": "commit_failed_entry_kept",
+                    "detail": "the previous entry could not be written back; the new entry stays in force",
+                }),
+            );
+        }
+        self.outcome(setting, "commit_failed_entry_kept", Some(reason));
+        Problem::new(
+            Code::PrimaryUnreachable,
+            "the new listeners are in force: the node couldn't keep the new sockets and couldn't put the previous entry back; change the listeners again to restore the old list",
+        )
+    }
+
     async fn rollback_locked(&self, pending_id: &str, reason: &str) {
         let p = {
             let mut g = lock(&self.inner);

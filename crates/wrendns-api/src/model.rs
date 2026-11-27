@@ -3339,13 +3339,27 @@ pub struct ProbeResult {
 }
 
 impl ProbeResult {
+    /// The target without its path (`proto://host`): what every role may see, and what health
+    /// reasons name (the DoH path is for admins only).
+    #[must_use]
+    pub fn public_target(&self) -> String {
+        match self.target.split_once("://") {
+            Some((head, rest)) => {
+                let host = rest.split('/').next().unwrap_or(rest);
+                format!("{head}://{host}")
+            }
+            None => self.target.clone(),
+        }
+    }
+
     /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — drop what only an admin sees of a
     /// listener's probe: the DoH path in the target, and the PROXY setting in the reason it was not
     /// probed.
     pub fn without_admin_fields(&mut self) {
-        if let Some((head, rest)) = self.target.split_once("://") {
-            let host = rest.split('/').next().unwrap_or(rest);
-            self.target = format!("{head}://{host}");
+        self.target = self.public_target();
+        if self.cert_error.is_some() {
+            // The error names the certificate file's path.
+            self.cert_error = Some("the certificate can't be read".to_owned());
         }
         if self.skipped.as_deref().is_some_and(|s| s.contains("PROXY")) {
             self.skipped = Some("it is not probed".to_owned());

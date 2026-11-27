@@ -248,7 +248,10 @@ staged: Option<StagedSet>   // sockets bound for a pending change, none of them 
   and fails if anything is left. A changed listener's swap is today's close-and-bind on the real port:
   a gap of a few milliseconds on that one TCP-based listener, as a reload has today, and never on UDP.
   If that bind fails, `apply` binds the old settings again and commit answers `commit_failed`. The
-  engine then removes the entry and runs the reload again, which puts the previous list back.
+  engine then writes back the entry that was in force before the change (or removes it when there
+  was none) and runs the reload again, which puts the previous list back. If that write fails too,
+  the new entry stands and so does the new list: the outcome is `commit_failed_entry_kept` (audited
+  `settings.guarded_commit_failed`, answered 503 `primary_unreachable`), never `rolled_back`.
 - **Abort** (expiry, cancel, a failed commit before the write) closes every staged and proof-port socket
   and touches nothing else. Nothing was written.
 - **A reload during the window** (SIGHUP, another API change, a replicated change) runs `apply` on the

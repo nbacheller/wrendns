@@ -322,7 +322,11 @@ impl Backend for Fake {
             ..Default::default()
         };
         vec![
-            one("https://192.168.1.2:443/secret-doh-path", "doh", None),
+            {
+                let mut p = one("https://192.168.1.2:443/secret-doh-path", "doh", None);
+                p.cert_error = Some("/etc/wrendns/tls/dns.pem: not found".to_owned());
+                p
+            },
             one(
                 "tls://192.168.1.2:853",
                 "dot",
@@ -5566,6 +5570,12 @@ async fn api_902_listener_paths_limits_and_options_are_for_admins_only() {
         v["items"][0]["target"],
         "https://192.168.1.2:443/secret-doh-path"
     );
+    assert!(
+        v["items"][0]["certError"]
+            .as_str()
+            .unwrap()
+            .contains("/etc/wrendns/tls/dns.pem")
+    );
     assert!(v["items"][1]["skipped"].as_str().unwrap().contains("PROXY"));
     for (name, role) in [
         ("olive2", auth::Role::Operator),
@@ -5584,6 +5594,7 @@ async fn api_902_listener_paths_limits_and_options_are_for_admins_only() {
             !text.contains("secret-doh-path") && !text.contains("PROXY"),
             "{name}: {text}"
         );
+        assert!(!text.contains("/etc/wrendns/tls"), "{name}: {text}");
     }
     // An admin's token cut to read scope is a viewer's.
     let admin = app.auth.state().user_by_name("root").unwrap().unwrap();

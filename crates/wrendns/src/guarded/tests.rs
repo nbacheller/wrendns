@@ -339,6 +339,9 @@ struct Fake {
     commit_error: Mutex<Option<crate::server::WindowError>>,
     commits: AtomicUsize,
     aborts: AtomicUsize,
+    /// Once a commit has failed, writing an entry fails too (the primary went away).
+    writes_down: AtomicBool,
+    writes_down_after_commit_error: AtomicBool,
 }
 
 fn key_of(node: &str) -> [u8; 32] {
@@ -367,6 +370,12 @@ impl Host for Fake {
         entry: Option<Stored>,
         by: &str,
     ) -> BoxFuture<Result<(), Problem>> {
+        if self.writes_down.load(Ordering::SeqCst) {
+            return Box::pin(std::future::ready(Err(Problem::new(
+                Code::PrimaryUnreachable,
+                "no primary",
+            ))));
+        }
         let target = if self.is_primary() || store::is_local(id) {
             Arc::clone(&self.state)
         } else {
@@ -537,6 +546,9 @@ impl Host for Fake {
     fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
         self.commits.fetch_add(1, Ordering::SeqCst);
         let r = self.commit_error.lock().unwrap().clone();
+        if r.is_some() && self.writes_down_after_commit_error.load(Ordering::SeqCst) {
+            self.writes_down.store(true, Ordering::SeqCst);
+        }
         Box::pin(std::future::ready(r.map_or(Ok(()), Err)))
     }
     fn abort_listeners(&self) -> BoxFuture<()> {
@@ -623,6 +635,8 @@ fn node_on(
         commit_error: Mutex::default(),
         commits: AtomicUsize::new(0),
         aborts: AtomicUsize::new(0),
+        writes_down: AtomicBool::new(false),
+        writes_down_after_commit_error: AtomicBool::new(false),
     });
     let engine = Engine::new(
         name.to_owned(),
