@@ -389,6 +389,13 @@ impl Backend for Fake {
             client_ips_masked: None,
             cluster: None,
             addresses: Vec::new(),
+            api: Some(crate::model::ApiInfo {
+                listen: "0.0.0.0:8053".into(),
+                scheme: "https".into(),
+                certificate: Some("self-signed".into()),
+                trusted_proxies: vec!["10.0.0.0/8".into()],
+                http_redirect: Some("0.0.0.0:80".into()),
+            }),
             build: crate::model::BuildInfo {
                 version: "0.1.0-edge.60".into(),
                 commit: "abc1234".into(),
@@ -583,6 +590,33 @@ impl Backend for Fake {
             ..crate::policy_api::ClientPolicy::default()
         })
     }
+    fn trust_anchors(&self) -> Vec<crate::model::TrustAnchorStatus> {
+        let key = |tag, state: &str, since, trusted_at| crate::model::TrustAnchorKey {
+            key_tag: tag,
+            algorithm: 8,
+            flags: 257,
+            state: state.into(),
+            since_s: since,
+            trusted_at_s: trusted_at,
+        };
+        let node = |name: &str, keys| crate::model::TrustAnchorStatus {
+            node: Some(name.into()),
+            mode: "following".into(),
+            keys,
+            last_reading_s: Some(1_800_000_000),
+            ..Default::default()
+        };
+        vec![
+            node(
+                "pi-a",
+                vec![
+                    key(20326, "valid", None, None),
+                    key(11111, "add_pend", Some(1_000), Some(1_000 + 2_592_000)),
+                ],
+            ),
+            node("pi-b", vec![key(20326, "valid", None, None)]),
+        ]
+    }
     fn recursor_trace(
         &self,
         p: &crate::model::RecursorTraceParams,
@@ -661,6 +695,8 @@ impl Backend for Fake {
         let list = |name: &str| ListInfo {
             name: name.into(),
             kind: "block".into(),
+            format: "auto".into(),
+            unsupported: 0,
             enabled: true,
             mode: "enforce".into(),
             source: "inline".into(),
@@ -1392,6 +1428,18 @@ async fn agt_004_agent_tokens_over_http() {
         status(call(
             "GET",
             "/api/v1/stats/summary?from=-1h",
+            &agent,
+            null.clone(),
+            None
+        ))
+        .await,
+        StatusCode::OK
+    );
+    // REQ: DNS-906 - the dnssec_trust_anchors tool's REST call works for an analytics:read agent.
+    assert_eq!(
+        status(call(
+            "GET",
+            "/api/v1/dnssec/anchors",
             &agent,
             null.clone(),
             None
@@ -2183,7 +2231,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 200 with DNS-904's /recursor/trace (T40.3), DNS-014's /access-settings/default (T27.14h), API-902's GET
     // /guarded/pending/{id} (T27.14b) and DSC-913's /locations and /locations/{slug} (T36.10a).
     // 201 with OBS-007's /dnstap-settings/default (T40.13).
-    assert_eq!(paths.len(), 201);
+    // 202 with DNS-906's /dnssec/anchors (T40.5).
+    // 204 with CLD-904's /dns-providers and /dns-providers/{name} (T36.10b).
+    assert_eq!(paths.len(), 204);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -5526,6 +5576,27 @@ async fn dns_904_the_trace_route_returns_the_steps() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
 }
 
+/// REQ: DNS-906 (T40.5, AC4), AGT-001 - `GET /api/v1/dnssec/anchors` lists every node's keys with
+/// their states in camelCase JSON; a viewer may read it, and an unchanged built-in key has no date.
+#[tokio::test]
+async fn dns_906_the_anchors_route_lists_every_node() {
+    let (app, _fake) = app();
+    let (status, _, v) = get(&app, "/api/v1/dnssec/anchors").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "one entry per node: {v}");
+    assert_eq!(items[0]["node"], "pi-a");
+    assert_eq!(items[0]["mode"], "following");
+    assert_eq!(items[0]["lastReadingS"], 1_800_000_000u64);
+    assert_eq!(items[0]["keys"][1]["state"], "add_pend");
+    assert_eq!(items[0]["keys"][1]["trustedAtS"], 1_000 + 2_592_000);
+    assert!(
+        items[0]["keys"][0].get("sinceS").is_none(),
+        "absent, not null: {v}"
+    );
+    assert_eq!(items[1]["keys"].as_array().unwrap().len(), 1);
+}
+
 /// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the judgement of a dnstap change (is it a
 /// widening, which the guarded flow takes) is the backend's own plan, made inside the one write that
 /// applies it, on the version the caller pinned: the route makes exactly one backend write per request
@@ -5559,6 +5630,91 @@ async fn obs_007_dnstap_write_is_judged_in_the_one_write_that_applies_it() {
     assert_eq!(w.len(), 2, "{w:?}");
     assert!(!w[0].contains("expect="), "{w:?}");
     assert!(w[1].ends_with(" expect=7"), "{w:?}");
+}
+
+/// REQ: API-902 (T27.14f; owner decision, 2026-11-27) - the `api` block of `system/info` (the API's
+/// address, scheme, certificate name, trusted proxies and redirect) is an admin's own session's: a
+/// viewer, an operator, a read-scoped token, an agent token and a wall display get none of it.
+#[tokio::test]
+async fn api_902_api_block_is_for_admins_only() {
+    let (app, _) = app();
+    let info = |cookie: String| {
+        Request::get("/api/v1/system/info")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, info(app.cookie.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["api"]["listen"], "0.0.0.0:8053", "{v}");
+    assert_eq!(v["api"]["scheme"], "https");
+    assert_eq!(v["api"]["certificate"], "self-signed");
+    assert_eq!(v["api"]["trustedProxies"][0], "10.0.0.0/8");
+    assert_eq!(v["api"]["httpRedirect"], "0.0.0.0:80");
+    for (name, role) in [
+        ("olive3", auth::Role::Operator),
+        ("vic3", auth::Role::Viewer),
+    ] {
+        let u = app
+            .auth
+            .create_user(name, "a long enough password", role, false, NOW)
+            .unwrap();
+        let (cookie, _) = app.session_for(&u);
+        let (s, _, v) = send(&app, info(cookie)).await;
+        assert_eq!(s, StatusCode::OK, "{name}: {v}");
+        assert!(
+            v.get("api").is_none(),
+            "{name} must not see the api block: {v}"
+        );
+        assert!(v.get("listenerAccess").is_some(), "the rest stays: {v}");
+    }
+    // An admin's token cut to read scope.
+    let admin = app.auth.state().user_by_name("root").unwrap().unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            admin.id,
+            "ro-api",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let req = Request::get("/api/v1/system/info")
+        .header("authorization", format!("Bearer tt_{tid}_{secret}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.get("api").is_none(), "{v}");
+    // The predicate itself: an agent grant or a display session is never an admin's own session,
+    // however high the role.
+    let principal = |agent: Option<auth::AgentGrant>, display: Option<&str>| {
+        let mut e = axum::http::Extensions::new();
+        e.insert(auth::Principal {
+            user_id: 1,
+            username: "root".into(),
+            role: auth::Role::Admin,
+            via: auth::Via::Token { id: "t".into() },
+            agent,
+            display: display.map(str::to_owned),
+        });
+        e
+    };
+    let grant = auth::AgentGrant {
+        token_name: "bot".into(),
+        scopes: std::collections::BTreeSet::new(),
+        group: None,
+        rate_per_minute: None,
+        client: None,
+    };
+    assert!(crate::is_admin_session(&principal(None, None)));
+    assert!(!crate::is_admin_session(&principal(Some(grant), None)));
+    assert!(!crate::is_admin_session(&principal(None, Some("wall"))));
+    assert!(!crate::is_admin_session(&axum::http::Extensions::new()));
 }
 
 /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — a listener's certificate and key paths, URL

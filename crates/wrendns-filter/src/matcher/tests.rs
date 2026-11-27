@@ -14,6 +14,7 @@ fn input(name: &str, kind: ListKind, text: &str) -> ListInput {
         options: ListOptions {
             kind,
             match_mode: ListMatch::Subtree,
+            ..ListOptions::default()
         },
         data: ListData::Bytes(text.as_bytes().to_vec()),
         source_hash: crate::fetch::content_hash(text.as_bytes()),
@@ -72,6 +73,7 @@ fn describe(m: &Matcher, a: &Attribution) -> String {
         RuleRef::Domain { scope, labels } => format!("{scope:?}/{labels}"),
         RuleRef::ModRule { .. } => "mod".into(),
         RuleRef::Regex { .. } => "regex".into(),
+        RuleRef::Rpz { .. } => "rpz".into(),
     };
     format!("{list} {rule}")
 }
@@ -471,6 +473,7 @@ fn verdict(m: &[(&Matcher, u16)], d: Decision) -> String {
         RuleRef::Domain { scope, labels } => format!("{scope:?}/{labels}"),
         RuleRef::ModRule { .. } => "mod".into(),
         RuleRef::Regex { .. } => "regex".into(),
+        RuleRef::Rpz { .. } => "rpz".into(),
     };
     format!("{kind} {name} {:?} {rule}", a.tier)
 }
@@ -659,4 +662,63 @@ fn flt_002_a_dotted_label_does_not_bypass_the_lists() {
     // The plain names still decide as before.
     assert_eq!(decide(&m, "ads.example.com"), "block block Subtree/3");
     assert_eq!(decide(&m, "exact.example.org"), "block block Exact/3");
+}
+
+/// REQ: FLT-906 (T40.9, AC4) - the plain actions of a zone are stored as 8-byte records, not as
+/// modifier rules, and the most specific trigger decides (an exact name over `*.parent`, a
+/// deeper wildcard over a shallower one); a passthru is the exception only where it is the
+/// most specific.
+#[test]
+fn flt_906_plain_zone_records_are_compact_and_the_most_specific_decides() {
+    use crate::rewrite::ListRewrite;
+    let zone = "\
+*.example.com CNAME .
+x.example.com CNAME rpz-passthru.
+*.corp.example CNAME rpz-passthru.
+bad.corp.example CNAME .
+drop.example CNAME rpz-drop.
+nodata.example CNAME *.
+walled.example A 192.0.2.7
+";
+    let mut list = input("zone", ListKind::Block, zone);
+    list.options.format = wrendns_config::ListFormat::Rpz;
+    let m = matcher_with(vec![list], 1);
+    let snap = m.snapshot().unwrap();
+    // Six plain records are 8 bytes each in rpz.bin; the address record is a modifier rule.
+    assert_eq!(snap.rpz.len(), 6 * crate::snapshot::RPZ_RECORD);
+    assert_eq!(snap.modrules.len(), 1);
+    let client = ClientCtx {
+        ip: CLIENT_IP,
+        name: None,
+        client_id: None,
+    };
+    let mask = ListMask::all(1);
+    let answer = |name: &str| {
+        m.rewrites(&wire(name), rtype::A, &client, &mask)
+            .map(|r| r.0)
+    };
+    assert_eq!(answer("y.example.com"), Some(ListRewrite::Rcode(3)));
+    assert_eq!(
+        answer("x.example.com"),
+        None,
+        "the exact passthru beats the wildcard"
+    );
+    assert_eq!(answer("bad.corp.example"), Some(ListRewrite::Rcode(3)));
+    assert_eq!(answer("fine.corp.example"), None);
+    assert_eq!(answer("drop.example"), Some(ListRewrite::Rcode(5)));
+    assert_eq!(answer("nodata.example"), Some(ListRewrite::Rcode(0)));
+    assert!(matches!(
+        answer("walled.example"),
+        Some(ListRewrite::Addrs(_))
+    ));
+    // Explain's matches name the record that applied, with its line.
+    let hits = m.rewrite_matches(&wire("y.example.com"), rtype::A, &client, &mask);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0].attribution.rule,
+        RuleRef::Rpz {
+            scope: Scope::Subdomains,
+            line: 1
+        }
+    );
 }

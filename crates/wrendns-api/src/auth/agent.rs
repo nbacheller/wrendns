@@ -203,6 +203,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/explain"
             // REQ: DNS-904 — the recursor's lookup trace.
             | "/api/v1/recursor/trace"
+            // REQ: DNS-906 - the root trust anchors and how they are kept.
+            | "/api/v1/dnssec/anchors"
             | "/api/v1/cache/stats"
             | "/api/v1/cache/lookup"
             | "/api/v1/cache/entries"
@@ -240,6 +242,9 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/zones"
             // REQ: DSC-913 (T36.10a) - the locations and the names each composes.
             | "/api/v1/locations"
+            // REQ: CLD-904 (T36.10b) - the DNS providers' status and settings (the credential as a
+            // name only). Every change is refused (`never_for_agents`).
+            | "/api/v1/dns-providers"
             | "/api/v1/alerts"
             | "/api/v1/forwards"
             | "/api/v1/rules"
@@ -275,6 +280,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if content_path(p) => return Need::Scope("config:read"),
             // REQ: DSC-913 (T36.10a) - one location.
             _ if location_path(p) => return Need::Scope("config:read"),
+            // REQ: CLD-904 (T36.10b) - one DNS provider.
+            _ if dns_provider_path(p) => return Need::Scope("config:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -338,6 +345,11 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/map-settings") {
             return Need::Scope("config:write:map");
         }
+        // REQ: CLD-904 (T36.10b, ADR-1084 point 4) - DNS providers are admin-only and have no agent
+        // scope: no token writes one, and there is no plan tool for the table.
+        if under("/api/v1/dns-providers") {
+            return Need::Forbidden;
+        }
         // REQ: API-016 (T23.7, ADR-903 §5) — routers are admin-only and have no agent scope.
         if under("/api/v1/routers") {
             return Need::Forbidden;
@@ -395,6 +407,9 @@ fn secret_path(p: &str) -> bool {
 pub fn never_for_agents(method: &Method, path: &str) -> bool {
     let p = path.trim_end_matches('/');
     let secret = p == "/api/v1/secrets" || secret_path(p);
+    // REQ: CLD-904 (T36.10b, ADR-1084 point 4) - the DNS-provider table, and its later test and
+    // record actions: no agent token writes any of them.
+    let providers = p == "/api/v1/dns-providers" || p.starts_with("/api/v1/dns-providers/");
     let write = *method == Method::PUT || *method == Method::DELETE || *method == Method::POST;
     // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings and token.
     let pihole = p == "/api/v1/pihole-api" || p == "/api/v1/pihole-api/token";
@@ -408,7 +423,7 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
         .strip_prefix("/api/v1/groups/")
         .and_then(|r| r.strip_suffix("/sources"))
         .is_some_and(|g| !g.is_empty() && !g.contains('/'));
-    ((secret || pihole) && write)
+    ((secret || pihole || providers) && write)
         || (guarded && *method != Method::GET && *method != Method::HEAD)
         // The read of one pending change (T27.14b) names the staged addresses and probe errors.
         || p.starts_with("/api/v1/guarded/pending/")
@@ -435,6 +450,12 @@ fn content_path(p: &str) -> bool {
 /// REQ: DSC-913 (T36.10a) - `/api/v1/locations/{slug}`.
 fn location_path(p: &str) -> bool {
     p.strip_prefix("/api/v1/locations/")
+        .is_some_and(|n| !n.is_empty() && !n.contains('/'))
+}
+
+/// REQ: CLD-904 (T36.10b) - `/api/v1/dns-providers/{name}`.
+fn dns_provider_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/dns-providers/")
         .is_some_and(|n| !n.is_empty() && !n.contains('/'))
 }
 
@@ -919,6 +940,11 @@ mod tests {
         // REQ: DNS-904 — the recursor's lookup trace is analytics.
         assert_eq!(
             required(&Method::GET, "/api/v1/recursor/trace"),
+            Scope("analytics:read")
+        );
+        // REQ: DNS-906 - the trust anchor list is analytics.
+        assert_eq!(
+            required(&Method::GET, "/api/v1/dnssec/anchors"),
             Scope("analytics:read")
         );
         // T6.15 — the top entries are analytics too.

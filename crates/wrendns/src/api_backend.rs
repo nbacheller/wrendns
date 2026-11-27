@@ -839,6 +839,35 @@ impl ApiBackend {
     }
 }
 
+/// REQ: API-902 (T27.14f) - how the web UI and API are served, as `system/info` reports it to admins.
+fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiInfo {
+    wrendns_api::model::ApiInfo {
+        listen: cfg.api.listen.to_string(),
+        scheme: if cfg.api.tls.is_some() {
+            "https"
+        } else {
+            "http"
+        }
+        .to_owned(),
+        certificate: cfg.api.tls.as_ref().map(|t| match &t.cert {
+            Some(c) if !t.self_signed => c
+                .as_str()
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+            _ => "self-signed".to_owned(),
+        }),
+        trusted_proxies: cfg
+            .api
+            .trusted_proxies
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        http_redirect: cfg.api.http_redirect.map(|a| a.to_string()),
+    }
+}
+
 impl Backend for ApiBackend {
     fn system_info(&self) -> SystemInfo {
         let cfg = self.src.config.load();
@@ -929,6 +958,8 @@ impl Backend for ApiBackend {
             cluster: self.src.cluster.as_deref().map(crate::cluster::info),
             // REQ: UPS-013 (T24.31) — the addresses an upstream's `source` can name.
             addresses: node_addresses(),
+            // REQ: API-902 (T27.14f) - how the web UI and API are served (stripped for non-admins).
+            api: Some(api_info(&cfg)),
             // REQ: OPS-010 — the web UI's banner when this node is in maintenance.
             maintenance: {
                 let now = crate::maintenance::now_ms();
@@ -2138,6 +2169,8 @@ impl Backend for ApiBackend {
                 ListInfo {
                     name: l.name.to_string(),
                     kind: label(&l.kind),
+                    format: label(&l.format),
+                    unsupported: per.map_or(0, |s| s.unsupported),
                     enabled: l.enabled,
                     mode: label(&l.mode),
                     source,
@@ -2825,6 +2858,11 @@ impl Backend for ApiBackend {
         self.src.shadow.suspects_view(limit)
     }
 
+    // REQ: DNS-906 (T40.5) - this node's root trust anchors.
+    fn trust_anchors(&self) -> Vec<wrendns_api::model::TrustAnchorStatus> {
+        vec![crate::anchors::status(&self.src.pipeline.rollover)]
+    }
+
     // REQ: OBS-019 (ADR-108)
     fn upstream_checks(&self) -> Vec<wrendns_api::model::UpstreamChecks> {
         let names: Vec<(u16, String)> = self
@@ -3046,6 +3084,13 @@ impl Backend for ApiBackend {
                 .reason(self.src.cluster.as_deref())
                 .as_deref(),
         ));
+        // REQ: DNS-906 (T40.5) — a root key in its hold-down, or a revoked trust anchor.
+        reasons.extend(crate::health::anchor_reasons(
+            self.src
+                .pipeline
+                .rollover
+                .reasons(wrendns_upstream::rfc5011::unix_now()),
+        ));
         // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
         reasons.extend(crate::names_repair::health_reasons());
         // REQ: DNS-901 (ADR-1090 point 1) — a listener gated only by the default refuses clients
@@ -3249,6 +3294,11 @@ impl Backend for ApiBackend {
             .iter()
             .map(|r| router_entry(&self.src, r, &file, status.get(r.name.as_str())))
             .collect()
+    }
+    // REQ: CLD-904 (T36.10b) - the DNS providers in effect, and whether the start-up hold keeps them
+    // out of what this node serves.
+    fn dns_providers(&self) -> wrendns_api::model::DnsProviderList {
+        crate::dns_provider_settings::list(&self.src)
     }
     // REQ: API-016 (T23.10) — the providers (settings are the node-managed entries every member
     // holds; the status is this node's).
@@ -3837,7 +3887,9 @@ impl Backend for ApiBackend {
     fn locations(&self) -> wrendns_api::model::LocationList {
         // REQ: DSC-908 (ADR-1104 point 5) - while the start-up hold stands the list is the
         // configured table (not the stripped running one), marked held.
-        let held = crate::upgrade_gate::HOLD.active();
+        let held = crate::upgrade_gate::HOLD
+            .held_features()
+            .contains(&wrendns_cluster::gate::Feature::Locations);
         let cfg = if held {
             unheld_config(&self.src)
         } else {
@@ -3856,8 +3908,11 @@ impl Backend for ApiBackend {
             }
         } else {
             // REQ: DSC-908 (ADR-1104 rule c) - a node that stopped leading with held entries says
-            // so where the hold shows: not held now, but the reason stays (`held` stays false).
-            list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+            // so where the hold shows: not held now, but the reason stays (`held` stays false). A
+            // hold of DNS providers alone says nothing about the locations.
+            if !crate::upgrade_gate::HOLD.active() {
+                list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+            }
         }
         list
     }
@@ -5364,6 +5419,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Forward => crate::managed::FORWARD,
         ManagedKind::Zone => crate::managed::ZONE,
         ManagedKind::Location => crate::managed::LOCATION,
+        ManagedKind::DnsProvider => crate::managed::DNS_PROVIDER,
         ManagedKind::Rule => crate::managed::RULE,
         ManagedKind::Upstream => crate::managed::UPSTREAM,
         ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
@@ -6075,6 +6131,10 @@ pub(crate) fn managed_impact(
         (ManagedKind::OidcProvider, _) => {
             "Applied on every node within seconds, without a restart: its sign-in button appears or goes (a node without public_url shows it as inactive), and the sessions of a removed provider end.".into()
         }
+        // REQ: CLD-904 (T36.10b) - stored and validated only; nothing calls a provider yet.
+        (ManagedKind::DnsProvider, _) => {
+            "Stored and shared by the cluster with no restart. Nothing calls a DNS provider yet, so no DNS answer changes; the entry is checked and kept for the certificate and dynamic-DNS work that uses it.".into()
+        }
         (ManagedKind::Router, _) => {
             "Polled by this node at its interval (by the primary, for a stored credential); the names it reports reach DNS after the next poll.".into()
         }
@@ -6191,6 +6251,10 @@ fn plan_managed(
     // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections.
     if crate::settings_kinds::is_node_kind(w.kind) {
         return crate::node_settings::plan(src, state, w);
+    }
+    // REQ: CLD-904 (T36.10b) - DNS providers: admin-only, shared, files win, secrets by reference.
+    if w.kind == ManagedKind::DnsProvider {
+        return crate::dns_provider_settings::plan(src, state, w);
     }
     // REQ: API-016 (T23.7, ADR-921) — routers have their own plan (admin-only, file-read-only).
     if w.kind == ManagedKind::Router {
@@ -7414,6 +7478,16 @@ pub(crate) fn plan_override(
     let (before, body) = step.map_err(|p| served_not_stored(src, w.kind, &name, p))?;
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    // REQ: FLT-906 (T40.9) - a list in the RPZ format waits until every member's build reads it
+    // (409 `upgrade_required`, naming the member; dry runs too, so the answer is the same).
+    if w.kind == ManagedKind::List && body_in.is_some() {
+        crate::upgrade_gate::enforce_rpz(src.cluster.as_deref(), &before_cfg, &merged).map_err(
+            |why| {
+                Problem::new(Code::UpgradeRequired, why)
+                    .hint("Upgrade the member named, then save the list again. DNS is unaffected.")
+            },
+        )?;
+    }
     let after = match w.kind {
         ManagedKind::Upstream => named_json(&merged.upstream, &name),
         ManagedKind::UpstreamGroup => named_json(&merged.upstream_group, &name),
@@ -8362,6 +8436,7 @@ fn keep_in_git(
         ManagedKind::Forward => "route",
         ManagedKind::Zone => "zone",
         ManagedKind::Location => "location",
+        ManagedKind::DnsProvider => "dns_provider",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",
@@ -9099,6 +9174,7 @@ mod stale_tests {
             path: None,
             rules: Vec::new(),
             kind: wrendns_config::ListKind::Block,
+            format: wrendns_config::ListFormat::Auto,
             match_mode: wrendns_config::ListMatch::Subtree,
             enabled: true,
             mode: wrendns_config::ListMode::Enforce,

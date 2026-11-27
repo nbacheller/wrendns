@@ -5846,12 +5846,283 @@
         }
       }
     },
+    "/api/v1/dns-providers": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The DNS providers in the configuration.",
+        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state. The table is stored and validated: nothing calls a provider yet, so every entry\nreads `not_used`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
+        "operationId": "list_dns_providers",
+        "responses": {
+          "200": {
+            "description": "The DNS providers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dns-providers/{name}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "One DNS provider by name.",
+        "description": "The same entry `GET /api/v1/dns-providers` lists. No credential is in the answer.",
+        "operationId": "get_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderEntry"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change a DNS provider.",
+        "description": "CLD-904 (T36.10b, ADR-1084, ADR-1104). The body has the fields of `[[dns_provider]]` (the name\ncomes from the path): `kind`, `zone`, `credential_ref` and the fields of the kind. The credential is\na name, never a value: `credential_ref` names a stored secret (422 `secret_missing` when none has\nthat name), entered through Settings, Integrations and secrets; the table has no inline credential\nand no file. The entry starts in `dry_run` (it only computes changes) unless the body says\notherwise. Admins only: an operator or an agent is refused (403). A provider the config files\ndefine is read-only here (409 `set_by_file`). The first provider waits until every cluster\nmember's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The\ntable is stored and validated; nothing calls a provider yet.",
+        "operationId": "put_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change a DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define this provider, which is read-only here; or `upgrade_required`: a cluster member's build does not know DNS providers yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, the credential reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a DNS provider that the API added.",
+        "description": "CLD-904 (T36.10b). Nothing else refers to a provider yet, so nothing else changes. A provider the\nconfig files define can't be removed here (409). Admins only.",
+        "operationId": "delete_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can remove a DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dnssec-settings/default": {
       "put": {
         "tags": [
           "config"
         ],
-        "summary": "REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.",
+        "summary": "REQ: DNS-011 (T27.11, ADR-1006), DNS-907 (T40.6, ADR-1105) — `[dnssec]` `mode`,\n`negative_trust_anchors` and `aggressive_nsec`.",
         "description": "The validation mode and the domains it skips apply on every node within seconds; the files' fields win.",
         "operationId": "put_dnssec_settings",
         "parameters": [
@@ -5979,6 +6250,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dnssec/anchors": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "The root trust anchors of every node.",
+        "description": "DNSSEC validation starts from the root's keys. The root changes its key-signing key now and\nthen, and each node follows the change on its own (RFC 5011): a new key the root publishes is\ntrusted only after it has been seen for a 30-day hold-down, and a key the root revokes stops\nbeing trusted at once. One entry per node: the keys with their states (`valid`, `add_pend`,\n`missing`, `revoked`), when each entered its state, when a pending key becomes trusted, and\nwhen the root was last read. A node that uses `trust_anchors_file` shows `mode: file` and\nfollows nothing. A node that runs an older build shows `mode: unsupported`. Example:\n`GET /api/v1/dnssec/anchors`.",
+        "operationId": "anchors",
+        "responses": {
+          "200": {
+            "description": "One entry per node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_TrustAnchorStatus"
                 }
               }
             }
@@ -17019,6 +17312,46 @@
           }
         }
       },
+      "ApiInfo": {
+        "type": "object",
+        "description": "REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and\nAPI, for the Settings \"Web UI and API\" card. Admin only: absent from every other caller's answer,\nas the listener paths are, and absent from an older node's.",
+        "required": [
+          "listen",
+          "scheme",
+          "trustedProxies"
+        ],
+        "properties": {
+          "certificate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With HTTPS: `self-signed`, or the certificate file's name (never its path)."
+          },
+          "httpRedirect": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set."
+          },
+          "listen": {
+            "type": "string",
+            "description": "The address the API listens on (`[api] listen`)."
+          },
+          "scheme": {
+            "type": "string",
+            "description": "`https` when `[api] tls` is set (the node serves HTTPS itself), else `http`."
+          },
+          "trustedProxies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[api] trusted_proxies`, as in force now: each address or network."
+          }
+        }
+      },
       "AttributionBudget": {
         "type": "object",
         "description": "REQ: OBS-027 — the budget over the window.",
@@ -21978,6 +22311,94 @@
           }
         }
       },
+      "DnsProviderEntry": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings\n(the credential as a stored secret's name, never a value), where it comes from, and its state.",
+        "required": [
+          "name",
+          "kind",
+          "zone",
+          "source",
+          "definition",
+          "dryRun",
+          "credentialPresent",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "credentialPresent": {
+            "type": "boolean",
+            "description": "Whether this node stores a secret by that name (the value is never shown)."
+          },
+          "credentialSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the stored secret that holds the credential."
+          },
+          "definition": {
+            "description": "The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the\nname of a stored secret."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The sentence that goes with `state`."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Whether it only computes changes and records them (`dry_run`)."
+          },
+          "held": {
+            "type": "boolean",
+            "description": "True while the start-up hold keeps the entry out of what this node serves and publishes (a\ncluster member's build does not know DNS providers yet)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`azure_dns`, `cloudflare`, `route53` or `rfc2136`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (the configuration files define it; read-only here) or `api`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`not_used`: the table stores and validates the entry; nothing calls the provider yet."
+          },
+          "zone": {
+            "type": "string",
+            "description": "The zone the provider serves."
+          }
+        }
+      },
+      "DnsProviderList": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`).",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "held": {
+            "type": "boolean",
+            "description": "True while the start-up hold keeps the providers out of the answers this node serves: the\nlist is what is configured."
+          },
+          "heldReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why they are held (the member that does not know them, or that the members are not heard\nfrom yet); set with `held`."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderEntry"
+            }
+          }
+        }
+      },
       "DrillAll": {
         "type": "string",
         "description": "REQ: CLU-014 — `\"all\"`: every device (the node's infrastructure, cluster nodes, and\nexcluded devices are never dropped).",
@@ -23966,6 +24387,13 @@
           },
           "restartRequired": {
             "type": "boolean"
+          },
+          "seenClient": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a `trusted-proxies` change: the client address the node sees for this request today\n(what the new list would change), when the request reached the node itself."
           },
           "setByFile": {
             "type": "boolean",
@@ -26042,6 +26470,10 @@
                     "null"
                   ]
                 },
+                "format": {
+                  "type": "string",
+                  "description": "REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or\n`rpz` (a response policy zone)."
+                },
                 "hits": {
                   "type": "integer",
                   "format": "int64",
@@ -26142,6 +26574,12 @@
                   "type": "integer",
                   "format": "int64",
                   "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+                  "minimum": 0
+                },
+                "unsupported": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:\ncosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.",
                   "minimum": 0
                 }
               }
@@ -27287,6 +27725,78 @@
           }
         }
       },
+      "Items_TrustAnchorStatus": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,\nREQ: DNS-906).",
+              "required": [
+                "mode",
+                "keys"
+              ],
+              "properties": {
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrustAnchorKey"
+                  },
+                  "description": "The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`."
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the last reading failed, if it did."
+                },
+                "lastReadingS": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "When the root's keys were last read (Unix seconds).",
+                  "minimum": 0
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "`following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of\n`trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`\n(the node runs a build that does not know this read)."
+                },
+                "nextReadingS": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "When the next reading is due (Unix seconds), while following.",
+                  "minimum": 0
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node (cluster nodes only)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_UpstreamChecks": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -27852,6 +28362,10 @@
               "null"
             ]
           },
+          "format": {
+            "type": "string",
+            "description": "REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or\n`rpz` (a response policy zone)."
+          },
           "hits": {
             "type": "integer",
             "format": "int64",
@@ -27952,6 +28466,12 @@
             "type": "integer",
             "format": "int64",
             "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+            "minimum": 0
+          },
+          "unsupported": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:\ncosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.",
             "minimum": 0
           }
         }
@@ -34331,6 +34851,17 @@
             },
             "description": "REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and\nlink-local left out), which an upstream's `source` can name. They differ per node."
           },
+          "api": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ApiInfo",
+                "description": "REQ: API-902 (T27.14f) - how this node serves the web UI and API: the address, the scheme,\nthe certificate's name, the trusted proxies and the redirect. Admin only (owner decision,\n2026-11-27); an older node omits it, so a reader must treat it as absent."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "build": {
             "$ref": "#/components/schemas/BuildInfo",
             "description": "Exactly which build this is (ADR-046)."
@@ -34953,6 +35484,111 @@
           "secretBase32": {
             "type": "string",
             "description": "For manual entry in an authenticator app."
+          }
+        }
+      },
+      "TrustAnchorKey": {
+        "type": "object",
+        "description": "One root trust anchor a node tracks (`GET /api/v1/dnssec/anchors`, REQ: DNS-906).",
+        "required": [
+          "keyTag",
+          "algorithm",
+          "flags",
+          "state"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The DNSSEC algorithm number (8 RSA/SHA-256, 13 ECDSA P-256, 15 Ed25519).",
+            "minimum": 0
+          },
+          "flags": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The DNSKEY flags (257 a key-signing key, 385 once revoked).",
+            "minimum": 0
+          },
+          "keyTag": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The RFC 4034 key tag.",
+            "minimum": 0
+          },
+          "sinceS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the key entered this state (Unix seconds); absent for a built-in anchor never changed.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`valid` (a trust anchor), `add_pend` (seen, in its hold-down, not trusted yet),\n`missing` (trusted, but the last reading did not list it) or `revoked` (never trusted)."
+          },
+          "trustedAtS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For a pending key: when its hold-down ends and it becomes a trust anchor (Unix seconds).",
+            "minimum": 0
+          }
+        }
+      },
+      "TrustAnchorStatus": {
+        "type": "object",
+        "description": "One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,\nREQ: DNS-906).",
+        "required": [
+          "mode",
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrustAnchorKey"
+            },
+            "description": "The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last reading failed, if it did."
+          },
+          "lastReadingS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the root's keys were last read (Unix seconds).",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "`following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of\n`trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`\n(the node runs a build that does not know this read)."
+          },
+          "nextReadingS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the next reading is due (Unix seconds), while following.",
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (cluster nodes only)."
           }
         }
       },

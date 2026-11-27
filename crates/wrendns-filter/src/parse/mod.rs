@@ -16,15 +16,17 @@
 
 mod modifiers;
 mod name;
+mod rpz;
 
 use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
 
-use wrendns_config::{ListKind, ListMatch};
+use wrendns_config::{ListFormat, ListKind, ListMatch};
 
 pub use self::modifiers::{Modifiers, Negatable};
 pub use self::name::{NameError, normalize};
+pub(crate) use self::rpz::Reader as RpzReader;
 
 /// Block or allow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -67,6 +69,8 @@ pub struct Rule {
 pub struct ListOptions {
     pub kind: ListKind,
     pub match_mode: ListMatch,
+    /// REQ: FLT-906 (T40.9) - `rpz` reads the text as a response policy zone.
+    pub format: ListFormat,
 }
 
 impl ListOptions {
@@ -128,6 +132,10 @@ const MAX_SAMPLES: usize = 10;
 
 /// Parses a whole list, calling `sink(line_number, rule)` for every rule.
 pub fn parse_list(data: &[u8], opts: ListOptions, mut sink: impl FnMut(u32, Rule)) -> ParseStats {
+    // REQ: FLT-906 - a response policy zone is read as one master file, not line by line.
+    if opts.format == ListFormat::Rpz {
+        return rpz::parse(data, sink);
+    }
     let data = data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data);
     // The final newline terminates the last line; it doesn't start another.
     let data = data.strip_suffix(b"\n").unwrap_or(data);

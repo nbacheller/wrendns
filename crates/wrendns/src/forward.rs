@@ -250,6 +250,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Forward => "forward",
                 ManagedKind::Zone => "zone",
                 ManagedKind::Location => "location",
+                ManagedKind::DnsProvider => "dns_provider",
                 ManagedKind::Rule => "rule",
                 ManagedKind::Upstream => "upstream",
                 ManagedKind::UpstreamGroup => "upstream_group",
@@ -651,6 +652,7 @@ fn settings_kinds_understood(
             | ManagedKind::Map
             | ManagedKind::Filter
             | ManagedKind::Access
+            | ManagedKind::DnsProvider
     ) {
         return Ok(());
     }
@@ -661,6 +663,9 @@ fn settings_kinds_understood(
     let gated = match kind {
         ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
         ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
+        // REQ: CLD-904 (T36.10b) - a DNS provider goes only to a primary whose build knows the
+        // table (an older one fails on the unknown kind of the forwarded write).
+        ManagedKind::DnsProvider => Some(wrendns_cluster::gate::Feature::DnsProviders),
         _ => None,
     };
     if let Some(feature) = gated {

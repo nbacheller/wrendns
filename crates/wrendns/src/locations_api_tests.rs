@@ -469,11 +469,7 @@ async fn dsc_908_held_at_start_with_an_older_member_released_when_it_announces()
     assert!(why.contains("version 1.1.0-edge.40"), "{why}");
     let reasons = crate::health::locations_held_reasons(Some(&why));
     assert_eq!(reasons[0].code, "locations_held");
-    assert!(
-        reasons[0]
-            .summary
-            .contains("DNS answers as without locations")
-    );
+    assert!(reasons[0].summary.contains("DNS answers as without them"));
     // The older member keeps the hold.
     assert!(!hold.release(Some(&old.primary), "x") && hold.active());
     let _ = old.stop.send(true);
@@ -949,6 +945,9 @@ async fn dsc_908_the_location_list_shows_held_locations_during_the_hold() {
 async fn dsc_908_a_promotion_during_the_hold_holds_then_releases() {
     let _turn = GATE.lock().await;
     let _end = ClearHold;
+    // The refusals a gate records are process-wide and the tests of the crate leave theirs (the
+    // DNS providers' too): start with none standing.
+    crate::upgrade_gate::forget_held();
     // Nothing refused: no hold starts.
     let new = pair("1.1.0", "1.1.0").await;
     let none = crate::credential_tests::config(DOMAIN);

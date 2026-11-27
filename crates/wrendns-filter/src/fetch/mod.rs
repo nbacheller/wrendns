@@ -68,6 +68,9 @@ pub struct ListSpec {
     /// Disabled in the configuration: its stored files are kept (so re-enabling it needs no
     /// download, ADR-016), but it is never refreshed.
     pub enabled: bool,
+    /// REQ: FLT-906 (T40.9) - how its text is read, so a download is checked the way it is
+    /// compiled (a zone file is not a list of one name per line).
+    pub format: wrendns_config::ListFormat,
 }
 
 /// REQ: FLT-901 — a `cat-` list whose catalog source resolves its URL through a JSON file is
@@ -111,6 +114,7 @@ impl ListSpec {
                     )),
                     max_bytes: l.max_bytes.unwrap_or(f.max_list_bytes).bytes(),
                     enabled: l.enabled,
+                    format: l.format,
                 })
             })
             .collect()
@@ -580,7 +584,7 @@ impl Fetcher {
             ),
             _ => return Err("internal: not a URL list".to_owned()),
         };
-        let mut spool = spool::Spool::new(self.store.spool_path(&spec.name));
+        let mut spool = spool::Spool::new(self.store.spool_path(&spec.name), spec.format);
         let got = self
             .download_into(&spec.name, &url, &cond, spec.max_bytes, &mut spool)
             .await;
@@ -756,6 +760,7 @@ impl Fetcher {
     fn checks(&self, spec: &ListSpec) -> Checks {
         Checks {
             max_invalid_percent: self.settings.max_invalid_percent,
+            format: spec.format,
             // A file or inline list shrinks because someone edited it.
             max_shrink_percent: if matches!(
                 spec.source,
@@ -903,6 +908,7 @@ fn sanity_check_head(head: &[u8], total: u64) -> Result<(), String> {
 struct Checks {
     max_invalid_percent: u8,
     max_shrink_percent: u8,
+    format: wrendns_config::ListFormat,
 }
 
 /// Checks a downloaded body and stores it if it differs from the stored copy. Updates the
@@ -917,7 +923,7 @@ fn accept_body(
     checks: Checks,
 ) -> Result<Outcome, String> {
     sanity_check(data)?;
-    usable_check(data, checks.max_invalid_percent)?;
+    usable_check(data, checks.max_invalid_percent, checks.format)?;
     let hash = content_hash(data);
     if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Outcome::Unchanged);
@@ -1011,9 +1017,17 @@ fn sanity_check(data: &[u8]) -> Result<(), String> {
 /// [`sanity_check`] and would otherwise replace a good list with nothing. At the default (50)
 /// that means more invalid lines than rules. REQ: FLT-004 — a list that fails keeps its last
 /// good version.
-fn usable_check(data: &[u8], max_invalid_percent: u8) -> Result<(), String> {
+fn usable_check(
+    data: &[u8],
+    max_invalid_percent: u8,
+    format: wrendns_config::ListFormat,
+) -> Result<(), String> {
     use crate::parse::{ListOptions, parse_list};
-    let s = parse_list(data, ListOptions::default(), |_, _| {});
+    let opts = ListOptions {
+        format,
+        ..ListOptions::default()
+    };
+    let s = parse_list(data, opts, |_, _| {});
     let (rules, invalid) = (s.rules, s.invalid);
     if invalid > 0 && invalid * 100 > (rules + invalid) * u64::from(max_invalid_percent) {
         let first = s
@@ -1066,6 +1080,7 @@ mod tests {
             refresh: Duration::from_hours(24),
             max_bytes: 1 << 20,
             enabled: true,
+            format: wrendns_config::ListFormat::Auto,
         }
     }
 
@@ -1173,5 +1188,21 @@ mod tests {
         assert!(sanity_check(b"\n<!DOCTYPE html><html>").is_err());
         assert!(sanity_check(b"<HTML><body>").is_err());
         assert!(sanity_check(b"! Title: <html> in a comment\n").is_ok());
+    }
+
+    // REQ: FLT-906 (T40.9) - a downloaded zone is checked as a zone: read as lines it would be
+    // mostly invalid and refused, so a list in the RPZ format must pass as its own format.
+    #[test]
+    fn flt_906_a_zone_is_checked_as_an_rpz() {
+        use wrendns_config::ListFormat;
+        let zone = b"$ORIGIN rpz.example.net.
+@ SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5
+bad.example.com CNAME .
+*.bad.example.com CNAME .
+ok.example.com CNAME rpz-passthru.
+";
+        assert!(usable_check(zone, 50, ListFormat::Rpz).is_ok());
+        let err = usable_check(zone, 50, ListFormat::Auto).unwrap_err();
+        assert!(err.contains("not a usable list"), "{err}");
     }
 }

@@ -60,6 +60,9 @@ pub(crate) fn validate(
     for (path, msg) in crate::location::problems(cfg) {
         r.err(path, msg);
     }
+    for (path, msg) in crate::dns_provider::problems(cfg) {
+        r.err(path, msg);
+    }
     watchdog(cfg, &mut r);
     alerts(cfg, &mut r);
     slo(cfg, &mut r);
@@ -1345,6 +1348,7 @@ fn categories(cfg: &Config, r: &mut Report<'_>) {
             || l.refresh_secs.is_some()
             || l.max_bytes.is_some()
             || l.stale_after_days.is_some()
+            || l.format != crate::schema::ListFormat::Auto
         {
             r.err(
                 &p,
@@ -2195,6 +2199,26 @@ pub fn valid_list_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
+// REQ: FLT-906 (T40.9) - an RPZ carries its own actions (a passthru is its allow), so the list's
+// `kind` stays `block`, and a plain-names `match` has nothing to say.
+fn rpz_list(l: &crate::schema::FilterList, p: &str, r: &mut Report<'_>) {
+    if l.format != crate::schema::ListFormat::Rpz {
+        return;
+    }
+    if l.kind != crate::schema::ListKind::Block {
+        r.err(
+            format!("{p}.kind"),
+            "format = \"rpz\" needs kind = \"block\": the zone's own rules say what is allowed (rpz-passthru.)",
+        );
+    }
+    if l.match_mode != crate::schema::ListMatch::Subtree {
+        r.err(
+            format!("{p}.match"),
+            "`match` does not apply to format = \"rpz\" (each trigger says whether it covers the subtree)",
+        );
+    }
+}
+
 // REQ: FLT-004 — list sources and fetch limits.
 fn lists(cfg: &Config, r: &mut Report<'_>) {
     if cfg.list.len() > MAX_LISTS {
@@ -2227,6 +2251,7 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
                 "shadow is for block lists (an allow list has nothing to count)",
             );
         }
+        rpz_list(l, &p, r);
         if let Some(url) = &l.url {
             match url.split_once("://") {
                 Some(("https", rest)) if !rest.is_empty() => {}

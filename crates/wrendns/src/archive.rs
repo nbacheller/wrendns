@@ -37,7 +37,11 @@ pub(crate) fn gzip(data: &[u8]) -> Vec<u8> {
     out.extend(miniz_oxide::deflate::compress_to_vec(data, 6));
     out.extend_from_slice(&crc32(data).to_le_bytes());
     // ISIZE is the length modulo 2^32.
-    out.extend_from_slice(&u32::try_from(data.len() & 0xFFFF_FFFF).unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(data.len() & 0xFFFF_FFFF)
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
     out
 }
 

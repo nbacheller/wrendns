@@ -642,6 +642,9 @@ pub(crate) struct Pipeline {
     dnssec: ArcSwapOption<Dnssec>,
     /// Validation counters, kept across reloads.
     pub(crate) dnssec_stats: Arc<wrendns_upstream::dnssec::Stats>,
+    /// REQ: DNS-906 (T40.5) — the root trust anchors RFC 5011 keeps, shared by every validator
+    /// and kept across reloads.
+    pub(crate) rollover: Arc<wrendns_upstream::rfc5011::Rollover>,
     /// REQ: OBS-019 (T11.4) — per-upstream answer quality (EDE codes, DNSSEC verdicts, second
     /// opinions), kept across reloads.
     pub(crate) quality: Arc<crate::upstream_checks::Quality>,
@@ -744,6 +747,7 @@ impl Pipeline {
             rt: tokio::runtime::Handle::try_current().ok(),
             dnssec: ArcSwapOption::empty(),
             dnssec_stats: Arc::default(),
+            rollover: Arc::default(),
             quality: Arc::default(),
             checker: ArcSwapOption::empty(),
         })
@@ -803,10 +807,21 @@ impl Pipeline {
         }
     }
 
+    /// REQ: DNS-906 (T40.5) — the upstream group the root DNSKEY set is read through: the
+    /// default group, else the first.
+    pub(crate) fn rollover_group(&self) -> Option<Arc<wrendns_upstream::Group>> {
+        let st = self.state.load();
+        st.router
+            .group("default")
+            .or_else(|| st.router.group_by_view(0))
+            .cloned()
+    }
+
     pub(crate) fn set_dnssec(&self, cfg: &wrendns_config::Config) {
         use wrendns_config::DnssecMode;
         let permissive = match cfg.dnssec.mode {
             DnssecMode::Off => {
+                self.rollover.set_mode(wrendns_upstream::rfc5011::Mode::Off);
                 self.dnssec.store(None);
                 return;
             }
@@ -828,6 +843,9 @@ impl Pipeline {
         let validator =
             wrendns_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats))
                 .with_anchors_file(cfg.dnssec.trust_anchors_file.as_deref())
+                // REQ: DNS-906 (T40.5) — the built-in anchors follow the root's key changes
+                // (RFC 5011) unless a file sets them.
+                .with_rollover(&self.rollover)
                 .with_aggressive_nsec(cfg.dnssec.aggressive_nsec);
         self.dnssec.store(Some(Arc::new(Dnssec {
             validator,
@@ -2744,7 +2762,7 @@ fn rule_of(a: &wrendns_filter::matcher::Attribution, allow: bool) -> Rule {
         list: a.list,
         kind: match a.rule {
             RuleRef::Domain { .. } => RuleKind::Domain,
-            RuleRef::ModRule { .. } => RuleKind::Modifier,
+            RuleRef::ModRule { .. } | RuleRef::Rpz { .. } => RuleKind::Modifier,
             RuleRef::Regex { .. } => RuleKind::Regex,
         },
         allow,
@@ -4548,6 +4566,89 @@ groups = ["kids"]
             ),
             "the exception"
         );
+    }
+
+    /// REQ: FLT-906 (T40.9, ADR-1110) - a response policy zone as a list: NXDOMAIN, NODATA, a
+    /// DROP answered REFUSED, a wildcard that leaves its apex alone, a passthru that is the
+    /// exception to a wildcard, and local data (an address, a CNAME).
+    #[test]
+    fn flt_906_rpz_list_answers() {
+        use wrendns_filter::compile::{CompileOptions, ListData, ListInput, compile};
+        let zone = [
+            "$ORIGIN rpz.example.net.",
+            "@ SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5",
+            "nx.example CNAME .",
+            "nodata.example CNAME *.",
+            "drop.example CNAME rpz-drop.",
+            "*.wild.example CNAME .",
+            "*.corp.example CNAME .",
+            "ok.corp.example CNAME rpz-passthru.",
+            "walled.example A 192.0.2.7",
+            "cn.example CNAME target.example.",
+            "32.7.2.0.192.rpz-ip CNAME .",
+            "",
+        ]
+        .join(
+            "
+",
+        );
+        let p = pipeline_with(
+            UPSTREAM,
+            "||nothing.example^
+",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("snap");
+        // The test configuration's lists are named `ads`: the groups' masks are built from it.
+        let input = ListInput {
+            name: "ads".into(),
+            options: wrendns_filter::parse::ListOptions {
+                format: wrendns_config::ListFormat::Rpz,
+                ..wrendns_filter::parse::ListOptions::default()
+            },
+            data: ListData::Bytes(zone.as_bytes().to_vec()),
+            source_hash: wrendns_filter::fetch::content_hash(zone.as_bytes()),
+            size: zone.len() as u64,
+        };
+        compile(vec![input], &out, &CompileOptions::default()).unwrap();
+        let snap = Arc::new(wrendns_filter::snapshot::Snapshot::open(&out).unwrap());
+        let m = Matcher::with_lookup(Some(snap), wrendns_filter::matcher::Lookup::Indexed).unwrap();
+        p.set_filter(Some(Arc::new(m)));
+        // An unblocked name goes upstream (nothing answers here), so it has no summary.
+        let code = |name: &str| {
+            summarize(&ask_from(&p, "10.0.0.5", name, rtype::A))
+                .ok()
+                .map(|s| s.rcode)
+        };
+        assert_eq!(code("nx.example"), Some(rcode::NXDOMAIN), "CNAME .");
+        // The trigger is the name only, not what is below it.
+        assert_ne!(code("www.nx.example"), Some(rcode::NXDOMAIN));
+        let s = summarize(&ask_from(&p, "10.0.0.5", "nodata.example", rtype::A)).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 0), "CNAME *.");
+        assert_eq!(
+            code("drop.example"),
+            Some(rcode::REFUSED),
+            "rpz-drop. is refused"
+        );
+        assert_eq!(
+            code("a.wild.example"),
+            Some(rcode::NXDOMAIN),
+            "wildcard: below"
+        );
+        assert_ne!(
+            code("wild.example"),
+            Some(rcode::NXDOMAIN),
+            "wildcard: not the apex"
+        );
+        assert_eq!(code("x.corp.example"), Some(rcode::NXDOMAIN));
+        assert_ne!(code("ok.corp.example"), Some(rcode::NXDOMAIN), "passthru");
+        assert!(contains(
+            &ask_from(&p, "10.0.0.5", "walled.example", rtype::A),
+            &[192, 0, 2, 7]
+        ));
+        cache_a(&p, "target.example", Ipv4Addr::new(198, 51, 100, 9));
+        let r = ask_from(&p, "10.0.0.5", "cn.example", rtype::A);
+        assert_eq!(summarize(&r).unwrap().answers, 2, "CNAME + the target's A");
     }
 
     /// REQ: DNS-016 (T9.10) — the exclusion set: an excluded (or IPv4-mapped) AAAA counts as

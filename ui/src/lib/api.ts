@@ -394,6 +394,8 @@ export const api = {
   queries: (q: Query) => get<S['QueryPage']>('/queries', q),
   explain: (q: { name: string; client?: string; qtype?: string }) => get<S['Explanation']>('/explain', q),
   // REQ: DNS-904 — how the built-in resolver walks to an answer (a real lookup).
+  // REQ: DNS-906 — each node's root trust anchors and their RFC 5011 states.
+  trustAnchors: () => get<S['Items_TrustAnchorStatus']>('/dnssec/anchors'),
   recursorTrace: (q: { name: string; qtype?: string; upstream?: string }) => get<S['RecursorTrace']>('/recursor/trace', q),
   lists: () => get<S['Items_ListInfo']>('/lists'),
   // REQ: FLT-004 — "update lists now" (202: what was queued; `refreshing` in `lists()` follows it).
@@ -628,6 +630,13 @@ export const api = {
       query: { dryRun: dryRun || undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
+  // REQ: CLD-904 (T36.10b) — the DNS providers (the credential as a stored secret's name), and an admin's
+  // create, replace and delete. Nothing calls a provider yet.
+  dnsProviders: () => get<S['DnsProviderList']>('/dns-providers'),
+  putDnsProvider: (name: string, b: Record<string, unknown>) =>
+    call<S['ConfigChange']>('PUT', `/dns-providers/${encodeURIComponent(name)}`, { body: b, headers: { 'idempotency-key': newKey() } }),
+  deleteDnsProvider: (name: string) =>
+    call<S['ConfigChange']>('DELETE', `/dns-providers/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
   // REQ: DSC-914 (T36.10c) — the locations with the names each composes, and a location's create, replace and
   // delete (the writes with a dry run; a reason goes in the audit record).
   locations: () => get<S['LocationList']>('/locations'),

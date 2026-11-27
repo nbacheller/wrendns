@@ -328,6 +328,16 @@
       "docs": "filter-lists"
     },
     {
+      "id": "list-rpz",
+      "title": "Lists in the response policy zone (RPZ) format",
+      "term": "Response policy zone (RPZ) list",
+      "summary": "An RPZ is a DNS zone file that says, name by name, what to do: answer no such name, answer no data, let the name through, refuse it, or answer with an address or another name. Choose the rpz format for a list that comes in that form; the Lists page shows how many of its records are not applied (response-IP, name-server and client triggers, and other record types).",
+      "when": "A threat feed or a Pi-hole or Unbound setup gives you a zone file instead of a hosts or domain list.",
+      "example": "A line like \"bad.example.com CNAME .\" makes bad.example.com answer no such name, and \"*.bad.example.com CNAME .\" does the same for every name below it but not for bad.example.com itself. A drop (rpz-drop.) is answered REFUSED so the device does not wait.",
+      "caution": "An rpz list must be a block list, and in a cluster it waits until every member's build can read the format. Triggers on the answer's address or on the name server are counted as not applied, never guessed at. A passthru turns rewrites off for the name in every list, and an ordinary allow list does not undo an RPZ answer: use a line like @@||bad.example.com^$dnsrewrite for that.",
+      "docs": "response-policy-zones-rpz"
+    },
+    {
       "id": "list-refresh",
       "title": "How lists stay current",
       "term": "List refresh",
@@ -598,6 +608,26 @@
       "example": "public_url = \"https://dns.example.com\" on one node and \"http://192.168.1.2:8053\" on another, each registered with the provider as <public_url>/api/v1/auth/oidc/<id>/callback.",
       "caution": "It is not shared between nodes and can't be set here: it is part of how the node is reached. Set it in the node's file and reload.",
       "docs": "users-and-sign-in"
+    },
+    {
+      "id": "dns-providers",
+      "title": "Let WrenDNS change a few records at your DNS host",
+      "term": "DNS providers",
+      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may one day write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
+      "when": "You want certificates or a changing home address to be handled for you, and you want to grant WrenDNS the smallest permission that does it.",
+      "example": "Azure DNS for example.net, with a role on the single record set _acme-challenge.home (the form shows the az command), the application's client secret stored as dns.azure-home.credential, and the entry in dry run until it is tested.",
+      "caution": "Providers are stored and checked here, but nothing calls them yet: certificates and dynamic DNS come next, so nothing at your DNS host changes. Every new entry starts in dry run. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-delegation",
+      "title": "Delegate the challenge name instead of storing a key",
+      "term": "Challenge delegation",
+      "summary": "Some hosts (GoDaddy, Cloudflare for a zone that holds more than the challenge) cannot limit a key to one record. Instead you create one CNAME at that host, once, that points _acme-challenge.<name> at a small zone you control at a provider that can limit a key narrowly. The certificate authority follows the CNAME, and WrenDNS writes only in the small zone, so a leaked key can change nothing else. Enter that zone's name as the challenge delegation.",
+      "when": "Your DNS host has no API, or only a key that can change the whole account or zone.",
+      "example": "_acme-challenge.home.example.net CNAME home.acme-validation.example.org, with home.acme-validation.example.org the delegation of a provider entry for acme-validation.example.org.",
+      "caution": "No GoDaddy key is ever stored: GoDaddy is served by this CNAME only. Delegation covers the challenge name only, not A or AAAA records. The CNAME is created by hand at your host, and a later release verifies it before use.",
+      "docs": "dns-providers"
     },
     {
       "id": "api-tokens",
@@ -1605,6 +1635,26 @@
       "docs": "dnssec-validation"
     },
     {
+      "id": "aggressive-nsec",
+      "title": "Answer from proven ranges (aggressive NSEC)",
+      "term": "Aggressive NSEC (RFC 8198)",
+      "summary": "When a signed zone proves that a whole range of names does not exist, WrenDNS remembers the range and answers later questions inside it itself, without asking upstream. It works for zones signed with NSEC and with NSEC3.",
+      "when": "You see many lookups for made-up names (printer.lan, wpad.home) reaching upstream, or you want to rule this cache out while chasing a wrong answer.",
+      "example": "After one proven 'no such name' for a made-up top-level name, other made-up names in the same range get NXDOMAIN at once.",
+      "caution": "Only proofs that validated as secure are used, so it does nothing while DNSSEC validation is off. Switching it off only means more questions go upstream.",
+      "docs": "dnssec-validation"
+    },
+    {
+      "id": "trust-anchors",
+      "title": "Root trust anchors and key rollover",
+      "term": "Trust anchor (RFC 5011)",
+      "summary": "DNSSEC validation starts from the root's keys. The root changes its key now and then, and each node follows the change on its own: a new key is trusted only after it has been seen for 30 days, and a key the root revokes stops being trusted at once.",
+      "when": "The root has announced a key rollover and you want to see where each node stands, or a health reason says a key is in its hold-down or was revoked.",
+      "example": "A key marked 'new, in hold-down' with a date: from that day the node trusts it. Until then the old key keeps validating, so nothing changes for your devices.",
+      "caution": "A node that uses trust_anchors_file follows nothing: only the file's keys are trusted. A node on an older build can't report its anchors.",
+      "docs": "dnssec-validation"
+    },
+    {
       "id": "recursive-options",
       "title": "How a recursive upstream asks",
       "term": "QNAME minimisation, 0x20 and IPv6 (recursive upstream)",
@@ -1824,6 +1874,16 @@
       "example": "Address 0.0.0.0:80 with the UI on 443: typing http://dns.example.com in a browser lands on https://dns.example.com/. With the UI on 8053 the redirect adds the port: https://dns.example.com:8053/.",
       "caution": "Needs [api] tls, and takes effect at the next start (Restart now where the node has a supervisor). Port 80 needs CAP_NET_BIND_SERVICE: the systemd unit has it; in Docker and Kubernetes publish the port yourself. If it can't bind, only a log line says so: DNS and the UI are not affected. A value set in the configuration file wins and locks the control.",
       "docs": "https-without-a-proxy"
+    },
+    {
+      "id": "trusted-proxies",
+      "title": "Trusted proxies",
+      "term": "[api] trusted_proxies",
+      "summary": "The hosts, usually your reverse proxy or ingress, whose X-Forwarded-For header the node believes. For a request that comes from one of them, the client's address is the last forwarded address that is not itself a trusted proxy; for everyone else the connection's own address is the client, whatever the header says. That address is what sign-in lockouts, the break-glass networks and the audit log use, and the same list decides whose X-Forwarded-Proto: https counts. You change the list as a whole: add or remove entries, review, type the phrase, and confirm within the window. Until you confirm, the new list is used only to judge the confirming request; everything else keeps the list in force, so a newly trusted host cannot spoof its address while the window is open.",
+      "when": "You put a reverse proxy or an ingress in front of the web UI and API, you move it to another address, or everyone shows up in the audit log as the proxy.",
+      "example": "Your Caddy on 192.168.1.5 forwards to the node: add 192.168.1.5, review (the review says what the server sees you as today), and confirm from a page that arrives through the proxy. The next sign-in is logged with your own address.",
+      "caution": "Adding an entry counts as weakening security: a trusted host can choose the address the node sees for its requests (a sign-in lockout, a break-glass check, the audit record), so list only hosts you run, never 0.0.0.0/0 or a public range. A change is kept when the confirming request passes under the new list (it arrived through a new proxy that forwarded your address), or when it reached the node directly, from a host in neither list. A request that came through a proxy the new list drops cannot confirm it, and the change rolls back. A file that sets trusted_proxies wins and locks the list; the way back is the file, wrendns guarded clear trusted-proxies, or WRENDNS_IGNORE_GUARDED=1.",
+      "docs": "behind-a-reverse-proxy-or-ingress"
     },
     {
       "id": "allowed-networks",

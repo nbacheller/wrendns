@@ -29,6 +29,9 @@ pub(crate) const ZONE: &str = "zone";
 /// REQ: DSC-913 (T36.10a) - locations made through the API, by slug: the body is a `[[location]]`
 /// without its slug (the files' locations win).
 pub(crate) const LOCATION: &str = "location";
+/// REQ: CLD-904 (T36.10b) - DNS providers made through the API, by name: the body is a
+/// `[[dns_provider]]` (the files' providers win). The credential is only ever a stored secret's name.
+pub(crate) const DNS_PROVIDER: &str = "dns_provider";
 /// Quick rules (T6.12, ADR-067), stored by ID.
 pub(crate) const RULE: &str = "rule";
 /// T7.5 (ADR-069): these may override or hide the files' entry of the same name.
@@ -237,6 +240,8 @@ pub(crate) struct Entries {
     pub(crate) zones: Vec<(String, wrendns_config::ZoneConfig)>,
     /// REQ: DSC-913 (T36.10a) — the locations made through the API, by slug.
     pub(crate) locations: Vec<(String, wrendns_config::LocationConfig)>,
+    /// REQ: CLD-904 (T36.10b) - the DNS providers made through the API, by name.
+    pub(crate) dns_providers: Vec<(String, wrendns_config::DnsProviderConfig)>,
     pub(crate) rules: Vec<wrendns_config::RuleConfig>,
     pub(crate) upstreams: Vec<(String, Ovr<Upstream>)>,
     pub(crate) upstream_groups: Vec<(String, Ovr<UpstreamGroup>)>,
@@ -468,6 +473,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         forwards: decode(state, FORWARD),
         zones: decode(state, ZONE),
         locations: decode(state, LOCATION),
+        dns_providers: decode(state, DNS_PROVIDER),
         rules: decode::<wrendns_config::RuleConfig>(state, RULE)
             .into_iter()
             .map(|(_, r)| r)
@@ -810,6 +816,13 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
             continue;
         }
         cfg.location.push(l.clone());
+    }
+    // REQ: CLD-904 (T36.10b) - DNS providers made through the API; one the files define wins.
+    for (_, p) in &e.dns_providers {
+        if file.dns_provider.iter().any(|f| f.name == p.name) {
+            continue;
+        }
+        cfg.dns_provider.push(p.clone());
     }
     if let Err(v) = wrendns_config::validate_config(&cfg) {
         errs.extend(v.iter().map(ToString::to_string));

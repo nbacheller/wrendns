@@ -18,6 +18,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{error, info, warn};
+use wrendns_cluster::gate::Feature;
 use wrendns_cluster::net::{BlobSource, Cluster};
 use wrendns_cluster::node::{self, Role};
 use wrendns_cluster::sync::{
@@ -63,20 +64,44 @@ pub(crate) fn is_clustered_primary(cfg: &Config) -> bool {
 /// was let in, and a restart does not hold it again. A promoted primary that has published
 /// nothing yet (no `published-config.json`) looks at the version it last applied as a replica
 /// instead: the cluster already runs locations when that one carried them.
+#[cfg(test)] // the server asks `published_features`; the tests of the locations ask this
 pub(crate) fn published_uses_locations(cfg: &Config) -> bool {
+    published_features(cfg).contains(&Feature::Locations)
+}
+
+/// REQ: DSC-908, CLD-904 (ADR-1104 point 5) - the held-back tables (locations, DNS providers) the
+/// version this node last published already carried, so a restart of an established cluster holds
+/// none of them (every member knew each table when it was let in). The same look at the last applied
+/// version for a promoted primary that has published nothing yet.
+pub(crate) fn published_features(cfg: &Config) -> Vec<Feature> {
     let path = node::dir_of(data_dir(cfg)).join("published-config.json");
-    if let Some(v) = std::fs::read(path)
+    let v = std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-    {
-        return shared_uses_locations(&v);
+        .or_else(|| {
+            last_applied(cfg).and_then(|m| {
+                let bytes = BlobStore::open(data_dir(cfg)).ok()?.read(&m.config).ok()?;
+                serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            })
+        });
+    let Some(v) = v else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if shared_uses_locations(&v) {
+        out.push(Feature::Locations);
     }
-    last_applied(cfg)
-        .and_then(|m| {
-            let bytes = BlobStore::open(data_dir(cfg)).ok()?.read(&m.config).ok()?;
-            serde_json::from_slice::<serde_json::Value>(&bytes).ok()
-        })
-        .is_some_and(|v| shared_uses_locations(&v))
+    if shared_uses_dns_providers(&v) {
+        out.push(Feature::DnsProviders);
+    }
+    out
+}
+
+/// Whether a shared configuration (as JSON) has a `[[dns_provider]]` entry.
+fn shared_uses_dns_providers(v: &serde_json::Value) -> bool {
+    v.get("dns_provider")
+        .and_then(|a| a.as_array())
+        .is_some_and(|a| !a.is_empty())
 }
 
 /// Whether a shared configuration (as JSON) has a `[[location]]` or a pinned client.
@@ -530,7 +555,9 @@ async fn supervise(
                 && matches!(role, Role::Primary | Role::Emergency)
                 && crate::upgrade_gate::hold_after_refusal()
             {
-                warn!("locations: held after the promotion until every member knows them");
+                warn!(
+                    "locations and DNS providers: held after the promotion until every member knows them"
+                );
                 let (tx, _rx) = oneshot::channel();
                 let _ = reload.send(tx).await;
                 crate::upgrade_gate::ensure_release_loop(&sources, &stop);

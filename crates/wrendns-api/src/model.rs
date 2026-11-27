@@ -77,6 +77,26 @@ impl ListenerAccess {
     }
 }
 
+/// REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and
+/// API, for the Settings "Web UI and API" card. Admin only: absent from every other caller's answer,
+/// as the listener paths are, and absent from an older node's.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiInfo {
+    /// The address the API listens on (`[api] listen`).
+    pub listen: String,
+    /// `https` when `[api] tls` is set (the node serves HTTPS itself), else `http`.
+    pub scheme: String,
+    /// With HTTPS: `self-signed`, or the certificate file's name (never its path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    /// `[api] trusted_proxies`, as in force now: each address or network.
+    pub trusted_proxies: Vec<String>,
+    /// The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_redirect: Option<String>,
+}
+
 /// Node and build information.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +141,11 @@ pub struct SystemInfo {
     /// REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
     /// link-local left out), which an upstream's `source` can name. They differ per node.
     pub addresses: Vec<NodeAddress>,
+    /// REQ: API-902 (T27.14f) - how this node serves the web UI and API: the address, the scheme,
+    /// the certificate's name, the trusted proxies and the redirect. Admin only (owner decision,
+    /// 2026-11-27); an older node omits it, so a reader must treat it as absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiInfo>,
 }
 
 /// One address this node holds, for the Upstreams form's `source` suggestions.
@@ -910,6 +935,10 @@ pub struct ExplainRoute {
     pub routed: bool,
 }
 
+fn auto_format() -> String {
+    "auto".to_owned()
+}
+
 /// A filter list and its download state.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -917,6 +946,10 @@ pub struct ListInfo {
     pub name: String,
     /// `block` or `allow`.
     pub kind: String,
+    /// REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or
+    /// `rpz` (a response policy zone).
+    #[serde(default = "auto_format")]
+    pub format: String,
     pub enabled: bool,
     /// REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are
     /// at `GET /analytics/shadow-lists`).
@@ -936,6 +969,10 @@ pub struct ListInfo {
     /// REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
     /// leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
     pub regex_skipped: u64,
+    /// REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:
+    /// cosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.
+    #[serde(default)]
+    pub unsupported: u64,
     /// Queries it blocked (or allowed, for an allow list) since each node started; in a
     /// cluster, every node's added up.
     pub hits: u64,
@@ -1299,6 +1336,53 @@ pub struct LocationList {
     /// from yet); set with `held`. Also set, with `held` false, after a node that held entries
     /// stopped leading: they were not published, and a config-file-only entry is not carried to
     /// the new primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_reason: Option<String>,
+}
+
+/// REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings
+/// (the credential as a stored secret's name, never a value), where it comes from, and its state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderEntry {
+    pub name: String,
+    /// `azure_dns`, `cloudflare`, `route53` or `rfc2136`.
+    pub kind: String,
+    /// The zone the provider serves.
+    pub zone: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    /// The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the
+    /// name of a stored secret.
+    pub definition: serde_json::Value,
+    /// Whether it only computes changes and records them (`dry_run`).
+    pub dry_run: bool,
+    /// The name of the stored secret that holds the credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+    /// Whether this node stores a secret by that name (the value is never shown).
+    pub credential_present: bool,
+    /// `not_used`: the table stores and validates the entry; nothing calls the provider yet.
+    pub state: String,
+    /// The sentence that goes with `state`.
+    pub detail: String,
+    /// True while the start-up hold keeps the entry out of what this node serves and publishes (a
+    /// cluster member's build does not know DNS providers yet).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+}
+
+/// REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderList {
+    pub items: Vec<DnsProviderEntry>,
+    /// True while the start-up hold keeps the providers out of the answers this node serves: the
+    /// list is what is configured.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    /// Why they are held (the member that does not know them, or that the members are not heard
+    /// from yet); set with `held`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_reason: Option<String>,
 }
@@ -5092,4 +5176,50 @@ pub struct RecursorTrace {
     pub total_micros: u64,
     /// The steps, in order. At most 128.
     pub steps: Vec<RecursorTraceStep>,
+}
+
+/// One root trust anchor a node tracks (`GET /api/v1/dnssec/anchors`, REQ: DNS-906).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustAnchorKey {
+    /// The RFC 4034 key tag.
+    pub key_tag: u16,
+    /// The DNSSEC algorithm number (8 RSA/SHA-256, 13 ECDSA P-256, 15 Ed25519).
+    pub algorithm: u8,
+    /// The DNSKEY flags (257 a key-signing key, 385 once revoked).
+    pub flags: u16,
+    /// `valid` (a trust anchor), `add_pend` (seen, in its hold-down, not trusted yet),
+    /// `missing` (trusted, but the last reading did not list it) or `revoked` (never trusted).
+    pub state: String,
+    /// When the key entered this state (Unix seconds); absent for a built-in anchor never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_s: Option<u64>,
+    /// For a pending key: when its hold-down ends and it becomes a trust anchor (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_at_s: Option<u64>,
+}
+
+/// One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,
+/// REQ: DNS-906).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustAnchorStatus {
+    /// The node (cluster nodes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// `following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of
+    /// `trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`
+    /// (the node runs a build that does not know this read).
+    pub mode: String,
+    /// The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`.
+    pub keys: Vec<TrustAnchorKey>,
+    /// When the root's keys were last read (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reading_s: Option<u64>,
+    /// When the next reading is due (Unix seconds), while following.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_reading_s: Option<u64>,
+    /// Why the last reading failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }

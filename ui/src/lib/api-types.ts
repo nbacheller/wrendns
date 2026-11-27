@@ -2254,6 +2254,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dns-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The DNS providers in the configuration.
+         * @description Each one comes with its settings (the credential as the name of a stored secret, never a value),
+         *     whether this node stores a secret by that name, where it comes from (the files or the API), and
+         *     its state. The table is stored and validated: nothing calls a provider yet, so every entry
+         *     reads `not_used`. `held` is true while the start-up hold keeps the providers out of what this
+         *     node serves and publishes (a cluster member's build does not know them yet).
+         */
+        get: operations["list_dns_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dns-providers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One DNS provider by name.
+         * @description The same entry `GET /api/v1/dns-providers` lists. No credential is in the answer.
+         */
+        get: operations["get_dns_provider"];
+        /**
+         * Add or change a DNS provider.
+         * @description CLD-904 (T36.10b, ADR-1084, ADR-1104). The body has the fields of `[[dns_provider]]` (the name
+         *     comes from the path): `kind`, `zone`, `credential_ref` and the fields of the kind. The credential is
+         *     a name, never a value: `credential_ref` names a stored secret (422 `secret_missing` when none has
+         *     that name), entered through Settings, Integrations and secrets; the table has no inline credential
+         *     and no file. The entry starts in `dry_run` (it only computes changes) unless the body says
+         *     otherwise. Admins only: an operator or an agent is refused (403). A provider the config files
+         *     define is read-only here (409 `set_by_file`). The first provider waits until every cluster
+         *     member's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The
+         *     table is stored and validated; nothing calls a provider yet.
+         */
+        put: operations["put_dns_provider"];
+        post?: never;
+        /**
+         * Remove a DNS provider that the API added.
+         * @description CLD-904 (T36.10b). Nothing else refers to a provider yet, so nothing else changes. A provider the
+         *     config files define can't be removed here (409). Admins only.
+         */
+        delete: operations["delete_dns_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dnssec-settings/default": {
         parameters: {
             query?: never;
@@ -2263,7 +2324,8 @@ export interface paths {
         };
         get?: never;
         /**
-         * REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+         * REQ: DNS-011 (T27.11, ADR-1006), DNS-907 (T40.6, ADR-1105) — `[dnssec]` `mode`,
+         *     `negative_trust_anchors` and `aggressive_nsec`.
          * @description The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
          */
         put: operations["put_dnssec_settings"];
@@ -2273,6 +2335,33 @@ export interface paths {
          * @description The config files' DNSSEC settings, or the defaults, apply again on every node.
          */
         delete: operations["delete_dnssec_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dnssec/anchors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The root trust anchors of every node.
+         * @description DNSSEC validation starts from the root's keys. The root changes its key-signing key now and
+         *     then, and each node follows the change on its own (RFC 5011): a new key the root publishes is
+         *     trusted only after it has been seen for a 30-day hold-down, and a key the root revokes stops
+         *     being trusted at once. One entry per node: the keys with their states (`valid`, `add_pend`,
+         *     `missing`, `revoked`), when each entered its state, when a pending key becomes trusted, and
+         *     when the root was last read. A node that uses `trust_anchors_file` shows `mode: file` and
+         *     follows nothing. A node that runs an older build shows `mode: unsupported`. Example:
+         *     `GET /api/v1/dnssec/anchors`.
+         */
+        get: operations["anchors"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -5541,6 +5630,23 @@ export interface components {
             /** @description The window examined (RFC 3339 start, and length in seconds). */
             windowStart: string;
         };
+        /**
+         * @description REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and
+         *     API, for the Settings "Web UI and API" card. Admin only: absent from every other caller's answer,
+         *     as the listener paths are, and absent from an older node's.
+         */
+        ApiInfo: {
+            /** @description With HTTPS: `self-signed`, or the certificate file's name (never its path). */
+            certificate?: string | null;
+            /** @description The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set. */
+            httpRedirect?: string | null;
+            /** @description The address the API listens on (`[api] listen`). */
+            listen: string;
+            /** @description `https` when `[api] tls` is set (the node serves HTTPS itself), else `http`. */
+            scheme: string;
+            /** @description `[api] trusted_proxies`, as in force now: each address or network. */
+            trustedProxies: string[];
+        };
         /** @description REQ: OBS-027 — the budget over the window. */
         AttributionBudget: {
             /**
@@ -7684,6 +7790,53 @@ export interface components {
             name: string;
         };
         /**
+         * @description REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings
+         *     (the credential as a stored secret's name, never a value), where it comes from, and its state.
+         */
+        DnsProviderEntry: {
+            /** @description Whether this node stores a secret by that name (the value is never shown). */
+            credentialPresent: boolean;
+            /** @description The name of the stored secret that holds the credential. */
+            credentialSecret?: string | null;
+            /**
+             * @description The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the
+             *     name of a stored secret.
+             */
+            definition: unknown;
+            /** @description The sentence that goes with `state`. */
+            detail: string;
+            /** @description Whether it only computes changes and records them (`dry_run`). */
+            dryRun: boolean;
+            /**
+             * @description True while the start-up hold keeps the entry out of what this node serves and publishes (a
+             *     cluster member's build does not know DNS providers yet).
+             */
+            held?: boolean;
+            /** @description `azure_dns`, `cloudflare`, `route53` or `rfc2136`. */
+            kind: string;
+            name: string;
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            /** @description `not_used`: the table stores and validates the entry; nothing calls the provider yet. */
+            state: string;
+            /** @description The zone the provider serves. */
+            zone: string;
+        };
+        /** @description REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`). */
+        DnsProviderList: {
+            /**
+             * @description True while the start-up hold keeps the providers out of the answers this node serves: the
+             *     list is what is configured.
+             */
+            held?: boolean;
+            /**
+             * @description Why they are held (the member that does not know them, or that the members are not heard
+             *     from yet); set with `held`.
+             */
+            heldReason?: string | null;
+            items: components["schemas"]["DnsProviderEntry"][];
+        };
+        /**
          * @description REQ: CLU-014 — `"all"`: every device (the node's infrastructure, cluster nodes, and
          *     excluded devices are never dropped).
          * @enum {string}
@@ -8524,6 +8677,11 @@ export interface components {
              */
             proofPort?: number | null;
             restartRequired: boolean;
+            /**
+             * @description For a `trusted-proxies` change: the client address the node sees for this request today
+             *     (what the new list would change), when the request reached the node itself.
+             */
+            seenClient?: string | null;
             /** @description The setting is a file's: the control is locked. */
             setByFile: boolean;
             setting: string;
@@ -9361,6 +9519,11 @@ export interface components {
                 entries: number;
                 error?: string | null;
                 /**
+                 * @description REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or
+                 *     `rpz` (a response policy zone).
+                 */
+                format?: string;
+                /**
                  * Format: int64
                  * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
                  *     cluster, every node's added up.
@@ -9433,6 +9596,12 @@ export interface components {
                  * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
                  */
                 unique: number;
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:
+                 *     cosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.
+                 */
+                unsupported?: number;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -9886,6 +10055,35 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_TrustAnchorStatus: {
+            items: {
+                /** @description The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`. */
+                keys: components["schemas"]["TrustAnchorKey"][];
+                /** @description Why the last reading failed, if it did. */
+                lastError?: string | null;
+                /**
+                 * Format: int64
+                 * @description When the root's keys were last read (Unix seconds).
+                 */
+                lastReadingS?: number | null;
+                /**
+                 * @description `following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of
+                 *     `trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`
+                 *     (the node runs a build that does not know this read).
+                 */
+                mode: string;
+                /**
+                 * Format: int64
+                 * @description When the next reading is due (Unix seconds), while following.
+                 */
+                nextReadingS?: number | null;
+                /** @description The node (cluster nodes only). */
+                node?: string | null;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_UpstreamChecks: {
             items: {
                 /** @description Second opinions are on (`sample_every` > 0). */
@@ -10112,6 +10310,11 @@ export interface components {
             entries: number;
             error?: string | null;
             /**
+             * @description REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or
+             *     `rpz` (a response policy zone).
+             */
+            format?: string;
+            /**
              * Format: int64
              * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
              *     cluster, every node's added up.
@@ -10184,6 +10387,12 @@ export interface components {
              * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
              */
             unique: number;
+            /**
+             * Format: int64
+             * @description REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:
+             *     cosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.
+             */
+            unsupported?: number;
         };
         /** @description REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others. */
         ListOverlapRow: {
@@ -12911,6 +13120,7 @@ export interface components {
              *     link-local left out), which an upstream's `source` can name. They differ per node.
              */
             addresses: components["schemas"]["NodeAddress"][];
+            api?: components["schemas"]["ApiInfo"] | null;
             /** @description Exactly which build this is (ADR-046). */
             build: components["schemas"]["BuildInfo"];
             clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
@@ -13164,6 +13374,67 @@ export interface components {
             otpauthUrl: string;
             /** @description For manual entry in an authenticator app. */
             secretBase32: string;
+        };
+        /** @description One root trust anchor a node tracks (`GET /api/v1/dnssec/anchors`, REQ: DNS-906). */
+        TrustAnchorKey: {
+            /**
+             * Format: int32
+             * @description The DNSSEC algorithm number (8 RSA/SHA-256, 13 ECDSA P-256, 15 Ed25519).
+             */
+            algorithm: number;
+            /**
+             * Format: int32
+             * @description The DNSKEY flags (257 a key-signing key, 385 once revoked).
+             */
+            flags: number;
+            /**
+             * Format: int32
+             * @description The RFC 4034 key tag.
+             */
+            keyTag: number;
+            /**
+             * Format: int64
+             * @description When the key entered this state (Unix seconds); absent for a built-in anchor never changed.
+             */
+            sinceS?: number | null;
+            /**
+             * @description `valid` (a trust anchor), `add_pend` (seen, in its hold-down, not trusted yet),
+             *     `missing` (trusted, but the last reading did not list it) or `revoked` (never trusted).
+             */
+            state: string;
+            /**
+             * Format: int64
+             * @description For a pending key: when its hold-down ends and it becomes a trust anchor (Unix seconds).
+             */
+            trustedAtS?: number | null;
+        };
+        /**
+         * @description One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,
+         *     REQ: DNS-906).
+         */
+        TrustAnchorStatus: {
+            /** @description The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`. */
+            keys: components["schemas"]["TrustAnchorKey"][];
+            /** @description Why the last reading failed, if it did. */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description When the root's keys were last read (Unix seconds).
+             */
+            lastReadingS?: number | null;
+            /**
+             * @description `following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of
+             *     `trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`
+             *     (the node runs a build that does not know this read).
+             */
+            mode: string;
+            /**
+             * Format: int64
+             * @description When the next reading is due (Unix seconds), while following.
+             */
+            nextReadingS?: number | null;
+            /** @description The node (cluster nodes only). */
+            node?: string | null;
         };
         /** @description REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time. */
         UnstableVoter: {
@@ -18049,6 +18320,210 @@ export interface operations {
             };
         };
     };
+    list_dns_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The DNS providers. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProviderList"];
+                };
+            };
+        };
+    };
+    get_dns_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The provider's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The DNS provider. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProviderEntry"];
+                };
+            };
+            /** @description No such DNS provider. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_dns_provider: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a DNS provider. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this provider, which is read-only here; or `upgrade_required`: a cluster member's build does not know DNS providers yet. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, the credential reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_dns_provider: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove a DNS provider. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No DNS provider by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     put_dnssec_settings: {
         parameters: {
             query?: {
@@ -18146,6 +18621,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    anchors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One entry per node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_TrustAnchorStatus"];
                 };
             };
         };

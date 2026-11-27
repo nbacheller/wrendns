@@ -156,6 +156,13 @@ type Checked = (DnssecDnsHandle<GroupHandle>, Arc<Mutex<(u16, u8)>>);
 /// Validates forwarded answers (one per pipeline state).
 pub struct Validator {
     anchors: Arc<TrustAnchors>,
+    /// REQ: DNS-906 (T40.5) — the trust anchors RFC 5011 keeps (shared by every validator of the
+    /// process, kept across reloads). `None`: the fixed `anchors` (a file) are used.
+    rollover: Option<Arc<crate::rfc5011::Rollover>>,
+    /// The generation of the rollover's set the cached handles were built on.
+    handles_gen: AtomicU64,
+    /// The anchors came from `trust_anchors_file`.
+    from_file: bool,
     /// Negative trust anchors: lowercase suffixes, no trailing dot.
     nta: Vec<String>,
     /// One validating handle (and validation cache) per upstream group, by its address.
@@ -185,6 +192,9 @@ impl Validator {
     pub fn new(nta: &[String], stats: Arc<Stats>) -> Self {
         Self {
             anchors: Arc::new(TrustAnchors::default()),
+            rollover: None,
+            from_file: false,
+            handles_gen: AtomicU64::new(0),
             nta: nta
                 .iter()
                 .map(|s| s.trim_end_matches('.').to_ascii_lowercase())
@@ -213,6 +223,17 @@ impl Validator {
         self.nsec.lock().clear();
     }
 
+    /// Test support: how many NSEC3 ranges the cache holds (to show that a denial was learned).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn nsec3_range_count(&self) -> usize {
+        self.nsec
+            .lock()
+            .values()
+            .map(crate::nsec::Ranges::nsec3_len)
+            .sum()
+    }
+
     /// REQ: DNS-011 (T9.8) — root trust anchors from `path` (DNSKEY records in zone-file
     /// form) instead of the built-in ones. A file that can't be read or holds no key keeps the
     /// built-in anchors (and says so).
@@ -225,6 +246,7 @@ impl Validator {
             Ok(a) if !a.is_empty() => {
                 tracing::info!(path, keys = a.len(), "DNSSEC: trust anchors from file");
                 self.anchors = Arc::new(a);
+                self.from_file = true;
             }
             Ok(_) => {
                 tracing::warn!(
@@ -239,9 +261,32 @@ impl Validator {
         self
     }
 
+    /// REQ: DNS-906 (T40.5) — follows the root's key changes (RFC 5011) with `rollover`, unless
+    /// a trust anchors file is in use (the file's keys are then the anchors and rollover is off).
+    #[must_use]
+    pub fn with_rollover(mut self, rollover: &Arc<crate::rfc5011::Rollover>) -> Self {
+        use crate::rfc5011::Mode;
+        if self.from_file {
+            rollover.set_mode(Mode::File);
+        } else {
+            rollover.set_mode(Mode::Following);
+            self.rollover = Some(Arc::clone(rollover));
+        }
+        self
+    }
+
     /// Root trust anchors in use (tests, metrics).
     pub fn anchor_count(&self) -> usize {
-        self.anchors.len()
+        self.rollover
+            .as_ref()
+            .map_or_else(|| self.anchors.len(), |r| r.current().1.len())
+    }
+
+    /// The trusted keys now, and the generation they belong to (0 for a fixed set).
+    fn current_anchors(&self) -> (u64, Arc<TrustAnchors>) {
+        self.rollover
+            .as_ref()
+            .map_or_else(|| (0, Arc::clone(&self.anchors)), |r| r.current())
     }
 
     /// Whether `name` (presentation form) is validated: not under a negative trust anchor.
@@ -259,9 +304,15 @@ impl Validator {
         budget: Duration,
     ) -> (DnssecDnsHandle<GroupHandle>, Arc<Mutex<(u16, u8)>>) {
         let key = Arc::as_ptr(group) as usize;
+        let (generation, anchors) = self.current_anchors();
         let mut h = self.handles.lock();
         if h.len() > 64 {
             h.clear(); // groups of past configurations
+        }
+        // REQ: DNS-906 — the trusted set changed (a key added or revoked): the handles, and the
+        // validated keys they cache, were built on the old one.
+        if self.handles_gen.swap(generation, Ordering::Relaxed) != generation {
+            h.clear();
         }
         h.entry(key)
             .or_insert_with(|| {
@@ -272,7 +323,7 @@ impl Validator {
                     last: Arc::clone(&last),
                 };
                 (
-                    DnssecDnsHandle::with_trust_anchor(inner, Arc::clone(&self.anchors))
+                    DnssecDnsHandle::with_trust_anchor(inner, Arc::clone(&anchors))
                         .nsec3_iteration_limits(Some(NSEC3_SOFT_LIMIT), Some(NSEC3_HARD_LIMIT)),
                     last,
                 )

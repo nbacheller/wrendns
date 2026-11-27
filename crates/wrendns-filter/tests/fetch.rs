@@ -206,6 +206,7 @@ fn spec(name: &str, url: String) -> ListSpec {
         refresh: Duration::from_hours(24),
         max_bytes: 1024,
         enabled: true,
+        format: wrendns_config::ListFormat::Auto,
     }
 }
 

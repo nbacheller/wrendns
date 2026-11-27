@@ -64,6 +64,7 @@ async fn flt_001_real_lists_parse_cleanly() {
             refresh: Duration::from_hours(24),
             max_bytes: 256 << 20,
             enabled: true,
+            format: wrendns_config::ListFormat::Auto,
         })
         .collect();
     let mut failures = Vec::new();

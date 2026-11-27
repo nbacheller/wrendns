@@ -39,6 +39,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
         guarded::LISTEN => Some(Arc::new(super::listen::Listen)),
         guarded::DNSTAP => Some(Arc::new(super::dnstap::Dnstap)),
+        guarded::TRUSTED_PROXIES => Some(Arc::new(super::trusted_proxies::TrustedProxies)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
@@ -704,6 +705,7 @@ mod redirect_tests {
             arrived_on: None,
             remote: None,
             remote_under_pending: None,
+            peer: None,
             tls: false,
         }
     }
@@ -801,6 +803,7 @@ pub(crate) mod listen_access_tests {
             arrived_on: None,
             remote: None,
             remote_under_pending: None,
+            peer: None,
             tls: false,
         }
     }

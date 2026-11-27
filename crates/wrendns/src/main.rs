@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod access_settings_tests;
 mod alerts;
+mod anchors;
 mod annotations;
 mod anomaly;
 mod api_backend;
@@ -31,6 +32,9 @@ mod datadir;
 mod device_dns;
 mod devices;
 mod discovery;
+mod dns_provider_settings;
+#[cfg(test)]
+mod dns_provider_tests;
 mod dnstap;
 mod dnstap_plan;
 #[cfg(test)]
@@ -100,6 +104,8 @@ mod rollups;
 mod router_cert;
 mod router_settings;
 mod routers;
+#[cfg(test)]
+mod rpz_gate_tests;
 #[cfg(test)]
 mod secret_store_tests;
 mod secrets;

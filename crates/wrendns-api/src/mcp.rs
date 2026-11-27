@@ -252,6 +252,13 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: DNS-906 (T40.5)
+        Tool {
+            name: "dnssec_trust_anchors",
+            description: "Read-only. The root trust anchors each node validates DNSSEC from, and how they are kept: the built-in keys followed by RFC 5011 (mode `following`), the keys of `trust_anchors_file` (mode `file`, rollover off), or off. Per node and key: the key tag, algorithm, state (`valid` a trust anchor, `add_pend` a new key the root published that is in its 30-day hold-down, `missing` trusted but not listed by the last reading, `revoked` never trusted), when it entered the state, when a pending key becomes trusted, and when the root was last read or why that failed. A node that runs an older build is `unsupported`. Use it to see whether a root key rollover is under way. Needs analytics:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("anchors".into(), "/api/v1/dnssec/anchors".into())]),
+        },
         // REQ: DNS-904 (T40.3)
         Tool {
             name: "trace_recursion",
@@ -338,6 +345,19 @@ pub fn tools() -> Vec<Tool> {
             description: "Read-only. The router integrations in the configuration (UniFi, OPNsense, Home Assistant): each one's name, kind and address (no password), its settings with stored secrets named (never their values), whether the configuration files define it, each credential's source and whether this node can read it, and the last read: its state (ok, failing, waiting, or skipped and why), when, the error, and the devices and networks it reported. There is no tool to add, change or check a router: an admin does that in Settings or the Routers page. Needs config:read.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("routers".into(), "/api/v1/routers".into())]),
+        },
+        // REQ: CLD-904 (T36.10b, ADR-1084 point 4) - the DNS providers' status and settings, the
+        // credential by name only; no tool adds, changes or plans one (admin-only, no agent scope).
+        Tool {
+            name: "list_dns_providers",
+            description: "Read-only. The DNS providers in the configuration (Azure DNS, Cloudflare, Route 53, RFC 2136): each one's name, kind and zone, its settings with the stored secret that holds the credential named (never its value), whether this node stores a secret by that name, whether the configuration files define it, whether it only computes changes (`dry_run`), and its state. Providers are stored and validated but not used yet, so every entry reads `not_used`. While `held` is true a cluster member's build does not know DNS providers yet: the list is what is configured, and the node serves and publishes without them until the hold ends. There is no tool to add, change, test or remove a provider, and no plan tool: an admin does that in Settings, DNS providers. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "dnsProviders".into(),
+                    "/api/v1/dns-providers".into(),
+                )])
+            },
         },
         // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export, tokens by name only; no
         // tool sets one (admin-only, no agent scope).
@@ -1428,13 +1448,14 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_add_list",
-            description: "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+            description: "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax, or a response policy zone with format rpz) or inline rules; block or allow. A format rpz list waits (409 upgrade_required) until every cluster member's build reads it. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "An ID: lowercase letters, digits, - and _."},
                 "url": {"type": "string", "description": "Where to download it (https)."},
                 "rules": {"type": "array", "items": {"type": "string"}, "description": "Or inline rules, one per item."},
-                "kind": {"type": "string", "enum": ["block", "allow"], "description": "Default block."},
+                "kind": {"type": "string", "enum": ["block", "allow"], "description": "Default block. An rpz list is always a block list."},
+                "format": {"type": "string", "enum": ["auto", "rpz"], "description": "auto (default): each line's syntax is detected. rpz: the text is a response policy zone (QNAME triggers with NXDOMAIN, NODATA, passthru, drop answered REFUSED, and local CNAME, A and AAAA data; other triggers are counted as unsupported)."},
                 "enabled": {"type": "boolean", "description": "Default true."},
                 "reason": reason_schema()
             }, "required": ["name", "reason"], "additionalProperties": false})
@@ -1449,6 +1470,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("url", "url"),
                         ("rules", "rules"),
                         ("kind", "kind"),
+                        ("format", "format"),
                         ("enabled", "enabled"),
                     ],
                 );
@@ -2235,7 +2257,7 @@ pub fn write_tools() -> Vec<WriteTool> {
             description: "Changes nothing (audited). Checks a filter list before you add it: this node downloads the URL (with the configured size limit and timeout), or takes inline rules, and parses it as the compiler would. Returns ok, how many rules it found, up to 10 lines it couldn't use and why, and the time. Use it before plan_add_list. Needs the config:write:lists scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
-                "list": {"type": "object", "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match."},
+                "list": {"type": "object", "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow), match, and format (auto|rpz)."},
                 "reason": reason_schema()
             }, "required": ["list", "reason"], "additionalProperties": false})
             },

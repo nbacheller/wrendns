@@ -99,6 +99,44 @@ fn synthetic(total: usize, count: usize) -> Vec<ListInput> {
         .collect()
 }
 
+/// REQ: FLT-906 (T40.9, AC4) - one response policy zone of `total` records: mostly `name CNAME .`
+/// blocks (a tenth of them `*.name`), as the block feeds published as RPZ editions are.
+fn rpz(total: usize) -> Vec<ListInput> {
+    let mut rng = Rng(0x7E11_7A1E);
+    let mut text = String::from(
+        "$ORIGIN rpz.example.net.
+@ SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5
+",
+    );
+    let mut n = String::new();
+    for i in 0..total {
+        name(&mut rng, &mut n);
+        let _ = if i % 10 == 0 {
+            writeln!(text, "*.{n} CNAME .")
+        } else {
+            writeln!(text, "{n} CNAME .")
+        };
+    }
+    vec![ListInput {
+        name: "rpz".into(),
+        options: ListOptions {
+            format: wrendns_config::ListFormat::Rpz,
+            ..ListOptions::default()
+        },
+        source_hash: content_hash(text.as_bytes()),
+        size: text.len() as u64,
+        data: ListData::Bytes(text.into_bytes()),
+    }]
+}
+
+/// Current resident set, MiB.
+fn rss_mib() -> Option<f64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    let kib: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib / 1024.0)
+}
+
 fn from_dir(dir: &Path) -> Vec<ListInput> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
@@ -140,9 +178,15 @@ fn main() {
                 .unwrap_or(1_500_000),
             args.get(4).and_then(|n| n.parse().ok()).unwrap_or(3),
         ),
+        Some("rpz") => rpz(args
+            .get(2)
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(1_000_000)),
         Some("dir") => from_dir(Path::new(args.get(2).map_or("bench/lists", String::as_str))),
         _ => {
-            eprintln!("usage: compile_bench synthetic <names> [threads] | dir <path> [threads]");
+            eprintln!(
+                "usage: compile_bench synthetic <names> [threads] | rpz <records> [threads] | dir <path> [threads]"
+            );
             std::process::exit(2);
         }
     };
@@ -191,6 +235,23 @@ fn main() {
         report.spilled_runs,
         peak_rss_mib().unwrap_or(0.0)
     );
+    if std::env::var_os("COMPILE_BENCH_STEADY").is_some() {
+        // The matcher as the daemon holds it: the snapshot opened (FSTs mapped) and indexed.
+        let before = rss_mib().unwrap_or(0.0);
+        let snap = std::sync::Arc::new(
+            wrendns_filter::snapshot::Snapshot::open(&tmp.path().join("snap")).unwrap(),
+        );
+        let m = wrendns_filter::matcher::Matcher::with_lookup(
+            Some(snap),
+            wrendns_filter::matcher::Lookup::Indexed,
+        )
+        .unwrap();
+        println!(
+            "matcher built: RSS {before:.0} MiB before, {:.0} MiB after (includes the compile's freed-but-held heap)",
+            rss_mib().unwrap_or(0.0)
+        );
+        drop(m);
+    }
     for (i, l) in st.per_list.iter().enumerate() {
         println!(
             "  {:<24} entries {:>9} unique {:>9} invalid {:>6} unsupported {:>6}",

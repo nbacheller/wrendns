@@ -58,7 +58,18 @@ golden!(
     "domains.txt",
     ListOptions {
         kind: ListKind::Allow,
-        match_mode: ListMatch::Exact
+        match_mode: ListMatch::Exact,
+        ..ListOptions::default()
+    }
+);
+// REQ: FLT-906 (T40.9) - a response policy zone, one record of each action and the unsupported
+// triggers counted.
+golden!(
+    flt_906_rpz,
+    "rpz.txt",
+    ListOptions {
+        format: wrendns_config::ListFormat::Rpz,
+        ..ListOptions::default()
     }
 );
 golden!(flt_001_wildcard, "wildcard.txt");

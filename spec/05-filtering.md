@@ -25,8 +25,9 @@
 | Pi-hole regex | `(^\|\.)doubleclick\.net$;querytype=A` / `;invert` | regex set with metadata |
 | AdBlock regex | `/^ad[0-9]+\./` | regex set |
 | comments | `#`, `!`, `[Adblock Plus 2.0]` | ignored |
+| RPZ zone (FLT-906, T40.9; `format = "rpz"` on the list) | `bad.example.com CNAME .`, `*.bad.example.com CNAME *.`, `ok.example.com CNAME rpz-passthru.`, `x.example.com CNAME rpz-drop.`, `www.example.com A 192.0.2.7` | modifier rules with `$dnsrewrite` (NXDOMAIN, `NOERROR;;`, REFUSED, address or CNAME) and, for a passthru, an allow plus a `@@…$dnsrewrite` exception; a plain owner is exact, `*.name` is below the name only (ADR-1110) |
 
-Unsupported AdBlock cosmetic/URL-path rules are counted as `unsupported` in list stats (not errors).
+Unsupported AdBlock cosmetic/URL-path rules are counted as `unsupported` in list stats (not errors). An RPZ list counts response-IP (`.rpz-ip`), NSDNAME, NSIP and client-IP triggers, `rpz-tcp-only.`, other `rpz-` actions, a zone-wide wildcard, `$INCLUDE`/`$GENERATE` and every record type but CNAME, A and AAAA the same way; the list's `unsupported` count is in `GET /api/v1/lists` and on the Lists page (FLT-906). An RPZ is read as one zone and never cut into chunks for the compile threads.
 
 ## 3. Compiled snapshot (FLT-003)
 ### 3.1 Domain sets as FSTs

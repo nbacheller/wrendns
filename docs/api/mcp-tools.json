@@ -216,6 +216,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The root trust anchors each node validates DNSSEC from, and how they are kept: the built-in keys followed by RFC 5011 (mode `following`), the keys of `trust_anchors_file` (mode `file`, rollover off), or off. Per node and key: the key tag, algorithm, state (`valid` a trust anchor, `add_pend` a new key the root published that is in its 30-day hold-down, `missing` trusted but not listed by the last reading, `revoked` never trusted), when it entered the state, when a pending key becomes trusted, and when the root was last read or why that failed. A node that runs an older build is `unsupported`. Use it to see whether a root key rollover is under way. Needs analytics:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "dnssec_trust_anchors"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. How the built-in recursive resolver resolves a name, step by step: where the lookup began (the root, a stub zone, or a cached zone cut), then every query to every authoritative server with the zone asked, the name sent (cut down by QNAME minimization), the outcome (referral, answer, nodata, nxdomain, lame, timeout, error, case-mismatch), the delegation a referral points to, the transport and the time in microseconds. Use it for a name that is slow or fails (SERVFAIL) when a `recursive://` upstream resolves it: it shows which server timed out or answered lame. It really resolves the name, so zone cuts are cached afterwards; a name whose cuts are cached starts below the root. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,
@@ -345,6 +360,21 @@
       "type": "object"
     },
     "name": "list_routers"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The DNS providers in the configuration (Azure DNS, Cloudflare, Route 53, RFC 2136): each one's name, kind and zone, its settings with the stored secret that holds the credential named (never its value), whether this node stores a secret by that name, whether the configuration files define it, whether it only computes changes (`dry_run`), and its state. Providers are stored and validated but not used yet, so every entry reads `not_used`. While `held` is true a cluster member's build does not know DNS providers yet: the list is what is configured, and the node serves and publishes without them until the hold ends. There is no tool to add, change, test or remove a provider, and no plan tool: an admin does that in Settings, DNS providers. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_dns_providers"
   },
   {
     "annotations": {
@@ -1747,7 +1777,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax, or a response policy zone with format rpz) or inline rules; block or allow. A format rpz list waits (409 upgrade_required) until every cluster member's build reads it. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1755,8 +1785,16 @@
           "description": "Default true.",
           "type": "boolean"
         },
+        "format": {
+          "description": "auto (default): each line's syntax is detected. rpz: the text is a response policy zone (QNAME triggers with NXDOMAIN, NODATA, passthru, drop answered REFUSED, and local CNAME, A and AAAA data; other triggers are counted as unsupported).",
+          "enum": [
+            "auto",
+            "rpz"
+          ],
+          "type": "string"
+        },
         "kind": {
-          "description": "Default block.",
+          "description": "Default block. An rpz list is always a block list.",
           "enum": [
             "block",
             "allow"
@@ -2788,7 +2826,7 @@
       "additionalProperties": false,
       "properties": {
         "list": {
-          "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match.",
+          "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow), match, and format (auto|rpz).",
           "type": "object"
         },
         "reason": {

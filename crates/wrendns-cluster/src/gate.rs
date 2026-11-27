@@ -25,6 +25,12 @@ pub enum Feature {
     Access,
     /// The `dnstap_settings` kind, the whole `[telemetry.dnstap]` section (OBS-007, API-905, T40.13).
     Dnstap,
+    /// A list with `format = "rpz"` (FLT-906, T40.9): an older member reads the unknown field as
+    /// a refusal of the whole lists section (or, were it lenient, a zone file as plain lines).
+    RpzLists,
+    /// The peer read of a node's root trust anchors (DNS-906, T40.5). Nothing is replicated: an
+    /// older member does not know the read, and is listed as not supporting it.
+    Rfc5011,
     /// `compression = "gzip"` in the OTLP export entry; a build that does not know the field
     /// refuses the whole entry (OBS-006, issue #155).
     OtlpCompression,
@@ -32,12 +38,14 @@ pub enum Feature {
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 6] = [
+    pub const ALL: [Feature; 8] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
         Self::Access,
         Self::Dnstap,
+        Self::RpzLists,
+        Self::Rfc5011,
         Self::OtlpCompression,
     ];
 
@@ -49,6 +57,8 @@ impl Feature {
             Self::PemSecrets => "pem_secrets",
             Self::Access => "access",
             Self::Dnstap => "dnstap",
+            Self::RpzLists => "rpz_lists",
+            Self::Rfc5011 => "rfc5011",
             Self::OtlpCompression => "otlp_compression",
         }
     }
@@ -61,6 +71,8 @@ impl Feature {
             Self::PemSecrets => "secrets of the `pem` kind",
             Self::Access => "the allowed networks",
             Self::Dnstap => "the dnstap settings",
+            Self::RpzLists => "lists in the RPZ format",
+            Self::Rfc5011 => "the trust anchor read",
             Self::OtlpCompression => "gzip compression of the OpenTelemetry export",
         }
     }
@@ -73,14 +85,17 @@ pub fn own_features() -> Vec<String> {
     ANNOUNCED.iter().map(|f| f.name().to_owned()).collect()
 }
 
-/// The features this build handles end to end. `DnsProviders` joins the list in the commit that
-/// brings its table (T36.10b): a build cut before then does not know it, and announcing it would
+/// The features this build handles end to end. `DnsProviders` joined the list in the commit that
+/// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 5] = [
+const ANNOUNCED: [Feature; 8] = [
     Feature::Locations,
+    Feature::DnsProviders,
     Feature::PemSecrets,
     Feature::Access,
     Feature::Dnstap,
+    Feature::RpzLists,
+    Feature::Rfc5011,
     Feature::OtlpCompression,
 ];
 
@@ -200,9 +215,9 @@ mod tests {
         assert!(!knows(&[], Feature::Locations));
     }
 
-    // REQ: DSC-908 - a build announces only what it handles: the table of DNS providers is not
-    // in this build, so it must not claim it (a member cut before the table lands would
-    // otherwise pass the gate and then refuse the section). Locations are in (T36.10a).
+    // REQ: DSC-908, CLD-904 - a build announces what it handles, and only that: the tables of
+    // locations (T36.10a) and DNS providers (T36.10b) are in this build, so it claims them; a member
+    // cut before they landed announces neither and is counted as not knowing them.
     #[test]
     fn dsc_908_a_build_announces_only_the_features_it_handles() {
         let own = own_features();
@@ -210,14 +225,18 @@ mod tests {
             own,
             vec![
                 "locations".to_owned(),
+                "dns_providers".to_owned(),
                 "pem_secrets".to_owned(),
                 "access".to_owned(),
                 "dnstap".to_owned(),
+                "rpz_lists".to_owned(),
+                "rfc5011".to_owned(),
                 "otlp_compression".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));
-        assert!(!knows(&own, Feature::DnsProviders));
+        assert!(knows(&own, Feature::DnsProviders));
+        assert!(Feature::ALL.iter().all(|f| knows(&own, *f)));
     }
 
     #[test]

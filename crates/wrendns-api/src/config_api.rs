@@ -161,6 +161,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/routers/{name}",
             put(put_router).delete(delete_router),
         )
+        // REQ: CLD-904 (T36.10b) - DNS providers (admin-only, shared; no agent).
+        .route(
+            "/api/v1/dns-providers/{name}",
+            put(put_dns_provider).delete(delete_dns_provider),
+        )
         // REQ: API-016 (T23.10, ADR-967) — OIDC providers (admin-only, node-managed).
         .route(
             "/api/v1/oidc-providers/{id}",
@@ -1159,6 +1164,87 @@ pub(crate) async fn delete_router(
         request,
         name,
         Op::Managed(ManagedKind::Router, None),
+    )
+    .await
+}
+
+/// Add or change a DNS provider.
+///
+/// CLD-904 (T36.10b, ADR-1084, ADR-1104). The body has the fields of `[[dns_provider]]` (the name
+/// comes from the path): `kind`, `zone`, `credential_ref` and the fields of the kind. The credential is
+/// a name, never a value: `credential_ref` names a stored secret (422 `secret_missing` when none has
+/// that name), entered through Settings, Integrations and secrets; the table has no inline credential
+/// and no file. The entry starts in `dry_run` (it only computes changes) unless the body says
+/// otherwise. Admins only: an operator or an agent is refused (403). A provider the config files
+/// define is read-only here (409 `set_by_file`). The first provider waits until every cluster
+/// member's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The
+/// table is stored and validated; nothing calls a provider yet.
+#[utoipa::path(put, path = "/api/v1/dns-providers/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change a DNS provider."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define this provider, which is read-only here; or `upgrade_required`: a cluster member's build does not know DNS providers yet."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, the credential reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_dns_provider(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /dns-providers/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::DnsProvider, Some(input)),
+    )
+    .await
+}
+
+/// Remove a DNS provider that the API added.
+///
+/// CLD-904 (T36.10b). Nothing else refers to a provider yet, so nothing else changes. A provider the
+/// config files define can't be removed here (409). Admins only.
+#[utoipa::path(delete, path = "/api/v1/dns-providers/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can remove a DNS provider."),
+        (status = 404, body = Problem, description = "No DNS provider by that name."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define it."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+    ))]
+pub(crate) async fn delete_dns_provider(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /dns-providers/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::DnsProvider, None),
     )
     .await
 }
@@ -3217,7 +3303,8 @@ pub(crate) async fn delete_updates_settings(
     .await
 }
 
-/// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+/// REQ: DNS-011 (T27.11, ADR-1006), DNS-907 (T40.6, ADR-1105) — `[dnssec]` `mode`,
+/// `negative_trust_anchors` and `aggressive_nsec`.
 ///
 /// The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
 #[utoipa::path(put, path = "/api/v1/dnssec-settings/default", tag = "config",
@@ -3627,6 +3714,7 @@ impl Op {
             Self::Managed(ManagedKind::Forward, _) => "forward",
             Self::Managed(ManagedKind::Zone, _) => "zone",
             Self::Managed(ManagedKind::Location, _) => "location",
+            Self::Managed(ManagedKind::DnsProvider, _) => "dns_provider",
             Self::Managed(ManagedKind::Rule, _) => "rule",
             Self::Managed(ManagedKind::Upstream, _) => "upstream",
             Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",

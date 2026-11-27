@@ -211,6 +211,130 @@ fn api_902_remote_under_pending_list_only_for_the_confirm_route() {
     assert_eq!(crate::auth::routes::remote(&auth, &ext, &headers), now);
 }
 
+// REQ: API-902 (ADR-956 §3, ADR-977 point 7 as amended 2026-11-27) - the `proxy_list` proof. A
+// request passes through the new list (its peer is a new proxy and a client differs from it), or
+// directly (its peer is in neither the list in force nor the new one). It does not pass when its peer
+// is in the old list but not the new one, or is in the new list with no forwarded client.
+#[test]
+fn api_902_proxy_list_proof_through_the_new_list_or_directly() {
+    use std::net::{IpAddr, SocketAddr};
+    let auth = crate::auth::Auth::new(
+        Arc::new(wrendns_store::state::State::in_memory().unwrap()),
+        crate::auth::Settings::default(),
+    );
+    let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+    let from = |peer: [u8; 4]| {
+        let mut e = axum::http::Extensions::new();
+        e.insert(axum::extract::ConnectInfo(SocketAddr::from((peer, 4000))));
+        e
+    };
+    let xff = |v: Option<&str>| {
+        let mut h = axum::http::HeaderMap::new();
+        if let Some(v) = v {
+            h.insert("x-forwarded-for", v.parse().unwrap());
+        }
+        h
+    };
+    let list = |s: &[&str]| s.iter().map(|a| (ip(a), 32)).collect::<Vec<_>>();
+    let proven = |peer: [u8; 4], h: Option<&str>, new: &[&str], old: &[&str]| {
+        crate::auth::routes::remote_under_proven(
+            &auth,
+            &from(peer),
+            &xff(h),
+            &list(new),
+            &list(old),
+        )
+    };
+    // Through the new list: a proxy that forwards a client.
+    assert_eq!(
+        proven([10, 0, 0, 2], Some("203.0.113.7"), &["10.0.0.2"], &[]),
+        Some(ip("203.0.113.7"))
+    );
+    // ... but with no forwarded client the new list proves nothing.
+    assert_eq!(proven([10, 0, 0, 2], None, &["10.0.0.2"], &[]), None);
+    // Directly: a peer in neither list (a direct admin adding, or removing, proxies).
+    assert_eq!(
+        proven([192, 0, 2, 5], None, &["10.0.0.2"], &["10.0.0.3"]),
+        Some(ip("192.0.2.5"))
+    );
+    assert_eq!(
+        proven([192, 0, 2, 5], Some("198.51.100.1"), &[], &[]),
+        Some(ip("192.0.2.5")),
+        "a header from an unlisted peer is ignored: the peer is the client"
+    );
+    // The proxy this request came through is in the old list and not in the new one: refused (the
+    // node would see the proxy, not the admin).
+    assert_eq!(
+        proven(
+            [10, 0, 0, 2],
+            Some("203.0.113.7"),
+            &["10.0.0.9"],
+            &["10.0.0.2"]
+        ),
+        None
+    );
+    assert_eq!(
+        proven([10, 0, 0, 2], Some("203.0.113.7"), &[], &["10.0.0.2"]),
+        None
+    );
+    // Through a proxy that stays: judged under the new list as before.
+    assert_eq!(
+        proven(
+            [10, 0, 0, 2],
+            Some("203.0.113.7"),
+            &["10.0.0.2", "10.0.0.9"],
+            &["10.0.0.2"]
+        ),
+        Some(ip("203.0.113.7"))
+    );
+    // No peer at all (not a connection): nothing is proven.
+    assert_eq!(
+        crate::auth::routes::remote_under_proven(
+            &auth,
+            &axum::http::Extensions::new(),
+            &xff(None),
+            &[],
+            &[]
+        ),
+        None
+    );
+}
+
+// REQ: API-902 (T27.14f) - the list in force is swappable: `remote` follows `set_trusted_proxies` at
+// once, and a list swapped in is what every reader sees.
+#[test]
+fn api_902_trusted_proxy_list_is_swappable() {
+    use std::net::{IpAddr, SocketAddr};
+    let auth = crate::auth::Auth::new(
+        Arc::new(wrendns_store::state::State::in_memory().unwrap()),
+        crate::auth::Settings {
+            trusted_proxies: vec![("192.0.2.1".parse().unwrap(), 32)],
+            ..crate::auth::Settings::default()
+        },
+    );
+    assert_eq!(
+        auth.trusted_proxies().len(),
+        1,
+        "it starts with the settings' list"
+    );
+    let mut ext = axum::http::Extensions::new();
+    ext.insert(axum::extract::ConnectInfo(SocketAddr::from((
+        [10, 0, 0, 5],
+        1234,
+    ))));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+    let peer = "10.0.0.5".parse::<IpAddr>().unwrap();
+    assert_eq!(crate::auth::routes::remote(&auth, &ext, &headers), peer);
+    auth.set_trusted_proxies(vec![("10.0.0.0".parse().unwrap(), 8)]);
+    assert_eq!(
+        crate::auth::routes::remote(&auth, &ext, &headers),
+        "203.0.113.9".parse::<IpAddr>().unwrap()
+    );
+    auth.set_trusted_proxies(Vec::new());
+    assert_eq!(crate::auth::routes::remote(&auth, &ext, &headers), peer);
+}
+
 // REQ: API-902 — the problem codes ADR-956 adds are stable, with their statuses.
 #[test]
 fn api_902_problem_codes_and_statuses() {

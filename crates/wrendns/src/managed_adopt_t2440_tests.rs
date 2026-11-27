@@ -660,6 +660,13 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
         "home",
         &json!({"slug": "home", "networks": ["192.0.2.0/24"], "domain": "example.net"}),
     );
+    // REQ: CLD-904 (T36.10b) - a DNS provider by name.
+    put_row(
+        &a,
+        "dns_provider",
+        "cf-home",
+        &json!({"name": "cf-home", "kind": "cloudflare", "zone": "example.net", "credential_ref": "cf"}),
+    );
     let file = crate::managed_adopt_tests::file_of(&a);
     let merged = crate::managed::merge(&file, &entries(a.auth.state())).unwrap();
     let derived = crate::managed_adopt::derive(&merged, &file);
@@ -676,8 +683,10 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
 fn tuned(own: &Config) -> Config {
     let mut s = own.clone();
     s.dnssec.mode = wrendns_config::DnssecMode::Validate;
-    // Not a field the API edits: it stays served, never in a row.
+    // An API field since T40.6 (ADR-1105), adopted like `mode`.
     s.dnssec.aggressive_nsec = !own.dnssec.aggressive_nsec;
+    // Not a field the API edits: it stays served, never in a row.
+    s.dnssec.trust_anchors_file = Some(wrendns_config::SafeString::new("/anchors.key").unwrap());
     s.filter.refresh_secs += 60;
     s.filter.fetch_concurrency += 1;
     // One of the /metrics histogram's bounds.
@@ -713,8 +722,12 @@ fn clu_015_t24_40_tuning_sections_are_adopted_when_they_differ() {
     assert!(derived.iter().all(|e| e.name == "default"));
     let dnssec = derived.iter().find(|e| e.kind == "dnssec").unwrap();
     assert_eq!(dnssec.body["mode"], "validate");
+    assert_eq!(
+        dnssec.body["aggressive_nsec"], !own.dnssec.aggressive_nsec,
+        "aggressive_nsec is one of the API's fields, like mode"
+    );
     assert!(
-        dnssec.body.get("aggressive_nsec").is_none(),
+        dnssec.body.get("trust_anchors_file").is_none(),
         "only the API's fields"
     );
     // Equal sections: nothing.
@@ -748,7 +761,11 @@ fn clu_015_t24_40_tuning_sections_strip_and_merge_back() {
         );
     }
     assert_eq!(
-        stripped.dnssec.aggressive_nsec, served.dnssec.aggressive_nsec,
+        stripped.dnssec.aggressive_nsec, own.dnssec.aggressive_nsec,
+        "aggressive_nsec goes back to the files' like mode"
+    );
+    assert_eq!(
+        stripped.dnssec.trust_anchors_file, served.dnssec.trust_anchors_file,
         "a field only the files set stays served"
     );
     assert_eq!(

@@ -947,6 +947,7 @@ fn compile_side(
             options: wrendns_filter::parse::ListOptions {
                 kind: s.list.kind,
                 match_mode: s.list.match_mode,
+                format: s.list.format,
             },
             source_hash: wrendns_filter::fetch::content_hash(&s.data),
             size: s.data.len() as u64,

@@ -1,0 +1,23 @@
+---
+source: crates/wrendns-filter/tests/golden.rs
+expression: "dump(\"rpz.txt\",\nListOptions\n{ format: wrendns_config::ListFormat::Rpz, ..ListOptions::default() })"
+---
+L10  block exact malware.example.com $dnsrewrite=NXDOMAIN
+L11  block subdomains malware.example.com $dnsrewrite=NXDOMAIN
+L12  block exact nodata.example.com $dnsrewrite=NOERROR;;
+L13  allow exact allowed.example.com $dnsrewrite=
+L13  allow exact allowed.example.com
+L14  block exact dropped.example.com $dnsrewrite=REFUSED
+L15  block exact portal.example.com $dnsrewrite=walled.example.net
+L16  block exact captive.example.com $dnsrewrite=192.0.2.80
+L17  block exact captive.example.com $dnsrewrite=2001:db8::80
+L20  block exact bad.example.org $dnsrewrite=NXDOMAIN
+
+lines=31 rules=9 blank=4 comments=5 ignored=6 unsupported=6 invalid=1
+L23  unsupported: response-IP triggers are not applied <- "32.1.2.0.192.rpz-ip          CNAME ."
+L24  unsupported: NSDNAME triggers are not applied <- "ns.evil.example.rpz-nsdname  CNAME ."
+L25  unsupported: NSIP triggers are not applied <- "24.0.2.0.192.rpz-nsip        CNAME ."
+L26  unsupported: client-IP triggers are not applied <- "24.0.2.0.192.rpz-client-ip   CNAME rpz-passthru."
+L27  unsupported: `rpz-tcp-only.` is not applied <- "tcp.example.com              CNAME rpz-tcp-only."
+L28  unsupported: `TXT` records are not applied (only CNAME, A and AAAA) <- "info.example.com             TXT   \"not a policy\""
+L31  invalid: `not-an-address` is not an IPv4 address <- "badaddr.example.com          A     not-an-address"

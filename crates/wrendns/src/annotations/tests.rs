@@ -316,6 +316,7 @@ fn manifest(
                 source_hash: (*h).to_owned(),
                 kind: wrendns_config::ListKind::Block,
                 match_mode: wrendns_config::ListMatch::Subtree,
+                format: wrendns_config::ListFormat::Auto,
             })
             .collect(),
         blobs: Vec::new(),

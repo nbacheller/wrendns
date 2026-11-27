@@ -81,6 +81,8 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     crate::managed::ZONE,
     // REQ: DSC-913 (T36.10a) - locations are shared too.
     crate::managed::LOCATION,
+    // REQ: CLD-904 (T36.10b) - and the DNS providers (a build that does not know the kind skips the row).
+    crate::managed::DNS_PROVIDER,
     crate::managed::SLO,
     crate::managed::PROBE,
     crate::managed::UPSTREAM_CHECK,
@@ -672,6 +674,37 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: CLD-904 (T36.10b) - a `dns_provider` row is a shared kind: the blob carries it whole (the
+    /// credential as a stored secret's name), a build that does not know the kind skips it and
+    /// reads the rest, and the start-up hold's strip leaves the row where it is.
+    #[test]
+    fn cld_904_a_dns_provider_row_is_shared_and_an_older_build_skips_it() {
+        let rows = vec![
+            (
+                crate::managed::DNS_PROVIDER.to_owned(),
+                "cf-home".to_owned(),
+                r#"{"name":"cf-home","kind":"cloudflare","zone":"example.net","credential_ref":"cf"}"#
+                    .to_owned(),
+            ),
+            (
+                crate::managed::CLIENT.to_owned(),
+                "tv".to_owned(),
+                r#"{"match":["192.0.2.10"]}"#.to_owned(),
+            ),
+        ];
+        let full = encode(&rows);
+        assert!(SHARED_KINDS.contains(&crate::managed::DNS_PROVIDER));
+        let got = parse_shared(&full).unwrap().unwrap();
+        assert!(got.iter().any(|e| e.kind == crate::managed::DNS_PROVIDER));
+        // The hold keeps the row in the blob (a build that does not know it skips it).
+        let held = parse_shared(&strip_held(&full)).unwrap().unwrap();
+        assert!(held.iter().any(|e| e.kind == crate::managed::DNS_PROVIDER));
+        // An older build's kinds: the device is read, the provider skipped.
+        let old = parse_kinds(&full, &[crate::managed::CLIENT]).unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].kind, crate::managed::CLIENT);
+    }
 
     /// REQ: DSC-908 (ADR-1104 point 5) - the blob published during the start-up hold keeps the
     /// `location` rows, carries each pin as a `location_pin` entry instead of a field of the
