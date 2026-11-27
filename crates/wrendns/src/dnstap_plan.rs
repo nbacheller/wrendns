@@ -137,11 +137,20 @@ fn reader(v: &Value) -> Vec<String> {
 /// reader is still the one confirmed on this node and that node runs the entry (`in_force`); what it
 /// stores is then clamped to what was confirmed (the feeds only if confirmed, sampling no more often),
 /// as the files' values in `after` were never confirmed with the phrase.
-fn entry_value(after: &Value, existing: Option<&Stored>, in_force: bool) -> (Value, &'static str) {
+fn entry_value(
+    after: &Value,
+    existing: Option<&Stored>,
+    in_force: bool,
+    file_n: &wrendns_config::Config,
+) -> (Value, &'static str) {
     let confirmed = existing.filter(|e| e.mode != crate::guarded::dnstap::NARROWED);
+    let by_file = crate::guarded::dnstap::file_fields(file_n);
+    // A reader the files set is not the admin's to change: the confirmed one is kept as it is.
+    let file_reader = by_file.contains(&"socket");
     let keeps_confirmed = in_force
-        && confirmed
-            .is_some_and(|e| !reader(after).is_empty() && reader(&e.value) == reader(after));
+        && confirmed.is_some_and(|e| {
+            !reader(&e.value).is_empty() && (file_reader || reader(&e.value) == reader(after))
+        });
     let mut v = after.clone();
     if keeps_confirmed && let Some(c) = confirmed.and_then(|e| normal(&e.value)) {
         let on = |x: &Value, k: &str| x.get(k).and_then(Value::as_bool) == Some(true);
@@ -154,6 +163,14 @@ fn entry_value(after: &Value, existing: Option<&Stored>, in_force: bool) -> (Val
                 "sample_every".to_owned(),
                 Value::from(every(after).max(every(&c))),
             );
+            // Every field the files set holds the file's value in `after`, which the admin never
+            // sent: the confirmed one stays, for the day the file lets go of it.
+            for k in &by_file {
+                match c.get(*k) {
+                    Some(x) => o.insert((*k).to_owned(), x.clone()),
+                    None => o.remove(*k),
+                };
+            }
         }
     }
     if let Some(o) = v.as_object_mut() {
@@ -189,7 +206,8 @@ fn guarded_only(deleting: bool) -> Problem {
 fn in_force(sent: &SentView, existing: Option<&Stored>, file_n: &wrendns_config::Config) -> bool {
     match (&sent.pending, existing) {
         (Some(p), Some(e)) if p.is_object() => {
-            reader(p) == reader(&e.value)
+            (crate::guarded::dnstap::file_fields(file_n).contains(&"socket")
+                || reader(p) == reader(&e.value))
                 && (e.mode == crate::guarded::dnstap::NARROWED
                     || !crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value))
         }
@@ -209,13 +227,14 @@ fn node_differs(sent: &SentView, after: &Value) -> bool {
 /// does, else the whole section; nothing when the entry already holds it.
 fn entry_change(
     w: &ManagedWrite,
+    file_n: &wrendns_config::Config,
     node: &str,
     after: &Value,
     file_section: &Value,
     existing: Option<&Stored>,
     (in_force, node_differs): (bool, bool),
 ) -> crate::api_backend::AlsoStored {
-    let wanted = (after != file_section).then(|| entry_value(after, existing, in_force));
+    let wanted = (after != file_section).then(|| entry_value(after, existing, in_force, file_n));
     let have = existing.map(|e| normal(&e.value));
     match (&wanted, &have) {
         (None, None) => Vec::new(),
@@ -253,18 +272,20 @@ fn refuse_discarding(
     let Some(e) = existing.filter(|e| e.mode != crate::guarded::dnstap::NARROWED) else {
         return Ok(());
     };
-    if !crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value) {
+    // Only a write that turns the tap off ends a confirmed entry; any other one that would drop it
+    // loses a value the admin confirmed, whether the file displaces it or only overrides its reader.
+    if !crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value) && reader(after).is_empty() {
         return Ok(());
     }
     let keeps = after != file_section
-        && entry_value(after, existing, in_force).1 != crate::guarded::dnstap::NARROWED;
+        && entry_value(after, existing, in_force, file_n).1 != crate::guarded::dnstap::NARROWED;
     if keeps {
         return Ok(());
     }
     Err(Problem::new(
         Code::Conflict,
         format!(
-            "{node} holds a confirmed dnstap value that its config file displaces (the file sets another reader, or a feed or sampling that copies more); saving this would discard it, and it would not come back when the file changes"
+            "{node} holds a confirmed dnstap value that this write would drop (its config file sets another reader, or a feed or sampling that copies more); saving this would discard it, and it would not come back when the file changes"
         ),
     )
     .hint("Remove the saved value first (DELETE /api/v1/dnstap-settings/default, or Remove in the dnstap card), or change the config file."))
@@ -388,6 +409,7 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
     let forced = in_force(&sent, existing.as_ref(), &file_n);
     let also = entry_change(
         w,
+        &file_n,
         &node,
         &after,
         &file_section,

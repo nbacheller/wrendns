@@ -1314,3 +1314,98 @@ async fn obs_007_dnstap_an_ordinary_write_does_not_discard_an_entry_displaced_by
     }
     assert_eq!(entry_of(&h, "pi-a").unwrap().value, held, "still saved");
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 12) - a field the file sets is never copied into the node's
+/// confirmed entry by an ordinary write: the confirmed reader and the confirmed feed or sampling stay,
+/// so the file dropping its line later gives the node what was confirmed with the phrase.
+#[tokio::test]
+async fn obs_007_dnstap_an_ordinary_write_keeps_the_confirmed_values_the_file_overrides() {
+    // (1) the file's reader replaces the confirmed one (no feed, so the file does not displace it).
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1 }),
+    );
+    let file = tap("/run/f.sock", 1);
+    let v = view(file.clone(), &["socket"], file.clone());
+    let mut body = file.clone();
+    body["buffer"] = json!(20000);
+    let r = forwarded(&h, "pi-a", Some(body.clone()), Some(v.clone()), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let e = entry_of(&h, "pi-a").unwrap();
+    assert_eq!(e.value["socket"], json!("/run/a.sock"), "{:?}", e.value);
+    assert_eq!(e.value["buffer"], json!(20000));
+    assert_eq!(e.mode, "staged");
+    // The same through a sampling write, which used to drop the confirmed reader as well.
+    let mut body = file.clone();
+    body["sample_every"] = json!(10);
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1 }),
+    );
+    let r = forwarded(&h, "pi-a", Some(body), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let e = entry_of(&h, "pi-a").unwrap();
+    assert_eq!(e.value["socket"], json!("/run/a.sock"), "{:?}", e.value);
+    assert_eq!(e.mode, "staged");
+    // (2) a feed the file now sets off: the confirmed feed stays in the entry.
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1, "forwarder": true }),
+    );
+    let file = tap("/run/a.sock", 1);
+    let v = view(file.clone(), &["socket", "forwarder"], file.clone());
+    let mut body = file.clone();
+    body["buffer"] = json!(20000);
+    let r = forwarded(&h, "pi-a", Some(body), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let e = entry_of(&h, "pi-a").unwrap();
+    assert_eq!(e.value["forwarder"], json!(true), "{:?}", e.value);
+    // (3) the same for a sampling the file sets over a confirmed one.
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1 }),
+    );
+    let file = tap("/run/a.sock", 10);
+    let v = view(file.clone(), &["socket", "sample_every"], file.clone());
+    let mut body = file.clone();
+    body["buffer"] = json!(20000);
+    let r = forwarded(&h, "pi-a", Some(body), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    let e = entry_of(&h, "pi-a").unwrap();
+    assert_eq!(e.value["sample_every"], json!(1), "{:?}", e.value);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review 12) - an ordinary write never ends a confirmed entry unless it
+/// turns the tap off: with a reader in the result and nothing that keeps the entry, it is refused.
+#[tokio::test]
+async fn obs_007_dnstap_only_turning_the_tap_off_ends_a_confirmed_entry() {
+    let h = node_a();
+    put_guarded_on(
+        "pi-a",
+        &h,
+        json!({ "socket": "/run/a.sock", "sample_every": 1 }),
+    );
+    // The files carry no reader; the admin sets another socket: that is a widening, never an entry.
+    let file = none();
+    let v = view(file.clone(), &[], file.clone());
+    let r = forwarded(
+        &h,
+        "pi-a",
+        Some(tap("/run/other.sock", 1)),
+        Some(v.clone()),
+        false,
+    )
+    .await;
+    assert_eq!(code(&r), "GuardedOnly", "{r:?}");
+    // Turning the tap off is an ordinary write and ends it.
+    let r = forwarded(&h, "pi-a", Some(none()), Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+}
