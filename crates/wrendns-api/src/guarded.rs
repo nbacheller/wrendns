@@ -181,6 +181,70 @@ pub struct GuardedCheck {
     pub detail: String,
 }
 
+/// REQ: API-902, DNS-001 (T27.14c) — the `value` of a `listen` change (`POST /api/v1/guarded/listen`
+/// and its preview): the node's whole DNS listener list, replaced as a list. An unknown field is
+/// refused, and so are `proxyProtocol` and `requireClientId`: each names where it is set (the
+/// configuration file; Settings → System → Listener access).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenValue {
+    pub listeners: Vec<ListenEntry>,
+}
+
+/// One listener in a [`ListenValue`].
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenEntry {
+    /// `udp`, `tcp`, `dot`, `doh`, `doh3` or `doq`.
+    pub proto: String,
+    /// The address and port, such as `203.0.113.9:853` or `[::]:853`.
+    pub addr: String,
+    /// Certificate and key as absolute paths of regular files on the node (not symlinks); required
+    /// for `dot`, `doh`, `doh3` and `doq`, refused for `udp` and `tcp`. Their contents are never
+    /// returned.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tls: Option<ListenTls>,
+    /// The URL path of `doh` and `doh3` (default `/dns-query`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub path: Option<String>,
+    /// Connections open at once (not for `udp`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_connections: Option<u32>,
+    /// Connections open at once from one client address (not for `udp`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_connections_per_address: Option<u32>,
+}
+
+/// The certificate and key paths of a [`ListenEntry`].
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenTls {
+    pub cert: String,
+    pub key: String,
+}
+
+/// REQ: API-902 (T27.14c) — one line of a listener change's diff, as the review step shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardedListenerLine {
+    /// `added`, `removed`, `changed` or `kept`.
+    pub change: String,
+    /// The listener, as `proto://address`.
+    pub listener: String,
+    /// What its device key gate will be, and why (not for a removed line or plain UDP and TCP).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gate: Option<String>,
+    /// The certificate's names and expiry (the file's contents are never returned).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub certificate: Option<String>,
+    /// For a changed or overlapping line: the port its new settings are tried on during the window.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof_port: Option<u16>,
+    /// What else the line says (an explicit device key setting that is dropped, a removed address).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub note: Option<String>,
+}
+
 /// The dry run's answer. Nothing was changed.
 #[allow(clippy::struct_excessive_bools)] // the flags are independent facts the UI shows
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -207,6 +271,9 @@ pub struct GuardedPreview {
     pub would_disconnect: bool,
     pub warnings: Vec<String>,
     pub checks: Vec<GuardedCheck>,
+    /// A listener change's diff, one line per listener (empty for any other setting).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub listeners: Vec<GuardedListenerLine>,
     /// For a window change that needs a temporary parallel listener (a TLS-only change): its port.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof_port: Option<u16>,

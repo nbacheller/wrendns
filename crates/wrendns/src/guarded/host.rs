@@ -161,3 +161,68 @@ pub(crate) trait Host: Send + Sync + 'static {
         })
     }
 }
+
+/// A host with nothing behind it, for the tests that only need a `CheckCx`.
+#[cfg(test)]
+pub(crate) struct StubHost;
+
+#[cfg(test)]
+impl Host for StubHost {
+    fn running_config(&self) -> Arc<Config> {
+        Arc::new(Config::default())
+    }
+    fn file_config(&self) -> Arc<Config> {
+        Arc::new(Config::default())
+    }
+    fn reload(&self) -> BoxFuture<bool> {
+        Box::pin(std::future::ready(true))
+    }
+    fn write_entry(
+        &self,
+        _node: &str,
+        _id: &str,
+        _entry: Option<Stored>,
+        _by: &str,
+    ) -> BoxFuture<Result<(), Problem>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn is_primary(&self) -> bool {
+        true
+    }
+    fn clustered(&self) -> bool {
+        false
+    }
+    fn members(&self) -> Vec<Member> {
+        Vec::new()
+    }
+    fn primary_name(&self) -> Option<String> {
+        None
+    }
+    fn primary_url(&self) -> Option<String> {
+        None
+    }
+    fn sign(&self, _bytes: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+    fn verify(&self, _node: &str, _bytes: &[u8], _sig: &[u8]) -> bool {
+        false
+    }
+    fn forward(&self, _node: &str, _req: Forwarded) -> BoxFuture<Result<ForwardedAnswer, Problem>> {
+        Box::pin(std::future::ready(Err(Problem::unavailable("stub"))))
+    }
+    fn audit(
+        &self,
+        _actor: &Actor,
+        _action: &str,
+        _target: &str,
+        _detail: &Value,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn restart(&self) -> BoxFuture<()> {
+        Box::pin(std::future::ready(()))
+    }
+    fn proof_socket(&self, _addr: SocketAddr) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>> {
+        Box::pin(std::future::ready(Err("stub".to_owned())))
+    }
+}

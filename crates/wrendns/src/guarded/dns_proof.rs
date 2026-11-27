@@ -110,18 +110,32 @@ pub(crate) fn probes_for(
             DnsProbe {
                 proto: s.proto,
                 addr: crate::probes::reachable(s.bound),
-                // The path as the bound server serves it: no trailing slash.
-                path: l.and_then(|l| {
-                    l.path
-                        .as_ref()
-                        .map(|p| p.as_str().trim_end_matches('/').to_owned())
-                        .filter(|p| !p.is_empty())
-                }),
+                path: l.and_then(served_path),
                 gated: l.is_some_and(|l| l.proto.needs_tls() && l.gated(host)),
                 evidence: Some(Arc::clone(&s.evidence)),
             }
         })
         .collect()
+}
+
+/// The path as the bound server serves it: no trailing slash.
+fn served_path(l: &Listener) -> Option<String> {
+    l.path
+        .as_ref()
+        .map(|p| p.as_str().trim_end_matches('/').to_owned())
+        .filter(|p| !p.is_empty())
+}
+
+/// REQ: API-902 (T27.14c, design 2.2 "removal-only changes") — the probe of a listener that stays:
+/// nothing new is bound, so the proof is that what remains still answers. No evidence counter.
+pub(crate) fn probe_of_kept(l: &Listener, host: wrendns_config::HostFacts) -> DnsProbe {
+    DnsProbe {
+        proto: l.proto,
+        addr: crate::probes::reachable(l.addr),
+        path: served_path(l),
+        gated: l.proto.needs_tls() && l.gated(host),
+        evidence: None,
+    }
 }
 
 /// The last result of one probe.

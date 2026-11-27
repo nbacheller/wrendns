@@ -30,6 +30,7 @@ pub(crate) mod dns_proof;
 pub(crate) mod e2e;
 pub(crate) mod engine;
 pub(crate) mod host;
+pub(crate) mod listen;
 pub(crate) mod probation;
 pub(crate) mod prod;
 pub(crate) mod restart;
@@ -37,6 +38,8 @@ pub(crate) mod store;
 
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod listen_tests;
 #[cfg(test)]
 mod tests;
 

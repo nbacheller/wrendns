@@ -18,7 +18,7 @@ use wrendns_api::BoxFuture;
 use wrendns_api::auth::Actor;
 use wrendns_api::guarded::{
     GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedCheck, GuardedNodeStatus,
-    GuardedOutcome, GuardedPending, GuardedPendingView, GuardedPreview, GuardedPreviewRequest,
+    GuardedListenerLine, GuardedOutcome, GuardedPending, GuardedPendingView, GuardedPreview, GuardedPreviewRequest,
     GuardedProbeLine, GuardedResult, GuardedSetting, GuardedStatus, Supervisor,
 };
 use wrendns_api::problem::{Code, Problem};
@@ -59,6 +59,10 @@ pub(crate) struct Checked {
     /// The change is weaker than the current value for a reason `weakens` can't see (for example
     /// no admin accounts afterwards); it adds to the row's own rule.
     pub(crate) weakening: bool,
+    /// What `would_disconnect` says it is (the generic sentence when `None`).
+    pub(crate) disconnect_detail: Option<String>,
+    /// REQ: API-902 (T27.14c) — a listener change's line-by-line diff, for the review step.
+    pub(crate) listeners: Vec<GuardedListenerLine>,
 }
 
 /// What an [`Applier`] is given to check a value.
@@ -69,6 +73,8 @@ pub(crate) struct CheckCx<'a> {
     pub(crate) value: &'a Value,
     pub(crate) options: &'a Value,
     pub(crate) caller: &'a GuardedCaller,
+    /// The node around the engine (the cluster's members, for the checks that name them).
+    pub(crate) host: &'a dyn Host,
 }
 
 /// What staging a window change bound.
@@ -91,6 +97,16 @@ pub(crate) struct Staged {
 pub(crate) trait WindowGuard: Send + Sync {
     fn commit(&self) -> BoxFuture<Result<(), Problem>>;
     fn abort(&self) -> BoxFuture<()>;
+    /// REQ: API-902 (T27.14c) — why what the preview promised no longer holds (the host's addresses
+    /// changed since the stage), checked at confirm before anything is written. `None`: still holds.
+    fn stale(&self) -> Option<String> {
+        None
+    }
+    /// The rollback reason of a failed [`commit`](Self::commit) (`commit_failed`, or `cancelled` when
+    /// the file took the listeners over).
+    fn failure_reason(&self) -> &'static str {
+        "commit_failed"
+    }
 }
 
 /// What one setting does to a node. T27.14 to T27.17 implement it for their rows.
@@ -714,13 +730,14 @@ impl Engine {
                 value: &req.value,
                 options: &req.options,
                 caller: c,
+                host: self.host.as_ref(),
             };
             (def.applier.check(&cx)?, def.applier.current(&cfg))
         };
         if checked.would_disconnect {
             return Err(Problem::new(
                 Code::WouldDisconnectYou,
-                "the change would leave this node without an API or DNS listener, or remove the listener this request came in on",
+                checked.disconnect_detail.clone().unwrap_or_else(|| "the change would leave this node without an API or DNS listener, or remove the listener this request came in on".to_owned()),
             )
             .hint("Add the new listener first, then remove the old one in a second change."));
         }
@@ -767,6 +784,7 @@ impl Engine {
             weakening,
             restart_required: checked.restart_required || row.mode == Mode::Staged,
             would_disconnect: false,
+            listeners: checked.listeners,
             warnings: checked.warnings,
             checks: checked.checks,
             proof_port: checked.proof_port,
@@ -796,6 +814,19 @@ impl Engine {
         };
         if g.busy || (g.pending.is_some() && id != RESTART_NOW && mode != Mode::Immediate) {
             return Err(busy());
+        }
+        // REQ: API-902 (T27.14c, design 4) — a gate change during a `listen` window would change the
+        // gate of sockets already staged, so the preview would no longer describe them.
+        if id == wrendns_config::guarded::LISTEN_ACCESS
+            && g.pending
+                .as_ref()
+                .is_some_and(|p| p.setting == wrendns_config::guarded::LISTEN)
+        {
+            return Err(Problem::new(
+                Code::GuardedChangePending,
+                "a listener change is pending on this node: change the listener access after it is confirmed or rolled back",
+            )
+            .hint("Confirm or cancel the pending listener change first."));
         }
         if id == RESTART_NOW && g.pending.is_some() {
             return Err(Problem::new(
@@ -1003,7 +1034,12 @@ impl Engine {
                     "a window change is pending on this node",
                 ));
             }
-        } else if row.mode != Mode::Immediate && g.pending.is_some() {
+        } else if (row.mode != Mode::Immediate && g.pending.is_some())
+            || (row.id == wrendns_config::guarded::LISTEN_ACCESS
+                && g.pending
+                    .as_ref()
+                    .is_some_and(|p| p.setting == wrendns_config::guarded::LISTEN))
+        {
             return Err(Problem::new(
                 Code::GuardedChangePending,
                 "this node already has a pending change",
@@ -1034,12 +1070,15 @@ impl Engine {
             value: &req.value,
             options: &req.options,
             caller: c,
+            host: self.host.as_ref(),
         };
         let checked = def.applier.check(&cx)?;
         if checked.would_disconnect {
             return Err(Problem::new(
                 Code::WouldDisconnectYou,
-                "the change would now cut this node off",
+                checked
+                    .disconnect_detail
+                    .unwrap_or_else(|| "the change would now cut this node off".to_owned()),
             ));
         }
         let before = def.applier.current(&cfg);
@@ -1499,6 +1538,13 @@ impl Engine {
                 p.reason.clone(),
             )
         };
+        // REQ: API-902 (T27.14c, design 4) — the host's addresses changed since the stage: the gates
+        // the staged sockets were bound with may no longer be the default. The window runs on.
+        if let Some(why) = guard.stale() {
+            return Err(Problem::new(Code::PreviewStale, why).hint(
+                "Cancel the change and review it again; it rolls back when the window ends.",
+            ));
+        }
         let def = self.row_def(&setting)?;
         let entry = Stored {
             node: self.node.clone(),
@@ -1523,11 +1569,16 @@ impl Engine {
         }
         if let Err(e) = guard.commit().await {
             warn!(setting = %setting, "committing the new sockets failed: {e:?}");
-            let _ = self
+            let removed = self
                 .host
                 .write_entry(&self.node, &setting, None, &admin)
                 .await;
-            self.rollback_locked(pending_id, "commit_failed").await;
+            // The reload puts the previous list back where the entry had already been applied.
+            if removed.is_ok() {
+                let _ = self.host.reload().await;
+            }
+            self.rollback_locked(pending_id, guard.failure_reason())
+                .await;
             return Err(Problem::new(
                 Code::Internal,
                 "the node couldn't keep the new sockets, so the change was rolled back",

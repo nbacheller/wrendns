@@ -37,6 +37,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         guarded::RESTART_NOW => Some(Arc::new(NoOp)),
         guarded::API_HTTP_REDIRECT => Some(Arc::new(HttpRedirect)),
         guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
+        guarded::LISTEN => Some(Arc::new(super::listen::Listen)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
@@ -426,7 +427,11 @@ pub(crate) fn overlay_with(
         return;
     }
     let suppressed = state.map(store::suppressed).unwrap_or_default();
-    for e in entries.iter().filter(|e| e.node == me) {
+    // REQ: API-902 (T27.14c, design 4) — `listen` is overlaid before `listen-access`, whatever order
+    // the entries are stored in, so the gate lines apply to the list the node runs.
+    let mut mine: Vec<&Stored> = entries.iter().filter(|e| e.node == me).collect();
+    mine.sort_by_key(|e| e.id != guarded::LISTEN);
+    for e in mine {
         if !matches!(e.state, EntryState::Active | EntryState::Probation) {
             continue;
         }
@@ -689,6 +694,7 @@ mod redirect_tests {
             value,
             options: &options,
             caller: &c,
+            host: &super::super::host::StubHost,
         })
     }
 
@@ -840,6 +846,7 @@ pub(crate) mod listen_access_tests {
                 value: v,
                 options: &options,
                 caller: &c,
+                host: &super::super::host::StubHost,
             })
         })
     }
