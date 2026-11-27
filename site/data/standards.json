@@ -223,7 +223,7 @@
       "reqs": [
         "DNS-011"
       ],
-      "summary": "A validated NSEC denial proves a range of names absent: later questions inside it get a signed NXDOMAIN or NODATA without asking upstream (`[dnssec] aggressive_nsec`, on by default). Partial: NSEC only; NSEC3-signed zones still ask (ADR-092).",
+      "summary": "A validated NSEC denial proves a range of names absent: later questions inside it get a signed NXDOMAIN or NODATA without asking upstream (`[dnssec] aggressive_nsec`, on by default). Zones signed with NSEC3 are covered too, using the zone's hash parameters and never an opt-out span (ADR-1105).",
       "diagram": "rfc8198"
     },
     {
