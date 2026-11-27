@@ -26042,6 +26042,10 @@
                     "null"
                   ]
                 },
+                "format": {
+                  "type": "string",
+                  "description": "REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or\n`rpz` (a response policy zone)."
+                },
                 "hits": {
                   "type": "integer",
                   "format": "int64",
@@ -26142,6 +26146,12 @@
                   "type": "integer",
                   "format": "int64",
                   "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+                  "minimum": 0
+                },
+                "unsupported": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:\ncosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.",
                   "minimum": 0
                 }
               }
@@ -27852,6 +27862,10 @@
               "null"
             ]
           },
+          "format": {
+            "type": "string",
+            "description": "REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or\n`rpz` (a response policy zone)."
+          },
           "hits": {
             "type": "integer",
             "format": "int64",
@@ -27952,6 +27966,12 @@
             "type": "integer",
             "format": "int64",
             "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+            "minimum": 0
+          },
+          "unsupported": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:\ncosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.",
             "minimum": 0
           }
         }

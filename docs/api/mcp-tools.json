@@ -1747,7 +1747,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax, or a response policy zone with format rpz) or inline rules; block or allow. A format rpz list waits (409 upgrade_required) until every cluster member's build reads it. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1755,8 +1755,16 @@
           "description": "Default true.",
           "type": "boolean"
         },
+        "format": {
+          "description": "auto (default): each line's syntax is detected. rpz: the text is a response policy zone (QNAME triggers with NXDOMAIN, NODATA, passthru, drop answered REFUSED, and local CNAME, A and AAAA data; other triggers are counted as unsupported).",
+          "enum": [
+            "auto",
+            "rpz"
+          ],
+          "type": "string"
+        },
         "kind": {
-          "description": "Default block.",
+          "description": "Default block. An rpz list is always a block list.",
           "enum": [
             "block",
             "allow"
@@ -2788,7 +2796,7 @@
       "additionalProperties": false,
       "properties": {
         "list": {
-          "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match.",
+          "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow), match, and format (auto|rpz).",
           "type": "object"
         },
         "reason": {

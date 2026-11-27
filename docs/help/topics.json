@@ -328,6 +328,16 @@
       "docs": "filter-lists"
     },
     {
+      "id": "list-rpz",
+      "title": "Lists in the response policy zone (RPZ) format",
+      "term": "Response policy zone (RPZ) list",
+      "summary": "An RPZ is a DNS zone file that says, name by name, what to do: answer no such name, answer no data, let the name through, refuse it, or answer with an address or another name. Choose the rpz format for a list that comes in that form; the Lists page shows how many of its records are not applied (response-IP, name-server and client triggers, and other record types).",
+      "when": "A threat feed or a Pi-hole or Unbound setup gives you a zone file instead of a hosts or domain list.",
+      "example": "A line like \"bad.example.com CNAME .\" makes bad.example.com answer no such name, and \"*.bad.example.com CNAME .\" does the same for every name below it but not for bad.example.com itself. A drop (rpz-drop.) is answered REFUSED so the device does not wait.",
+      "caution": "An rpz list must be a block list, and in a cluster it waits until every member's build can read the format. Triggers on the answer's address or on the name server are counted as not applied, never guessed at.",
+      "docs": "response-policy-zones-rpz"
+    },
+    {
       "id": "list-refresh",
       "title": "How lists stay current",
       "term": "List refresh",

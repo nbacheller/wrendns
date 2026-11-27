@@ -100,6 +100,7 @@ wrendns ctl lists refresh --wait       # update every list now (or name some; --
       <tr><td><code>/^ad[0-9]+\./</code> or <code>(^|\.)doubleclick\.net$</code></td><td>AdBlock regex, or Pi-hole regex</td></tr>
     </tbody>
   </table></div>
+  <p class="muted">A threat feed that comes as a response policy zone (a DNS zone file with <code>name CNAME .</code> records) works too: choose the <b>rpz</b> format for the list. Each record becomes the answer it names (no such name, no data, let through, refused, or a local answer); triggers on the answer's address or the name server are counted as unsupported. See <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#response-policy-zones-rpz">Response policy zones</a>.</p>
   <p class="muted">Rules that only make sense in a browser (cosmetic <code>##</code> rules, URL paths, <code>$third-party</code>) are counted as <i>unsupported</i> and skipped, not treated as errors. The <a href="https://github.com/nbacheller/wrendns/blob/main/docs/running.md#list-syntax">full syntax table</a> has every modifier.</p>
 </section>
 
