@@ -81,6 +81,7 @@ fn admin() -> GuardedCaller {
         arrived_on: None,
         remote: Some("192.0.2.10".parse().unwrap()),
         remote_under_pending: None,
+        peer: None,
         tls: false,
     }
 }

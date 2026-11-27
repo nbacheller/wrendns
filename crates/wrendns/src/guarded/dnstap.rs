@@ -279,6 +279,7 @@ mod tests {
             arrived_on: None,
             remote: None,
             remote_under_pending: None,
+            peer: None,
             tls: false,
         }
     }

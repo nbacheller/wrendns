@@ -67,6 +67,9 @@ pub(crate) struct Checked {
     /// REQ: API-902 (T27.14c) — the host facts the verdict was judged with; an apply whose check
     /// reads other facts is `preview_stale`.
     pub(crate) host_facts: Option<wrendns_config::HostFacts>,
+    /// REQ: API-902 (T27.14f) — the client address the node sees for this request today, for a review
+    /// that says what a proxy-list change does to it (`None` for a request the primary relayed).
+    pub(crate) seen_client: Option<String>,
 }
 
 /// What an [`Applier`] is given to check a value.
@@ -881,6 +884,7 @@ impl Engine {
             warnings: checked.warnings,
             checks: checked.checks,
             proof_port: checked.proof_port,
+            seen_client: checked.seen_client,
             acknowledgements: checked.acknowledgements,
             window_secs: u32::try_from(window_secs).unwrap_or(120),
             needs_recent_sign_in: needs_recent,
@@ -2222,6 +2226,7 @@ impl Engine {
             arrived_on: None,
             remote: a.remote.as_deref().and_then(|r| r.parse().ok()),
             remote_under_pending: None,
+            peer: None,
             tls: false,
         };
         match f.op {

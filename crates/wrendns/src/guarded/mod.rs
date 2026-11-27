@@ -36,6 +36,7 @@ pub(crate) mod probation;
 pub(crate) mod prod;
 pub(crate) mod restart;
 pub(crate) mod store;
+pub(crate) mod trusted_proxies;
 
 #[cfg(test)]
 mod api_tests;

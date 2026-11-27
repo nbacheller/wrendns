@@ -17312,6 +17312,46 @@
           }
         }
       },
+      "ApiInfo": {
+        "type": "object",
+        "description": "REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and\nAPI, for the Settings \"Web UI and API\" card. Admin only: absent from every other caller's answer,\nas the listener paths are, and absent from an older node's.",
+        "required": [
+          "listen",
+          "scheme",
+          "trustedProxies"
+        ],
+        "properties": {
+          "certificate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With HTTPS: `self-signed`, or the certificate file's name (never its path)."
+          },
+          "httpRedirect": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set."
+          },
+          "listen": {
+            "type": "string",
+            "description": "The address the API listens on (`[api] listen`)."
+          },
+          "scheme": {
+            "type": "string",
+            "description": "`https` when `[api] tls` is set (the node serves HTTPS itself), else `http`."
+          },
+          "trustedProxies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`[api] trusted_proxies`, as in force now: each address or network."
+          }
+        }
+      },
       "AttributionBudget": {
         "type": "object",
         "description": "REQ: OBS-027 — the budget over the window.",
@@ -24347,6 +24387,13 @@
           },
           "restartRequired": {
             "type": "boolean"
+          },
+          "seenClient": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a `trusted-proxies` change: the client address the node sees for this request today\n(what the new list would change), when the request reached the node itself."
           },
           "setByFile": {
             "type": "boolean",
@@ -34798,6 +34845,17 @@
               "$ref": "#/components/schemas/NodeAddress"
             },
             "description": "REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and\nlink-local left out), which an upstream's `source` can name. They differ per node."
+          },
+          "api": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ApiInfo",
+                "description": "REQ: API-902 (T27.14f) - how this node serves the web UI and API: the address, the scheme,\nthe certificate's name, the trusted proxies and the redirect. Admin only (owner decision,\n2026-11-27); an older node omits it, so a reader must treat it as absent."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "build": {
             "$ref": "#/components/schemas/BuildInfo",

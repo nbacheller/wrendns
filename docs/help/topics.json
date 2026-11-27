@@ -1876,6 +1876,16 @@
       "docs": "https-without-a-proxy"
     },
     {
+      "id": "trusted-proxies",
+      "title": "Trusted proxies",
+      "term": "[api] trusted_proxies",
+      "summary": "The hosts, usually your reverse proxy or ingress, whose X-Forwarded-For header the node believes. For a request that comes from one of them, the client's address is the last forwarded address that is not itself a trusted proxy; for everyone else the connection's own address is the client, whatever the header says. That address is what sign-in lockouts, the break-glass networks and the audit log use, and the same list decides whose X-Forwarded-Proto: https counts. You change the list as a whole: add or remove entries, review, type the phrase, and confirm within the window. Until you confirm, the new list is used only to judge the confirming request; everything else keeps the list in force, so a newly trusted host cannot spoof its address while the window is open.",
+      "when": "You put a reverse proxy or an ingress in front of the web UI and API, you move it to another address, or everyone shows up in the audit log as the proxy.",
+      "example": "Your Caddy on 192.168.1.5 forwards to the node: add 192.168.1.5, review (the review says what the server sees you as today), and confirm from a page that arrives through the proxy. The next sign-in is logged with your own address.",
+      "caution": "Adding an entry counts as weakening security: a trusted host can choose the address the node sees for its requests (a sign-in lockout, a break-glass check, the audit record), so list only hosts you run, never 0.0.0.0/0 or a public range. A change is kept when the confirming request passes under the new list (it arrived through a new proxy that forwarded your address), or when it reached the node directly, from a host in neither list. A request that came through a proxy the new list drops cannot confirm it, and the change rolls back. A file that sets trusted_proxies wins and locks the list; the way back is the file, wrendns guarded clear trusted-proxies, or WRENDNS_IGNORE_GUARDED=1.",
+      "docs": "behind-a-reverse-proxy-or-ingress"
+    },
+    {
       "id": "allowed-networks",
       "title": "Allowed networks",
       "term": "[access] allowed_networks",

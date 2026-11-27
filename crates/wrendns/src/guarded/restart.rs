@@ -200,6 +200,7 @@ impl Engine {
             disconnect_detail: None,
             listeners: Vec::new(),
             host_facts: None,
+            seen_client: None,
         })
     }
 

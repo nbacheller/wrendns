@@ -122,28 +122,33 @@ pub(crate) fn remote_under(
         .unwrap_or(peer)
 }
 
-/// REQ: API-902 (ADR-956 §3) — what a `proxy_list` proof needs: the request passes under the new
-/// list. The connection's peer must be one of the new list's proxies (else the new list is not what
-/// is carrying this request) and the client address under it must be a different address (else the
-/// proxy's header was not read). `Some(client)` then; `None` otherwise.
+/// REQ: API-902 (ADR-956 §3, ADR-977 point 7 as amended 2026-11-27) — what a `proxy_list` proof
+/// needs. The request passes in one of two ways. (1) Through the new list: its peer is one of the
+/// new list's proxies and the client address under that list is a different address (else the
+/// proxy's header was not read). (2) Directly: its peer is in neither the list in force (`old`) nor
+/// the new one, so the change does not touch how this request is seen (an admin who reaches the node
+/// directly can add or remove proxies, and a change that only removes entries can be confirmed). A
+/// peer that is in the old list and not in the new one, or in the new list with no forwarded client,
+/// proves nothing. `Some(client)` then (the peer itself in the direct case); `None` otherwise.
 pub(crate) fn remote_under_proven(
     auth: &Auth,
     req_ext: &axum::http::Extensions,
     headers: &HeaderMap,
-    proxies: &[(IpAddr, u8)],
+    new: &[(IpAddr, u8)],
+    old: &[(IpAddr, u8)],
 ) -> Option<IpAddr> {
     let peer = req_ext.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip())?;
-    if !proxies.iter().any(|(n, l)| super::in_network(peer, *n, *l)) {
-        return None;
+    let listed = |l: &[(IpAddr, u8)]| l.iter().any(|(n, len)| super::in_network(peer, *n, *len));
+    if listed(new) {
+        let client = remote_under(auth, req_ext, headers, new);
+        return (client != peer).then_some(client);
     }
-    let client = remote_under(auth, req_ext, headers, proxies);
-    (client != peer).then_some(client)
+    (!listed(old)).then_some(peer)
 }
 
 /// `ip` is one of `[api] trusted_proxies`.
 fn is_trusted_proxy(auth: &Auth, ip: IpAddr) -> bool {
-    auth.settings()
-        .trusted_proxies
+    auth.trusted_proxies()
         .iter()
         .any(|(n, l)| super::in_network(ip, *n, *l))
 }
@@ -216,8 +221,7 @@ pub(crate) fn is_https(auth: &Auth, req_ext: &axum::http::Extensions, headers: &
         let ip = c.0.ip().to_canonical();
         ip.is_loopback()
             || auth
-                .settings()
-                .trusted_proxies
+                .trusted_proxies()
                 .iter()
                 .any(|(n, l)| super::in_network(ip, *n, *l))
     })

@@ -384,6 +384,9 @@
         </ul>
         <p class="small muted">You confirm this on this page, once the node's own test query to each new listener is answered. That proves the listener works on this machine, not that your devices can reach it: a firewall, your router or a container's published ports may still be in the way.</p>
       {/if}
+      {#if pv.seenClient}
+        <p class="small" data-testid="guarded-seen">Today the server sees you as <strong>{pv.seenClient}</strong>.</p>
+      {/if}
       {#each pv.warnings as w, i (i)}
         <div class="notice warn small" data-testid="guarded-warning">{w}</div>
       {/each}
