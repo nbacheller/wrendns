@@ -18,6 +18,9 @@
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
   import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
   import { mode } from '../lib/mode.svelte';
+  import { loadLocations, locationOfAddress } from '../lib/locations.svelte';
+  import LocationBadge from '../lib/components/LocationBadge.svelte';
+  import LocationFilter from '../lib/components/LocationFilter.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -129,6 +132,17 @@
   ]);
   const tab = $derived(activeTab(tabs));
 
+  // REQ: DSC-914 (T36.10c) — each device's location (a badge) and a filter on all three lists. A device's
+  // location is what the API composed for it; the filter hides the others.
+  let locFilter = $state('');
+  $effect(() => {
+    void loadLocations();
+  });
+  const inLoc = (slug: string | null | undefined) => !locFilter || slug === locFilter;
+  const shownSeen = $derived(seen.filter((c) => inLoc(locationOfAddress(c.key)?.slug)));
+  const shownConfigured = $derived(configured.filter((c) => inLoc(c.location)));
+  const shownFound = $derived(found.filter((l) => inLoc(locationOfAddress(l.ip)?.slug)));
+
   // REQ: OBS-031, OBS-034 — a device's drawer: its rhythm and its day. The address says which
   // (`#/clients?device=…&view=timeline`), so findings and the heatmap can link to it.
   const rhythmFor = $derived(route.params.get('device'));
@@ -171,6 +185,7 @@
   <h1>Clients<HelpButton id="devices" /></h1>
   <ErrorNote {error} />
   <Tabs {tabs} active={tab} label="Clients" />
+  <LocationFilter bind:value={locFilter} />
   <TabPanel active={tab}>
   {#if tab === 'seen'}
     <section class="card">
@@ -183,15 +198,16 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Client</th><th>Device</th><th>Groups</th>{#if showAffinity}<th data-testid="affinity-head">Servers<HelpButton id="affinity" /></th>{/if}<th class="num">Queries</th><th></th></tr></thead>
+            <thead><tr><th>Client</th><th>Device</th><th>Groups</th><th>Location</th>{#if showAffinity}<th data-testid="affinity-head">Servers<HelpButton id="affinity" /></th>{/if}<th class="num">Queries</th><th></th></tr></thead>
             <tbody>
-              {#each seen as c (c.key)}
+              {#each shownSeen as c (c.key)}
                 <tr>
                   <td class="mono"><ClientChip ip={c.key} onchanged={load} /></td>
                   <td>{c.name ?? ''}<IdentityLine identity={identities[c.key]} /></td>
                   <td class="small">
                     {#each c.groups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                   </td>
+                  <td class="small"><LocationBadge loc={locationOfAddress(c.key)} /></td>
                   {#if showAffinity}
                     {@const a = affinity[c.key]}
                     <td class="small" data-testid="affinity" title={a ? a.nodes.map((n) => `${n.node}: ${num(n.queries)}`).join('\n') : ''}>{a?.label ?? ''}</td>
@@ -213,9 +229,9 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Name</th><th>Recognized by</th><th>Groups</th><th>Defined in</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Recognized by</th><th>Groups</th><th>Location</th><th>Defined in</th><th></th></tr></thead>
             <tbody>
-              {#each configured as c (c.name)}
+              {#each shownConfigured as c (c.name)}
                 <tr>
                   <td><strong>{c.name}</strong><IdentityLine identity={c.identity} /></td>
                   <td class="mono small">{c.match.join(', ')}</td>
@@ -228,6 +244,7 @@
                       <div class="muted">{fromText[c.groupsFrom ?? '']}</div>
                     {/if}
                   </td>
+                  <td class="small"><LocationBadge loc={c.location ? { slug: c.location, label: c.locationName ?? c.location, pinned: !!c.locationPinned } : null} /></td>
                   <td class="small">{c.source === 'api' ? 'the UI / API' : 'config file'}</td>
                   <td class="num nowrap">
                     <button type="button" class="link small" onclick={() => openDevice(c.name, 'policy')} data-testid="open-policy" aria-label={`Policy of ${c.name}`}>Policy</button>
@@ -299,9 +316,9 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>IPv6<HelpButton id="device-ipv6" /></th><th>From</th><th>MAC</th><th>In WrenDNS</th></tr></thead>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>IPv6<HelpButton id="device-ipv6" /></th><th>From</th><th>Location</th><th>MAC</th><th>In WrenDNS</th></tr></thead>
             <tbody>
-              {#each found as l (l.ip)}
+              {#each shownFound as l (l.ip)}
                 <tr>
                   <td class="mono"><ClientChip ip={l.ip} onchanged={load} />{#if l.offline}
                       <span class="badge warn" data-testid="offline-badge" title="The router remembers this client but doesn't see it now">offline</span>
@@ -320,6 +337,7 @@
                     {:else}<span class="muted">none</span>{/if}
                   </td>
                   <td><span class="badge info" data-testid="named-by">{sourceLabel(l)}</span></td>
+                  <td class="small"><LocationBadge loc={locationOfAddress(l.ip)} /></td>
                   <td class="mono small">{l.mac}</td>
                   <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
                 </tr>

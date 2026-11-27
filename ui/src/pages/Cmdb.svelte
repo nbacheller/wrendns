@@ -14,6 +14,9 @@
   import CmdbPicker from '../lib/components/CmdbPicker.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import LocationBadge from '../lib/components/LocationBadge.svelte';
+  import LocationFilter from '../lib/components/LocationFilter.svelte';
+  import { loadLocations, locationOfName, locs } from '../lib/locations.svelte';
 
   type Entry = S['ConfigEntry'];
   type Ci = S['CmdbCi'];
@@ -185,6 +188,21 @@
       loadingList = false;
     }
   }
+  // REQ: DSC-914 (T36.10c) — each device CI's location (matched by its name or address, since a CI is never
+  // placed by the CMDB, DSC-910), a filter on the loaded page, and the list grouped by location.
+  let locFilter = $state('');
+  let byLocation = $state(false);
+  $effect(() => {
+    void loadLocations();
+  });
+  const placed = (c: Ci) => (c.ty === 'device' ? locationOfName(c.name) : undefined);
+  const groups = $derived.by(() => {
+    const rows = items.filter((c) => !locFilter || placed(c)?.slug === locFilter);
+    if (!byLocation || !locs.items.length) return rows.length ? [{ key: '', label: '', rows }] : [];
+    const out = locs.items.map((l) => ({ key: l.slug, label: l.label || l.slug, rows: rows.filter((c) => placed(c)?.slug === l.slug) }));
+    out.push({ key: '', label: 'No location', rows: rows.filter((c) => !placed(c)) });
+    return out.filter((g) => g.rows.length);
+  });
   let queryTimer: ReturnType<typeof setTimeout> | undefined;
   function filterChanged() {
     clearTimeout(queryTimer);
@@ -488,16 +506,23 @@
           Find
           <input type="search" bind:value={q} oninput={filterChanged} aria-label="Find a CI" placeholder="name, MAC, serial or id" />
         </label>
+        <LocationFilter bind:value={locFilter} />
+        {#if locs.items.length}
+          <label class="check"><input type="checkbox" bind:checked={byLocation} data-testid="cmdb-by-location" /> Group by location</label>
+        {/if}
       </div>
       <ErrorNote error={listError} />
       <div class="table-wrap">
         <table data-testid="cmdb-cis">
-          <thead><tr><th>Name</th><th>Type</th><th>Sources</th><th>Records</th><th>Flags</th></tr></thead>
+          <thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Sources</th><th>Records</th><th>Flags</th></tr></thead>
           <tbody>
-            {#each items as c (c.id)}
+            {#each groups as g, gi (gi)}
+              {#if g.label}<tr data-testid="cmdb-location-group"><th colspan="6">{g.label} ({g.rows.length})</th></tr>{/if}
+            {#each g.rows as c (c.id)}
               <tr data-testid="cmdb-row" data-ci={c.id} data-name={c.name ?? ''}>
                 <td><button class="link" onclick={() => open(c.id)}>{c.name ?? c.id}</button></td>
                 <td>{c.ty}{#if c.kind} <span class="muted small">({c.kind})</span>{/if}</td>
+                <td class="small"><LocationBadge loc={placed(c)} /></td>
                 <td class="small">{c.sources.join(', ')}</td>
                 <td>{c.records}</td>
                 <td class="small">
@@ -506,8 +531,9 @@
                   {#if c.proposals > 0}<span class="chip" title="A merge proposal names it">{c.proposals} proposal{c.proposals === 1 ? '' : 's'}</span>{/if}
                 </td>
               </tr>
+            {/each}
             {:else}
-              <tr><td colspan="5" class="muted small">{loadingList ? 'Loading' : 'Nothing yet. The sources report once a minute.'}</td></tr>
+              <tr><td colspan="6" class="muted small">{loadingList ? 'Loading' : 'Nothing yet. The sources report once a minute.'}</td></tr>
             {/each}
           </tbody>
         </table>

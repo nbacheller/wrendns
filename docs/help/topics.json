@@ -268,6 +268,36 @@
       "caution": "Networks come from your routers, from the networks this node is directly on (marked this node: its own LAN and any tagged VLAN interface), and from your groups' networks. A network nothing reports shows as group only. A VLAN reached through the gateway is not on the node, so it shows only if a router reports it. This node means the node answering the API. A replica asks the primary, which reads the routers, for their networks and devices and adds the networks it is directly on; if the primary doesn't answer it shows only its own and says which node didn't. Inside a bridged Docker container there are none (set WRENDNS_HOST_NETWORK=1 on host networking)."
     },
     {
+      "id": "locations",
+      "title": "Locations: a name subtree for each part of the network",
+      "term": "Location",
+      "summary": "A location is a part of the network (a site, a lab, a VLAN) with a device-name subtree of its own. A device on its networks answers as device.location.domain, and its PTR is that name. Each location lists its networks as resolved now, the nodes that serve it, the names it composes, and every collision with the device that kept the name.",
+      "when": "Two places on your network use the same device names, or you want a private part of the network whose names only its own clients can resolve.",
+      "example": "A home location on 192.0.2.0/24 and a lab on 198.51.100.0/24: nas.home.example.net and nas.lab.example.net are two devices.",
+      "caution": "When two devices want the same name, the one ADR-901 ranks first keeps it (a device you named, then a router's name, then mDNS, then the lowest address) and the others get no A or PTR there. A private location is a convenience, not access control: only the source address is tested. The first location is refused while a cluster member's build does not know locations, and a location the configuration file defines is changed there. While the start-up hold stands the page says why, and the devices and collisions are not resolved until it ends.",
+      "docs": "locations"
+    },
+    {
+      "id": "location-flat-names",
+      "title": "Flat names: the old device names keep answering",
+      "term": "Flat names",
+      "summary": "While a location's flat names are on, the old name device.domain keeps answering (A and AAAA, no PTR) for the location's devices, so bookmarks, scripts and SSH known-hosts keep working. The page counts how many queries used flat names over the last 7 days on this node.",
+      "when": "Nobody uses the old names any more: the count stays at zero for a week or more.",
+      "example": "home: flat names on, 0 queries in 7 days. Turn them off and nas.example.net stops answering.",
+      "caution": "Turning them off is an audited write and asks for a reason. The count is per node and starts again when the node restarts, so a quiet week on one node is not proof for the others. Two locations that compose the same flat name follow the same collision ranking as every other name.",
+      "docs": "locations"
+    },
+    {
+      "id": "location-pin",
+      "title": "Pin a device to a location",
+      "term": "Location pin",
+      "summary": "By default a device is in the location whose networks hold its address. A pin puts it in a location whatever its address, and choosing From its address removes the pin.",
+      "when": "A device roams between networks but belongs to one place, or its address is not in any location's networks.",
+      "example": "A laptop that is sometimes on the lab VLAN stays in home.",
+      "caution": "The pin is part of the device's entry, so renaming or regrouping the device keeps it. An agent token needs both the clients and the locations write scopes to set or change a pin. A location can't be deleted while a device is pinned to it.",
+      "docs": "locations"
+    },
+    {
       "id": "network-group",
       "title": "Make a group from a network",
       "term": "Group",

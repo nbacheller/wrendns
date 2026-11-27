@@ -12,6 +12,7 @@
   import Picker from './Picker.svelte';
   import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
   import { routerKey, routerLabel } from '../router-name';
+  import { labelOf, loadLocations, locationOfAddress, locs } from '../locations.svelte';
 
   let {
     ip,
@@ -57,6 +58,8 @@
   // what it was set to be ('' = let WrenDNS guess).
   let identity = $state<S['DeviceIdentity'] | null>(null);
   let kind = $state('');
+  // REQ: DSC-910, DSC-914 (T36.10c) — the location the device is pinned to ('' = the one its address gives it).
+  let location = $state('');
   // REQ: FLT-006 (T24.9, ADR-973) — the name the router gave this address, as a label, and whether
   // the device is also recognized by it (a `hostname:` key beside its address).
   let routerName = $state<string | null>(null);
@@ -163,6 +166,8 @@
         chosen = [id.suggestedGroup, ...chosen.filter((x) => x !== 'default')];
       }
       kind = existing?.kind ?? '';
+      await loadLocations();
+      location = existing?.locationPinned ? (existing.location ?? '') : '';
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -180,9 +185,10 @@
     return routerMatch ? [...kept, key] : kept;
   }
 
-  /** The device's own location pin, sent back so a rename, a regroup or a kind change keeps it (the write replaces the whole entry). */
+  /** The device's location pin as the form holds it ('' removes it); the write replaces the whole entry, so it is always sent. */
   function pin(): string | undefined {
-    return existing?.locationPinned && existing.location ? existing.location : undefined;
+    // Without the list the control is hidden, so an existing pin is kept as it is.
+    return (locs.items.length ? location : existing?.locationPinned ? existing.location : '') || undefined;
   }
 
   async function simulateChange(): Promise<S['Simulation'] | null | undefined> {
@@ -324,6 +330,15 @@
             {#each kinds as k (k)}<option value={k}>{k === 'unknown' ? 'unknown (stop guessing)' : k}</option>{/each}
           </select>
         </label>
+        {#if locs.items.length}
+          <label>
+            Location<HelpButton id="location-pin" />
+            <select bind:value={location} aria-label="Location" data-testid="device-location">
+              <option value="">From its address{locationOfAddress(ip) ? ` (${locationOfAddress(ip)?.label})` : ' (none)'}</option>
+              {#each locs.items as l (l.slug)}<option value={l.slug}>{labelOf(l)}</option>{/each}
+            </select>
+          </label>
+        {/if}
         {#if routerName}
           <label class="check" data-testid="router-name-match">
             <input type="checkbox" bind:checked={routerMatch} /> Also recognize it by its router name (<code>{routerName}</code>)

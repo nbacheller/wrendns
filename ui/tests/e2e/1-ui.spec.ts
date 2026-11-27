@@ -9003,3 +9003,358 @@ test('dns_014 operator sees allowed networks read only', async () => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// REQ: DSC-914, DSC-909, DSC-910, DSC-916 (T36.10c; ADR-1081, ADR-1096, ADR-1104) — the Locations page, the device's
+// location control, and the badges and filters. The server's answers are stubbed (the API itself is tested in the
+// Rust crates); what is checked is what the page shows and what it sends.
+const LOCATIONS = {
+  held: false,
+  conflicts: [],
+  collisions: [{ name: 'printer.example.net', flat: true, keptAddress: '192.0.2.40', lostAddress: '198.51.100.40', lostLocation: 'lab' }],
+  items: [
+    {
+      slug: 'home', label: 'Home', domain: 'example.net', visibility: 'shared', flatNames: true, flatNameUses7d: 42, source: 'api', nodes: [],
+      networks: [
+        { entry: '10.20.2.0/24', resolved: ['10.20.2.0/24'] },
+        { entry: 'vlan:30', resolved: ['192.0.2.0/25'] },
+      ],
+      devices: [
+        { address: '192.0.2.10', name: 'nas.home.example.net', flatName: 'nas.example.net', pinned: false },
+        { address: '10.20.2.31', name: 'laptop.home.example.net', flatName: 'laptop.example.net', pinned: true },
+      ],
+      collisions: [{ name: 'nas.home.example.net', flat: false, keptAddress: '192.0.2.10', lostAddress: '192.0.2.11', lostLocation: 'home' }],
+    },
+    {
+      slug: 'lab', label: null, domain: 'example.net', visibility: 'private', flatNames: false, flatNameUses7d: 0, source: 'file', nodes: ['pi-a'],
+      networks: [{ entry: '198.51.100.0/24', resolved: ['198.51.100.0/24'] }],
+      devices: [{ address: '198.51.100.7', name: 'bench.lab.example.net', pinned: false }],
+      collisions: [],
+    },
+  ],
+};
+
+async function stubLocations(body: unknown = LOCATIONS) {
+  await page.route(/\/api\/v1\/locations$/, (r) => r.fulfill({ json: body }));
+}
+async function unstubLocations() {
+  await page.unroute(/\/api\/v1\/locations$/);
+}
+
+test('dsc_914 the locations page lists locations, collisions and the flat-name count', async () => {
+  await stubLocations();
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await expect(page.getByRole('heading', { name: 'Locations', level: 1 })).toBeVisible();
+    const home = page.getByTestId('location-row').filter({ hasText: 'Home' });
+    await expect(home).toContainText('10.20.2.0/24, vlan:30');
+    await expect(home.getByTestId('flat-use')).toContainText('on, 42 queries in 7 days');
+    await expect(home.getByTestId('collision-count')).toHaveText('1');
+    const lab = page.getByTestId('location-row').filter({ hasText: 'lab' });
+    await expect(lab).toContainText('private');
+    await expect(lab).toContainText('pi-a');
+    await expect(lab.getByTestId('flat-use')).toHaveText('off');
+    await expect(lab.getByTestId('location-file')).toBeVisible();
+    // The collision of devices on no location's network.
+    await expect(page.getByTestId('unplaced-collisions')).toContainText('printer.example.net');
+    // A location's names, its VLAN as resolved, and its collision with the winner.
+    await home.getByTestId('location-open').click();
+    await expect(page.getByTestId('location-networks')).toContainText('vlan:30');
+    await expect(page.getByTestId('location-networks')).toContainText('192.0.2.0/25');
+    await expect(page.getByTestId('location-devices')).toContainText('nas.home.example.net');
+    await expect(page.getByTestId('location-devices')).toContainText('nas.example.net');
+    await expect(page.getByTestId('location-devices').getByRole('row').filter({ hasText: 'laptop' })).toContainText('pinned');
+    const col = page.getByTestId('location-collisions').getByTestId('collision-row');
+    await expect(col).toContainText('nas.home.example.net');
+    await expect(col).toContainText('192.0.2.10');
+    await expect(col).toContainText('192.0.2.11');
+    await page.keyboard.press('Escape');
+    // A location the file defines is read-only here.
+    await lab.getByTestId('location-open').click();
+    await expect(page.getByTestId('location-edit')).toHaveCount(0);
+    await expect(page.getByTestId('location-delete')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    // The help topic opens from the heading.
+    await page.getByRole('button', { name: /^Help: Locations/ }).click();
+    await expect(page.getByTestId('help-panel')).toContainText('PTR');
+    await page.keyboard.press('Escape');
+  } finally {
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 the locations page says when the start-up hold keeps them out', async () => {
+  await stubLocations({
+    ...LOCATIONS,
+    held: true,
+    heldReason: 'node pi-b has not announced locations yet',
+    conflicts: ['192.0.2.0/24 is claimed by home and lab'],
+    items: LOCATIONS.items.map((l) => ({ ...l, held: true, heldReason: 'node pi-b has not announced locations yet' })),
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await expect(page.getByTestId('locations-held')).toContainText('pi-b has not announced locations yet');
+    await expect(page.getByTestId('location-held')).toHaveCount(2);
+    await expect(page.getByTestId('location-conflict')).toContainText('claimed by home and lab');
+  } finally {
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 a location is created, with a dry run first', async () => {
+  await stubLocations();
+  const seen: { dry: boolean; body: unknown; reason: string | undefined }[] = [];
+  await page.route(/\/api\/v1\/locations\/garden/, async (r) => {
+    const req = r.request();
+    seen.push({ dry: req.url().includes('dryRun=true'), body: req.postDataJSON(), reason: req.headers()['x-wrendns-reason'] });
+    await r.fulfill({ json: { applied: !req.url().includes('dryRun'), configVersion: 1, warnings: ['the VLAN is not reported yet'], impact: 'Adds the location garden.' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await page.getByTestId('location-new').click();
+    const form = page.getByTestId('location-form');
+    await form.getByLabel('Slug').fill('Garden');
+    await form.getByLabel('Name', { exact: true }).fill('Garden');
+    await form.getByLabel('Networks').fill('203.0.113.0/24\nvlan:40');
+    await form.getByLabel('Visibility').selectOption('private');
+    // Saving needs the dry run first.
+    await expect(page.getByTestId('location-save')).toBeDisabled();
+    await page.getByTestId('location-check').click();
+    await expect(page.getByTestId('location-preview')).toContainText('Adds the location garden.');
+    await expect(page.getByTestId('location-preview')).toContainText('the VLAN is not reported yet');
+    // A change after the check asks for another one.
+    await form.getByLabel('Name', { exact: true }).fill('The garden');
+    await expect(page.getByTestId('location-save')).toBeDisabled();
+    await page.getByTestId('location-check').click();
+    await expect(page.getByTestId('location-save')).toBeEnabled();
+    await page.getByTestId('location-save').click();
+    await expect(page.getByTestId('location-form')).toHaveCount(0);
+    expect(seen.map((s) => s.dry)).toEqual([true, true, false]);
+    expect(seen[2].body).toMatchObject({ label: 'The garden', networks: ['203.0.113.0/24', 'vlan:40'], visibility: 'private', flatNames: true, nodes: [] });
+  } finally {
+    await page.unroute(/\/api\/v1\/locations\/garden/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 turning flat names off asks for a reason, and the reason is sent', async () => {
+  await stubLocations();
+  const seen: { dry: boolean; body: unknown; reason: string | undefined }[] = [];
+  // The node's device domain: a location on it keeps following it, so the edit form leaves the domain empty.
+  await page.route(/\/api\/v1\/config\/entries\?kind=local/, (r) =>
+    r.fulfill({ json: { items: [{ kind: 'local', name: 'default', source: 'file', definition: { device_domain: 'example.net' } }] } }),
+  );
+  await page.route(/\/api\/v1\/locations\/home/, async (r) => {
+    const req = r.request();
+    if (req.method() !== 'PUT') return r.continue();
+    seen.push({ dry: req.url().includes('dryRun=true'), body: req.postDataJSON(), reason: req.headers()['x-wrendns-reason'] });
+    await r.fulfill({ json: { applied: !req.url().includes('dryRun'), configVersion: 2, warnings: [], impact: 'The old names stop answering.' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await page.getByTestId('location-row').filter({ hasText: 'Home' }).getByTestId('location-open').click();
+    await page.getByTestId('location-edit').click();
+    const form = page.getByTestId('location-form');
+    // The edit form holds what the list showed, and no reason is asked while the names stay on.
+    await expect(form.getByLabel('Networks')).toHaveValue('10.20.2.0/24\nvlan:30');
+    await expect(page.getByTestId('location-reason')).toHaveCount(0);
+    await page.getByTestId('location-flat').uncheck();
+    await expect(page.getByTestId('location-reason')).toBeVisible();
+    await expect(page.getByTestId('location-check')).toBeDisabled();
+    await page.getByTestId('location-reason').fill('Nothing has used them for a month');
+    await page.getByTestId('location-check').click();
+    await expect(page.getByTestId('location-preview')).toContainText('The old names stop answering.');
+    await page.getByTestId('location-save').click();
+    await expect(page.getByTestId('location-form')).toHaveCount(0);
+    expect(seen[1]).toMatchObject({ dry: false, reason: 'Nothing has used them for a month', body: { flatNames: false, domain: null } });
+  } finally {
+    await page.unroute(/\/api\/v1\/locations\/home/);
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=local/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 a location is deleted after a question', async () => {
+  await stubLocations();
+  let deleted = 0;
+  await page.route(/\/api\/v1\/locations\/home/, async (r) => {
+    if (r.request().method() !== 'DELETE') return r.continue();
+    deleted++;
+    await r.fulfill({ json: { applied: true, configVersion: 3, warnings: [] } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await page.getByTestId('location-row').filter({ hasText: 'Home' }).getByTestId('location-open').click();
+    await page.getByTestId('location-delete').click();
+    await expect(page.getByTestId('location-delete-ask')).toContainText('unpinned first');
+    expect(deleted).toBe(0);
+    await page.getByTestId('location-delete-yes').click();
+    await expect.poll(() => deleted).toBe(1);
+  } finally {
+    await page.unroute(/\/api\/v1\/locations\/home/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 a viewer reads the locations and has no control, and the API refuses the write', async () => {
+  const who = await operatorPage(VIEWER.user, VIEWER.pass, 'viewer');
+  try {
+    await expect(who.p.getByRole('heading', { name: 'Sign in' })).toHaveCount(0);
+    await who.p.goto('/#/locations');
+    await who.p.reload();
+    await expect(who.p.getByRole('heading', { name: 'Locations', level: 1 })).toBeVisible({ timeout: 30_000 });
+    await expect(who.p.getByTestId('locations-empty')).toBeVisible();
+    await expect(who.p.getByTestId('location-new')).toHaveCount(0);
+    const put = await who.p.request.put('/api/v1/locations/viewer-try', {
+      headers: { 'x-csrf-token': await csrfOf(who.p.request) },
+      data: { networks: ['203.0.113.0/24'] },
+    });
+    expect(put.status()).toBe(403);
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 403 \(/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await who.close();
+  }
+});
+
+// The device form's location control: it pins the device and, on "From its address", removes the pin (the write
+// replaces the whole entry, so a clear is the location left out).
+test('dsc_910 the device form sets and clears a location override', async () => {
+  await stubLocations();
+  let pinned = false;
+  // A stored device on the address the dashboard's top clients show (the earlier tests renamed the real one).
+  await page.route(/\/api\/v1\/clients$/, (r) =>
+    r.fulfill({
+      json: { items: [{ name: 'Pin test', match: ['127.0.0.1'], groups: ['default'], effectiveGroups: ['default'], source: 'api', ...(pinned ? { location: 'lab', locationName: 'lab', locationPinned: true } : {}) }] },
+    }),
+  );
+  let sent: Record<string, unknown> | null = null;
+  await page.route(/\/api\/v1\/clients\/Pin%20test/, async (r) => {
+    if (r.request().method() !== 'PUT') return r.continue();
+    if (!r.request().url().includes('dryRun')) sent = r.request().postDataJSON();
+    await r.fulfill({ json: { applied: true, recentQueries: 0 } });
+  });
+  const openForm = async () => {
+    await page.goto('/#/');
+    await listOf('Top clients').getByRole('button', { name: /Renamed laptop|127\.0\.0\.1/ }).first().click();
+    await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+    await expect(page.getByTestId('device-location')).toBeVisible();
+  };
+  try {
+    await openForm();
+    // Not pinned: the form says it follows its address.
+    await expect(page.getByTestId('device-location')).toHaveValue('');
+    await page.getByTestId('device-location').selectOption('lab');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status')).toContainText('Saved');
+    expect(sent).toMatchObject({ name: 'Pin test', location: 'lab' });
+    await page.keyboard.press('Escape');
+    // Pinned: the form shows the pin, and "From its address" removes it.
+    pinned = true;
+    sent = null;
+    await openForm();
+    await expect(page.getByTestId('device-location')).toHaveValue('lab');
+    await page.getByTestId('device-location').selectOption('');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status')).toContainText('Saved');
+    expect(sent).not.toBeNull();
+    expect(sent).not.toHaveProperty('location');
+    await page.keyboard.press('Escape');
+  } finally {
+    await page.unroute(/\/api\/v1\/clients$/);
+    await page.unroute(/\/api\/v1\/clients\/Pin%20test/);
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 the clients lists show a location badge and filter by location', async () => {
+  await stubLocations();
+  const device = (name: string, match: string, location: string, label: string, pinned: boolean) => ({
+    name, match: [match], groups: ['default'], effectiveGroups: ['default'], source: 'api', location, locationName: label, locationPinned: pinned,
+  });
+  await page.route(/\/api\/v1\/clients$/, (r) =>
+    r.fulfill({ json: { items: [device('Nas', '192.0.2.10', 'home', 'Home', false), device('Bench', '198.51.100.7', 'lab', 'lab', true)] } }),
+  );
+  await page.route('**/api/v1/dhcp/leases', (r) =>
+    r.fulfill({ json: { items: [{ ip: '192.0.2.10', mac: 'aa:bb:cc:dd:ee:10', hostname: 'nas', dnsName: 'nas.home.example.net', source: 'router', router: 'udm', expiresUnixSeconds: 0 }, { ip: '203.0.113.9', mac: 'aa:bb:cc:dd:ee:09', hostname: 'stray', source: 'router', router: 'udm', expiresUnixSeconds: 0 }] } }),
+  );
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=devices');
+    const nas = page.getByRole('row').filter({ hasText: 'Nas' });
+    await expect(nas.getByTestId('location-badge')).toHaveText('Home');
+    await expect(page.getByRole('row').filter({ hasText: 'Bench' }).getByTestId('location-badge')).toHaveText('lab (pinned)');
+    await page.getByTestId('location-filter').selectOption('home');
+    await expect(page.getByRole('row').filter({ hasText: 'Bench' })).toHaveCount(0);
+    await expect(nas).toBeVisible();
+    await page.getByTestId('location-filter').selectOption('');
+    // The discovered list gets the badge from the address.
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await expect(page.getByRole('row').filter({ hasText: '192.0.2.10' }).getByTestId('location-badge')).toHaveText('Home');
+    await expect(page.getByRole('row').filter({ hasText: '203.0.113.9' }).getByTestId('location-badge')).toHaveCount(0);
+    await page.getByTestId('location-filter').selectOption('lab');
+    await expect(page.getByRole('row').filter({ hasText: '192.0.2.10' })).toHaveCount(0);
+  } finally {
+    await page.unroute(/\/api\/v1\/clients$/);
+    await page.unroute('**/api/v1/dhcp/leases');
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 the networks show a location badge, a filter, and each device’s location', async () => {
+  await stubLocations();
+  await page.route('**/api/v1/networks', (r) => r.fulfill({ json: { items: NETWORKS } }));
+  await page.route('**/api/v1/dhcp/leases', (r) => r.fulfill({ json: { items: DEVICES_ON_NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    const home = page.getByRole('row').filter({ hasText: '10.20.2.0/24' });
+    await expect(home.getByTestId('location-badge')).toHaveText('Home');
+    await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('location-badge')).toHaveCount(0);
+    await page.getByTestId('location-filter').selectOption('home');
+    await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' })).toHaveCount(0);
+    await expect(home).toBeVisible();
+    await home.getByTestId('network-open').click();
+    const dev = page.getByTestId('network-devices').getByRole('row').filter({ hasText: '10.20.2.31' });
+    await expect(dev.getByTestId('location-badge')).toHaveText('Home (pinned)');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute('**/api/v1/dhcp/leases');
+    await unstubLocations();
+  }
+});
+
+test('dsc_914 the CMDB list shows a location badge, filters and groups by location', async () => {
+  await stubLocations();
+  await page.route('**/api/v1/cmdb/status', (r) =>
+    r.fulfill({ json: { enabled: true, running: true, designated: true, cis: [{ ty: 'device', count: 3 }], records: 3, recordsPresent: 3, proposalsOpen: 0, diskBytes: 1048576, sources: [], dropped: { ci: 0, record: 0, batch: 0 }, caps: {} } }),
+  );
+  const ci = (id: string, name: string) => ({ id, ty: 'device', name, unconfirmed: false, unmappedPort: false, firstSeen: 1, records: 1, sources: ['config'], proposals: 0 });
+  await page.route('**/api/v1/cmdb/proposals', (r) => r.fulfill({ json: [] }));
+  await page.route(/\/api\/v1\/cmdb\/cis(\?|$)/, (r) =>
+    r.fulfill({ json: { items: [ci('ci_a', 'nas'), ci('ci_b', 'bench.lab.example.net'), ci('ci_c', 'stray')] } }),
+  );
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/cmdb');
+    await expect(page.getByTestId('cmdb-row')).toHaveCount(3);
+    await expect(page.getByTestId('cmdb-row').filter({ hasText: 'nas' }).getByTestId('location-badge')).toHaveText('Home');
+    await expect(page.getByTestId('cmdb-row').filter({ hasText: 'bench' }).getByTestId('location-badge')).toHaveText('lab');
+    await expect(page.getByTestId('cmdb-row').filter({ hasText: 'stray' }).getByTestId('location-badge')).toHaveCount(0);
+    await page.getByTestId('location-filter').selectOption('lab');
+    await expect(page.getByTestId('cmdb-row')).toHaveCount(1);
+    await page.getByTestId('location-filter').selectOption('');
+    await page.getByTestId('cmdb-by-location').check();
+    await expect(page.getByTestId('cmdb-location-group')).toHaveText(['Home (1)', 'lab (1)', 'No location (1)']);
+  } finally {
+    await page.unroute('**/api/v1/cmdb/status');
+    await page.unroute(/\/api\/v1\/cmdb\/cis(\?|$)/);
+    await page.unroute('**/api/v1/cmdb/proposals');
+    await unstubLocations();
+  }
+});
