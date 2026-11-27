@@ -16,6 +16,13 @@ use axum::response::{IntoResponse, Response};
 #[allow_missing = true]
 struct Assets;
 
+/// The help glossary (REQ: API-011, ADR-036, ADR-1020 amendment): the one file the UI fetches when
+/// a "?" first needs it. It is embedded from `docs/help/topics.json`, outside `ui/dist`, so the
+/// UI's size budget (which counts every file in `ui/dist`) does not carry it. It is served like
+/// the UI's own files, with no sign-in (the sign-in page has help buttons too).
+static GLOSSARY: &[u8] = include_bytes!("../../../docs/help/topics.json");
+const GLOSSARY_PATH: &str = "help/topics.json";
+
 /// Content Security Policy for every UI response. Styles are only stylesheets: the UI sets
 /// dynamic styles through the CSSOM, which CSP allows, never through `style` attributes.
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
@@ -149,6 +156,7 @@ pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
     let (body, encoded): (Cow<'static, [u8]>, bool) = match Assets::get(&format!("{path}.gz")) {
+        _ if path == GLOSSARY_PATH => (Cow::Borrowed(GLOSSARY), false),
         // A client that accepts gzip gets the stored file; any other gets it inflated.
         Some(f) if accepts_gzip(headers) => (f.data, true),
         Some(f) => match gunzip(&f.data) {
@@ -173,6 +181,8 @@ pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
         header::CACHE_CONTROL,
         HeaderValue::from_static(if path.starts_with("assets/") {
             "public, max-age=31536000, immutable"
+        } else if path == GLOSSARY_PATH {
+            "public, max-age=3600"
         } else {
             "no-cache"
         }),
@@ -208,6 +218,35 @@ mod tests {
             "text/javascript; charset=utf-8"
         );
         assert_eq!(content_type("favicon.svg"), "image/svg+xml");
+    }
+
+    // REQ: API-011 (ADR-1020 amendment) — the glossary is served outside the UI bundle, with the UI's
+    // security headers, as JSON that holds every topic, to a client with or without gzip.
+    #[test]
+    fn api_011_glossary_is_served_from_the_binary() {
+        let uri: Uri = "/help/topics.json".parse().unwrap();
+        for method in [Method::GET, Method::HEAD] {
+            let resp = serve(&method, &uri, &HeaderMap::new());
+            assert_eq!(resp.status(), StatusCode::OK);
+            let h = resp.headers();
+            assert_eq!(h[header::CONTENT_TYPE], "application/json");
+            assert!(h.get(header::CONTENT_ENCODING).is_none());
+            assert!(h.contains_key(header::CONTENT_SECURITY_POLICY));
+            assert!(
+                h[header::CACHE_CONTROL]
+                    .to_str()
+                    .unwrap()
+                    .contains("max-age=")
+            );
+        }
+        let v: serde_json::Value = serde_json::from_slice(GLOSSARY).unwrap();
+        let topics = v["topics"].as_array().unwrap();
+        assert!(topics.len() > 100);
+        assert!(
+            topics
+                .iter()
+                .all(|t| t["id"].is_string() && t["title"].is_string())
+        );
     }
 
     // REQ: NFR-001 (ADR-168) — a UI file is stored gzipped and inflated for a client that
