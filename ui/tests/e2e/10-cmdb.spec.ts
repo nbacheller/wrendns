@@ -200,9 +200,37 @@ test('dsc_903 merge two devices with a preview; the old id redirects', async () 
   expect((await cis(A)).some((c) => c.id === idA)).toBe(false);
 });
 
+test('dsc_903 a filter typed while the list is loading is not lost', async () => {
+  // The unfiltered load that opens the page is held; the filter is typed meanwhile. The list must
+  // end up answering the filter (one row), not the held load's answer and not a dropped request.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  await page.route(/\/api\/v1\/cmdb\/cis\?/, async (route) => {
+    if (!route.request().url().includes('q=')) await gate;
+    await route.continue();
+  });
+  try {
+    const held = page.waitForRequest((r) => /\/api\/v1\/cmdb\/cis\?limit=50$/.test(r.url()));
+    await page.reload();
+    await held;
+    await page.getByLabel('Find a CI').fill(idB);
+    await page.waitForTimeout(600); // past the 200 ms debounce: the filtered load is asked for while the first runs
+    release();
+    await expect(page.locator('[data-testid="cmdb-row"]')).toHaveCount(1);
+    await expect(page.locator(`[data-testid="cmdb-row"][data-ci="${idB}"]`)).toBeVisible();
+  } finally {
+    release();
+    await page.unroute(/\/api\/v1\/cmdb\/cis\?/);
+  }
+});
+
 test('dsc_903 split a record out, then unlink and move one; the decisions stay', async () => {
+  // Start from a known state: the page the merge test left open is reloaded (a goto to the same hash
+  // does not), and the CI is found by its id, which a merge never changes (its name can: the survivor
+  // may carry the other device's name, so a search for the old name finds nothing).
   await page.goto('/#/cmdb');
-  await page.getByLabel('Find a CI').fill(B);
+  await page.reload();
+  await page.getByLabel('Find a CI').fill(idB);
   await page.locator(`[data-testid="cmdb-row"][data-ci="${idB}"]`).getByRole('button').click();
   const ci = page.getByTestId('cmdb-ci');
   await expect(ci.locator('[data-testid="cmdb-record"]')).toHaveCount(2);
