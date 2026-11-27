@@ -44,7 +44,8 @@
         for (const p of points) if (p.startUnixSeconds === t && (n === undefined || p.node === n)) spent += p.bad;
         return Math.round((100 - (spent * 100) / Math.max(1, allowed)) * 10) / 10;
       });
-      return { label: n ?? 'every node', color: colors[i % colors.length], values };
+      // The legend's figure off the plot: the budget left now (a percentage is not summed over time).
+      return { label: n ?? 'every node', color: colors[i % colors.length], values, overall: values.length ? values[values.length - 1] : null };
     });
     return { times, series };
   }
@@ -99,7 +100,7 @@
       <p class="empty" data-testid="budget-empty">Nothing spent this window.</p>
     {:else}
       {#if all}
-        <Chart title="Budget left (%)" times={all.times} series={all.series} height={200} markers={changes.markers} format={(n) => `${n}%`} />
+        <Chart title="Budget left (%)" times={all.times} series={all.series} height={200} markers={changes.markers} format={(n) => `${n}%`} overallLabel="now" />
       {/if}
       {#if hidden('timeline_only')}
         <p class="muted small">The privacy level keeps only the timeline: no breakdown by client, name, or anything else.</p>
@@ -130,7 +131,7 @@
         <h3>By node</h3>
         <div class="nodes">
           {#each perNode as n (n.node)}
-            <Chart title={n.node} times={n.times} series={n.series} height={120} format={(v) => `${v}%`} />
+            <Chart title={n.node} times={n.times} series={n.series} height={120} format={(v) => `${v}%`} overallLabel="now" />
           {/each}
         </div>
       {/if}

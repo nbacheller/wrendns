@@ -68,17 +68,19 @@
     const at = (iso: string) => Math.round(Date.parse(iso) / 1000 / step) * step;
     const times = [...new Set(stats.flatMap((s) => (s.history ?? []).map((p) => at(p.at))))].sort((a, b) => a - b);
     const index = new Map(times.map((t, i) => [t, i]));
-    const series = (pick: (p: S['CachePoint']) => number | null | undefined): Series[] =>
+    const series = (pick: (p: S['CachePoint']) => number | null | undefined, percent = false): Series[] =>
       stats.map((s, i) => {
         const values: (number | null)[] = times.map(() => null);
         for (const p of s.history ?? []) {
           const j = index.get(at(p.at));
           if (j != null) values[j] = pick(p) ?? null;
         }
-        return { label: label(s), color: colors[i % colors.length], values: values as number[] };
+        // A percentage is not added up over time or across nodes: each node's legend figure is its
+        // hits over its lookups for the hour (`hitLastHour`, from the counts), null before any lookup.
+        return { label: label(s), color: colors[i % colors.length], values: values as number[], ...(percent ? { overall: hitLastHour(s) } : {}) };
       });
     // DNS-007: answered from the cache (fresh or refreshed); fresh hits alone from older nodes.
-    return { times, hit: series((p) => p.answeredPercent ?? p.hitPercent), lookups: series((p) => p.lookups) };
+    return { times, hit: series((p) => p.answeredPercent ?? p.hitPercent, true), lookups: series((p) => p.lookups) };
   });
 
   const lastHour = (s: Stats, k: 'staleServed' | 'prefetches' | 'evictions' | 'lookups') =>
@@ -94,7 +96,6 @@
   const barColors = ['--ok', '--warn', '--info', '--bad'];
   let showAllNodes = $state(false);
   let expanded = $state<string | null>(null);
-  const ttlShort = (s: number) => (s >= 0 ? duration(s) : `-${duration(-s)}`);
   type Merged = {
     key: string;
     name: string;
@@ -107,6 +108,8 @@
     bytes: number;
     ttlMin: number;
     ttlMax: number;
+    /** Nodes holding it past its time (kept only to answer when upstreams fail). */
+    stale: number;
     nodes: { node: string; entry: S['CacheTopEntry'] }[];
   };
   // Answers with an error (a node that couldn't be asked) don't count as nodes holding names.
@@ -124,8 +127,12 @@
         if (m) {
           m.hits += e.hits;
           m.bytes = Math.max(m.bytes, e.bytes);
-          m.ttlMin = Math.min(m.ttlMin, e.ttlLeftSeconds);
-          m.ttlMax = Math.max(m.ttlMax, e.ttlLeftSeconds);
+          if (e.ttlLeftSeconds >= 0) {
+            m.ttlMin = Math.min(m.ttlMin, e.ttlLeftSeconds);
+            m.ttlMax = Math.max(m.ttlMax, e.ttlLeftSeconds);
+          } else {
+            m.stale++;
+          }
           m.authentic ||= e.authentic;
           m.nodes.push({ node, entry: e });
         } else {
@@ -139,8 +146,9 @@
             authentic: e.authentic,
             hits: e.hits,
             bytes: e.bytes,
-            ttlMin: e.ttlLeftSeconds,
-            ttlMax: e.ttlLeftSeconds,
+            ttlMin: e.ttlLeftSeconds >= 0 ? e.ttlLeftSeconds : Infinity,
+            ttlMax: e.ttlLeftSeconds >= 0 ? e.ttlLeftSeconds : -Infinity,
+            stale: e.ttlLeftSeconds >= 0 ? 0 : 1,
             nodes: [{ node, entry: e }],
           });
         }
@@ -148,7 +156,9 @@
     }
     const rows = [...by.values()];
     if (sort === 'bytes') rows.sort((a, b) => b.bytes - a.bytes);
-    else if (sort === 'expiring') rows.sort((a, b) => a.ttlMin - b.ttlMin);
+    // A name stale on any node sorts first, on purpose: a stale copy counts as already expired, so
+    // '41s to 59s left (stale on 1)' comes before a name at '0s left'.
+    else if (sort === 'expiring') rows.sort((a, b) => (a.stale ? -1 : a.ttlMin) - (b.stale ? -1 : b.ttlMin));
     else rows.sort((a, b) => b.hits - a.hits || b.nodes.length - a.nodes.length);
     return rows.slice(0, LIMIT);
   });
@@ -159,6 +169,14 @@
     ['servfail', 'SERVFAIL', 'SERVFAIL'],
   ];
   const total = (m: S['CacheMakeup']) => m.positive + m.nxdomain + m.nodata + m.servfail;
+  // REQ: DNS-001 — the time left across nodes: the range over the nodes where it is still good
+  // (never a negative time: an entry past its time is not part of the range), and how many hold
+  // it stale; held stale everywhere, it reads like a single node's row.
+  const ttlRange = (m: Merged) => {
+    if (m.ttlMax < 0) return m.stale > 1 ? `stale on ${m.stale} nodes` : ttl(m.nodes[0].entry.ttlLeftSeconds);
+    const live = duration(m.ttlMin) === duration(m.ttlMax) ? `${duration(m.ttlMin)} left` : `${duration(m.ttlMin)} to ${duration(m.ttlMax)} left`;
+    return m.stale ? `${live} (stale on ${m.stale})` : live;
+  };
   const ttl = (s: number) => (s >= 0 ? `${duration(s)} left` : `stale ${duration(-s)}`);
   let lookupName = $state('');
   // REQ: OBS-021 — the size advice's verdicts.
@@ -228,7 +246,7 @@
   </section>
 
   {#if charts.times.length > 1}
-    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} markers={changes.markers} />
+    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} overallLabel="last hour" format={(n) => pct(n)} markers={changes.markers} />
     <Chart title="Lookups per 15 s" times={charts.times} series={charts.lookups} height={160} markers={changes.markers} />
   {:else if stats.length}
     <p class="muted small">The charts fill in over the first minutes (a sample every 15 s).</p>
@@ -326,7 +344,7 @@
                   <td class="mono"><button class="link" onclick={() => (lookupName = m.name)} title="Look it up below">{m.name}</button></td>
                   <td>{m.qtype}{#if m.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
                   <td class="small">{m.rcode} · {m.answers}{#if m.authentic}<span class="badge ok">validated</span>{/if}</td>
-                  <td class="small {m.ttlMax < 0 ? 'muted' : ''}">{ttlShort(m.ttlMin) === ttlShort(m.ttlMax) ? ttl(m.ttlMin) : `${ttlShort(m.ttlMin)} to ${ttlShort(m.ttlMax)}`}</td>
+                  <td class="small {m.ttlMax < 0 ? 'muted' : ''}">{ttlRange(m)}</td>
                   {#if multi}
                     <td class="small">
                       <button class="link" aria-expanded={expanded === m.key} onclick={() => (expanded = expanded === m.key ? null : m.key)}
