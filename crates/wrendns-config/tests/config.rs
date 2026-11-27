@@ -2068,10 +2068,6 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
             "telemetry.qlog.flush_interval_secs",
         ),
         (
-            "[telemetry.dnstap]\nbuffer = 1000001\n",
-            "telemetry.dnstap.buffer",
-        ),
-        (
             "[telemetry.dnstap]\nbuffer = 99\n",
             "telemetry.dnstap.buffer",
         ),
@@ -2089,6 +2085,24 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
     }
     let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n[telemetry.dnstap]\nbuffer = 1000000\n";
     assert!(load(ok).is_ok(), "the bounds themselves are accepted");
+    // REQ: OBS-007, API-905 (T40.13, review) - a file whose dnstap `buffer` is above the API's
+    // ceiling still loads (it was valid before the ceiling), with a warning.
+    let big = load("[telemetry.dnstap]\nbuffer = 2000000\n").expect("a large buffer still loads");
+    assert!(
+        big.warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.buffer") && w.contains("2000000")),
+        "{:?}",
+        big.warnings
+    );
+    assert!(
+        !load(ok)
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|w| w.contains("dnstap")),
+        "no warning at the ceiling"
+    );
 }
 
 /// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or

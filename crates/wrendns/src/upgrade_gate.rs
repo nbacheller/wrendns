@@ -19,6 +19,12 @@ fn held() -> std::sync::MutexGuard<'static, BTreeSet<Feature>> {
     HELD.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A test that made a gate refuse leaves no refusal standing for the tests that read `standing`.
+#[cfg(test)]
+pub(crate) fn forget_held() {
+    held().clear();
+}
+
 /// The peers heard from and the full members the identity registry names (this node and removed
 /// nodes left out): a registered member this process has not heard from since it started has
 /// not reported its build, and the gate counts it as not knowing the feature.

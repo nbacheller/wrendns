@@ -474,6 +474,9 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
     Ok(section_json(kind, &cfg))
 }
 
+/// The most a `[telemetry.dnstap] buffer` set through the API or the web UI may be (OBS-007, API-905).
+pub(crate) const DNSTAP_BUFFER_MAX: u64 = 1_000_000;
+
 /// A PUT body as stored: a field the files set and the body leaves out keeps the file's value
 /// (as credentials do, OPS-014); a body that sets one to another value is refused (409
 /// `set_by_file`). `file` is the section as the files give it.
@@ -497,6 +500,18 @@ pub(crate) fn prepare(
     // read is fine, and it is never stored.
     if kind == ManagedKind::TelemetryDnstap {
         obj.remove("restart_needed");
+        // REQ: OBS-007, API-905 (T40.13) - the queue is allocated at its full size when the node
+        // starts, so a `buffer` the API or the UI sets has a ceiling. The file's own validation only
+        // warns (a file that predates the ceiling still loads), and the file's value sent back as
+        // read is no new setting.
+        if let Some(n) = obj.get("buffer").and_then(Value::as_u64)
+            && n > DNSTAP_BUFFER_MAX
+            && file.get("buffer").and_then(Value::as_u64) != Some(n)
+        {
+            return Err(Problem::invalid(format!(
+                "`buffer`: at most {DNSTAP_BUFFER_MAX}"
+            )));
+        }
     }
     // `mdns_port` is the same: read-only here, as the file sets it.
     if kind == ManagedKind::Clients

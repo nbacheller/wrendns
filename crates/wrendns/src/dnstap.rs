@@ -95,6 +95,12 @@ fn now_ns() -> u128 {
 }
 
 impl Tap {
+    /// Every how many client queries one is copied (the tests read what the start-up path set).
+    #[cfg(test)]
+    pub(crate) fn sample_every(&self) -> u64 {
+        self.every
+    }
+
     /// Offers one answered (or dropped) query; copies it if it's sampled.
     pub(crate) fn offer(
         &self,

@@ -729,9 +729,13 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
         r.err("telemetry.dnstap.buffer", "at least 100");
     }
     // REQ: OBS-007, API-905 (T40.13) - the queue is allocated at its full size when the node starts,
-    // so a setting an admin can make from the UI has a ceiling.
+    // so the API and the UI refuse a `buffer` above 1,000,000. A file written before that (any
+    // value of 100 or more was valid) still loads: it is a warning, never a refusal to start.
     if d.buffer > 1_000_000 {
-        r.err("telemetry.dnstap.buffer", "at most 1000000");
+        r.warn(format!(
+            "telemetry.dnstap.buffer: {} is above 1000000, the most the API and the web UI accept; the queue is allocated at its full size when the node starts",
+            d.buffer
+        ));
     }
 }
 

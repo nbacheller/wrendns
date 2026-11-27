@@ -4293,7 +4293,7 @@ async fn write_inner(
     if let Err(e) = pin_guard(&p, existing.as_ref(), &op) {
         return e.into_response();
     }
-    let expect = match expected_version(&headers) {
+    let mut expect = match expected_version(&headers) {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
@@ -4397,7 +4397,9 @@ async fn write_inner(
     // out of the process: a change that widens the copy needs a sign-in within the last 10 minutes,
     // as the guarded settings do (a token or Basic sign-in never has one). The judgement is on what
     // the write would change, so a DELETE that brings a file's tap back is judged too. A dry run is
-    // let through: its warnings say what the real write will need.
+    // let through: its warnings say what the real write will need. The judgement is made on one
+    // version of the settings and the real write is pinned to it (`expect`), so a change made in
+    // between fails with 409 `version_conflict` instead of being applied unjudged.
     if let Op::Managed(ManagedKind::TelemetryDnstap, body) = &op
         && !dry_run
     {
@@ -4407,7 +4409,7 @@ async fn write_inner(
                 name: name.clone(),
                 body: body.clone(),
                 dry_run: true,
-                expect: None,
+                expect,
                 by: actor.name.clone(),
                 simulate: None,
                 role: Some(p.role),
@@ -4431,6 +4433,7 @@ async fn write_inner(
                         return e.into_response();
                     }
                 }
+                expect = Some(c.config_version);
             }
             Err(e) => return crate::simulate_api::sanitize_problem(&p, e).into_response(),
         }

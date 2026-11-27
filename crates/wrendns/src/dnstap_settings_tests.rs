@@ -355,6 +355,73 @@ async fn obs_007_dnstap_a_change_needs_a_restart_and_says_so() {
     assert_eq!(s, StatusCode::OK, "{v}");
 }
 
+/// REQ: OBS-007, API-905 (T40.13, AC2, review) - the start-up path picks up what the API stored: the
+/// configuration a node loads at start (`server::load`: the files, then the stored settings) has the
+/// tap's target, sampling, queue, `forwarder` and `resolver` as saved, and `dnstap::start`, which the
+/// node calls with it, builds the tap and the exchange observers from them.
+#[tokio::test]
+async fn obs_007_dnstap_start_up_reads_what_the_api_stored() {
+    let h = harness("");
+    let body = json!({
+        "socket": "/run/wrendns-test-tap.sock",
+        "sample_every": 7,
+        "buffer": 200,
+        "forwarder": true,
+        "resolver": true,
+    });
+    let (s, v) = session_call(&h, 0, "PUT", URL, Some(body)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // A node's own file: nothing about dnstap, the data directory the stored settings live in.
+    let data = h.src.file_config.load_full().node.data_dir.to_string();
+    let file = std::path::Path::new(&data).join("wrendns.toml");
+    std::fs::write(&file, format!("[node]\ndata_dir = \"{data}\"\n")).unwrap();
+    let cfg = crate::server::load(&[file]).expect("the node's configuration loads");
+    let d = &cfg.telemetry.dnstap;
+    assert_eq!(d.socket.as_deref(), Some("/run/wrendns-test-tap.sock"));
+    assert_eq!((d.sample_every, d.buffer), (7, 200));
+    assert!(d.forwarder && d.resolver, "both exchange observers are on");
+    let tap = crate::dnstap::start(&cfg).expect("the tap starts from the stored settings");
+    assert_eq!(tap.sample_every(), 7);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - a file whose `buffer` is above the API's ceiling (it was
+/// valid before the ceiling) still loads, with a warning, and a write that leaves `buffer` out or
+/// sends the file's value back still works; only a new value above the ceiling is refused.
+#[tokio::test]
+async fn obs_007_dnstap_a_large_buffer_in_the_file_still_loads() {
+    let loaded = wrendns_config::Loader::new()
+        .toml_str("t.toml", "[telemetry.dnstap]\nbuffer = 2000000\n")
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .expect("the file loads");
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.buffer")),
+        "{:?}",
+        loaded.warnings
+    );
+    let h = with_toml("[telemetry.dnstap]\nbuffer = 2000000\n");
+    let (s, _, v) = h
+        .call("PUT", URL, Some(&json!({ "sample_every": 20 })))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(merged(&h).telemetry.dnstap.buffer, 2_000_000);
+    let (s, _, v) = h
+        .call("PUT", URL, Some(&json!({ "buffer": 2_000_000 })))
+        .await;
+    assert_eq!(s, StatusCode::OK, "the file's own value, sent back: {v}");
+    let plain = harness("");
+    let (s, _, v) = plain
+        .call("PUT", URL, Some(&json!({ "buffer": 1_000_001 })))
+        .await;
+    assert!(
+        s == StatusCode::UNPROCESSABLE_ENTITY || s == StatusCode::BAD_REQUEST,
+        "{s} {v}"
+    );
+}
+
 /// REQ: OBS-007, API-905, CLU-015 (T40.13, AC1) - the kind is node-managed: its row is in the
 /// node-managed blob a primary publishes (so a promoted replica keeps it), a build that does not
 /// know the kind skips it, and the kind is classified once.
@@ -389,6 +456,9 @@ async fn obs_007_dnstap_settings_replicate_in_the_node_managed_blob() {
 /// is sent; a primary that announces it gets the write.
 #[tokio::test(flavor = "multi_thread")]
 async fn obs_007_primary_without_the_dnstap_feature_is_refused_before_forwarding() {
+    // The refusals a gate records are process-wide (`upgrade_gate::standing`): take the turn the
+    // other gate tests take, and leave nothing standing behind.
+    let _turn = crate::secrets_api_tests::GATE.lock().await;
     let body = json!({ "buffer": 5000 });
     let (replica, older) = crate::credential_tests::older_primary_and_replica_features(
         "1.1.0-edge.40",
@@ -414,6 +484,7 @@ async fn obs_007_primary_without_the_dnstap_feature_is_refused_before_forwarding
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(!current.got.lock().unwrap().is_empty(), "forwarded");
     let _ = current.stop.send(true);
+    crate::upgrade_gate::forget_held();
 }
 
 /// REQ: OBS-007, API-905, CLU-010 (T40.13, AC7) - where the write is applied: a primary with a
@@ -422,6 +493,9 @@ async fn obs_007_primary_without_the_dnstap_feature_is_refused_before_forwarding
 /// every member announces it, the write goes through.
 #[tokio::test(flavor = "multi_thread")]
 async fn obs_007_dnstap_write_waits_for_every_members_build() {
+    // The refusals a gate records are process-wide (`upgrade_gate::standing`): take the turn the
+    // other gate tests take, and leave nothing standing behind.
+    let _turn = crate::secrets_api_tests::GATE.lock().await;
     let body = json!({ "buffer": 5000 });
     let (replica, old) = crate::credential_tests::older_primary_and_replica_features(
         "1.1.0",
@@ -458,6 +532,7 @@ async fn obs_007_dnstap_write_waits_for_every_members_build() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(h.auth.state().managed("dnstap_settings").unwrap().len(), 1);
     let _ = new.stop.send(true);
+    crate::upgrade_gate::forget_held();
 }
 
 /// REQ: OBS-007, API-905 (T40.13, AC5) - the read is open to agents through MCP, and there is no

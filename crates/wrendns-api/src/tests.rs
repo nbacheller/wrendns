@@ -221,6 +221,23 @@ impl Backend for Fake {
                 })
             });
         }
+        // REQ: OBS-007, API-905 - the dnstap settings: the plan is at version 7, nothing widens.
+        if w.kind == crate::ManagedKind::TelemetryDnstap {
+            let applied = !w.dry_run;
+            return Box::pin(async move {
+                Ok(crate::model::ConfigChange {
+                    applied,
+                    config_version: 7,
+                    before: Some(serde_json::json!({})),
+                    after: Some(serde_json::json!({})),
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                })
+            });
+        }
         Box::pin(async { Err(Problem::unavailable("recorded")) })
     }
     fn annotations(&self, f: &crate::model::AnnotationFilter) -> Vec<crate::model::Annotation> {
@@ -5465,4 +5482,41 @@ async fn dns_904_the_trace_route_returns_the_steps() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = get(&app, "/api/v1/recursor/trace").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "name is required");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - a dnstap write is judged on one version of the settings
+/// and the real write is pinned to it: a change made between the judgement and the write fails with
+/// 409 instead of being applied unjudged. A caller's own `If-Match` is the one judged.
+#[tokio::test]
+async fn obs_007_dnstap_write_is_pinned_to_the_version_it_was_judged_on() {
+    let (app, fake) = app();
+    let put = |extra: Option<&str>| {
+        let mut b = Request::put("/api/v1/dnstap-settings/default")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json");
+        if let Some(v) = extra {
+            b = b.header("if-match", v);
+        }
+        b.body(Body::from(r#"{"buffer":5000}"#)).unwrap()
+    };
+    let (s, _, v) = send(&app, put(None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = send(&app, put(Some("\"7\""))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let w: Vec<String> = fake
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|x| x.starts_with("managed TelemetryDnstap"))
+        .cloned()
+        .collect();
+    // Each request: the judging dry run (the caller's expect), then the real write at version 7.
+    assert_eq!(w.len(), 4, "{w:?}");
+    assert!(!w[0].contains("expect="), "{w:?}");
+    assert!(w[1].ends_with(" expect=7"), "{w:?}");
+    assert!(
+        w[2].ends_with(" expect=7") && w[3].ends_with(" expect=7"),
+        "{w:?}"
+    );
 }

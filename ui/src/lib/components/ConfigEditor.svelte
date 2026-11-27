@@ -53,8 +53,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import Picker from './Picker.svelte';
-  import { api, type S } from '../api';
-  import { can } from '../session.svelte';
+  import { api, ApiError, type S } from '../api';
+  import { can, session, signedIn } from '../session.svelte';
   import { currentMode } from '../mode.svelte';
   import Drawer from './Drawer.svelte';
   import ErrorNote from './ErrorNote.svelte';
@@ -118,6 +118,38 @@
      *  Edit (event sinks). */
     fileReadOnly?: boolean;
   } = $props();
+  // REQ: API-905 (T40.13, review) - a change the server holds to a sign-in from the last 10 minutes
+  // (403 `reauth_required`: the dnstap settings, widening) asks for the password here and then makes
+  // the same change again. Nothing typed is kept once it is sent.
+  let reauth = $state.raw<(() => Promise<void>) | null>(null);
+  let password = $state('');
+  let totp = $state('');
+  let needTotp = $state(false);
+  let reauthError = $state<unknown>(null);
+  const needsSignIn = (err: unknown) => err instanceof ApiError && err.code === 'reauth_required';
+  function cancelReauth() {
+    reauth = null;
+    password = totp = '';
+    needTotp = false;
+    reauthError = null;
+  }
+  async function signInAgain() {
+    const user = session.user?.username;
+    const retry = reauth;
+    if (!user || !retry) return;
+    busy = true;
+    reauthError = null;
+    try {
+      signedIn(await api.login({ username: user, password, totp: totp || undefined }));
+      cancelReauth();
+      busy = false;
+      await retry();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'totp_required') needTotp = true;
+      else reauthError = e;
+      busy = false;
+    }
+  }
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
     if (!formAction || !editing) return;
@@ -325,7 +357,8 @@
       // Saved and kept for Git: it exists now, so a second save is an update, not a new name.
       else if (editing) editing = { ...editing, isNew: false };
     } catch (err) {
-      formError = err;
+      if (needsSignIn(err)) reauth = apply;
+      else formError = err;
     } finally {
       busy = false;
     }
@@ -339,7 +372,8 @@
       onchanged?.();
       if (result.keepInGit) editing = { name: e.name, isNew: false, values: {} };
     } catch (err) {
-      error = err;
+      if (needsSignIn(err)) reauth = () => remove(e);
+      else error = err;
     } finally {
       busy = false;
     }
@@ -354,12 +388,33 @@
   const toLines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 </script>
 
+{#snippet signIn()}
+  <div class="notice warn" role="alert" data-testid="reauth">
+    <strong>Confirm it's you.</strong> This change needs a sign-in from the last 10 minutes.
+    <label class="small">Password for {session.user?.username}
+      <input type="password" autocomplete="current-password" bind:value={password} aria-label="Your password" />
+    </label>
+    {#if needTotp}
+      <label class="small">Authenticator code
+        <input bind:value={totp} inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" />
+      </label>
+    {/if}
+    <ErrorNote error={reauthError} />
+    <div class="row">
+      <button type="button" class="primary" disabled={busy || !password} onclick={signInAgain} data-testid="reauth-go">Sign in again and apply</button>
+      <button type="button" disabled={busy} onclick={cancelReauth}>Cancel</button>
+    </div>
+    <span class="muted small">Signed in with a single sign-on provider? Sign out, sign in again, and retry.</span>
+  </div>
+{/snippet}
+
 <section class="card" data-testid={`editor-${kind}`}>
   <div class="head">
     <h2>{title}{#if help}<HelpButton id={help} />{:else}<HelpButton id="config-sources" />{/if}</h2>
     {#if writable && !singleton}<button onclick={() => open()}>Add {noun}</button>{/if}
   </div>
   <ErrorNote {error} />
+  {#if reauth && !editing}{@render signIn()}{/if}
   {#if entries.length === 0}
     <p class="empty">None yet.</p>
   {:else}
@@ -510,6 +565,7 @@
         {/each}
         {#if note}<p class="small" data-testid="editor-note">{note(editing.values)}</p>{/if}
         <ErrorNote error={formError} />
+        {#if reauth}{@render signIn()}{/if}
         {#if preview}
           <div class="preview" data-testid="entry-preview">
             <p><b>What this will do:</b> {preview.impact || 'Changes the configuration as shown.'}</p>

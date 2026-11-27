@@ -3624,6 +3624,8 @@ test('api_015 errors read as sentences', async () => {
     [422, 'credential_reentry_required', '`url` is `<redacted>`, and `tls_server_name` changed: a credential isn\'t sent to a new destination without being entered again', /The stored credential `url` isn't kept, because this entry now points somewhere else\. Enter it again on this form/],
     [422, 'credential_reentry_required', '`password` is `<redacted>`, and there is no stored value to keep', /The stored credential `password` has no value to keep\. Enter it again on this form/],
     [409, 'upgrade_required', 'a newer primary is needed', /too old/],
+    // A feature gate (dnstap, allowed networks) names the member and the setting, not a credential.
+    [409, 'upgrade_required', 'node edge-b runs version 1.1.0, which does not know the dnstap settings; upgrade it first', /edge-b runs version 1\.1\.0/],
     [422, 'secret_missing', '`token_ref` names no stored secret', /doesn't store/],
     [409, 'secret_in_use', "`alert.ui-used.token` is used by alert ui-used", /still in use/],
     [503, 'secrets_locked', 'the secrets key is missing', /can't be read, so/],
@@ -4997,6 +4999,61 @@ test('obs_007 dnstap card edits the section and says a restart is needed', async
   }
   await expect(row).toContainText('Off; upstream off, resolver off.');
   await expect(row).not.toContainText('Restart needed');
+});
+
+// REQ: OBS-007, API-905 (T40.13, review) — a widening change the server holds to a sign-in from the last
+// 10 minutes (403 `reauth_required`) does not dead-end: the card asks for the password, signs in again
+// and makes the same change. The first real write is refused (stubbed); the retry reaches the server.
+test('obs_007 dnstap card asks for the password when the sign-in is too old', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  await page.getByTestId('tuning-dnstap').locator('summary').click();
+  const row = page.getByTestId('editor-dnstap_settings').getByTestId('entry-row');
+  await expect(row).toContainText('Off; upstream off, resolver off.');
+  let refused = 0;
+  await page.route('**/api/v1/dnstap-settings/default*', async (route) => {
+    const req = route.request();
+    if (req.method() === 'PUT' && !req.url().includes('dryRun=true') && refused === 0) {
+      refused++;
+      return route.fulfill({
+        status: 403,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({
+          type: 'https://wrendns.com/problems/reauth_required',
+          title: 'Recent sign-in needed',
+          status: 403,
+          code: 'reauth_required',
+          detail: 'this needs a sign-in within the last 10 minutes; yours is older',
+        }),
+      });
+    }
+    return route.continue();
+  });
+  try {
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('/run/e2e-dnstap-reauth.sock');
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByTestId('entry-preview')).toContainText('restart');
+    await page.getByRole('button', { name: 'Apply' }).click();
+    const prompt = page.getByTestId('reauth');
+    await expect(prompt).toBeVisible();
+    await expect(prompt.getByTestId('reauth-go')).toBeDisabled();
+    await prompt.getByLabel('Your password').fill(ADMIN.pass);
+    await prompt.getByTestId('reauth-go').click();
+    await expect(row).toContainText('Restart needed');
+    expect(refused).toBe(1);
+    await expect(page.getByTestId('reauth')).toHaveCount(0);
+    const entry = (await (await page.request.get('/api/v1/config/entries?kind=dnstap_settings')).json()).items[0];
+    expect(entry.definition.socket).toBe('/run/e2e-dnstap-reauth.sock');
+  } finally {
+    await page.unroute('**/api/v1/dnstap-settings/default*');
+    const close = page.getByRole('dialog').getByRole('button', { name: 'Close' });
+    if (await close.count()) await close.click();
+    const revert = row.getByRole('button', { name: 'Revert to the file' });
+    if (await revert.count()) await revert.click();
+  }
+  await expect(row).toContainText('Off; upstream off, resolver off.');
 });
 
 // REQ: OBS-007, API-905 (T40.13) — the dnstap settings are an admin's as a whole: an operator sees the
