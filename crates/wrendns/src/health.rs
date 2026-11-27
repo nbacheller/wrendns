@@ -262,7 +262,7 @@ pub(crate) fn locations_held_reasons(held: Option<&str>) -> Vec<HealthReason> {
 pub(crate) fn anchor_reasons(items: Vec<(&'static str, String)>) -> Vec<HealthReason> {
     items
         .into_iter()
-        .map(|(code, text)| reason(DEGRADED, code, text, "#/settings"))
+        .map(|(code, text)| reason(DEGRADED, code, text, "#/settings?tab=queries"))
         .collect()
 }
 

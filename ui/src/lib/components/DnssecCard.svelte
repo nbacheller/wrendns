@@ -151,7 +151,7 @@
           <span class="muted">{NOT_FOLLOWED[n.mode]}</span>
         {:else}
           <ul>
-            {#each n.keys as k (k.keyTag)}
+            {#each n.keys as k}
               <li data-testid="anchor-key" data-state={k.state}>
                 <span class="mono">{k.keyTag}</span> {STATES[k.state] ?? k.state}
                 {#if k.state === 'add_pend' && k.trustedAtS}<span class="muted">(trusted from {when(k.trustedAtS)})</span>
