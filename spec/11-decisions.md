@@ -6570,7 +6570,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** whether the flat-name count should survive a restart and be summed across nodes (point 9). Decided 2026-11-26: node names wait for T36.10d (point 2), the start-up hold (point 5), both tools and the scope and both scopes for a device pin (point 4), the order of the core and the page (above).
 
-## ADR-1107 — The dnstap editor: the whole section is one admin-only entry for each node, read at start, and a change that copies more goes through the guarded flow (Proposed 2026-11-26, revised after the fourth review 2026-11-27; owner decisions of 2026-11-26 and 2026-11-27; OBS-007, API-905; T40.13)
+## ADR-1107 — The dnstap editor: the whole section is one admin-only entry for each node, read at start, and a change that copies more goes through the guarded flow (Accepted 2026-11-27, accepted on merge; revised after the fourth review 2026-11-27; owner decisions of 2026-11-26 and 2026-11-27; OBS-007, API-905; T40.13)
 
 **Context:** ADR-1102 point 4 records the owner's decision (2026-11-26, through the question tool) that the whole `[telemetry.dnstap]` section gets an API and an editable card as its own task, T40.13, instead of a read-only card or file-only settings. The records left the mechanism to the task: how a change takes effect (the tap and its writer start once, `dnstap::start` at start-up, and the exchange observers are process-wide), how the "guarded rules" apply to the section, what is bounded, and how the kind meets older cluster members.
 
