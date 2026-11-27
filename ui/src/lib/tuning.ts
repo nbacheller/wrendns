@@ -174,7 +174,7 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     role: 'admin',
     summary: 'Change the dnstap output',
     guardedId: 'dnstap-output',
-    note: 'dnstap is read when a node starts: a saved change takes effect after a restart of each node (restart needed). Turning it on, pointing it at another socket or address, copying more kinds of exchange or sampling more often copies more of the clients’ queries out of the process, so Check sends it to the review: a preview, a phrase you type and a sign-in from the last 10 minutes.',
+    note: 'dnstap is read when a node starts: a saved change takes effect after a restart of each node (restart needed). Turning it on, pointing it at another socket or address, copying more kinds of exchange or sampling more often copies more of the clients’ queries out of the process, so Check sends it to the review: a preview, a phrase you type and a sign-in from the last 10 minutes. A saved narrowing is read by each node only where it narrows that node’s own settings; a node’s own tap is confirmed on that node.',
     fields: [
       { key: 'socket', label: 'Unix socket of the reader', type: 'text', placeholder: '/run/dnstap.sock',
         help: 'Leave the socket and the address empty for no tap.' },
@@ -188,6 +188,8 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
       `${d.socket || d.address ? `Copying to ${String(d.socket || d.address)}, one query in ${num(d.sample_every)}` : 'Off'}; upstream ${d.forwarder ? 'on' : 'off'}, resolver ${d.resolver ? 'on' : 'off'}.${d.restart_needed ? ' Restart needed.' : ''}`,
     validate: (v) => {
       if (given(v.socket) && given(v.address)) return 'Set a socket or an address, not both.';
+      // eslint-disable-next-line no-control-regex
+      if (given(v.socket) && (!String(v.socket).startsWith('/') || /[ -]/.test(String(v.socket)))) return 'The socket is an absolute path, for example /run/dnstap.sock.';
       if (given(v.address) && !/:\d{1,5}$/.test(String(v.address))) return 'The address is tcp://host:port.';
       if (given(v.sample_every) && !(Number.isInteger(Number(v.sample_every)) && Number(v.sample_every) >= 1)) return 'Copy one query in: a whole number, at least 1.';
       if (given(v.buffer) && !(Number(v.buffer) >= 100 && Number(v.buffer) <= 1000000)) return 'Copies held: from 100 to 1,000,000.';

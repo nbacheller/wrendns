@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! REQ: OBS-007, API-905 (T40.13, ADR-1107) - the dnstap settings through the real write path
 //! (route, plan, store, audit): `[telemetry.dnstap]` as one admin-only, node-managed entry. A
-//! viewer, an operator and an agent are refused; a change that copies more out of the process needs
-//! a sign-in within the last 10 minutes; the file's bounds hold; the files win; the entry says "restart
+//! viewer, an operator and an agent are refused; a change that copies more out of the process is
+//! refused with `guarded_only` (it goes through `/api/v1/guarded/dnstap-output`); the file's bounds hold; the files win; the entry says "restart
 //! needed" while the running tap differs; and a member that does not announce the feature holds it.
 
 use std::net::SocketAddr;
@@ -657,4 +657,126 @@ fn obs_007_mcp_reads_the_dnstap_settings_and_never_writes_them() {
             .all(|t| !t.name.contains("dnstap")),
         "no agent write"
     );
+}
+
+fn put_guarded_on(node: &str, h: &Harness, value: Value) {
+    let entry = crate::guarded::store::Stored {
+        node: node.to_owned(),
+        id: "dnstap-output".to_owned(),
+        value,
+        mode: "staged".to_owned(),
+        state: crate::guarded::store::EntryState::Active,
+        by: "admin".to_owned(),
+        at: crate::guarded::now_secs(),
+    };
+    crate::guarded::store::put(h.auth.state(), &entry, entry.at, "admin").unwrap();
+}
+
+fn entry_of(h: &Harness, node: &str) -> Option<crate::guarded::store::Stored> {
+    crate::guarded::store::all(h.auth.state())
+        .into_iter()
+        .find(|e| e.id == "dnstap-output" && e.node == node)
+}
+
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - a narrowing forwarded from a replica whose own
+/// tap was confirmed is judged against that replica's confirmed value, not the primary's section (the
+/// primary has no tap): it is an ordinary write, narrows that replica's entry and leaves a
+/// widening of it refused. A write that names no target (a different buffer here) never deletes or
+/// wipes another node's confirmed tap.
+#[tokio::test]
+async fn obs_007_dnstap_a_narrowing_is_judged_against_the_node_it_narrows() {
+    let h = harness("");
+    crate::guarded::set_this_node("pi-a");
+    let b_value = json!({ "socket": "/run/b.sock", "sample_every": 2, "buffer": 10000 });
+    put_guarded_on("pi-b", &h, b_value.clone());
+    // Replica pi-b lowers its sampling: its card sends its own target. The primary has no tap.
+    let narrow = json!({ "socket": "/run/b.sock", "sample_every": 10 });
+    let (s, _, v) = h.call("PUT", URL, Some(&narrow)).await;
+    assert_eq!(s, StatusCode::OK, "a narrowing is not blocked: {v}");
+    let e = entry_of(&h, "pi-b").expect("pi-b keeps its confirmed tap");
+    assert_eq!(e.value["sample_every"], 10, "{:?}", e.value);
+    assert_eq!(e.value["socket"], "/run/b.sock");
+    // Sampling more often than that node's value is still the guarded flow's.
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            URL,
+            Some(&json!({ "socket": "/run/b.sock", "sample_every": 1 })),
+        )
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("guarded_only")),
+        "{v}"
+    );
+    // A target nobody confirmed is the guarded flow's too.
+    let (s, _, v) = h
+        .call("PUT", URL, Some(&json!({ "socket": "/run/other.sock" })))
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("guarded_only")),
+        "{v}"
+    );
+    // A change on the primary that names no target does not delete the replica's confirmed tap.
+    let (s, _, v) = h.call("PUT", URL, Some(&json!({ "buffer": 5000 }))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let e = entry_of(&h, "pi-b").expect("still there after a small change on the primary");
+    assert_eq!(e.value["socket"], "/run/b.sock", "{:?}", e.value);
+    assert_eq!(e.value["sample_every"], 10);
+    // A dry run changes nothing.
+    put_guarded_on("pi-b", &h, b_value.clone());
+    let (s, _, v) = h
+        .call("PUT", &format!("{URL}?dryRun=true"), Some(&narrow))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(entry_of(&h, "pi-b").unwrap().value, b_value);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4; owner decision, 2026-11-27) - the stored ordinary
+/// row is read on each node only where it narrows that node's own section. A promoted replica that
+/// seeds the row from the blob, and a replica that reads the blob, start no tap they never
+/// confirmed; a node whose files have a tap takes a narrowing and refuses a widening.
+#[tokio::test]
+async fn obs_007_dnstap_a_stored_row_never_starts_a_tap_on_another_node() {
+    let row = json!({ "socket": "/run/dnstap.sock", "sample_every": 10, "buffer": 5000 });
+    // A node whose files have no tap: the row is not read (the promoted replica, the replica).
+    let e = crate::managed::Entries {
+        telemetry_dnstap: Some(row.clone()),
+        ..crate::managed::Entries::default()
+    };
+    let promoted = crate::managed::merge(&Config::default(), &e).unwrap();
+    assert!(promoted.telemetry.dnstap.socket.is_none(), "seeded: no tap");
+    let blob = serde_json::to_vec(&json!({
+        "version": 1,
+        "entries": [{ "kind": "dnstap_settings", "name": "default", "body": row }]
+    }))
+    .unwrap();
+    let mut replica = Config::default();
+    crate::node_managed::overlay_blob(&mut replica, &blob);
+    assert!(replica.telemetry.dnstap.socket.is_none(), "replica: no tap");
+    // A node whose files have a tap takes what narrows it, and only that.
+    let file = |every: u32| {
+        let mut c = Config::default();
+        c.telemetry.dnstap.socket = Some("/run/dnstap.sock".into());
+        c.telemetry.dnstap.sample_every = every;
+        c.file_set.push("telemetry.dnstap.socket".to_owned());
+        c.file_set.push("telemetry.dnstap.sample_every".to_owned());
+        c
+    };
+    let mut c = file(10);
+    let own = c.clone();
+    crate::settings_kinds::overlay_dnstap(&mut c, &own, &json!({"sample_every": 10})).unwrap();
+    assert_eq!(c.telemetry.dnstap.sample_every, 10);
+    let mut wide = file(20);
+    let own = wide.clone();
+    crate::settings_kinds::overlay_dnstap(&mut wide, &own, &json!({"forwarder": true})).unwrap();
+    assert!(
+        !wide.telemetry.dnstap.forwarder,
+        "a feed turned on is a widening"
+    );
+    let mut buf = file(20);
+    let own = buf.clone();
+    crate::settings_kinds::overlay_dnstap(&mut buf, &own, &json!({"buffer": 4000})).unwrap();
+    assert_eq!(buf.telemetry.dnstap.buffer, 4000, "a narrowing is read");
 }

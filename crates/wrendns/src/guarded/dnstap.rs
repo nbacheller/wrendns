@@ -55,6 +55,59 @@ pub(crate) fn parse(v: &Value) -> Result<DnstapConfig, Problem> {
     serde_json::from_value::<DnstapConfig>(Value::Object(o)).map_err(|e| bad(e.to_string()))
 }
 
+/// The fields of `[telemetry.dnstap]` the files set (`own.file_set` names them).
+fn file_fields(own: &Config) -> Vec<&'static str> {
+    [
+        "socket",
+        "address",
+        "sample_every",
+        "buffer",
+        "forwarder",
+        "resolver",
+    ]
+    .into_iter()
+    .filter(|k| {
+        own.file_set
+            .iter()
+            .any(|f| f.strip_prefix("telemetry.dnstap.") == Some(k))
+    })
+    .collect()
+}
+
+/// REQ: OBS-007, API-905 (T40.13) - whether `value` changes a field the files set (a value that
+/// leaves the files' fields as they are is not locked by them).
+pub(crate) fn changes_file_field(file: &Config, value: &Value) -> bool {
+    let Ok(new) = parse(value) else {
+        // `check` says what is wrong with it.
+        return false;
+    };
+    let (want, have) = (json_of(&new), json_of(&file.telemetry.dnstap));
+    file_fields(file)
+        .into_iter()
+        .any(|k| want.get(k) != have.get(k))
+}
+
+/// Puts the fields the files set back as the files have them, after a value was laid over.
+pub(crate) fn keep_file_fields(cfg: &mut Config, own: &Config) {
+    let mut now = json_of(&cfg.telemetry.dnstap);
+    let theirs = json_of(&own.telemetry.dnstap);
+    if let Value::Object(o) = &mut now {
+        for k in file_fields(own) {
+            match theirs.get(k) {
+                Some(v) => {
+                    o.insert(k.to_owned(), v.clone());
+                }
+                None => {
+                    o.remove(k);
+                }
+            }
+        }
+    }
+    if let Ok(d) = serde_json::from_value::<DnstapConfig>(now) {
+        cfg.telemetry.dnstap = d;
+    }
+}
+
 fn json_of(d: &DnstapConfig) -> Value {
     serde_json::to_value(d).unwrap_or(Value::Null)
 }
@@ -91,6 +144,16 @@ impl Applier for Dnstap {
             return Err(Problem::new(
                 Code::InvalidConfig,
                 format!("`buffer`: at most {BUFFER_MAX}"),
+            ));
+        }
+        // The same for a socket: an absolute path (a file that has a relative one still loads).
+        if let Some(sock) = &new.socket
+            && !sock.starts_with('/')
+            && new.socket != cx.cfg.telemetry.dnstap.socket
+        {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                "`socket`: use an absolute path (for example /run/dnstap.sock)",
             ));
         }
         let mut c = cx.cfg.clone();

@@ -6567,15 +6567,14 @@ fn plan_settings(
         crate::settings_kinds::set_stored(&mut entries, w.kind, None);
         None
     };
-    // REQ: OBS-007, API-905 (T40.13) - an ordinary write of the dnstap section replaces the guarded
-    // entries of the row (they are removed with it), so what follows is judged without them.
-    if w.kind == ManagedKind::TelemetryDnstap {
-        entries
-            .guarded
-            .retain(|g| g.id != wrendns_config::guarded::DNSTAP);
-    }
-    let merged = crate::managed::merge(&file, &entries)
-        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    // REQ: OBS-007, API-905 (T40.13) - an ordinary write of the dnstap section is judged as asked
+    // for, without the guarded entries (`dnstap_plan` says which it narrows or replaces).
+    let merged = if w.kind == ManagedKind::TelemetryDnstap {
+        dnstap_candidate(&file, &mut entries)?
+    } else {
+        crate::managed::merge(&file, &entries)
+            .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?
+    };
     let after = crate::settings_kinds::section_json(w.kind, &merged);
     crate::settings_kinds::check_admin_fields(w.kind, &before, &after, w.role, w.agent.as_deref())?;
     let mut warnings = wrendns_config::validate_config(&merged).unwrap_or_default();
@@ -6614,6 +6613,37 @@ fn plan_settings(
     })
 }
 
+/// REQ: OBS-007, API-905 (T40.13) - the configuration the dnstap write would give: the value as asked
+/// for, laid over the files. A stored row is read by each node only where it narrows that node's own
+/// section (`settings_kinds::overlay_dnstap`), so the judgement is made on the raw value, not on what
+/// one node would keep of it; the guarded entries are left out, so the value asked for is what is
+/// judged (they are not deleted here: `dnstap_plan` says which are replaced).
+fn dnstap_candidate(
+    file: &wrendns_config::Config,
+    entries: &mut crate::managed::Entries,
+) -> Result<wrendns_config::Config, Problem> {
+    entries
+        .guarded
+        .retain(|g| g.id != wrendns_config::guarded::DNSTAP);
+    let row = entries.telemetry_dnstap.take();
+    let mut merged = crate::managed::merge(file, entries)
+        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    if let Some(v) = &row {
+        crate::settings_kinds::overlay(&mut merged, file, ManagedKind::TelemetryDnstap, v)
+            .map_err(|why| Problem::new(Code::InvalidConfig, why))?;
+    }
+    if let Err(errs) = wrendns_config::validate_config(&merged) {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            errs.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
+    }
+    Ok(merged)
+}
+
 /// REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
 /// member's build announces the `access` kind (a feature, not a version number). A DELETE is
 /// never held. Dry runs too, so the answer is the same.
@@ -6637,33 +6667,67 @@ fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem>
 /// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4; owner decision, 2026-11-27) - the ordinary write
 /// of the dnstap section. A change that copies more is the guarded flow's (preview, typed phrase,
 /// `settings.guarded` record): refused here, dry runs too, so the card learns it from the server. A
-/// change that only narrows is this write, says the tap is read when a node starts, and removes the
-/// guarded entries of the row (what it returns), so that the newer value is the one in force.
+/// change that only narrows is this write and says the tap is read when a node starts.
+///
+/// The write is judged against the section of the node that takes it (`before`, the primary's) and
+/// against the confirmed value of each node that has one (the guarded entries): a replica forwards its
+/// narrowing here, so the node whose tap it narrows is the one whose confirmed value it is compared to.
+/// Each node applies the stored value only where it narrows that node's own section
+/// (`settings_kinds::overlay_dnstap`), so no node starts a tap or widens one because of it. The
+/// guarded entries a change narrows are rewritten to the narrower value (a confirmed value is laid
+/// over the ordinary one, so it must not hide the narrowing); an entry it does not narrow, a node's
+/// own confirmed tap included, is left as it is.
 fn dnstap_plan(
     state: &wrendns_store::state::State,
     before: &serde_json::Value,
     after: &serde_json::Value,
     warnings: &mut Vec<String>,
 ) -> Result<AlsoStored, Problem> {
-    if wrendns_config::guarded::dnstap_widened(before, after) {
-        return Err(Problem::new(
-            Code::GuardedOnly,
-            "this copies more of the clients' queries (their addresses and names) out of the process than before (the tap on, another socket or address, upstream or recursor exchanges added, or sampling more often), so it is changed from the guarded review: a preview, the phrase you type and a sign-in from the last 10 minutes",
-        )
-        .hint("Use Settings, System, dnstap output in the web UI, or POST /api/v1/guarded/dnstap-output/preview and then /apply."));
-    }
-    warnings.extend(dnstap_warnings(before, after));
-    Ok(crate::guarded::store::all(state)
+    let entries: Vec<_> = crate::guarded::store::all(state)
         .into_iter()
         .filter(|e| {
             e.id == wrendns_config::guarded::DNSTAP && !crate::guarded::store::is_local(&e.id)
         })
-        .map(|e| {
-            (
-                crate::guarded::KIND,
-                crate::guarded::entry_name(&e.node, &e.id),
-                None,
-            )
+        .collect();
+    let widens = |from: &serde_json::Value| wrendns_config::guarded::dnstap_widened(from, after);
+    if widens(before) && entries.iter().all(|e| widens(&e.value)) {
+        return Err(Problem::new(
+            Code::GuardedOnly,
+            "this copies more of the clients' queries (their addresses and names) out of the process than before (the tap on, another socket or address, upstream or recursor exchanges added, or sampling more often), so it is changed from the guarded review: a preview, the phrase you type and a sign-in from the last 10 minutes",
+        )
+        .hint("Use Settings, System, dnstap output in the web UI, or POST /api/v1/guarded/dnstap-output/preview and then /apply. To go back to the config file's values after a narrowing, review them there too."));
+    }
+    warnings.extend(dnstap_warnings(before, after));
+    // The node taking the write turns its own tap off or narrows it with it; another node's confirmed
+    // tap is narrowed only by a write that names its target, never wiped by one that names none (a
+    // different buffer on this node, say).
+    let target = |v: &serde_json::Value| {
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        (s("socket"), s("address"))
+    };
+    let this = crate::guarded::this_node();
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.value != *after && !widens(&e.value))
+        .filter(|e| this.as_deref() == Some(e.node.as_str()) || target(&e.value) == target(after))
+        .map(|mut e| {
+            let name = crate::guarded::entry_name(&e.node, &e.id);
+            // A write that names no tap, on this node: the ordinary row (no tap) is the value in
+            // force there, over the files' (a node reads it where it narrows them): the entry goes.
+            if target(after) == (None, None) {
+                return (crate::guarded::KIND, name, None);
+            }
+            // As a guarded value is laid out: a reader that is not there is left out.
+            let mut v = after.clone();
+            if let Some(o) = v.as_object_mut() {
+                o.retain(|k, x| !(matches!(k.as_str(), "socket" | "address") && x.is_null()));
+            }
+            e.value = v;
+            (crate::guarded::KIND, name, serde_json::to_string(&e).ok())
         })
         .collect())
 }
@@ -6675,7 +6739,7 @@ fn dnstap_warnings(before: &serde_json::Value, after: &serde_json::Value) -> Vec
         return Vec::new();
     }
     vec![
-        "The dnstap settings are read when a node starts: this takes effect after a restart of every node (restart needed).".to_owned(),
+        "The dnstap settings are read when a node starts: this takes effect after a restart of every node (restart needed). A node applies it only where it narrows that node's own settings.".to_owned(),
     ]
 }
 

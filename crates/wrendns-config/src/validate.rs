@@ -713,6 +713,22 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     if d.socket.is_some() && d.address.is_some() {
         r.err("telemetry.dnstap", "set socket or address, not both");
     }
+    // REQ: OBS-007, API-905 (T40.13) - a socket is a path with no control characters. A relative one
+    // is read against whatever directory the node starts in: a file written before this check (any
+    // path was valid) still loads, with a warning; the API and the web UI refuse one.
+    if let Some(sock) = &d.socket {
+        let t: &str = sock;
+        if t.trim().is_empty() || t.chars().any(char::is_control) {
+            r.err(
+                "telemetry.dnstap.socket",
+                "a path (for example /run/dnstap.sock), with no control characters",
+            );
+        } else if !t.starts_with('/') {
+            r.warn(format!(
+                "telemetry.dnstap.socket: `{t}` is not an absolute path; it is read against the directory the node starts in"
+            ));
+        }
+    }
     if let Some(a) = &d.address {
         let hp = a.strip_prefix("tcp://").unwrap_or(a);
         if !hp

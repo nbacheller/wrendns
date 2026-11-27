@@ -3603,3 +3603,73 @@ async fn dns_901_gate_file_wins_over_the_stored_value() {
     super::appliers::overlay_with(&mut cfg, &Config::default(), &e, None, &defs, "pi-a", false);
     assert_eq!(cfg.listen[0].require_client_id, Some(false));
 }
+
+// REQ: OBS-007, API-905 (T40.13; owner decision, 2026-11-27) - the dnstap row is locked per field
+// by the files, not as a whole: with the reader's socket in the file, the feeds and the sampling
+// still go through the preview and the phrase (the file's socket stays, whatever the value says), and a
+// value that changes the file's socket is 409 `set_by_file`.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_file_socket_locks_that_field_only() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/run/file.sock".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file.clone());
+    *n.host.cfg.lock().unwrap() = Arc::new(file.clone());
+    // Another socket: the file wins.
+    assert_eq!(
+        code(
+            preview(
+                &n.engine,
+                &a,
+                "dnstap-output",
+                json!({"socket": "/run/other.sock"})
+            )
+            .await
+        ),
+        Code::SetByFile
+    );
+    // The file's socket with a feed turned on: a weakening review, and it applies.
+    let v = json!({"socket": "/run/file.sock", "forwarder": true});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(p.weakening, "{p:?}");
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+    assert!(
+        !n.engine
+            .status_local()
+            .settings
+            .iter()
+            .any(|s| s.id == "dnstap-output" && s.set_by_file),
+        "the listing is not locked"
+    );
+    // The stored value never overrides the file's socket.
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let e = vec![Stored {
+        node: "pi-a".into(),
+        id: "dnstap-output".into(),
+        value: json!({"socket": "/run/other.sock", "forwarder": true}),
+        mode: "staged".into(),
+        state: EntryState::Active,
+        by: "alice".into(),
+        at: 1,
+    }];
+    let mut cfg = file.clone();
+    super::appliers::overlay_with(&mut cfg, &file, &e, None, &defs, "pi-a", false);
+    assert_eq!(
+        cfg.telemetry.dnstap.socket.as_deref(),
+        Some("/run/file.sock")
+    );
+    assert!(
+        cfg.telemetry.dnstap.forwarder,
+        "the feed is the stored value's"
+    );
+}

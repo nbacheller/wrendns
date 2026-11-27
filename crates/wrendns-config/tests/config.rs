@@ -2105,6 +2105,35 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
     );
 }
 
+/// REQ: OBS-007, API-905 (T40.13) - the dnstap socket is a path with no control characters; a
+/// relative path in a file written before the check still loads, with a warning.
+#[test]
+fn obs_007_dnstap_socket_is_a_clean_path() {
+    let toml = |sock: &str| format!("[telemetry.dnstap]\nsocket = \"{sock}\"\n");
+    for bad in ["  ", "/run/a\\u0007b"] {
+        let errs = load_str(&toml(bad)).unwrap_err();
+        assert!(
+            paths(&errs).contains(&"telemetry.dnstap.socket"),
+            "{bad}: {errs:?}"
+        );
+    }
+    let rel = load_str(&toml("dnstap.sock")).expect("still loads");
+    assert!(
+        rel.warnings
+            .iter()
+            .any(|w| w.contains("telemetry.dnstap.socket") && w.contains("absolute")),
+        "{:?}",
+        rel.warnings
+    );
+    assert!(
+        !load_str(&toml("/run/dnstap.sock"))
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|w| w.contains("dnstap"))
+    );
+}
+
 /// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or
 /// a network; a port, a wildcard and nonsense are refused.
 #[test]

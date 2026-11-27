@@ -450,10 +450,14 @@ pub(crate) fn overlay_with(
                 .iter()
                 .any(|k| k == p || k.strip_prefix(p).is_some_and(|r| r.starts_with('.')))
         });
-        if by_file {
+        // REQ: OBS-007, API-905 (T40.13) - the dnstap row is locked per field: the files' fields stay.
+        if by_file && e.id != wrendns_config::guarded::DNSTAP {
             continue;
         }
         def.applier.overlay(cfg, &e.value);
+        if by_file {
+            super::dnstap::keep_file_fields(cfg, own);
+        }
     }
 }
 

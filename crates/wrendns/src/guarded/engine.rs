@@ -445,6 +445,16 @@ impl Engine {
         })
     }
 
+    /// REQ: OBS-007, API-905 (T40.13) - [`Self::set_by_file`] for a request with this value. The dnstap
+    /// row is locked per field: a value is refused only if it changes a field the files set, so a
+    /// node whose file names the reader's socket can still have the feeds or the sampling confirmed.
+    fn set_by_file_for(&self, row: &Row, value: &Value) -> bool {
+        if row.id == wrendns_config::guarded::DNSTAP {
+            return super::dnstap::changes_file_field(&self.host.file_config(), value);
+        }
+        self.set_by_file(row)
+    }
+
     fn resolve(&self, node: Option<&str>) -> Result<Target, Problem> {
         let Some(n) = node.map(str::trim).filter(|n| !n.is_empty()) else {
             return Ok(Target::Local);
@@ -574,7 +584,9 @@ impl Engine {
                     mode: d.row.mode.as_str().to_owned(),
                     proof: d.row.proof.map(|p| p.as_str().to_owned()),
                     paths: d.row.paths.iter().map(|p| (*p).to_owned()).collect(),
-                    set_by_file: self.set_by_file(&d.row),
+                    // The dnstap row is locked per field, for the value asked (`set_by_file_for`).
+                    set_by_file: d.row.id != wrendns_config::guarded::DNSTAP
+                        && self.set_by_file(&d.row),
                     has_entry: e.is_some(),
                     pending_restart: e.is_some_and(|e| e.state == EntryState::Staged),
                     on_probation: e.is_some_and(|e| e.state == EntryState::Probation),
@@ -694,7 +706,7 @@ impl Engine {
         req: &GuardedPreviewRequest,
     ) -> Result<GuardedPreview, Problem> {
         let row = &def.row;
-        if self.set_by_file(row) {
+        if self.set_by_file_for(row, &req.value) {
             return Err(Problem::new(
                 Code::SetByFile,
                 format!(
@@ -947,7 +959,7 @@ impl Engine {
                 "the confirmation doesn't match: type exactly `{phrase}`"
             )));
         }
-        if self.set_by_file(row) {
+        if self.set_by_file_for(row, &req.value) {
             return Err(Problem::new(
                 Code::SetByFile,
                 "a configuration file now sets it",

@@ -513,6 +513,17 @@ pub(crate) fn prepare(
             )));
         }
     }
+    // REQ: OBS-007, API-905 (T40.13) - a socket the API or the UI sets is an absolute path.
+    if kind == ManagedKind::TelemetryDnstap
+        && let Some(sock) = obj.get("socket").and_then(Value::as_str)
+        && !sock.trim().is_empty()
+        && !sock.starts_with('/')
+        && file.get("socket").and_then(Value::as_str) != Some(sock)
+    {
+        return Err(Problem::invalid(
+            "`socket`: use an absolute path (for example /run/dnstap.sock)",
+        ));
+    }
     // `mdns_port` is the same: read-only here, as the file sets it.
     if kind == ManagedKind::Clients
         && obj.get("mdns_port") == serde_json::to_value(own.clients.mdns_port).ok().as_ref()
@@ -567,13 +578,47 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::TelemetryDnstap, &e.telemetry_dnstap),
     ] {
         let Some(stored) = stored else { continue };
-        if let Err(why) = overlay(cfg, own, kind, stored) {
+        let done = if kind == ManagedKind::TelemetryDnstap {
+            overlay_dnstap(cfg, own, stored)
+        } else {
+            overlay(cfg, own, kind, stored)
+        };
+        if let Err(why) = done {
             errs.push(format!("{}: {why}", section(kind)));
         }
     }
     // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's own per-node sections.
     errs.extend(crate::node_settings::apply_stored(cfg, own, e));
     errs
+}
+
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the ordinary dnstap row on one node: it is a
+/// change that only narrows, so a node lays it over its own section only where it does not copy
+/// more than that node's own section does (the files, here). The write was judged against the
+/// node that took it; another node (a replica, or a promoted one that seeded the row from the blob)
+/// never starts a tap, takes a new target, turns a feed on or samples more often because of it. That
+/// is the guarded review's, node by node, with a phrase.
+pub(crate) fn overlay_dnstap(cfg: &mut Config, own: &Config, stored: &Value) -> Result<(), String> {
+    let mut trial = cfg.clone();
+    overlay(&mut trial, own, ManagedKind::TelemetryDnstap, stored)?;
+    let now = section_json(ManagedKind::TelemetryDnstap, cfg);
+    let next = section_json(ManagedKind::TelemetryDnstap, &trial);
+    if wrendns_config::guarded::dnstap_widened(&now, &next) {
+        static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+        let msg = next.to_string();
+        let mut last = LAST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *last != msg {
+            tracing::warn!(
+                "the stored dnstap settings would copy more than this node's own do, so this node keeps its own (a widening is confirmed on each node, in the guarded review)"
+            );
+            last.clone_from(&msg);
+        }
+        return Ok(());
+    }
+    cfg.telemetry.dnstap = trial.telemetry.dnstap;
+    Ok(())
 }
 
 pub(crate) fn overlay(
@@ -911,7 +956,7 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         (ManagedKind::TelemetryMetrics, false) => "The config file's per-client settings (or off) apply again within a few seconds.".into(),
         // REQ: OBS-007, API-905 (T40.13, ADR-1107) - the tap and its writer start once, when the node
         // starts: a change is stored and replicated at once and read after a restart of each node.
-        (ManagedKind::TelemetryDnstap, true) => "Takes effect after a restart of every node: the dnstap writer and its settings are read once, when the node starts. Until then the node keeps the tap it started with.".into(),
+        (ManagedKind::TelemetryDnstap, true) => "Takes effect after a restart of each node: the dnstap writer and its settings are read once, when the node starts. Each node reads a saved narrowing only where it narrows that node's own settings; a tap on a node is confirmed on that node. Until then the node keeps the tap it started with.".into(),
         (ManagedKind::TelemetryDnstap, false) => "The config file's dnstap settings (or none: no tap) apply again after a restart of every node.".into(),
         // REQ: DNS-014 (T27.14h) - the list is read again on every node at the reload.
         (ManagedKind::Access, true) => "Applies on every node within a few seconds, with no restart, to DNS, the web UI and the API: addresses outside the list are refused from then on.".into(),

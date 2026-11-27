@@ -5025,6 +5025,11 @@ test('obs_007 dnstap card edits the section and says a restart is needed', async
     await expect(page.getByText('Set a socket or an address, not both.')).toBeVisible();
     await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('');
     await page.getByRole('textbox', { name: 'Or a TCP reader' }).fill('');
+    // A relative socket is refused in the form too.
+    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('dnstap.sock');
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByText('The socket is an absolute path, for example /run/dnstap.sock.')).toBeVisible();
+    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('');
     await page.getByRole('spinbutton', { name: 'Copy one query in' }).fill('5');
     await page.getByRole('switch', { name: /recursive resolver/ }).check();
     await page.getByRole('button', { name: 'Check', exact: true }).click();
