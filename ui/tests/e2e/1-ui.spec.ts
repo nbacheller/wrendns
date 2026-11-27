@@ -9150,6 +9150,19 @@ test('dsc_914 the locations page says when the start-up hold keeps them out', as
   }
 });
 
+test('dsc_914 the locations page shows why held file entries were not published after the node stopped leading', async () => {
+  const why = 'the held locations (locations: lab) were not published before this node stopped leading; entries that only a config file holds are not carried to the new primary';
+  await stubLocations({ ...LOCATIONS, heldReason: why });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/locations');
+    await expect(page.getByTestId('locations-held')).toContainText('were not published before this node stopped leading');
+    await expect(page.getByTestId('location-held')).toHaveCount(0);
+  } finally {
+    await unstubLocations();
+  }
+});
+
 test('dsc_914 a location is created, with a dry run first', async () => {
   await stubLocations();
   const seen: { dry: boolean; body: unknown; reason: string | undefined }[] = [];
@@ -9398,6 +9411,36 @@ test('dsc_910 the device form names the location its address gives, not the pin'
     await page.keyboard.press('Escape');
   } finally {
     await page.unroute(/\/api\/v1\/clients$/);
+    await unstubLocations();
+  }
+});
+
+// "From its address" matches IPv6 networks by CIDR too, the most specific network winning (the IPv4 path is above).
+test('dsc_910 the device form names the location an IPv6 address gives, by CIDR', async () => {
+  const body = JSON.parse(JSON.stringify(LOCATIONS));
+  body.items[0].networks.push({ entry: '2001:db8:1::/48', resolved: ['2001:db8:1::/48'] });
+  body.items[1].networks.push({ entry: '2001:db8:1:ffff::/64', resolved: ['2001:db8:1:ffff::/64'] });
+  await stubLocations(body);
+  const lease = (ip: string, n: number) => ({ ip, mac: `aa:bb:cc:dd:ee:0${n}`, hostname: `h${n}`, source: 'router', router: 'udm', expiresUnixSeconds: 0 });
+  await page.route('**/api/v1/dhcp/leases', (r) =>
+    r.fulfill({ json: { items: [lease('2001:db8:1::5', 1), lease('2001:db8:1:ffff::9', 2), lease('2001:db8:2::1', 3)] } }),
+  );
+  const first = async (ip: string) => {
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await page.getByRole('row').filter({ hasText: ip }).getByRole('button', { name: ip }).first().click();
+    await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+    const opt = page.getByTestId('device-location').locator('option').first();
+    const text = await opt.textContent();
+    await page.keyboard.press('Escape');
+    return text;
+  };
+  try {
+    expect(await first('2001:db8:1::5')).toBe('From its address (Home)');
+    expect(await first('2001:db8:1:ffff::9')).toBe('From its address (lab)');
+    expect(await first('2001:db8:2::1')).toBe('From its address (none)');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
     await unstubLocations();
   }
 });

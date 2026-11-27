@@ -28632,7 +28632,7 @@
               "string",
               "null"
             ],
-            "description": "Why they are held (the member that does not know them, or that the members are not heard\nfrom yet); set with `held`."
+            "description": "Why they are held (the member that does not know them, or that the members are not heard\nfrom yet); set with `held`. Also set, with `held` false, after a node that held entries\nstopped leading: they were not published, and a config-file-only entry is not carried to\nthe new primary."
           },
           "items": {
             "type": "array",

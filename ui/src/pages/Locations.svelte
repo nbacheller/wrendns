@@ -156,6 +156,8 @@
       Held: the locations are configured but this node does not serve or publish them yet. {list.heldReason ?? ''} The devices
       and collisions below are not resolved until the hold ends.
     </p>
+  {:else if list?.heldReason}
+    <p class="notice warn small" role="status" data-testid="locations-held">{list.heldReason}</p>
   {/if}
   {#each list?.conflicts ?? [] as c, i (i)}<p class="notice bad small" role="alert" data-testid="location-conflict">{c}</p>{/each}
 

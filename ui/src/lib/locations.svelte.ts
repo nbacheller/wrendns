@@ -63,25 +63,45 @@ export function locationOfName(name: string | null | undefined): Loc | undefined
   return n ? (byAddress.get(n) ?? byLabel.get(n.split('.')[0] ?? '') ?? undefined) : undefined;
 }
 
-const v4 = (ip: string) => {
-  const p = ip.split('.').map(Number);
-  return p.length === 4 && p.every((x) => Number.isInteger(x) && x >= 0 && x < 256) ? p.reduce((n, x) => n * 256 + x, 0) : null;
-};
+/** An IPv4 or IPv6 address as a number and its width in bits; null when it is neither (a zone after % is ignored). */
+function parseIp(ip: string): { n: bigint; w: 32 | 128 } | null {
+  const t = ip.split('%')[0] ?? '';
+  if (!t.includes(':')) {
+    const p = t.split('.').map(Number);
+    return p.length === 4 && p.every((x) => Number.isInteger(x) && x >= 0 && x < 256)
+      ? { n: p.reduce((n, x) => n * 256n + BigInt(x), 0n), w: 32 }
+      : null;
+  }
+  const halves = t.split('::');
+  if (halves.length > 2) return null;
+  const groups = (h: string) => (h === '' ? [] : h.split(':'));
+  const head = groups(halves[0] ?? '');
+  const tail = halves.length === 2 ? groups(halves[1] ?? '') : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 2 ? fill < 1 : fill !== 0) return null;
+  const all = [...head, ...Array<string>(halves.length === 2 ? fill : 0).fill('0'), ...tail];
+  let n = 0n;
+  for (const g of all) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    n = (n << 16n) | BigInt(parseInt(g, 16));
+  }
+  return { n, w: 128 };
+}
 
-/** The location an address's own network gives, ignoring any pin: the most specific resolved network (IPv4) wins; an
- *  address no network holds falls back to an unpinned device's location. */
+/** The location an address's own network gives, ignoring any pin: the most specific resolved network (IPv4 or IPv6)
+ *  wins; an address no network holds falls back to an unpinned device's location. */
 export function locationFromNetworks(address: string | null | undefined): Loc | undefined {
-  const a = address ? v4(address) : null;
+  const a = address ? parseIp(address) : null;
   let best: { l: S['LocationInfo']; bits: number } | undefined;
   for (const l of locs.items)
     for (const n of l.networks)
       for (const r of n.resolved) {
         const [net, b] = r.split('/');
         const bits = Number(b);
-        const base = v4(net ?? '');
-        if (a === null || base === null || !(bits >= 0 && bits <= 32) || (best && best.bits >= bits)) continue;
-        const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-        if (((a & mask) >>> 0) === ((base & mask) >>> 0)) best = { l, bits };
+        const base = parseIp(net ?? '');
+        if (!a || !base || a.w !== base.w || !(Number.isInteger(bits) && bits >= 0 && bits <= a.w) || (best && best.bits >= bits)) continue;
+        const shift = BigInt(a.w - bits);
+        if (a.n >> shift === base.n >> shift) best = { l, bits };
       }
   if (best) return { slug: best.l.slug, label: labelOf(best.l), pinned: false };
   const d = locationOfAddress(address);

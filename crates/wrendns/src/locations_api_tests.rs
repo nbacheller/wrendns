@@ -590,6 +590,14 @@ async fn dsc_908_a_hold_that_ends_because_the_node_stopped_leading_says_so() {
         why.contains("home") && why.contains("not published"),
         "{why}"
     );
+    // Owner decision 2026-11-27: file-only entries are not carried over; the words say so.
+    assert!(
+        why.contains("were not published before this node stopped leading")
+            && why.contains("only a config file holds")
+            && why.contains("not carried to the new primary")
+            && why.contains("same file"),
+        "{why}"
+    );
     assert_eq!(
         crate::health::locations_held_reasons(Some(&why))[0].code,
         "locations_held"
@@ -602,6 +610,32 @@ async fn dsc_908_a_hold_that_ends_because_the_node_stopped_leading_says_so() {
             .reason(Some(&pair.primary))
             .unwrap()
             .contains("not published")
+    );
+    let _ = pair.stop.send(true);
+}
+
+/// REQ: DSC-908 (ADR-1104 rule c; owner decision 2026-11-27) - after a node stopped leading with
+/// held entries the Locations list is not held, but carries the reason the entries were not
+/// published, so the page can show it.
+#[tokio::test]
+async fn dsc_908_the_list_carries_the_reason_after_the_node_stopped_leading() {
+    let _turn = GATE.lock().await;
+    let _end = ClearHold;
+    let pair = pair("1.1.0", "1.1.0").await;
+    let h = harness_in(DOMAIN, Some(Arc::clone(&pair.replica)));
+    let (_, _, v) = h.call("GET", "/api/v1/locations", None).await;
+    assert!(v.get("heldReason").is_none(), "no hold, no reason: {v}");
+    let mut c = crate::credential_tests::config(HELD);
+    assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
+    let named = crate::upgrade_gate::describe_held(Some(&crate::credential_tests::config(HELD)));
+    assert!(!crate::upgrade_gate::HOLD.release(Some(&pair.replica), &named));
+    let (_, _, v) = h.call("GET", "/api/v1/locations", None).await;
+    assert!(v.get("held").is_none(), "the hold is over: {v}");
+    let why = v["heldReason"].as_str().expect("the reason stays");
+    assert!(
+        why.contains("not published before this node stopped leading")
+            && why.contains("only a config file holds"),
+        "{why}"
     );
     let _ = pair.stop.send(true);
 }
