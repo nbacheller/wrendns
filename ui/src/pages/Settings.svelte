@@ -19,6 +19,7 @@
   import DnssecCard from '../lib/components/DnssecCard.svelte';
   import GuardedCard from '../lib/components/GuardedCard.svelte';
   import ListenerGate from '../lib/components/ListenerGate.svelte';
+  import Listeners from '../lib/components/Listeners.svelte';
   import AllowedNetworks from '../lib/components/AllowedNetworks.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
@@ -929,6 +930,10 @@
       {/if}
       <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would. With HTTPS on the web UI (<code>[api] tls</code>), it's checked too: compare its SHA-256 fingerprint with the one your browser shows before trusting a self-signed certificate.</p>
     </section>
+    <!-- REQ: API-902, DNS-001 (T27.14c) — the node's DNS listeners (admins edit through the guarded window), with the cluster's allowed networks read-only below. -->
+    {#if info}
+      <Listeners rows={info.listenerAccess ?? []} probes={probes ?? []} editable={can('admin')} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />
+    {/if}
     <!-- REQ: DNS-901 (T36.2, ADR-1090) — which listeners need a device key, and a warning for a public one that does not. -->
     {#if info && info.listenerAccess?.length}
       <section class="card" data-testid="listener-access">
@@ -967,8 +972,6 @@
           </table>
         </div>
         <p class="muted small">Unset, <code>require_client_id</code> is on for a public address and off otherwise, and for a listener that binds every address it is on when this host has a public IPv4 address (a change of the host's addresses is picked up at the next reload); turning it on for a listener your LAN uses refuses the devices that carry no key. In the configuration file it is <code>require_client_id = true</code> or <code>false</code> on a <code>[[listen]]</code> entry (DoT, DoH, DoH3 or DoQ), and a reload applies it.</p>
-        <!-- REQ: DNS-014 (T27.14h) — the cluster-wide allowed networks, read-only here, linked to their card. -->
-        <AllowedNetworks summary />
         {#if can('admin')}
           <!-- REQ: DNS-901, API-902 (T27.14) — the gate's three states, changed through the guarded framework. -->
           <ListenerGate rows={info.listenerAccess} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />

@@ -673,6 +673,217 @@ test('dns_901 listener gate is changed through the guarded review', async () => 
   await page.unroute('**/api/v1/system/info');
 });
 
+// REQ: API-902, DNS-001 (T27.14c) — Settings → System → Listeners. The e2e server's file sets
+// `[[listen]]`, so on the real node the card is locked; the editing tests stub the node's listing, the
+// guarded status (set by file off) and the guarded routes, and drive the page the way an admin does.
+const LISTEN_BASE = { gatedByDefault: false, wildcardBind: false, canCarryKey: false, setting: 'unset', publicAddress: false, requireClientId: false, defaultOn: false, defaultReason: 'off, because the address is not public', publicExposure: false, proxyProtocol: false };
+
+async function stubListeners(phase: { v: 'idle' | 'pending' | 'rolled_back' | 'confirmed' }, probes: { v: Array<{ listener: string; state: string; otherHosts: number }> }, seen: { preview?: { value?: { listeners?: Array<{ proto: string; addr: string }> } }; cancelled?: boolean }) {
+  await page.route('**/api/v1/system/info', async (route) => {
+    const res = await route.fetch();
+    const info = await res.json();
+    info.listenerAccess = [
+      { ...LISTEN_BASE, listener: 'udp://192.168.1.2:53' },
+      { ...LISTEN_BASE, listener: 'tcp://192.168.1.2:53' },
+    ];
+    await route.fulfill({ response: res, json: info });
+  });
+  await page.route('**/api/v1/guarded', async (route) => {
+    const res = await route.fetch();
+    const j = await res.json();
+    const n = j.nodes[0];
+    const st = n.settings.find((x: { id: string }) => x.id === 'listen');
+    if (st) st.setByFile = false;
+    if (phase.v === 'pending') n.pending = { id: 'p1', setting: 'listen', node: n.node, deadlineSecs: 30, by: 'admin' };
+    else if (phase.v !== 'idle') {
+      delete n.pending;
+      n.outcomes = [{ setting: 'listen', node: n.node, outcome: phase.v, reason: phase.v === 'rolled_back' ? 'expired' : undefined, at: Math.floor(Date.now() / 1000) }];
+    }
+    await route.fulfill({ response: res, json: j });
+  });
+  await page.route('**/api/v1/guarded/listen/preview', async (route) => {
+    seen.preview = route.request().postDataJSON();
+    const node = 'home-dns';
+    const listeners = (seen.preview?.value?.listeners ?? []).map((l) => ({ change: 'added', listener: `${l.proto}://${l.addr}`, gate: undefined }));
+    await route.fulfill({
+      json: {
+        previewId: 'stub', setting: 'listen', node, nodes: [node], mode: 'window', phrase: `${node} listen`, effect: 'Adds a listener.', weakening: false,
+        needsRecentSignIn: false, restartRequired: false, setByFile: false, windowSecs: 30, checks: [], listeners,
+        warnings: ['Clients that send queries to 192.168.1.2 stop getting answers on a removed listener when you confirm. Point them at the new address first.'],
+      },
+    });
+  });
+  await page.route('**/api/v1/guarded/listen', async (route) => {
+    phase.v = 'pending';
+    const node = 'home-dns';
+    await route.fulfill({ status: 202, json: { status: 'pending', setting: 'listen', node, pendingRestart: false, pendingId: 'p1', deadlineSecs: 30, confirmToken: 'tok', proof: 'new_socket', message: 'Confirm within 30 seconds, or the change rolls back.' } });
+  });
+  await page.route('**/api/v1/guarded/pending/p1', (route) => route.fulfill({ json: { id: 'p1', setting: 'listen', node: 'n', deadlineSecs: 30, probes: probes.v } }));
+  await page.route('**/api/v1/guarded/pending/p1/confirm', async (route) => {
+    phase.v = 'confirmed';
+    await route.fulfill({ json: { setting: 'listen', node: 'n', outcome: 'confirmed' } });
+  });
+  await page.route('**/api/v1/guarded/pending/p1/cancel', async (route) => {
+    seen.cancelled = true;
+    phase.v = 'rolled_back';
+    await route.fulfill({ json: { setting: 'listen', node: 'n', outcome: 'rolled_back', reason: 'cancelled' } });
+  });
+}
+
+async function unstubListeners() {
+  for (const u of ['system/info', 'guarded', 'guarded/listen/preview', 'guarded/listen', 'guarded/pending/p1', 'guarded/pending/p1/confirm', 'guarded/pending/p1/cancel']) {
+    await page.unroute(`**/api/v1/${u}`);
+  }
+}
+
+async function reviewListen(box: ReturnType<Page['getByTestId']>) {
+  await box.getByTestId('listeners-add').click();
+  const row = box.getByTestId('listeners-row').last();
+  await row.getByTestId('listeners-proto').selectOption('tcp');
+  await row.getByTestId('listeners-addr').fill('192.168.1.2:5300');
+  await box.getByTestId('guarded-start-listen').click();
+  await expect(box.getByTestId('guarded-preview')).toBeVisible();
+  await box.getByTestId('guarded-phrase-input').fill((await box.getByTestId('guarded-phrase').innerText()).trim());
+}
+
+test('api_902 listener change rolls back without confirmation', async () => {
+  const phase = { v: 'idle' as 'idle' | 'pending' | 'rolled_back' | 'confirmed' };
+  const probes = { v: [{ listener: 'tcp://192.168.1.2:5300', state: 'answered', otherHosts: 0 }] };
+  const seen: { preview?: { value?: { listeners?: Array<{ proto: string; addr: string }> } } } = {};
+  await stubListeners(phase, probes, seen);
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const box = page.getByTestId('listeners-card');
+    await expect(box.getByTestId('listeners-row')).toHaveCount(2);
+    await expect(box.getByTestId('guarded-start-listen')).toBeDisabled();
+    await reviewListen(box);
+    await expect(box.getByTestId('guarded-listener')).toContainText('tcp://192.168.1.2:5300');
+    // The whole list goes to the server, the new listener last.
+    expect(seen.preview?.value?.listeners?.map((l) => `${l.proto}://${l.addr}`)).toEqual(['udp://192.168.1.2:53', 'tcp://192.168.1.2:53', 'tcp://192.168.1.2:5300']);
+    await box.getByTestId('guarded-apply').click();
+    await expect(box.getByTestId('guarded-countdown')).toBeVisible();
+    await expect(box.getByTestId('guarded-probe')).toHaveAttribute('data-state', 'answered');
+    await expect(box.getByTestId('guarded-test-cmd')).toContainText('dig @192.168.1.2 -p 5300 +tcp example.com');
+    // Nobody confirms: the node rolls it back, and the card says why.
+    phase.v = 'rolled_back';
+    await expect(box.getByTestId('guarded-rolled-back')).toContainText('not confirmed in time', { timeout: 15_000 });
+    await expect(box.getByTestId('listeners-row')).toHaveCount(3); // the draft still holds the new row; the listing is unchanged
+  } finally {
+    await unstubListeners();
+  }
+});
+
+test("api_902 listener add confirmed with the node's probe", async () => {
+  const phase = { v: 'idle' as 'idle' | 'pending' | 'rolled_back' | 'confirmed' };
+  const probes = { v: [{ listener: 'tcp://192.168.1.2:5300', state: 'waiting', otherHosts: 0 }] };
+  await stubListeners(phase, probes, {});
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const box = page.getByTestId('listeners-card');
+    await reviewListen(box);
+    await box.getByTestId('guarded-apply').click();
+    // Confirm waits for the node's own test query to be answered.
+    const confirm = box.getByTestId('guarded-confirm-here');
+    await expect(box.getByTestId('guarded-probe')).toHaveAttribute('data-state', 'waiting');
+    await expect(confirm).toBeDisabled();
+    probes.v = [{ listener: 'tcp://192.168.1.2:5300', state: 'answered', otherHosts: 0 }];
+    await expect(box.getByTestId('guarded-probe')).toHaveAttribute('data-state', 'answered', { timeout: 10_000 });
+    await expect(box.getByTestId('guarded-evidence')).toContainText('No other host has used it yet');
+    await expect(confirm).toBeEnabled(); // evidence from other hosts is shown, never required
+    await confirm.click();
+    await expect(box.getByTestId('guarded-result')).toContainText('confirmed');
+  } finally {
+    await unstubListeners();
+  }
+});
+
+test('api_902 listener removal warns about clients', async () => {
+  const phase = { v: 'idle' as 'idle' | 'pending' | 'rolled_back' | 'confirmed' };
+  const seen: { preview?: { value?: { listeners?: Array<{ proto: string; addr: string }> } } } = {};
+  await stubListeners(phase, { v: [] }, seen);
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const box = page.getByTestId('listeners-card');
+    const rows = box.getByTestId('listeners-row');
+    await expect(box.getByTestId('listeners-keep-old')).toHaveCount(0);
+    await rows.nth(1).getByTestId('listeners-remove').click();
+    await expect(rows.nth(1).getByTestId('listeners-status')).toHaveText('to remove');
+    await box.getByTestId('listeners-add').click();
+    await rows.last().getByTestId('listeners-proto').selectOption('udp');
+    await rows.last().getByTestId('listeners-addr').fill('192.168.1.3:53');
+    // Adds and removes: "Add only" is offered, and ticked.
+    await expect(box.getByTestId('listeners-keep-old')).toBeChecked();
+    await box.getByTestId('guarded-start-listen').click();
+    await expect(box.getByTestId('guarded-warning')).toContainText('stop getting answers');
+    expect(seen.preview?.value?.listeners?.map((l) => `${l.proto}://${l.addr}`)).toEqual(['udp://192.168.1.2:53', 'tcp://192.168.1.2:53', 'udp://192.168.1.3:53']);
+    await box.getByTestId('guarded-back').click();
+    // Add and remove: the removed listener is left out of the list.
+    await box.getByTestId('listeners-keep-old').uncheck();
+    await box.getByTestId('guarded-start-listen').click();
+    await expect(box.getByTestId('guarded-preview')).toBeVisible();
+    expect(seen.preview?.value?.listeners?.map((l) => `${l.proto}://${l.addr}`)).toEqual(['udp://192.168.1.2:53', 'udp://192.168.1.3:53']);
+  } finally {
+    await unstubListeners();
+  }
+});
+
+test('api_902 listener editor is read-only when set by file', async () => {
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  const box = page.getByTestId('listeners-card');
+  await expect(box.getByTestId('listeners-row').first()).toBeVisible();
+  await expect(box.getByTestId('listeners-file')).toContainText('Set by file');
+  await expect(box.getByTestId('listeners-add')).toHaveCount(0);
+  await expect(box.getByTestId('listeners-edit')).toHaveCount(0);
+  await expect(box.getByTestId('guarded-start-listen')).toHaveCount(0);
+  // The cluster's allowed networks are listed read-only under it.
+  await expect(box.getByTestId('allowed-networks-summary')).toContainText('127.0.0.0/8');
+});
+
+test('api_902 operator sees listeners without controls', async () => {
+  const who = await operatorPage('operator1', 'operator long password', 'operator');
+  try {
+    await who.p.goto('/#/settings?tab=system');
+    await who.p.reload();
+    const box = who.p.getByTestId('listeners-card');
+    await expect(box.getByTestId('listeners-row').first()).toBeVisible();
+    await expect(box.getByTestId('listeners-add')).toHaveCount(0);
+    await expect(box.getByTestId('listeners-edit')).toHaveCount(0);
+    await expect(box.getByTestId('guarded-start-listen')).toHaveCount(0);
+  } finally {
+    await who.close();
+  }
+});
+
+test('api_902 public udp listener asks for sign-in', async () => {
+  const phase = { v: 'idle' as 'idle' | 'pending' | 'rolled_back' | 'confirmed' };
+  await stubListeners(phase, { v: [] }, {});
+  // The preview of a weakening change says so, and needs a recent sign-in: the apply is refused until then.
+  await page.route('**/api/v1/guarded/listen/preview', async (route) => {
+    const node = 'home-dns';
+    await route.fulfill({
+      json: { previewId: 'stub', setting: 'listen', node, nodes: [node], mode: 'window', phrase: `${node} listen`, effect: 'Adds UDP on 203.0.113.9:5300.', weakening: true, needsRecentSignIn: true, restartRequired: false, setByFile: false, windowSecs: 30, checks: [], listeners: [{ change: 'added', listener: 'udp://203.0.113.9:5300' }], warnings: ['This change weakens security: it adds UDP on 203.0.113.9:5300, which answers anyone on the internet without a device key.'] },
+    });
+  });
+  await page.route('**/api/v1/guarded/listen', (route) => route.fulfill({ status: 403, json: { type: 'about:blank', title: 'Sign in again', status: 403, code: 'reauth_required', detail: 'this change weakens security: it needs a sign-in within the last 10 minutes' } }));
+  try {
+    await page.goto('/#/settings?tab=system');
+    await page.reload();
+    const box = page.getByTestId('listeners-card');
+    await reviewListen(box);
+    await expect(box.getByTestId('guarded-weakens')).toBeVisible();
+    await expect(box.getByTestId('guarded-warning')).toContainText('answers anyone on the internet without a device key');
+    await box.getByTestId('guarded-apply').click();
+    await expect(box.getByTestId('guarded-reauth')).toBeVisible();
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 403 \(/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await unstubListeners();
+  }
+});
+
 // REQ: OPS-010 — maintenance from the Cluster page (the e2e server runs on its own): /readyz
 // turns 503 with the reason while DNS keeps answering, the banners and the health note show,
 // and ending it makes the node ready again.

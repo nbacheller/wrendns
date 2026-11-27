@@ -28318,7 +28318,8 @@
           "defaultOn",
           "defaultReason",
           "publicExposure",
-          "canCarryKey"
+          "canCarryKey",
+          "proxyProtocol"
         ],
         "properties": {
           "canCarryKey": {
@@ -28341,6 +28342,34 @@
             "type": "string",
             "description": "The listener, as `proto://addr`."
           },
+          "maxConnections": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The connection limits, when set.",
+            "minimum": 0
+          },
+          "maxConnectionsPerAddress": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The URL path of a DoH or DoH3 listener, when one is set."
+          },
+          "proxyProtocol": {
+            "type": "boolean",
+            "description": "The listener accepts PROXY protocol v2 (set in the configuration file only)."
+          },
           "publicAddress": {
             "type": "boolean",
             "description": "Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a\nwildcard bind is not public)."
@@ -28356,6 +28385,19 @@
           "setting": {
             "type": "string",
             "description": "What the file says: `unset`, `true` or `false`."
+          },
+          "tlsCert": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the\nfiles' contents are never returned), so the Listeners card can show and re-send them."
+          },
+          "tlsKey": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "wildcardBind": {
             "type": "boolean",

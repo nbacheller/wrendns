@@ -2732,6 +2732,12 @@ export interface paths {
          * @description Changes nothing. The preview is bound to you, the node, the setting, the value and the
          *     configuration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin
          *     session only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.
+         *
+         *     For `listen` the `value` is a `ListenValue` (the node's whole DNS listener list, replaced as a
+         *     list), and the answer carries a `listeners` diff with each listener's gate sentence. A value that
+         *     would leave the node without a DNS listener, or without UDP or TCP on port 53 for a family it
+         *     answers on today, is 409 `would_disconnect_you`; `proxyProtocol` and `requireClientId` are refused
+         *     with a sentence naming where each is set. No MCP tool and no plan changes it (409 `guarded_only`).
          */
         post: operations["guarded_preview"];
         delete?: never;
@@ -8351,6 +8357,24 @@ export interface components {
              */
             confirmToken?: string | null;
         };
+        /** @description REQ: API-902 (T27.14c) — one line of a listener change's diff, as the review step shows it. */
+        GuardedListenerLine: {
+            /** @description The certificate's names and expiry (the file's contents are never returned). */
+            certificate?: string | null;
+            /** @description `added`, `removed`, `changed` or `kept`. */
+            change: string;
+            /** @description What its device key gate will be, and why (not for a removed line or plain UDP and TCP). */
+            gate?: string | null;
+            /** @description The listener, as `proto://address`. */
+            listener: string;
+            /** @description What else the line says (an explicit device key setting that is dropped, a removed address). */
+            note?: string | null;
+            /**
+             * Format: int32
+             * @description For a changed or overlapping line: the port its new settings are tried on during the window.
+             */
+            proofPort?: number | null;
+        };
         /**
          * @description `GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or
          *     confirmation token is ever in it.
@@ -8438,6 +8462,8 @@ export interface components {
             checks: components["schemas"]["GuardedCheck"][];
             /** @description What the change does, in words. */
             effect: string;
+            /** @description A listener change's diff, one line per listener (empty for any other setting). */
+            listeners?: components["schemas"]["GuardedListenerLine"][];
             mode: string;
             /**
              * @description The change needs a session signed in within the last 10 minutes (it weakens security, or
@@ -10291,6 +10317,40 @@ export interface components {
                 username: string;
             }[];
         };
+        /** @description One listener in a [`ListenValue`]. */
+        ListenEntry: {
+            /** @description The address and port, such as `203.0.113.9:853` or `[::]:853`. */
+            addr: string;
+            /**
+             * Format: int32
+             * @description Connections open at once (not for `udp`).
+             */
+            maxConnections?: number | null;
+            /**
+             * Format: int32
+             * @description Connections open at once from one client address (not for `udp`).
+             */
+            maxConnectionsPerAddress?: number | null;
+            /** @description The URL path of `doh` and `doh3` (default `/dns-query`). */
+            path?: string | null;
+            /** @description `udp`, `tcp`, `dot`, `doh`, `doh3` or `doq`. */
+            proto: string;
+            tls?: components["schemas"]["ListenTls"] | null;
+        };
+        /** @description The certificate and key paths of a [`ListenEntry`]. */
+        ListenTls: {
+            cert: string;
+            key: string;
+        };
+        /**
+         * @description REQ: API-902, DNS-001 (T27.14c) — the `value` of a `listen` change (`POST /api/v1/guarded/listen`
+         *     and its preview): the node's whole DNS listener list, replaced as a list. An unknown field is
+         *     refused, and so are `proxyProtocol` and `requireClientId`: each names where it is set (the
+         *     configuration file; Settings → System → Listener access).
+         */
+        ListenValue: {
+            listeners: components["schemas"]["ListenEntry"][];
+        };
         /** @description REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate. */
         ListenerAccess: {
             /** @description The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`). */
@@ -10314,6 +10374,17 @@ export interface components {
             /** @description The listener, as `proto://addr`. */
             listener: string;
             /**
+             * Format: int32
+             * @description The connection limits, when set.
+             */
+            maxConnections?: number | null;
+            /** Format: int32 */
+            maxConnectionsPerAddress?: number | null;
+            /** @description The URL path of a DoH or DoH3 listener, when one is set. */
+            path?: string | null;
+            /** @description The listener accepts PROXY protocol v2 (set in the configuration file only). */
+            proxyProtocol: boolean;
+            /**
              * @description Bound to a public address (not loopback, RFC 1918, CGNAT, link-local or unique-local; a
              *     wildcard bind is not public).
              */
@@ -10327,6 +10398,12 @@ export interface components {
             requireClientId: boolean;
             /** @description What the file says: `unset`, `true` or `false`. */
             setting: string;
+            /**
+             * @description REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the
+             *     files' contents are never returned), so the Listeners card can show and re-send them.
+             */
+            tlsCert?: string | null;
+            tlsKey?: string | null;
             /** @description Bound to every address (`0.0.0.0`, `::` or `::ffff:0.0.0.0`). */
             wildcardBind: boolean;
         };
