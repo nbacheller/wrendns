@@ -729,7 +729,12 @@ async fn dsc_908_pem_secret_waits_for_every_members_build() {
         .call("PUT", "/api/v1/secrets/plain", Some(&put_body(VALUE)))
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let holds = crate::upgrade_gate::standing(Some(&old.primary));
+    // The held set is one per process and the crate's tests share it, so this looks for its own
+    // feature's refusal and does not count the others.
+    let holds: Vec<String> = crate::upgrade_gate::standing(Some(&old.primary))
+        .into_iter()
+        .filter(|h| h.contains("`pem` kind"))
+        .collect();
     assert_eq!(holds.len(), 1, "{holds:?}");
     let reasons = crate::health::upgrade_gate_reasons(&holds);
     assert_eq!(reasons[0].code, "upgrade_gate_holding");
