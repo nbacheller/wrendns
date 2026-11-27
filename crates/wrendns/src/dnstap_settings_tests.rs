@@ -1279,3 +1279,38 @@ async fn obs_007_dnstap_an_ordinary_write_does_not_discard_a_displaced_confirmed
     assert_eq!(code(&r), "ok", "{r:?}");
     assert!(entry_of(&h, "pi-a").is_none());
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 11) - a confirmed entry the file displaces through a sampling
+/// or a feed while keeping the same reader is no more in force than one it displaces through a reader:
+/// a buffer-only write is refused with 409 and the confirmed value stays.
+#[tokio::test]
+async fn obs_007_dnstap_an_ordinary_write_does_not_discard_an_entry_displaced_by_a_feed_or_sampling()
+ {
+    // (1) the file samples more often than the entry confirmed, and the entry has the forwarder on.
+    let h = node_a();
+    let held = json!({ "socket": "/run/a.sock", "sample_every": 10, "forwarder": true });
+    put_guarded_on("pi-a", &h, held.clone());
+    let file = tap("/run/a.sock", 2);
+    let v = view(file.clone(), &["socket", "sample_every"], file.clone());
+    let mut buffer_only = file.clone();
+    buffer_only["buffer"] = json!(20000);
+    for dry in [true, false] {
+        let r = forwarded(&h, "pi-a", Some(buffer_only.clone()), Some(v.clone()), dry).await;
+        assert_eq!(code(&r), "Conflict", "{r:?}");
+    }
+    assert_eq!(entry_of(&h, "pi-a").unwrap().value, held, "still saved");
+    // (2) the file adds a feed the entry lacks.
+    let h = node_a();
+    let held = json!({ "socket": "/run/a.sock", "forwarder": true });
+    put_guarded_on("pi-a", &h, held.clone());
+    let mut file = tap("/run/a.sock", 1);
+    file["resolver"] = json!(true);
+    let v = view(file.clone(), &["socket", "resolver"], file.clone());
+    let mut buffer_only = file.clone();
+    buffer_only["buffer"] = json!(20000);
+    for dry in [true, false] {
+        let r = forwarded(&h, "pi-a", Some(buffer_only.clone()), Some(v.clone()), dry).await;
+        assert_eq!(code(&r), "Conflict", "{r:?}");
+    }
+    assert_eq!(entry_of(&h, "pi-a").unwrap().value, held, "still saved");
+}

@@ -184,10 +184,15 @@ fn guarded_only(deleting: bool) -> Problem {
     .hint("Use Settings, System, dnstap output in the web UI, or POST /api/v1/guarded/dnstap-output/preview, then POST /api/v1/guarded/dnstap-output with the previewId and the phrase.")
 }
 
-/// Whether the node runs the reader of the entry the primary holds for it.
-fn in_force(sent: &SentView, existing: Option<&Stored>) -> bool {
+/// Whether the node runs the entry the primary holds for it: the reader it confirmed, and the entry
+/// itself, not a section its files displace through a feed or a sampling (`not_applied`).
+fn in_force(sent: &SentView, existing: Option<&Stored>, file_n: &wrendns_config::Config) -> bool {
     match (&sent.pending, existing) {
-        (Some(p), Some(e)) if p.is_object() => reader(p) == reader(&e.value),
+        (Some(p), Some(e)) if p.is_object() => {
+            reader(p) == reader(&e.value)
+                && (e.mode == crate::guarded::dnstap::NARROWED
+                    || !crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value))
+        }
         _ => true,
     }
 }
@@ -380,7 +385,7 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
             "The dnstap settings are read when a node starts: this takes effect on {node} after a restart of that node (restart needed). Other nodes keep their own."
         ));
     }
-    let forced = in_force(&sent, existing.as_ref());
+    let forced = in_force(&sent, existing.as_ref(), &file_n);
     let also = entry_change(
         w,
         &node,
@@ -390,7 +395,14 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
         (forced, node_differs(&sent, &after)),
     );
     if w.body.is_some() && !also.is_empty() {
-        refuse_discarding(&node, &file_n, &after, &file_section, existing.as_ref(), forced)?;
+        refuse_discarding(
+            &node,
+            &file_n,
+            &after,
+            &file_section,
+            existing.as_ref(),
+            forced,
+        )?;
     }
     let (recent_queries, impact) =
         crate::api_backend::managed_impact(src, KIND, "default", w.body.is_some());

@@ -648,6 +648,36 @@ fn entry_write(src: &Sources, cluster: &Cluster, peer: &str, body: &[u8]) -> Opt
     }
 }
 
+/// One pass over the queued removals: each one is sent to the primary and dequeued when it took it.
+pub(crate) async fn send_removals<H: Host + ?Sized>(host: &H, state: &State, node: &str) {
+    for r in store::removals(state) {
+        // A removal that knows the entry it was for is sent against that entry: when the
+        // primary holds another one by now (a newer write), the removal is moot.
+        let sent = match r.at {
+            Some(at) => {
+                host.write_entry_expecting(node, &r.id, None, &r.by, Some(at))
+                    .await
+            }
+            None => host.write_entry(node, &r.id, None, &r.by).await,
+        };
+        if sent
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.code == Code::PreviewStale)
+        {
+            if let Err(e) = store::removal_done(state, &r.id) {
+                warn!("a moot guarded removal can't be dequeued: {e}");
+            }
+            info!(setting = %r.id, "the guarded removal cleared offline on this node was dropped: the primary holds a newer entry");
+        } else if sent.is_ok() {
+            if let Err(e) = store::removal_done(state, &r.id) {
+                warn!("a sent guarded removal can't be dequeued: {e}");
+            }
+            info!(setting = %r.id, "the primary removed the guarded entry cleared offline on this node");
+        }
+    }
+}
+
 /// REQ: API-902 (ADR-957 step 10) — sends the removals an offline `wrendns guarded clear` queued
 /// on this node (a replica) to the primary, as soon as it can be reached; each one is dropped from
 /// the queue when the primary has taken it. DNS never waits for it (CLU-004).
@@ -662,15 +692,7 @@ pub(crate) fn spawn_removals(
     }
     tokio::spawn(async move {
         loop {
-            for r in store::removals(&state) {
-                let sent = host.write_entry(&node, &r.id, None, &r.by).await;
-                if sent.is_ok() {
-                    if let Err(e) = store::removal_done(&state, &r.id) {
-                        warn!("a sent guarded removal can't be dequeued: {e}");
-                    }
-                    info!(setting = %r.id, "the primary removed the guarded entry cleared offline on this node");
-                }
-            }
+            send_removals(host.as_ref(), &state, &node).await;
             if store::removals(&state).is_empty() {
                 return;
             }

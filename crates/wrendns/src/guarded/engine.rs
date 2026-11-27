@@ -1450,8 +1450,11 @@ impl Engine {
         pre: &Preview,
         before: Value,
     ) -> Result<GuardedApplied, Problem> {
-        let entry = self.stored(row, req, EntryState::Staged, &c.username);
+        let mut entry = self.stored(row, req, EntryState::Staged, &c.username);
         if row.id == wrendns_config::guarded::DNSTAP {
+            // Every write of the shared entry gets a distinct, increasing time (as the ordinary
+            // write does), so the stale check can tell a second confirm from the first.
+            entry.at = entry.at.max(pre.seen_at.map_or(0, |a| a + 1));
             // REQ: OBS-007, API-905 (T40.13, review) - this row shares its entry with the ordinary
             // write: the primary refuses when the entry it holds is not the one this node saw (an
             // ordinary narrowing was answered with success meanwhile).

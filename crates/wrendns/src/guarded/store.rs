@@ -329,6 +329,11 @@ const REMOVALS: &str = "guarded.removals";
 pub(crate) struct Removal {
     pub(crate) id: String,
     pub(crate) by: String,
+    /// The time of the entry the clear removed: the primary deletes only the entry it still holds
+    /// with this time, so a newer write (an ordinary narrowing, a confirmed value) survives. A
+    /// removal queued by an older build has none and deletes whatever is held.
+    #[serde(default)]
+    pub(crate) at: Option<u64>,
 }
 
 /// The queued removals.
@@ -352,12 +357,18 @@ fn set_removals(state: &State, v: &[Removal]) -> Result<(), String> {
 }
 
 /// Queues a removal of `id` for the primary (once).
-pub(crate) fn queue_removal(state: &State, id: &str, by: &str) -> Result<(), String> {
+pub(crate) fn queue_removal(
+    state: &State,
+    id: &str,
+    by: &str,
+    at: Option<u64>,
+) -> Result<(), String> {
     let mut v = removals(state);
     if !v.iter().any(|r| r.id == id) {
         v.push(Removal {
             id: id.to_owned(),
             by: by.to_owned(),
+            at,
         });
     }
     set_removals(state, &v)

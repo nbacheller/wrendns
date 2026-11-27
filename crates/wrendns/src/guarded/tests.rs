@@ -3409,6 +3409,48 @@ fn api_902_replica_clear_queues_a_removal_for_the_primary() {
     assert!(store::suppressed(&state).is_empty());
 }
 
+// REQ: OBS-007, API-905 (T40.13, review 11) - a removal an offline clear queued on a replica is sent
+// against the entry it cleared: the primary deletes it only while it still holds that entry, so a
+// newer write that landed in the gap survives and the moot removal is dropped from the queue.
+#[tokio::test]
+async fn api_902_a_queued_removal_does_not_delete_a_newer_entry() {
+    let (a, b, _c) = cluster();
+    let entry = |at: u64, v: Value| Stored {
+        node: "pi-b".to_owned(),
+        id: "t-stg".to_owned(),
+        value: v,
+        mode: "staged".to_owned(),
+        state: EntryState::Staged,
+        by: "alex".to_owned(),
+        at,
+    };
+    let held = |a: &Node| {
+        store::for_node(&a.host.state, "pi-b")
+            .into_iter()
+            .find(|e| e.id == "t-stg")
+    };
+    // The entry the clear removed (time 5) is replaced by a newer one (time 6) before the removal is sent.
+    store::put(
+        &a.host.state,
+        &entry(6, json!({"label": "newer"})),
+        6,
+        "alex",
+    )
+    .unwrap();
+    store::queue_removal(&b.host.state, "t-stg", "cli:alex", Some(5)).unwrap();
+    super::prod::send_removals(&*b.host, &b.host.state, "pi-b").await;
+    assert_eq!(held(&a).expect("the newer entry stays").at, 6);
+    assert!(
+        store::removals(&b.host.state).is_empty(),
+        "the moot removal is dropped"
+    );
+    // The entry it was for is removed.
+    store::queue_removal(&b.host.state, "t-stg", "cli:alex", Some(6)).unwrap();
+    super::prod::send_removals(&*b.host, &b.host.state, "pi-b").await;
+    assert!(held(&a).is_none());
+    assert!(store::removals(&b.host.state).is_empty());
+}
+
 // REQ: API-902 (ADR-956 §3) — a replica's immediate change isn't answered `applied` until the
 // primary's version carrying it has reached the node: the entry is the primary's, the answer says
 // it isn't here yet, and nothing is reloaded early.
@@ -4293,6 +4335,34 @@ fn dnstap_entry(node: &str, value: Value, at: u64) -> Stored {
         by: "bob".into(),
         at,
     }
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 11) - a confirmed write of the shared entry gets a time later
+// than the entry it saw (an ordinary write may have moved it ahead of the clock, or both fall in one
+// second), so a second confirm that saw the same entry is refused as stale.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirmed_write_moves_the_entry_time_forward() {
+    let (a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let ahead = super::now_secs() + 1000;
+    let e1 = dnstap_entry("pi-b", json!({"socket": "/a"}), ahead);
+    store::put(&a.host.state, &e1, ahead, "bob").unwrap();
+    store::put(&b.host.state, &e1, ahead, "bob").unwrap();
+    let v = json!({"socket": "/b"});
+    let p = preview_for(&b.engine, &alice, "pi-b", "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v.clone())
+        .await
+        .unwrap();
+    let held = store::for_node(&a.host.state, "pi-b");
+    assert_eq!(held[0].value, v);
+    assert_eq!(held[0].at, ahead + 1, "{:?}", held[0]);
+    // A second confirm that saw the first entry is stale.
+    let e = apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
 }
 
 // REQ: OBS-007, API-905 (T40.13, review 8) - a review is judged on the node's entry as the admin saw
