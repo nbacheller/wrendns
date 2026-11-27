@@ -162,6 +162,10 @@ pub(crate) trait Host: Send + Sync + 'static {
     }
 }
 
+/// What a test's node does on a reload, told the value of the entry now written.
+#[cfg(test)]
+pub(crate) type ReloadHook = Arc<dyn Fn(Option<Value>) -> BoxFuture<bool> + Send + Sync>;
+
 /// A host with little behind it. By default it has nothing (the tests that only need a `CheckCx`);
 /// the process tests give it the node's real listeners and a reload that applies what the engine
 /// wrote.
@@ -173,7 +177,7 @@ pub(crate) struct StubHost {
     /// The configuration the node runs.
     pub(crate) cfg: std::sync::Mutex<Option<Arc<Config>>>,
     /// The node's reload, told the value of the entry now written (`None`: none or removed).
-    pub(crate) on_reload: Option<Arc<dyn Fn(Option<Value>) -> BoxFuture<bool> + Send + Sync>>,
+    pub(crate) on_reload: Option<ReloadHook>,
     /// The value of the entry the engine wrote last.
     pub(crate) entry: std::sync::Mutex<Option<Value>>,
 }

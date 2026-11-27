@@ -5,6 +5,8 @@
 //! socket: the engine and the sockets are driven in `tests/listen_engine_tests.rs` and the server's
 //! own tests.
 
+#![allow(clippy::field_reassign_with_default, clippy::many_single_char_names)]
+
 use serde_json::{Value, json};
 use wrendns_api::problem::Code;
 use wrendns_config::{Config, HostFacts, ListenProto, Listener};
@@ -676,13 +678,19 @@ fn api_902_listen_kept_listener_with_a_bad_certificate_is_a_warning() {
     let pki = Pki::new();
     let (c, k) = pki.pair("kept", &["dns.example"]);
     let mut cfg = Config::default();
-    cfg.listen.extend(parse(&value(&[dot("192.168.1.2:853", &c, &k)])).unwrap());
+    cfg.listen
+        .extend(parse(&value(&[dot("192.168.1.2:853", &c, &k)])).unwrap());
     std::fs::remove_file(&c).unwrap();
     // Kept: warned about, and the rest of the change goes through.
-    let same = with(vec![dot("192.168.1.2:853", &c, &k), l("udp", "192.168.1.2:5300")]);
+    let same = with(vec![
+        dot("192.168.1.2:853", &c, &k),
+        l("udp", "192.168.1.2:5300"),
+    ]);
     let ok = run(&cfg, &same, PRIVATE4).unwrap();
     assert!(
-        ok.warnings.iter().any(|w| w.contains("is kept, but its certificate can't be used now")),
+        ok.warnings
+            .iter()
+            .any(|w| w.contains("is kept, but its certificate can't be used now")),
         "{:?}",
         ok.warnings
     );

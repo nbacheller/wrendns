@@ -4,6 +4,8 @@
 //! cancelled change, a confirmed change and a removal, and not one query is lost on a listener that
 //! stays.
 
+#![allow(clippy::field_reassign_with_default, clippy::many_single_char_names)]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

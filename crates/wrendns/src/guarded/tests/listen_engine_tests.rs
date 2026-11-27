@@ -390,6 +390,51 @@ async fn api_902_listen_one_pending_change_per_node() {
     );
 }
 
+// The set-by-file lock: a file that sets any `[[listen]]` wins over the whole row (the editor is
+// locked, a preview is 409 `set_by_file`); a file that sets only `require_client_id` is the other
+// row's lock, not this one's.
+#[tokio::test(start_paused = true)]
+async fn api_902_listen_set_by_file_locks_the_row() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.file_set.push("listen".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file);
+    assert_eq!(
+        code(
+            preview(
+                &n.engine,
+                &a,
+                "listen",
+                value(&[l("udp", "127.0.0.1:5300")])
+            )
+            .await
+        ),
+        Code::SetByFile
+    );
+    let st = n.engine.status_local();
+    assert!(
+        st.settings
+            .iter()
+            .any(|s| s.id == "listen" && s.set_by_file)
+    );
+    assert!(
+        st.settings
+            .iter()
+            .any(|s| s.id == "listen-access" && !s.set_by_file)
+    );
+    let mut file = Config::default();
+    file.file_set.push("listen.require_client_id".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file);
+    // The gate is the file's; this row is not (a `listen.require_client_id` path is another row's).
+    let st = n.engine.status_local();
+    assert!(
+        st.settings
+            .iter()
+            .any(|s| s.id == "listen-access" && s.set_by_file)
+    );
+}
+
 // A value that is not the row's is a 422 at the preview, with the sentence that names where the field
 // is set.
 #[tokio::test(start_paused = true)]

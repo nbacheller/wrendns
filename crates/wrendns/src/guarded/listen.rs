@@ -119,6 +119,7 @@ fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
 
 /// The listeners a `listen` value names. A field that is not the row's is refused with a sentence
 /// that says where it is set.
+#[allow(clippy::too_many_lines)] // one pass over each listener's fields, in the order the value lists them
 pub(crate) fn parse(v: &Value) -> Result<Vec<Listener>, Problem> {
     let o = v
         .as_object()
@@ -656,7 +657,7 @@ pub(crate) fn evaluate(
         } else if st == "kept" {
             keeps += 1;
         }
-        let note = if st == "added" {
+        let explain = if st == "added" {
             running
                 .iter()
                 .find(|r| {
@@ -689,7 +690,7 @@ pub(crate) fn evaluate(
             gate,
             certificate,
             proof_port: None,
-            note,
+            note: explain,
         });
     }
     // Removed listeners, and an explicit device key setting that goes with them.
@@ -776,16 +777,17 @@ pub(crate) fn evaluate(
     }
     let mut effect = String::new();
     if !adds.is_empty() {
-        effect.push_str(&format!("Adds {}. ", adds.join(", ")));
+        effect.push_str("Adds ");
+        effect.push_str(&adds.join(", "));
+        effect.push_str(". ");
     }
     if !removes.is_empty() || !adds.is_empty() || keeps < new.len() {
         effect.push_str("Keeps every current listener until you confirm. ");
     }
     if !removes.is_empty() {
-        effect.push_str(&format!(
-            "Removes {} when you confirm. ",
-            removes.join(", ")
-        ));
+        effect.push_str("Removes ");
+        effect.push_str(&removes.join(", "));
+        effect.push_str(" when you confirm. ");
     }
     if effect.is_empty() {
         effect = format!(
