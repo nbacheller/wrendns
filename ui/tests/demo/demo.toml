@@ -83,6 +83,14 @@ rules = [
   "||tracker.example.org^",
 ]
 
+[[list]]
+name = "malware-and-phishing"
+rules = ["||phish.example.org^", "||malware.example.net^", "||badsite.example.com^"]
+
+[[list]]
+name = "social-media"
+rules = ["||social.example.com^", "||chat.social.example.com^"]
+
 [[record]]
 name = "nas.home.arpa"
 type = "A"

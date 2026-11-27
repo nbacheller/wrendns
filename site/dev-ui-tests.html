@@ -33,13 +33,19 @@
     <thead><tr><th>File in <code>ui/tests/e2e/</code></th><th>What it is</th></tr></thead>
     <tbody>
       <tr><td><code>1-ui.spec.ts</code></td><td>The main suite: <b>one <code>serial</code> group on one server and one signed-in page</b>. The first test creates the admin with the setup token; everything after runs as that admin.</td></tr>
-      <tr><td><code>2-shots.spec.ts</code></td><td>Screenshots for the documentation.</td></tr>
+      <tr><td><code>2-shots.spec.ts</code></td><td>Screenshots of every page for design review, saved to <code>ui/.shots/</code> (with <code>SHOTS=1</code>). The site's pictures come from the demo network below.</td></tr>
       <tr><td><code>3-oidc.spec.ts</code></td><td>Sign-in through real Keycloak and Authentik (the <code>oidc</code> job).</td></tr>
       <tr><td><code>4-icons</code>, <code>5-markers</code>, <code>6-markup</code></td><td>Tests that need no browser page: pure functions and a scan of the source. Fast, and immune to everything on this page.</td></tr>
       <tr><td><code>server.mjs</code>, <code>dns.ts</code></td><td>The test server and a DNS helper. <code>server.mjs</code> writes a configuration, starts the binary with it on <code>127.0.0.1:18054</code> with the query log flushed every second, and runs a stub upstream that answers any name. <code>query(name)</code> asks the server over UDP and returns the response code.</td></tr>
     </tbody>
   </table></div>
   <p>The configuration is <code>ui/playwright.config.ts</code>: one worker, no parallelism, and <b>no retries</b>.</p>
+</section>
+
+<section id="screenshots">
+  <h2>The site's screenshots</h2>
+  <p>The pictures on this site are made on an invented home network, never on a real one. <code>ui/tests/demo/run.sh</code> starts two stub upstreams, a stub gateway and a three-node cluster on loopback, sends about fourteen minutes of synthetic traffic from made-up devices, and runs <code>shots.spec.ts</code> and <code>site-shots.spec.ts</code>. They write <code>site/assets/shots/&lt;page&gt;-light.jpg</code> and <code>-dark.jpg</code> at 1280 by 860, JPEG quality 80. The README's pictures (<code>docs/images/</code>) come from the same run.</p>
+  <p>Build the UI and the binary first (<code>npm run build</code> in <code>ui/</code>, then <code>cargo build -p wrendns</code>), then run <code>ui/tests/demo/run.sh</code> from the repository root. Where a page needs data the demo cannot make (the cluster with Kubernetes pods, the lookup trace, a listener change), the spec answers that one request with an invented example. Look at every picture before you commit it.</p>
 </section>
 
 <section id="rules">

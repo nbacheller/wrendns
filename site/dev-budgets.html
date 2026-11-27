@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Size and performance budgets — WrenDNS</title>
-<meta name="description" content="The limits a change to WrenDNS must stay within: the 15 MiB image, the 400 KiB web UI, and the DNS path's speed. What we cut, what we measured and refused, and how to measure without fooling yourself.">
+<meta name="description" content="The limits a change to WrenDNS must stay within: the 25 MiB image, the 512 KiB web UI, and the DNS path's speed. What we cut, what we measured and refused, and how to measure without fooling yourself.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -19,10 +19,10 @@
   <p class="lede">WrenDNS runs on a Raspberry Pi next to other things, so footprint and speed are features with hard limits. This page lists the limits, where the bytes and the microseconds are, what we have already cut, what we measured and refused (so nobody has to measure it again), and how to measure your own change.</p>
   <ul class="onpage">
     <li><a href="#rules">The rules</a></li>
-    <li><a href="#image">The image: 15 MiB</a></li>
+    <li><a href="#image">The image: 25 MiB</a></li>
     <li><a href="#cut">What we cut</a></li>
     <li><a href="#refused">What we measured and refused</a></li>
-    <li><a href="#ui">The web UI: 400 KiB</a></li>
+    <li><a href="#ui">The web UI: 512 KiB</a></li>
     <li><a href="#speed">The DNS path's speed</a></li>
     <li><a href="#more">When you need more</a></li>
   </ul>
@@ -33,17 +33,17 @@
   <ul>
     <li><b>Performance ranks above footprint, and footprint above everything else but speed.</b> If a size saving costs speed on the DNS path, the speed wins. We have refused savings of 0.3 MiB for that reason (below).</li>
     <li><b>Never add allocation, locking, or I/O to the hot path</b> without a benchmark that shows it is within budget. The steady-state cache-hit and blocked-answer paths allocate nothing (NFR-002, checked by an allocation-counting test).</li>
-    <li><b>A new runtime dependency</b> needs a one-line justification and must not push the image past 15 MiB (<a href="https://github.com/nbacheller/wrendns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>, rule 8).</li>
+    <li><b>A new runtime dependency</b> needs a one-line justification and must not push the image past 25 MiB, this project's limit (ADR-916; the project it started from used 15 MiB) (<a href="https://github.com/nbacheller/wrendns/blob/main/AGENTS.md"><code>AGENTS.md</code></a>, rule 8).</li>
     <li><b>Measure, don't assume.</b> Every number in an ADR came from a real build. If you cannot say how you measured it, it is a guess.</li>
   </ul>
 </section>
 
 <section id="image">
-  <h2>The image: 15 MiB per architecture</h2>
+  <h2>The image: 25 MiB per architecture</h2>
   <ul>
-    <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/nbacheller/wrendns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 15 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
+    <li><b>The gate.</b> The <code>image</code> workflow builds every platform, then <a href="https://github.com/nbacheller/wrendns/blob/main/deploy/image/size.py"><code>deploy/image/size.py</code></a> adds up the <i>compressed</i> layer sizes per platform and fails over 25 MiB. Compressed is what a Pi downloads, so how well something compresses matters: the same bytes stored twice cost twice.</li>
     <li><b>Where the bytes are.</b> About 97% of the image is the one static binary. Its largest parts are the DNS and TLS code, SQLite, and the embedded web UI.</li>
-    <li><b>Where we are.</b> About 13.0 MiB on amd64, 12.3 on arm64, and 12.8 on armv7 after the cuts below (it was 14.84, 14.16, and 14.82 when the margin ran out). The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
+    <li><b>Where we are.</b> About 10.6 to 11.1 MiB per architecture on the shipped build (the <a href="performance.html">Performance</a> page has the table). The cuts below were made when the limit was 15 MiB and the image was 14.84, 14.16, and 14.82 MiB. The size gate in the <code>image</code> run prints the real numbers for your commit.</li>
     <li><b>Measure it like CI does.</b> Build the image with BuildKit and OCI output as the <a href="https://github.com/nbacheller/wrendns/blob/main/.github/workflows/image.yml"><code>image</code> workflow</a> does, then run <code>python3 deploy/image/size.py --oci image.tar</code>. A debug build says nothing: the release profile uses fat LTO, one codegen unit, and abort on panic.</li>
   </ul>
 </section>
@@ -85,9 +85,10 @@
 </section>
 
 <section id="ui">
-  <h2>The web UI: 400 KiB</h2>
+  <h2>The web UI: 512 KiB</h2>
   <ul>
-    <li><b>The budget</b> is 400 KiB gzipped for the whole of <code>ui/dist</code>, lazy chunks included. <code>npm run build</code> prints the total and fails over the limit (<code>ui/scripts/postbuild.mjs</code>). It is about 296 KiB now.</li>
+    <li><b>The budget</b> is 512 KiB gzipped for the whole of <code>ui/dist</code>, lazy chunks included (ADR-1020 raised it from 400 KiB). <code>npm run build</code> prints the total and fails over the limit (<code>ui/scripts/postbuild.mjs</code>). It is about 463 KiB on main now.</li>
+    <li><b>The help glossary is not in the bundle.</b> <span class="pill planned">Coming in 1.1</span> The node serves it from <code>/help/topics.json</code> the first time a "?" needs it, and the browser keeps it for an hour. That took about 48 KiB off the bundle. The sign-in page has help buttons too, so the file needs no sign-in.</li>
     <li><b>Big data goes in a lazy chunk</b> that loads when something needs it (the icon glyphs are one), so a page that never shows it never pays for it.</li>
     <li><b>The UI is embedded in the binary</b> as gzip only, so every KiB of UI is close to a KiB in the image.</li>
     <li><b>A chart or a font library is a dependency.</b> Justify it against the budget before you add it.</li>

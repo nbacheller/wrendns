@@ -49,7 +49,7 @@
       <tr><td><b>The list is curated.</b> A brand is on the map because a person listed it with its domains. The generator never adds a pack's whole set.</td><td>A pack indexes brands, not domains, and no open dataset maps domains to icons. The whole of Simple Icons is 4.8 MiB, which the image cannot afford.</td></tr>
       <tr><td><b>A domain belongs to one brand, matched on whole labels, longest suffix first.</b> A full host may be listed (<code>teams.microsoft.com</code> beats <code>microsoft.com</code>).</td><td><code>notnetflix.com</code> is not Netflix. A CDN name belongs to the company that owns the content on it, not to the CDN.</td></tr>
       <tr><td><b>Only CC0, MIT, or Apache-2.0 sources</b>, with their notice in <code>docs/third-party-notices.md</code>.</td><td>The marks are their owners' trademarks and are shown only to identify the name; the notice says so, and a permissive licence on the artwork does not change that.</td></tr>
-      <tr><td><b>The glyph data stays small.</b> It is a lazy chunk (fetched when the first brand tile is drawn), minified to one decimal (two on the 16 grid), and counted in the UI's 400 KiB budget and the image's 15 MiB.</td><td>See <a href="dev-budgets.html">Size and performance budgets</a>. The minifying paid for the second pack: eleven more glyphs and about 15 KiB gzipped less.</td></tr>
+      <tr><td><b>The glyph data stays small.</b> It is a lazy chunk (fetched when the first brand tile is drawn), minified to one decimal (two on the 16 grid), and counted in the UI's 512 KiB budget and the image's 25 MiB.</td><td>See <a href="dev-budgets.html">Size and performance budgets</a>. The minifying paid for the second pack: eleven more glyphs and about 15 KiB gzipped less.</td></tr>
       <tr><td><b>The output is committed, and a build needs neither pack.</b> The versions are pinned in the generator, which refuses a different one.</td><td>A build must not touch the network, and an icon must not change because a package did.</td></tr>
     </tbody>
   </table></div>
@@ -99,7 +99,7 @@ node scripts/brand-icons.mjs</code></pre>
       <tr><td>The generator throws "BOOTSTRAP has … which no LIST entry uses", or "has no entry for …"</td><td>The table and the list disagree: a colour without a use, or a <code>bi:</code> name with no colour.</td></tr>
       <tr><td><code>obs_039 the generated data is whole</code></td><td>A mapped brand has no colour, path, or title, or a glyph on the map is unused (it would ship for nothing), or a grid size is not 16.</td></tr>
       <tr><td><code>obs_039 the marks Simple Icons dropped come from the second pack</code></td><td>A name you expected to map to a Bootstrap glyph does not (the list or the suffix rule), or a first-pack glyph picked up a grid size.</td></tr>
-      <tr><td><code>npm run build</code> over 400 KiB, or the image size gate</td><td>The data grew more than you planned. See the budgets page.</td></tr>
+      <tr><td><code>npm run build</code> over 512 KiB, or the image size gate</td><td>The data grew more than you planned. See the budgets page.</td></tr>
       <tr><td><code>svelte-check</code></td><td>The glyph tuple's type changed and a user of it did not.</td></tr>
     </tbody>
   </table></div>

@@ -387,7 +387,7 @@
       <div class="notice warn" role="status" data-testid="lists-unread">Hits leave out: {unread.join(', ')}.</div>
     {/if}
   {/if}
-  {#if refresh || lastUpdated || lists.some((l) => l.enabled)}
+  {#if refresh || lastUpdated || startingRow || starting || lists.some((l) => l.enabled && l.source !== 'inline')}
     <p class="small muted refresh-status" data-testid="lists-refresh-status" aria-live="polite">
       {#if startingRow}
         Downloading {startingRow}…
