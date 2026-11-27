@@ -80,4 +80,4 @@ Query data leaves the node when you do this. The privacy rules are unchanged: th
 
 - On the card: **Exporting from this node**. `wrendns_traces_total{result="failed"}` counts trace requests the collector did not take.
 - In the collector, add a `debug` exporter with `verbosity: detailed` to a pipeline and watch the records arrive.
-- The repository's tests run the exporter against a local fake OTLP/HTTP receiver and check that metrics, logs and traces arrive, plain and gzip, with the headers and attributes above (`cargo test -p wrendns receiver_tests`).
+- The repository's tests run the exporter against a local fake OTLP/HTTP receiver and check that metrics and traces arrive plain and gzip, and logs plain only (gzip for an event sink is an open item), with the headers and attributes above (`cargo test -p wrendns receiver_` runs all four).
