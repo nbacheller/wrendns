@@ -2744,7 +2744,7 @@ fn rule_of(a: &wrendns_filter::matcher::Attribution, allow: bool) -> Rule {
         list: a.list,
         kind: match a.rule {
             RuleRef::Domain { .. } => RuleKind::Domain,
-            RuleRef::ModRule { .. } => RuleKind::Modifier,
+            RuleRef::ModRule { .. } | RuleRef::Rpz { .. } => RuleKind::Modifier,
             RuleRef::Regex { .. } => RuleKind::Regex,
         },
         allow,

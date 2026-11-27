@@ -697,12 +697,22 @@ lists = ["policy"]
     let rules = &e.filter.as_ref().unwrap().rules;
     let winner = rules.iter().find(|r| r.winner).unwrap();
     assert_eq!(winner.lines[0].text, "x.example.com A 192.0.2.1");
-    assert!(contains(&served(&p, "x.example.com", home).unwrap(), &[192, 0, 2, 1]));
-    assert_eq!(rc("z.example.com"), Some(3), "the wildcard still covers the rest");
+    assert!(contains(
+        &served(&p, "x.example.com", home).unwrap(),
+        &[192, 0, 2, 1]
+    ));
+    assert_eq!(
+        rc("z.example.com"),
+        Some(3),
+        "the wildcard still covers the rest"
+    );
     // (b) NODATA, not the wildcard's address
     let a = served(&p, "y.other.example", home).unwrap();
     assert_eq!((a[3] & 0x0F, a[7]), (0, 0), "NODATA: no answer");
-    assert!(contains(&served(&p, "z.other.example", home).unwrap(), &[192, 0, 2, 2]));
+    assert!(contains(
+        &served(&p, "z.other.example", home).unwrap(),
+        &[192, 0, 2, 2]
+    ));
     // (c) the exact block beats the wildcard's passthru
     assert_eq!(rc("bad.corp.example"), Some(3));
     assert_ne!(rc("fine.corp.example"), Some(3), "passthru wildcard");

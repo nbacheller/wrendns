@@ -10,6 +10,9 @@
 //! - `listsets.bin`: the interned [`ListSetTable`]
 //! - `modrules.fst` + `modrules.json`: rules with `$client`/`$dnstype`/`$denyallow`/
 //!   `$dnsrewrite` (key → range of rules, evaluated only on a hit, §3.3)
+//! - `rpz.fst` + `rpz.bin`: the plain actions of response policy zones (FLT-906: NXDOMAIN,
+//!   NODATA, REFUSED, passthru) as 8-byte records, so a zone of a million blocks costs about
+//!   twenty bytes a record instead of a modifier rule each (key → range of records)
 //! - `regex.json`: regex rules with metadata (§3.2)
 //! - `manifest.json`: version, list IDs, per-blob BLAKE3 + size, compile stats
 //!
@@ -68,6 +71,8 @@ pub fn shard_of(key: &[u8], shards: usize) -> usize {
 pub const LISTSETS: &str = "listsets.bin";
 pub const MODRULES_FST: &str = "modrules.fst";
 pub const MODRULES: &str = "modrules.json";
+pub const RPZ_FST: &str = "rpz.fst";
+pub const RPZ_BIN: &str = "rpz.bin";
 pub const REGEX: &str = "regex.json";
 pub const MANIFEST: &str = "manifest.json";
 
@@ -76,7 +81,7 @@ pub fn blob_names(shards: usize) -> Vec<String> {
     let mut v: Vec<String> = (0..SCOPE_NAMES.len())
         .flat_map(|scope| (0..shards).map(move |shard| domain_fst(scope, shard)))
         .collect();
-    v.extend([LISTSETS, MODRULES_FST, MODRULES, REGEX].map(String::from));
+    v.extend([LISTSETS, MODRULES_FST, MODRULES, RPZ_FST, RPZ_BIN, REGEX].map(String::from));
     v
 }
 
@@ -223,6 +228,84 @@ pub struct RegexRule {
     pub dnstype: Vec<NegValue<u16>>,
 }
 
+/// REQ: FLT-906 (T40.9) - what a plain response policy zone record does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpzAction {
+    /// `CNAME .`
+    Nxdomain,
+    /// `CNAME *.`
+    Nodata,
+    /// `CNAME rpz-drop.` (answered REFUSED, ADR-1110)
+    Refused,
+    /// `CNAME rpz-passthru.`: turns the zone's rewrites off for the name.
+    Passthru,
+}
+
+impl RpzAction {
+    fn byte(self) -> u8 {
+        self as u8
+    }
+    fn from_byte(b: u8) -> Option<Self> {
+        Some(match b {
+            0 => Self::Nxdomain,
+            1 => Self::Nodata,
+            2 => Self::Refused,
+            3 => Self::Passthru,
+            _ => return None,
+        })
+    }
+    /// The action for a `$dnsrewrite` value a zone record was parsed into, if it is a plain one.
+    pub fn of_rewrite(value: &str) -> Option<Self> {
+        Some(match value {
+            "NXDOMAIN" => Self::Nxdomain,
+            "NOERROR;;" => Self::Nodata,
+            "REFUSED" => Self::Refused,
+            "" => Self::Passthru,
+            _ => return None,
+        })
+    }
+}
+
+/// One record of `rpz.bin` ([`RPZ_RECORD`] bytes: list u16, scope u8, action u8, line u32, little
+/// endian).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpzRecord {
+    pub list: u16,
+    pub scope: ScopeTag,
+    pub action: RpzAction,
+    pub line: u32,
+}
+
+pub const RPZ_RECORD: usize = 8;
+
+impl RpzRecord {
+    pub(crate) fn encode(self) -> [u8; RPZ_RECORD] {
+        let mut b = [0u8; RPZ_RECORD];
+        b[..2].copy_from_slice(&self.list.to_le_bytes());
+        b[2] = match self.scope {
+            ScopeTag::Subtree => 0,
+            ScopeTag::Exact => 1,
+            ScopeTag::Subdomains => 2,
+        };
+        b[3] = self.action.byte();
+        b[4..].copy_from_slice(&self.line.to_le_bytes());
+        b
+    }
+    fn decode(b: [u8; RPZ_RECORD]) -> Option<Self> {
+        Some(Self {
+            list: u16::from_le_bytes([b[0], b[1]]),
+            scope: match b[2] {
+                0 => ScopeTag::Subtree,
+                1 => ScopeTag::Exact,
+                2 => ScopeTag::Subdomains,
+                _ => return None,
+            },
+            action: RpzAction::from_byte(b[3])?,
+            line: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+        })
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct ModRules {
     /// Sorted by key; `modrules.fst` maps each key to `start << 32 | count`.
@@ -249,6 +332,10 @@ pub struct Snapshot {
     pub listsets: ListSetTable,
     pub modrules_index: Map<Vec<u8>>,
     pub modrules: Vec<ModRule>,
+    /// REQ: FLT-906 - plain response policy zone records: key → `start << 32 | count` into
+    /// [`Snapshot::rpz`] (empty for a snapshot without any).
+    pub rpz_index: Map<Vec<u8>>,
+    pub rpz: Vec<u8>,
     pub regexes: Vec<RegexRule>,
 }
 
@@ -259,6 +346,10 @@ pub struct DomainHit {
     /// The matching name (`example.com` for a hit on `ads.example.com`).
     pub name: String,
     pub listset: u32,
+}
+
+fn empty_fst() -> Map<Vec<u8>> {
+    Map::default()
 }
 
 fn invalid(msg: String) -> io::Error {
@@ -306,6 +397,13 @@ impl Snapshot {
         let fst = |name: &str| -> io::Result<Map<Vec<u8>>> {
             Map::new(read(name)?).map_err(|e| invalid(format!("{name}: {e}")))
         };
+        // A snapshot compiled before response policy zones has neither blob.
+        let has_rpz = manifest.blobs.iter().any(|b| b.name == RPZ_FST);
+        let (rpz_index, rpz) = if has_rpz {
+            (fst(RPZ_FST)?, read(RPZ_BIN)?)
+        } else {
+            (empty_fst(), Vec::new())
+        };
         let modrules: ModRules = serde_json::from_slice(&read(MODRULES)?)
             .map_err(|e| invalid(format!("{MODRULES}: {e}")))?;
         let regexes: Regexes =
@@ -325,6 +423,8 @@ impl Snapshot {
             listsets: ListSetTable::read(&read(LISTSETS)?)?,
             modrules_index: fst(MODRULES_FST)?,
             modrules: modrules.rules,
+            rpz_index,
+            rpz,
             regexes: regexes.rules,
             manifest,
         })
@@ -338,12 +438,23 @@ impl Snapshot {
             .map_err(|e| invalid(format!("{MODRULES}: {e}")))?;
         let regexes: Regexes = serde_json::from_slice(&fs::read(dir.join(REGEX))?)
             .map_err(|e| invalid(format!("{REGEX}: {e}")))?;
+        let (rpz_index, rpz) = if dir.join(RPZ_FST).exists() {
+            (
+                Map::new(fs::read(dir.join(RPZ_FST))?)
+                    .map_err(|e| invalid(format!("{RPZ_FST}: {e}")))?,
+                fs::read(dir.join(RPZ_BIN))?,
+            )
+        } else {
+            (empty_fst(), Vec::new())
+        };
         Ok(Self {
             domains: Default::default(),
             listsets,
             modrules_index: Map::new(fs::read(dir.join(MODRULES_FST))?)
                 .map_err(|e| invalid(format!("{MODRULES_FST}: {e}")))?,
             modrules: modrules.rules,
+            rpz_index,
+            rpz,
             regexes: regexes.rules,
             manifest,
         })
@@ -411,6 +522,22 @@ impl Snapshot {
                 self.modrules.get(start..start + count)
             })
             .unwrap_or(&[])
+    }
+
+    /// REQ: FLT-906 - the response policy zone records in `rpz.bin` from `start`, `count` of them.
+    pub fn rpz_records(&self, packed: u64) -> impl Iterator<Item = RpzRecord> + '_ {
+        let start = usize::try_from(packed >> 32).unwrap_or(usize::MAX);
+        let count = usize::try_from(packed & 0xffff_ffff).unwrap_or(0);
+        let from = start.saturating_mul(RPZ_RECORD);
+        let to = from.saturating_add(count.saturating_mul(RPZ_RECORD));
+        self.rpz
+            .get(from..to)
+            .unwrap_or(&[])
+            .as_chunks::<RPZ_RECORD>()
+            .0
+            .iter()
+            .copied()
+            .filter_map(RpzRecord::decode)
     }
 
     /// The list name for an ID.

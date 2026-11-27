@@ -200,6 +200,115 @@ fn mod_rule(list: u16, line: u32, scope: Scope, rule: &Rule) -> ModRule {
     }
 }
 
+/// REQ: FLT-906 - the plain action of a zone record whose only modifier is its answer.
+fn rpz_action(m: &Modifiers) -> Option<snapshot::RpzAction> {
+    if !m.client.is_empty() || !m.dnstype.is_empty() || !m.denyallow.is_empty() || m.important {
+        return None;
+    }
+    snapshot::RpzAction::of_rewrite(m.dnsrewrite.as_deref()?)
+}
+
+/// REQ: FLT-906 - zone records waiting to be written: the keys in one buffer, a small entry each.
+#[derive(Default)]
+struct RpzTable {
+    keys: Vec<u8>,
+    entries: Vec<RpzEntry>,
+}
+
+struct RpzEntry {
+    at: u32,
+    len: u8,
+    scope: Scope,
+    action: snapshot::RpzAction,
+    list: u16,
+    line: u32,
+}
+
+impl RpzTable {
+    fn push(
+        &mut self,
+        key: &[u8],
+        list: u16,
+        scope: Scope,
+        action: snapshot::RpzAction,
+        line: u32,
+    ) {
+        let (Ok(at), Ok(len)) = (u32::try_from(self.keys.len()), u8::try_from(key.len())) else {
+            return;
+        };
+        self.keys.extend_from_slice(key);
+        self.entries.push(RpzEntry {
+            at,
+            len,
+            scope,
+            action,
+            list,
+            line,
+        });
+    }
+
+    fn append(&mut self, other: Self) {
+        let base = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
+        self.keys.extend_from_slice(&other.keys);
+        self.entries.extend(other.entries.into_iter().map(|mut e| {
+            e.at = e.at.saturating_add(base);
+            e
+        }));
+    }
+
+    fn key(&self, e: &RpzEntry) -> &[u8] {
+        let at = e.at as usize;
+        self.keys.get(at..at + usize::from(e.len)).unwrap_or(&[])
+    }
+}
+
+/// REQ: FLT-906 - writes `rpz.fst` and `rpz.bin`: records sorted by key, list and line; the FST
+/// maps each key to `start << 32 | count` into the records.
+fn write_rpz(
+    mut rpz: RpzTable,
+    dir: OutDir<'_>,
+    per_list: &mut [ListCompileStats],
+    stats: &mut CompileStats,
+) -> Result<(), CompileError> {
+    let mut entries = std::mem::take(&mut rpz.entries);
+    entries.sort_by(|a, b| {
+        rpz.key(a)
+            .cmp(rpz.key(b))
+            .then(a.list.cmp(&b.list))
+            .then(a.line.cmp(&b.line))
+    });
+    let mut idx = MapBuilder::new(BufWriter::new(File::create(dir.join(snapshot::RPZ_FST))?))?;
+    let mut bin = BufWriter::new(File::create(dir.join(snapshot::RPZ_BIN))?);
+    let mut i = 0;
+    while i < entries.len() {
+        let key = rpz.key(&entries[i]);
+        let mut j = i;
+        while j < entries.len() && rpz.key(&entries[j]) == key {
+            j += 1;
+        }
+        idx.insert(key, ((i as u64) << 32) | (j - i) as u64)?;
+        i = j;
+    }
+    for e in &entries {
+        let rec = snapshot::RpzRecord {
+            list: e.list,
+            scope: e.scope.into(),
+            action: e.action,
+            line: e.line,
+        };
+        bin.write_all(&rec.encode())?;
+        per_list[usize::from(e.list)].entries += 1;
+        per_list[usize::from(e.list)].rules += 1;
+    }
+    stats.modrules += entries.len() as u64;
+    let mut idx = idx.into_inner()?;
+    idx.flush()?;
+    dir.sync(idx.get_ref())?;
+    bin.flush()?;
+    dir.sync(bin.get_ref())?;
+    Ok(())
+}
+
 fn regex_rule(list: u16, line: u32, pattern: &str, invert: bool, rule: &Rule) -> RegexRule {
     RegexRule {
         pattern: pattern.to_owned(),
@@ -219,6 +328,8 @@ struct Parsed {
     /// Records per scope (ADR-145: the lookup index's size).
     scope_records: [u64; 3],
     mods: Vec<(Vec<u8>, ModRule, Rule)>,
+    /// REQ: FLT-906 - plain response policy zone records, kept compact.
+    rpz: RpzTable,
     regexes: Vec<(RegexRule, Rule)>,
     /// `$badfilter` targets among plain domain rules: key → bitmask of classes.
     bad_domains: HashMap<Vec<u8>, u8>,
@@ -347,6 +458,7 @@ fn parse_bucket(bucket: Vec<Unit>, budget: usize, tmp: &Path, tag: &str) -> io::
         runs: 0,
         scope_records: [0; 3],
         mods: Vec::new(),
+        rpz: RpzTable::default(),
         regexes: Vec::new(),
         bad_domains: HashMap::new(),
         bad_rules: HashSet::new(),
@@ -392,6 +504,15 @@ fn parse_bucket(bucket: Vec<Unit>, budget: usize, tmp: &Path, tag: &str) -> io::
                 }
                 _ if badfilter => {
                     out.bad_rules.insert(rule);
+                }
+                Pattern::Domain { name, scope }
+                    if options.format == wrendns_config::ListFormat::Rpz
+                        && let Some(action) = rpz_action(&rule.modifiers) =>
+                {
+                    // REQ: FLT-906 (AC4) - a plain zone record is 16 bytes here and 8 on disk,
+                    // not a modifier rule.
+                    out.rpz
+                        .push(&reversed_key(name), list, *scope, action, line);
                 }
                 Pattern::Domain { name, scope } => {
                     let modrule = mod_rule(list, line, *scope, &rule);
@@ -540,6 +661,12 @@ fn build(
         &mut per_list,
         &mut stats,
     )?;
+    write_rpz(
+        std::mem::take(&mut parsed.rpz),
+        out,
+        &mut per_list,
+        &mut stats,
+    )?;
     timings.tables = t.elapsed();
 
     // REQ: FLT-003 (T10.3, ADR-145) — a first merge pass fills the lookup index, and the new
@@ -588,6 +715,7 @@ struct Combined {
     sources: Vec<sort::Source>,
     scope_records: [u64; 3],
     mods: Vec<(Vec<u8>, ModRule, Rule)>,
+    rpz: RpzTable,
     regexes: Vec<(RegexRule, Rule)>,
     bad_domains: HashMap<Vec<u8>, u8>,
     bad_rules: HashSet<Rule>,
@@ -630,6 +758,7 @@ fn parse_all(
         sources: Vec::new(),
         scope_records: [0; 3],
         mods: Vec::new(),
+        rpz: RpzTable::default(),
         regexes: Vec::new(),
         bad_domains: HashMap::new(),
         bad_rules: HashSet::new(),
@@ -644,6 +773,7 @@ fn parse_all(
         }
         c.spilled_runs += p.runs;
         c.mods.extend(p.mods);
+        c.rpz.append(p.rpz);
         c.regexes.extend(p.regexes);
         for (k, mask) in p.bad_domains {
             *c.bad_domains.entry(k).or_default() |= mask;

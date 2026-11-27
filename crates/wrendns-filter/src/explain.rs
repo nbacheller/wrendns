@@ -120,6 +120,11 @@ pub fn explain(
                     wanted.known.entry(a.list).or_default().push((i, r.line));
                 }
             }
+            RuleRef::Rpz { scope, line } => {
+                rule.kind = RuleKind::Modifier;
+                rule.scope = Some(scope);
+                wanted.known.entry(a.list).or_default().push((i, line));
+            }
             RuleRef::Regex { index } => {
                 rule.kind = RuleKind::Regex;
                 if let Some(r) = snap.and_then(|s| s.regexes.get(index as usize)) {
