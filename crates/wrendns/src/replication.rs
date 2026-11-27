@@ -60,15 +60,27 @@ pub(crate) fn is_clustered_primary(cfg: &Config) -> bool {
 
 /// REQ: DSC-908 (ADR-1104 point 5) - whether the version this node last published already carried
 /// locations (a `[[location]]` entry or a client pin). Then every member knew the table when it
-/// was let in, and a restart does not hold it again.
+/// was let in, and a restart does not hold it again. A promoted primary that has published
+/// nothing yet (no `published-config.json`) looks at the version it last applied as a replica
+/// instead: the cluster already runs locations when that one carried them.
 pub(crate) fn published_uses_locations(cfg: &Config) -> bool {
     let path = node::dir_of(data_dir(cfg)).join("published-config.json");
-    let Some(v) = std::fs::read(path)
+    if let Some(v) = std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-    else {
-        return false;
-    };
+    {
+        return shared_uses_locations(&v);
+    }
+    last_applied(cfg)
+        .and_then(|m| {
+            let bytes = BlobStore::open(data_dir(cfg)).ok()?.read(&m.config).ok()?;
+            serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+        })
+        .is_some_and(|v| shared_uses_locations(&v))
+}
+
+/// Whether a shared configuration (as JSON) has a `[[location]]` or a pinned client.
+fn shared_uses_locations(v: &serde_json::Value) -> bool {
     let located = |k: &str| v.get(k).and_then(|a| a.as_array());
     located("location").is_some_and(|a| !a.is_empty())
         || located("client").is_some_and(|a| {

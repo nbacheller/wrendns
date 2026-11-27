@@ -3713,6 +3713,11 @@ impl Backend for ApiBackend {
         if held {
             list.held = true;
             list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
+            // REQ: DSC-908 - one location read on its own carries the marker too.
+            for l in &mut list.items {
+                l.held = true;
+                l.held_reason.clone_from(&list.held_reason);
+            }
         }
         list
     }

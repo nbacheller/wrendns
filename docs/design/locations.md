@@ -363,6 +363,8 @@ Owner decision, 2026-11-26, on the eight questions this note asked through the q
 6. **The first providers.** Azure DNS, Cloudflare, Route 53 and RFC 2136 dynamic update with TSIG. GoDaddy is supported by delegation of the challenge name only, with no stored GoDaddy key. Azure DNS credentials are scoped to a single record set (Microsoft documents record-set-level role assignment: https://learn.microsoft.com/azure/dns/dns-protect-zones-recordsets). This amends ADR-1084 (§4.3, CLD-904).
 7. **The wildcard key.** A location's wildcard certificate key is not exportable at first: WrenDNS's own listeners only. A guarded, audited download is a later opt-in task (§3.4, CLD-920).
 8. **Public names.** A publicly published local name may not point at a private, CGNAT, link-local or reserved address (§5, DSC-917).
+9. **Who may pin a device (an agent).** Setting or changing a device's location pin by an agent needs both scopes, `config:write:clients` and `config:write:locations`, chosen over the device scope alone, so an existing device-writing token gains nothing (ADR-1104 point 4, DSC-913).
+10. **Order of the work.** The core (T36.10a) merges before the Locations page (T36.10c), which is built next; T36.10a stays unticked until the page lands and no release is cut in between (ADR-1104).
 
 Reading of decision 5: "its secret kind" is read as the new `pem` secret kind, which this note gated together with `[[dns_provider]]` (§2.6); the provider's own credential is an ordinary `text` secret, which every build already knows.
 

@@ -4333,6 +4333,19 @@ test('api_005 the Home Assistant preset fills the agent scopes', async () => {
   await expect(row).toHaveCount(0);
 });
 
+// REQ: DSC-913, DSC-910 (ADR-1104; the owner's decision of 2026-11-26) - an agent token's scope list
+// has the locations scope, and its help says a device pin needs it together with the devices scope.
+test('dsc_913 the agent scope list has the locations scope', async () => {
+  await page.goto('/#/settings?tab=tokens');
+  await page.getByLabel('Kind', { exact: true }).selectOption('agent');
+  const scope = page.locator('fieldset.agent-scopes input[value="config:write:locations"]');
+  await expect(scope).toHaveCount(1);
+  await expect(scope).not.toBeChecked();
+  const label = page.locator('fieldset.agent-scopes label').filter({ has: page.locator('input[value="config:write:locations"]') });
+  await expect(label).toContainText('pin a device');
+  await expect(label).toContainText('devices scope');
+});
+
 // REQ: FLT-010 (T9.7) — schedules from the UI: a bad window is explained, a good one saved;
 // a group follows it (on now), then both are undone.
 test('flt_010 schedules are edited from the UI', async () => {

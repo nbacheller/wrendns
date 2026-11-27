@@ -1230,6 +1230,14 @@ pub struct LocationInfo {
     /// Every name that collided in this location or with its devices' flat names, each with its
     /// ADR-901 winner.
     pub collisions: Vec<LocationCollision>,
+    /// True while the start-up hold keeps this location out of the answers the node serves (as
+    /// `held` on the list): what is shown is configured, its devices and collisions are not
+    /// resolved until the hold ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    /// Why it is held; set with `held`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_reason: Option<String>,
 }
 
 /// REQ: DSC-913 (T36.10a) - the locations (`GET /api/v1/locations`).

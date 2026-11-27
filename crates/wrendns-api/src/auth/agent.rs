@@ -30,7 +30,7 @@ pub const SCOPES: &[(&str, &str)] = &[
     ),
     (
         "config:write:clients",
-        "create, rename, regroup, and delete devices",
+        "create, rename, regroup, and delete devices (setting, changing or removing a device's location pin needs config:write:locations too)",
     ),
     (
         "config:write:records",
@@ -38,7 +38,7 @@ pub const SCOPES: &[(&str, &str)] = &[
     ),
     (
         "config:write:locations",
-        "add, change, and remove locations (parts of the network with their own device names)",
+        "add, change, and remove locations (parts of the network with their own device names); with config:write:clients, pin a device to a location or take the pin off",
     ),
     ("config:write:forwards", "send domains to other servers"),
     (

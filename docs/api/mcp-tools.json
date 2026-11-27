@@ -1378,7 +1378,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. Needs the config:write:clients scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. A device's location pin is kept; a rename never changes it. Needs the config:write:clients scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1415,7 +1415,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). A device's location pin is kept (changing it is plan_set_device_location). Needs the config:write:clients scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1466,7 +1466,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Pins a named device to a location (its slug from list_locations), whatever its address: it answers as <device>.<slug>.<domain> from then on, and the old flat name keeps answering while the location's flat names are on. An empty `location` takes the pin off, so the device's location is the one its address gives it. The device must already be named (plan_assign_client names one); its groups, addresses and kind are kept. Needs config:write:clients (and config:read to read the current device).",
+    "description": "Plans a change (nothing changes until apply_plan). Pins a named device to a location (its slug from list_locations), whatever its address: it answers as <device>.<slug>.<domain> from then on, and the old flat name keeps answering while the location's flat names are on. An empty `location` takes the pin off, so the device's location is the one its address gives it. The device must already be named (plan_assign_client names one); its groups, addresses and kind are kept. Setting, changing or removing the pin needs BOTH config:write:clients and config:write:locations (a token with the devices scope alone is refused), and config:read to read the current device.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

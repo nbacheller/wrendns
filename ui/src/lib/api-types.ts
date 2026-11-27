@@ -10327,6 +10327,14 @@ export interface components {
              */
             flatNameUses7d: number;
             flatNames: boolean;
+            /**
+             * @description True while the start-up hold keeps this location out of the answers the node serves (as
+             *     `held` on the list): what is shown is configured, its devices and collisions are not
+             *     resolved until the hold ends.
+             */
+            held?: boolean;
+            /** @description Why it is held; set with `held`. */
+            heldReason?: string | null;
             label?: string | null;
             networks: components["schemas"]["LocationNetworkInfo"][];
             nodes: string[];
@@ -10385,12 +10393,16 @@ export interface components {
             collisions: components["schemas"]["LocationCollision"][];
             /** @description Networks two locations claim at once (neither applies until it is fixed), as sentences. */
             conflicts: string[];
-            /** @description True while the start-up hold keeps the locations out of the answers this node serves
+            /**
+             * @description True while the start-up hold keeps the locations out of the answers this node serves
              *     (a cluster member's build does not know them yet): the list is what is configured, and
-             *     the devices and collisions are not resolved until the hold ends. */
-            held: boolean;
-            /** @description Why they are held (the member that does not know them, or that the members are not heard
-             *     from yet); set with `held`. */
+             *     the devices and collisions are not resolved until the hold ends.
+             */
+            held?: boolean;
+            /**
+             * @description Why they are held (the member that does not know them, or that the members are not heard
+             *     from yet); set with `held`.
+             */
             heldReason?: string | null;
             items: components["schemas"]["LocationInfo"][];
         };

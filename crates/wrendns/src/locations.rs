@@ -352,6 +352,8 @@ pub(crate) fn list(
                 flat_name_uses_7d: uses,
                 devices,
                 collisions,
+                held: false,
+                held_reason: None,
             })
         })
         .collect();

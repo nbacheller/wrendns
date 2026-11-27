@@ -927,6 +927,42 @@ async fn backup_response(
     }
 }
 
+/// REQ: DSC-913, DSC-910 (ADR-1104, the owner's decision of 2026-11-26) - an agent token that
+/// would set, change or remove a device's location pin needs `config:write:locations` as well as
+/// `config:write:clients`. A write that leaves the pin as it is (a rename or a regroup that keeps
+/// it) passes. `existing` is the device `name` names, if any (read off the runtime by the caller).
+fn pin_guard(
+    p: &crate::auth::Principal,
+    existing: Option<&crate::model::ClientInfo>,
+    op: &Op,
+) -> Result<(), Problem> {
+    let Some(a) = p.agent.as_ref() else {
+        return Ok(());
+    };
+    if a.scopes.contains("config:write:locations") {
+        return Ok(());
+    }
+    let Op::Client(input) = op else {
+        return Ok(());
+    };
+    let before = existing
+        .filter(|c| c.location_pinned)
+        .and_then(|c| c.location.as_deref());
+    let after = input
+        .as_ref()
+        .and_then(|i| i.location.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if before == after {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Forbidden,
+        "setting, changing or removing a device's location pin needs the `config:write:locations` scope as well as `config:write:clients`",
+    )
+    .hint("Create an agent token with both scopes (POST /api/v1/tokens with kind = agent), or leave the pin as it is."))
+}
+
 /// REQ: AGT-004 — an agent restricted to a group changes only that group's devices, and
 /// only into that group (ADR-064). `existing` is the device `name` names, if any: the caller
 /// reads it off the runtime (CLU-004), because a replica's read waits on the cluster.
@@ -4050,7 +4086,12 @@ async fn write_inner(
     let simulate = simulate.filter(|_| crate::simulate_api::agent_may_simulate(&p, None).is_ok());
     // REQ: CLU-004 (upstream #7) — only a group-restricted agent's check reads the devices;
     // that read waits on the cluster on a replica, so it runs off the runtime.
-    let existing = if p.agent.as_ref().is_some_and(|a| a.group.is_some()) {
+    // REQ: DSC-913 - the pin check reads the device too (an agent without the locations scope).
+    let needs_device = matches!(op, Op::Client(_))
+        && p.agent
+            .as_ref()
+            .is_some_and(|a| a.group.is_some() || !a.scopes.contains("config:write:locations"));
+    let existing = if needs_device {
         let bk = Arc::clone(&backend);
         let device = name.clone();
         match blocking(move || Ok(bk.clients().into_iter().find(|c| c.name == device))).await {
@@ -4061,6 +4102,9 @@ async fn write_inner(
         None
     };
     if let Err(e) = group_guard(&p, existing.as_ref(), &name, &op) {
+        return e.into_response();
+    }
+    if let Err(e) = pin_guard(&p, existing.as_ref(), &op) {
         return e.into_response();
     }
     let expect = match expected_version(&headers) {

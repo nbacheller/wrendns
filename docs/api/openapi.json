@@ -28097,6 +28097,17 @@
           "flatNames": {
             "type": "boolean"
           },
+          "held": {
+            "type": "boolean",
+            "description": "True while the start-up hold keeps this location out of the answers the node serves (as\n`held` on the list): what is shown is configured, its devices and collisions are not\nresolved until the hold ends."
+          },
+          "heldReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it is held; set with `held`."
+          },
           "label": {
             "type": [
               "string",

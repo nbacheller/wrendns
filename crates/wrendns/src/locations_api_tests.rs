@@ -775,6 +775,8 @@ async fn dsc_908_the_location_list_shows_held_locations_during_the_hold() {
     let h = harness_in(HELD, Some(Arc::clone(&old.primary)));
     let (_, _, v) = h.call("GET", "/api/v1/locations", None).await;
     assert!(v.get("held").is_none(), "no hold: {v}");
+    let (_, _, one) = h.call("GET", "/api/v1/locations/home", None).await;
+    assert!(one.get("held").is_none(), "no hold, no marker: {one}");
     let mut c = (*h.src.config.load_full()).clone();
     h.src.unheld.store(Some(Arc::new(c.clone())));
     assert!(crate::upgrade_gate::HOLD.at_start(&mut c, true, false));
@@ -789,6 +791,11 @@ async fn dsc_908_the_location_list_shows_held_locations_during_the_hold() {
     assert_eq!(v["items"][0]["slug"], "home", "{v}");
     let (s, _, v) = h.call("GET", "/api/v1/locations/home", None).await;
     assert_eq!(s, StatusCode::OK, "a held slug is not a 404: {v}");
+    assert_eq!(v["held"], true, "one location carries the marker too: {v}");
+    assert!(
+        v["heldReason"].as_str().unwrap().contains("1.1.0-edge.40"),
+        "{v}"
+    );
     let _ = old.stop.send(true);
 }
 
@@ -933,4 +940,322 @@ async fn dsc_908_the_process_hold_shows_in_health_and_is_released_by_the_loop() 
     let _ = task.await;
     assert_eq!(held_reasons(&h).await, 0, "the reason clears with the hold");
     let _ = new.stop.send(true);
+}
+
+/// An agent token with `scopes` (stored for the admin, as the sign-in-only route would); its
+/// bearer.
+fn agent_bearer(h: &crate::credential_tests::Harness, name: &str, scopes: &[&str]) -> String {
+    let (id, secret) = (
+        wrendns_api::auth::crypto::random_id(),
+        wrendns_api::auth::crypto::random_secret(),
+    );
+    let state = h.auth.state();
+    state
+        .create_token(
+            &id,
+            h.admin_id,
+            name,
+            &wrendns_api::auth::crypto::secret_hash(&secret),
+            "admin",
+            None,
+            crate::pipeline::unix_now(),
+        )
+        .unwrap();
+    state
+        .set_token_agent(&id, &scopes.join(" "), None, Some(600))
+        .unwrap();
+    format!("tt_{id}_{secret}")
+}
+
+/// One request as the bearer, with a reason (an agent write needs one).
+async fn call_with(
+    h: &crate::credential_tests::Harness,
+    bearer: &str,
+    method: &str,
+    uri: &str,
+    body: Option<&Value>,
+) -> (StatusCode, Value) {
+    let mut req = h.request(method, uri, body);
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {bearer}").parse().unwrap());
+    req.headers_mut()
+        .insert("x-wrendns-reason", "a test".parse().unwrap());
+    let (s, _, t) = h.send(req).await;
+    (s, serde_json::from_str(&t).unwrap_or(Value::String(t)))
+}
+
+fn pin_of(h: &crate::credential_tests::Harness, device: &str) -> Option<String> {
+    h.src
+        .config
+        .load()
+        .client
+        .iter()
+        .find(|c| c.name.as_str() == device)
+        .and_then(|c| c.location.as_ref().map(|l| l.as_str().to_owned()))
+}
+
+/// One MCP tool call as the bearer.
+async fn mcp_as(
+    h: &crate::credential_tests::Harness,
+    bearer: &str,
+    id: u64,
+    tool: &str,
+    args: Value,
+) -> Value {
+    let mut req = h.request("POST", "/mcp", Some(&rpc(id, tool, &args)));
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {bearer}").parse().unwrap());
+    let (_, _, t) = h.send(req).await;
+    serde_json::from_str::<Value>(&t).unwrap()
+}
+
+/// Plans `tool` as the bearer and applies the plan; the apply's result.
+async fn plan_and_apply(
+    h: &crate::credential_tests::Harness,
+    bearer: &str,
+    tool: &str,
+    args: Value,
+) -> Value {
+    let v = mcp_as(h, bearer, 1, tool, args).await;
+    assert_ne!(v["result"]["isError"], true, "{tool}: {v}");
+    let id = v["result"]["structuredContent"]["planId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no planId: {v}"))
+        .to_owned();
+    mcp_as(h, bearer, 2, "apply_plan", json!({"planId": id})).await
+}
+
+fn device_body(name: &str, extra: &Value) -> Value {
+    let mut b = json!({ "match": [format!("203.0.113.{}", name.len())] });
+    b.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    b
+}
+
+/// REQ: DSC-913, DSC-910 (ADR-1104; the owner's decision of 2026-11-26, through the question
+/// tool) - an agent token that would set, change or remove a device's pin needs
+/// `config:write:locations` as well as `config:write:clients`: the direct write, the MCP device
+/// plans and the delete; a write that leaves the pin as it is passes and keeps it; a token
+/// holding both scopes pins.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn dsc_913_an_agent_pins_a_device_only_with_both_scopes() {
+    let h = harness(DOMAIN);
+    for (slug, net) in [("lab", "198.51.100.0/24"), ("home", "192.0.2.0/24")] {
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                &format!("/api/v1/locations/{slug}"),
+                Some(&body(&[net])),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    // A pinned device and an unpinned one, made by an operator.
+    for (name, extra) in [("pinned", json!({"location": "lab"})), ("plain", json!({}))] {
+        let (s, _, v) = h
+            .call(
+                "PUT",
+                &format!("/api/v1/clients/{name}"),
+                Some(&device_body(name, &extra)),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let clients = agent_bearer(&h, "clients-only", &["config:read", "config:write:clients"]);
+    let both = agent_bearer(
+        &h,
+        "both",
+        &[
+            "config:read",
+            "config:write:clients",
+            "config:write:locations",
+        ],
+    );
+    let refused = |s: StatusCode, v: &Value, what: &str| {
+        assert_eq!(s, StatusCode::FORBIDDEN, "{what}: {v}");
+        assert!(
+            v.to_string().contains("config:write:locations"),
+            "{what}: {v}"
+        );
+    };
+
+    // Direct writes without the locations scope: set, change, remove (empty, or left out), delete.
+    for (what, uri, b) in [
+        (
+            "set",
+            "/api/v1/clients/plain",
+            device_body("plain", &json!({"location": "lab"})),
+        ),
+        (
+            "change",
+            "/api/v1/clients/pinned",
+            device_body("pinned", &json!({"location": "home"})),
+        ),
+        (
+            "remove",
+            "/api/v1/clients/pinned",
+            device_body("pinned", &json!({"location": ""})),
+        ),
+        (
+            "absent",
+            "/api/v1/clients/pinned",
+            device_body("pinned", &json!({})),
+        ),
+    ] {
+        let (s, v) = call_with(&h, &clients, "PUT", uri, Some(&b)).await;
+        refused(s, &v, what);
+        // A dry run is refused too.
+        let (s, v) = call_with(&h, &clients, "PUT", &format!("{uri}?dryRun=true"), Some(&b)).await;
+        refused(s, &v, what);
+    }
+    let (s, v) = call_with(&h, &clients, "DELETE", "/api/v1/clients/pinned", None).await;
+    refused(s, &v, "delete");
+    assert_eq!(
+        pin_of(&h, "pinned").as_deref(),
+        Some("lab"),
+        "nothing changed"
+    );
+    assert_eq!(pin_of(&h, "plain"), None);
+
+    // Leaving the pin as it is passes: a regroup and a rename keep it; an unpinned device is
+    // changed freely.
+    let (s, v) = call_with(
+        &h,
+        &clients,
+        "PUT",
+        "/api/v1/clients/pinned",
+        Some(&device_body(
+            "pinned",
+            &json!({"location": "lab", "groups": ["default"]}),
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = call_with(
+        &h,
+        &clients,
+        "PUT",
+        "/api/v1/clients/pinned",
+        Some(&device_body(
+            "pinned",
+            &json!({"name": "pinned2", "location": "lab"}),
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(pin_of(&h, "pinned2").as_deref(), Some("lab"));
+    let (s, v) = call_with(
+        &h,
+        &clients,
+        "PUT",
+        "/api/v1/clients/plain",
+        Some(&device_body("plain", &json!({"kind": "tv"}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // The MCP plans as the clients-only agent: the pin plan is refused (at the plan), the rename
+    // and the regroup plans pass and keep the pin.
+    for (device, location) in [("plain", "lab"), ("pinned2", "")] {
+        let v = mcp_as(
+            &h,
+            &clients,
+            1,
+            "plan_set_device_location",
+            json!({"device": device, "location": location, "reason": "r"}),
+        )
+        .await;
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        assert!(v.to_string().contains("config:write:locations"), "{v}");
+    }
+    for (tool, args) in [
+        (
+            "plan_rename_client",
+            json!({"client": "pinned2", "newName": "pinned3", "reason": "r"}),
+        ),
+        (
+            "plan_assign_client",
+            json!({"client": "pinned3", "groups": ["default"], "reason": "r"}),
+        ),
+    ] {
+        let v = plan_and_apply(&h, &clients, tool, args).await;
+        assert_ne!(v["result"]["isError"], true, "{tool} apply: {v}");
+    }
+    assert_eq!(
+        pin_of(&h, "pinned3").as_deref(),
+        Some("lab"),
+        "the pin is kept"
+    );
+
+    // With both scopes the pin is changed and removed, and set by a direct write; the delete of
+    // a pinned device passes.
+    for (loc, want) in [("home", Some("home")), ("", None)] {
+        let v = plan_and_apply(
+            &h,
+            &both,
+            "plan_set_device_location",
+            json!({"device": "pinned3", "location": loc, "reason": "r"}),
+        )
+        .await;
+        assert_ne!(v["result"]["isError"], true, "{v}");
+        assert_eq!(pin_of(&h, "pinned3").as_deref(), want);
+    }
+    let (s, v) = call_with(
+        &h,
+        &both,
+        "PUT",
+        "/api/v1/clients/plain",
+        Some(&device_body("plain", &json!({"location": "lab"}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = call_with(&h, &both, "DELETE", "/api/v1/clients/plain", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// REQ: DSC-908 (ADR-1104 point 5) - a promoted primary that has published nothing (no
+/// `published-config.json`) still knows the cluster runs locations: the version it last applied
+/// as a replica carried them, so a restart does not hold them. A published file, when there is
+/// one, stays the answer; a last-applied version without locations holds nothing back.
+#[test]
+fn dsc_908_a_promoted_primary_with_no_published_file_reads_the_applied_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = crate::credential_tests::config(DOMAIN);
+    cfg.node.data_dir = wrendns_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+    let cluster = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster).unwrap();
+    let applied = |shared: &Value| {
+        let bytes = shared.to_string().into_bytes();
+        let blob = wrendns_cluster::sync::blob_ref("config", &bytes);
+        wrendns_cluster::sync::BlobStore::open(dir.path())
+            .unwrap()
+            .put(&blob, &bytes)
+            .unwrap();
+        let m = wrendns_cluster::sync::ClusterManifest {
+            cluster_id: "c".into(),
+            epoch: 1,
+            seq: 1,
+            primary: "other".into(),
+            config: blob,
+            ..wrendns_cluster::sync::ClusterManifest::default()
+        };
+        std::fs::write(
+            cluster.join(crate::replication::APPLIED),
+            serde_json::to_vec(&m).unwrap(),
+        )
+        .unwrap();
+    };
+    // Nothing published and nothing applied: not held back by this check.
+    assert!(!crate::replication::published_uses_locations(&cfg));
+    applied(&json!({"upstream": []}));
+    assert!(!crate::replication::published_uses_locations(&cfg));
+    applied(&json!({"location": [{"slug": "home", "networks": ["192.0.2.0/24"]}]}));
+    assert!(crate::replication::published_uses_locations(&cfg));
+    applied(&json!({"client": [{"name": "x", "location": "home"}]}));
+    assert!(crate::replication::published_uses_locations(&cfg));
+    // A published file wins over the applied version.
+    std::fs::write(cluster.join("published-config.json"), r#"{"upstream": []}"#).unwrap();
+    assert!(!crate::replication::published_uses_locations(&cfg));
 }

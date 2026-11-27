@@ -242,6 +242,7 @@
     ['querylog:read', 'The query log (who asked for what)'],
     ['config:read', 'Lists, groups, devices, names, upstreams'],
     ['config:write:clients', 'Name and regroup devices'],
+    ['config:write:locations', 'Make locations; with the devices scope, pin a device to one'],
     ['config:write:records', 'Change names on your network'],
     ['config:write:forwards', 'Send domains to other servers'],
     ['ops:pause', 'Pause and resume blocking'],
