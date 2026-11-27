@@ -170,8 +170,46 @@ pub(crate) fn begin_for(
     };
     // REQ: API-902 — on a replica the staged entry is the primary's, in the blob it applied.
     let pairs = store::effective(cfg, &state, &node);
-    let entries: Vec<Stored> = pairs.iter().map(|(e, _)| e.clone()).collect();
+    let mut entries: Vec<Stored> = pairs.iter().map(|(e, _)| e.clone()).collect();
     let replicated = |id: &str| pairs.iter().any(|(e, r)| *r && e.id == id);
+    // REQ: OBS-007, API-905 (T40.13, review) - an ordinary dnstap narrowing was never confirmed with the
+    // phrase: if the files changed so that it would now copy more than they do, it is dropped (the
+    // node starts from the files) and the drop is audited.
+    entries.retain(|e| {
+        if e.id != wrendns_config::guarded::DNSTAP
+            || e.mode != super::dnstap::NARROWED
+            || !super::dnstap::unconfirmed_widens(cfg, &e.value)
+        {
+            return true;
+        }
+        warn!(id = %e.id, "an unconfirmed dnstap entry would now copy more than the files do: it is not applied and is dropped");
+        let dropped = if replicated(&e.id) {
+            store::drop_entry(&state, e, true)
+        } else {
+            store::delete(&state, &node, &e.id)
+        };
+        if let Err(err) = dropped {
+            warn!(id = %e.id, "the unconfirmed dnstap entry can't be dropped: {err}");
+        }
+        audit_system(
+            &state,
+            now,
+            "settings.guarded_rolled_back",
+            &super::entry_name(&node, &e.id),
+            &json!({"setting": e.id, "node": node, "reason": "would_widen"}),
+        );
+        store::record_outcome(
+            &state,
+            GuardedOutcome {
+                setting: e.id.clone(),
+                node: node.clone(),
+                outcome: "rolled_back".to_owned(),
+                reason: Some("would_widen".to_owned()),
+                at: now,
+            },
+        );
+        false
+    });
     let waiting: Vec<&Stored> = entries
         .iter()
         .filter(|e| matches!(e.state, EntryState::Staged | EntryState::Probation))

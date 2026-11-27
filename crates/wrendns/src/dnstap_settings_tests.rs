@@ -857,7 +857,7 @@ async fn obs_007_dnstap_a_write_is_judged_on_the_node_it_is_for() {
     assert_eq!(e.state, crate::guarded::store::EntryState::Staged);
     // Without its view, a node's write is not judged on a guess.
     let r = forwarded(&h, "pi-c", Some(json!({})), None, false).await;
-    assert_eq!(code(&r), "UpgradeRequired", "{r:?}");
+    assert_eq!(code(&r), "Unavailable", "{r:?}");
 }
 
 /// REQ: OBS-007, API-905 (T40.13, review 4) - a node's confirmed tap clears only that node: a write for
@@ -986,4 +986,97 @@ async fn obs_007_dnstap_a_narrowed_entry_in_force_shows_the_narrowed_tap() {
     assert_eq!(c["definition"]["socket"], "/run/b.sock", "{c}");
     assert_eq!(c["definition"]["sample_every"], 10, "{c}");
     assert_eq!(c["definition"]["restart_needed"], true, "{c}");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - a write is judged on what this primary holds for the node,
+/// not on a value the replica sends (its copy of the store can lag). (1) The node's confirmed tap was
+/// removed on the primary, the replica's card still shows it: asking for it back with a lower sampling
+/// is a widening on what the node will run, 409 `guarded_only`, and nothing is stored. (2) The primary
+/// holds a confirmed tap the replica has not heard of: a write that turns it off is judged against
+/// that tap and the answer says so.
+#[tokio::test]
+async fn obs_007_dnstap_a_stale_view_is_not_the_nodes_state() {
+    let h = node_a();
+    let stale = view(none(), &[], tap("/run/b.sock", 1));
+    let ask = json!({ "socket": "/run/b.sock", "sample_every": 2 });
+    let r = forwarded(&h, "pi-b", Some(ask), Some(stale), false).await;
+    assert_eq!(code(&r), "GuardedOnly", "{r:?}");
+    assert!(
+        entry_of(&h, "pi-b").is_none(),
+        "no tap came back unconfirmed"
+    );
+    // (2)
+    put_guarded_on(
+        "pi-b",
+        &h,
+        json!({ "socket": "/run/b.sock", "sample_every": 1 }),
+    );
+    let lagging = view(none(), &[], none());
+    let c = forwarded(
+        &h,
+        "pi-b",
+        Some(json!({ "sample_every": 5 })),
+        Some(lagging),
+        false,
+    )
+    .await
+    .expect("turning the tap off narrows");
+    assert_eq!(
+        c.before.as_ref().unwrap()["socket"],
+        "/run/b.sock",
+        "judged against the entry the primary holds: {c:?}"
+    );
+    let e = entry_of(&h, "pi-b").unwrap();
+    assert!(e.value.get("socket").is_none(), "{:?}", e.value);
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - an ordinary narrowing stores no reader and is marked
+/// `narrowed`: with the tap on in the files, an admin lowers the sampling; the files then drop the
+/// tap; at the next start the node runs no tap (the entry never carried the file's socket).
+#[tokio::test]
+async fn obs_007_dnstap_a_narrowing_does_not_keep_the_files_socket() {
+    let h = with_toml("[telemetry.dnstap]\nsocket = \"/run/x.sock\"\n");
+    let (s, _, v) = h
+        .call("PUT", URL, Some(&json!({ "sample_every": 5 })))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut e = entry_of(&h, "pi-a").expect("the node's entry");
+    assert_eq!(e.mode, crate::guarded::dnstap::NARROWED);
+    assert!(e.value.get("socket").is_none(), "{:?}", e.value);
+    // The start moved it on; the files no longer set the tap.
+    e.state = crate::guarded::store::EntryState::Probation;
+    crate::guarded::store::put(h.auth.state(), &e, e.at, "admin").unwrap();
+    let files_now = Config::default();
+    let cfg = crate::managed::merge(&files_now, &crate::managed::entries(h.auth.state()))
+        .expect("the merged configuration validates");
+    assert!(cfg.telemetry.dnstap.socket.is_none(), "no tap");
+    assert!(cfg.telemetry.dnstap.address.is_none());
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - a replica whose own dnstap settings are not readable
+/// refuses locally (503) instead of forwarding a write with no view, which the primary would take for
+/// an older build; a removal sent with no view is still `upgrade_required` and a change sent with
+/// none is not (the first write is held until every member has the feature).
+#[tokio::test]
+async fn obs_007_dnstap_a_missing_view_is_not_an_old_build() {
+    let h = node_a();
+    let r = forwarded(&h, "pi-c", Some(json!({})), None, false).await;
+    assert_eq!(code(&r), "Unavailable", "{r:?}");
+    let r = forwarded(&h, "pi-c", None, None, false).await;
+    assert_eq!(code(&r), "UpgradeRequired", "{r:?}");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - an address the API is given is `tcp://host:port` with a
+/// host name or IP address: another scheme or white space is refused before the change is judged.
+#[tokio::test]
+async fn obs_007_dnstap_an_address_the_writer_cannot_use_is_refused() {
+    let h = node_a();
+    for bad in ["udp://h:53", "http://h:80", "bad host:53"] {
+        let (s, _, v) = h.call("PUT", URL, Some(&json!({ "address": bad }))).await;
+        assert!(
+            s == StatusCode::UNPROCESSABLE_ENTITY || s == StatusCode::BAD_REQUEST,
+            "{bad}: {s} {v}"
+        );
+        assert_ne!(v["code"], "guarded_only", "{bad}: {v}");
+    }
 }

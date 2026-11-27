@@ -325,6 +325,8 @@ struct Fake {
     audit_to_state: AtomicBool,
     /// Whether a replica's entry reaches it in time (`Host::wait_applied`).
     arrives: AtomicBool,
+    /// What the node will run after its next start, when it differs from `cfg` (a staged entry).
+    pending: Mutex<Option<Arc<Config>>>,
 }
 
 fn key_of(node: &str) -> [u8; 32] {
@@ -337,6 +339,10 @@ impl Host for Fake {
     }
     fn file_config(&self) -> Arc<Config> {
         Arc::clone(&self.file_cfg.lock().unwrap())
+    }
+    fn pending_config(&self) -> Arc<Config> {
+        let p = self.pending.lock().unwrap().clone();
+        p.unwrap_or_else(|| self.running_config())
     }
     fn reload(&self) -> BoxFuture<bool> {
         self.reloads.fetch_add(1, Ordering::SeqCst);
@@ -568,6 +574,7 @@ fn node_on(
         can_sign,
         audit_to_state: AtomicBool::new(false),
         arrives: AtomicBool::new(true),
+        pending: Mutex::new(None),
     });
     let engine = Engine::new(
         name.to_owned(),
@@ -3672,4 +3679,174 @@ async fn obs_007_dnstap_a_file_socket_locks_that_field_only() {
         cfg.telemetry.dnstap.forwarder,
         "the feed is the stored value's"
     );
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - the review judges "widening" against what the node will run
+// after its next start, as the ordinary write does: the tap is on at /a, an ordinary write staged
+// "off", and a review that sets /a again turns the tap on at the next start, so it weakens (a recent
+// sign-in, the warning, `weakening` in the preview).
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_review_is_judged_on_what_the_node_will_run() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut running = Config::default();
+    running.telemetry.dnstap.socket = Some("/a".into());
+    *n.host.cfg.lock().unwrap() = Arc::new(running);
+    let v = json!({"socket": "/a"});
+    // Judged on the running tap alone, the same value changes nothing.
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(!p.weakening, "nothing changes from the running tap");
+    // A staged "off": the next start has no tap, so /a again turns it on.
+    *n.host.pending.lock().unwrap() = Some(Arc::new(Config::default()));
+    let p = preview(&n.engine, &a, "dnstap-output", v).await.unwrap();
+    assert!(p.weakening, "{p:?}");
+    assert!(p.needs_recent_sign_in, "{p:?}");
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - the reader is one field: a file that sets the address
+// takes the entry's socket away (and the other way round), so the merged section has one reader and
+// validates; the node does not fall back to its files alone.
+#[test]
+fn obs_007_dnstap_the_reader_is_one_field() {
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let entry = |value: Value| {
+        vec![Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value,
+            mode: "staged".into(),
+            state: EntryState::Active,
+            by: "alice".into(),
+            at: 1,
+        }]
+    };
+    for (file_field, file_value, entry_value) in [
+        (
+            "address",
+            "tcp://192.0.2.5:6000",
+            json!({"socket": "/run/a.sock", "forwarder": true}),
+        ),
+        (
+            "socket",
+            "/run/f.sock",
+            json!({"address": "tcp://192.0.2.9:6000", "forwarder": true}),
+        ),
+    ] {
+        let mut file = Config::default();
+        if file_field == "address" {
+            file.telemetry.dnstap.address = Some(file_value.into());
+        } else {
+            file.telemetry.dnstap.socket = Some(file_value.into());
+        }
+        file.file_set.push(format!("telemetry.dnstap.{file_field}"));
+        let mut cfg = file.clone();
+        super::appliers::overlay_with(
+            &mut cfg,
+            &file,
+            &entry(entry_value),
+            None,
+            &defs,
+            "pi-a",
+            false,
+        );
+        let d = &cfg.telemetry.dnstap;
+        assert_eq!(
+            (d.socket.is_some(), d.address.is_some()),
+            (file_field == "socket", file_field == "address"),
+            "one reader, the file's: {d:?}"
+        );
+        assert!(d.forwarder, "the entry's other fields stay");
+        assert!(wrendns_config::validate_config(&cfg).is_ok(), "{d:?}");
+        // A value that changes the reader the file does not name is still the file's field.
+        assert!(
+            super::dnstap::changes_file_field(&file, &json!({"socket": "/run/zzz.sock"}))
+                || file_field == "socket"
+        );
+        assert!(
+            super::dnstap::changes_file_field(&file, &json!({"address": "tcp://192.0.2.77:1"}))
+                || file_field == "address"
+        );
+    }
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - an entry an ordinary write stored (`narrowed`, never
+// confirmed with the phrase) is applied only while it copies no more than the files: when the files
+// have dropped the tap or added a feed since, it is not applied.
+#[test]
+fn obs_007_dnstap_an_unconfirmed_entry_never_widens_the_files() {
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    let entry = |mode: &str, value: Value| {
+        vec![Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value,
+            mode: mode.into(),
+            state: EntryState::Active,
+            by: "alice".into(),
+            at: 1,
+        }]
+    };
+    let run = |file: &Config, e: &[Stored]| {
+        let mut cfg = file.clone();
+        super::appliers::overlay_with(&mut cfg, file, e, None, &defs, "pi-a", false);
+        cfg.telemetry.dnstap
+    };
+    // The entry as an ordinary write leaves it: a sampling change and a feed, no reader.
+    let value = json!({"sample_every": 5, "resolver": true});
+    // The files have no tap: a feed with no target copies nothing, so it is applied.
+    let none = Config::default();
+    assert!(run(&none, &entry("narrowed", value.clone())).resolver);
+    // The files then add a socket: the feed would copy exchanges nobody confirmed.
+    let mut with_tap = Config::default();
+    with_tap.telemetry.dnstap.socket = Some("/run/x.sock".into());
+    with_tap.file_set.push("telemetry.dnstap.socket".to_owned());
+    let d = run(&with_tap, &entry("narrowed", value.clone()));
+    assert!(!d.resolver && d.sample_every == 1, "not applied: {d:?}");
+    assert_eq!(d.socket.as_deref(), Some("/run/x.sock"));
+    // A reviewed entry is the owner's decision: it is applied.
+    assert!(run(&with_tap, &entry("staged", value)).resolver);
+}
+
+// REQ: OBS-007, API-905 (T40.13, review) - the file had the tap on, an admin narrowed the sampling by
+// an ordinary write (an entry with no reader, `narrowed`), then the file took the tap out and added a
+// feed: at the next start nothing is applied that copies more than the files (no tap, no feed), the
+// entry is dropped, and the drop is audited as a rollback.
+#[test]
+fn obs_007_dnstap_restart_drops_an_unconfirmed_entry_the_files_now_widen() {
+    let (_dir, mut cfg) = dir_with(&[]);
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    store::put(
+        &state,
+        &Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value: json!({"sample_every": 5, "buffer": 10000, "forwarder": false, "resolver": true}),
+            mode: "narrowed".into(),
+            state: EntryState::Staged,
+            by: "alice".into(),
+            at: 1,
+        },
+        1,
+        "alice",
+    )
+    .unwrap();
+    // The files now set a socket: the entry's feed would copy what nobody confirmed.
+    cfg.telemetry.dnstap.socket = Some("/run/x.sock".into());
+    cfg.file_set.push("telemetry.dnstap.socket".to_owned());
+    let b = begin(&cfg);
+    assert!(b.on_probation.is_empty(), "{b:?}");
+    assert!(entries_of(&cfg).is_empty(), "dropped");
+    let audits = state
+        .audit_page(None, 10, Some("settings.guarded_rolled_back"), None)
+        .unwrap();
+    assert_eq!(audits.len(), 1);
+    assert!(audits[0].detail.contains("would_widen"));
 }

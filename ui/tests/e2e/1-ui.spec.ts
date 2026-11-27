@@ -5162,6 +5162,43 @@ test('obs_007 dnstap revert that would copy more opens the review at the file va
   }
 });
 
+// REQ: OBS-007, API-905 (T40.13, review) — a node whose file holds a `buffer` above the card's ceiling and a
+// relative `socket` (both still load, with a warning) can still narrow: the form's own checks leave a value
+// as the node reads it to the server, so a feed turned off reaches the server instead of failing in the form.
+test('obs_007 dnstap card leaves the values read from the file to the server', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  await page.route('**/api/v1/config/entries?kind=dnstap_settings*', async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.items[0].definition = { ...body.items[0].definition, buffer: 2000000, socket: 'dnstap.sock', resolver: true };
+    return route.fulfill({ response: res, json: body });
+  });
+  let sent: Record<string, unknown> | null = null;
+  await page.route('**/api/v1/dnstap-settings/default?dryRun=true', async (route) => {
+    sent = route.request().postDataJSON() as Record<string, unknown>;
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ applied: false, configVersion: 1, recentQueries: 0, impact: '', warnings: [] }) });
+  });
+  try {
+    await page.reload();
+    await page.getByTestId('tuning-dnstap').locator('summary').click();
+    const row = page.getByTestId('editor-dnstap_settings').getByTestId('entry-row');
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await page.getByRole('switch', { name: /recursive resolver/ }).uncheck();
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect.poll(() => sent).not.toBeNull();
+    expect(sent!.buffer).toBe(2000000);
+    expect(sent!.resolver).toBe(false);
+    await expect(page.getByText('Copies held: from 100 to 1,000,000.')).toHaveCount(0);
+    await expect(page.getByText('The socket is an absolute path, for example /run/dnstap.sock.')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/config/entries?kind=dnstap_settings*');
+    await page.unroute('**/api/v1/dnstap-settings/default?dryRun=true');
+    const close = page.getByRole('dialog').getByRole('button', { name: 'Close' });
+    if (await close.count()) await close.click();
+  }
+});
+
 // REQ: OBS-007, API-905 (T40.13) — the dnstap settings are an admin's as a whole: an operator sees the
 // card read-only and the server refuses the operator's write (403), and a viewer-level read is allowed.
 test('obs_007 operator cannot change the dnstap settings', async () => {

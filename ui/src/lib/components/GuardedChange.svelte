@@ -37,6 +37,10 @@
     onDone?: () => void;
   } = $props();
 
+  // The node the change is for: the one named, else this node (the first in the listing); never just the
+  // node picked in the Guarded settings picker, which a card on another node does not follow.
+  const target = $derived(node ? (guarded.nodes.find((x) => x.node === node) ?? null) : (guarded.nodes[0] ?? null));
+
   type Step = 'idle' | 'review' | 'working' | 'pending' | 'done' | 'restarting';
   let step = $state<Step>('idle');
   let pv = $state<S['GuardedPreview'] | null>(null);
@@ -183,7 +187,7 @@
       stopWatch = watchGuarded(1_500);
     } else if (r.status === 'restarting') {
       step = 'restarting';
-      restartIds = [...(guarded.node?.pendingRestart ?? [])];
+      restartIds = [...(target?.pendingRestart ?? [])];
       restartAsked = Math.floor(Date.now() / 1000) - 5;
       restartStarted = Date.now();
       restartTimedOut = false;
@@ -200,18 +204,18 @@
   // The window: follow the server's own count, and notice how it ended.
   $effect(() => {
     if (step !== 'pending' || !result) return;
-    const p = guarded.node?.pending;
+    const p = target?.pending;
     void tick;
     if (p && p.id === result.pendingId) {
       sawPending = true;
       hear(p.deadlineSecs);
-    } else if (guarded.loaded && guarded.node && (sawPending || secsLeft === 0)) {
-      const o = guarded.node.outcomes.find((x) => x.setting === id);
+    } else if (guarded.loaded && target && (sawPending || secsLeft === 0)) {
+      const o = target.outcomes.find((x) => x.setting === id);
       step = 'done';
       stop();
       if (o?.outcome === 'confirmed') {
         finalKind = 'ok';
-        finalText = `The change was confirmed and is kept on ${guarded.node.node}.`;
+        finalText = `The change was confirmed and is kept on ${target.node}.`;
         onDone?.();
       } else {
         finalKind = 'bad';
@@ -257,7 +261,7 @@
   // Restart now: the node goes away and comes back; its outcome is read from the listing.
   $effect(() => {
     if (step !== 'restarting') return;
-    const n = guarded.node;
+    const n = target;
     if (n && !n.restarting && guarded.error === '' && Date.now() - restartStarted > 800) {
       // The newest outcome of each staged setting since the restart was asked for.
       const mine = restartIds.flatMap((sid) => {
@@ -286,7 +290,7 @@
   });
   $effect(() => {
     void tick;
-    if (step === 'restarting' && Date.now() - restartStarted > Math.max(guarded.node?.confirmWindowSecs ?? 120, 180) * 2000) {
+    if (step === 'restarting' && Date.now() - restartStarted > Math.max(target?.confirmWindowSecs ?? 120, 180) * 2000) {
       restartTimedOut = true;
     }
   });
@@ -438,9 +442,9 @@
     </section>
   {:else if step === 'restarting'}
     <section class="pending" data-testid="guarded-restarting" aria-live="polite">
-      <h4>{guarded.node?.node ?? 'The node'} is restarting…</h4>
+      <h4>{target?.node ?? 'The node'} is restarting…</h4>
       <p>
-        Waiting for it to answer. {hasSupervisor(guarded.node) ? `Your ${guarded.node?.supervisor.kind} starts it again.` : ''}
+        Waiting for it to answer. {hasSupervisor(target) ? `Your ${target?.supervisor.kind} starts it again.` : ''}
         This page keeps trying.
       </p>
       {#if restartTimedOut}

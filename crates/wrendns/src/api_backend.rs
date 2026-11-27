@@ -4828,7 +4828,7 @@ impl Backend for ApiBackend {
 
     fn dnstap_view(&self) -> Option<serde_json::Value> {
         let (v, _) = self.dnstap_view_of()?;
-        serde_json::to_value(v).ok()
+        serde_json::to_value(v.sent()).ok()
     }
 
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
@@ -8140,6 +8140,11 @@ impl ApiBackend {
                     // REQ: API-002 (T9.22) — what the change also needs, first; the version
                     // check applies to the first write.
                     let mut expect = w.expect;
+                    // REQ: OBS-007, API-905 (T40.13, review) - the node's entry is replaced or removed
+                    // only if nothing was stored since the plan read it.
+                    if w.kind == ManagedKind::TelemetryDnstap && expect.is_none() {
+                        expect = Some(current);
+                    }
                     // REQ: FLT-902 (T24.29): a group and its devices go in one transaction, so
                     // the version moves once and nothing is half-applied.
                     if w.kind == ManagedKind::GroupSources {

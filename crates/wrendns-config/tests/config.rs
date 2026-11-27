@@ -2134,6 +2134,51 @@ fn obs_007_dnstap_socket_is_a_clean_path() {
     );
 }
 
+/// REQ: OBS-007, API-905 (T40.13, review) - a dnstap address is `[tcp://]host:port` with a host name
+/// or IP address; another scheme or a host with white space still loads from a file (it was valid
+/// before the check) with a warning, and the API's check (`dnstap_address_ok`) refuses it.
+#[test]
+fn obs_007_dnstap_address_is_tcp_host_port() {
+    for ok in [
+        "tcp://192.0.2.5:6000",
+        "192.0.2.5:6000",
+        "collector.example.net:6000",
+        "tcp://[2001:db8::5]:6000",
+    ] {
+        assert!(wrendns_config::dnstap_address_ok(ok), "{ok}");
+        let toml = format!(
+            "[telemetry.dnstap]
+address = \"{ok}\"
+"
+        );
+        assert!(
+            !load_str(&toml)
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|w| w.contains("telemetry.dnstap.address")),
+            "{ok}"
+        );
+    }
+    for bad in ["udp://h:53", "http://h:80", "bad host:53", "tcp://h /x:53"] {
+        assert!(!wrendns_config::dnstap_address_ok(bad), "{bad}");
+        let toml = format!(
+            "[telemetry.dnstap]
+address = \"{bad}\"
+"
+        );
+        let loaded = load_str(&toml).expect("a file written before the check still loads");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.contains("telemetry.dnstap.address")),
+            "{bad}: {:?}",
+            loaded.warnings
+        );
+    }
+}
+
 /// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or
 /// a network; a port, a wildcard and nonsense are refused.
 #[test]

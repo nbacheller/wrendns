@@ -229,6 +229,13 @@ impl Host for ProdHost {
         self.src.file_config.load_full()
     }
 
+    fn pending_config(&self) -> Arc<Config> {
+        match self.src.auth.get() {
+            Some(a) => Arc::new(crate::dnstap_plan::pending_config(&self.src, a.state())),
+            None => self.running_config(),
+        }
+    }
+
     fn reload(&self) -> BoxFuture<bool> {
         let tx = self.src.reload.clone();
         Box::pin(async move {

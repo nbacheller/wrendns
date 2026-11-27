@@ -109,7 +109,8 @@
     /** REQ: API-901 (T27.5) — the server's checks that a field's bound alone can't say (a timeout
      *  shorter than the interval, a size string): the reason to refuse the draft, or null. The
      *  server checks the same things, so this only shows the reason sooner. */
-    validate?: (values: Record<string, unknown>) => string | null;
+    /** `loaded` is the entry as read and `setByFile` its fields a file sets: a value left as read is no new setting. */
+    validate?: (values: Record<string, unknown>, loaded?: Record<string, unknown>, setByFile?: string[]) => string | null;
     /** REQ: API-014 (T24.16, ADR-926 §1) — what a draft needs an admin for (a program address): the
      *  reason, for a non-admin, which holds Check and Apply; the server refuses it too. `saved` is the
      *  entry as it was read (null for a new entry), so a draft that leaves a saved program address
@@ -304,7 +305,7 @@
       preview = null;
       return;
     }
-    const why = validate?.(editing.values) ?? null;
+    const why = validate?.(editing.values, original, fileSet) ?? null;
     if (why) {
       formError = new Error(why);
       preview = null;
@@ -328,7 +329,7 @@
       formError = sameNameError();
       return;
     }
-    const why = validate?.(editing.values) ?? null;
+    const why = validate?.(editing.values, original, fileSet) ?? null;
     if (why) {
       formError = new Error(why);
       return;

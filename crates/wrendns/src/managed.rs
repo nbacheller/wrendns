@@ -724,10 +724,6 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
         }
     }
     let mut errs = crate::settings_kinds::apply_stored(&mut cfg, own, e);
-    // REQ: OBS-007, API-905 (T40.13) - the dnstap section is this node's own entry of the guarded
-    // store (a reviewed widening, or a narrowing written by an ordinary admin change): laid over the
-    // files' section field by field, as a replica lays its node-managed entries over the shared part.
-    crate::guarded::appliers::overlay(&mut cfg, own, &e.guarded, None);
     for (name, recs) in &e.records {
         if file
             .record

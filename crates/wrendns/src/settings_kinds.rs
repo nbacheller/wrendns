@@ -524,6 +524,17 @@ pub(crate) fn prepare(
             "`socket`: use an absolute path (for example /run/dnstap.sock)",
         ));
     }
+    // REQ: OBS-007, API-905 (T40.13, review) - and an address is tcp://host:port with a host name or IP.
+    if kind == ManagedKind::TelemetryDnstap
+        && let Some(a) = obj.get("address").and_then(Value::as_str)
+        && !a.trim().is_empty()
+        && !wrendns_config::dnstap_address_ok(a)
+        && file.get("address").and_then(Value::as_str) != Some(a)
+    {
+        return Err(Problem::invalid(
+            "`address`: use tcp://host:port, with a host name or an IP address (an IPv6 one in brackets)",
+        ));
+    }
     // `mdns_port` is the same: read-only here, as the file sets it.
     if kind == ManagedKind::Clients
         && obj.get("mdns_port") == serde_json::to_value(own.clients.mdns_port).ok().as_ref()

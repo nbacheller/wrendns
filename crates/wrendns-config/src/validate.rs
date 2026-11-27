@@ -705,6 +705,29 @@ fn identify(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: OBS-007, API-905 (T40.13, review) - whether a dnstap address is `[tcp://]host:port`: the only
+/// scheme is `tcp`, the host is a name or an IP address (an IPv6 one in brackets), the port a `u16`;
+/// no white space or control character.
+#[must_use]
+pub fn dnstap_address_ok(a: &str) -> bool {
+    let hp = a.strip_prefix("tcp://").unwrap_or(a);
+    let Some((host, port)) = hp.rsplit_once(':') else {
+        return false;
+    };
+    if port.parse::<u16>().is_err() {
+        return false;
+    }
+    let name = |h: &str| {
+        !h.is_empty()
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    };
+    match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(v6) => v6.parse::<std::net::Ipv6Addr>().is_ok(),
+        None => name(host),
+    }
+}
+
 // REQ: OBS-006 (T7.17) — OTLP: an http(s) endpoint, a sane interval.
 fn otlp(cfg: &Config, r: &mut Report<'_>) {
     otlp_one(&cfg.telemetry.otlp, r);
@@ -736,6 +759,12 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
             .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
         {
             r.err("telemetry.dnstap.address", "use tcp://host:port");
+        } else if !dnstap_address_ok(a) {
+            // A file written before this check still loads (the writer would fail at start, and say
+            // so); the API and the web UI refuse such an address.
+            r.warn(format!(
+                "telemetry.dnstap.address: `{a}` is not tcp://host:port with a host name or IP address; the writer will not connect"
+            ));
         }
     }
     if d.sample_every == 0 {

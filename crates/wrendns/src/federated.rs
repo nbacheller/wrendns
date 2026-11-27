@@ -3384,6 +3384,16 @@ impl Backend for Federated {
                 // files and what it will run, as the primary cannot see them.
                 if w.kind == wrendns_api::ManagedKind::TelemetryDnstap {
                     w.node_view = self.dnstap_view();
+                    // Not readable yet (its state isn't open): nothing to judge the change on, and
+                    // the primary would take the silence for an older build.
+                    if w.node_view.is_none() {
+                        return Box::pin(async {
+                            Err(Problem::unavailable(
+                                "this node's dnstap settings are not readable yet",
+                            )
+                            .hint("Try again in a moment."))
+                        });
+                    }
                 }
                 Box::pin(crate::forward::managed(
                     Arc::clone(&self.cluster),

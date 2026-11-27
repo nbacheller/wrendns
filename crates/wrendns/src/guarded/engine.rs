@@ -448,6 +448,17 @@ impl Engine {
     /// REQ: OBS-007, API-905 (T40.13) - [`Self::set_by_file`] for a request with this value. The dnstap
     /// row is locked per field: a value is refused only if it changes a field the files set, so a
     /// node whose file names the reader's socket can still have the feeds or the sampling confirmed.
+    /// The configuration a change to `id` is judged against: what the node runs, except for the dnstap
+    /// row, which is judged on what the node will run after its next start (a staged value
+    /// included), as the ordinary write is (ADR-1107 point 4).
+    fn judged_config(&self, id: &str) -> Arc<Config> {
+        if id == wrendns_config::guarded::DNSTAP {
+            self.host.pending_config()
+        } else {
+            self.host.running_config()
+        }
+    }
+
     fn set_by_file_for(&self, row: &Row, value: &Value) -> bool {
         if row.id == wrendns_config::guarded::DNSTAP {
             return super::dnstap::changes_file_field(&self.host.file_config(), value);
@@ -716,7 +727,7 @@ impl Engine {
             )
             .hint("Remove it from the file (and restart) to change it here."));
         }
-        let cfg = self.host.running_config();
+        let cfg = self.judged_config(row.id);
         let (checked, before) = if row.id == RESTART_NOW {
             (self.restart_checked()?, Value::Null)
         } else {
@@ -1038,7 +1049,7 @@ impl Engine {
         if row.id == RESTART_NOW {
             return self.restart_apply(c, &req, &pre).await;
         }
-        let cfg = self.host.running_config();
+        let cfg = self.judged_config(row.id);
         // The same checks again: what was true at preview may not be now (ADR-956 §3).
         let cx = CheckCx {
             cfg: &cfg,

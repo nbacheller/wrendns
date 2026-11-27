@@ -55,8 +55,20 @@ pub(crate) fn parse(v: &Value) -> Result<DnstapConfig, Problem> {
     serde_json::from_value::<DnstapConfig>(Value::Object(o)).map_err(|e| bad(e.to_string()))
 }
 
-/// The fields of `[telemetry.dnstap]` the files set (`own.file_set` names them).
+/// The mode of an entry an ordinary admin write stored (a change that copies no more than the node
+/// would run): unlike a reviewed one it was never confirmed with the phrase, so it is applied only
+/// while it still copies no more than the files do ([`unconfirmed_widens`]).
+pub(crate) const NARROWED: &str = "narrowed";
+
+/// The fields of `[telemetry.dnstap]` the files set (`own.file_set` names them). The reader is one
+/// choice, a socket or an address: a file that sets either one sets both.
 fn file_fields(own: &Config) -> Vec<&'static str> {
+    let set = |k: &str| {
+        own.file_set
+            .iter()
+            .any(|f| f.strip_prefix("telemetry.dnstap.") == Some(k))
+    };
+    let reader = set("socket") || set("address");
     [
         "socket",
         "address",
@@ -67,11 +79,29 @@ fn file_fields(own: &Config) -> Vec<&'static str> {
     ]
     .into_iter()
     .filter(|k| {
-        own.file_set
-            .iter()
-            .any(|f| f.strip_prefix("telemetry.dnstap.") == Some(k))
+        if matches!(*k, "socket" | "address") {
+            reader
+        } else {
+            set(k)
+        }
     })
     .collect()
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - whether an entry that was never confirmed with the phrase
+/// (an ordinary narrowing) would, laid over `own`'s files as they are now, copy more than the files
+/// do. The files may have changed since it was written (the tap taken out, a feed or a socket added),
+/// and such an entry may never turn into a widening: it is then not applied.
+pub(crate) fn unconfirmed_widens(own: &Config, value: &Value) -> bool {
+    let mut cfg = own.clone();
+    if let Ok(d) = parse(value) {
+        cfg.telemetry.dnstap = d;
+    }
+    keep_file_fields(&mut cfg, own);
+    wrendns_config::guarded::dnstap_widened(
+        &json_of(&own.telemetry.dnstap),
+        &json_of(&cfg.telemetry.dnstap),
+    )
 }
 
 /// REQ: OBS-007, API-905 (T40.13) - whether `value` changes a field the files set (a value that
@@ -154,6 +184,15 @@ impl Applier for Dnstap {
             return Err(Problem::new(
                 Code::InvalidConfig,
                 "`socket`: use an absolute path (for example /run/dnstap.sock)",
+            ));
+        }
+        if let Some(a) = &new.address
+            && !wrendns_config::dnstap_address_ok(a)
+            && new.address != cx.cfg.telemetry.dnstap.address
+        {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                "`address`: use tcp://host:port, with a host name or an IP address (an IPv6 one in brackets)",
             ));
         }
         let mut c = cx.cfg.clone();
