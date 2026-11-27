@@ -907,7 +907,7 @@ addr = \"127.0.0.1:5\"
     #[test]
     fn api_902_test_rows_are_marked() {
         assert!(TEST_ROWS_COMPILED);
-        assert!(rows().iter().filter(|r| r.test_only).count() == 4);
+        assert!(rows().iter().filter(|r| r.test_only).count() == 5);
         let w = row("e2e-window").unwrap_or_else(|| unreachable!());
         assert_eq!(w.proof, Some(Proof::NewSocket));
     }
