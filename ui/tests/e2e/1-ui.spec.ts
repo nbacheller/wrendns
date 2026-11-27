@@ -1890,7 +1890,7 @@ test('api_011 help panels, diagrams, and simple/advanced', async () => {
 // fetch gives a plain message and a retry in the panel, never a broken page; the retry works.
 test('api_011 help glossary load failure shows a message and a retry', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  const url = '**/help/topics.json';
+  const url = '**/help/topics.json*';
   try {
     await page.route(url, (r) => r.abort());
     await page.goto('/#/lists');
@@ -1903,7 +1903,13 @@ test('api_011 help glossary load failure shows a message and a retry', async () 
     await page.unroute(url);
     await panel.getByRole('button', { name: 'Retry' }).click();
     await expect(panel).toContainText('When you');
+    // Keyboard focus stays in the dialog when the Retry button goes away.
+    await expect(panel).toBeFocused();
     await expect(btn).toHaveAttribute('aria-label', 'Help: Block or allow whole categories of sites');
+    // One retry fills every "?" on the page, not only the one opened.
+    const buttons = page.locator('[data-help]');
+    expect(await buttons.count()).toBeGreaterThan(1);
+    for (const b of await buttons.all()) await expect(b).not.toHaveAttribute('aria-label', 'Help');
     await page.keyboard.press('Escape');
     await expect(panel).toHaveCount(0);
   } finally {
@@ -1914,6 +1920,16 @@ test('api_011 help glossary load failure shows a message and a retry', async () 
     await page.goto('/#/');
     await page.reload();
   }
+});
+
+// REQ: API-011 (ADR-1020 amendment) — the glossary URL carries the content hash, so a cached copy
+// from before an upgrade is never paired with a newer UI.
+test('api_011 help glossary URL is versioned by content', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  const req = page.waitForRequest((r) => r.url().includes('/help/topics.json'));
+  await page.reload();
+  expect((await req).url()).toMatch(/\/help\/topics\.json\?v=[0-9a-f]{12}$/);
 });
 
 // REQ: API-011 (T3.12 AC) — a novice creates nas.home.arpa and sends corp.example elsewhere through

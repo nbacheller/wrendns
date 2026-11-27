@@ -2,22 +2,34 @@
   // REQ: API-011, ADR-036 — the "?" beside a setting: opens a side panel with the topic in a
   // fixed order (summary, diagram, when, example, caution, term, docs). It never blocks the
   // form underneath (Escape or ✕ closes it).
-  import { docsUrl, loadTopics, topic, type Topic } from '../help';
+  import { tick } from 'svelte';
+  import { docsUrl, glossary, loadTopics, topic } from '../help';
   import Drawer from './Drawer.svelte';
   import FlowDiagram from './FlowDiagram.svelte';
 
   let { id }: { id: string } = $props();
   // The glossary is fetched from the node once, when the first "?" mounts (ADR-1020 amendment).
-  let all = $state<Map<string, Topic>>();
+  const all = $derived($glossary);
   let failed = $state(false);
+  let box = $state<HTMLElement>();
   const t = $derived(all ? (topic(all, id) ?? { id, title: id, term: '', summary: 'No help text for this yet.', when: '', example: '', caution: '' }) : undefined);
   let open = $state(false);
 
   function load() {
     failed = false;
-    loadTopics().then((m) => (all = m), () => (failed = true));
+    return loadTopics().then(() => true, () => ((failed = true), false));
   }
-  $effect(load);
+  // The Retry button leaves the page once the text arrives: keep keyboard focus in the dialog.
+  function retry() {
+    load().then(async (ok) => {
+      if (!ok) return;
+      await tick();
+      box?.focus();
+    });
+  }
+  $effect(() => {
+    load();
+  });
 </script>
 
 <button
@@ -36,11 +48,11 @@
 
 {#if open}
   <Drawer title={t?.title ?? 'Help'} onclose={() => (open = false)}>
-    <div class="help" data-testid="help-panel">
+    <div class="help" data-testid="help-panel" tabindex="-1" bind:this={box}>
       {#if !t}
         {#if failed}
           <p class="notice warn" role="alert">The help text could not be loaded.</p>
-          <button type="button" onclick={load}>Retry</button>
+          <button type="button" onclick={retry}>Retry</button>
         {:else}
           <p class="muted" role="status">Loading help…</p>
         {/if}
@@ -87,6 +99,9 @@
   .help-btn:focus-visible {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  .help {
+    outline: none;
   }
   .help .lead {
     font-size: 1.05em;

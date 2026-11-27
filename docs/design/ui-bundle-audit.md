@@ -60,7 +60,7 @@ Largest sources in the main chunk (a share of the gzip size):
 
 Thirty-odd more pages and components follow, each under 2.5 KiB. The generated data in the main chunk is `map.data.ts` (2.9 KiB); the other generated tables are already lazy (`brands.ts` 23.4 KiB in its own chunk, `world-data.ts` inside the World chunk). The scoped class names were already cut to `s` plus four characters in the first trim.
 
-**`HelpButton` chunk (76 KiB).** The help glossary (`docs/help/topics.json`, 162 topics, 141 KB raw) is 48.5 KiB of it, by far the largest single block in the build. The Svelte runtime is about 16.4 KiB, `api.ts` 5.6 KiB, `Icon` 1.4 KiB. The chunk carries the name of one of its importers; the glossary is in it because `help.ts` imports the JSON statically.
+**`HelpButton` chunk (76 KiB).** The help glossary (`docs/help/topics.json`, 162 topics, 161 KB raw) is 48.5 KiB of it, by far the largest single block in the build. The Svelte runtime is about 16.4 KiB, `api.ts` 5.6 KiB, `Icon` 1.4 KiB. The chunk carries the name of one of its importers; the glossary is in it because `help.ts` imports the JSON statically.
 
 ## Duplicate and dead code
 
@@ -154,4 +154,4 @@ Nothing here is open after that decision. If brotli is looked at again, the ques
 
 ## Implemented: the glossary on demand (2026-11-26)
 
-Idea 1 was built, not as a lazy chunk (the gate counts every file in `ui/dist`, so that would save nothing) but as data fetched from the node: the glossary is embedded in the server outside `ui/dist` and served at `/help/topics.json`. Gate: 508.0 KiB before, 459.2 KiB after (-48.8 KiB). See the ADR-1020 amendment in `spec/11-decisions.md`. The first load still fetches the file (about 141 KB raw, not gzipped on the wire), after first paint and once per page load, because the "?" tooltips need the titles.
+Idea 1 was built, not as a lazy chunk (the gate counts every file in `ui/dist`, so that would save nothing) but as data fetched from the node: the glossary is embedded in the server outside `ui/dist` and served at `/help/topics.json`. Gate: 508.0 KiB before, 459.2 KiB after (-48.8 KiB). See the ADR-1020 amendment in `spec/11-decisions.md`. The first load still fetches the file (161,052 bytes (157 KiB) raw and 51,659 bytes (about 50 KiB) at `gzip -9`, not gzipped on the wire), after first paint and once per page load, because the "?" tooltips need the titles.
