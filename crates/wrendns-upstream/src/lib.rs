@@ -22,6 +22,7 @@ mod group;
 pub mod health;
 mod http1;
 mod nsec;
+mod nsec3;
 /// REQ: UPS-011 (T7.16)
 mod plugin;
 pub mod presets;

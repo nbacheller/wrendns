@@ -9,8 +9,9 @@
 //! - **NODATA** when an NSEC owned by the name lacks the type and CNAME (and isn't a
 //!   delegation, unless the question is DS).
 //!
-//! Only NSEC (not NSEC3, whose hashed ranges need the zone's parameters for every lookup), and
-//! only records the validator proved secure, signed by the zone whose SOA came with them.
+//! NSEC3-signed zones have their own table ([`crate::nsec3`], DNS-907, ADR-1105): its ranges
+//! are hashed, so each lookup hashes with the zone's parameters. Only records the validator
+//! proved secure, signed by the zone whose SOA came with them, are used.
 //! Entries live for the smaller of the NSEC TTL and the SOA's negative TTL (RFC 8198 §5.4).
 //! The cache is per upstream group and bounded; it's consulted on cache misses only.
 
@@ -21,6 +22,8 @@ use hickory_net::proto::dnssec::Proof;
 use hickory_net::proto::dnssec::rdata::DNSSECRData;
 use hickory_net::proto::op::{Message, ResponseCode};
 use hickory_net::proto::rr::{Name, RData, Record, RecordType};
+
+use crate::nsec3::Nsec3Ranges;
 
 /// Ranges kept per upstream group at most; past it, the ones expiring first go.
 const MAX_RANGES: usize = 20_000;
@@ -66,9 +69,11 @@ pub(crate) struct Synth {
 pub(crate) struct Ranges {
     by_owner: BTreeMap<Name, Range>,
     soas: HashMap<Name, Soa>,
+    /// REQ: DNS-907 (T40.6) — the zones signed with NSEC3.
+    nsec3: Nsec3Ranges,
 }
 
-fn rrsigs(m: &Message, owner: &Name, covered: RecordType) -> Vec<Record> {
+pub(crate) fn rrsigs(m: &Message, owner: &Name, covered: RecordType) -> Vec<Record> {
     m.authorities
         .iter()
         .filter(|r| {
@@ -79,7 +84,7 @@ fn rrsigs(m: &Message, owner: &Name, covered: RecordType) -> Vec<Record> {
         .collect()
 }
 
-fn signer(sigs: &[Record]) -> Option<Name> {
+pub(crate) fn signer(sigs: &[Record]) -> Option<Name> {
     sigs.iter().find_map(|r| match &r.data {
         RData::DNSSEC(DNSSECRData::RRSIG(s)) => Some(s.input().signer_name.clone()),
         _ => None,
@@ -110,6 +115,29 @@ impl Range {
     }
 }
 
+/// Every record counts down to the earliest expiry among them.
+fn countdown(parts: &[(&[Record], Instant)], denial: Denial, now: Instant) -> Synth {
+    let left = parts
+        .iter()
+        .map(|(_, e)| e.saturating_duration_since(now).as_secs())
+        .min()
+        .unwrap_or(0);
+    let left = u32::try_from(left).unwrap_or(u32::MAX).max(1);
+    let authorities = parts
+        .iter()
+        .flat_map(|(rs, _)| rs.iter())
+        .map(|r| {
+            let mut r = r.clone();
+            r.ttl = r.ttl.min(left);
+            r
+        })
+        .collect();
+    Synth {
+        denial,
+        authorities,
+    }
+}
+
 impl Ranges {
     /// REQ: DNS-011 (T9.16) — keeps the NSEC records of `m`, a validated negative answer.
     /// Records the validator didn't prove secure, or that another zone signed, are skipped.
@@ -137,7 +165,8 @@ impl Ranges {
         if negative_ttl == 0 {
             return;
         }
-        let mut learned = false;
+        // REQ: DNS-907 (T40.6) — NSEC3 records (a zone has one kind or the other).
+        let mut learned = self.nsec3.learn(m, &zone, negative_ttl, now);
         for r in &m.authorities {
             let RData::DNSSEC(DNSSECRData::NSEC(n)) = &r.data else {
                 continue;
@@ -189,6 +218,24 @@ impl Ranges {
     /// REQ: DNS-011 (T9.16) — a negative answer for `q`/`qtype` proven by cached ranges, or
     /// `None` when they don't prove one (then the question goes upstream as usual).
     pub(crate) fn synthesize(&self, q: &Name, qtype: RecordType, now: Instant) -> Option<Synth> {
+        // ANY lists every type; a cached range can't say what the zone would answer.
+        if qtype == RecordType::ANY {
+            return None;
+        }
+        self.synthesize_nsec(q, qtype, now)
+            .or_else(|| self.synthesize_nsec3(q, qtype, now))
+    }
+
+    /// REQ: DNS-907 (T40.6) — the same from the NSEC3 ranges of the zone `q` is in.
+    fn synthesize_nsec3(&self, q: &Name, qtype: RecordType, now: Instant) -> Option<Synth> {
+        let (zone, (denial, proof)) = self.nsec3.prove(q, qtype, now)?;
+        let soa = self.soas.get(zone).filter(|s| s.expires > now)?;
+        let mut parts: Vec<(&[Record], Instant)> = vec![(&soa.records, soa.expires)];
+        parts.extend(proof);
+        Some(countdown(&parts, denial, now))
+    }
+
+    fn synthesize_nsec(&self, q: &Name, qtype: RecordType, now: Instant) -> Option<Synth> {
         let (owner, range) = self.find(q, now)?;
         let soa = self.soas.get(&range.zone).filter(|s| s.expires > now)?;
         let mut parts: Vec<(&[Record], Instant)> = vec![(&soa.records, soa.expires)];
@@ -232,26 +279,7 @@ impl Ranges {
             }
             Denial::NxDomain
         };
-        // Every record counts down to the earliest expiry among them.
-        let left = parts
-            .iter()
-            .map(|(_, e)| e.saturating_duration_since(now).as_secs())
-            .min()
-            .unwrap_or(0);
-        let left = u32::try_from(left).unwrap_or(u32::MAX).max(1);
-        let authorities = parts
-            .iter()
-            .flat_map(|(rs, _)| rs.iter())
-            .map(|r| {
-                let mut r = r.clone();
-                r.ttl = r.ttl.min(left);
-                r
-            })
-            .collect();
-        Some(Synth {
-            denial,
-            authorities,
-        })
+        Some(countdown(&parts, denial, now))
     }
 
     /// Drops expired entries, then the soonest-expiring ones past the bounds.
@@ -288,14 +316,15 @@ impl Ranges {
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.by_owner.len()
+        self.by_owner.len() + self.nsec3.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hickory_net::proto::dnssec::rdata::{NSEC, RRSIG};
+    use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
+    use hickory_net::proto::dnssec::rdata::{NSEC, NSEC3, RRSIG};
     use hickory_net::proto::dnssec::{Algorithm, rdata::sig::SigInput};
     use hickory_net::proto::rr::SerialNumber;
     use hickory_net::proto::rr::rdata::SOA;
@@ -348,7 +377,7 @@ mod tests {
         m.add_authority(sig(zone, RecordType::SOA, zone));
         for r in nsecs {
             m.add_authority(r.clone());
-            m.add_authority(sig(&r.name.to_ascii(), RecordType::NSEC, zone));
+            m.add_authority(sig(&r.name.to_ascii(), r.record_type(), zone));
         }
         m
     }
@@ -481,5 +510,365 @@ mod tests {
         m.add_authority(sig("c.example.", RecordType::NSEC, "example."));
         r.learn(&m, t0);
         assert_eq!(r.len(), 0);
+    }
+
+    // ---- REQ: DNS-907 (T40.6) — NSEC3 ranges ----
+
+    const SALT: [u8; 2] = [0xab, 0xcd];
+
+    fn hash3(it: u16, name: &Name) -> Vec<u8> {
+        Nsec3HashAlgorithm::SHA1
+            .hash(&SALT, name, it)
+            .unwrap()
+            .as_ref()
+            .to_vec()
+    }
+
+    /// base32hex, lowercase, no padding (RFC 4648 §7).
+    fn b32(bytes: &[u8]) -> String {
+        const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+        let mut out = String::new();
+        let (mut acc, mut bits) = (0u32, 0u32);
+        for b in bytes {
+            acc = (acc << 8) | u32::from(*b);
+            bits += 8;
+            while bits >= 5 {
+                bits -= 5;
+                out.push(char::from(T[((acc >> bits) & 31) as usize]));
+            }
+            acc &= (1 << bits) - 1;
+        }
+        if bits > 0 {
+            out.push(char::from(T[((acc << (5 - bits)) & 31) as usize]));
+        }
+        out
+    }
+
+    fn nsec3_owner(zone: &str, hash: &[u8]) -> String {
+        format!("{}.{zone}", b32(hash))
+    }
+
+    /// One NSEC3 record (secure) for the hash `owner`, pointing at `next`.
+    fn nsec3(
+        zone: &str,
+        owner: &[u8],
+        next: &[u8],
+        it: u16,
+        opt_out: bool,
+        types: &[RecordType],
+    ) -> Record {
+        let mut r = Record::from_rdata(
+            n(&nsec3_owner(zone, owner)),
+            86_400,
+            RData::DNSSEC(DNSSECRData::NSEC3(NSEC3::new(
+                Nsec3HashAlgorithm::SHA1,
+                opt_out,
+                it,
+                SALT.to_vec(),
+                next.to_vec(),
+                types.iter().copied(),
+            ))),
+        );
+        r.proof = Proof::Secure;
+        r
+    }
+
+    type Chain = Vec<(Vec<u8>, Record)>;
+
+    /// The full chain of a zone with these existing names: (owner hash, record), sorted.
+    fn chain(zone: &str, it: u16, opt_out: bool, names: &[(&str, &[RecordType])]) -> Chain {
+        let mut hashed: Vec<(Vec<u8>, &[RecordType])> = names
+            .iter()
+            .map(|(nm, t)| (hash3(it, &n(nm)), *t))
+            .collect();
+        hashed.sort();
+        let count = hashed.len();
+        (0..count)
+            .map(|i| {
+                let next = &hashed[(i + 1) % count].0;
+                (
+                    hashed[i].0.clone(),
+                    nsec3(zone, &hashed[i].0, next, it, opt_out, hashed[i].1),
+                )
+            })
+            .collect()
+    }
+
+    /// The chain record that covers `h`.
+    fn covering<'a>(c: &'a Chain, h: &[u8]) -> &'a (Vec<u8>, Record) {
+        c.iter()
+            .rev()
+            .find(|(o, _)| o.as_slice() < h)
+            .unwrap_or_else(|| c.last().unwrap())
+    }
+
+    /// The chain record that matches `name`.
+    fn matching(c: &Chain, it: u16, name: &Name) -> Record {
+        c.iter()
+            .find(|(o, _)| *o == hash3(it, name))
+            .unwrap()
+            .1
+            .clone()
+    }
+
+    /// What an authoritative server sends for a name below `encloser` that doesn't exist.
+    fn proof_records(c: &Chain, it: u16, encloser: &str, q: &Name) -> Vec<Record> {
+        let enc = n(encloser);
+        let next_closer = q.trim_to(usize::from(enc.num_labels()) + 1);
+        let wildcard = enc.prepend_label("*").unwrap();
+        let mut out: Vec<Record> = Vec::new();
+        for r in [
+            matching(c, it, &enc),
+            covering(c, &hash3(it, &next_closer)).1.clone(),
+            covering(c, &hash3(it, &wildcard)).1.clone(),
+        ] {
+            if !out.iter().any(|o| o.name == r.name) {
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    const APEX_TYPES: &[RecordType] = &[
+        RecordType::NS,
+        RecordType::SOA,
+        RecordType::RRSIG,
+        RecordType::DNSKEY,
+        RecordType::NSEC3PARAM,
+    ];
+    const A_TYPES: &[RecordType] = &[RecordType::A, RecordType::RRSIG];
+
+    fn example_names() -> Vec<(&'static str, &'static [RecordType])> {
+        vec![
+            ("example.", APEX_TYPES),
+            ("www.example.", A_TYPES),
+            ("mail.example.", A_TYPES),
+            ("sub.example.", &[RecordType::NS, RecordType::RRSIG]),
+        ]
+    }
+
+    /// A name below `example.` whose next closer name is covered by the same record as `like`'s
+    /// (or, with `other`, by a different one).
+    fn name_like(c: &Chain, it: u16, like: &Name, other: bool) -> Name {
+        let want = covering(c, &hash3(it, like)).0.clone();
+        (0..10_000)
+            .map(|i| n(&format!("zz-{i}.example.")))
+            .find(|q| (covering(c, &hash3(it, q)).0 == want) != other && q != like)
+            .unwrap()
+    }
+
+    /// REQ: DNS-907 (T40.6) — one signed NXDOMAIN proves the names of its span: the second name
+    /// in it is answered from the cache with the closest encloser proof, signed; a name in a span
+    /// not cached, an existing name's present type, and the type of a delegation go upstream.
+    #[test]
+    fn dns_907_nsec3_nxdomain_and_nodata_from_cached_ranges() {
+        let t0 = Instant::now();
+        let it = 5;
+        let c = chain("example.", it, false, &example_names());
+        let q1 = n("zz-first.example.");
+        let proof = proof_records(&c, it, "example.", &q1);
+        let mut r = Ranges::default();
+        r.learn(&denial("example.", ResponseCode::NXDomain, &proof), t0);
+        assert_eq!(r.len(), proof.len());
+        let q2 = name_like(&c, it, &q1, false);
+        let s = r.synthesize(&q2, RecordType::A, t0).expect("proven");
+        assert_eq!(s.denial, Denial::NxDomain);
+        let kinds: Vec<RecordType> = s.authorities.iter().map(Record::record_type).collect();
+        assert!(kinds.contains(&RecordType::SOA));
+        assert_eq!(
+            kinds.iter().filter(|t| **t == RecordType::NSEC3).count(),
+            proof.len()
+        );
+        assert_eq!(
+            kinds.iter().filter(|t| **t == RecordType::RRSIG).count(),
+            proof.len() + 1
+        );
+        assert!(s.authorities.iter().all(|x| x.ttl <= 3600));
+        // Another span, not cached: nothing proven.
+        let other = name_like(&c, it, &q1, true);
+        assert!(r.synthesize(&other, RecordType::A, t0).is_none());
+        // Expired: nothing.
+        assert!(
+            r.synthesize(&q2, RecordType::A, t0 + Duration::from_secs(3601))
+                .is_none()
+        );
+        // ANY is never made up from a range.
+        assert!(r.synthesize(&q2, RecordType::ANY, t0).is_none());
+
+        // NODATA: the NSEC3 record matching `www.example.` lacks AAAA.
+        let www = n("www.example.");
+        let mut r = Ranges::default();
+        let m = matching(&c, it, &www);
+        r.learn(&denial("example.", ResponseCode::NoError, &[m]), t0);
+        let s = r.synthesize(&www, RecordType::AAAA, t0).expect("NODATA");
+        assert_eq!(s.denial, Denial::NoData);
+        assert!(r.synthesize(&www, RecordType::A, t0).is_none(), "A exists");
+        // At a delegation: any type but DS is the child zone's to answer.
+        let sub = n("sub.example.");
+        let m = matching(&c, it, &sub);
+        let mut r = Ranges::default();
+        r.learn(&denial("example.", ResponseCode::NoError, &[m]), t0);
+        assert!(r.synthesize(&sub, RecordType::A, t0).is_none());
+        assert!(r.synthesize(&sub, RecordType::DS, t0).is_some());
+    }
+
+    /// REQ: DNS-907 (T40.6) — a name under a delegation (the encloser has NS and no SOA) isn't
+    /// denied by the parent's ranges.
+    #[test]
+    fn dns_907_nsec3_nothing_below_a_delegation() {
+        let t0 = Instant::now();
+        let it = 5;
+        let c = chain("example.", it, false, &example_names());
+        let q = n("deep.sub.example.");
+        let mut all = proof_records(&c, it, "sub.example.", &q);
+        all.push(matching(&c, it, &n("example.")));
+        let mut r = Ranges::default();
+        r.learn(&denial("example.", ResponseCode::NXDomain, &all), t0);
+        assert!(r.synthesize(&q, RecordType::A, t0).is_none());
+    }
+
+    /// REQ: DNS-907 (T40.6) — an opt-out span never denies a name: it may hide an unsigned
+    /// delegation. The records are kept (a matching record still proves NODATA for a name that
+    /// exists), but no NXDOMAIN is made from the span.
+    #[test]
+    fn dns_907_nsec3_opt_out_spans_never_deny() {
+        let t0 = Instant::now();
+        let it = 5;
+        let c = chain("example.", it, true, &example_names());
+        let q1 = n("zz-first.example.");
+        let proof = proof_records(&c, it, "example.", &q1);
+        let mut r = Ranges::default();
+        r.learn(&denial("example.", ResponseCode::NXDomain, &proof), t0);
+        assert!(r.len() >= 2, "kept");
+        let q2 = name_like(&c, it, &q1, false);
+        assert!(r.synthesize(&q1, RecordType::A, t0).is_none());
+        assert!(r.synthesize(&q2, RecordType::A, t0).is_none());
+        // The same chain without the flag does deny.
+        let c = chain("example.", it, false, &example_names());
+        let proof = proof_records(&c, it, "example.", &q1);
+        let mut r = Ranges::default();
+        r.learn(&denial("example.", ResponseCode::NXDomain, &proof), t0);
+        assert!(r.synthesize(&q1, RecordType::A, t0).is_some());
+    }
+
+    /// REQ: DNS-907 (T40.6) — records above the iteration limit are never cached (the limit is
+    /// the validator's soft limit, 50); records not proven secure, or signed by another zone,
+    /// are skipped; new hash parameters for a zone replace the old ranges.
+    #[test]
+    fn dns_907_nsec3_what_is_never_cached() {
+        use crate::dnssec::NSEC3_SOFT_LIMIT;
+        let t0 = Instant::now();
+        for (it, kept) in [(NSEC3_SOFT_LIMIT, true), (NSEC3_SOFT_LIMIT + 1, false)] {
+            let c = chain("example.", it, false, &example_names());
+            let proof = proof_records(&c, it, "example.", &n("zz-first.example."));
+            let mut r = Ranges::default();
+            r.learn(&denial("example.", ResponseCode::NXDomain, &proof), t0);
+            assert_eq!(r.len() > 0, kept, "iterations {it}");
+        }
+        let it = 5;
+        let c = chain("example.", it, false, &example_names());
+        let mut proof = proof_records(&c, it, "example.", &n("zz-first.example."));
+        let total = proof.len();
+        // One not secure, one signed by another zone.
+        proof[0].proof = Proof::Insecure;
+        let mut r = Ranges::default();
+        let mut m = denial("example.", ResponseCode::NXDomain, &proof);
+        let stranger = c
+            .iter()
+            .map(|(_, r)| r)
+            .find(|r| !proof.iter().any(|p| p.name == r.name))
+            .unwrap()
+            .clone();
+        m.add_authority(stranger.clone());
+        m.add_authority(sig(&stranger.name.to_ascii(), RecordType::NSEC3, "other."));
+        r.learn(&m, t0);
+        assert_eq!(r.len(), total - 1);
+        // Different parameters for the zone: the ranges of the old ones are dropped.
+        let c2 = chain("example.", 7, false, &example_names());
+        let p2 = proof_records(&c2, 7, "example.", &n("zz-first.example."));
+        r.learn(&denial("example.", ResponseCode::NXDomain, &p2), t0);
+        assert_eq!(r.len(), p2.len());
+    }
+
+    /// REQ: DNS-907 (T40.6) — bounded like the NSEC table: at most 20,000 ranges and 2,000
+    /// zones, the soonest-expiring going first.
+    #[test]
+    fn dns_907_nsec3_is_bounded() {
+        use crate::nsec3::{MAX_RANGES, MAX_ZONES, Nsec3Ranges};
+        let t0 = Instant::now();
+        let mut r = Nsec3Ranges::default();
+        let zone = n("big.");
+        let mut counter = 0u32;
+        for batch in 0..42u32 {
+            let mut m = Message::response(0, hickory_net::proto::op::OpCode::Query);
+            for _ in 0..500 {
+                counter += 1;
+                let mut owner = vec![0u8; 20];
+                owner[..4].copy_from_slice(&counter.to_be_bytes());
+                let mut next = owner.clone();
+                next[19] = 1;
+                let rec = nsec3("big.", &owner, &next, 0, false, A_TYPES);
+                m.add_authority(sig(&rec.name.to_ascii(), RecordType::NSEC3, "big."));
+                m.add_authority(rec);
+            }
+            // Later batches live longer, so the first ones go first.
+            r.learn(&m, &zone, 100 + batch, t0);
+            assert!(r.len() <= MAX_RANGES);
+        }
+        assert_eq!(r.len(), MAX_RANGES);
+        // Zones: one range each.
+        let mut z = Nsec3Ranges::default();
+        for i in 0..(MAX_ZONES + 20) {
+            let name = format!("z{i}.");
+            let mut m = Message::response(0, hickory_net::proto::op::OpCode::Query);
+            let rec = nsec3(&name, &[1; 20], &[2; 20], 0, false, A_TYPES);
+            m.add_authority(sig(&rec.name.to_ascii(), RecordType::NSEC3, &name));
+            m.add_authority(rec);
+            z.learn(&m, &n(&name), 3600, t0);
+            assert!(z.len() <= MAX_ZONES);
+        }
+        assert_eq!(z.len(), MAX_ZONES);
+    }
+
+    /// REQ: DNS-907 (T40.6) — lookup cost (AGENTS rule 4: the hot path never reaches this, it
+    /// runs on cache misses only): with a full chain, a miss costs two or three SHA-1 chains
+    /// whatever the name's depth, so thousands of lookups fit in a fraction of a second.
+    #[test]
+    fn dns_907_nsec3_lookup_is_cheap() {
+        use crate::nsec3::Nsec3Ranges;
+        let t0 = Instant::now();
+        let it = 10;
+        let mut names: Vec<(String, Vec<RecordType>)> = vec![("big.".into(), APEX_TYPES.to_vec())];
+        names.extend((0..5_000).map(|i| (format!("n{i}.big."), A_TYPES.to_vec())));
+        let refs: Vec<(&str, &[RecordType])> = names
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_slice()))
+            .collect();
+        let c = chain("big.", it, false, &refs);
+        let mut tables = Nsec3Ranges::default();
+        // 500 records a message keeps the signature lookup short.
+        for part in c.chunks(500) {
+            let mut m = Message::response(0, hickory_net::proto::op::OpCode::Query);
+            for (_, rec) in part {
+                m.add_authority(sig(&rec.name.to_ascii(), RecordType::NSEC3, "big."));
+                m.add_authority(rec.clone());
+            }
+            tables.learn(&m, &n("big."), 3600, t0);
+        }
+        assert_eq!(tables.len(), c.len());
+        let start = std::time::Instant::now();
+        let mut proven = 0;
+        for i in 0..2_000 {
+            let q = n(&format!("x{i}.a.b.c.d.e.f.g.h.i.j.k.l.m.nothing.big."));
+            if tables.prove(&q, RecordType::A, t0).is_some() {
+                proven += 1;
+            }
+        }
+        assert_eq!(proven, 2_000, "every miss in a full chain is proven");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "2,000 lookups took {:?}",
+            start.elapsed()
+        );
     }
 }
