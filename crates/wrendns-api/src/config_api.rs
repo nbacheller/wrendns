@@ -131,6 +131,10 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/metrics-settings/default",
             put(put_metrics_settings).delete(delete_metrics_settings),
         )
+        .route(
+            "/api/v1/dnstap-settings/default",
+            put(put_dnstap_settings).delete(delete_dnstap_settings),
+        )
         .route("/api/v1/rules/{id}", put(put_rule).delete(delete_rule))
         // REQ: API-002 (T7.5, ADR-069)
         .route(
@@ -2860,6 +2864,71 @@ pub(crate) async fn delete_metrics_settings(
     .await
 }
 
+/// Set the dnstap output (`[telemetry.dnstap]`): where the copies go, how often, how many are held, and whether upstream and recursor exchanges are copied too. Admins only; no agent can change it.
+///
+/// REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is
+/// read when the node starts, so a change applies after a restart of every node (the answer says so). Turning the tap on,
+/// pointing it at another socket or address, copying more kinds of exchange and sampling more often need a sign-in within the
+/// last 10 minutes (403 `reauth_required` otherwise; tokens never have one). A file that sets a field wins (`set_by_file`).
+/// Held until every cluster member announces the kind (409 `upgrade_required`).
+#[utoipa::path(put, path = "/api/v1/dnstap-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change; `warnings` says when a sign-in is needed and that a restart is)."),
+        (status = 403, body = Problem, description = "Not an admin, an agent, or a widening change without a sign-in in the last 10 minutes (`reauth_required`)."),
+        (status = 409, body = Problem, description = "`set_by_file`, or a cluster member's build does not know the dnstap settings yet (`upgrade_required`)."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range (`buffer` 100 to 1000000, `sample_every` at least 1, a socket or an address, not both)."),
+    ))]
+pub(crate) async fn put_dnstap_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::TelemetryDnstap,
+        "/dnstap-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[telemetry.dnstap]` settings (OBS-007).
+///
+/// Removes what the API stored, so the file's settings (or the defaults: no tap) apply again on every node after a restart.
+/// Never held for an old member: it is the way out.
+#[utoipa::path(delete, path = "/api/v1/dnstap-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not an admin, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_dnstap_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::TelemetryDnstap,
+        "DELETE /dnstap-settings/default",
+    )
+    .await
+}
+
 /// Go back to the config file's `[clients]` mdns setting (DNS-023).
 ///
 /// Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may
@@ -3592,6 +3661,7 @@ impl Op {
             Self::Managed(ManagedKind::TelemetryAnomaly, _) => "anomaly_settings",
             Self::Managed(ManagedKind::TelemetryQlog, _) => "qlog_settings",
             Self::Managed(ManagedKind::TelemetryMetrics, _) => "metrics_settings",
+            Self::Managed(ManagedKind::TelemetryDnstap, _) => "dnstap_settings",
         }
     }
     fn deleting(&self) -> bool {
@@ -4321,6 +4391,48 @@ async fn write_inner(
                 }
                 return crate::simulate_api::sanitize_problem(&p, e).into_response();
             }
+        }
+    }
+    // REQ: OBS-007, API-905 (T40.13, ADR-914) - the dnstap section copies client addresses and names
+    // out of the process: a change that widens the copy needs a sign-in within the last 10 minutes,
+    // as the guarded settings do (a token or Basic sign-in never has one). The judgement is on what
+    // the write would change, so a DELETE that brings a file's tap back is judged too. A dry run is
+    // let through: its warnings say what the real write will need.
+    if let Op::Managed(ManagedKind::TelemetryDnstap, body) = &op
+        && !dry_run
+    {
+        let judged = backend
+            .write_managed(ManagedWrite {
+                kind: ManagedKind::TelemetryDnstap,
+                name: name.clone(),
+                body: body.clone(),
+                dry_run: true,
+                expect: None,
+                by: actor.name.clone(),
+                simulate: None,
+                role: Some(p.role),
+                agent: p.agent.as_ref().map(|a| a.token_name.clone()),
+            })
+            .await;
+        match judged {
+            Ok(c) => {
+                let widened = wrendns_config::guarded::dnstap_widened(
+                    c.before.as_ref().unwrap_or(&serde_json::Value::Null),
+                    c.after.as_ref().unwrap_or(&serde_json::Value::Null),
+                );
+                if widened {
+                    let (a2, p2, at) = (Arc::clone(&auth), p.clone(), backend.now_unix_seconds());
+                    let ok = tokio::task::spawn_blocking(move || a2.recent_sign_in(&p2, at))
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(Problem::internal(format!("request worker failed: {e}")))
+                        });
+                    if let Err(e) = ok {
+                        return e.into_response();
+                    }
+                }
+            }
+            Err(e) => return crate::simulate_api::sanitize_problem(&p, e).into_response(),
         }
     }
     let result: Result<serde_json::Value, Problem> = match op {

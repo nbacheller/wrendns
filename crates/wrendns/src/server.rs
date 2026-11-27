@@ -1488,6 +1488,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
         rollout: Arc::default(),
         started: std::time::Instant::now(),
         allowed: ArcSwap::from_pointee(cfg.access.allowed_networks.clone()),
+        dnstap_started: ArcSwapOption::from_pointee(crate::settings_kinds::section_json(
+            wrendns_api::ManagedKind::TelemetryDnstap,
+            &cfg,
+        )),
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),

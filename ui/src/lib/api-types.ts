@@ -2278,6 +2278,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dnstap-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the dnstap output (`[telemetry.dnstap]`): where the copies go, how often, how many are held, and whether upstream and recursor exchanges are copied too. Admins only; no agent can change it.
+         * @description REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is
+         *     read when the node starts, so a change applies after a restart of every node (the answer says so). Turning the tap on,
+         *     pointing it at another socket or address, copying more kinds of exchange and sampling more often need a sign-in within the
+         *     last 10 minutes (403 `reauth_required` otherwise; tokens never have one). A file that sets a field wins (`set_by_file`).
+         *     Held until every cluster member announces the kind (409 `upgrade_required`).
+         */
+        put: operations["put_dnstap_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[telemetry.dnstap]` settings (OBS-007).
+         * @description Removes what the API stored, so the file's settings (or the defaults: no tap) apply again on every node after a restart.
+         *     Never held for an old member: it is the way out.
+         */
+        delete: operations["delete_dnstap_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/drill-settings/default": {
         parameters: {
             query?: never;
@@ -17997,6 +18026,125 @@ export interface operations {
                 };
             };
             /** @description The API sets no DNSSEC settings. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_dnstap_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change; `warnings` says when a sign-in is needed and that a restart is). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not an admin, an agent, or a widening change without a sign-in in the last 10 minutes (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, or a cluster member's build does not know the dnstap settings yet (`upgrade_required`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range (`buffer` 100 to 1000000, `sample_every` at least 1, a socket or an address, not both). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_dnstap_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not an admin, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
                 headers: {
                     [name: string]: unknown;

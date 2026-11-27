@@ -19,6 +19,7 @@
     {:else if which === 'upstream_check'}<HelpButton id="upstream-checks" />
     {:else if which === 'anomaly'}<HelpButton id="anomaly-settings" />
     {:else if which === 'qlog'}<HelpButton id="qlog-settings" />
+    {:else if which === 'dnstap'}<HelpButton id="dnstap-settings" />
     {:else}<HelpButton id="metrics-settings" />{/if}
   </summary>
   {#if open}
@@ -30,6 +31,7 @@
       noun={spec.noun}
       fields={spec.fields}
       summary={spec.describe}
+      note={spec.note ? () => spec.note! : undefined}
       role={spec.role}
       validate={spec.validate}
     />

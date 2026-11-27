@@ -23,15 +23,18 @@ pub enum Feature {
     PemSecrets,
     /// The `access` settings kind, the cluster-wide allowed networks (DNS-014, T27.14h).
     Access,
+    /// The `dnstap_settings` kind, the whole `[telemetry.dnstap]` section (OBS-007, API-905, T40.13).
+    Dnstap,
 }
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 4] = [
+    pub const ALL: [Feature; 5] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
         Self::Access,
+        Self::Dnstap,
     ];
 
     /// The name a build announces the feature under (wire: Hello `features`).
@@ -41,6 +44,7 @@ impl Feature {
             Self::DnsProviders => "dns_providers",
             Self::PemSecrets => "pem_secrets",
             Self::Access => "access",
+            Self::Dnstap => "dnstap",
         }
     }
 
@@ -51,6 +55,7 @@ impl Feature {
             Self::DnsProviders => "DNS providers",
             Self::PemSecrets => "secrets of the `pem` kind",
             Self::Access => "the allowed networks",
+            Self::Dnstap => "the dnstap settings",
         }
     }
 }
@@ -65,7 +70,12 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joins the list in the commit that
 /// brings its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 3] = [Feature::Locations, Feature::PemSecrets, Feature::Access];
+const ANNOUNCED: [Feature; 4] = [
+    Feature::Locations,
+    Feature::PemSecrets,
+    Feature::Access,
+    Feature::Dnstap,
+];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
 /// field, or one that has not reported yet) knows none.
@@ -194,7 +204,8 @@ mod tests {
             vec![
                 "locations".to_owned(),
                 "pem_secrets".to_owned(),
-                "access".to_owned()
+                "access".to_owned(),
+                "dnstap".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));

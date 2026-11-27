@@ -890,6 +890,8 @@
     <!-- REQ: OBS-020 (ADR-107) — can clients reach each listener? -->
     <!-- REQ: OBS-005 (T27.5, ADR-1007) — the per-client series, an admin's setting. -->
     <TuningSettings which="metrics" />
+    <!-- REQ: OBS-007, API-905 (T40.13) — the dnstap output, an admin's setting, read at start. -->
+    <TuningSettings which="dnstap" />
     <section class="card" data-testid="probes">
       <h2>Listener checks<HelpButton id="probes" /></h2>
       <!-- REQ: OBS-020 (T27.5, ADR-1007) — the probes' interval and targets. -->

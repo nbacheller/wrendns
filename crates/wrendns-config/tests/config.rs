@@ -2067,6 +2067,18 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
             "[telemetry.qlog]\nflush_interval_secs = 3601\n",
             "telemetry.qlog.flush_interval_secs",
         ),
+        (
+            "[telemetry.dnstap]\nbuffer = 1000001\n",
+            "telemetry.dnstap.buffer",
+        ),
+        (
+            "[telemetry.dnstap]\nbuffer = 99\n",
+            "telemetry.dnstap.buffer",
+        ),
+        (
+            "[telemetry.dnstap]\nsample_every = 0\n",
+            "telemetry.dnstap.sample_every",
+        ),
     ] {
         let errs = load(toml).unwrap_err();
         assert!(
@@ -2075,7 +2087,7 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
             paths(&errs)
         );
     }
-    let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n";
+    let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n[telemetry.dnstap]\nbuffer = 1000000\n";
     assert!(load(ok).is_ok(), "the bounds themselves are accepted");
 }
 

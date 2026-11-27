@@ -53,6 +53,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::TelemetryAnomaly => "anomaly_settings",
         ManagedKind::TelemetryQlog => "qlog_settings",
         ManagedKind::TelemetryMetrics => "metrics_settings",
+        ManagedKind::TelemetryDnstap => "dnstap_settings",
     }
 }
 

@@ -5,13 +5,13 @@
 // and `validate` repeats the server's checks that a single bound can't say (REQ: API-901).
 import type { Field } from './components/ConfigEditor.svelte';
 
-export type TuningKey = 'slo' | 'probe' | 'upstream_check' | 'anomaly' | 'qlog' | 'metrics';
+export type TuningKey = 'slo' | 'probe' | 'upstream_check' | 'anomaly' | 'qlog' | 'metrics' | 'dnstap';
 
 export type TuningSpec = {
   /** The kind the server lists the entry under (`GET /config/entries?kind=`). */
-  kind: 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings';
+  kind: 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings' | 'dnstap_settings';
   /** The entry path (`PUT /{path}/default`). */
-  path: 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
+  path: 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings' | 'dnstap-settings';
   title: string;
   noun: string;
   /** Who may change it: the telemetry sections are an admin's (ADR-1007). */
@@ -19,6 +19,8 @@ export type TuningSpec = {
   /** The one-line summary of the disclosure, before it is opened. */
   summary: string;
   fields: Field[];
+  /** A sentence under the fields (dnstap: the settings are read when a node starts). */
+  note?: string;
   describe: (def: Record<string, unknown>) => string;
   /** The reason a draft is refused, or null (the server checks the same; this is the sooner check). */
   validate?: (values: Record<string, unknown>) => string | null;
@@ -159,5 +161,34 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
         help: 'The rest are counted as “other”.' },
     ],
     describe: (d) => (d.per_client ? `Per device, up to ${num(d.per_client_cap)} devices.` : 'Off.'),
+  },
+  // REQ: OBS-007, API-905 (T40.13) — the whole [telemetry.dnstap] section. It is read when a node starts,
+  // so the row says "Restart needed" while the running tap differs (`restart_needed`, this node's answer).
+  dnstap: {
+    kind: 'dnstap_settings',
+    path: 'dnstap-settings',
+    title: 'dnstap output',
+    noun: 'dnstap settings',
+    role: 'admin',
+    summary: 'Change the dnstap output',
+    note: 'dnstap is read when a node starts: a saved change applies after a restart of every node. Turning it on, pointing it elsewhere or copying more needs a sign-in within the last 10 minutes.',
+    fields: [
+      { key: 'socket', label: 'Unix socket of the reader', type: 'text', placeholder: '/run/dnstap.sock',
+        help: 'Leave the socket and the address empty for no tap.' },
+      { key: 'address', label: 'Or a TCP reader', type: 'text', placeholder: 'tcp://host:port' },
+      { key: 'sample_every', label: 'Copy one query in', type: 'number', min: 1, initial: 1, help: '1 copies every query.' },
+      { key: 'buffer', label: 'Copies held while the reader is slow', type: 'number', min: 100, max: 1000000, initial: 10000 },
+      { key: 'forwarder', label: 'Also copy queries to upstreams and their answers', type: 'bool', initial: false },
+      { key: 'resolver', label: 'Also copy the recursive resolver’s queries and answers', type: 'bool', initial: false },
+    ],
+    describe: (d) =>
+      `${d.socket || d.address ? `Copying to ${String(d.socket || d.address)}, one query in ${num(d.sample_every)}` : 'Off'}; upstream ${d.forwarder ? 'on' : 'off'}, resolver ${d.resolver ? 'on' : 'off'}.${d.restart_needed ? ' Restart needed.' : ''}`,
+    validate: (v) => {
+      if (given(v.socket) && given(v.address)) return 'Set a socket or an address, not both.';
+      if (given(v.address) && !/:\d{1,5}$/.test(String(v.address))) return 'The address is tcp://host:port.';
+      if (given(v.sample_every) && !(Number.isInteger(Number(v.sample_every)) && Number(v.sample_every) >= 1)) return 'Copy one query in: a whole number, at least 1.';
+      if (given(v.buffer) && !(Number(v.buffer) >= 100 && Number(v.buffer) <= 1000000)) return 'Copies held: from 100 to 1,000,000.';
+      return null;
+    },
   },
 };

@@ -42,6 +42,7 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::TelemetryAnomaly => "telemetry.anomaly",
         ManagedKind::TelemetryQlog => "telemetry.qlog",
         ManagedKind::TelemetryMetrics => "telemetry.metrics",
+        ManagedKind::TelemetryDnstap => "telemetry.dnstap",
         _ => "clients",
     }
 }
@@ -93,6 +94,7 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
             | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap
     )
 }
 
@@ -101,7 +103,10 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
 pub(crate) fn is_node_telemetry(kind: ManagedKind) -> bool {
     matches!(
         kind,
-        ManagedKind::TelemetryAnomaly | ManagedKind::TelemetryQlog | ManagedKind::TelemetryMetrics
+        ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap
     )
 }
 
@@ -201,6 +206,15 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "flush_interval_secs",
         ],
         ManagedKind::TelemetryMetrics => &["per_client", "per_client_cap"],
+        // REQ: OBS-007, API-905 (T40.13) - the whole `[telemetry.dnstap]` section.
+        ManagedKind::TelemetryDnstap => &[
+            "socket",
+            "address",
+            "sample_every",
+            "buffer",
+            "forwarder",
+            "resolver",
+        ],
         _ => &["mdns"],
     }
 }
@@ -224,7 +238,8 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
         // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — every field of the telemetry sections.
         ManagedKind::TelemetryAnomaly
         | ManagedKind::TelemetryQlog
-        | ManagedKind::TelemetryMetrics => keys(kind),
+        | ManagedKind::TelemetryMetrics
+        | ManagedKind::TelemetryDnstap => keys(kind),
         _ => &[],
     }
 }
@@ -268,6 +283,7 @@ fn section_full(kind: ManagedKind, cfg: &Config) -> Value {
         ManagedKind::TelemetryAnomaly => serde_json::to_value(&cfg.telemetry.anomaly),
         ManagedKind::TelemetryQlog => serde_json::to_value(&cfg.telemetry.qlog),
         ManagedKind::TelemetryMetrics => serde_json::to_value(&cfg.telemetry.metrics),
+        ManagedKind::TelemetryDnstap => serde_json::to_value(&cfg.telemetry.dnstap),
         _ => serde_json::to_value(&cfg.clients),
     }
     .unwrap_or(Value::Null)
@@ -285,6 +301,9 @@ fn set_section(cfg: &mut Config, kind: ManagedKind, v: Value) -> Result<(), Stri
         ManagedKind::Filter => cfg.filter = serde_json::from_value(v).map_err(bad)?,
         ManagedKind::Drill => cfg.drill = serde_json::from_value(v).map_err(bad)?,
         ManagedKind::Access => cfg.access = serde_json::from_value(v).map_err(bad)?,
+        ManagedKind::TelemetryDnstap => {
+            cfg.telemetry.dnstap = serde_json::from_value(v).map_err(bad)?;
+        }
         _ => {}
     }
     Ok(())
@@ -320,7 +339,8 @@ pub(crate) fn restore_api_fields(cfg: &mut Config, own: &Config, kind: ManagedKi
             ManagedKind::Dnssec
             | ManagedKind::Filter
             | ManagedKind::Drill
-            | ManagedKind::Access => {
+            | ManagedKind::Access
+            | ManagedKind::TelemetryDnstap => {
                 set_section(cfg, kind, full.clone())?;
             }
             _ => {}
@@ -337,6 +357,7 @@ pub(crate) fn restore_api_fields(cfg: &mut Config, own: &Config, kind: ManagedKi
             ManagedKind::Filter => cfg.filter = own.filter.clone(),
             ManagedKind::Drill => cfg.drill = own.drill.clone(),
             ManagedKind::Access => cfg.access = own.access.clone(),
+            ManagedKind::TelemetryDnstap => cfg.telemetry.dnstap = own.telemetry.dnstap.clone(),
             _ => {}
         }
     }
@@ -418,7 +439,8 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
         | ManagedKind::Dnssec
         | ManagedKind::Filter
         | ManagedKind::Drill
-        | ManagedKind::Access => {
+        | ManagedKind::Access
+        | ManagedKind::TelemetryDnstap => {
             if let Value::Object(o) = body
                 && let Some(k) = o.keys().find(|k| !keys(kind).contains(&k.as_str()))
             {
@@ -471,6 +493,11 @@ pub(crate) fn prepare(
     {
         obj.remove("hosts_files");
     }
+    // `restart_needed` comes back in the dnstap entry (this node's own answer): sending it back as
+    // read is fine, and it is never stored.
+    if kind == ManagedKind::TelemetryDnstap {
+        obj.remove("restart_needed");
+    }
     // `mdns_port` is the same: read-only here, as the file sets it.
     if kind == ManagedKind::Clients
         && obj.get("mdns_port") == serde_json::to_value(own.clients.mdns_port).ok().as_ref()
@@ -522,6 +549,7 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::TelemetryAnomaly, &e.telemetry_anomaly),
         (ManagedKind::TelemetryQlog, &e.telemetry_qlog),
         (ManagedKind::TelemetryMetrics, &e.telemetry_metrics),
+        (ManagedKind::TelemetryDnstap, &e.telemetry_dnstap),
     ] {
         let Some(stored) = stored else { continue };
         if let Err(why) = overlay(cfg, own, kind, stored) {
@@ -602,7 +630,8 @@ pub(crate) fn overlay(
         | ManagedKind::Dnssec
         | ManagedKind::Filter
         | ManagedKind::Drill
-        | ManagedKind::Access => {
+        | ManagedKind::Access
+        | ManagedKind::TelemetryDnstap => {
             let mut full = section_full(kind, cfg);
             if let (Value::Object(f), Value::Object(c)) = (&mut full, &cur) {
                 for k in keys(kind) {
@@ -665,6 +694,7 @@ pub(crate) fn check_admin_fields(
                 | ManagedKind::Filter
                 | ManagedKind::Drill
                 | ManagedKind::Access
+                | ManagedKind::TelemetryDnstap
         )
     {
         return Err(Problem::new(
@@ -797,6 +827,7 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::TelemetryAnomaly => entries.telemetry_anomaly.is_none(),
         ManagedKind::TelemetryQlog => entries.telemetry_qlog.is_none(),
         ManagedKind::TelemetryMetrics => entries.telemetry_metrics.is_none(),
+        ManagedKind::TelemetryDnstap => entries.telemetry_dnstap.is_none(),
         _ => entries.clients_settings.is_none(),
     }
 }
@@ -818,6 +849,7 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::TelemetryAnomaly => entries.telemetry_anomaly = v,
         ManagedKind::TelemetryQlog => entries.telemetry_qlog = v,
         ManagedKind::TelemetryMetrics => entries.telemetry_metrics = v,
+        ManagedKind::TelemetryDnstap => entries.telemetry_dnstap = v,
         _ => entries.clients_settings = v,
     }
 }
@@ -839,6 +871,7 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::TelemetryAnomaly => "anomaly settings",
         ManagedKind::TelemetryQlog => "query log settings",
         ManagedKind::TelemetryMetrics => "metric series settings",
+        ManagedKind::TelemetryDnstap => "dnstap settings",
         _ => "clients settings",
     }
 }
@@ -861,6 +894,10 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         (ManagedKind::TelemetryQlog, false) => "The config file's query log settings (or the defaults) apply again: the privacy level within a few seconds, the rest after a restart.".into(),
         (ManagedKind::TelemetryMetrics, true) => "Applies on every node within a few seconds, with no restart: per-client series appear or go, up to the cap.".into(),
         (ManagedKind::TelemetryMetrics, false) => "The config file's per-client settings (or off) apply again within a few seconds.".into(),
+        // REQ: OBS-007, API-905 (T40.13, ADR-1107) - the tap and its writer start once, when the node
+        // starts: a change is stored and replicated at once and read after a restart of each node.
+        (ManagedKind::TelemetryDnstap, true) => "Takes effect after a restart of every node: the dnstap writer and its settings are read once, when the node starts. Until then the node keeps the tap it started with.".into(),
+        (ManagedKind::TelemetryDnstap, false) => "The config file's dnstap settings (or none: no tap) apply again after a restart of every node.".into(),
         // REQ: DNS-014 (T27.14h) - the list is read again on every node at the reload.
         (ManagedKind::Access, true) => "Applies on every node within a few seconds, with no restart, to DNS, the web UI and the API: addresses outside the list are refused from then on.".into(),
         (ManagedKind::Access, false) => "The config file's allowed networks apply again on every node within a few seconds, to DNS, the web UI and the API.".into(),

@@ -4176,6 +4176,12 @@ impl Backend for ApiBackend {
                 "metrics_settings",
                 e.telemetry_metrics.is_some(),
             ),
+            // REQ: OBS-007, API-905 (T40.13) - `[telemetry.dnstap]`.
+            (
+                ManagedKind::TelemetryDnstap,
+                "dnstap_settings",
+                e.telemetry_dnstap.is_some(),
+            ),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4211,6 +4217,22 @@ impl Backend for ApiBackend {
                     d.insert(
                         "hosts_files".into(),
                         serde_json::to_value(&cfg.local.hosts_files).unwrap_or_default(),
+                    );
+                }
+                // REQ: OBS-007, API-905 (T40.13) - `restart_needed` is read-only, as `hosts_files`
+                // is: true while the settings in effect differ from the ones the running tap started
+                // with (the tap is read once, at start). It is this node's own answer.
+                if mk == ManagedKind::TelemetryDnstap
+                    && let Some(d) = definition.as_object_mut()
+                {
+                    let started = self.src.dnstap_started.load();
+                    d.insert(
+                        "restart_needed".into(),
+                        serde_json::Value::Bool(
+                            started
+                                .as_deref()
+                                .is_some_and(|s| *s != serde_json::Value::Object(d.clone())),
+                        ),
                     );
                 }
                 // `mdns_port` likewise: the file's, shown read-only.
@@ -5344,6 +5366,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::TelemetryAnomaly => crate::managed::ANOMALY_SETTINGS,
         ManagedKind::TelemetryQlog => crate::managed::QLOG_SETTINGS,
         ManagedKind::TelemetryMetrics => crate::managed::METRICS_SETTINGS,
+        ManagedKind::TelemetryDnstap => crate::managed::DNSTAP_SETTINGS,
         ManagedKind::Router => crate::managed::ROUTER,
         ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
         ManagedKind::Sink => crate::managed::SINK,
@@ -6080,7 +6103,8 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             | ManagedKind::UpstreamCheck
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
-            | ManagedKind::TelemetryMetrics,
+            | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap,
             put,
         ) => crate::settings_kinds::impact(kind, put),
         (ManagedKind::KubernetesMap, true) => {
@@ -6518,12 +6542,15 @@ fn plan_settings(
     // REQ: DNS-014 (T27.14h, DSC-908) - the first write of the allowed networks waits until every
     // member's build announces the `access` kind (a feature, not a version number). A DELETE is
     // never held. Dry runs too, so the answer is the same.
-    if w.kind == ManagedKind::Access
+    // REQ: OBS-007, API-905 (T40.13) - and likewise the first write of the dnstap settings.
+    let gated_feature = match w.kind {
+        ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
+        ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
+        _ => None,
+    };
+    if let Some(feature) = gated_feature
         && w.body.is_some()
-        && let Err(why) = crate::upgrade_gate::enforce(
-            src.cluster.as_deref(),
-            wrendns_cluster::gate::Feature::Access,
-        )
+        && let Err(why) = crate::upgrade_gate::enforce(src.cluster.as_deref(), feature)
     {
         return Err(Problem::new(Code::UpgradeRequired, why)
             .hint("Upgrade the member named, then make this change again."));
@@ -6564,6 +6591,11 @@ fn plan_settings(
     if w.kind == ManagedKind::Access {
         warnings.extend(public_range_warnings(&before_cfg, &merged));
     }
+    // REQ: OBS-007, API-905 (T40.13) - the tap is read when the node starts: a change says so, and a
+    // change that sends more out of the process says what the write will need.
+    if w.kind == ManagedKind::TelemetryDnstap {
+        warnings.extend(dnstap_warnings(&before, &after));
+    }
     // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
     // says so here, as the dry run's answer does.
     if w.kind == ManagedKind::Clients && before != after {
@@ -6584,6 +6616,24 @@ fn plan_settings(
         candidate: merged,
         redirect: None,
     })
+}
+
+/// REQ: OBS-007, API-905 (T40.13) - what a change to the dnstap settings says before it is applied: the
+/// tap is read when a node starts, and a change that copies more out of the process needs a recent
+/// sign-in.
+fn dnstap_warnings(before: &serde_json::Value, after: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if before != after {
+        out.push(
+            "The dnstap settings are read when a node starts: this takes effect after a restart of every node.".to_owned(),
+        );
+        if wrendns_config::guarded::dnstap_widened(before, after) {
+            out.push(
+                "This copies more of the clients' queries (their addresses and names) out of the process than before, so applying it needs an admin session signed in within the last 10 minutes.".to_owned(),
+            );
+        }
+    }
+    out
 }
 
 /// REQ: DNS-014 (T27.14h, ADR-1098 point 4) - one warning for each public range the change adds to
@@ -8290,6 +8340,7 @@ fn keep_in_git(
         ManagedKind::TelemetryAnomaly => "telemetry.anomaly",
         ManagedKind::TelemetryQlog => "telemetry.qlog",
         ManagedKind::TelemetryMetrics => "telemetry.metrics",
+        ManagedKind::TelemetryDnstap => "telemetry.dnstap",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -8333,6 +8384,7 @@ fn keep_in_git(
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
             | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap
             | ManagedKind::Filter
     ) {
         return singleton_in_git(head, section, body.is_some(), after);

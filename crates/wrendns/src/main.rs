@@ -32,6 +32,8 @@ mod device_dns;
 mod devices;
 mod discovery;
 mod dnstap;
+#[cfg(test)]
+mod dnstap_settings_tests;
 mod drill;
 mod explain;
 mod federated;

@@ -39,6 +39,7 @@ pub(crate) const KINDS: &[&str] = &[
     crate::managed::ANOMALY_SETTINGS,
     crate::managed::QLOG_SETTINGS,
     crate::managed::METRICS_SETTINGS,
+    crate::managed::DNSTAP_SETTINGS,
     crate::guarded::KIND,
 ];
 /// REQ: CLU-015 (T24.37, ADR-1016) — the kinds of the shared configuration that the API stores:

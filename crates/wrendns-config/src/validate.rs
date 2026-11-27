@@ -728,6 +728,11 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     if d.buffer < 100 {
         r.err("telemetry.dnstap.buffer", "at least 100");
     }
+    // REQ: OBS-007, API-905 (T40.13) - the queue is allocated at its full size when the node starts,
+    // so a setting an admin can make from the UI has a ceiling.
+    if d.buffer > 1_000_000 {
+        r.err("telemetry.dnstap.buffer", "at most 1000000");
+    }
 }
 
 /// The OTLP export's own rules (the endpoint, the interval, the trace settings).

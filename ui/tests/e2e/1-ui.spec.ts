@@ -4956,6 +4956,78 @@ test('obs_020 form refuses a timeout longer than the interval', async () => {
   await expect(row).not.toContainText('Every 5 s');
 });
 
+// REQ: OBS-007, API-905 (T40.13, ADR-1107) — the dnstap card shows the section's values, an admin edits
+// `resolver` and `sample_every` and the row shows the result with "Restart needed" (the tap is read when
+// the node starts), a bad draft is refused in the form, and the revert brings the file's values back.
+test('obs_007 dnstap card edits the section and says a restart is needed', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  await page.getByTestId('tuning-dnstap').locator('summary').click();
+  const row = page.getByTestId('editor-dnstap_settings').getByTestId('entry-row');
+  await expect(row).toContainText('Off; upstream off, resolver off.');
+  await expect(row).not.toContainText('Restart needed');
+  try {
+    await row.getByRole('button', { name: 'Edit' }).click();
+    // A socket and an address together are refused in the form, before the server is asked.
+    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('/run/e2e-dnstap.sock');
+    await page.getByRole('textbox', { name: 'Or a TCP reader' }).fill('tcp://192.0.2.5:6000');
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByText('Set a socket or an address, not both.')).toBeVisible();
+    await page.getByRole('textbox', { name: 'Unix socket of the reader' }).fill('');
+    await page.getByRole('textbox', { name: 'Or a TCP reader' }).fill('');
+    await page.getByRole('spinbutton', { name: 'Copy one query in' }).fill('5');
+    await page.getByRole('switch', { name: /recursive resolver/ }).check();
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByTestId('entry-preview')).toContainText('restart');
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(row).toContainText('resolver on');
+    await expect(row).toContainText('Restart needed');
+    await expect(row).toContainText('overrides the file');
+    const entry = (await (await page.request.get('/api/v1/config/entries?kind=dnstap_settings')).json()).items[0];
+    expect(entry.definition.sample_every).toBe(5);
+    expect(entry.definition.resolver).toBe(true);
+    expect(entry.definition.restart_needed).toBe(true);
+  } finally {
+    // The drawer may still be open after a failed step; the revert is on the row.
+    const close = page.getByRole('dialog').getByRole('button', { name: 'Close' });
+    if (await close.count()) await close.click();
+    const revert = row.getByRole('button', { name: 'Revert to the file' });
+    if (await revert.count()) await revert.click();
+  }
+  await expect(row).toContainText('Off; upstream off, resolver off.');
+  await expect(row).not.toContainText('Restart needed');
+});
+
+// REQ: OBS-007, API-905 (T40.13) — the dnstap settings are an admin's as a whole: an operator sees the
+// card read-only and the server refuses the operator's write (403), and a viewer-level read is allowed.
+test('obs_007 operator cannot change the dnstap settings', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: 'olive', password: 'an operator password', role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const o = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await o.newPage();
+    await p.goto('/#/settings?tab=system');
+    await p.getByLabel('Username', { exact: true }).fill('olive');
+    await p.getByLabel('Password', { exact: true }).fill('an operator password');
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await p.goto('/#/settings?tab=system');
+    await p.getByTestId('tuning-dnstap').locator('summary').click();
+    const row = p.getByTestId('editor-dnstap_settings').getByTestId('entry-row');
+    await expect(row).toContainText('Off; upstream off, resolver off.', { timeout: 30_000 });
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    const token = (await (await o.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const refused = await o.request.put('/api/v1/dnstap-settings/default', {
+      headers: { 'x-csrf-token': token, 'content-type': 'application/json' },
+      data: { resolver: true },
+    });
+    expect(refused.status()).toBe(403);
+  } finally {
+    await o.close();
+  }
+});
+
 // REQ: OBS-003 (T27.5, API-901) — the query log's size is checked in the form: a size the server
 // can't read (`2 gigs`) is refused with the accepted units, not sent.
 test('obs_003 form refuses a size it cannot read', async () => {

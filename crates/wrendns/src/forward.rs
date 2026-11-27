@@ -280,6 +280,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::TelemetryAnomaly => "anomaly_settings",
                 ManagedKind::TelemetryQlog => "qlog_settings",
                 ManagedKind::TelemetryMetrics => "metrics_settings",
+                ManagedKind::TelemetryDnstap => "dnstap_settings",
             };
             let deleting = body.is_none();
             let r = local
@@ -635,6 +636,7 @@ fn settings_kinds_understood(
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
             | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap
             | ManagedKind::Map
             | ManagedKind::Filter
             | ManagedKind::Access
@@ -644,16 +646,21 @@ fn settings_kinds_understood(
     // REQ: DNS-014 (T27.14h, DSC-908) - the `access` kind is gated by the feature every member
     // announces, not by a version number: a development build carries the same number as one
     // that cannot read the kind.
-    if kind == ManagedKind::Access {
+    // REQ: OBS-007, API-905 (T40.13) - the `dnstap_settings` kind is gated the same way.
+    let gated = match kind {
+        ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
+        ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
+        _ => None,
+    };
+    if let Some(feature) = gated {
         // A DELETE (back to the files) is never held: it is the way out.
         if !is_put {
             return Ok(());
         }
-        return crate::upgrade_gate::enforce(Some(cluster), wrendns_cluster::gate::Feature::Access)
-            .map_err(|why| {
-                Problem::new(Code::UpgradeRequired, why)
-                    .hint("Upgrade the member named, then make this change again.")
-            });
+        return crate::upgrade_gate::enforce(Some(cluster), feature).map_err(|why| {
+            Problem::new(Code::UpgradeRequired, why)
+                .hint("Upgrade the member named, then make this change again.")
+        });
     }
     let since = if matches!(kind, ManagedKind::Discovery | ManagedKind::Cmdb) {
         DISCOVERY_SINCE

@@ -529,6 +529,7 @@ fn clu_015_every_settings_kind_is_classified_once() {
         m::ANOMALY_SETTINGS,
         m::QLOG_SETTINGS,
         m::METRICS_SETTINGS,
+        m::DNSTAP_SETTINGS,
     ];
     let shared = [
         m::DNSSEC,

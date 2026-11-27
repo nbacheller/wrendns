@@ -482,6 +482,39 @@ pub fn turned_on(old: &Value, new: &Value) -> bool {
     old.as_bool() != Some(true) && new.as_bool() == Some(true)
 }
 
+/// REQ: OBS-007, API-905 (T40.13) - a change to `[telemetry.dnstap]` (the section as the API
+/// carries it) that sends more of the clients' traffic out of the process than before: the tap
+/// turned on (a socket or an address where there was none), pointed at another one, or widened to
+/// the upstream (`forwarder`) or recursor (`resolver`) exchanges, or sampled more often (a smaller
+/// `sample_every`). Turning it off, sampling less often and a larger queue copy no more than before
+/// and never weaken.
+pub fn dnstap_widened(old: &Value, new: &Value) -> bool {
+    let target = |v: &Value| -> Option<(String, String)> {
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+        };
+        match (s("socket"), s("address")) {
+            (None, None) => None,
+            (a, b) => Some((a.unwrap_or_default(), b.unwrap_or_default())),
+        }
+    };
+    let Some(now) = target(new) else {
+        return false;
+    };
+    if target(old).as_ref() != Some(&now) {
+        return true;
+    }
+    let on = |v: &Value, k: &str| v.get(k).and_then(Value::as_bool) == Some(true);
+    let every = |v: &Value| v.get("sample_every").and_then(Value::as_u64).unwrap_or(1);
+    ["forwarder", "resolver"]
+        .iter()
+        .any(|k| on(new, k) && !on(old, k))
+        || every(new) < every(old)
+}
+
 /// The watchdog turned off (`watchdog.enabled`, or the whole section replaced by one that is).
 pub fn watchdog_turned_off(old: &Value, new: &Value) -> bool {
     let on = |v: &Value| match v {
@@ -697,6 +730,45 @@ addr = \"127.0.0.1:5\"
                 "docs/recovery.md doesn't mention {needle}"
             );
         }
+    }
+
+    // REQ: OBS-007, API-905 (T40.13) - what widens the dnstap copy: the tap turned on, a new target,
+    // upstream or recursor exchanges added, a smaller `sample_every`; never the reverse.
+    #[test]
+    fn obs_007_dnstap_widened_rule() {
+        use serde_json::json;
+        let off = json!({"socket": null, "address": null, "sample_every": 10, "buffer": 10000, "forwarder": false, "resolver": false});
+        let on = json!({"socket": "/run/dnstap.sock", "address": null, "sample_every": 10, "buffer": 10000, "forwarder": false, "resolver": false});
+        assert!(dnstap_widened(&off, &on), "turned on");
+        assert!(!dnstap_widened(&on, &off), "turned off");
+        assert!(!dnstap_widened(&off, &off));
+        assert!(!dnstap_widened(&on, &on));
+        let mut other = on.clone();
+        other["socket"] = json!("/run/other.sock");
+        assert!(dnstap_widened(&on, &other), "a new socket");
+        let mut tcp = on.clone();
+        tcp["socket"] = Value::Null;
+        tcp["address"] = json!("tcp://192.0.2.5:6000");
+        assert!(dnstap_widened(&on, &tcp), "a socket to an address");
+        for k in ["forwarder", "resolver"] {
+            let mut more = on.clone();
+            more[k] = json!(true);
+            assert!(dnstap_widened(&on, &more), "{k} added");
+            assert!(!dnstap_widened(&more, &on), "{k} dropped");
+        }
+        let mut often = on.clone();
+        often["sample_every"] = json!(1);
+        assert!(dnstap_widened(&on, &often), "sampled more often");
+        assert!(!dnstap_widened(&often, &on), "sampled less often");
+        let mut big = on.clone();
+        big["buffer"] = json!(500_000);
+        assert!(!dnstap_widened(&on, &big), "a larger queue copies no more");
+        let mut resolver_off_tap = off.clone();
+        resolver_off_tap["resolver"] = json!(true);
+        assert!(
+            !dnstap_widened(&off, &resolver_off_tap),
+            "no target, nothing leaves"
+        );
     }
 
     // REQ: API-902 (ADR-956 §1(b)) — the two sign-in lockout settings are file-only.

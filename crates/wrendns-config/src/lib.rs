@@ -233,7 +233,7 @@ fn explicit_keys(root: &Table) -> Vec<String> {
     }
     // REQ: OBS-013, OBS-003, OBS-020 (T27.5, ADR-1007) — the node-managed parts of `[telemetry]`.
     if let Some(Value::Table(tel)) = root.get("telemetry") {
-        for section in ["anomaly", "qlog", "metrics"] {
+        for section in ["anomaly", "qlog", "metrics", "dnstap"] {
             if let Some(Value::Table(t)) = tel.get(section) {
                 keys.extend(t.keys().map(|k| format!("telemetry.{section}.{k}")));
             }
