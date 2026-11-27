@@ -8762,6 +8762,8 @@ test('dns_904 the trace shows the walk of a recursive lookup in Explain', async 
   } finally {
     await page.unroute(trace);
     await page.goto('/#/');
+  }
+});
 
 // REQ: DNS-014, API-901 (T27.14h) — Settings → System → Allowed networks: an admin adds a network and
 // the check (before anything is saved) warns for a public range and not for a private one, a list that
