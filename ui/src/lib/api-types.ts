@@ -5541,6 +5541,23 @@ export interface components {
             /** @description The window examined (RFC 3339 start, and length in seconds). */
             windowStart: string;
         };
+        /**
+         * @description REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and
+         *     API, for the Settings "Web UI and API" card. Admin only: absent from every other caller's answer,
+         *     as the listener paths are, and absent from an older node's.
+         */
+        ApiInfo: {
+            /** @description With HTTPS: `self-signed`, or the certificate file's name (never its path). */
+            certificate?: string | null;
+            /** @description The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set. */
+            httpRedirect?: string | null;
+            /** @description The address the API listens on (`[api] listen`). */
+            listen: string;
+            /** @description `https` when `[api] tls` is set (the node serves HTTPS itself), else `http`. */
+            scheme: string;
+            /** @description `[api] trusted_proxies`, as in force now: each address or network. */
+            trustedProxies: string[];
+        };
         /** @description REQ: OBS-027 — the budget over the window. */
         AttributionBudget: {
             /**
@@ -8524,6 +8541,11 @@ export interface components {
              */
             proofPort?: number | null;
             restartRequired: boolean;
+            /**
+             * @description For a `trusted-proxies` change: the client address the node sees for this request today
+             *     (what the new list would change), when the request reached the node itself.
+             */
+            seenClient?: string | null;
             /** @description The setting is a file's: the control is locked. */
             setByFile: boolean;
             setting: string;
@@ -12906,6 +12928,7 @@ export interface components {
              *     link-local left out), which an upstream's `source` can name. They differ per node.
              */
             addresses: components["schemas"]["NodeAddress"][];
+            api?: components["schemas"]["ApiInfo"] | null;
             /** @description Exactly which build this is (ADR-046). */
             build: components["schemas"]["BuildInfo"];
             clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
