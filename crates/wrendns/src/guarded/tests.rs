@@ -3184,7 +3184,11 @@ fn api_902_confirmed_listener_bind_failure_falls_back_at_start_with_the_listen_r
         },
     );
     assert!(r.is_ok(), "{r:?}");
-    assert_eq!(*seen.borrow(), vec![5, 4], "the second start runs the file's listeners");
+    assert_eq!(
+        *seen.borrow(),
+        vec![5, 4],
+        "the second start runs the file's listeners"
+    );
     assert_eq!(probation::fallbacks(), vec!["listen".to_owned()]);
     let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
     assert_eq!(store::for_node(&state, "pi-a").len(), 1, "the entry stays");

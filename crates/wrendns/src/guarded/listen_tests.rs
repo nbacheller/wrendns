@@ -5,8 +5,6 @@
 //! socket: the engine and the sockets are driven in `tests/listen_engine_tests.rs` and the server's
 //! own tests.
 
-
-
 use serde_json::{Value, json};
 use wrendns_api::problem::Code;
 use wrendns_config::{Config, HostFacts, ListenProto, Listener};
@@ -135,11 +133,17 @@ fn api_902_listen_value_refuses_unknown_and_foreign_fields() {
     let mut p = l("tcp", "0.0.0.0:53");
     p["proxyProtocol"] = json!(true);
     let d = bad(value(&[p]));
-    assert!(d.contains("configuration file only") && d.contains("PROXY"), "{d}");
+    assert!(
+        d.contains("configuration file only") && d.contains("PROXY"),
+        "{d}"
+    );
     let mut g = l("dot", "0.0.0.0:853");
     g["requireClientId"] = json!(true);
     let d = bad(value(&[g]));
-    assert!(d.contains("Listener access") && d.contains("listen-access"), "{d}");
+    assert!(
+        d.contains("Listener access") && d.contains("listen-access"),
+        "{d}"
+    );
     // The snake_case spellings of the configuration file are refused the same way.
     let mut s = l("tcp", "0.0.0.0:53");
     s["proxy_protocol"] = json!(true);
@@ -191,7 +195,10 @@ fn api_902_listen_check_table_internal_ports_and_overlaps() {
     let cfg = Config::default();
     // The web UI's port, the metrics endpoint's, the cluster's, and the redirect's, each named.
     let d = err(&cfg, &with(vec![l("udp", "192.168.1.2:8053")]));
-    assert!(d.contains("port 8053 is the web UI's ([api] listen)"), "{d}");
+    assert!(
+        d.contains("port 8053 is the web UI's ([api] listen)"),
+        "{d}"
+    );
     let d = err(&cfg, &with(vec![l("tcp", "192.168.1.2:9153")]));
     assert!(d.contains("([telemetry.metrics] listen)"), "{d}");
     let d = err(&cfg, &with(vec![l("udp", "192.168.1.2:8443")]));
@@ -202,8 +209,11 @@ fn api_902_listen_check_table_internal_ports_and_overlaps() {
     assert!(d.contains("([api] http_redirect)"), "{d}");
     // A listener that stays on such a port is not judged: the running set is what it is.
     let mut c = Config::default();
-    c.listen
-        .push(parse(&value(&[l("tcp", "192.168.1.2:9153")])).unwrap().remove(0));
+    c.listen.push(
+        parse(&value(&[l("tcp", "192.168.1.2:9153")]))
+            .unwrap()
+            .remove(0),
+    );
     let mut kept = with(vec![l("tcp", "192.168.1.2:9153")]);
     assert!(run(&c, &kept, PRIVATE4).is_ok());
     kept = with(vec![]);
@@ -215,7 +225,10 @@ fn api_902_listen_check_table_internal_ports_and_overlaps() {
     );
     assert!(d.contains("overlaps"), "{d}");
     let fine = with(vec![l("udp", "192.168.1.2:5300"), l("udp", "0.0.0.0:5300")]);
-    assert!(run(&cfg, &fine, PRIVATE4).is_ok(), "plain UDP shares a port");
+    assert!(
+        run(&cfg, &fine, PRIVATE4).is_ok(),
+        "plain UDP shares a port"
+    );
     // Families do not overlap each other.
     let fam = with(vec![l("tcp", "192.168.1.2:5300"), l("tcp", "[::]:5300")]);
     assert!(run(&cfg, &fam, PRIVATE4).is_ok());
@@ -258,13 +271,25 @@ fn api_902_listen_check_table_empty_and_port_53() {
     assert!(!run(&cfg, &moved, PRIVATE4).unwrap().would_disconnect);
     // A node that does not run port 53 today is not held to it.
     let mut off53 = Config::default();
-    off53.listen = parse(&value(&[l("udp", "0.0.0.0:5353"), l("tcp", "0.0.0.0:5353")])).unwrap();
+    off53.listen = parse(&value(&[
+        l("udp", "0.0.0.0:5353"),
+        l("tcp", "0.0.0.0:5353"),
+    ]))
+    .unwrap();
     let c = run(&off53, &value(&[l("udp", "0.0.0.0:5454")]), PRIVATE4).unwrap();
     assert!(!c.would_disconnect);
     // One family only on port 53 today: the other is not demanded.
     let mut v4only = Config::default();
     v4only.listen = parse(&value(&[l("udp", "0.0.0.0:53"), l("tcp", "0.0.0.0:53")])).unwrap();
-    let c = run(&v4only, &value(&[l("udp", "0.0.0.0:53"), l("tcp", "0.0.0.0:53"), l("dot", "0.0.0.0:5353")]), PRIVATE4);
+    let c = run(
+        &v4only,
+        &value(&[
+            l("udp", "0.0.0.0:53"),
+            l("tcp", "0.0.0.0:53"),
+            l("dot", "0.0.0.0:5353"),
+        ]),
+        PRIVATE4,
+    );
     assert!(c.is_err(), "the dot listener needs a certificate");
 }
 
@@ -279,7 +304,15 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         site: "home".to_owned(),
         witness: true,
     };
-    let e = evaluate(&cfg, "pi-a", &value(&defaults()), &[w], "home", &env(PRIVATE4)).unwrap_err();
+    let e = evaluate(
+        &cfg,
+        "pi-a",
+        &value(&defaults()),
+        &[w],
+        "home",
+        &env(PRIVATE4),
+    )
+    .unwrap_err();
     assert_eq!(e.code, Code::InvalidConfig);
     assert!(e.detail.contains("witness serves no DNS"));
     // The only healthy resolver of its site is a warning.
@@ -291,10 +324,34 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         site: "home".to_owned(),
         witness: false,
     };
-    let c = evaluate(&cfg, "pi-a", &value(&defaults()), &[other(false)], "home", &env(PRIVATE4)).unwrap();
-    assert!(c.warnings.iter().any(|w| w.contains("only healthy resolver in site home")));
-    let c = evaluate(&cfg, "pi-a", &value(&defaults()), &[other(true)], "home", &env(PRIVATE4)).unwrap();
-    assert!(!c.warnings.iter().any(|w| w.contains("only healthy resolver")));
+    let c = evaluate(
+        &cfg,
+        "pi-a",
+        &value(&defaults()),
+        &[other(false)],
+        "home",
+        &env(PRIVATE4),
+    )
+    .unwrap();
+    assert!(
+        c.warnings
+            .iter()
+            .any(|w| w.contains("only healthy resolver in site home"))
+    );
+    let c = evaluate(
+        &cfg,
+        "pi-a",
+        &value(&defaults()),
+        &[other(true)],
+        "home",
+        &env(PRIVATE4),
+    )
+    .unwrap();
+    assert!(
+        !c.warnings
+            .iter()
+            .any(|w| w.contains("only healthy resolver"))
+    );
 }
 
 #[test]
@@ -302,7 +359,13 @@ fn api_902_listen_warnings_platform_and_interface() {
     let cfg = Config::default();
     let v = with(vec![l("udp", "198.51.100.7:5300")]);
     let c = run(&cfg, &v, PRIVATE4).unwrap();
-    assert!(c.warnings.iter().any(|w| w.contains("198.51.100.7 is on no interface")), "{:?}", c.warnings);
+    assert!(
+        c.warnings
+            .iter()
+            .any(|w| w.contains("198.51.100.7 is on no interface")),
+        "{:?}",
+        c.warnings
+    );
     // An address the host holds, and a wildcard, do not warn.
     let c = run(&cfg, &with(vec![l("udp", "192.168.1.2:5300")]), PRIVATE4).unwrap();
     assert!(!c.warnings.iter().any(|w| w.contains("no interface")));
@@ -310,7 +373,11 @@ fn api_902_listen_warnings_platform_and_interface() {
     let mut e = env(PRIVATE4);
     e.supervisor = "docker".to_owned();
     let c = evaluate(&cfg, "pi-a", &with(vec![]), &[], "", &e).unwrap();
-    assert!(c.warnings.iter().any(|w| w.contains("Docker or Kubernetes")));
+    assert!(
+        c.warnings
+            .iter()
+            .any(|w| w.contains("Docker or Kubernetes"))
+    );
     // An unreadable interface list says nothing about interfaces.
     let mut e = env(PRIVATE4);
     e.local = None;
@@ -322,20 +389,43 @@ fn api_902_listen_warnings_platform_and_interface() {
 fn api_902_listen_removed_address_is_said_out_loud() {
     let mut cfg = Config::default();
     cfg.listen.extend(
-        parse(&value(&[l("udp", "192.168.1.2:53"), l("tcp", "192.168.1.2:53")])).unwrap(),
+        parse(&value(&[
+            l("udp", "192.168.1.2:53"),
+            l("tcp", "192.168.1.2:53"),
+        ]))
+        .unwrap(),
     );
     let c = run(&cfg, &value(&defaults()), PRIVATE4).unwrap();
-    let w = c.warnings.iter().find(|w| w.contains("stop getting answers")).unwrap();
+    let w = c
+        .warnings
+        .iter()
+        .find(|w| w.contains("stop getting answers"))
+        .unwrap();
     assert!(w.contains("192.168.1.2") && w.contains("DHCP"), "{w}");
     assert_eq!(
-        c.warnings.iter().filter(|w| w.contains("stop getting answers")).count(),
+        c.warnings
+            .iter()
+            .filter(|w| w.contains("stop getting answers"))
+            .count(),
         1,
         "once per address, not per protocol"
     );
-    let removed: Vec<_> = c.listeners.iter().filter(|x| x.change == "removed").collect();
+    let removed: Vec<_> = c
+        .listeners
+        .iter()
+        .filter(|x| x.change == "removed")
+        .collect();
     assert_eq!(removed.len(), 2);
-    assert!(c.effect.contains("Removes UDP on 192.168.1.2:53, TCP on 192.168.1.2:53 when you confirm"), "{}", c.effect);
-    assert!(c.effect.contains("Keeps every current listener until you confirm"));
+    assert!(
+        c.effect
+            .contains("Removes UDP on 192.168.1.2:53, TCP on 192.168.1.2:53 when you confirm"),
+        "{}",
+        c.effect
+    );
+    assert!(
+        c.effect
+            .contains("Keeps every current listener until you confirm")
+    );
 }
 
 // ---- the weakening table ---------------------------------------------------------------
@@ -363,15 +453,27 @@ fn api_902_listener_weakening_table() {
     let unread = HostFacts::UNKNOWN;
     // (c) plain UDP or TCP added on a public address weakens, on any host.
     for host in [PUBLIC4, PRIVATE4, GLOBAL6, unread] {
-        assert!(weak(&base, &add(l("udp", "203.0.113.9:5300")), host), "udp {host:?}");
-        assert!(weak(&base, &add(l("tcp", "203.0.113.9:5300")), host), "tcp {host:?}");
+        assert!(
+            weak(&base, &add(l("udp", "203.0.113.9:5300")), host),
+            "udp {host:?}"
+        );
+        assert!(
+            weak(&base, &add(l("tcp", "203.0.113.9:5300")), host),
+            "tcp {host:?}"
+        );
         // A private address never does.
-        assert!(!weak(&base, &add(l("udp", "192.168.1.2:5300")), host), "lan {host:?}");
+        assert!(
+            !weak(&base, &add(l("udp", "192.168.1.2:5300")), host),
+            "lan {host:?}"
+        );
         assert!(!weak(&base, &add(l("udp", "127.0.0.1:5300")), host));
     }
     // (c) an encrypted listener on a public address: the default gate is on, so it does not weaken.
     for host in [PUBLIC4, PRIVATE4, GLOBAL6, unread] {
-        assert!(!weak(&base, &add(dot("203.0.113.9:853", c, k)), host), "gated {host:?}");
+        assert!(
+            !weak(&base, &add(dot("203.0.113.9:853", c, k)), host),
+            "gated {host:?}"
+        );
     }
     // ... unless the gate is off there: a kept explicit setting is not this row's, so an added
     // listener always starts on its default; an encrypted one on a private address is off and not
@@ -386,7 +488,10 @@ fn api_902_listener_weakening_table() {
     // A wildcard encrypted listener is gated by default where it is reachable, off where it is not,
     // and where it is off it is not reachable either.
     for host in [PUBLIC4, PRIVATE4, GLOBAL6, unread] {
-        assert!(!weak(&base, &add(dot("0.0.0.0:853", c, k)), host), "wild dot {host:?}");
+        assert!(
+            !weak(&base, &add(dot("0.0.0.0:853", c, k)), host),
+            "wild dot {host:?}"
+        );
     }
     // A kept listener never counts, even a public one on a public host.
     let with_public = {
@@ -400,8 +505,14 @@ fn api_902_listener_weakening_table() {
     // (b) a gated encrypted listener replaced by an ungated one of its protocol.
     let gated = vec![l("udp", "0.0.0.0:53"), dot("203.0.113.9:853", c, k)];
     let to_wild = vec![l("udp", "0.0.0.0:53"), dot("0.0.0.0:853", c, k)];
-    assert!(weak(&gated, &to_wild, GLOBAL6), "public dot to a wildcard on an IPv6-only host");
-    assert!(!weak(&gated, &to_wild, PUBLIC4), "the wildcard is gated where the host is public");
+    assert!(
+        weak(&gated, &to_wild, GLOBAL6),
+        "public dot to a wildcard on an IPv6-only host"
+    );
+    assert!(
+        !weak(&gated, &to_wild, PUBLIC4),
+        "the wildcard is gated where the host is public"
+    );
     // Removing the gated listener without adding an ungated one is not (b).
     assert!(!weak(&gated, &[l("udp", "0.0.0.0:53")], GLOBAL6));
     // (a) the encrypted listener goes and plain DNS stays on the address.
@@ -413,7 +524,14 @@ fn api_902_listener_weakening_table() {
         dot("192.168.1.2:853", c, k),
         json!({"proto": "doq", "addr": "192.168.1.2:853", "tls": {"cert": c, "key": k}}),
     ];
-    assert!(!weak(&two, &[l("udp", "192.168.1.2:53"), json!({"proto": "doq", "addr": "192.168.1.2:853", "tls": {"cert": c, "key": k}})], PRIVATE4));
+    assert!(!weak(
+        &two,
+        &[
+            l("udp", "192.168.1.2:53"),
+            json!({"proto": "doq", "addr": "192.168.1.2:853", "tls": {"cert": c, "key": k}})
+        ],
+        PRIVATE4
+    ));
     assert!(!weak(&enc, &[l("udp", "192.168.1.3:53")], PRIVATE4));
 }
 
@@ -443,16 +561,31 @@ fn api_902_listen_certificate_rules() {
     let (c, k) = pki.pair("good", &["dns.example"]);
     // A good pair: names and expiry shown, contents never returned.
     let ok = run(&cfg, &with(vec![dot("192.168.1.2:853", &c, &k)]), PRIVATE4).unwrap();
-    let line = ok.listeners.iter().find(|x| x.listener == "dot://192.168.1.2:853").unwrap();
+    let line = ok
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://192.168.1.2:853")
+        .unwrap();
     let cert = line.certificate.clone().unwrap();
-    assert!(cert.contains("dns.example") && cert.contains("expires in"), "{cert}");
-    let all = serde_json::to_string(&(&ok.effect, &ok.warnings, &ok.checks, &ok.listeners)).unwrap();
+    assert!(
+        cert.contains("dns.example") && cert.contains("expires in"),
+        "{cert}"
+    );
+    let all =
+        serde_json::to_string(&(&ok.effect, &ok.warnings, &ok.checks, &ok.listeners)).unwrap();
     assert!(!all.contains("BEGIN"), "no file contents in the answer");
-    assert!(ok.checks.iter().any(|x| x.name.starts_with("certificate ") && x.ok));
+    assert!(
+        ok.checks
+            .iter()
+            .any(|x| x.name.starts_with("certificate ") && x.ok)
+    );
     // A relative path, a missing file, a directory.
     let d = err(&cfg, &with(vec![dot("192.168.1.2:853", "dns.crt", &k)]));
     assert!(d.contains("must be absolute"), "{d}");
-    let d = err(&cfg, &with(vec![dot("192.168.1.2:853", &format!("{c}.nope"), &k)]));
+    let d = err(
+        &cfg,
+        &with(vec![dot("192.168.1.2:853", &format!("{c}.nope"), &k)]),
+    );
     assert!(d.contains("can't be read"), "{d}");
     let dir = pki.dir.path().to_string_lossy().into_owned();
     let d = err(&cfg, &with(vec![dot("192.168.1.2:853", &dir, &k)]));
@@ -464,13 +597,25 @@ fn api_902_listen_certificate_rules() {
     // Not a certificate at all.
     let junk = pki.dir.path().join("junk.crt");
     std::fs::write(&junk, "not a certificate").unwrap();
-    let d = err(&cfg, &with(vec![dot("192.168.1.2:853", &junk.to_string_lossy(), &k)]));
+    let d = err(
+        &cfg,
+        &with(vec![dot("192.168.1.2:853", &junk.to_string_lossy(), &k)]),
+    );
     assert!(d.contains("can't be used together"), "{d}");
     // A path the T23.2 rules deny.
-    let d = err(&cfg, &with(vec![dot("192.168.1.2:853", "/proc/self/environ", &k)]));
-    assert!(d.contains("no path set through the UI or API may name") || d.contains("can't be read") || d.contains("regular file"), "{d}");
+    let d = err(
+        &cfg,
+        &with(vec![dot("192.168.1.2:853", "/proc/self/environ", &k)]),
+    );
+    assert!(
+        d.contains("no path set through the UI or API may name")
+            || d.contains("can't be read")
+            || d.contains("regular file"),
+        "{d}"
+    );
     let mut c2 = Config::default();
-    c2.node.data_dir = wrendns_config::SafeString::new(pki.dir.path().to_string_lossy().into_owned()).unwrap();
+    c2.node.data_dir =
+        wrendns_config::SafeString::new(pki.dir.path().to_string_lossy().into_owned()).unwrap();
     let d = err(&c2, &with(vec![dot("192.168.1.2:853", &c, &k)]));
     assert!(d.contains("data directory"), "{d}");
 }
@@ -483,7 +628,10 @@ fn api_902_listen_certificate_symlink_refused() {
     let (c, k) = pki.pair("real", &["dns.example"]);
     let link = pki.dir.path().join("link.crt");
     std::os::unix::fs::symlink(&c, &link).unwrap();
-    let d = err(&cfg, &with(vec![dot("192.168.1.2:853", &link.to_string_lossy(), &k)]));
+    let d = err(
+        &cfg,
+        &with(vec![dot("192.168.1.2:853", &link.to_string_lossy(), &k)]),
+    );
     assert!(d.contains("symbolic link"), "{d}");
 }
 
@@ -495,13 +643,55 @@ fn api_902_listen_certificate_expiry_warnings() {
     let mut cfg = Config::default();
     cfg.probe.cert_warn_days = 10_000_000;
     let ok = run(&cfg, &with(vec![dot("192.168.1.2:853", &c, &k)]), PRIVATE4).unwrap();
-    assert!(ok.warnings.iter().any(|w| w.contains("expires in")), "{:?}", ok.warnings);
+    assert!(
+        ok.warnings.iter().any(|w| w.contains("expires in")),
+        "{:?}",
+        ok.warnings
+    );
     let cfg = Config::default();
     let ok = run(&cfg, &with(vec![dot("192.168.1.2:853", &c, &k)]), PRIVATE4).unwrap();
-    assert!(!ok.warnings.iter().any(|w| w.contains("expires in") || w.contains("expired")));
+    assert!(
+        !ok.warnings
+            .iter()
+            .any(|w| w.contains("expires in") || w.contains("expired"))
+    );
     let (ec, ek) = pki.expired("old");
-    let old = run(&cfg, &with(vec![dot("192.168.1.2:853", &ec, &ek)]), PRIVATE4).unwrap();
-    assert!(old.warnings.iter().any(|w| w.contains("has expired")), "{:?}", old.warnings);
+    let old = run(
+        &cfg,
+        &with(vec![dot("192.168.1.2:853", &ec, &ek)]),
+        PRIVATE4,
+    )
+    .unwrap();
+    assert!(
+        old.warnings.iter().any(|w| w.contains("has expired")),
+        "{:?}",
+        old.warnings
+    );
+}
+
+// A listener the node already runs as it is, whose files can't be used now, is a warning: an
+// unrelated change is not held up by it. Changing that listener (or adding one on the same files) is.
+#[test]
+fn api_902_listen_kept_listener_with_a_bad_certificate_is_a_warning() {
+    let pki = Pki::new();
+    let (c, k) = pki.pair("kept", &["dns.example"]);
+    let mut cfg = Config::default();
+    cfg.listen.extend(parse(&value(&[dot("192.168.1.2:853", &c, &k)])).unwrap());
+    std::fs::remove_file(&c).unwrap();
+    // Kept: warned about, and the rest of the change goes through.
+    let same = with(vec![dot("192.168.1.2:853", &c, &k), l("udp", "192.168.1.2:5300")]);
+    let ok = run(&cfg, &same, PRIVATE4).unwrap();
+    assert!(
+        ok.warnings.iter().any(|w| w.contains("is kept, but its certificate can't be used now")),
+        "{:?}",
+        ok.warnings
+    );
+    // Another listener on the same broken files is added: refused.
+    let more = with(vec![
+        dot("192.168.1.2:853", &c, &k),
+        dot("192.168.1.2:8853", &c, &k),
+    ]);
+    assert!(err(&cfg, &more).contains("can't be read"));
 }
 
 // ---- the gate lines --------------------------------------------------------------------
@@ -517,34 +707,67 @@ fn api_902_listen_gate_lines_and_dropped_settings() {
     // Moved to the public address: starts on its default, the explicit setting is dropped and named.
     let v = with(vec![dot("203.0.113.9:853", &c, &k)]);
     let ck = run(&cfg, &v, PRIVATE4).unwrap();
-    let added = ck.listeners.iter().find(|x| x.listener == "dot://203.0.113.9:853").unwrap();
+    let added = ck
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://203.0.113.9:853")
+        .unwrap();
     assert_eq!(added.change, "added");
     assert_eq!(
         added.gate.as_deref(),
-        Some("dot://203.0.113.9:853: answers only a known device key (default: on, because the address is public)")
+        Some(
+            "dot://203.0.113.9:853: answers only a known device key (default: on, because the address is public)"
+        )
     );
-    let gone = ck.listeners.iter().find(|x| x.listener == "dot://192.168.1.2:853").unwrap();
+    let gone = ck
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://192.168.1.2:853")
+        .unwrap();
     assert_eq!(gone.change, "removed");
     let note = gone.note.clone().unwrap();
-    assert!(note.contains("Listener access for dot://192.168.1.2:853 was set to off"), "{note}");
-    assert!(note.contains("dot://203.0.113.9:853 starts on its default (on)"), "{note}");
+    assert!(
+        note.contains("Listener access for dot://192.168.1.2:853 was set to off"),
+        "{note}"
+    );
+    assert!(
+        note.contains("dot://203.0.113.9:853 starts on its default (on)"),
+        "{note}"
+    );
     assert!(ck.warnings.iter().any(|w| w.contains("gated by default")));
     // A wildcard says why it is off or on.
     let v = with(vec![dot("0.0.0.0:853", &c, &k)]);
     let ck = run(&cfg, &v, GLOBAL6).unwrap();
-    let w = ck.listeners.iter().find(|x| x.listener == "dot://0.0.0.0:853").unwrap();
+    let w = ck
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://0.0.0.0:853")
+        .unwrap();
     assert!(w.gate.as_deref().unwrap().contains("open to the allowed networks (default: off, because it binds every address and this host has no public IPv4 address"));
     // A kept listener keeps its explicit setting and is a `kept` line.
     let v = with(vec![dot("192.168.1.2:853", &c, &k)]);
     let ck = run(&cfg, &v, PRIVATE4).unwrap();
-    let kept = ck.listeners.iter().find(|x| x.listener == "dot://192.168.1.2:853").unwrap();
+    let kept = ck
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://192.168.1.2:853")
+        .unwrap();
     assert_eq!(kept.change, "kept");
-    assert!(kept.gate.as_deref().unwrap().contains("set under Listener access"));
+    assert!(
+        kept.gate
+            .as_deref()
+            .unwrap()
+            .contains("set under Listener access")
+    );
     // A changed certificate path is a `changed` line tried on a proof port.
     let (c2, k2) = pki.pair("g2", &["dns.example"]);
     let v = with(vec![dot("192.168.1.2:853", &c2, &k2)]);
     let ck = run(&cfg, &v, PRIVATE4).unwrap();
-    let ch = ck.listeners.iter().find(|x| x.listener == "dot://192.168.1.2:853").unwrap();
+    let ch = ck
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://192.168.1.2:853")
+        .unwrap();
     assert_eq!(ch.change, "changed");
     assert!(ch.note.as_deref().unwrap().contains("temporary port"));
 }
@@ -556,11 +779,19 @@ fn api_902_listen_overlap_with_a_wildcard_is_noted() {
     let pki = Pki::new();
     let (c, k) = pki.pair("o", &["dns.example"]);
     let mut cfg = Config::default();
-    cfg.listen.extend(parse(&value(&[dot("0.0.0.0:853", &c, &k)])).unwrap());
+    cfg.listen
+        .extend(parse(&value(&[dot("0.0.0.0:853", &c, &k)])).unwrap());
     let ck = run(&cfg, &with(vec![dot("192.168.1.2:853", &c, &k)]), PRIVATE4).unwrap();
-    let line = ck.listeners.iter().find(|x| x.listener == "dot://192.168.1.2:853").unwrap();
+    let line = ck
+        .listeners
+        .iter()
+        .find(|x| x.listener == "dot://192.168.1.2:853")
+        .unwrap();
     let note = line.note.clone().unwrap();
-    assert!(note.contains("overlaps dot://0.0.0.0:853") && note.contains("few milliseconds"), "{note}");
+    assert!(
+        note.contains("overlaps dot://0.0.0.0:853") && note.contains("few milliseconds"),
+        "{note}"
+    );
 }
 
 // ---- the overlay order -----------------------------------------------------------------
@@ -600,13 +831,24 @@ fn api_902_listen_overlay_order_is_listen_then_listen_access() {
     let own = Config::default();
     let defs = super::appliers::rows();
     // The access entry first, as a store could list it.
-    for order in [vec![access.clone(), listen.clone()], vec![listen.clone(), access.clone()]] {
+    for order in [
+        vec![access.clone(), listen.clone()],
+        vec![listen.clone(), access.clone()],
+    ] {
         let mut cfg = Config::default();
         overlay_with(&mut cfg, &own, &order, None, &defs, "pi-a", false);
         assert_eq!(cfg.listen.len(), 3, "{order:?}");
         let by = |a: &str| cfg.listen.iter().find(|x| x.addr.to_string() == a).unwrap();
-        assert_eq!(by("192.168.1.2:853").require_client_id, Some(false), "explicit gate kept");
-        assert_eq!(by("192.168.1.3:853").require_client_id, None, "a new one starts on its default");
+        assert_eq!(
+            by("192.168.1.2:853").require_client_id,
+            Some(false),
+            "explicit gate kept"
+        );
+        assert_eq!(
+            by("192.168.1.3:853").require_client_id,
+            None,
+            "a new one starts on its default"
+        );
         assert_eq!(by("192.168.1.2:53").proto, ListenProto::Udp);
     }
     // A file that sets any [[listen]] locks the row: the overlay leaves the list alone.

@@ -13,9 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use wrendns_api::BoxFuture;
 use wrendns_api::auth::Actor;
-use wrendns_api::guarded::{
-    GuardedApplyRequest, GuardedCaller, GuardedPreviewRequest, Supervisor,
-};
+use wrendns_api::guarded::{GuardedApplyRequest, GuardedCaller, GuardedPreviewRequest, Supervisor};
 use wrendns_api::problem::Code;
 use wrendns_config::{Config, ListenProto, Listener};
 use wrendns_proto::{NameBuf, build_query, rtype};
@@ -195,7 +193,10 @@ async fn api_902_bad_listener_rolls_back_and_dns_keeps_answering() {
     );
     let a = admin();
     // The query loop on the listener that stays.
-    let (lost, stop) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+    let (lost, stop) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
     let sent = Arc::new(AtomicUsize::new(0));
     let looper = {
         let (lost, stop, sent) = (Arc::clone(&lost), Arc::clone(&stop), Arc::clone(&sent));
@@ -220,15 +221,25 @@ async fn api_902_bad_listener_rolls_back_and_dns_keeps_answering() {
     assert!(answers(old.addr).await);
     // 2. A good new listener is staged and served; the admin cancels and it closes.
     let new = loopback(free_udp_port());
-    let r = preview_apply(&engine, &a, value(&[old.addr, new])).await.unwrap();
+    let r = preview_apply(&engine, &a, value(&[old.addr, new]))
+        .await
+        .unwrap();
     assert_eq!(r.status, "pending");
-    assert!(answers(new).await, "the staged socket answers during the window");
+    assert!(
+        answers(new).await,
+        "the staged socket answers during the window"
+    );
     assert!(answers(old.addr).await);
-    engine.cancel(&a, r.pending_id.as_deref().unwrap()).await.unwrap();
+    engine
+        .cancel(&a, r.pending_id.as_deref().unwrap())
+        .await
+        .unwrap();
     assert!(!answers(new).await, "closed when the change rolled back");
     assert!(answers(old.addr).await);
     // 3. The same change confirmed: the staged socket is adopted, the old one stays.
-    let r = preview_apply(&engine, &a, value(&[old.addr, new])).await.unwrap();
+    let r = preview_apply(&engine, &a, value(&[old.addr, new]))
+        .await
+        .unwrap();
     let done = engine
         .confirm(&a, r.pending_id.as_deref().unwrap(), r.confirm_token)
         .await
@@ -238,8 +249,15 @@ async fn api_902_bad_listener_rolls_back_and_dns_keeps_answering() {
     assert!(answers(old.addr).await);
     stop.store(true, Ordering::SeqCst);
     looper.await.unwrap();
-    assert!(sent.load(Ordering::SeqCst) > 5, "the loop ran across all of it");
-    assert_eq!(lost.load(Ordering::SeqCst), 0, "not one query lost on the listener that stayed");
+    assert!(
+        sent.load(Ordering::SeqCst) > 5,
+        "the loop ran across all of it"
+    );
+    assert_eq!(
+        lost.load(Ordering::SeqCst),
+        0,
+        "not one query lost on the listener that stayed"
+    );
     // 4. Removing the first listener closes it, and only it.
     let mut after = cfg.clone();
     after.listen = vec![old.clone(), udp(new)];
@@ -250,7 +268,10 @@ async fn api_902_bad_listener_rolls_back_and_dns_keeps_answering() {
         .await
         .unwrap();
     assert!(answers(new).await);
-    assert!(!answers(old.addr).await, "the removed listener is closed at the commit");
+    assert!(
+        !answers(old.addr).await,
+        "the removed listener is closed at the commit"
+    );
     drop(apply_tx);
     drop(engine);
     drop(host);

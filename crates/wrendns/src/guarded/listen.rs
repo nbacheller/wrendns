@@ -137,7 +137,12 @@ pub(crate) fn parse(v: &Value) -> Result<Vec<Listener>, Problem> {
             .ok_or_else(|| bad("each entry must be an object"))?;
         for k in o.keys() {
             match k.as_str() {
-                "proto" | "addr" | "tls" | "path" | "maxConnections" | "maxConnectionsPerAddress" => {}
+                "proto"
+                | "addr"
+                | "tls"
+                | "path"
+                | "maxConnections"
+                | "maxConnectionsPerAddress" => {}
                 "proxyProtocol" | "proxy_protocol" => {
                     return Err(bad(
                         "`proxyProtocol` is set in the configuration file only: a PROXY listener trusts the address in each connection's header, so turning it on here would let any client choose its own address",
@@ -190,9 +195,9 @@ pub(crate) fn parse(v: &Value) -> Result<Vec<Listener>, Problem> {
         let path = match o.get("path") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) if s.trim().is_empty() => None,
-            Some(Value::String(s)) => Some(
-                SafeString::new(s.trim()).map_err(|e| bad(format!("{who}: `path` {e}")))?,
-            ),
+            Some(Value::String(s)) => {
+                Some(SafeString::new(s.trim()).map_err(|e| bad(format!("{who}: `path` {e}")))?)
+            }
             Some(_) => return Err(bad(format!("{who}: `path` must be text"))),
         };
         let limit = |k: &str| -> Result<Option<u32>, Problem> {
@@ -228,9 +233,7 @@ pub(crate) fn parse(v: &Value) -> Result<Vec<Listener>, Problem> {
         if proto == ListenProto::Udp
             && (max_connections.is_some() || max_connections_per_address.is_some())
         {
-            return Err(bad(format!(
-                "{who}: the connection limits aren't for udp"
-            )));
+            return Err(bad(format!("{who}: the connection limits aren't for udp")));
         }
         if max_connections == Some(0) {
             return Err(bad(format!("{who}: `maxConnections` must be at least 1")));
@@ -339,11 +342,7 @@ impl CertInfo {
 /// REQ: API-902 (design 1.2) — one certificate and key pair: each path absolute, a regular file and
 /// not a symlink, not a path the T23.2 rules deny, readable; the certificate parses and the key
 /// matches it. The contents are never returned.
-pub(crate) fn check_cert(
-    rules: &PathRules,
-    t: &TlsFiles,
-    now: u64,
-) -> Result<CertInfo, String> {
+pub(crate) fn check_cert(rules: &PathRules, t: &TlsFiles, now: u64) -> Result<CertInfo, String> {
     for (what, p) in [("certificate", t.cert.as_str()), ("key", t.key.as_str())] {
         let path = std::path::Path::new(p);
         if !path.is_absolute() {
@@ -399,9 +398,9 @@ pub(crate) fn weakening_reason(
         if has(new, o) {
             continue;
         }
-        let still_encrypted = new
-            .iter()
-            .any(|n| n.proto.needs_tls() && n.addr.ip().to_canonical() == o.addr.ip().to_canonical());
+        let still_encrypted = new.iter().any(|n| {
+            n.proto.needs_tls() && n.addr.ip().to_canonical() == o.addr.ip().to_canonical()
+        });
         let plain_stays = new.iter().any(|n| {
             !n.proto.needs_tls() && n.addr.ip().to_canonical() == o.addr.ip().to_canonical()
         });
@@ -473,12 +472,17 @@ fn internal_ports(cfg: &Config) -> Vec<(SocketAddr, &'static str, &'static str)>
 }
 
 fn old_has(running: &[Listener], l: &Listener) -> bool {
-    running.iter().any(|x| x.proto == l.proto && x.addr == l.addr)
+    running
+        .iter()
+        .any(|x| x.proto == l.proto && x.addr == l.addr)
 }
 
 /// A line is `kept` when the node already runs the same listener with the same settings.
 fn status(running: &[Listener], l: &Listener) -> &'static str {
-    match running.iter().find(|x| x.proto == l.proto && x.addr == l.addr) {
+    match running
+        .iter()
+        .find(|x| x.proto == l.proto && x.addr == l.addr)
+    {
         None => "added",
         Some(r) if same_settings(r, l) => "kept",
         Some(_) => "changed",
@@ -570,17 +574,31 @@ pub(crate) fn evaluate(
     let mut certs: Vec<(TlsFiles, Result<CertInfo, String>)> = Vec::new();
     for l in &new {
         let Some(t) = &l.tls else { continue };
-        if certs.iter().any(|(c, _)| c == t) {
-            continue;
-        }
-        let r = check_cert(&rules, t, env.now);
+        // A listener the node already runs as it is is judged by a warning, not a refusal: its files
+        // are the node's business today, and a change elsewhere must not wait for them.
+        let kept = status(running, l) == "kept";
+        let pos = certs.iter().position(|(c, _)| c == t);
+        let r = match pos {
+            Some(i) => certs[i].1.clone(),
+            None => check_cert(&rules, t, env.now),
+        };
         if let Err(why) = &r {
-            return Err(Problem::new(
-                Code::InvalidConfig,
-                format!("`listeners`: {}: {why}", name(l)),
-            ));
+            if !kept {
+                return Err(Problem::new(
+                    Code::InvalidConfig,
+                    format!("`listeners`: {}: {why}", name(l)),
+                ));
+            }
+            if pos.is_none() {
+                warnings.push(format!(
+                    "{} is kept, but its certificate can't be used now: {why}.",
+                    name(l)
+                ));
+            }
         }
-        certs.push((t.clone(), r));
+        if pos.is_none() {
+            certs.push((t.clone(), r));
+        }
     }
     let warn_days = i64::from(cfg.probe.cert_warn_days);
     for (t, r) in &certs {
@@ -742,9 +760,9 @@ pub(crate) fn evaluate(
         }
     }
     if !site.is_empty() {
-        let others_up = members.iter().any(|m| {
-            m.up && !m.witness && m.site == site && m.id != node && m.name != node
-        });
+        let others_up = members
+            .iter()
+            .any(|m| m.up && !m.witness && m.site == site && m.id != node && m.name != node);
         if !members.is_empty() && !others_up {
             warnings.push(format!(
                 "This node is the only healthy resolver in site {site}: clients there have no other one while the change settles."
@@ -764,7 +782,10 @@ pub(crate) fn evaluate(
         effect.push_str("Keeps every current listener until you confirm. ");
     }
     if !removes.is_empty() {
-        effect.push_str(&format!("Removes {} when you confirm. ", removes.join(", ")));
+        effect.push_str(&format!(
+            "Removes {} when you confirm. ",
+            removes.join(", ")
+        ));
     }
     if effect.is_empty() {
         effect = format!(

@@ -704,7 +704,7 @@ async function stubListeners(phase: { v: 'idle' | 'pending' | 'rolled_back' | 'c
   await page.route('**/api/v1/guarded/listen/preview', async (route) => {
     seen.preview = route.request().postDataJSON();
     const node = 'home-dns';
-    const listeners = (seen.preview?.value?.listeners ?? []).map((l) => ({ change: 'added', listener: `${l.proto}://${l.addr}`, gate: undefined }));
+    const listeners = (seen.preview?.value?.listeners ?? []).map((l) => ({ change: ['udp://192.168.1.2:53', 'tcp://192.168.1.2:53'].includes(`${l.proto}://${l.addr}`) ? 'kept' : 'added', listener: `${l.proto}://${l.addr}`, gate: undefined }));
     await route.fulfill({
       json: {
         previewId: 'stub', setting: 'listen', node, nodes: [node], mode: 'window', phrase: `${node} listen`, effect: 'Adds a listener.', weakening: false,
@@ -758,7 +758,7 @@ test('api_902 listener change rolls back without confirmation', async () => {
     await expect(box.getByTestId('listeners-row')).toHaveCount(2);
     await expect(box.getByTestId('guarded-start-listen')).toBeDisabled();
     await reviewListen(box);
-    await expect(box.getByTestId('guarded-listener')).toContainText('tcp://192.168.1.2:5300');
+    await expect(box.getByTestId('guarded-listener').last()).toContainText('added tcp://192.168.1.2:5300');
     // The whole list goes to the server, the new listener last.
     expect(seen.preview?.value?.listeners?.map((l) => `${l.proto}://${l.addr}`)).toEqual(['udp://192.168.1.2:53', 'tcp://192.168.1.2:53', 'tcp://192.168.1.2:5300']);
     await box.getByTestId('guarded-apply').click();
@@ -846,6 +846,7 @@ test('api_902 listener editor is read-only when set by file', async () => {
 test('api_902 operator sees listeners without controls', async () => {
   const who = await operatorPage('operator1', 'operator long password', 'operator');
   try {
+    await expect(who.p.getByRole('heading', { name: 'Sign in' })).toHaveCount(0); // signed in before the page moves
     await who.p.goto('/#/settings?tab=system');
     await who.p.reload();
     const box = who.p.getByTestId('listeners-card');

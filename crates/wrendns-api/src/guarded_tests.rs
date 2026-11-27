@@ -142,10 +142,19 @@ fn api_902_plan_naming_listen_is_refused() {
     assert!(names("/api/v1/config/listen", None));
     assert!(names("/api/v1/config/listen/0/addr?x=1", None));
     assert!(names("/api/v1/config/listen.tls", None));
-    assert!(names("/api/v1/x", Some(&json!({"listen": [{"proto": "udp"}]}))));
-    assert!(names("/api/v1/x", Some(&json!({"listen.addr": "0.0.0.0:53"}))));
+    assert!(names(
+        "/api/v1/x",
+        Some(&json!({"listen": [{"proto": "udp"}]}))
+    ));
+    assert!(names(
+        "/api/v1/x",
+        Some(&json!({"listen.addr": "0.0.0.0:53"}))
+    ));
     assert!(!names("/api/v1/clients/listening", None));
-    assert!(!names("/api/v1/config/entries/upstream", Some(&json!({"listening": 1}))));
+    assert!(!names(
+        "/api/v1/config/entries/upstream",
+        Some(&json!({"listening": 1}))
+    ));
     assert!(!names("/api/v1/x", Some(&json!([{"listen": 1}]))));
     let plans = crate::plans::Plans::default();
     for (path, body) in [

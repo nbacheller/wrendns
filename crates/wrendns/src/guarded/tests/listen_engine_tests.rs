@@ -40,26 +40,49 @@ fn access_value() -> Value {
 async fn api_902_listen_change_staged_proved_and_committed() {
     let n = solo();
     let a = admin("alice", 5);
-    let p = preview(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap();
+    let p = preview(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     assert_eq!(p.mode, "window");
     assert_eq!(p.phrase, "pi-a listen");
     assert!(!p.weakening);
-    assert!(p.listeners.iter().any(|x| x.change == "added" && x.listener == "udp://127.0.0.1:5300"));
+    assert!(
+        p.listeners
+            .iter()
+            .any(|x| x.change == "added" && x.listener == "udp://127.0.0.1:5300")
+    );
     let r = n
         .engine
-        .apply(&a, "listen", apply_req(&p, value(&[l("udp", "127.0.0.1:5300")])))
+        .apply(
+            &a,
+            "listen",
+            apply_req(&p, value(&[l("udp", "127.0.0.1:5300")])),
+        )
         .await
         .unwrap();
     assert_eq!(r.status, "pending");
     assert_eq!(r.proof.as_deref(), Some("new_socket"));
-    assert!(r.new_address.is_none(), "nothing to open: the API did not move");
+    assert!(
+        r.new_address.is_none(),
+        "nothing to open: the API did not move"
+    );
     let lists = n.host.staged_lists.lock().unwrap().clone();
     assert_eq!(lists.len(), 1);
     assert_eq!(lists[0].len(), 5);
-    assert!(lists[0].iter().all(|x| x.require_client_id.is_none() && !x.proxy_protocol));
-    assert!(store::for_node(&n.engine.state, "pi-a").is_empty(), "nothing is written yet");
+    assert!(
+        lists[0]
+            .iter()
+            .all(|x| x.require_client_id.is_none() && !x.proxy_protocol)
+    );
+    assert!(
+        store::for_node(&n.engine.state, "pi-a").is_empty(),
+        "nothing is written yet"
+    );
     let (pid, token) = ids(&r);
     tokio::task::yield_now().await;
     let view = n.engine.pending_view(&a, &pid, None).unwrap();
@@ -68,7 +91,10 @@ async fn api_902_listen_change_staged_proved_and_committed() {
     let done = n.engine.confirm(&a, &pid, token).await.unwrap();
     assert_eq!(done.outcome, "confirmed");
     assert_eq!(n.host.commits.load(Ordering::SeqCst), 1);
-    assert!(n.host.reloads.load(Ordering::SeqCst) >= 1, "the reload adopts the staged sockets");
+    assert!(
+        n.host.reloads.load(Ordering::SeqCst) >= 1,
+        "the reload adopts the staged sockets"
+    );
     assert_eq!(n.host.aborts.load(Ordering::SeqCst), 0);
     let e = store::for_node(&n.engine.state, "pi-a");
     assert_eq!(e.len(), 1);
@@ -81,9 +107,14 @@ async fn api_902_listen_change_staged_proved_and_committed() {
 async fn api_902_listen_cancel_aborts_the_staged_sockets() {
     let n = solo();
     let a = admin("alice", 5);
-    let r = change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap();
+    let r = change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     let (pid, _) = ids(&r);
     let res = n.engine.cancel(&a, &pid).await.unwrap();
     assert_eq!(res.reason.as_deref(), Some("cancelled"));
@@ -97,13 +128,21 @@ async fn api_902_listen_cancel_aborts_the_staged_sockets() {
 async fn api_902_listen_expiry_rolls_back() {
     let n = solo();
     let a = admin("alice", 5);
-    change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap();
+    change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_secs(61)).await;
     assert!(n.engine.status_local().pending.is_none());
     assert_eq!(n.host.aborts.load(Ordering::SeqCst), 1);
-    assert_eq!(n.audits("settings.guarded_rolled_back")[0]["reason"], "expired");
+    assert_eq!(
+        n.audits("settings.guarded_rolled_back")[0]["reason"],
+        "expired"
+    );
 }
 
 // A failed bind changes nothing: the apply answers with the address and the OS error, audits
@@ -116,13 +155,25 @@ async fn api_902_listen_bind_failure_changes_nothing() {
         reason: "bind_failed",
         detail: "udp 203.0.113.9:5300: Cannot assign requested address".to_owned(),
     });
-    let e = change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap_err();
+    let e = change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code, Code::Conflict);
-    assert!(e.detail.contains("Cannot assign requested address"), "{}", e.detail);
+    assert!(
+        e.detail.contains("Cannot assign requested address"),
+        "{}",
+        e.detail
+    );
     assert!(n.engine.status_local().pending.is_none());
-    assert_eq!(n.audits("settings.guarded_rolled_back")[0]["reason"], "bind_failed");
+    assert_eq!(
+        n.audits("settings.guarded_rolled_back")[0]["reason"],
+        "bind_failed"
+    );
     assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
 }
 
@@ -136,19 +187,31 @@ async fn api_902_listen_commit_failure_maps_the_reason() {
     ] {
         let n = solo();
         let a = admin("alice", 5);
-        let r = change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-            .await
-            .unwrap();
+        let r = change(
+            &n.engine,
+            &a,
+            "listen",
+            value(&[l("udp", "127.0.0.1:5300")]),
+        )
+        .await
+        .unwrap();
         let (pid, token) = ids(&r);
         *n.host.commit_error.lock().unwrap() = Some(crate::server::WindowError {
-            reason: if reason == "cancelled" { "cancelled" } else { "commit_failed" },
+            reason: if reason == "cancelled" {
+                "cancelled"
+            } else {
+                "commit_failed"
+            },
             detail: detail.to_owned(),
         });
         let reloads = n.host.reloads.load(Ordering::SeqCst);
         let e = n.engine.confirm(&a, &pid, token).await.unwrap_err();
         assert_eq!(e.code, Code::Internal, "{reason}");
         assert!(n.engine.status_local().pending.is_none(), "{reason}");
-        assert!(store::for_node(&n.engine.state, "pi-a").is_empty(), "{reason}: the entry is removed");
+        assert!(
+            store::for_node(&n.engine.state, "pi-a").is_empty(),
+            "{reason}: the entry is removed"
+        );
         assert!(
             n.host.reloads.load(Ordering::SeqCst) >= reloads + 2,
             "{reason}: reloaded to apply and again to put the previous list back"
@@ -157,7 +220,10 @@ async fn api_902_listen_commit_failure_maps_the_reason() {
             n.audits("settings.guarded_rolled_back").last().unwrap()["reason"],
             reason
         );
-        assert!(n.audits("settings.guarded").is_empty(), "{reason}: nothing confirmed");
+        assert!(
+            n.audits("settings.guarded").is_empty(),
+            "{reason}: nothing confirmed"
+        );
     }
 }
 
@@ -166,13 +232,21 @@ async fn api_902_listen_commit_failure_maps_the_reason() {
 async fn api_902_listen_failed_reload_at_commit_rolls_back() {
     let n = solo();
     let a = admin("alice", 5);
-    let r = change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap();
+    let r = change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     let (pid, token) = ids(&r);
     n.host.reload_ok.store(false, Ordering::SeqCst);
     assert!(n.engine.confirm(&a, &pid, token).await.is_err());
-    assert_eq!(n.audits("settings.guarded_rolled_back")[0]["reason"], "commit_failed");
+    assert_eq!(
+        n.audits("settings.guarded_rolled_back")[0]["reason"],
+        "commit_failed"
+    );
     assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
 }
 
@@ -222,7 +296,11 @@ async fn api_902_would_disconnect_refused() {
         .await
         .unwrap_err();
     assert_eq!(e.code, Code::WouldDisconnectYou);
-    assert!(e.detail.contains("no UDP listener on port 53 for IPv4"), "{}", e.detail);
+    assert!(
+        e.detail.contains("no UDP listener on port 53 for IPv4"),
+        "{}",
+        e.detail
+    );
     assert!(n.engine.status_local().pending.is_none());
 }
 
@@ -233,17 +311,30 @@ async fn api_902_listen_access_refused_during_a_listen_window() {
     let n = solo();
     let a = admin("alice", 5);
     // Before the window it is fine.
-    assert!(preview(&n.engine, &a, "listen-access", access_value()).await.is_ok());
-    let r = change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap();
+    assert!(
+        preview(&n.engine, &a, "listen-access", access_value())
+            .await
+            .is_ok()
+    );
+    let r = change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     let (pid, _) = ids(&r);
     assert_eq!(
         code(preview(&n.engine, &a, "listen-access", access_value()).await),
         Code::GuardedChangePending
     );
     n.engine.cancel(&a, &pid).await.unwrap();
-    assert!(preview(&n.engine, &a, "listen-access", access_value()).await.is_ok());
+    assert!(
+        preview(&n.engine, &a, "listen-access", access_value())
+            .await
+            .is_ok()
+    );
 }
 
 // A preview made before the window opened cannot sneak in at apply either.
@@ -251,12 +342,23 @@ async fn api_902_listen_access_refused_during_a_listen_window() {
 async fn api_902_listen_access_apply_refused_during_a_listen_window() {
     let n = solo();
     let a = admin("alice", 5);
-    let early = preview(&n.engine, &a, "listen-access", access_value()).await.unwrap();
-    change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
+    let early = preview(&n.engine, &a, "listen-access", access_value())
         .await
         .unwrap();
+    change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        code(n.engine.apply(&a, "listen-access", apply_req(&early, access_value())).await),
+        code(
+            n.engine
+                .apply(&a, "listen-access", apply_req(&early, access_value()))
+                .await
+        ),
         Code::GuardedChangePending
     );
 }
@@ -266,11 +368,24 @@ async fn api_902_listen_access_apply_refused_during_a_listen_window() {
 async fn api_902_listen_one_pending_change_per_node() {
     let n = solo();
     let a = admin("alice", 5);
-    change(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5300")]))
-        .await
-        .unwrap();
+    change(
+        &n.engine,
+        &a,
+        "listen",
+        value(&[l("udp", "127.0.0.1:5300")]),
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        code(preview(&n.engine, &a, "listen", value(&[l("udp", "127.0.0.1:5301")])).await),
+        code(
+            preview(
+                &n.engine,
+                &a,
+                "listen",
+                value(&[l("udp", "127.0.0.1:5301")])
+            )
+            .await
+        ),
         Code::GuardedChangePending
     );
 }
@@ -368,17 +483,25 @@ async fn api_902_listen_preview_stale_when_the_host_changed() {
             how: "test".to_owned(),
         },
     );
-    let r = change(&engine, &a, "t-win", json!({"label": "x"})).await.unwrap();
+    let r = change(&engine, &a, "t-win", json!({"label": "x"}))
+        .await
+        .unwrap();
     let (pid, token) = ids(&r);
     guard.stale.store(true, Ordering::SeqCst);
     let e = engine.confirm(&a, &pid, token.clone()).await.unwrap_err();
     assert_eq!(e.code, Code::PreviewStale);
     assert!(e.detail.contains("addresses changed"), "{}", e.detail);
-    assert!(engine.status_local().pending.is_some(), "the window runs on");
+    assert!(
+        engine.status_local().pending.is_some(),
+        "the window runs on"
+    );
     assert!(store::for_node(&engine.state, "pi-a").is_empty());
     // The host is back to what the stage saw: the same confirm now works.
     guard.stale.store(false, Ordering::SeqCst);
-    assert_eq!(engine.confirm(&a, &pid, token).await.unwrap().outcome, "confirmed");
+    assert_eq!(
+        engine.confirm(&a, &pid, token).await.unwrap().outcome,
+        "confirmed"
+    );
 }
 
 // REQ: API-902, CLU-006 (design 3) — a listener change made at the primary for another node is
@@ -452,6 +575,12 @@ fn api_902_listen_guard_notices_changed_host_facts() {
         private,
     );
     assert!(g.stale().is_none());
-    let g = super::super::listen::ListenGuard::new(host, "pi-a".to_owned(), String::new(), private(), public);
+    let g = super::super::listen::ListenGuard::new(
+        host,
+        "pi-a".to_owned(),
+        String::new(),
+        private(),
+        public,
+    );
     assert!(g.stale().unwrap().contains("addresses changed"));
 }
