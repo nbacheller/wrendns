@@ -44,6 +44,7 @@ fn weaken_flag(_old: &Value, new: &Value) -> bool {
 }
 
 mod dns_proof_tests;
+mod listen_engine_tests;
 
 macro_rules! row {
     ($id:literal, $paths:expr, $mode:expr, $proof:expr, $weak:expr) => {
@@ -264,6 +265,10 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN_ACCESS).unwrap(),
                 applier: Arc::new(super::appliers::ListenAccess),
             },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
+                applier: Arc::new(super::listen::Listen),
+            },
         ])
         .collect()
 }
@@ -321,6 +326,12 @@ struct Fake {
     audit_to_state: AtomicBool,
     /// Whether a replica's entry reaches it in time (`Host::wait_applied`).
     arrives: AtomicBool,
+    /// T27.14c: the lists `stage_listeners` was given, and what the staged sockets are made to do.
+    staged_lists: Mutex<Vec<Vec<wrendns_config::Listener>>>,
+    stage_error: Mutex<Option<crate::server::WindowError>>,
+    commit_error: Mutex<Option<crate::server::WindowError>>,
+    commits: AtomicUsize,
+    aborts: AtomicUsize,
 }
 
 fn key_of(node: &str) -> [u8; 32] {
@@ -489,6 +500,42 @@ impl Host for Fake {
             .unwrap_or(Ok(Kind::Answered));
         Box::pin(std::future::ready(r))
     }
+    fn stage_listeners(
+        &self,
+        list: Vec<wrendns_config::Listener>,
+    ) -> BoxFuture<Result<Vec<crate::server::StagedListener>, crate::server::WindowError>> {
+        if let Some(e) = self.stage_error.lock().unwrap().clone() {
+            return Box::pin(std::future::ready(Err(e)));
+        }
+        let running = self.running_config();
+        let staged = list
+            .iter()
+            .filter(|l| {
+                !running
+                    .listen
+                    .iter()
+                    .any(|r| r.proto == l.proto && r.addr == l.addr)
+            })
+            .map(|l| crate::server::StagedListener {
+                proto: l.proto,
+                addr: l.addr,
+                bound: l.addr,
+                proof: false,
+                evidence: Evidence::new(Vec::new()),
+            })
+            .collect();
+        self.staged_lists.lock().unwrap().push(list);
+        Box::pin(std::future::ready(Ok(staged)))
+    }
+    fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        let r = self.commit_error.lock().unwrap().clone();
+        Box::pin(std::future::ready(r.map_or(Ok(()), Err)))
+    }
+    fn abort_listeners(&self) -> BoxFuture<()> {
+        self.aborts.fetch_add(1, Ordering::SeqCst);
+        Box::pin(std::future::ready(()))
+    }
     fn proof_socket(&self, addr: SocketAddr) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>> {
         if self.bind_fails.load(Ordering::SeqCst) {
             return Box::pin(std::future::ready(Err("address already in use".to_owned())));
@@ -564,6 +611,11 @@ fn node_on(
         can_sign,
         audit_to_state: AtomicBool::new(false),
         arrives: AtomicBool::new(true),
+        staged_lists: Mutex::default(),
+        stage_error: Mutex::default(),
+        commit_error: Mutex::default(),
+        commits: AtomicUsize::new(0),
+        aborts: AtomicUsize::new(0),
     });
     let engine = Engine::new(
         name.to_owned(),
