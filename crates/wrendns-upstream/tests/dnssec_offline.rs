@@ -1092,3 +1092,67 @@ async fn nfr_004_offline_slow_upstream_ends_within_two_budgets() {
     assert_eq!(r.verdict, Verdict::Bogus, "the forged answer, still bogus");
     assert_eq!(stats.insecure.load(Ordering::Relaxed), 0);
 }
+
+/// REQ: DNS-906 (T40.5) - a validator that follows the anchors with RFC 5011 validates from the
+/// rollover's trusted set (no file), and a reading of the fixture root's DNSKEY set through the
+/// upstream group, signed by that key, changes nothing and is recorded. A set no trusted key
+/// signed is refused.
+#[tokio::test]
+async fn dns_906_offline_validator_follows_the_rollover_set() {
+    use wrendns_upstream::rfc5011::{KeyEntry, KeyState, Mode, Rollover};
+    let z = Arc::new(zone());
+    let asked = Arc::new(AtomicUsize::new(0));
+    let addr = serve(Arc::clone(&z), Arc::clone(&asked)).await;
+    let ep = Endpoint::parse(&format!("udp://{addr}")).unwrap();
+    let up = Upstream::build(
+        1,
+        "root",
+        ep,
+        &UpstreamOptions::default(),
+        &TlsOptions::default(),
+    )
+    .unwrap();
+    let group = Arc::new(Group::new(
+        "default",
+        vec![Arc::new(up)],
+        Strategy::Failover,
+    ));
+    let key = |bytes: &[u8]| KeyEntry {
+        algorithm: 15,
+        flags: 257,
+        public: bytes.to_vec(),
+        state: KeyState::Valid,
+        since: 0,
+    };
+    let rollover = Arc::new(Rollover::from_keys(vec![key(&z.key[4..])]));
+    let v = Validator::new(&[], Arc::new(Stats::default())).with_rollover(&rollover);
+    assert_eq!(rollover.mode(), Mode::Following);
+    let budget = Duration::from_secs(5);
+    let r = v
+        .resolve(&group, question("a", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.verdict,
+        Verdict::Secure,
+        "validated from the rollover's keys"
+    );
+
+    // A reading of the root's keys: the set is signed by the trusted key, nothing changes.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let changes = rollover.read_through(&group, budget, now).await.unwrap();
+    assert!(changes.is_empty(), "{changes:?}");
+    let st = rollover.status();
+    assert_eq!(st.last_reading, Some(now));
+    assert_eq!(st.anchors.len(), 1);
+    assert_eq!(st.anchors[0].state, KeyState::Valid);
+
+    // With a different trusted key the same answer authenticates nothing.
+    let other = Arc::new(Rollover::from_keys(vec![key(&[7u8; 32])]));
+    let e = other.read_through(&group, budget, now).await.unwrap_err();
+    assert!(e.contains("no trusted key"), "{e}");
+    assert!(other.status().last_error.is_some());
+}

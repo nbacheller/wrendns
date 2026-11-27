@@ -159,6 +159,50 @@ test.describe('settings from T27.11', () => {
     }
   });
 
+  test('dns_906 the card lists the root trust anchors and a key in hold-down', async ({ browser }) => {
+    // REQ: DNS-906 (T40.5) - every node's anchors with their RFC 5011 state; the answer is mocked (the
+    // e2e server has validation off and no root to read).
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
+    try {
+      const day = 86_400;
+      const now = Math.floor(Date.now() / 1000);
+      await page.route('**/api/v1/dnssec/anchors', (r) =>
+        r.fulfill({
+          json: {
+            items: [
+              {
+                node: 'pi-a',
+                mode: 'following',
+                lastReadingS: now - 3600,
+                keys: [
+                  { keyTag: 20326, algorithm: 8, flags: 257, state: 'valid' },
+                  { keyTag: 38696, algorithm: 8, flags: 257, state: 'valid' },
+                  { keyTag: 11111, algorithm: 8, flags: 257, state: 'add_pend', sinceS: now - 10 * day, trustedAtS: now + 20 * day },
+                ],
+              },
+              { node: 'pi-b', mode: 'file', keys: [] },
+              { node: 'pi-c', mode: 'unsupported', keys: [] },
+            ],
+          },
+        }),
+      );
+      await page.reload();
+      const card = page.getByTestId('dnssec-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      const nodes = card.getByTestId('anchors-node');
+      await expect(nodes).toHaveCount(3);
+      await expect(nodes.nth(0).getByTestId('anchor-key')).toHaveCount(3);
+      const pending = nodes.nth(0).locator('[data-state="add_pend"]');
+      await expect(pending).toContainText('11111');
+      await expect(pending).toContainText('in hold-down');
+      await expect(pending).toContainText('trusted from');
+      await expect(nodes.nth(1)).toContainText('trust_anchors_file');
+      await expect(nodes.nth(2)).toContainText('older build');
+    } finally {
+      await page.context().close();
+    }
+  });
+
   test('dns_011 add a negative trust anchor', async ({ browser }) => {
     // REQ: DNS-011 (T27.11) — DNSSEC on Settings → Query handling: a domain not validated, checked then saved.
     const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
@@ -171,6 +215,31 @@ test.describe('settings from T27.11', () => {
       await expect(card.getByTestId('dnssec-preview')).toBeVisible();
       await card.getByRole('button', { name: 'Apply' }).click();
       await expect(card.getByTestId('dnssec-values')).toContainText('lab.example');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('dns_907 switch aggressive NSEC off and back on', async ({ browser }) => {
+    // REQ: DNS-907 (T40.6, ADR-1105) — the aggressive_nsec switch is checked, saved, and put back.
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
+    try {
+      const card = page.getByTestId('dnssec-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('dnssec-edit').click();
+      const sw = card.getByLabel('Answer from proven ranges');
+      const original = await sw.isChecked();
+      await sw.setChecked(!original);
+      await card.getByRole('button', { name: 'Check' }).click();
+      await expect(card.getByTestId('dnssec-preview')).toBeVisible();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('dnssec-values')).toContainText(original ? 'off' : 'on');
+      await card.getByTestId('dnssec-edit').click();
+      await expect(sw).toBeChecked({ checked: !original });
+      await sw.setChecked(original);
+      await card.getByRole('button', { name: 'Check' }).click();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('dnssec-edit')).toBeVisible();
     } finally {
       await page.context().close();
     }

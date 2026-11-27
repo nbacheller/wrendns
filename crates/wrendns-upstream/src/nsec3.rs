@@ -18,7 +18,8 @@
 //! §6). A name below a delegation or a DNAME is left to the child zone.
 //!
 //! The walk starts at the zone apex and goes down while the names match, so a random name costs
-//! two hashes (the apex and the next closer name) plus one for the wildcard, whatever its depth.
+//! four hash chains (the name itself, the apex, the next closer name and the wildcard), whatever
+//! its depth.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;

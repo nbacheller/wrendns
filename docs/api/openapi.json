@@ -5851,7 +5851,7 @@
         "tags": [
           "config"
         ],
-        "summary": "REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.",
+        "summary": "REQ: DNS-011 (T27.11, ADR-1006), DNS-907 (T40.6, ADR-1105) — `[dnssec]` `mode`,\n`negative_trust_anchors` and `aggressive_nsec`.",
         "description": "The validation mode and the domains it skips apply on every node within seconds; the files' fields win.",
         "operationId": "put_dnssec_settings",
         "parameters": [
@@ -5979,6 +5979,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dnssec/anchors": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "The root trust anchors of every node.",
+        "description": "DNSSEC validation starts from the root's keys. The root changes its key-signing key now and\nthen, and each node follows the change on its own (RFC 5011): a new key the root publishes is\ntrusted only after it has been seen for a 30-day hold-down, and a key the root revokes stops\nbeing trusted at once. One entry per node: the keys with their states (`valid`, `add_pend`,\n`missing`, `revoked`), when each entered its state, when a pending key becomes trusted, and\nwhen the root was last read. A node that uses `trust_anchors_file` shows `mode: file` and\nfollows nothing. A node that runs an older build shows `mode: unsupported`. Example:\n`GET /api/v1/dnssec/anchors`.",
+        "operationId": "anchors",
+        "responses": {
+          "200": {
+            "description": "One entry per node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_TrustAnchorStatus"
                 }
               }
             }
@@ -27287,6 +27309,78 @@
           }
         }
       },
+      "Items_TrustAnchorStatus": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,\nREQ: DNS-906).",
+              "required": [
+                "mode",
+                "keys"
+              ],
+              "properties": {
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrustAnchorKey"
+                  },
+                  "description": "The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`."
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the last reading failed, if it did."
+                },
+                "lastReadingS": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "When the root's keys were last read (Unix seconds).",
+                  "minimum": 0
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "`following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of\n`trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`\n(the node runs a build that does not know this read)."
+                },
+                "nextReadingS": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "When the next reading is due (Unix seconds), while following.",
+                  "minimum": 0
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node (cluster nodes only)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_UpstreamChecks": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -34948,6 +35042,111 @@
           "secretBase32": {
             "type": "string",
             "description": "For manual entry in an authenticator app."
+          }
+        }
+      },
+      "TrustAnchorKey": {
+        "type": "object",
+        "description": "One root trust anchor a node tracks (`GET /api/v1/dnssec/anchors`, REQ: DNS-906).",
+        "required": [
+          "keyTag",
+          "algorithm",
+          "flags",
+          "state"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The DNSSEC algorithm number (8 RSA/SHA-256, 13 ECDSA P-256, 15 Ed25519).",
+            "minimum": 0
+          },
+          "flags": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The DNSKEY flags (257 a key-signing key, 385 once revoked).",
+            "minimum": 0
+          },
+          "keyTag": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The RFC 4034 key tag.",
+            "minimum": 0
+          },
+          "sinceS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the key entered this state (Unix seconds); absent for a built-in anchor never changed.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`valid` (a trust anchor), `add_pend` (seen, in its hold-down, not trusted yet),\n`missing` (trusted, but the last reading did not list it) or `revoked` (never trusted)."
+          },
+          "trustedAtS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For a pending key: when its hold-down ends and it becomes a trust anchor (Unix seconds).",
+            "minimum": 0
+          }
+        }
+      },
+      "TrustAnchorStatus": {
+        "type": "object",
+        "description": "One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,\nREQ: DNS-906).",
+        "required": [
+          "mode",
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrustAnchorKey"
+            },
+            "description": "The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last reading failed, if it did."
+          },
+          "lastReadingS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the root's keys were last read (Unix seconds).",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "`following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of\n`trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`\n(the node runs a build that does not know this read)."
+          },
+          "nextReadingS": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the next reading is due (Unix seconds), while following.",
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (cluster nodes only)."
           }
         }
       },

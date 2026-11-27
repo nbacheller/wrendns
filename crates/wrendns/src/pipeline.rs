@@ -642,6 +642,9 @@ pub(crate) struct Pipeline {
     dnssec: ArcSwapOption<Dnssec>,
     /// Validation counters, kept across reloads.
     pub(crate) dnssec_stats: Arc<wrendns_upstream::dnssec::Stats>,
+    /// REQ: DNS-906 (T40.5) — the root trust anchors RFC 5011 keeps, shared by every validator
+    /// and kept across reloads.
+    pub(crate) rollover: Arc<wrendns_upstream::rfc5011::Rollover>,
     /// REQ: OBS-019 (T11.4) — per-upstream answer quality (EDE codes, DNSSEC verdicts, second
     /// opinions), kept across reloads.
     pub(crate) quality: Arc<crate::upstream_checks::Quality>,
@@ -744,6 +747,7 @@ impl Pipeline {
             rt: tokio::runtime::Handle::try_current().ok(),
             dnssec: ArcSwapOption::empty(),
             dnssec_stats: Arc::default(),
+            rollover: Arc::default(),
             quality: Arc::default(),
             checker: ArcSwapOption::empty(),
         })
@@ -803,10 +807,21 @@ impl Pipeline {
         }
     }
 
+    /// REQ: DNS-906 (T40.5) — the upstream group the root DNSKEY set is read through: the
+    /// default group, else the first.
+    pub(crate) fn rollover_group(&self) -> Option<Arc<wrendns_upstream::Group>> {
+        let st = self.state.load();
+        st.router
+            .group("default")
+            .or_else(|| st.router.group_by_view(0))
+            .cloned()
+    }
+
     pub(crate) fn set_dnssec(&self, cfg: &wrendns_config::Config) {
         use wrendns_config::DnssecMode;
         let permissive = match cfg.dnssec.mode {
             DnssecMode::Off => {
+                self.rollover.set_mode(wrendns_upstream::rfc5011::Mode::Off);
                 self.dnssec.store(None);
                 return;
             }
@@ -828,6 +843,9 @@ impl Pipeline {
         let validator =
             wrendns_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats))
                 .with_anchors_file(cfg.dnssec.trust_anchors_file.as_deref())
+                // REQ: DNS-906 (T40.5) — the built-in anchors follow the root's key changes
+                // (RFC 5011) unless a file sets them.
+                .with_rollover(&self.rollover)
                 .with_aggressive_nsec(cfg.dnssec.aggressive_nsec);
         self.dnssec.store(Some(Arc::new(Dnssec {
             validator,
