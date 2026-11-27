@@ -28,17 +28,21 @@ pub enum Feature {
     /// A list with `format = "rpz"` (FLT-906, T40.9): an older member reads the unknown field as
     /// a refusal of the whole lists section (or, were it lenient, a zone file as plain lines).
     RpzLists,
+    /// The peer read of a node's root trust anchors (DNS-906, T40.5). Nothing is replicated: an
+    /// older member does not know the read, and is listed as not supporting it.
+    Rfc5011,
 }
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 6] = [
+    pub const ALL: [Feature; 7] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
         Self::Access,
         Self::Dnstap,
         Self::RpzLists,
+        Self::Rfc5011,
     ];
 
     /// The name a build announces the feature under (wire: Hello `features`).
@@ -50,6 +54,7 @@ impl Feature {
             Self::Access => "access",
             Self::Dnstap => "dnstap",
             Self::RpzLists => "rpz_lists",
+            Self::Rfc5011 => "rfc5011",
         }
     }
 
@@ -62,6 +67,7 @@ impl Feature {
             Self::Access => "the allowed networks",
             Self::Dnstap => "the dnstap settings",
             Self::RpzLists => "lists in the RPZ format",
+            Self::Rfc5011 => "the trust anchor read",
         }
     }
 }
@@ -76,12 +82,13 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joins the list in the commit that
 /// brings its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 5] = [
+const ANNOUNCED: [Feature; 6] = [
     Feature::Locations,
     Feature::PemSecrets,
     Feature::Access,
     Feature::Dnstap,
     Feature::RpzLists,
+    Feature::Rfc5011,
 ];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
@@ -213,7 +220,8 @@ mod tests {
                 "pem_secrets".to_owned(),
                 "access".to_owned(),
                 "dnstap".to_owned(),
-                "rpz_lists".to_owned()
+                "rpz_lists".to_owned(),
+                "rfc5011".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));

@@ -2278,6 +2278,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dnssec/anchors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The root trust anchors of every node.
+         * @description DNSSEC validation starts from the root's keys. The root changes its key-signing key now and
+         *     then, and each node follows the change on its own (RFC 5011): a new key the root publishes is
+         *     trusted only after it has been seen for a 30-day hold-down, and a key the root revokes stops
+         *     being trusted at once. One entry per node: the keys with their states (`valid`, `add_pend`,
+         *     `missing`, `revoked`), when each entered its state, when a pending key becomes trusted, and
+         *     when the root was last read. A node that uses `trust_anchors_file` shows `mode: file` and
+         *     follows nothing. A node that runs an older build shows `mode: unsupported`. Example:
+         *     `GET /api/v1/dnssec/anchors`.
+         */
+        get: operations["anchors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dnstap-settings/default": {
         parameters: {
             query?: never;
@@ -9897,6 +9924,35 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_TrustAnchorStatus: {
+            items: {
+                /** @description The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`. */
+                keys: components["schemas"]["TrustAnchorKey"][];
+                /** @description Why the last reading failed, if it did. */
+                lastError?: string | null;
+                /**
+                 * Format: int64
+                 * @description When the root's keys were last read (Unix seconds).
+                 */
+                lastReadingS?: number | null;
+                /**
+                 * @description `following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of
+                 *     `trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`
+                 *     (the node runs a build that does not know this read).
+                 */
+                mode: string;
+                /**
+                 * Format: int64
+                 * @description When the next reading is due (Unix seconds), while following.
+                 */
+                nextReadingS?: number | null;
+                /** @description The node (cluster nodes only). */
+                node?: string | null;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_UpstreamChecks: {
             items: {
                 /** @description Second opinions are on (`sample_every` > 0). */
@@ -13181,6 +13237,67 @@ export interface components {
             otpauthUrl: string;
             /** @description For manual entry in an authenticator app. */
             secretBase32: string;
+        };
+        /** @description One root trust anchor a node tracks (`GET /api/v1/dnssec/anchors`, REQ: DNS-906). */
+        TrustAnchorKey: {
+            /**
+             * Format: int32
+             * @description The DNSSEC algorithm number (8 RSA/SHA-256, 13 ECDSA P-256, 15 Ed25519).
+             */
+            algorithm: number;
+            /**
+             * Format: int32
+             * @description The DNSKEY flags (257 a key-signing key, 385 once revoked).
+             */
+            flags: number;
+            /**
+             * Format: int32
+             * @description The RFC 4034 key tag.
+             */
+            keyTag: number;
+            /**
+             * Format: int64
+             * @description When the key entered this state (Unix seconds); absent for a built-in anchor never changed.
+             */
+            sinceS?: number | null;
+            /**
+             * @description `valid` (a trust anchor), `add_pend` (seen, in its hold-down, not trusted yet),
+             *     `missing` (trusted, but the last reading did not list it) or `revoked` (never trusted).
+             */
+            state: string;
+            /**
+             * Format: int64
+             * @description For a pending key: when its hold-down ends and it becomes a trust anchor (Unix seconds).
+             */
+            trustedAtS?: number | null;
+        };
+        /**
+         * @description One node's root trust anchors and how they are kept (`GET /api/v1/dnssec/anchors`,
+         *     REQ: DNS-906).
+         */
+        TrustAnchorStatus: {
+            /** @description The keys, in no particular order. Empty when the mode is `file`, `off` or `unsupported`. */
+            keys: components["schemas"]["TrustAnchorKey"][];
+            /** @description Why the last reading failed, if it did. */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description When the root's keys were last read (Unix seconds).
+             */
+            lastReadingS?: number | null;
+            /**
+             * @description `following` (the built-in anchors, kept up to date by RFC 5011), `file` (the keys of
+             *     `trust_anchors_file`; rollover is off), `off` (DNSSEC validation is off) or `unsupported`
+             *     (the node runs a build that does not know this read).
+             */
+            mode: string;
+            /**
+             * Format: int64
+             * @description When the next reading is due (Unix seconds), while following.
+             */
+            nextReadingS?: number | null;
+            /** @description The node (cluster nodes only). */
+            node?: string | null;
         };
         /** @description REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time. */
         UnstableVoter: {
@@ -18163,6 +18280,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    anchors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One entry per node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_TrustAnchorStatus"];
                 };
             };
         };

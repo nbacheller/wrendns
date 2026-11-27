@@ -591,6 +591,7 @@ answer = "cdn.example"
 /// decided (its list and line), the DROP is answered REFUSED, a passthru is the exception to a
 /// wildcard, and each outcome agrees with what the pipeline does with the same query.
 #[test]
+#[allow(clippy::too_many_lines)] // one table of actions, each checked against the pipeline
 fn flt_906_rpz_rules_are_named_in_the_explanation() {
     let extra = r#"
 [[list]]
@@ -602,6 +603,8 @@ rules = [
   "*.wild.example CNAME .",
   "ok.wild.example CNAME rpz-passthru.",
   "walled.example A 192.0.2.7",
+  "nodata.example CNAME *.",
+  "local.example CNAME portal.example.net.",
 ]
 
 [[group]]
@@ -656,12 +659,47 @@ lists = ["policy"]
         3,
         "NXDOMAIN"
     );
+    // NODATA and a local CNAME: Explain names their records too (AC 1, every action).
+    for (name, line, record) in [
+        ("nodata.example", 6, "nodata.example CNAME *."),
+        (
+            "local.example",
+            7,
+            "local.example CNAME portal.example.net.",
+        ),
+    ] {
+        let e = ask(&p, &sources, name, home);
+        let rules = &e.filter.as_ref().unwrap().rules;
+        let winner = rules
+            .iter()
+            .find(|r| r.winner)
+            .unwrap_or_else(|| panic!("{name}: no winning rule in {rules:?}: {}", e.summary));
+        assert_eq!(winner.list, "policy", "{name}");
+        assert_eq!(winner.lines[0].line, line, "{name}: {:?}", winner.lines);
+        assert_eq!(winner.lines[0].text, record, "{name}");
+        // NODATA is answered at once; a CNAME to another name goes on to be resolved.
+        assert_eq!(
+            served(&p, name, home).is_some(),
+            name == "nodata.example",
+            "{name}"
+        );
+    }
     // The apex of the wildcard and the passthru name are not rewritten: both go on.
     for name in ["wild.example", "ok.wild.example"] {
         let e = ask(&p, &sources, name, home);
         assert_ne!(e.outcome, Outcome::Local, "{name}: {}", e.summary);
         assert!(served(&p, name, home).is_none(), "{name}");
     }
+    // The passthru is named as the rule that let the name through.
+    let e = ask(&p, &sources, "ok.wild.example", home);
+    let rules = &e.filter.as_ref().unwrap().rules;
+    assert!(
+        rules.iter().any(|r| r.list == "policy"
+            && r.lines
+                .iter()
+                .any(|l| l.text == "ok.wild.example CNAME rpz-passthru.")),
+        "{rules:?}"
+    );
 }
 
 /// REQ: FLT-906 (T40.9) - within one RPZ the most specific trigger decides: an exact name beats

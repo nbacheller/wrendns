@@ -334,7 +334,7 @@
       "summary": "An RPZ is a DNS zone file that says, name by name, what to do: answer no such name, answer no data, let the name through, refuse it, or answer with an address or another name. Choose the rpz format for a list that comes in that form; the Lists page shows how many of its records are not applied (response-IP, name-server and client triggers, and other record types).",
       "when": "A threat feed or a Pi-hole or Unbound setup gives you a zone file instead of a hosts or domain list.",
       "example": "A line like \"bad.example.com CNAME .\" makes bad.example.com answer no such name, and \"*.bad.example.com CNAME .\" does the same for every name below it but not for bad.example.com itself. A drop (rpz-drop.) is answered REFUSED so the device does not wait.",
-      "caution": "An rpz list must be a block list, and in a cluster it waits until every member's build can read the format. Triggers on the answer's address or on the name server are counted as not applied, never guessed at.",
+      "caution": "An rpz list must be a block list, and in a cluster it waits until every member's build can read the format. Triggers on the answer's address or on the name server are counted as not applied, never guessed at. A passthru turns rewrites off for the name in every list, and an ordinary allow list does not undo an RPZ answer: use a line like @@||bad.example.com^$dnsrewrite for that.",
       "docs": "response-policy-zones-rpz"
     },
     {
@@ -1612,6 +1612,16 @@
       "when": "You want to stop forged answers from reaching your devices, or to see how many would be refused before you turn refusing on.",
       "example": "A domain whose server is internal and not signed goes in the list of domains not validated, so its answers aren't refused.",
       "caution": "Validation takes effect on every node within seconds. A wrong trust anchor makes answers for a signed domain fail.",
+      "docs": "dnssec-validation"
+    },
+    {
+      "id": "trust-anchors",
+      "title": "Root trust anchors and key rollover",
+      "term": "Trust anchor (RFC 5011)",
+      "summary": "DNSSEC validation starts from the root's keys. The root changes its key now and then, and each node follows the change on its own: a new key is trusted only after it has been seen for 30 days, and a key the root revokes stops being trusted at once.",
+      "when": "The root has announced a key rollover and you want to see where each node stands, or a health reason says a key is in its hold-down or was revoked.",
+      "example": "A key marked 'new, in hold-down' with a date: from that day the node trusts it. Until then the old key keeps validating, so nothing changes for your devices.",
+      "caution": "A node that uses trust_anchors_file follows nothing: only the file's keys are trusted. A node on an older build can't report its anchors.",
       "docs": "dnssec-validation"
     },
     {

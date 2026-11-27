@@ -252,6 +252,13 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: DNS-906 (T40.5)
+        Tool {
+            name: "dnssec_trust_anchors",
+            description: "Read-only. The root trust anchors each node validates DNSSEC from, and how they are kept: the built-in keys followed by RFC 5011 (mode `following`), the keys of `trust_anchors_file` (mode `file`, rollover off), or off. Per node and key: the key tag, algorithm, state (`valid` a trust anchor, `add_pend` a new key the root published that is in its 30-day hold-down, `missing` trusted but not listed by the last reading, `revoked` never trusted), when it entered the state, when a pending key becomes trusted, and when the root was last read or why that failed. A node that runs an older build is `unsupported`. Use it to see whether a root key rollover is under way. Needs analytics:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("anchors".into(), "/api/v1/dnssec/anchors".into())]),
+        },
         // REQ: DNS-904 (T40.3)
         Tool {
             name: "trace_recursion",

@@ -53,7 +53,7 @@ async fn flt_906_an_rpz_list_waits_for_every_members_build() {
             .any(|l| l.name.as_str() == "policy"),
         "nothing was stored"
     );
-    // An ordinary list is never held, and neither is an RPZ list's removal.
+    // An ordinary list is never held (the removal of an RPZ list is checked further down).
     let (s, _, v) = ph
         .call(
             "PUT",
@@ -83,6 +83,29 @@ async fn flt_906_an_rpz_list_waits_for_every_members_build() {
     assert!(
         crate::server::reload_gate(&ph.src, &with, &with).is_ok(),
         "an unchanged RPZ list is not held again"
+    );
+    // Removing an RPZ list is never held: through the loader, the gate itself, and the API on a
+    // node that already stores one (a list saved before a member was downgraded).
+    assert!(crate::server::reload_gate(&ph.src, &with, &none).is_ok());
+    assert!(crate::upgrade_gate::enforce_rpz(Some(&old.primary), &with, &none).is_ok());
+    let stored = harness_in(
+        &format!(
+            "{DOMAIN}[[list]]\nname = \"policy\"\nurl = \"https://lists.example/policy.rpz\"\nformat = \"rpz\"\n"
+        ),
+        Some(Arc::clone(&old.primary)),
+    );
+    crate::http::serve_peers(&stored.src);
+    let (s, _, v) = stored.call("DELETE", "/api/v1/lists/policy", None).await;
+    assert!(s.is_success(), "{s} {v}");
+    assert!(
+        !stored
+            .src
+            .config
+            .load()
+            .list
+            .iter()
+            .any(|l| l.name.as_str() == "policy"),
+        "the list is gone"
     );
     // A standalone node has no members to wait for.
     assert!(crate::upgrade_gate::enforce_rpz(None, &none, &with).is_ok());

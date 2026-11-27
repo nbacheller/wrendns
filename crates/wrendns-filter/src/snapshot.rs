@@ -237,7 +237,7 @@ pub enum RpzAction {
     Nodata,
     /// `CNAME rpz-drop.` (answered REFUSED, ADR-1110)
     Refused,
-    /// `CNAME rpz-passthru.`: turns the zone's rewrites off for the name.
+    /// `CNAME rpz-passthru.`: turns rewrites off for the name (every list's, like any `@@...$dnsrewrite`).
     Passthru,
 }
 

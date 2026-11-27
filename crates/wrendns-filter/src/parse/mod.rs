@@ -26,6 +26,7 @@ use wrendns_config::{ListFormat, ListKind, ListMatch};
 
 pub use self::modifiers::{Modifiers, Negatable};
 pub use self::name::{NameError, normalize};
+pub(crate) use self::rpz::Reader as RpzReader;
 
 /// Block or allow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

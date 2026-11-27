@@ -27,6 +27,7 @@ mod plugin;
 pub mod presets;
 /// REQ: UPS-010 (T7.16)
 pub mod proxy;
+pub mod rfc5011;
 mod router;
 /// REQ: UPS-013 (T24.31)
 mod source;

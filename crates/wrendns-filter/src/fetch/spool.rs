@@ -17,7 +17,7 @@ use zstd::stream::write::Encoder;
 
 use super::http::BodySink;
 use super::store::ZSTD_LEVEL;
-use crate::parse::{ListOptions, parse_list};
+use crate::parse::{ListOptions, ParseStats, RpzReader, parse_list};
 
 /// Complete lines are checked in blocks of about this many bytes.
 const BLOCK: usize = 64 * 1024;
@@ -56,6 +56,9 @@ pub(crate) struct Spool {
     invalid: u64,
     first_invalid: String,
     peak_held: usize,
+    /// REQ: FLT-906 - an RPZ is checked by one reader that keeps its state from block to block
+    /// (the inherited owner, `$ORIGIN`, an open parenthesis), and its totals so far.
+    rpz: Option<(RpzReader, ParseStats)>,
 }
 
 impl Spool {
@@ -75,10 +78,36 @@ impl Spool {
             invalid: 0,
             first_invalid: String::new(),
             peak_held: 0,
+            rpz: (format == wrendns_config::ListFormat::Rpz)
+                .then(|| (RpzReader::default(), ParseStats::default())),
+        }
+    }
+
+    /// An RPZ reader's totals so far, as the spool's own.
+    fn take_totals(stats: &ParseStats, rules: &mut u64, invalid: &mut u64, first: &mut String) {
+        *rules = stats.rules;
+        *invalid = stats.invalid;
+        if first.is_empty()
+            && let Some(x) = stats.samples.iter().find(|x| !x.unsupported)
+        {
+            first.clone_from(&x.reason);
         }
     }
 
     fn check_block(&mut self, complete: &[u8]) {
+        if let Some((reader, stats)) = self.rpz.as_mut() {
+            let text = complete.strip_suffix(b"\n").unwrap_or(complete);
+            for line in text.split(|&b| b == b'\n') {
+                reader.feed(line, stats, &mut |_, _| {});
+            }
+            Self::take_totals(
+                stats,
+                &mut self.rules,
+                &mut self.invalid,
+                &mut self.first_invalid,
+            );
+            return;
+        }
         let opts = ListOptions {
             format: self.format,
             ..ListOptions::default()
@@ -99,6 +128,16 @@ impl Spool {
         let rest = std::mem::take(&mut self.block);
         if !rest.is_empty() {
             self.check_block(&rest);
+        }
+        if let Some((reader, stats)) = self.rpz.as_mut() {
+            // An open parenthesis at the end of the body is read as far as it goes.
+            reader.finish(stats, &mut |_, _| {});
+            Self::take_totals(
+                stats,
+                &mut self.rules,
+                &mut self.invalid,
+                &mut self.first_invalid,
+            );
         }
         if let Some(enc) = self.enc.take() {
             let mut w = enc.finish()?;
@@ -181,6 +220,7 @@ impl BodySink for Spool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::io::Read;
 
     /// REQ: FLT-901 (design 2.4) — a 20 MB body goes to disk as it arrives: the spool holds a
@@ -251,5 +291,50 @@ last.example",
         assert_ne!(done.first_invalid, "");
         spool.discard();
         assert!(!path.exists());
+    }
+
+    /// A zone's head and enough records to fill a checked block, then `tail` ending the block.
+    fn rpz_first_block(tail: &str) -> (String, u64) {
+        let mut first = String::from(
+            "$ORIGIN rpz.example.net.\n@ SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5\n",
+        );
+        let mut n = 0u64;
+        while first.len() < BLOCK {
+            let _ = writeln!(first, "h{n}.example.com CNAME .");
+            n += 1;
+        }
+        first.push_str(tail);
+        (first, n)
+    }
+
+    fn rpz_check(first: &str, second: &[u8]) -> (u64, u64, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spool = Spool::new(tmp.path().join("rpz.tmp"), wrendns_config::ListFormat::Rpz);
+        spool.reset().unwrap();
+        spool.chunk(first.as_bytes()).unwrap();
+        spool.chunk(second).unwrap();
+        let (done, spool) = spool.finish().unwrap();
+        spool.discard();
+        (done.rules, done.invalid, done.first_invalid)
+    }
+
+    /// REQ: FLT-906 - an RPZ record that leaves its owner out at the start of a checked block
+    /// takes the owner the block before ended on, as it does in the compile.
+    #[test]
+    fn flt_906_spool_rpz_inherited_owner_across_blocks() {
+        let (first, n) = rpz_first_block("own.example.com CNAME .\n");
+        let (rules, invalid, why) =
+            rpz_check(&first, b"\tIN A 192.0.2.1\nlast.example.com CNAME .\n");
+        assert_eq!(invalid, 0, "{why}");
+        assert_eq!(rules, n + 3);
+    }
+
+    /// REQ: FLT-906 - a parenthesised RPZ record split across the edge of a checked block.
+    #[test]
+    fn flt_906_spool_rpz_open_parenthesis_across_blocks() {
+        let (first, n) = rpz_first_block("paren.example.com CNAME (\n");
+        let (rules, invalid, why) = rpz_check(&first, b". )\nlast.example.com CNAME .\n");
+        assert_eq!(invalid, 0, "{why}");
+        assert_eq!(rules, n + 2);
     }
 }

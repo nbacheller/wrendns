@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `name CNAME .` | block `name` (the name only) with `$dnsrewrite=NXDOMAIN` |
 //! | `name CNAME *.` | the same with `$dnsrewrite=NOERROR;;` (the name exists, no data) |
-//! | `name CNAME rpz-passthru.` | allow `name`, and an exception that turns this zone's rewrites off for it |
+//! | `name CNAME rpz-passthru.` | allow `name`, and an exception that turns rewrites off for it (every list's, as `@@...$dnsrewrite` does; ADR-1110) |
 //! | `name CNAME rpz-drop.` | block with `$dnsrewrite=REFUSED` (ADR-1110: the client gets an immediate refusal, never silence) |
 //! | `name CNAME target.` | rewrite to the CNAME `target` |
 //! | `name A` / `AAAA` | rewrite to the address |
@@ -17,7 +17,9 @@
 //! Response-IP (`*.rpz-ip`), NSDNAME, NSIP and client-IP triggers, `rpz-tcp-only.`, and every
 //! other record type are counted as unsupported, not errors. SOA, NS and DNSSEC records of the
 //! zone itself, `$TTL` and `$ORIGIN` are accepted and ignored (the origin is only used to cut
-//! it from absolute owner names).
+//! it from absolute owner names). The origin comes from `$ORIGIN` or the absolute owner of the
+//! SOA; a zone that only writes `@` leaves it unknown, and then an absolute owner (or a
+//! relative CNAME target) is counted as unsupported rather than guessed (ADR-1110 point 12).
 //!
 //! Records may span lines in parentheses and omit their owner (the previous one is used); a
 //! rule's line number is the first line of its record.
@@ -34,27 +36,58 @@ pub(super) fn parse(data: &[u8], mut sink: impl FnMut(u32, Rule)) -> ParseStats 
     if data.is_empty() {
         return stats;
     }
-    let mut zone = State::default();
-    // The record being gathered across lines: its first line, its text, and the open `(`.
-    let mut open: Option<(u32, String, i32)> = None;
-    for (i, raw) in data.split(|&b| b == b'\n').enumerate() {
+    let mut reader = Reader::default();
+    for raw in data.split(|&b| b == b'\n') {
+        reader.feed(raw, &mut stats, &mut sink);
+    }
+    reader.finish(&mut stats, &mut sink);
+    stats
+}
+
+/// A zone read one line at a time, keeping what a record needs from the lines before it: the
+/// inherited owner, `$ORIGIN`, the SOA's name and an open parenthesis. The download check
+/// (`fetch::spool`) feeds it block after block, so a record split across a block edge reads as
+/// it does in the compile.
+#[derive(Default)]
+pub(crate) struct Reader {
+    zone: State,
+    /// The record being gathered across lines: its first line, its text, and the open `(`.
+    open: Option<(u32, String, i32)>,
+    /// Lines fed so far.
+    line: u32,
+}
+
+impl Reader {
+    /// Reads one line (without its line break).
+    pub(crate) fn feed(
+        &mut self,
+        raw: &[u8],
+        stats: &mut ParseStats,
+        sink: &mut impl FnMut(u32, Rule),
+    ) {
+        let raw = if self.line == 0 {
+            raw.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(raw)
+        } else {
+            raw
+        };
+        self.line = self.line.saturating_add(1);
+        let line_no = self.line;
         let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
-        let line_no = u32::try_from(i + 1).unwrap_or(u32::MAX);
         let text = String::from_utf8_lossy(raw);
         stats.lines += 1;
         let (body, depth) = strip_comment(&text);
-        if let Some((first, mut acc, mut open_depth)) = open.take() {
+        if let Some((first, mut acc, mut open_depth)) = self.open.take() {
             // A continuation line of a parenthesised record.
             stats.ignored += 1;
             acc.push(' ');
             acc.push_str(&body);
             open_depth += depth;
             if open_depth > 0 {
-                open = Some((first, acc, open_depth));
+                self.open = Some((first, acc, open_depth));
             } else {
-                finish(&mut zone, first, &acc, &mut stats, &mut sink);
+                finish(&mut self.zone, first, &acc, stats, sink);
             }
-            continue;
+            return;
         }
         if body.trim().is_empty() {
             if text.trim().is_empty() {
@@ -62,26 +95,29 @@ pub(super) fn parse(data: &[u8], mut sink: impl FnMut(u32, Rule)) -> ParseStats 
             } else {
                 stats.comments += 1;
             }
-            continue;
+            return;
         }
         if depth > 0 {
-            open = Some((line_no, body, depth));
-            continue;
+            self.open = Some((line_no, body, depth));
+            return;
         }
-        finish(&mut zone, line_no, &body, &mut stats, &mut sink);
+        finish(&mut self.zone, line_no, &body, stats, sink);
     }
-    if let Some((first, acc, _)) = open {
-        // An unclosed parenthesis at the end: read what there is.
-        finish(&mut zone, first, &acc, &mut stats, &mut sink);
+
+    /// The end of the text: an unclosed parenthesis is read as far as it goes.
+    pub(crate) fn finish(&mut self, stats: &mut ParseStats, sink: &mut impl FnMut(u32, Rule)) {
+        if let Some((first, acc, _)) = self.open.take() {
+            finish(&mut self.zone, first, &acc, stats, sink);
+        }
     }
-    stats
 }
 
 #[derive(Default)]
 struct State {
     /// The last owner name written (a line starting with white space reuses it).
     owner: Option<String>,
-    /// The zone's name, from `$ORIGIN` or the owner of its SOA, lowercase without a final dot.
+    /// The zone's name, from `$ORIGIN` or the absolute owner of its SOA (ADR-1110 point 12),
+    /// lowercase without a final dot. A zone that names itself only as `@` leaves it unknown.
     origin: Option<String>,
 }
 
@@ -183,8 +219,10 @@ fn finish(
                 Outcome::Rule(rule) => {
                     stats.rules += 1;
                     if rule.action == Action::Allow {
-                        // A passthru also turns off the zone's rewrites for its names (the
-                        // matcher lets a rewrite win over blocking, not over this exception).
+                        // A passthru also turns rewrites off for its names. The matcher lets a
+                        // rewrite win over blocking, not over this exception, and an exception
+                        // covers the rewrites of every list the client uses, as any
+                        // `@@...$dnsrewrite` does (ADR-1110 point 3).
                         let mut off = rule.clone();
                         off.modifiers.dnsrewrite = Some(String::new());
                         sink(line_no, off);
@@ -299,6 +337,11 @@ fn record(zone: &State, owner: &str, rtype: &str, rdata: &[String]) -> Outcome {
         Kind::Other(what) => {
             return Outcome::Unsupported(format!("{what} triggers are not applied"));
         }
+        Kind::NoOrigin => {
+            return Outcome::Unsupported(
+                "an absolute owner name in a zone whose origin is not known".into(),
+            );
+        }
     }) else {
         return Outcome::Ignored;
     };
@@ -325,7 +368,18 @@ fn record(zone: &State, owner: &str, rtype: &str, rdata: &[String]) -> Outcome {
             t if t.starts_with("rpz-") && t.ends_with('.') => {
                 return Outcome::Unsupported(format!("action `{t}` is not applied"));
             }
+            t if t.starts_with("*.") => {
+                return Outcome::Unsupported(
+                    "a wildcard CNAME target (local data for the whole subtree) is not applied"
+                        .into(),
+                );
+            }
             t => {
+                if !t.ends_with('.') && zone.origin.is_none() {
+                    return Outcome::Unsupported(
+                        "a relative CNAME target in a zone whose origin is not known".into(),
+                    );
+                }
                 let target = target_name(zone, t);
                 if crate::rewrite::parse(&target).is_none() {
                     return Outcome::Invalid(format!("CNAME target `{value}` is not a name"));
@@ -367,6 +421,9 @@ enum Kind {
     Qname,
     /// A trigger type the list does not apply (`rpz-ip`, `rpz-nsdname`, `rpz-nsip`, `rpz-client-ip`).
     Other(&'static str),
+    /// An absolute owner in a zone whose name is not known: it cannot be cut back, so it is not
+    /// guessed (ADR-1110 point 12).
+    NoOrigin,
 }
 
 /// The trigger part of an owner name (the zone's origin cut off) and what kind it is.
@@ -377,29 +434,42 @@ fn trigger_of(zone: &State, owner: &str) -> (String, Kind) {
     let mut name = owner;
     if let Some(abs) = owner.strip_suffix('.') {
         name = abs;
-        if let Some(o) = &zone.origin {
-            if abs == o {
-                return (String::new(), Kind::Apex);
+        match &zone.origin {
+            Some(o) => {
+                if abs == o {
+                    return (String::new(), Kind::Apex);
+                }
+                if let Some(rel) = abs
+                    .strip_suffix(o.as_str())
+                    .and_then(|r| r.strip_suffix('.'))
+                {
+                    name = rel;
+                }
             }
-            if let Some(rel) = abs
-                .strip_suffix(o.as_str())
-                .and_then(|r| r.strip_suffix('.'))
-            {
-                name = rel;
+            None => {
+                // The special labels give the trigger away wherever the zone name sits.
+                return match abs.rsplit('.').find_map(special) {
+                    Some(what) => (String::new(), Kind::Other(what)),
+                    None => (String::new(), Kind::NoOrigin),
+                };
             }
         }
     }
     let last = name.rsplit('.').next().unwrap_or(name);
-    let other = match last {
+    match special(last) {
+        Some(what) => (String::new(), Kind::Other(what)),
+        None => (name.to_owned(), Kind::Qname),
+    }
+}
+
+/// The trigger type a label marks (`rpz-ip` and so on), if it is one this list does not apply.
+fn special(label: &str) -> Option<&'static str> {
+    match label {
         "rpz-ip" => Some("response-IP"),
         "rpz-nsdname" => Some("NSDNAME"),
         "rpz-nsip" => Some("NSIP"),
         "rpz-client-ip" => Some("client-IP"),
         _ => None,
-    };
-    match other {
-        Some(what) => (String::new(), Kind::Other(what)),
-        None => (name.to_owned(), Kind::Qname),
     }
 }
 
@@ -510,6 +580,63 @@ bad.example.com.rpz.example.net. IN CNAME .
         let (rules, stats) = run("a.example.com A not-an-ip\nb.example.com CNAME .\n$INCLUDE x\n");
         assert_eq!(rules, ["L2 block exact b.example.com $dnsrewrite=NXDOMAIN"]);
         assert_eq!((stats.invalid, stats.unsupported), (1, 1));
+    }
+
+    // REQ: FLT-906 (ADR-1110 point 12) - a zone that names itself only as `@` has no known
+    // origin: an absolute owner is counted unsupported, never blocked under a made-up name.
+    #[test]
+    fn flt_906_unknown_origin_is_not_guessed() {
+        let text = "\
+@ IN SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5
+bad.example.com.rpz.example.net. CNAME .
+32.1.2.0.192.rpz-ip.rpz.example.net. CNAME .
+relative.example.com CNAME .
+rel.example.com CNAME target
+";
+        let (rules, stats) = run(text);
+        assert_eq!(
+            rules,
+            ["L4 block exact relative.example.com $dnsrewrite=NXDOMAIN"]
+        );
+        assert_eq!(
+            (stats.unsupported, stats.invalid),
+            (3, 0),
+            "{:?}",
+            stats.samples
+        );
+        assert!(
+            stats.samples.iter().any(|s| s.reason.contains("origin")),
+            "{:?}",
+            stats.samples
+        );
+        assert!(
+            stats
+                .samples
+                .iter()
+                .any(|s| s.reason.contains("response-IP")),
+            "{:?}",
+            stats.samples
+        );
+        // The same records with the origin given are cut back and read.
+        let (rules, stats) = run(&format!("$ORIGIN rpz.example.net.\n{text}"));
+        assert_eq!(rules.len(), 3, "{rules:?}");
+        assert_eq!((stats.unsupported, stats.invalid), (1, 0));
+    }
+
+    // REQ: FLT-906 (AC 3) - a wildcard local-data CNAME is unsupported, not invalid.
+    #[test]
+    fn flt_906_wildcard_cname_target_is_unsupported() {
+        let (rules, stats) = run("x.example.com CNAME *.garden.example.\ny.example.com CNAME *.\n");
+        assert_eq!(
+            rules,
+            ["L2 block exact y.example.com $dnsrewrite=NOERROR;;"]
+        );
+        assert_eq!(
+            (stats.unsupported, stats.invalid),
+            (1, 0),
+            "{:?}",
+            stats.samples
+        );
     }
 
     #[test]

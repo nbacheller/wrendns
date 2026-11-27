@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod access_settings_tests;
 mod alerts;
+mod anchors;
 mod annotations;
 mod anomaly;
 mod api_backend;
