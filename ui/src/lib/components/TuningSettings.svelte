@@ -16,6 +16,8 @@
   const restartNeeded = $derived(which === 'dnstap' && !!guarded.nodes[0]?.pendingRestart.includes(spec.guardedId ?? ''));
   // A saved value the config file displaces stays saved but a restart does not apply it.
   const displaced = $derived(which === 'dnstap' && !!guarded.nodes[0]?.settings.find((s) => s.id === spec.guardedId)?.displacedByFile);
+  // An ordinary saved value the file now outgrows is removed at the node's next start.
+  const dropped = $derived(which === 'dnstap' && !!guarded.nodes[0]?.settings.find((s) => s.id === spec.guardedId)?.droppedAtNextStart);
   $effect(() => (which === 'dnstap' && open ? watchGuarded(3_000) : undefined));
 </script>
 
@@ -48,7 +50,10 @@
       <p class="notice small" data-testid="dnstap-restart-needed">Restart needed: a dnstap change confirmed here is read when {guarded.nodes[0]?.node ?? 'the node'} starts again.</p>
     {/if}
     {#if which === 'dnstap' && displaced}
-      <p class="notice small" data-testid="dnstap-displaced">Saved, not applied: the config file sets another reader or feed, so this node runs the file's dnstap settings. The saved value is applied again when the file changes back, or remove it to follow the file.</p>
+      <p class="notice small" data-testid="dnstap-displaced">Saved, not applied: the config file sets another reader, or a feed or sampling that copies more, so this node runs the file's dnstap settings. The saved value is applied again when the file changes back, or remove it to follow the file.</p>
+    {/if}
+    {#if which === 'dnstap' && dropped}
+      <p class="notice small" data-testid="dnstap-dropped">Saved, not applied: the config file changed so this would copy more than the file; it is removed at this node's next start. Save it again after the file changes.</p>
     {/if}
   {/if}
 </details>

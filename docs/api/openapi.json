@@ -24110,7 +24110,11 @@
         "properties": {
           "displacedByFile": {
             "type": "boolean",
-            "description": "A saved dnstap value that the config file displaces (it sets another reader, or a feed or a\nsampling that would copy more than both): it stays saved but is not applied, and a restart\ndoes not apply it, until the file changes back."
+            "description": "A confirmed dnstap value that the config file displaces (it sets another reader, or a feed or a\nsampling that would copy more than both): it stays saved but is not applied, and a restart\ndoes not apply it, until the file changes back. Never set for an ordinary (narrowed) entry."
+          },
+          "droppedAtNextStart": {
+            "type": "boolean",
+            "description": "An ordinary (narrowed) dnstap value the config file now outgrows (it would copy more than the\nfile): it is not applied and is removed at this node's next start, so it has to be saved again."
           },
           "hasEntry": {
             "type": "boolean",

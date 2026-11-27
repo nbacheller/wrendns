@@ -4199,6 +4199,44 @@ async fn obs_007_dnstap_displaced_staged_entry_is_not_listed_pending_restart() {
     assert!(s.displaced_by_file && !s.pending_restart && s.has_entry);
 }
 
+// REQ: OBS-007, API-905 (T40.13, review 10) - an ordinary (narrowed) dnstap entry the file outgrows is
+// dropped at the next start, so the status says that and not "displaced" (kept until the file changes
+// back), and does not list it as pending a restart.
+#[tokio::test]
+async fn obs_007_dnstap_a_narrowed_entry_the_file_outgrows_is_dropped_not_displaced() {
+    let n = solo();
+    store::put(
+        &n.host.state,
+        &Stored {
+            node: "pi-a".into(),
+            id: "dnstap-output".into(),
+            value: json!({"sample_every": 10, "forwarder": true}),
+            mode: "narrowed".into(),
+            state: EntryState::Staged,
+            by: "bob".into(),
+            at: 7,
+        },
+        7,
+        "bob",
+    )
+    .unwrap();
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/f".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file);
+    let st = n.engine.status_local();
+    assert!(st.pending_restart.is_empty(), "{st:?}");
+    let s = st
+        .settings
+        .iter()
+        .find(|s| s.id == "dnstap-output")
+        .unwrap();
+    assert!(
+        s.dropped_at_next_start && !s.displaced_by_file && !s.pending_restart && s.has_entry,
+        "{s:?}"
+    );
+}
+
 // REQ: OBS-007, API-905 (T40.13, review 7) - a replica's phrase-confirmed write is refused with
 // `preview_stale` when the primary holds an entry the replica had not seen (an ordinary narrowing
 // answered with success meanwhile), and goes through when it saw the same one.

@@ -628,7 +628,21 @@ impl Engine {
     /// apply it (the node runs the file's section), so it is not "pending a restart".
     fn displaced(&self, e: &Stored) -> bool {
         e.id == wrendns_config::guarded::DNSTAP
+            && e.mode != super::dnstap::NARROWED
             && super::dnstap::not_applied(&self.host.file_config(), &e.mode, &e.value)
+    }
+
+    /// REQ: OBS-007, API-905 (T40.13) - an ordinary (narrowed) dnstap entry the config file now
+    /// outgrows: the node's next start deletes it (`begin_for`), so it is neither pending nor kept.
+    fn dropped_at_next_start(&self, e: &Stored) -> bool {
+        e.id == wrendns_config::guarded::DNSTAP
+            && e.mode == super::dnstap::NARROWED
+            && super::dnstap::not_applied(&self.host.file_config(), &e.mode, &e.value)
+    }
+
+    /// A staged entry a restart applies (one the file displaces or outgrows is not).
+    fn restart_pending(&self, e: &Stored) -> bool {
+        e.state == EntryState::Staged && !self.displaced(e) && !self.dropped_at_next_start(e)
     }
 
     /// This node's guarded settings and what is pending. No value, preview ID or token.
@@ -651,9 +665,9 @@ impl Engine {
                     set_by_file: d.row.id != wrendns_config::guarded::DNSTAP
                         && self.set_by_file(&d.row),
                     has_entry: e.is_some(),
-                    pending_restart: e
-                        .is_some_and(|e| e.state == EntryState::Staged && !self.displaced(e)),
+                    pending_restart: e.is_some_and(|e| self.restart_pending(e)),
                     displaced_by_file: e.is_some_and(|e| self.displaced(e)),
+                    dropped_at_next_start: e.is_some_and(|e| self.dropped_at_next_start(e)),
                     on_probation: e.is_some_and(|e| e.state == EntryState::Probation),
                     suppressed: suppressed.contains_key(d.row.id),
                 }
@@ -673,7 +687,7 @@ impl Engine {
             pending,
             pending_restart: entries
                 .iter()
-                .filter(|e| e.state == EntryState::Staged && !self.displaced(e))
+                .filter(|e| self.restart_pending(e))
                 .map(|e| e.id.clone())
                 .collect(),
             outcomes: store::outcomes(&self.state),

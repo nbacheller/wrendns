@@ -1253,3 +1253,29 @@ async fn obs_007_dnstap_a_write_the_node_ignored_is_stored_again() {
         "so a local suppression no longer matches"
     );
 }
+
+/// REQ: OBS-007, API-905 (T40.13, review 10) - an ordinary write on a node whose confirmed entry the
+/// file displaces does not silently replace or delete that entry: a buffer-only change and an unchanged
+/// value are refused with 409 `Conflict` (the entry stays); the explicit delete still removes it.
+#[tokio::test]
+async fn obs_007_dnstap_an_ordinary_write_does_not_discard_a_displaced_confirmed_entry() {
+    let h = node_a();
+    let held = json!({ "socket": "/run/a.sock", "sample_every": 1, "forwarder": true });
+    put_guarded_on("pi-a", &h, held.clone());
+    // The file gained a socket: the merged section copies more than the entry and than the file.
+    let file = tap("/run/f.sock", 1);
+    let v = view(file.clone(), &["socket"], file.clone());
+    let mut buffer_only = file.clone();
+    buffer_only["buffer"] = json!(20000);
+    for body in [buffer_only, file.clone()] {
+        for dry in [true, false] {
+            let r = forwarded(&h, "pi-a", Some(body.clone()), Some(v.clone()), dry).await;
+            assert_eq!(code(&r), "Conflict", "{r:?}");
+        }
+    }
+    assert_eq!(entry_of(&h, "pi-a").unwrap().value, held, "still saved");
+    // The explicit delete is the way to drop it.
+    let r = forwarded(&h, "pi-a", None, Some(v), false).await;
+    assert_eq!(code(&r), "ok", "{r:?}");
+    assert!(entry_of(&h, "pi-a").is_none());
+}

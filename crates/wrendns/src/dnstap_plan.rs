@@ -234,6 +234,37 @@ fn entry_change(
     }
 }
 
+/// A confirmed entry the file displaces is kept for the file to change back; an ordinary write that
+/// would replace it with a narrowed one, or delete it (an unchanged value), would lose it with no
+/// word. That is refused: the way to drop it is the explicit DELETE.
+fn refuse_discarding(
+    node: &str,
+    file_n: &wrendns_config::Config,
+    after: &Value,
+    file_section: &Value,
+    existing: Option<&Stored>,
+    in_force: bool,
+) -> Result<(), Problem> {
+    let Some(e) = existing.filter(|e| e.mode != crate::guarded::dnstap::NARROWED) else {
+        return Ok(());
+    };
+    if !crate::guarded::dnstap::not_applied(file_n, &e.mode, &e.value) {
+        return Ok(());
+    }
+    let keeps = after != file_section
+        && entry_value(after, existing, in_force).1 != crate::guarded::dnstap::NARROWED;
+    if keeps {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Conflict,
+        format!(
+            "{node} holds a confirmed dnstap value that its config file displaces (the file sets another reader, or a feed or sampling that copies more); saving this would discard it, and it would not come back when the file changes"
+        ),
+    )
+    .hint("Remove the saved value first (DELETE /api/v1/dnstap-settings/default, or Remove in the dnstap card), or change the config file."))
+}
+
 /// The node's files, as the node says them: a replica sends them (the node's own word about its own
 /// files), the primary reads its own.
 fn sent_view(src: &Sources, state: &State, w: &ManagedWrite) -> Result<SentView, Problem> {
@@ -263,6 +294,21 @@ fn sent_view(src: &Sources, state: &State, w: &ManagedWrite) -> Result<SentView,
     })
 }
 
+/// The files as that node has them: the dnstap fields and the marks of the fields they set.
+fn node_files(src: &Sources, sent: &SentView) -> Result<wrendns_config::Config, Problem> {
+    let mut file_n = (*crate::api_backend::plan_files(src)).clone();
+    file_n.telemetry.dnstap = crate::guarded::dnstap::parse(&sent.file)?;
+    file_n
+        .file_set
+        .retain(|f| !f.starts_with("telemetry.dnstap."));
+    file_n.file_set.extend(
+        sent.file_set
+            .iter()
+            .map(|k| format!("telemetry.dnstap.{k}")),
+    );
+    Ok(file_n)
+}
+
 /// The plan of one dnstap write: judged on the node it is for, stored as that node's entry.
 pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<ManagedPlan, Problem> {
     let noun = settings_kinds::noun(KIND);
@@ -278,17 +324,7 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
         .or_else(crate::guarded::this_node)
         .ok_or_else(|| Problem::unavailable("this node's name isn't known yet"))?;
     let sent = sent_view(src, state, w)?;
-    // The files as that node has them: the dnstap fields and the marks of the fields they set.
-    let mut file_n = (*crate::api_backend::plan_files(src)).clone();
-    file_n.telemetry.dnstap = crate::guarded::dnstap::parse(&sent.file)?;
-    file_n
-        .file_set
-        .retain(|f| !f.starts_with("telemetry.dnstap."));
-    file_n.file_set.extend(
-        sent.file_set
-            .iter()
-            .map(|k| format!("telemetry.dnstap.{k}")),
-    );
+    let file_n = node_files(src, &sent)?;
     let file_section = settings_kinds::section_json(KIND, &file_n);
     let existing = crate::guarded::store::all(state)
         .into_iter()
@@ -344,17 +380,18 @@ pub(crate) fn plan(src: &Sources, state: &State, w: &ManagedWrite) -> Result<Man
             "The dnstap settings are read when a node starts: this takes effect on {node} after a restart of that node (restart needed). Other nodes keep their own."
         ));
     }
+    let forced = in_force(&sent, existing.as_ref());
     let also = entry_change(
         w,
         &node,
         &after,
         &file_section,
         existing.as_ref(),
-        (
-            in_force(&sent, existing.as_ref()),
-            node_differs(&sent, &after),
-        ),
+        (forced, node_differs(&sent, &after)),
     );
+    if w.body.is_some() && !also.is_empty() {
+        refuse_discarding(&node, &file_n, &after, &file_section, existing.as_ref(), forced)?;
+    }
     let (recent_queries, impact) =
         crate::api_backend::managed_impact(src, KIND, "default", w.body.is_some());
     Ok(ManagedPlan {

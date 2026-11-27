@@ -97,11 +97,15 @@ pub struct GuardedSetting {
     pub has_entry: bool,
     /// A staged change waits for the node to restart.
     pub pending_restart: bool,
-    /// A saved dnstap value that the config file displaces (it sets another reader, or a feed or a
+    /// A confirmed dnstap value that the config file displaces (it sets another reader, or a feed or a
     /// sampling that would copy more than both): it stays saved but is not applied, and a restart
-    /// does not apply it, until the file changes back.
+    /// does not apply it, until the file changes back. Never set for an ordinary (narrowed) entry.
     #[serde(default)]
     pub displaced_by_file: bool,
+    /// An ordinary (narrowed) dnstap value the config file now outgrows (it would copy more than the
+    /// file): it is not applied and is removed at this node's next start, so it has to be saved again.
+    #[serde(default)]
+    pub dropped_at_next_start: bool,
     /// A start has the entry on probation (it counts as applied once the node is healthy).
     pub on_probation: bool,
     /// A command-line clear is hiding the replicated entry until the primary's copy changes.
