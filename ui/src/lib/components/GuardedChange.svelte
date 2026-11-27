@@ -228,7 +228,8 @@
   // window is open. A change with no probes (or one pending on another node) answers an empty list or a
   // 404, and shows nothing.
   let probes = $state<S['GuardedProbeLine'][]>([]);
-  const probeFailing = $derived(probes.some((p) => p.state === 'no_answer'));
+  // Confirm waits until every probe has been answered (the server refuses anyway).
+  const probeFailing = $derived(probes.some((p) => p.state === 'no_answer' || p.state === 'waiting'));
   $effect(() => {
     const pid = step === 'pending' ? result?.pendingId : undefined;
     if (!pid) {
@@ -251,6 +252,19 @@
       clearInterval(t);
     };
   });
+  /** A command to run from a client, with the address filled in (T27.14c). */
+  function testCmd(listener: string): string {
+    // The path the listener serves: the draft names it, a wildcard is probed on its loopback address.
+    const lst = (value as { listeners?: { proto: string; addr: string; path?: string | null }[] } | null)?.listeners ?? [];
+    const served = lst.find((x) => `${x.proto}://${x.addr.replace(/^0\.0\.0\.0:/, '127.0.0.1:').replace(/^\[::\]:/, '[::1]:')}` === listener)?.path || '/dns-query';
+    const [proto, addr] = [listener.slice(0, listener.indexOf('://')), listener.slice(listener.indexOf('://') + 3)];
+    const i = addr.lastIndexOf(':');
+    const [ip, port] = [addr.slice(0, i).replace(/^\[|\]$/g, ''), addr.slice(i + 1)];
+    if (proto === 'udp' || proto === 'tcp') return `dig @${ip} -p ${port}${proto === 'tcp' ? ' +tcp' : ''} example.com`;
+    if (proto === 'dot') return `kdig +tls @${ip} -p ${port} example.com`;
+    if (proto === 'doq') return `kdig +quic @${ip} -p ${port} example.com`;
+    return `curl -H 'accept: application/dns-message' 'https://${ip}:${port}${served}?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'`;
+  }
   function probeText(p: S['GuardedProbeLine']): string {
     if (p.state === 'answered') return "the node's own test query was answered";
     if (p.state === 'refused_by_gate') return "the node's own test query was refused by the device-key gate, as it should be";
@@ -360,7 +374,17 @@
         {#if pv.mode === 'window'}It takes effect now and is kept only if you confirm it through the new address within {pv.windowSecs} seconds; otherwise it rolls back.{/if}
         {#if pv.restartRequired}It takes effect at the node's next start.{/if}
       </p>
-      {#each pv.warnings as w (w)}
+      {#if pv.listeners?.length}
+        <ul class="small" data-testid="guarded-listeners">
+          {#each pv.listeners as l, i (i)}
+            <li data-testid="guarded-listener" data-change={l.change}>
+              <strong>{l.change}</strong> <code>{l.listener}</code>{#if l.gate}: {l.gate}{/if}{#if l.certificate} ({l.certificate}){/if}{#if l.note}. {l.note}{/if}
+            </li>
+          {/each}
+        </ul>
+        <p class="small muted">You confirm this on this page, once the node's own test query to each new listener is answered. That proves the listener works on this machine, not that your devices can reach it: a firewall, your router or a container's published ports may still be in the way.</p>
+      {/if}
+      {#each pv.warnings as w, i (i)}
         <div class="notice warn small" data-testid="guarded-warning">{w}</div>
       {/each}
       {#each pv.checks.filter((c) => !c.ok) as c (c.name)}
@@ -424,6 +448,7 @@
           {#each probes as p, i (i)}
             <li data-testid="guarded-probe" data-state={p.state}>
               <code>{p.listener}</code>: {probeText(p)}.
+              <code class="small" data-testid="guarded-test-cmd">{testCmd(p.listener)}</code>
               <span class="muted" data-testid="guarded-evidence">{p.otherHosts > 0 ? `${p.otherHosts} other ${p.otherHosts === 1 ? 'host has' : 'hosts have'} used it.` : 'No other host has used it yet.'}</span>
             </li>
           {/each}

@@ -3037,9 +3037,11 @@ impl Mcp {
         };
         // REQ: API-902 (ADR-956 §7) — no tool plans or makes a guarded change: the plan store
         // refuses guarded paths, so `apply_plan` can't replay one.
-        if crate::guarded::is_guarded_path(&w.path) {
+        if crate::guarded::is_guarded_path(&w.path)
+            || crate::guarded::names_listen_setting(&w.path, w.body.as_ref())
+        {
             return tool_error(format!(
-                "{}: guarded settings are for people; no plan can change them",
+                "{}: guarded_only: guarded settings are for people; no plan can change them",
                 tool.name
             ));
         }
@@ -3251,7 +3253,12 @@ impl Mcp {
         };
         let approved_content = plan.tool == CONTENT_PLAN && plan.decided_by.is_some();
         // REQ: API-902 — a plan for a guarded path is never replayed (none is ever stored).
-        if crate::guarded::is_guarded_path(&plan.path) {
+        if crate::guarded::is_guarded_path(&plan.path)
+            || crate::guarded::names_listen_setting(
+                &plan.path,
+                plan.write_body.as_ref().or(plan.body.as_ref()),
+            )
+        {
             plans.finish(
                 &id,
                 "failed",

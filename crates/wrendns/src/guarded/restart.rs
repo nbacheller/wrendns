@@ -197,6 +197,9 @@ impl Engine {
             proof_port: None,
             acknowledgements: Vec::new(),
             weakening: false,
+            disconnect_detail: None,
+            listeners: Vec::new(),
+            host_facts: None,
         })
     }
 

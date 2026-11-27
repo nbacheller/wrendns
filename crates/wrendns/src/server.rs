@@ -27,7 +27,9 @@ use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 mod evidence;
 mod listener_window;
 pub(crate) use evidence::Evidence;
-pub(crate) use listener_window::{ListenerCmd, ListenerHandle, StagedListener, WindowError};
+pub(crate) use listener_window::{
+    COMMIT_FAILED, ListenerCmd, ListenerHandle, StagedListener, WindowError,
+};
 
 /// Loads and validates config from `files` + environment plus what the UI/API stored
 /// (ADR-040), logging every problem.

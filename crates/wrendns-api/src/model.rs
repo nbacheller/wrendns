@@ -37,6 +37,44 @@ pub struct ListenerAccess {
     pub public_exposure: bool,
     /// The transport can carry a device key (`dot`, `doh`, `doh3`, `doq`).
     pub can_carry_key: bool,
+    /// REQ: API-902 (T27.14c) — the certificate and key paths of an encrypted listener (paths only; the
+    /// files' contents are never returned), so the Listeners card can show and re-send them.
+    ///
+    /// Admin only (owner decision, 2026-11-27): absent from every other role's answer, with the path,
+    /// the limits and `proxy_protocol` below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
+    /// The URL path of a DoH or DoH3 listener, when one is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The connection limits, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_address: Option<u32>,
+    /// The listener accepts PROXY protocol v2 (set in the configuration file only). Admin only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_protocol: Option<bool>,
+    /// The certificate's file name, without its directory: every signed-in role sees it (the paths
+    /// above are admin only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cert_name: Option<String>,
+}
+
+impl ListenerAccess {
+    /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — drop what only an admin sees: the
+    /// certificate and key paths, the URL path, the limits and the PROXY setting. The address, the
+    /// protocol, the certificate's file name and the gate stay.
+    pub fn without_admin_fields(&mut self) {
+        self.tls_cert = None;
+        self.tls_key = None;
+        self.path = None;
+        self.max_connections = None;
+        self.max_connections_per_address = None;
+        self.proxy_protocol = None;
+    }
 }
 
 /// Node and build information.
@@ -3307,6 +3345,35 @@ pub struct ProbeResult {
     /// doesn't expire.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cert_self_signed: bool,
+}
+
+impl ProbeResult {
+    /// The target without its path (`proto://host`): what every role may see, and what health
+    /// reasons name (the DoH path is for admins only).
+    #[must_use]
+    pub fn public_target(&self) -> String {
+        match self.target.split_once("://") {
+            Some((head, rest)) => {
+                let host = rest.split('/').next().unwrap_or(rest);
+                format!("{head}://{host}")
+            }
+            None => self.target.clone(),
+        }
+    }
+
+    /// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — drop what only an admin sees of a
+    /// listener's probe: the DoH path in the target, and the PROXY setting in the reason it was not
+    /// probed.
+    pub fn without_admin_fields(&mut self) {
+        self.target = self.public_target();
+        if self.cert_error.is_some() {
+            // The error names the certificate file's path.
+            self.cert_error = Some("the certificate can't be read".to_owned());
+        }
+        if self.skipped.as_deref().is_some_and(|s| s.contains("PROXY")) {
+            self.skipped = Some("it is not probed".to_owned());
+        }
+    }
 }
 
 /// REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast

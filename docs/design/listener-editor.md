@@ -248,7 +248,10 @@ staged: Option<StagedSet>   // sockets bound for a pending change, none of them 
   and fails if anything is left. A changed listener's swap is today's close-and-bind on the real port:
   a gap of a few milliseconds on that one TCP-based listener, as a reload has today, and never on UDP.
   If that bind fails, `apply` binds the old settings again and commit answers `commit_failed`. The
-  engine then removes the entry and runs the reload again, which puts the previous list back.
+  engine then writes back the entry that was in force before the change (or removes it when there
+  was none) and runs the reload again, which puts the previous list back. If that write fails too,
+  the new entry stands and so does the new list: the outcome is `commit_failed_entry_kept` (audited
+  `settings.guarded_commit_failed`, answered 503 `primary_unreachable`), never `rolled_back`.
 - **Abort** (expiry, cancel, a failed commit before the write) closes every staged and proof-port socket
   and touches nothing else. Nothing was written.
 - **A reload during the window** (SIGHUP, another API change, a replicated change) runs `apply` on the
@@ -504,9 +507,11 @@ which address the default is judged on, so the `listen` row has to take the defa
   address is the safer choice, because the new address may be public where the old one was not. A
   single commit that wrote two entries would also not be atomic across replication. The preview names
   each explicit setting that is dropped: "Listener access for dot://10.0.0.53:853 was set to off;
-  dot://10.0.0.54:853 starts on its default (off)". Stale lines in the `listen-access` entry are ignored
-  by its overlay, which matches by `proto://addr`. The next Listener access save sends the current list
-  and clears them.
+  dot://10.0.0.54:853 starts on its default (off)". After a kept `listen` change the stored
+  `listen-access` lines of the removed listeners are dropped (best effort: a failed write is logged and
+  the change is kept). A line that is still there (a hand edit, a failed prune) applies to a listener
+  added again at the same `proto://addr`, through the overlay that matches by `proto://addr`, and rule (c)
+  still judges it.
 - **Order of overlays.** `listen` is overlaid before `listen-access`, so the gate lines apply to the list
   the node runs. The overlay walks the registry rows in a fixed order with `listen` first, and is not
   left to the order of the stored entries.
@@ -865,10 +870,20 @@ the answer starts):
 - **Agents and the allowed-networks control** (before T27.14h). Whether an agent token, or an MCP tool,
   may change the list (API-901 and the agent rules ask for agent-ready routes; the decision said admin
   only).
-- **A `[::]` wildcard on a host with only a global IPv6 address** (before T27.14c). ADR-1090's wildcard
-  rule looks at public IPv4 only, so under decision 2 adding plain UDP on `[::]:53` on such a host is
-  not weakening, although the host can be reached from the internet over IPv6. The preview warns, as
-  ADR-1090 point 9(b) does for the gate; whether it should also count as weakening is open.
-- **Rule (c) and `allowed_networks`** (before T27.14c). This note reads decision 2 as judged on the
-  socket alone, so a public UDP listener weakens even when `allowed_networks` would refuse the
-  internet. The owner's wording supports that reading; it is listed so the owner can confirm it.
+
+**Settled 2026-11-27 (T27.14c): items 6 and 9 are owner decisions through the question tool; item 7 is the owner's earlier decision (ADR-1090); item 8 is the design's own choice:**
+6. **Who sees a listener's files and settings.** Each listener's certificate and key file paths, its
+   limits and its options (the DoH path, PROXY) are for admins only. `GET /api/v1/system/info` leaves
+   them out of a viewer's, an operator's, an agent's and a wall display's answer; they still see the
+   address, the protocol, the certificate's file name and expiry, and the device key. The card for
+   them is read-only and has no such fields. `GET /api/v1/system/probes` follows the same rule: for
+   other callers a listener probe's target has no DoH path and a PROXY listener's skipped reason is the
+   generic "it is not probed". Chosen over showing them to every signed-in role.
+7. **A `[::]` wildcard on a host with only a global IPv6 address** stays as ADR-1090 has it, by the
+   owner's earlier decision ("public IPv4 only"): it is not counted as reachable, so adding plain UDP
+   on `[::]:53` there is not weakening. The preview and the Listener access page warn, as ADR-1090
+   point 9(b) does.
+8. **Rule (c) and `allowed_networks`** is judged on the socket alone: it ignores
+   `[access] allowed_networks`. This is the design's conservative choice (the records were silent),
+   not the owner's words.
+9. **"Use the web UI's certificate"** stays out until T27.14e, in the card and its help.

@@ -17,9 +17,10 @@ use tracing::{info, warn};
 use wrendns_api::BoxFuture;
 use wrendns_api::auth::Actor;
 use wrendns_api::guarded::{
-    GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedCheck, GuardedNodeStatus,
-    GuardedOutcome, GuardedPending, GuardedPendingView, GuardedPreview, GuardedPreviewRequest,
-    GuardedProbeLine, GuardedResult, GuardedSetting, GuardedStatus, Supervisor,
+    GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedCheck, GuardedListenerLine,
+    GuardedNodeStatus, GuardedOutcome, GuardedPending, GuardedPendingView, GuardedPreview,
+    GuardedPreviewRequest, GuardedProbeLine, GuardedResult, GuardedSetting, GuardedStatus,
+    Supervisor,
 };
 use wrendns_api::problem::{Code, Problem};
 use wrendns_config::Config;
@@ -59,6 +60,13 @@ pub(crate) struct Checked {
     /// The change is weaker than the current value for a reason `weakens` can't see (for example
     /// no admin accounts afterwards); it adds to the row's own rule.
     pub(crate) weakening: bool,
+    /// What `would_disconnect` says it is (the generic sentence when `None`).
+    pub(crate) disconnect_detail: Option<String>,
+    /// REQ: API-902 (T27.14c) — a listener change's line-by-line diff, for the review step.
+    pub(crate) listeners: Vec<GuardedListenerLine>,
+    /// REQ: API-902 (T27.14c) — the host facts the verdict was judged with; an apply whose check
+    /// reads other facts is `preview_stale`.
+    pub(crate) host_facts: Option<wrendns_config::HostFacts>,
 }
 
 /// What an [`Applier`] is given to check a value.
@@ -69,6 +77,11 @@ pub(crate) struct CheckCx<'a> {
     pub(crate) value: &'a Value,
     pub(crate) options: &'a Value,
     pub(crate) caller: &'a GuardedCaller,
+    /// The node around the engine (the cluster's members, for the checks that name them).
+    pub(crate) host: &'a dyn Host,
+    /// REQ: API-902 (T27.14c) — this node's stored `listen-access` value that is in force, for a
+    /// listener change to judge an address the node once gated (its lines outlive the listener).
+    pub(crate) access: Option<&'a Value>,
 }
 
 /// What staging a window change bound.
@@ -91,6 +104,16 @@ pub(crate) struct Staged {
 pub(crate) trait WindowGuard: Send + Sync {
     fn commit(&self) -> BoxFuture<Result<(), Problem>>;
     fn abort(&self) -> BoxFuture<()>;
+    /// REQ: API-902 (T27.14c) — why what the preview promised no longer holds (the host's addresses
+    /// changed since the stage), checked at confirm before anything is written. `None`: still holds.
+    fn stale(&self) -> Option<String> {
+        None
+    }
+    /// The rollback reason of a failed [`commit`](Self::commit) (`commit_failed`, or `cancelled` when
+    /// the file took the listeners over).
+    fn failure_reason(&self) -> &'static str {
+        "commit_failed"
+    }
 }
 
 /// What one setting does to a node. T27.14 to T27.17 implement it for their rows.
@@ -111,6 +134,8 @@ pub(crate) trait Applier: Send + Sync {
         _host: Arc<dyn Host>,
         _node: String,
         _value: Value,
+        _access: Option<Value>,
+        _facts: Option<wrendns_config::HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         Box::pin(std::future::ready(Err(Problem::unavailable(
             "this setting has no confirmation window",
@@ -166,7 +191,15 @@ pub(crate) struct Preview {
     expires: Instant,
     phrase: String,
     weakening: bool,
+    /// The host facts the preview was judged with (`None` for a row that does not read them).
+    host_facts: Option<wrendns_config::HostFacts>,
     needs_recent: bool,
+    /// REQ: OBS-007, API-905 (T40.13, review 8) - what a dnstap review was judged on: the time of the
+    /// node's entry the admin saw (`None`: none) and the section the node will run. A confirm that
+    /// finds either changed is `preview_stale`, however the change came about (a forwarded write
+    /// answered with success meanwhile, a file edit and reload).
+    seen_at: Option<u64>,
+    before: Value,
     acknowledgements: Vec<String>,
     /// For `restart-now`: the staged entries it listed.
     staged_listed: Vec<String>,
@@ -459,6 +492,18 @@ impl Engine {
         }
     }
 
+    /// The time of this node's entry of the row, as this node sees it now (`None`: no entry); only the
+    /// dnstap row shares its entry with an ordinary write, so only it is read.
+    fn dnstap_seen_at(&self, id: &str) -> Option<u64> {
+        if id != wrendns_config::guarded::DNSTAP {
+            return None;
+        }
+        store::effective(&self.host.running_config(), &self.state, &self.node)
+            .into_iter()
+            .find(|(e, _)| e.id == id)
+            .map(|(e, _)| e.at)
+    }
+
     fn set_by_file_for(&self, row: &Row, value: &Value) -> bool {
         if row.id == wrendns_config::guarded::DNSTAP {
             return super::dnstap::changes_file_field(&self.host.file_config(), value);
@@ -728,7 +773,8 @@ impl Engine {
             .hint("Remove it from the file (and restart) to change it here."));
         }
         let cfg = self.judged_config(row.id);
-        let (checked, before) = if row.id == RESTART_NOW {
+        let access = self.stored_access();
+        let (mut checked, before) = if row.id == RESTART_NOW {
             (self.restart_checked()?, Value::Null)
         } else {
             let cx = CheckCx {
@@ -737,15 +783,30 @@ impl Engine {
                 value: &req.value,
                 options: &req.options,
                 caller: c,
+                host: self.host.as_ref(),
+                access: access.as_ref(),
             };
             (def.applier.check(&cx)?, def.applier.current(&cfg))
         };
         if checked.would_disconnect {
             return Err(Problem::new(
                 Code::WouldDisconnectYou,
-                "the change would leave this node without an API or DNS listener, or remove the listener this request came in on",
+                checked.disconnect_detail.clone().unwrap_or_else(|| "the change would leave this node without an API or DNS listener, or remove the listener this request came in on".to_owned()),
             )
             .hint("Add the new listener first, then remove the old one in a second change."));
+        }
+        // REQ: OBS-007, API-905 (T40.13, review 8) - a confirmed dnstap entry holds the whole value, a
+        // field the files set included (the card sends every field). It is the node's own from then
+        // on: if the files later change or drop that field, the node keeps what was confirmed. Said in
+        // every review that widens and carries such a field, not only when reverting to the file.
+        if row.id == wrendns_config::guarded::DNSTAP && checked.weakening {
+            let held = super::dnstap::file_fields(&self.host.file_config());
+            if !held.is_empty() {
+                checked.warnings.push(format!(
+                    "The config file sets {} today. Confirming saves those values with the rest: this node then keeps them, even if the file later changes or drops them. To follow the file again afterwards, remove the saved value.",
+                    held.join(", ")
+                ));
+            }
         }
         self.pending_conflict(row.mode, row.id)?;
         let weakening = (row.weakens)(&before, &req.value) || checked.weakening;
@@ -769,7 +830,10 @@ impl Engine {
                     expires: now + Duration::from_secs(PREVIEW_SECS),
                     phrase: phrase.clone(),
                     weakening,
+                    host_facts: checked.host_facts,
                     needs_recent,
+                    seen_at: self.dnstap_seen_at(row.id),
+                    before: before.clone(),
                     acknowledgements: checked.acknowledgements.clone(),
                     staged_listed: if row.id == RESTART_NOW {
                         self.staged_ids()
@@ -790,6 +854,7 @@ impl Engine {
             weakening,
             restart_required: checked.restart_required || row.mode == Mode::Staged,
             would_disconnect: false,
+            listeners: checked.listeners,
             warnings: checked.warnings,
             checks: checked.checks,
             proof_port: checked.proof_port,
@@ -820,6 +885,19 @@ impl Engine {
         if g.busy || (g.pending.is_some() && id != RESTART_NOW && mode != Mode::Immediate) {
             return Err(busy());
         }
+        // REQ: API-902 (T27.14c, design 4) — a gate change during a `listen` window would change the
+        // gate of sockets already staged, so the preview would no longer describe them.
+        if id == wrendns_config::guarded::LISTEN_ACCESS
+            && g.pending
+                .as_ref()
+                .is_some_and(|p| p.setting == wrendns_config::guarded::LISTEN)
+        {
+            return Err(Problem::new(
+                Code::GuardedChangePending,
+                "a listener change is pending on this node: change the listener access after it is confirmed or rolled back",
+            )
+            .hint("Confirm or cancel the pending listener change first."));
+        }
         if id == RESTART_NOW && g.pending.is_some() {
             return Err(Problem::new(
                 Code::GuardedChangePending,
@@ -848,6 +926,69 @@ impl Engine {
             .map(|(e, _)| e)
             .filter(|e| !self.suppressed_entry(e))
             .collect()
+    }
+
+    /// This node's `listen-access` value that is in force (active or on probation), if it has one.
+    pub(crate) fn stored_access(&self) -> Option<Value> {
+        self.effective_entries()
+            .into_iter()
+            .find(|e| {
+                e.id == wrendns_config::guarded::LISTEN_ACCESS
+                    && matches!(e.state, EntryState::Active | EntryState::Probation)
+            })
+            .map(|e| e.value)
+    }
+
+    /// REQ: API-902, DNS-901 (T27.14c) — after a `listen` change is kept, this node's stored
+    /// `listen-access` loses the lines of the listeners that are gone, so a listener added again on
+    /// the same protocol and address starts on its default gate and not on a setting the admin made
+    /// for the listener that was removed. A failed write is logged: the change itself is kept.
+    async fn prune_gate_lines(&self, listen: &Value, by: &str) {
+        let Ok(kept) = super::listen::parse(listen) else {
+            return;
+        };
+        let Some(entry) = self.effective_entries().into_iter().find(|e| {
+            e.id == wrendns_config::guarded::LISTEN_ACCESS
+                && matches!(e.state, EntryState::Active | EntryState::Probation)
+        }) else {
+            return;
+        };
+        let Ok(lines) = super::appliers::ListenAccess::lines(&entry.value) else {
+            return;
+        };
+        let Some(all) = entry.value.get("listeners").and_then(Value::as_array) else {
+            return;
+        };
+        let left: Vec<Value> = all
+            .iter()
+            .zip(&lines)
+            .filter(|(_, line)| {
+                kept.iter()
+                    .any(|l| l.proto == line.proto && l.addr == line.addr)
+            })
+            .map(|(v, _)| v.clone())
+            .collect();
+        if left.len() == all.len() {
+            return;
+        }
+        let pruned = Stored {
+            value: json!({"listeners": left}),
+            by: by.to_owned(),
+            at: (self.now)(),
+            ..entry
+        };
+        if let Err(e) = self
+            .host
+            .write_entry(
+                &self.node,
+                wrendns_config::guarded::LISTEN_ACCESS,
+                Some(pruned),
+                by,
+            )
+            .await
+        {
+            warn!("dropping the device key lines of removed listeners failed: {e:?}");
+        }
     }
 
     /// Whether a local clear is suppressing this replicated entry.
@@ -1026,7 +1167,12 @@ impl Engine {
                     "a window change is pending on this node",
                 ));
             }
-        } else if row.mode != Mode::Immediate && g.pending.is_some() {
+        } else if (row.mode != Mode::Immediate && g.pending.is_some())
+            || (row.id == wrendns_config::guarded::LISTEN_ACCESS
+                && g.pending
+                    .as_ref()
+                    .is_some_and(|p| p.setting == wrendns_config::guarded::LISTEN))
+        {
             return Err(Problem::new(
                 Code::GuardedChangePending,
                 "this node already has a pending change",
@@ -1050,6 +1196,7 @@ impl Engine {
             return self.restart_apply(c, &req, &pre).await;
         }
         let cfg = self.judged_config(row.id);
+        let access = self.stored_access();
         // The same checks again: what was true at preview may not be now (ADR-956 §3).
         let cx = CheckCx {
             cfg: &cfg,
@@ -1057,15 +1204,41 @@ impl Engine {
             value: &req.value,
             options: &req.options,
             caller: c,
+            host: self.host.as_ref(),
+            access: access.as_ref(),
         };
         let checked = def.applier.check(&cx)?;
+        // REQ: API-902 (T27.14c, design 4) — what the admin reviewed no longer holds: the host's
+        // facts moved, or the change now weakens and the preview said it did not. Judged again
+        // from a fresh preview, never on the old one's gates and confirm requirements.
+        if checked.host_facts != pre.host_facts || (checked.weakening && !pre.weakening) {
+            return Err(Problem::new(
+                Code::PreviewStale,
+                "this host's addresses changed since the preview, so the review no longer holds",
+            )
+            .hint("Preview the change again."));
+        }
+        // REQ: OBS-007, API-905 (T40.13, review 8) - the dnstap review was judged on the node's entry and
+        // on the section it will run: a change to either since (an ordinary write forwarded and
+        // answered with success, a file edit and reload) means the review no longer holds.
+        let before = def.applier.current(&cfg);
+        if row.id == wrendns_config::guarded::DNSTAP
+            && (before != pre.before || self.dnstap_seen_at(row.id) != pre.seen_at)
+        {
+            return Err(Problem::new(
+                Code::PreviewStale,
+                "the node's dnstap settings changed since the preview, so the review no longer holds",
+            )
+            .hint("Preview the change again."));
+        }
         if checked.would_disconnect {
             return Err(Problem::new(
                 Code::WouldDisconnectYou,
-                "the change would now cut this node off",
+                checked
+                    .disconnect_detail
+                    .unwrap_or_else(|| "the change would now cut this node off".to_owned()),
             ));
         }
-        let before = def.applier.current(&cfg);
         match row.mode {
             Mode::Immediate => self.apply_immediate(c, &row, &req, &pre, before).await,
             Mode::Staged => self.apply_staged(c, &row, &req, &pre, before).await,
@@ -1259,12 +1432,8 @@ impl Engine {
             // REQ: OBS-007, API-905 (T40.13, review) - this row shares its entry with the ordinary
             // write: the primary refuses when the entry it holds is not the one this node saw (an
             // ordinary narrowing was answered with success meanwhile).
-            let seen = store::effective(&self.host.running_config(), &self.state, &self.node)
-                .into_iter()
-                .find(|(e, _)| e.id == row.id)
-                .map(|(e, _)| e.at);
             self.host
-                .write_entry_expecting(&self.node, row.id, Some(entry), &c.username, seen)
+                .write_entry_expecting(&self.node, row.id, Some(entry), &c.username, pre.seen_at)
                 .await?;
         } else {
             self.host
@@ -1294,7 +1463,13 @@ impl Engine {
         let row = def.row;
         let staged = match def
             .applier
-            .stage(Arc::clone(&self.host), self.node.clone(), req.value.clone())
+            .stage(
+                Arc::clone(&self.host),
+                self.node.clone(),
+                req.value.clone(),
+                self.stored_access(),
+                pre.host_facts,
+            )
             .await
         {
             Ok(s) => s,
@@ -1535,7 +1710,18 @@ impl Engine {
                 p.reason.clone(),
             )
         };
+        // REQ: API-902 (T27.14c, design 4) — the host's addresses changed since the stage: the gates
+        // the staged sockets were bound with may no longer be the default. The window runs on.
+        if let Some(why) = guard.stale() {
+            return Err(Problem::new(Code::PreviewStale, why).hint(
+                "Cancel the change and review it again; it rolls back when the window ends.",
+            ));
+        }
         let def = self.row_def(&setting)?;
+        // The entry in force before this change: a failed commit puts it back (not removes it).
+        let previous = self.effective_entries().into_iter().find(|e| {
+            e.id == setting && matches!(e.state, EntryState::Active | EntryState::Probation)
+        });
         let entry = Stored {
             node: self.node.clone(),
             id: setting.clone(),
@@ -1559,17 +1745,31 @@ impl Engine {
         }
         if let Err(e) = guard.commit().await {
             warn!(setting = %setting, "committing the new sockets failed: {e:?}");
-            let _ = self
+            let removed = self
                 .host
-                .write_entry(&self.node, &setting, None, &admin)
+                .write_entry(&self.node, &setting, previous, &admin)
                 .await;
-            self.rollback_locked(pending_id, "commit_failed").await;
+            if let Err(e) = removed {
+                // The new entry still stands (here, or on the primary and replicated), and the
+                // reload may already have applied it: never report this as rolled back.
+                warn!(setting = %setting, "putting the previous entry back failed: {e:?}");
+                return Err(self
+                    .commit_failed_entry_kept(pending_id, &setting, guard.failure_reason())
+                    .await);
+            }
+            // The reload puts the previous list back where the entry had already been applied.
+            let _ = self.host.reload().await;
+            self.rollback_locked(pending_id, guard.failure_reason())
+                .await;
             return Err(Problem::new(
                 Code::Internal,
                 "the node couldn't keep the new sockets, so the change was rolled back",
             ));
         }
         let _ = def;
+        if setting == wrendns_config::guarded::LISTEN {
+            self.prune_gate_lines(&value, &admin).await;
+        }
         let seen = c.remote_under_pending.map(|a| a.to_string());
         {
             let mut g = lock(&self.inner);
@@ -1736,6 +1936,46 @@ impl Engine {
     }
 
     /// [`Engine::rollback`] when the caller already holds the operation lock.
+    /// A commit failed and the previous entry could not be written back: the new entry stands, so
+    /// the outcome is `commit_failed_entry_kept`, never `rolled_back`.
+    async fn commit_failed_entry_kept(
+        &self,
+        pending_id: &str,
+        setting: &str,
+        reason: &'static str,
+    ) -> Problem {
+        let p = {
+            let mut g = lock(&self.inner);
+            if g.pending.as_ref().is_some_and(|p| p.id == pending_id) {
+                g.pending.take()
+            } else {
+                None
+            }
+        };
+        if let Some(mut p) = p {
+            p.end_probes();
+            if let Some(h) = p.expiry.take() {
+                h.abort();
+            }
+            p.guard.abort().await;
+            self.audit_best_effort(
+                &p.actor,
+                "settings.guarded_commit_failed",
+                &self.target_name(setting),
+                &json!({
+                    "setting": setting, "node": self.node, "reason": reason,
+                    "outcome": "commit_failed_entry_kept",
+                    "detail": "the previous entry could not be written back; the new entry stays in force",
+                }),
+            );
+        }
+        self.outcome(setting, "commit_failed_entry_kept", Some(reason));
+        Problem::new(
+            Code::PrimaryUnreachable,
+            "the new listeners are in force: the node couldn't keep the new sockets and couldn't put the previous entry back; change the listeners again to restore the old list",
+        )
+    }
+
     async fn rollback_locked(&self, pending_id: &str, reason: &str) {
         let p = {
             let mut g = lock(&self.inner);

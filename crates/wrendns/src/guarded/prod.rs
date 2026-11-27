@@ -117,7 +117,23 @@ impl ProdHost {
                         Err(e) => Err(Problem::internal(format!("bad answer: {e}"))),
                     }
                 }
-                _ => local(&state),
+                _ => {
+                    // The primary or a standalone node holds the entry itself: the same comparison.
+                    if check
+                        && store::for_node(&state, &node)
+                            .into_iter()
+                            .find(|e| e.id == id)
+                            .map(|e| e.at)
+                            != expect_at
+                    {
+                        return Err(Problem::new(
+                            Code::PreviewStale,
+                            "the node's dnstap settings changed since the preview",
+                        )
+                        .hint("Preview the change again."));
+                    }
+                    local(&state)
+                }
             }
         })
     }

@@ -62,7 +62,7 @@ pub(crate) const NARROWED: &str = "narrowed";
 
 /// The fields of `[telemetry.dnstap]` the files set (`own.file_set` names them). The reader is one
 /// choice, a socket or an address: a file that sets either one sets both.
-fn file_fields(own: &Config) -> Vec<&'static str> {
+pub(crate) fn file_fields(own: &Config) -> Vec<&'static str> {
     let set = |k: &str| {
         own.file_set
             .iter()
@@ -291,6 +291,8 @@ mod tests {
             value,
             options: &options,
             caller: &c,
+            host: &super::super::host::StubHost::default(),
+            access: None,
         })
     }
 

@@ -1852,7 +1852,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult, guarded::GuardedPendingView, guarded::GuardedProbeLine,
+        guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult, guarded::GuardedPendingView, guarded::GuardedProbeLine, guarded::GuardedListenerLine, guarded::ListenValue, guarded::ListenEntry, guarded::ListenTls,
         map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, model::GeoipStatus, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
         model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::RecursorTrace, model::RecursorTraceStep, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
@@ -2003,14 +2003,30 @@ async fn config_etag(b: &Shared) -> Result<String, Problem> {
     Ok(format!("\"{version}\""))
 }
 
+/// REQ: API-902 (T27.14c; owner decision, 2026-11-27) — whether the caller is an admin's own
+/// session (not a viewer, an operator, an agent token, a wall display or an unknown principal).
+fn is_admin_session(ext: &axum::http::Extensions) -> bool {
+    ext.get::<auth::Principal>()
+        .is_some_and(|p| p.role == auth::Role::Admin && p.agent.is_none() && p.display.is_none())
+}
+
 /// Node and build information.
 ///
 /// Version, role, uptime, listeners, whether the query log is on, and the active filter
 /// snapshot. Cheap; suitable for health dashboards.
 #[utoipa::path(get, path = "/api/v1/system/info", tag = "system",
     responses((status = 200, body = SystemInfo, description = "The result.")))]
-async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
-    Json(b.system_info())
+async fn system_info(State(b): State<Shared>, ext: axum::http::Extensions) -> Json<SystemInfo> {
+    let mut info = b.system_info();
+    // REQ: API-902 (T27.14c; owner decision, 2026-11-27) — each listener's certificate and key
+    // paths, limits and options are for admins' own sessions; every other caller (viewer, operator,
+    // an agent token, a wall display, or no known principal) gets the rest.
+    if !is_admin_session(&ext) {
+        for l in &mut info.listener_access {
+            l.without_admin_fields();
+        }
+    }
+    Json(info)
 }
 
 /// How WrenDNS is doing: healthy, degraded, or severe, and why.
@@ -2045,10 +2061,18 @@ async fn system_health(State(b): State<Shared>) -> Result<Json<model::Health>, P
     responses((status = 200, body = Items<model::ProbeResult>, description = "Every probe, by node.")))]
 async fn system_probes(
     State(b): State<Shared>,
+    ext: axum::http::Extensions,
 ) -> Result<Json<Items<model::ProbeResult>>, Problem> {
     let b = request_backend(&b);
     let bk = Arc::clone(&b);
-    let items = blocking(move || Ok(bk.probes())).await?;
+    let mut items = blocking(move || Ok(bk.probes())).await?;
+    // REQ: API-902 (T27.14c; owner decision, 2026-11-27) — a listener's URL path and PROXY setting
+    // are for admins: every other caller gets the target without its path and a generic reason.
+    if !is_admin_session(&ext) {
+        for p in items.iter_mut().filter(|p| p.listener) {
+            p.without_admin_fields();
+        }
+    }
     Ok(Json(Items {
         missing_nodes: b.missing_nodes(),
         items,

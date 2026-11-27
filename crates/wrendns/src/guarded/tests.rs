@@ -44,6 +44,7 @@ fn weaken_flag(_old: &Value, new: &Value) -> bool {
 }
 
 mod dns_proof_tests;
+mod listen_engine_tests;
 
 macro_rules! row {
     ($id:literal, $paths:expr, $mode:expr, $proof:expr, $weak:expr) => {
@@ -142,9 +143,14 @@ impl Applier for TApplier {
                 "needs a label, a port, proxies or probes",
             ));
         }
+        // A test that moves the host's facts between preview and apply (`gate_host::set_facts`).
+        let facts = crate::gate_host::read();
+        let weak_on_public = cx.value.get("weak_on_public").and_then(Value::as_bool) == Some(true);
         Ok(Checked {
             effect: format!("sets {} on {}", cx.value, cx.node),
             would_disconnect: cx.value.get("disconnect").and_then(Value::as_bool) == Some(true),
+            host_facts: weak_on_public.then_some(facts),
+            weakening: weak_on_public && facts.public_ipv4 == Some(true),
             ..Checked::default()
         })
     }
@@ -153,6 +159,8 @@ impl Applier for TApplier {
         host: Arc<dyn Host>,
         _node: String,
         value: Value,
+        _access: Option<Value>,
+        _facts: Option<wrendns_config::HostFacts>,
     ) -> BoxFuture<Result<Staged, Problem>> {
         let (committed, aborted) = FLAGS.with(|f| {
             let f = f.borrow();
@@ -265,6 +273,10 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
                 applier: Arc::new(super::appliers::ListenAccess),
             },
             RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
+                applier: Arc::new(super::listen::Listen),
+            },
+            RowDef {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
                 applier: Arc::new(super::dnstap::Dnstap),
             },
@@ -327,6 +339,15 @@ struct Fake {
     arrives: AtomicBool,
     /// What the node will run after its next start, when it differs from `cfg` (a staged entry).
     pending: Mutex<Option<Arc<Config>>>,
+    /// T27.14c: the lists `stage_listeners` was given, and what the staged sockets are made to do.
+    staged_lists: Mutex<Vec<Vec<wrendns_config::Listener>>>,
+    stage_error: Mutex<Option<crate::server::WindowError>>,
+    commit_error: Mutex<Option<crate::server::WindowError>>,
+    commits: AtomicUsize,
+    aborts: AtomicUsize,
+    /// Once a commit has failed, writing an entry fails too (the primary went away).
+    writes_down: AtomicBool,
+    writes_down_after_commit_error: AtomicBool,
 }
 
 fn key_of(node: &str) -> [u8; 32] {
@@ -359,6 +380,12 @@ impl Host for Fake {
         entry: Option<Stored>,
         by: &str,
     ) -> BoxFuture<Result<(), Problem>> {
+        if self.writes_down.load(Ordering::SeqCst) {
+            return Box::pin(std::future::ready(Err(Problem::new(
+                Code::PrimaryUnreachable,
+                "no primary",
+            ))));
+        }
         let target = if self.is_primary() || store::is_local(id) {
             Arc::clone(&self.state)
         } else {
@@ -535,6 +562,45 @@ impl Host for Fake {
             .unwrap_or(Ok(Kind::Answered));
         Box::pin(std::future::ready(r))
     }
+    fn stage_listeners(
+        &self,
+        list: Vec<wrendns_config::Listener>,
+    ) -> BoxFuture<Result<Vec<crate::server::StagedListener>, crate::server::WindowError>> {
+        if let Some(e) = self.stage_error.lock().unwrap().clone() {
+            return Box::pin(std::future::ready(Err(e)));
+        }
+        let running = self.running_config();
+        let staged = list
+            .iter()
+            .filter(|l| {
+                !running
+                    .listen
+                    .iter()
+                    .any(|r| r.proto == l.proto && r.addr == l.addr)
+            })
+            .map(|l| crate::server::StagedListener {
+                proto: l.proto,
+                addr: l.addr,
+                bound: l.addr,
+                proof: false,
+                evidence: Evidence::new(Vec::new()),
+            })
+            .collect();
+        self.staged_lists.lock().unwrap().push(list);
+        Box::pin(std::future::ready(Ok(staged)))
+    }
+    fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        let r = self.commit_error.lock().unwrap().clone();
+        if r.is_some() && self.writes_down_after_commit_error.load(Ordering::SeqCst) {
+            self.writes_down.store(true, Ordering::SeqCst);
+        }
+        Box::pin(std::future::ready(r.map_or(Ok(()), Err)))
+    }
+    fn abort_listeners(&self) -> BoxFuture<()> {
+        self.aborts.fetch_add(1, Ordering::SeqCst);
+        Box::pin(std::future::ready(()))
+    }
     fn proof_socket(&self, addr: SocketAddr) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>> {
         if self.bind_fails.load(Ordering::SeqCst) {
             return Box::pin(std::future::ready(Err("address already in use".to_owned())));
@@ -611,6 +677,13 @@ fn node_on(
         audit_to_state: AtomicBool::new(false),
         arrives: AtomicBool::new(true),
         pending: Mutex::new(None),
+        staged_lists: Mutex::default(),
+        stage_error: Mutex::default(),
+        commit_error: Mutex::default(),
+        commits: AtomicUsize::new(0),
+        aborts: AtomicUsize::new(0),
+        writes_down: AtomicBool::new(false),
+        writes_down_after_commit_error: AtomicBool::new(false),
     });
     let engine = Engine::new(
         name.to_owned(),
@@ -3129,6 +3202,69 @@ fn api_902_bind_failure_at_start_runs_again_on_the_files_value() {
     probation::reset_fallbacks();
 }
 
+// REQ: API-902, CLU-004 (T27.14c; ADR-956 §4, design 2.5 `failed_start`) — with the real `listen` row:
+// a confirmed listener list that can't bind at start (a VIP the other node holds, an interface that
+// isn't up) falls back for that start only to the file's listeners; the entry stays, and the next
+// start tries it again.
+#[test]
+fn api_902_confirmed_listener_bind_failure_falls_back_at_start_with_the_listen_row() {
+    let _g = FALLBACK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    probation::reset_fallbacks();
+    super::set_this_node("pi-a");
+    let stored = json!({"listeners": [
+        {"proto": "udp", "addr": "0.0.0.0:53"}, {"proto": "tcp", "addr": "0.0.0.0:53"},
+        {"proto": "udp", "addr": "[::]:53"}, {"proto": "tcp", "addr": "[::]:53"},
+        {"proto": "udp", "addr": "198.51.100.7:53"},
+    ]});
+    let (_dir, cfg) = dir_with(&[("listen", stored, EntryState::Active)]);
+    let rows = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
+        applier: Arc::new(super::listen::Listen),
+    }];
+    let build = || {
+        let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+        let mut c = cfg.clone();
+        super::appliers::overlay_with(
+            &mut c,
+            &cfg,
+            &store::for_node(&state, "pi-a"),
+            None,
+            &rows,
+            "pi-a",
+            false,
+        );
+        c
+    };
+    assert_eq!(build().listen.len(), 5, "the entry is overlaid");
+    let seen = std::cell::RefCell::new(Vec::new());
+    let r = super::serve_with_fallback(
+        build(),
+        || Some(build()),
+        || Some(cfg.clone()),
+        &rows,
+        |c| {
+            seen.borrow_mut().push(c.listen.len());
+            if seen.borrow().len() == 1 {
+                Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(
+        *seen.borrow(),
+        vec![5, 4],
+        "the second start runs the file's listeners"
+    );
+    assert_eq!(probation::fallbacks(), vec!["listen".to_owned()]);
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    assert_eq!(store::for_node(&state, "pi-a").len(), 1, "the entry stays");
+    probation::reset_fallbacks();
+}
+
 /// A node directory that follows a primary as a replica, with `entries` for it in the node-managed
 /// blob of the version it last applied. Returns the node's own name (its cluster node ID).
 fn replica_with(entries: &[(&str, Value, EntryState)]) -> (tempfile::TempDir, Config, String) {
@@ -4032,4 +4168,120 @@ async fn obs_007_dnstap_a_confirmed_write_does_not_overwrite_an_unseen_narrowing
     assert!(super::prod::entry_stale(held.first(), &w(None)));
     assert!(!super::prod::entry_stale(held.first(), &w(Some(7))));
     assert!(!super::prod::entry_stale(None, &w(None)));
+}
+
+fn dnstap_entry(node: &str, value: Value, at: u64) -> Stored {
+    Stored {
+        node: node.into(),
+        id: "dnstap-output".into(),
+        value,
+        mode: "staged".into(),
+        state: EntryState::Active,
+        by: "bob".into(),
+        at,
+    }
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 8) - a review is judged on the node's entry as the admin saw
+// it: when that entry is deleted by an ordinary narrowing (answered with success) after the preview,
+// the confirm is `preview_stale` even though the replica's own version did not move and the section
+// the node will run is the same, and the stored entry is not rewritten.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirm_after_the_entry_was_removed_is_stale() {
+    let (a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let e1 = dnstap_entry("pi-b", json!({"socket": "/a"}), 100);
+    store::put(&a.host.state, &e1, 100, "bob").unwrap();
+    store::put(&b.host.state, &e1, 100, "bob").unwrap();
+    let mut pending = Config::default();
+    pending.telemetry.dnstap.socket = Some("/a".into());
+    *b.host.pending.lock().unwrap() = Some(Arc::new(pending));
+    let v = json!({"socket": "/a"});
+    let p = preview_for(&b.engine, &alice, "pi-b", "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(!p.weakening, "the same tap: no widening at preview");
+    // An ordinary narrowing removes the entry meanwhile; the section the node runs is unchanged here.
+    store::delete(&a.host.state, "pi-b", "dnstap-output").unwrap();
+    store::delete(&b.host.state, "pi-b", "dnstap-output").unwrap();
+    let e = apply_for(&b.engine, &alice, "pi-b", "dnstap-output", &p, v)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+    assert!(store::for_node(&a.host.state, "pi-b").is_empty());
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 8) - the same for the section the node will run (a file edit
+// and reload do not move the version): a confirm after it changed is `preview_stale`, also when it
+// still widens.
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_a_confirm_after_the_pending_section_changed_is_stale() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let v = json!({"socket": "/a"});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(p.weakening);
+    let mut now = Config::default();
+    now.telemetry.dnstap.socket = Some("/b".into());
+    *n.host.pending.lock().unwrap() = Some(Arc::new(now));
+    let e = n
+        .engine
+        .apply(&a, "dnstap-output", apply_req(&p, v.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, Code::PreviewStale, "{e:?}");
+    // A fresh review on the new state goes through.
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+}
+
+// REQ: OBS-007, API-905 (T40.13, review 8) - the review of a widening that carries a field the files
+// set says the node keeps the saved values whatever the file later does; and a confirmed entry that
+// holds the file's reader keeps it when the file drops its section (pinned: it was named in the
+// phrase the admin typed).
+#[tokio::test(start_paused = true)]
+async fn obs_007_dnstap_review_names_the_file_values_it_saves() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut file = Config::default();
+    file.telemetry.dnstap.socket = Some("/run/f.sock".into());
+    file.file_set.push("telemetry.dnstap.socket".to_owned());
+    *n.host.file_cfg.lock().unwrap() = Arc::new(file.clone());
+    *n.host.cfg.lock().unwrap() = Arc::new(file.clone());
+    let v = json!({"socket": "/run/f.sock", "forwarder": true});
+    let p = preview(&n.engine, &a, "dnstap-output", v.clone())
+        .await
+        .unwrap();
+    assert!(
+        p.warnings
+            .iter()
+            .any(|w| w.contains("config file sets socket") && w.contains("even if the file later")),
+        "{:?}",
+        p.warnings
+    );
+    n.engine
+        .apply(&a, "dnstap-output", apply_req(&p, v))
+        .await
+        .unwrap();
+    // After the restart the staged entry is in force.
+    let mut held = store::for_node(&n.host.state, "pi-a");
+    assert_eq!(held.len(), 1);
+    held[0].state = EntryState::Active;
+    let defs = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
+        applier: Arc::new(super::dnstap::Dnstap),
+    }];
+    // The file drops its section: the node keeps what was confirmed with the phrase.
+    let none = Config::default();
+    let mut cfg = none.clone();
+    super::appliers::overlay_with(&mut cfg, &none, &held, None, &defs, "pi-a", false);
+    assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/f.sock"));
+    assert!(cfg.telemetry.dnstap.forwarder);
 }

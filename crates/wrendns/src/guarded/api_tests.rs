@@ -567,6 +567,7 @@ fn api_902_test_row_absent_in_release() {
             "restart-now",
             "api-http-redirect",
             "listen-access",
+            "listen",
             "dnstap-output"
         ],
         "only the real rows have appliers"
