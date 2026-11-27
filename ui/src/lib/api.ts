@@ -628,6 +628,19 @@ export const api = {
       query: { dryRun: dryRun || undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
+  // REQ: DSC-914 (T36.10c) — the locations with the names each composes, and a location's create, replace and
+  // delete (the writes with a dry run; a reason goes in the audit record).
+  locations: () => get<S['LocationList']>('/locations'),
+  putLocation: (slug: string, body: S['LocationInput'], dryRun = false, reason?: string) =>
+    call<S['ConfigChange']>('PUT', `/locations/${encodeURIComponent(slug)}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: { ...(reason ? { 'x-wrendns-reason': reason } : {}), ...(dryRun ? {} : { 'idempotency-key': newKey() }) },
+    }),
+  deleteLocation: (slug: string, reason?: string) =>
+    call<S['ConfigChange']>('DELETE', `/locations/${encodeURIComponent(slug)}`, {
+      headers: { ...(reason ? { 'x-wrendns-reason': reason } : {}), 'idempotency-key': newKey() },
+    }),
   putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/${path}/${encodeURIComponent(name)}`, {
       body,

@@ -223,7 +223,7 @@ impl Hold {
                 "locations: this node stopped leading before the held entries were published; they are not part of the cluster's configuration"
             );
             *self.lost() = Some(format!(
-                "the held locations ({held}) were not published before this node stopped leading; enter them again on the new primary"
+                "the held locations ({held}) were not published before this node stopped leading; entries that only a config file holds are not carried to the new primary, so keep the same file on that node, or create them through the API there"
             ));
             self.finish();
             return false;

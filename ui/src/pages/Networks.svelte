@@ -10,6 +10,9 @@
   import Drawer from '../lib/components/Drawer.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import LocationBadge from '../lib/components/LocationBadge.svelte';
+  import LocationFilter from '../lib/components/LocationFilter.svelte';
+  import { loadLocations, locationOfAddress, locationOfNetwork } from '../lib/locations.svelte';
 
   type Net = S['NetworkInfo'];
   let networks = $state<Net[]>([]);
@@ -35,6 +38,12 @@
       .finally(() => (loaded = true));
   }
   $effect(load);
+  // REQ: DSC-914 (T36.10c) — the location of each network, and a filter on it.
+  let locFilter = $state('');
+  $effect(() => {
+    void loadLocations();
+  });
+  const shown = $derived(networks.filter((n) => !locFilter || locationOfNetwork(n.subnet)?.slug === locFilter));
 
   // IPv4 membership without a library: is `ip` inside `cidr`?
   function ipToInt(ip: string): number | null {
@@ -106,6 +115,7 @@
     </p>
   {/if}
 
+  <LocationFilter bind:value={locFilter} />
   <section class="card">
     {#if loaded && networks.length === 0 && !error}
       <p class="empty" data-testid="networks-empty">
@@ -126,6 +136,7 @@
               <th class="wide">Domain</th>
               <th>Router</th>
               <th>Group</th>
+              <th>Location</th>
               <th class="num wide">Size</th>
               <th class="num">Devices</th>
               <th>Share used</th>
@@ -134,7 +145,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each networks as n (n.subnet + n.source + (n.router ?? ''))}
+            {#each shown as n (n.subnet + n.source + (n.router ?? ''))}
               <tr data-testid="network-row">
                 <td>
                   <button type="button" class="link" onclick={() => show(n)} data-testid="network-open">{n.name}</button>
@@ -151,6 +162,7 @@
                   {#if n.group}{n.group}{:else}<span class="muted">none</span>{/if}
                   {#if groupOnly(n)}<span class="badge info" data-testid="group-only">group only</span>{/if}
                 </td>
+                <td class="small"><LocationBadge loc={locationOfNetwork(n.subnet)} /></td>
                 <td class="num wide">{num(n.addresses)}</td>
                 <td class="num">{num(n.devices)}</td>
                 <td>
@@ -187,7 +199,7 @@
       {#if devices.length}
         <div class="table-wrap">
           <table data-testid="network-devices">
-            <thead><tr><th>Address</th><th>DNS name</th><th>IPv6</th><th>Name it gave</th><th>From</th></tr></thead>
+            <thead><tr><th>Address</th><th>DNS name</th><th>IPv6</th><th>Name it gave</th><th>From</th><th>Location</th></tr></thead>
             <tbody>
               {#each devices as d (d.ip + d.mac)}
                 <tr>
@@ -198,6 +210,7 @@
                   <td class="mono small" data-testid="network-ipv6">{d.ipv6?.length ? d.ipv6.join(', ') : 'none'}</td>
                   <td>{d.hostname ?? ''}</td>
                   <td class="small">{d.source === 'router' && d.router ? `router: ${d.router}` : d.source}</td>
+                  <td class="small"><LocationBadge loc={locationOfAddress(d.ip)} /></td>
                 </tr>
               {/each}
             </tbody>
