@@ -11,8 +11,15 @@ const ADMIN = { user: 'admin', pass: 'correct horse battery' };
 const VIEWER = { user: 'settings-vw', pass: 'viewer long password' };
 
 /** Signs in as `who` and opens the page at `hash`. */
-async function signedIn(browser: Browser, who: { user: string; pass: string }, hash: string): Promise<Page> {
+async function signedIn(
+  browser: Browser,
+  who: { user: string; pass: string },
+  hash: string,
+  // Runs on the new page before it loads, so a route mock is in place for the first request.
+  before?: (page: Page) => Promise<void>,
+): Promise<Page> {
   const page = await browser.newPage();
+  if (before) await before(page);
   await page.goto(`/#/${hash}`);
   await page.getByLabel('Username', { exact: true }).fill(who.user);
   await page.getByLabel('Password', { exact: true }).fill(who.pass);
@@ -162,11 +169,12 @@ test.describe('settings from T27.11', () => {
   test('dns_906 the card lists the root trust anchors and a key in hold-down', async ({ browser }) => {
     // REQ: DNS-906 (T40.5) - every node's anchors with their RFC 5011 state; the answer is mocked (the
     // e2e server has validation off and no root to read).
-    const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
-    try {
-      const day = 86_400;
-      const now = Math.floor(Date.now() / 1000);
-      await page.route('**/api/v1/dnssec/anchors', (r) =>
+    const day = 86_400;
+    const now = Math.floor(Date.now() / 1000);
+    // The mock goes in before the page loads and before the sign-in: a reload straight after the
+    // sign-in click raced it and landed on the sign-in page.
+    const mock = (p: Page) =>
+      p.route('**/api/v1/dnssec/anchors', (r) =>
         r.fulfill({
           json: {
             items: [
@@ -186,7 +194,8 @@ test.describe('settings from T27.11', () => {
           },
         }),
       );
-      await page.reload();
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries', mock);
+    try {
       const card = page.getByTestId('dnssec-card');
       await expect(card).toBeVisible({ timeout: 30_000 });
       const nodes = card.getByTestId('anchors-node');
