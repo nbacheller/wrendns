@@ -53,7 +53,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import Picker from './Picker.svelte';
-  import { api, type S } from '../api';
+  import { api, ApiError, type S } from '../api';
+  import GuardedChange from './GuardedChange.svelte';
   import { can } from '../session.svelte';
   import { currentMode } from '../mode.svelte';
   import Drawer from './Drawer.svelte';
@@ -80,10 +81,11 @@
     draft = null,
     adminOnly,
     fileReadOnly = false,
+    guardedId,
     validate,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients' | 'sink' | 'map' | 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'sinks' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients' | 'sink' | 'map' | 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings' | 'dnstap_settings';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'sinks' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings' | 'dnstap-settings';
     title: string;
     noun: string;
     fields: Field[];
@@ -107,7 +109,8 @@
     /** REQ: API-901 (T27.5) — the server's checks that a field's bound alone can't say (a timeout
      *  shorter than the interval, a size string): the reason to refuse the draft, or null. The
      *  server checks the same things, so this only shows the reason sooner. */
-    validate?: (values: Record<string, unknown>) => string | null;
+    /** `loaded` is the entry as read and `setByFile` its fields a file sets: a value left as read is no new setting. */
+    validate?: (values: Record<string, unknown>, loaded?: Record<string, unknown>, setByFile?: string[]) => string | null;
     /** REQ: API-014 (T24.16, ADR-926 §1) — what a draft needs an admin for (a program address): the
      *  reason, for a non-admin, which holds Check and Apply; the server refuses it too. `saved` is the
      *  entry as it was read (null for a new entry), so a draft that leaves a saved program address
@@ -117,7 +120,17 @@
      *  removed here (the server refuses it, 409 `set_by_file`): its row says so instead of offering
      *  Edit (event sinks). */
     fileReadOnly?: boolean;
+    /** The guarded row that takes a change the server refuses as `guarded_only` (dnstap). */
+    guardedId?: string;
   } = $props();
+  // REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - a setting that has a guarded row (`guardedId`): a
+  // change the server says is the guarded flow's (409 `guarded_only`: it widens what leaves the process)
+  // is not applied here. The server's own words are shown, and the same review the other guarded settings
+  // use takes over: the preview, the phrase to type, a sign-in from the last 10 minutes.
+  let guardedValue = $state.raw<Record<string, unknown> | null>(null);
+  /** The review was opened with the file's values (a revert the server refused): it saves them, it does not remove the saved value. */
+  let reviewingFile = $state(false);
+  const guardedOnly = (err: unknown) => !!guardedId && err instanceof ApiError && err.code === 'guarded_only';
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
     if (!formAction || !editing) return;
@@ -197,6 +210,8 @@
 
   function open(e?: S['ConfigEntry'], fill: Record<string, unknown> = {}, name = '') {
     preview = null;
+    guardedValue = null;
+    reviewingFile = false;
     result = null;
     formError = null;
     formOut = null;
@@ -279,6 +294,12 @@
   function sameNameError(): Error {
     return new Error(`A ${noun} called ${editing!.name.trim()} already exists. Pick another name.`);
   }
+  /** The server refused the draft as the guarded flow's: show its words and offer the review. */
+  function holdForReview(err: unknown) {
+    formError = err;
+    preview = null;
+    guardedValue = body();
+  }
   async function check(e: SubmitEvent) {
     e.preventDefault();
     if (!editing) return;
@@ -287,7 +308,7 @@
       preview = null;
       return;
     }
-    const why = validate?.(editing.values) ?? null;
+    const why = validate?.(editing.values, original, fileSet) ?? null;
     if (why) {
       formError = new Error(why);
       preview = null;
@@ -298,7 +319,8 @@
     try {
       preview = await api.putEntry(path, editing.name.trim(), body(), true);
     } catch (err) {
-      formError = err;
+      if (guardedOnly(err)) holdForReview(err);
+      else formError = err;
       preview = null;
     } finally {
       busy = false;
@@ -310,7 +332,7 @@
       formError = sameNameError();
       return;
     }
-    const why = validate?.(editing.values) ?? null;
+    const why = validate?.(editing.values, original, fileSet) ?? null;
     if (why) {
       formError = new Error(why);
       return;
@@ -325,10 +347,23 @@
       // Saved and kept for Git: it exists now, so a second save is an update, not a new name.
       else if (editing) editing = { ...editing, isNew: false };
     } catch (err) {
-      formError = err;
+      if (guardedOnly(err)) holdForReview(err);
+      else formError = err;
     } finally {
       busy = false;
     }
+  }
+  /** REQ: OBS-007, API-905 (T40.13, review) - the way back to the file would copy more than this node will
+   *  run, so it is the review's: the form opens at this node's file values (a field the files set keeps
+   *  the file's value, the others take their defaults) and hands them to the review. */
+  function reviewFileValues(e: S['ConfigEntry'], err: unknown) {
+    const def = (e.definition ?? {}) as Record<string, unknown>;
+    const set = e.setByFile ?? [];
+    const fill: Record<string, unknown> = {};
+    for (const f of fields) fill[f.key] = set.includes(f.key) ? def[f.key] : (f.initial ?? '');
+    open(e, fill);
+    holdForReview(err);
+    reviewingFile = true;
   }
   async function remove(e: S['ConfigEntry']) {
     busy = true;
@@ -339,7 +374,8 @@
       onchanged?.();
       if (result.keepInGit) editing = { name: e.name, isNew: false, values: {} };
     } catch (err) {
-      error = err;
+      if (guardedOnly(err)) reviewFileValues(e, err);
+      else error = err;
     } finally {
       busy = false;
     }
@@ -510,7 +546,21 @@
         {/each}
         {#if note}<p class="small" data-testid="editor-note">{note(editing.values)}</p>{/if}
         <ErrorNote error={formError} />
-        {#if preview}
+        {#if guardedValue && guardedId}
+          <div class="preview" data-testid="entry-guarded">
+            {#if reviewingFile}<p class="small" data-testid="entry-guarded-file-note">This saves a value equal to the config file's values today. It is not a return to the file. If the file later drops one of them, this node keeps the saved value. While the file sets a field, the file's value wins, and if that would copy more than both the saved value and the file alone, the saved value is not applied until the file changes back. To follow the file again, remove the saved value.</p>{/if}
+            <GuardedChange
+              id={guardedId}
+              label={title}
+              value={guardedValue}
+              onDone={async () => {
+                await load();
+                onchanged?.();
+              }}
+            />
+            <div class="row"><button type="button" onclick={() => { guardedValue = null; formError = null; }}>Change it</button></div>
+          </div>
+        {:else if preview}
           <div class="preview" data-testid="entry-preview">
             <p><b>What this will do:</b> {preview.impact || 'Changes the configuration as shown.'}</p>
             {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}

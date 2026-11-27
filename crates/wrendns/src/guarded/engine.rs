@@ -194,6 +194,12 @@ pub(crate) struct Preview {
     /// The host facts the preview was judged with (`None` for a row that does not read them).
     host_facts: Option<wrendns_config::HostFacts>,
     needs_recent: bool,
+    /// REQ: OBS-007, API-905 (T40.13, review 8) - what a dnstap review was judged on: the time of the
+    /// node's entry the admin saw (`None`: none) and the section the node will run. A confirm that
+    /// finds either changed is `preview_stale`, however the change came about (a forwarded write
+    /// answered with success meanwhile, a file edit and reload).
+    seen_at: Option<u64>,
+    before: Value,
     acknowledgements: Vec<String>,
     /// For `restart-now`: the staged entries it listed.
     staged_listed: Vec<String>,
@@ -472,6 +478,39 @@ impl Engine {
         })
     }
 
+    /// REQ: OBS-007, API-905 (T40.13) - [`Self::set_by_file`] for a request with this value. The dnstap
+    /// row is locked per field: a value is refused only if it changes a field the files set, so a
+    /// node whose file names the reader's socket can still have the feeds or the sampling confirmed.
+    /// The configuration a change to `id` is judged against: what the node runs, except for the dnstap
+    /// row, which is judged on what the node will run after its next start (a staged value
+    /// included), as the ordinary write is (ADR-1107 point 4).
+    fn judged_config(&self, id: &str) -> Arc<Config> {
+        if id == wrendns_config::guarded::DNSTAP {
+            self.host.pending_config()
+        } else {
+            self.host.running_config()
+        }
+    }
+
+    /// The time of this node's entry of the row, as this node sees it now (`None`: no entry); only the
+    /// dnstap row shares its entry with an ordinary write, so only it is read.
+    fn dnstap_seen_at(&self, id: &str) -> Option<u64> {
+        if id != wrendns_config::guarded::DNSTAP {
+            return None;
+        }
+        store::effective(&self.host.running_config(), &self.state, &self.node)
+            .into_iter()
+            .find(|(e, _)| e.id == id)
+            .map(|(e, _)| e.at)
+    }
+
+    fn set_by_file_for(&self, row: &Row, value: &Value) -> bool {
+        if row.id == wrendns_config::guarded::DNSTAP {
+            return super::dnstap::changes_file_field(&self.host.file_config(), value);
+        }
+        self.set_by_file(row)
+    }
+
     fn resolve(&self, node: Option<&str>) -> Result<Target, Problem> {
         let Some(n) = node.map(str::trim).filter(|n| !n.is_empty()) else {
             return Ok(Target::Local);
@@ -585,6 +624,27 @@ impl Engine {
 
     // ---- status --------------------------------------------------------------------------
 
+    /// REQ: OBS-007, API-905 (T40.13) - a dnstap entry the config file displaces: a restart would not
+    /// apply it (the node runs the file's section), so it is not "pending a restart".
+    fn displaced(&self, e: &Stored) -> bool {
+        e.id == wrendns_config::guarded::DNSTAP
+            && e.mode != super::dnstap::NARROWED
+            && super::dnstap::not_applied(&self.host.file_config(), &e.mode, &e.value)
+    }
+
+    /// REQ: OBS-007, API-905 (T40.13) - an ordinary (narrowed) dnstap entry the config file now
+    /// outgrows: the node's next start deletes it (`begin_for`), so it is neither pending nor kept.
+    fn dropped_at_next_start(&self, e: &Stored) -> bool {
+        e.id == wrendns_config::guarded::DNSTAP
+            && e.mode == super::dnstap::NARROWED
+            && super::dnstap::not_applied(&self.host.file_config(), &e.mode, &e.value)
+    }
+
+    /// A staged entry a restart applies (one the file displaces or outgrows is not).
+    fn restart_pending(&self, e: &Stored) -> bool {
+        e.state == EntryState::Staged && !self.displaced(e) && !self.dropped_at_next_start(e)
+    }
+
     /// This node's guarded settings and what is pending. No value, preview ID or token.
     pub(crate) fn status_local(&self) -> GuardedNodeStatus {
         let entries = self.effective_entries();
@@ -601,9 +661,13 @@ impl Engine {
                     mode: d.row.mode.as_str().to_owned(),
                     proof: d.row.proof.map(|p| p.as_str().to_owned()),
                     paths: d.row.paths.iter().map(|p| (*p).to_owned()).collect(),
-                    set_by_file: self.set_by_file(&d.row),
+                    // The dnstap row is locked per field, for the value asked (`set_by_file_for`).
+                    set_by_file: d.row.id != wrendns_config::guarded::DNSTAP
+                        && self.set_by_file(&d.row),
                     has_entry: e.is_some(),
-                    pending_restart: e.is_some_and(|e| e.state == EntryState::Staged),
+                    pending_restart: e.is_some_and(|e| self.restart_pending(e)),
+                    displaced_by_file: e.is_some_and(|e| self.displaced(e)),
+                    dropped_at_next_start: e.is_some_and(|e| self.dropped_at_next_start(e)),
                     on_probation: e.is_some_and(|e| e.state == EntryState::Probation),
                     suppressed: suppressed.contains_key(d.row.id),
                 }
@@ -623,7 +687,7 @@ impl Engine {
             pending,
             pending_restart: entries
                 .iter()
-                .filter(|e| e.state == EntryState::Staged)
+                .filter(|e| self.restart_pending(e))
                 .map(|e| e.id.clone())
                 .collect(),
             outcomes: store::outcomes(&self.state),
@@ -721,7 +785,7 @@ impl Engine {
         req: &GuardedPreviewRequest,
     ) -> Result<GuardedPreview, Problem> {
         let row = &def.row;
-        if self.set_by_file(row) {
+        if self.set_by_file_for(row, &req.value) {
             return Err(Problem::new(
                 Code::SetByFile,
                 format!(
@@ -731,9 +795,9 @@ impl Engine {
             )
             .hint("Remove it from the file (and restart) to change it here."));
         }
-        let cfg = self.host.running_config();
+        let cfg = self.judged_config(row.id);
         let access = self.stored_access();
-        let (checked, before) = if row.id == RESTART_NOW {
+        let (mut checked, before) = if row.id == RESTART_NOW {
             (self.restart_checked()?, Value::Null)
         } else {
             let cx = CheckCx {
@@ -753,6 +817,19 @@ impl Engine {
                 checked.disconnect_detail.clone().unwrap_or_else(|| "the change would leave this node without an API or DNS listener, or remove the listener this request came in on".to_owned()),
             )
             .hint("Add the new listener first, then remove the old one in a second change."));
+        }
+        // REQ: OBS-007, API-905 (T40.13, review 8) - a confirmed dnstap entry holds the whole value, a
+        // field the files set included (the card sends every field). It is the node's own from then
+        // on: if the files later change or drop that field, the node keeps what was confirmed. Said in
+        // every review that widens and carries such a field, not only when reverting to the file.
+        if row.id == wrendns_config::guarded::DNSTAP && checked.weakening {
+            let held = super::dnstap::file_fields(&self.host.file_config());
+            if !held.is_empty() {
+                checked.warnings.push(format!(
+                    "The config file sets {} today. Confirming saves those values with the rest. If the file later drops one of them, this node keeps the saved value. While the file sets a field, the file's value wins, and if that would copy more than both the saved value and the file alone, the saved value is not applied until the file changes back. To follow the file again, remove the saved value.",
+                    held.join(", ")
+                ));
+            }
         }
         self.pending_conflict(row.mode, row.id)?;
         let weakening = (row.weakens)(&before, &req.value) || checked.weakening;
@@ -778,6 +855,8 @@ impl Engine {
                     weakening,
                     host_facts: checked.host_facts,
                     needs_recent,
+                    seen_at: self.dnstap_seen_at(row.id),
+                    before: before.clone(),
                     acknowledgements: checked.acknowledgements.clone(),
                     staged_listed: if row.id == RESTART_NOW {
                         self.staged_ids()
@@ -1055,7 +1134,7 @@ impl Engine {
                 "the confirmation doesn't match: type exactly `{phrase}`"
             )));
         }
-        if self.set_by_file(row) {
+        if self.set_by_file_for(row, &req.value) {
             return Err(Problem::new(
                 Code::SetByFile,
                 "a configuration file now sets it",
@@ -1139,7 +1218,7 @@ impl Engine {
         if row.id == RESTART_NOW {
             return self.restart_apply(c, &req, &pre).await;
         }
-        let cfg = self.host.running_config();
+        let cfg = self.judged_config(row.id);
         let access = self.stored_access();
         // The same checks again: what was true at preview may not be now (ADR-956 §3).
         let cx = CheckCx {
@@ -1162,6 +1241,19 @@ impl Engine {
             )
             .hint("Preview the change again."));
         }
+        // REQ: OBS-007, API-905 (T40.13, review 8) - the dnstap review was judged on the node's entry and
+        // on the section it will run: a change to either since (an ordinary write forwarded and
+        // answered with success, a file edit and reload) means the review no longer holds.
+        let before = def.applier.current(&cfg);
+        if row.id == wrendns_config::guarded::DNSTAP
+            && (before != pre.before || self.dnstap_seen_at(row.id) != pre.seen_at)
+        {
+            return Err(Problem::new(
+                Code::PreviewStale,
+                "the node's dnstap settings changed since the preview, so the review no longer holds",
+            )
+            .hint("Preview the change again."));
+        }
         if checked.would_disconnect {
             return Err(Problem::new(
                 Code::WouldDisconnectYou,
@@ -1170,7 +1262,6 @@ impl Engine {
                     .unwrap_or_else(|| "the change would now cut this node off".to_owned()),
             ));
         }
-        let before = def.applier.current(&cfg);
         match row.mode {
             Mode::Immediate => self.apply_immediate(c, &row, &req, &pre, before).await,
             Mode::Staged => self.apply_staged(c, &row, &req, &pre, before).await,
@@ -1359,10 +1450,22 @@ impl Engine {
         pre: &Preview,
         before: Value,
     ) -> Result<GuardedApplied, Problem> {
-        let entry = self.stored(row, req, EntryState::Staged, &c.username);
-        self.host
-            .write_entry(&self.node, row.id, Some(entry), &c.username)
-            .await?;
+        let mut entry = self.stored(row, req, EntryState::Staged, &c.username);
+        if row.id == wrendns_config::guarded::DNSTAP {
+            // Every write of the shared entry gets a distinct, increasing time (as the ordinary
+            // write does), so the stale check can tell a second confirm from the first.
+            entry.at = entry.at.max(pre.seen_at.map_or(0, |a| a + 1));
+            // REQ: OBS-007, API-905 (T40.13, review) - this row shares its entry with the ordinary
+            // write: the primary refuses when the entry it holds is not the one this node saw (an
+            // ordinary narrowing was answered with success meanwhile).
+            self.host
+                .write_entry_expecting(&self.node, row.id, Some(entry), &c.username, pre.seen_at)
+                .await?;
+        } else {
+            self.host
+                .write_entry(&self.node, row.id, Some(entry), &c.username)
+                .await?;
+        }
         self.finish_audit(c, row, req, &before, "staged", pre.weakening);
         Ok(self.applied(
             "staged",

@@ -92,6 +92,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         listeners: crate::server::ListenerHandle::detached(),
         config_writes: tokio::sync::Mutex::new(()),
         allowed: ArcSwap::from_pointee(Vec::new()),
+        dnstap_started: ArcSwapOption::empty(),
         probes: Arc::default(),
         shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         traces: Arc::default(),

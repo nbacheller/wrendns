@@ -55,6 +55,10 @@ pub(crate) struct Sources {
     /// REQ: DNS-014 (T27.14h) — `[access] allowed_networks` for the web UI and the API, read again
     /// at each reload (a change to the list applies without a restart, on every node).
     pub(crate) allowed: ArcSwap<Vec<Cidr>>,
+    /// REQ: OBS-007, API-905 (T40.13) - `[telemetry.dnstap]` as this process started the tap with (the
+    /// section's fields, as the entry shows them): the entry says "restart needed" while the settings in
+    /// effect differ. `None` when unknown.
+    pub(crate) dnstap_started: ArcSwapOption<serde_json::Value>,
     /// The list fetcher and compiler, when this node handles lists.
     pub(crate) lists: ArcSwapOption<ListsShared>,
     /// Query-log write counters, when the query log is on.

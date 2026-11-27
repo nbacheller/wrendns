@@ -55,6 +55,10 @@ pub(crate) enum Write {
         /// REQ: API-014 — the agent token's name when an agent made it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        /// REQ: OBS-007, API-905 (T40.13) - a dnstap write carries the sending node's own view of the
+        /// section (its files and what it runs after its next start): the primary cannot see them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_view: Option<serde_json::Value>,
     },
     Client {
         name: String,
@@ -90,6 +94,7 @@ impl std::fmt::Debug for Write {
                 simulate,
                 role,
                 agent,
+                node_view,
             } => f
                 .debug_struct("Managed")
                 .field("kind", kind)
@@ -101,6 +106,7 @@ impl std::fmt::Debug for Write {
                 .field("simulate", simulate)
                 .field("role", role)
                 .field("agent", agent)
+                .field("node_view", node_view)
                 .finish(),
             Self::Client {
                 name,
@@ -137,6 +143,7 @@ impl From<ManagedWrite> for Write {
             simulate: w.simulate,
             role: w.role,
             agent: w.agent,
+            node_view: w.node_view,
         }
     }
 }
@@ -236,6 +243,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
             simulate,
             role,
             agent,
+            node_view,
         } => {
             let action = match kind {
                 ManagedKind::Record => "record",
@@ -280,6 +288,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::TelemetryAnomaly => "anomaly_settings",
                 ManagedKind::TelemetryQlog => "qlog_settings",
                 ManagedKind::TelemetryMetrics => "metrics_settings",
+                ManagedKind::TelemetryDnstap => "dnstap_settings",
             };
             let deleting = body.is_none();
             let r = local
@@ -295,6 +304,9 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                     // the role the entry node vouches for (none from an older node).
                     role,
                     agent,
+                    // REQ: OBS-007, API-905 - the node the write came from, by its certificate.
+                    origin: Some(peer.to_owned()),
+                    node_view,
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
@@ -635,6 +647,7 @@ fn settings_kinds_understood(
             | ManagedKind::TelemetryAnomaly
             | ManagedKind::TelemetryQlog
             | ManagedKind::TelemetryMetrics
+            | ManagedKind::TelemetryDnstap
             | ManagedKind::Map
             | ManagedKind::Filter
             | ManagedKind::Access
@@ -644,16 +657,21 @@ fn settings_kinds_understood(
     // REQ: DNS-014 (T27.14h, DSC-908) - the `access` kind is gated by the feature every member
     // announces, not by a version number: a development build carries the same number as one
     // that cannot read the kind.
-    if kind == ManagedKind::Access {
+    // REQ: OBS-007, API-905 (T40.13) - the `dnstap_settings` kind is gated the same way.
+    let gated = match kind {
+        ManagedKind::Access => Some(wrendns_cluster::gate::Feature::Access),
+        ManagedKind::TelemetryDnstap => Some(wrendns_cluster::gate::Feature::Dnstap),
+        _ => None,
+    };
+    if let Some(feature) = gated {
         // A DELETE (back to the files) is never held: it is the way out.
         if !is_put {
             return Ok(());
         }
-        return crate::upgrade_gate::enforce(Some(cluster), wrendns_cluster::gate::Feature::Access)
-            .map_err(|why| {
-                Problem::new(Code::UpgradeRequired, why)
-                    .hint("Upgrade the member named, then make this change again.")
-            });
+        return crate::upgrade_gate::enforce(Some(cluster), feature).map_err(|why| {
+            Problem::new(Code::UpgradeRequired, why)
+                .hint("Upgrade the member named, then make this change again.")
+        });
     }
     let since = if matches!(kind, ManagedKind::Discovery | ManagedKind::Cmdb) {
         DISCOVERY_SINCE
@@ -776,6 +794,7 @@ mod tests {
             simulate: None,
             role: Some(Role::Admin),
             agent: None,
+            node_view: None,
         };
         let logged = format!("{w:?}");
         assert!(leaks(&logged).is_empty(), "{logged}");
@@ -796,6 +815,54 @@ mod tests {
             .concat();
         assert!(audit.contains("alice via pi"), "{audit}");
         assert!(leaks(&audit).is_empty(), "{audit}");
+    }
+
+    /// REQ: OBS-007, API-905 (T40.13, review) - a dnstap change forwarded from a replica is the
+    /// replica's: a tap turned off on its card removes the replica's own confirmed entry and leaves the
+    /// primary's alone (the primary reads the write as the node it came from, by its certificate).
+    #[tokio::test]
+    async fn obs_007_forwarded_tap_off_removes_the_senders_entry() {
+        use crate::credential_tests::harness;
+        use crate::dnstap_settings_tests::{entry_of, put_guarded_on};
+        let h = harness("");
+        crate::guarded::set_this_node("pi-a");
+        put_guarded_on("pi-a", &h, serde_json::json!({ "socket": "/run/a.sock" }));
+        put_guarded_on("pi-b", &h, serde_json::json!({ "socket": "/run/b.sock" }));
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let w = Write::Managed {
+            kind: ManagedKind::TelemetryDnstap,
+            name: "default".into(),
+            body: Some(serde_json::json!({})),
+            dry_run: false,
+            expect: None,
+            by: "alice".into(),
+            simulate: None,
+            role: Some(Role::Admin),
+            agent: None,
+            // The replica's own view: no tap in its files, its confirmed one to be run.
+            node_view: Some(serde_json::json!({
+                "file": { "socket": null, "address": null, "sample_every": 1, "buffer": 10000, "forwarder": false, "resolver": false },
+                "file_set": [],
+                "pending": { "socket": "/run/b.sock", "address": null, "sample_every": 1, "buffer": 10000, "forwarder": false, "resolver": false },
+            })),
+        };
+        let Answer::Ok(c) = apply(&h.src, &local, "pi-b", "pi", w).await else {
+            panic!("refused")
+        };
+        assert_eq!(c["applied"], true, "{c}");
+        assert!(entry_of(&h, "pi-b").is_none(), "the sender's tap is off");
+        assert!(entry_of(&h, "pi-a").is_some(), "the primary's is untouched");
+        // REQ: OBS-007, API-905 (review 4) - the record names the node the change was for, and its
+        // before and after are that node's own (the replica's tap), not the primary's.
+        assert_eq!(c["node"], "pi-b", "{c}");
+        assert_eq!(c["before"]["socket"], "/run/b.sock", "{c}");
+        let audit = h.audit_text();
+        assert!(
+            audit.contains("pi-b") && audit.contains("/run/b.sock") && audit.contains("\"node\""),
+            "{audit}"
+        );
     }
 
     /// REQ: API-014, CLU-010 (T23.2) — the primary checks the credential rules again for a
@@ -823,6 +890,7 @@ mod tests {
                     simulate: None,
                     role,
                     agent: agent.map(str::to_owned),
+                    node_view: None,
                 }
             };
         let moved = serde_json::json!({
@@ -1142,6 +1210,8 @@ mod tests {
             }),
             role: Some(Role::Operator),
             agent: Some("helper".into()),
+            origin: None,
+            node_view: None,
         }
         .into();
         let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();

@@ -1919,18 +1919,20 @@ async fn dsc_908_adopt_holds_a_pem_row_until_every_member_knows_the_kind() {
             pem_taken,
             "{ans}"
         );
-        if pem_taken {
-            assert_eq!(ans["conflicts"], json!([]), "{ans}");
-            assert_eq!(
-                crate::upgrade_gate::standing(Some(&p.primary)),
-                Vec::<String>::new()
-            );
-        } else {
-            assert_eq!(ans["conflicts"], json!(["cert.cluster.key"]), "{ans}");
-            let holds: Vec<String> = crate::upgrade_gate::standing(Some(&p.primary))
+        // The refusals a gate records are process-wide, and a test of another kind (the allowed
+        // networks, the dnstap settings) may have one standing: this test reads the pem kind's.
+        let pem_holds = || -> Vec<String> {
+            crate::upgrade_gate::standing(Some(&p.primary))
                 .into_iter()
                 .filter(|h| h.contains("`pem` kind"))
-                .collect();
+                .collect()
+        };
+        if pem_taken {
+            assert_eq!(ans["conflicts"], json!([]), "{ans}");
+            assert_eq!(pem_holds(), Vec::<String>::new());
+        } else {
+            assert_eq!(ans["conflicts"], json!(["cert.cluster.key"]), "{ans}");
+            let holds = pem_holds();
             assert_eq!(holds.len(), 1, "{holds:?}");
             assert!(holds[0].contains("1.1.0-edge.40"), "{holds:?}");
         }

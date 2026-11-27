@@ -645,6 +645,9 @@ async fn dns_014_primary_without_the_access_feature_is_refused_before_forwarding
 /// every member announcing it, the write goes through.
 #[tokio::test(flavor = "multi_thread")]
 async fn dns_014_access_write_waits_for_every_members_build() {
+    // The refusals a gate records are process-wide (`upgrade_gate::standing`): take the turn the
+    // other gate tests take, and leave nothing standing behind.
+    let _turn = crate::secrets_api_tests::GATE.lock().await;
     let url = "/api/v1/access-settings/default";
     let body = json!({ "allowed_networks": ["127.0.0.0/8"] });
     let (replica, old) = crate::credential_tests::older_primary_and_replica_features(
@@ -688,4 +691,5 @@ async fn dns_014_access_write_waits_for_every_members_build() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(h.auth.state().managed("access").unwrap().len(), 1);
     let _ = new.stop.send(true);
+    crate::upgrade_gate::forget_held();
 }

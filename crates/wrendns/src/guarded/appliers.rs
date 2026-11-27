@@ -38,6 +38,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         guarded::API_HTTP_REDIRECT => Some(Arc::new(HttpRedirect)),
         guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
         guarded::LISTEN => Some(Arc::new(super::listen::Listen)),
+        guarded::DNSTAP => Some(Arc::new(super::dnstap::Dnstap)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
@@ -413,6 +414,12 @@ pub(crate) fn overlay(cfg: &mut Config, own: &Config, entries: &[Stored], state:
     overlay_with(cfg, own, entries, state, table(), &me, super::ignored());
 }
 
+/// [`overlay`] for node `me` (not necessarily this one), with no state: what a node will run after
+/// its next start, as the primary works it out from that node's files and its entry.
+pub(crate) fn overlay_for(cfg: &mut Config, own: &Config, entries: &[Stored], me: &str) {
+    overlay_with(cfg, own, entries, None, table(), me, false);
+}
+
 /// [`overlay`] with the rows, the node's name and the ignore switch passed in.
 pub(crate) fn overlay_with(
     cfg: &mut Config,
@@ -454,10 +461,21 @@ pub(crate) fn overlay_with(
                 .iter()
                 .any(|k| k == p || k.strip_prefix(p).is_some_and(|r| r.starts_with('.')))
         });
-        if by_file {
+        // REQ: OBS-007, API-905 (T40.13) - the dnstap row is locked per field: the files' fields stay.
+        if by_file && e.id != wrendns_config::guarded::DNSTAP {
+            continue;
+        }
+        // REQ: OBS-007, API-905 (T40.13, review) - an ordinary narrowing was never confirmed with the
+        // phrase: it is applied only while it still copies no more than the files do now.
+        if e.id == wrendns_config::guarded::DNSTAP
+            && super::dnstap::not_applied(own, &e.mode, &e.value)
+        {
             continue;
         }
         def.applier.overlay(cfg, &e.value);
+        if by_file {
+            super::dnstap::keep_file_fields(cfg, own);
+        }
     }
 }
 

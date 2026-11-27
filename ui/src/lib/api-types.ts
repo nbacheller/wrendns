@@ -2278,6 +2278,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dnstap-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Narrow the dnstap output (`[telemetry.dnstap]`): the tap off, a feed off, sampling less often, a different queue size. Admins only; no agent can change it.
+         * @description REQ: OBS-007, API-905 (T40.13, ADR-1107). The whole section is one entry: a field left out takes its default. The tap is
+         *     read when the node starts, so a change applies after a restart of that node (the answer says so). The settings are each node's own: a
+         *     write is for one node (the replica it came from, else this one), judged on what that node will run (its files and its own
+         *     entry) and stored as that node's `dnstap-output` entry. A change that copies
+         *     more of the clients' queries out of the process (the tap on, another socket or address, upstream or recursor exchanges
+         *     added, sampling more often) is refused with 409 `guarded_only`: it goes through the guarded review (`POST /api/v1/guarded/dnstap-output/preview`,
+         *     then `POST /api/v1/guarded/dnstap-output`: a preview, the typed phrase, a sign-in within the last 10 minutes and the `settings.guarded` audit record). A file that
+         *     sets a field wins (`set_by_file`). Held until every cluster member announces the kind (409 `upgrade_required`).
+         */
+        put: operations["put_dnstap_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[telemetry.dnstap]` settings (OBS-007).
+         * @description Removes what the API stored for this node (the replica it came from, else this one), so the file's settings (or the defaults: no tap) apply
+         *     again on that node after its restart. Judged like a change: back to file values that copy more than the node will run is the guarded
+         *     review's (409 `guarded_only`). Never held for an old member: it is the way out.
+         */
+        delete: operations["delete_dnstap_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/drill-settings/default": {
         parameters: {
             query?: never;
@@ -7134,6 +7167,11 @@ export interface components {
              */
             keepInGit?: string | null;
             /**
+             * @description REQ: OBS-007, API-905 (T40.13) - the node a per-node change was made for (the dnstap
+             *     settings: the node whose own entry `before` and `after` describe). Absent for the rest.
+             */
+            node?: string | null;
+            /**
              * Format: int64
              * @description Queries in the current and previous hour for the name (or names under the domain)
              *     that the change affects. A lower bound: counted from the busiest names.
@@ -8553,6 +8591,17 @@ export interface components {
         };
         /** @description One guarded setting, as `GET /api/v1/guarded` lists it for this node. */
         GuardedSetting: {
+            /**
+             * @description A confirmed dnstap value that the config file displaces (it sets another reader, or a feed or a
+             *     sampling that would copy more than both): it stays saved but is not applied, and a restart
+             *     does not apply it, until the file changes back. Never set for an ordinary (narrowed) entry.
+             */
+            displacedByFile?: boolean;
+            /**
+             * @description An ordinary (narrowed) dnstap value the config file now outgrows (it would copy more than the
+             *     file): it is not applied and is removed at this node's next start, so it has to be saved again.
+             */
+            droppedAtNextStart?: boolean;
             /** @description A guarded entry holds a value for it (confirmed, applied or staged). */
             hasEntry: boolean;
             id: string;
@@ -18087,6 +18136,134 @@ export interface operations {
             };
             /** @description The API sets no DNSSEC settings. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_dnstap_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change; `warnings` says that a restart is needed). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not an admin, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `guarded_only` (the change copies more: use the guarded review), `set_by_file`, or a cluster member's build does not know the dnstap settings yet (`upgrade_required`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range (`buffer` 100 to 1000000, `sample_every` at least 1, a socket or an address, not both). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_dnstap_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not an admin, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API for this node: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `guarded_only`: the file's values copy more than the node will run, so going back to them is the guarded review's. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -705,6 +705,29 @@ fn identify(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: OBS-007, API-905 (T40.13, review) - whether a dnstap address is `[tcp://]host:port`: the only
+/// scheme is `tcp`, the host is a name or an IP address (an IPv6 one in brackets), the port a `u16`;
+/// no white space or control character.
+#[must_use]
+pub fn dnstap_address_ok(a: &str) -> bool {
+    let hp = a.strip_prefix("tcp://").unwrap_or(a);
+    let Some((host, port)) = hp.rsplit_once(':') else {
+        return false;
+    };
+    if port.parse::<u16>().is_err() {
+        return false;
+    }
+    let name = |h: &str| {
+        !h.is_empty()
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    };
+    match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(v6) => v6.parse::<std::net::Ipv6Addr>().is_ok(),
+        None => name(host),
+    }
+}
+
 // REQ: OBS-006 (T7.17) — OTLP: an http(s) endpoint, a sane interval.
 fn otlp(cfg: &Config, r: &mut Report<'_>) {
     otlp_one(&cfg.telemetry.otlp, r);
@@ -713,6 +736,28 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     if d.socket.is_some() && d.address.is_some() {
         r.err("telemetry.dnstap", "set socket or address, not both");
     }
+    // REQ: OBS-007, API-905 (T40.13) - a socket is a path with no control characters. A relative one
+    // is read against whatever directory the node starts in: a file written before this check (any
+    // path was valid) still loads, with a warning; the API and the web UI refuse one.
+    if let Some(sock) = &d.socket {
+        let t: &str = sock;
+        if t.chars().any(char::is_control) {
+            r.err(
+                "telemetry.dnstap.socket",
+                "a path (for example /run/dnstap.sock), with no control characters",
+            );
+        } else if t.trim().is_empty() {
+            // A file written before this check (an empty socket was valid, and meant no tap that
+            // could connect) still loads: the node must start after an upgrade.
+            r.warn(
+                "telemetry.dnstap.socket: is empty; there is no tap to write to (leave it out, or set a path such as /run/dnstap.sock)",
+            );
+        } else if !t.starts_with('/') {
+            r.warn(format!(
+                "telemetry.dnstap.socket: `{t}` is not an absolute path; it is read against the directory the node starts in"
+            ));
+        }
+    }
     if let Some(a) = &d.address {
         let hp = a.strip_prefix("tcp://").unwrap_or(a);
         if !hp
@@ -720,6 +765,12 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
             .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
         {
             r.err("telemetry.dnstap.address", "use tcp://host:port");
+        } else if !dnstap_address_ok(a) {
+            // A file written before this check still loads (the writer would fail at start, and say
+            // so); the API and the web UI refuse such an address.
+            r.warn(format!(
+                "telemetry.dnstap.address: `{a}` is not tcp://host:port with a host name or IP address; the writer will not connect"
+            ));
         }
     }
     if d.sample_every == 0 {
@@ -727,6 +778,15 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     }
     if d.buffer < 100 {
         r.err("telemetry.dnstap.buffer", "at least 100");
+    }
+    // REQ: OBS-007, API-905 (T40.13) - the queue is allocated at its full size when the node starts,
+    // so the API and the UI refuse a `buffer` above 1,000,000. A file written before that (any
+    // value of 100 or more was valid) still loads: it is a warning, never a refusal to start.
+    if d.buffer > 1_000_000 {
+        r.warn(format!(
+            "telemetry.dnstap.buffer: {} is above 1000000, the most the API and the web UI accept; the queue is allocated at its full size when the node starts",
+            d.buffer
+        ));
     }
 }
 

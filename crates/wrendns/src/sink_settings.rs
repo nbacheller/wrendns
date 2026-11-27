@@ -361,6 +361,7 @@ fn plan_sink(
         also: Vec::new(),
         candidate: merged,
         redirect,
+        node: None,
     })
 }
 
@@ -427,6 +428,7 @@ fn plan_otlp(
         also: Vec::new(),
         candidate: merged,
         redirect,
+        node: None,
     })
 }
 

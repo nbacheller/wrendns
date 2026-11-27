@@ -55,7 +55,13 @@ pub(crate) struct Stored {
 impl Stored {
     /// A hash of the value, for "the primary's copy changed" (ADR-957).
     pub(crate) fn digest(&self) -> String {
-        let bytes = serde_json::to_vec(&self.value).unwrap_or_default();
+        let mut bytes = serde_json::to_vec(&self.value).unwrap_or_default();
+        // REQ: OBS-007, API-905 (T40.13, review) - the dnstap entry is also written by ordinary admin
+        // writes: one that stores the same value again (the node set it aside, and the admin asks for
+        // it once more) must not stay suppressed, so the time of the write is part of its digest.
+        if self.id == wrendns_config::guarded::DNSTAP {
+            bytes.extend_from_slice(&self.at.to_le_bytes());
+        }
         super::hex(blake3::hash(&bytes).as_bytes())
     }
 }
@@ -323,6 +329,11 @@ const REMOVALS: &str = "guarded.removals";
 pub(crate) struct Removal {
     pub(crate) id: String,
     pub(crate) by: String,
+    /// The time of the entry the clear removed: the primary deletes only the entry it still holds
+    /// with this time, so a newer write (an ordinary narrowing, a confirmed value) survives. A
+    /// removal queued by an older build has none and deletes whatever is held.
+    #[serde(default)]
+    pub(crate) at: Option<u64>,
 }
 
 /// The queued removals.
@@ -346,12 +357,18 @@ fn set_removals(state: &State, v: &[Removal]) -> Result<(), String> {
 }
 
 /// Queues a removal of `id` for the primary (once).
-pub(crate) fn queue_removal(state: &State, id: &str, by: &str) -> Result<(), String> {
+pub(crate) fn queue_removal(
+    state: &State,
+    id: &str,
+    by: &str,
+    at: Option<u64>,
+) -> Result<(), String> {
     let mut v = removals(state);
     if !v.iter().any(|r| r.id == id) {
         v.push(Removal {
             id: id.to_owned(),
             by: by.to_owned(),
+            at,
         });
     }
     set_removals(state, &v)
