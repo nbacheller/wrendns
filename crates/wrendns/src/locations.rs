@@ -347,6 +347,7 @@ pub(crate) fn list(
                 networks,
                 nodes: l.nodes.iter().map(ToString::to_string).collect(),
                 domain: loc.parent.clone(),
+                own_domain: l.domain.as_ref().map(ToString::to_string),
                 visibility: if loc.private { "private" } else { "shared" }.to_owned(),
                 flat_names: loc.flat,
                 flat_name_uses_7d: uses,
