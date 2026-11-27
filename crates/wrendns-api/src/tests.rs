@@ -5510,6 +5510,7 @@ async fn dns_904_the_trace_route_returns_the_steps() {
 /// none of them, and an admin's token cut to read scope gets none either; the address, the protocol,
 /// the certificate's file name and the gate stay for every role.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one table: every role and every read that could carry the fields
 async fn api_902_listener_paths_limits_and_options_are_for_admins_only() {
     let (app, _) = app();
     let info = |cookie: String| {

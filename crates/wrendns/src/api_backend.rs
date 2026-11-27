@@ -3854,6 +3854,10 @@ impl Backend for ApiBackend {
                 l.held = true;
                 l.held_reason.clone_from(&list.held_reason);
             }
+        } else {
+            // REQ: DSC-908 (ADR-1104 rule c) - a node that stopped leading with held entries says
+            // so where the hold shows: not held now, but the reason stays (`held` stays false).
+            list.held_reason = crate::upgrade_gate::HOLD.reason(self.src.cluster.as_deref());
         }
         list
     }

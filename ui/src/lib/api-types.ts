@@ -10548,6 +10548,8 @@ export interface components {
             label?: string | null;
             networks: components["schemas"]["LocationNetworkInfo"][];
             nodes: string[];
+            /** @description The domain this location sets itself; absent when it follows `[local] device_domain`. */
+            ownDomain?: string | null;
             slug: string;
             /**
              * @description `file` (read-only here) or `api`.
@@ -10611,7 +10613,9 @@ export interface components {
             held?: boolean;
             /**
              * @description Why they are held (the member that does not know them, or that the members are not heard
-             *     from yet); set with `held`.
+             *     from yet); set with `held`. Also set, with `held` false, after a node that held entries
+             *     stopped leading: they were not published, and a config-file-only entry is not carried to
+             *     the new primary.
              */
             heldReason?: string | null;
             items: components["schemas"]["LocationInfo"][];

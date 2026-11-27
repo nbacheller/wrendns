@@ -1257,6 +1257,9 @@ pub struct LocationInfo {
     pub nodes: Vec<String>,
     /// The parent domain in effect; its names are `<device>.<slug>.<domain>`.
     pub domain: String,
+    /// The domain this location sets itself; absent when it follows `[local] device_domain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_domain: Option<String>,
     /// `shared` or `private`.
     pub visibility: String,
     pub flat_names: bool,
@@ -1293,7 +1296,9 @@ pub struct LocationList {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
     /// Why they are held (the member that does not know them, or that the members are not heard
-    /// from yet); set with `held`.
+    /// from yet); set with `held`. Also set, with `held` false, after a node that held entries
+    /// stopped leading: they were not published, and a config-file-only entry is not carried to
+    /// the new primary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_reason: Option<String>,
 }
