@@ -3132,6 +3132,65 @@ fn api_902_bind_failure_at_start_runs_again_on_the_files_value() {
     probation::reset_fallbacks();
 }
 
+// REQ: API-902, CLU-004 (T27.14c; ADR-956 §4, design 2.5 `failed_start`) — with the real `listen` row:
+// a confirmed listener list that can't bind at start (a VIP the other node holds, an interface that
+// isn't up) falls back for that start only to the file's listeners; the entry stays, and the next
+// start tries it again.
+#[test]
+fn api_902_confirmed_listener_bind_failure_falls_back_at_start_with_the_listen_row() {
+    let _g = FALLBACK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    probation::reset_fallbacks();
+    super::set_this_node("pi-a");
+    let stored = json!({"listeners": [
+        {"proto": "udp", "addr": "0.0.0.0:53"}, {"proto": "tcp", "addr": "0.0.0.0:53"},
+        {"proto": "udp", "addr": "[::]:53"}, {"proto": "tcp", "addr": "[::]:53"},
+        {"proto": "udp", "addr": "198.51.100.7:53"},
+    ]});
+    let (_dir, cfg) = dir_with(&[("listen", stored, EntryState::Active)]);
+    let rows = vec![RowDef {
+        row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
+        applier: Arc::new(super::listen::Listen),
+    }];
+    let build = || {
+        let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+        let mut c = cfg.clone();
+        super::appliers::overlay_with(
+            &mut c,
+            &cfg,
+            &store::for_node(&state, "pi-a"),
+            None,
+            &rows,
+            "pi-a",
+            false,
+        );
+        c
+    };
+    assert_eq!(build().listen.len(), 5, "the entry is overlaid");
+    let seen = std::cell::RefCell::new(Vec::new());
+    let r = super::serve_with_fallback(
+        build(),
+        || Some(build()),
+        || Some(cfg.clone()),
+        &rows,
+        |c| {
+            seen.borrow_mut().push(c.listen.len());
+            if seen.borrow().len() == 1 {
+                Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(*seen.borrow(), vec![5, 4], "the second start runs the file's listeners");
+    assert_eq!(probation::fallbacks(), vec!["listen".to_owned()]);
+    let state = State::open(&crate::managed::state_path(&cfg)).unwrap();
+    assert_eq!(store::for_node(&state, "pi-a").len(), 1, "the entry stays");
+    probation::reset_fallbacks();
+}
+
 /// A node directory that follows a primary as a replica, with `entries` for it in the node-managed
 /// blob of the version it last applied. Returns the node's own name (its cluster node ID).
 fn replica_with(entries: &[(&str, Value, EntryState)]) -> (tempfile::TempDir, Config, String) {

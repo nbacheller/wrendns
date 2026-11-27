@@ -694,7 +694,7 @@ mod redirect_tests {
             value,
             options: &options,
             caller: &c,
-            host: &super::super::host::StubHost,
+            host: &super::super::host::StubHost::default(),
         })
     }
 
@@ -846,7 +846,7 @@ pub(crate) mod listen_access_tests {
                 value: v,
                 options: &options,
                 caller: &c,
-                host: &super::super::host::StubHost,
+                host: &super::super::host::StubHost::default(),
             })
         })
     }

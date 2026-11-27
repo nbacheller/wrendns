@@ -162,29 +162,75 @@ pub(crate) trait Host: Send + Sync + 'static {
     }
 }
 
-/// A host with nothing behind it, for the tests that only need a `CheckCx`.
+/// A host with little behind it. By default it has nothing (the tests that only need a `CheckCx`);
+/// the process tests give it the node's real listeners and a reload that applies what the engine
+/// wrote.
 #[cfg(test)]
-pub(crate) struct StubHost;
+#[derive(Default)]
+pub(crate) struct StubHost {
+    /// The node's listeners, reached as the production host reaches them.
+    pub(crate) listeners: Option<crate::server::ListenerHandle>,
+    /// The configuration the node runs.
+    pub(crate) cfg: std::sync::Mutex<Option<Arc<Config>>>,
+    /// The node's reload, told the value of the entry now written (`None`: none or removed).
+    pub(crate) on_reload: Option<Arc<dyn Fn(Option<Value>) -> BoxFuture<bool> + Send + Sync>>,
+    /// The value of the entry the engine wrote last.
+    pub(crate) entry: std::sync::Mutex<Option<Value>>,
+}
 
 #[cfg(test)]
 impl Host for StubHost {
     fn running_config(&self) -> Arc<Config> {
-        Arc::new(Config::default())
+        self.cfg
+            .lock()
+            .ok()
+            .and_then(|c| c.clone())
+            .unwrap_or_default()
     }
     fn file_config(&self) -> Arc<Config> {
         Arc::new(Config::default())
     }
     fn reload(&self) -> BoxFuture<bool> {
-        Box::pin(std::future::ready(true))
+        match &self.on_reload {
+            Some(f) => f(self.entry.lock().ok().and_then(|e| e.clone())),
+            None => Box::pin(std::future::ready(true)),
+        }
     }
     fn write_entry(
         &self,
         _node: &str,
         _id: &str,
-        _entry: Option<Stored>,
+        entry: Option<Stored>,
         _by: &str,
     ) -> BoxFuture<Result<(), Problem>> {
+        if let Ok(mut e) = self.entry.lock() {
+            *e = entry.map(|s| s.value);
+        }
         Box::pin(std::future::ready(Ok(())))
+    }
+    fn stage_listeners(
+        &self,
+        list: Vec<wrendns_config::Listener>,
+    ) -> BoxFuture<Result<Vec<crate::server::StagedListener>, crate::server::WindowError>> {
+        match self.listeners.clone() {
+            Some(h) => Box::pin(async move { h.stage(list).await }),
+            None => Box::pin(std::future::ready(Err(crate::server::WindowError {
+                reason: "bind_failed",
+                detail: "this node has no listeners to stage".to_owned(),
+            }))),
+        }
+    }
+    fn commit_listeners(&self) -> BoxFuture<Result<(), crate::server::WindowError>> {
+        match self.listeners.clone() {
+            Some(h) => Box::pin(async move { h.commit().await }),
+            None => Box::pin(std::future::ready(Ok(()))),
+        }
+    }
+    fn abort_listeners(&self) -> BoxFuture<()> {
+        match self.listeners.clone() {
+            Some(h) => Box::pin(async move { h.abort().await }),
+            None => Box::pin(std::future::ready(())),
+        }
     }
     fn is_primary(&self) -> bool {
         true
