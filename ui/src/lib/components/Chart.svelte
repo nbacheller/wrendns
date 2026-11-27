@@ -27,6 +27,7 @@
     seconds = false,
     format = num,
     markers = [],
+    overallLabel = 'total',
   }: {
     title: string;
     /** Unix seconds. */
@@ -40,6 +41,9 @@
     format?: (n: number) => string;
     /** REQ: OBS-033 — change markers: a thin line each, hover for what and who. */
     markers?: Marker[];
+    /** The time column's text when the cursor is off the plot (the legend then shows each series'
+     *  `overall`, or its sum): 'total' for counts, what the figures cover when they are not sums. */
+    overallLabel?: string;
   } = $props();
 
   // REQ: OBS-033 — markers sit over the plot as small buttons (keyboard and screen readers
@@ -193,7 +197,7 @@
         },
       ],
       series: [
-        { value: (_u, v) => (v == null ? 'total' : clock(v, true)) },
+        { value: (_u, v) => (v == null ? overallLabel : clock(v, true)) },
         ...order.map((i) => {
           const c = color(series[i].color);
           return {
@@ -205,7 +209,7 @@
             paths: bars ? roundBars : stacked ? undefined : spline,
             points: { show: !bars && times.length < 3 },
             value: (_u: uPlot, _v: number | null, _si: number, idx: number | null) =>
-              // Not hovering: the total over the shown range.
+              // Not hovering: the series' `overall` figure, else the total over the shown range.
               idx == null ? overallText(series[i]) : format(series[i].values[idx] ?? 0),
           } satisfies uPlot.Series;
         }),

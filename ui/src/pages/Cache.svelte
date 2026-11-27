@@ -156,6 +156,8 @@
     }
     const rows = [...by.values()];
     if (sort === 'bytes') rows.sort((a, b) => b.bytes - a.bytes);
+    // A name stale on any node sorts first, on purpose: a stale copy counts as already expired, so
+    // '41s to 59s left (stale on 1)' comes before a name at '0s left'.
     else if (sort === 'expiring') rows.sort((a, b) => (a.stale ? -1 : a.ttlMin) - (b.stale ? -1 : b.ttlMin));
     else rows.sort((a, b) => b.hits - a.hits || b.nodes.length - a.nodes.length);
     return rows.slice(0, LIMIT);
@@ -244,7 +246,7 @@
   </section>
 
   {#if charts.times.length > 1}
-    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} markers={changes.markers} />
+    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} overallLabel="last hour" format={(n) => pct(n)} markers={changes.markers} />
     <Chart title="Lookups per 15 s" times={charts.times} series={charts.lookups} height={160} markers={changes.markers} />
   {:else if stats.length}
     <p class="muted small">The charts fill in over the first minutes (a sample every 15 s).</p>
