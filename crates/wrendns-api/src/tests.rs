@@ -1426,6 +1426,11 @@ async fn agt_004_agent_tokens_over_http() {
         .await,
         StatusCode::OK
     );
+    // REQ: DNS-906 - the dnssec_trust_anchors tool's REST call works for an analytics:read agent.
+    assert_eq!(
+        status(call("GET", "/api/v1/dnssec/anchors", &agent, null.clone(), None)).await,
+        StatusCode::OK
+    );
     assert_eq!(
         status(call("GET", "/api/v1/queries", &agent, null.clone(), None)).await,
         StatusCode::FORBIDDEN,
