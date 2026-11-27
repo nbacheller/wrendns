@@ -1383,6 +1383,11 @@ pub struct ManagedWrite {
     /// REQ: API-014 — the agent token's name when an agent asks: agents never make the
     /// admin-only credential changes, whatever their scopes.
     pub agent: Option<String>,
+    /// REQ: OBS-007, API-905 (T40.13) - the node a write was forwarded from, set by the primary that
+    /// applies it (the connection's node ID, never read from the body); `None` for a write that
+    /// starts here. A change that is the node's own (the dnstap settings' confirmed tap) is read as
+    /// that node's.
+    pub origin: Option<String>,
 }
 
 /// REQ: API-007 (T24.18, ADR-940) — an uploaded Pi-hole export to preview.

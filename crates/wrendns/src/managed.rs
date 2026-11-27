@@ -726,9 +726,10 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     }
     let mut errs = crate::settings_kinds::apply_stored(&mut cfg, own, e);
     // REQ: OBS-007, API-905 (T40.13) - the dnstap section has an ordinary entry (a change that only
-    // narrows) and a guarded one (a widening, confirmed with the phrase). The ordinary write removes
-    // the guarded entries, so what is in force is the newer: the guarded value is laid over the
-    // ordinary one here, as a replica lays its node-managed entries over the shared part.
+    // narrows) and a guarded one (a widening, confirmed with the phrase). A confirmed guarded value of
+    // this node is laid over the ordinary row, as a replica lays its node-managed entries over the
+    // shared part; `dnstap_plan` rewrites or removes only the entries an ordinary write narrows, so a
+    // guarded value can be in force over a newer ordinary row.
     crate::guarded::appliers::overlay(&mut cfg, own, &e.guarded, None);
     for (name, recs) in &e.records {
         if file

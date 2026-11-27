@@ -260,8 +260,9 @@ socket = \"/run/file.sock\"
 
 /// REQ: OBS-007, API-905 (T40.13, ADR-1107 point 4) - the two entries of the section agree on
 /// which is in force: a guarded value that was confirmed is in force over the ordinary one, and an
-/// ordinary write that narrows removes the guarded entries (so the newer value wins, and a stale
-/// widening can never hide a narrowing); a staged guarded entry waits for the next start.
+/// ordinary write that narrows rewrites to the new value, or removes, this node's entry and an entry
+/// with the same target (other entries are kept), so a stale widening never hides a narrowing; a
+/// staged guarded entry waits for the next start.
 #[tokio::test]
 #[allow(clippy::many_single_char_names)] // h, s, v, e, f: the harness and its answers
 async fn obs_007_dnstap_the_newer_of_the_two_entries_is_in_force() {
@@ -659,7 +660,7 @@ fn obs_007_mcp_reads_the_dnstap_settings_and_never_writes_them() {
     );
 }
 
-fn put_guarded_on(node: &str, h: &Harness, value: Value) {
+pub(crate) fn put_guarded_on(node: &str, h: &Harness, value: Value) {
     let entry = crate::guarded::store::Stored {
         node: node.to_owned(),
         id: "dnstap-output".to_owned(),
@@ -672,7 +673,7 @@ fn put_guarded_on(node: &str, h: &Harness, value: Value) {
     crate::guarded::store::put(h.auth.state(), &entry, entry.at, "admin").unwrap();
 }
 
-fn entry_of(h: &Harness, node: &str) -> Option<crate::guarded::store::Stored> {
+pub(crate) fn entry_of(h: &Harness, node: &str) -> Option<crate::guarded::store::Stored> {
     crate::guarded::store::all(h.auth.state())
         .into_iter()
         .find(|e| e.id == "dnstap-output" && e.node == node)
@@ -779,4 +780,33 @@ async fn obs_007_dnstap_a_stored_row_never_starts_a_tap_on_another_node() {
     let own = buf.clone();
     crate::settings_kinds::overlay_dnstap(&mut buf, &own, &json!({"buffer": 4000})).unwrap();
     assert_eq!(buf.telemetry.dnstap.buffer, 4000, "a narrowing is read");
+}
+
+/// REQ: OBS-007, API-905 (T40.13, review) - the stored row is judged against the row it replaces,
+/// as the primary cannot see the other nodes' files. On its own node a DELETE is judged exactly (the
+/// section the node runs, then the file's); in a cluster a row that holds something back (here: no
+/// tap, which a replica whose file has one reads as "off") is not taken away by an ordinary write,
+/// 409 `guarded_only`, a dry run too, and stays; the way back is the review on each node. A
+/// replacement is ordinary.
+#[tokio::test(flavor = "multi_thread")]
+async fn obs_007_dnstap_a_row_other_nodes_read_is_not_taken_away_in_a_cluster() {
+    let _turn = crate::secrets_api_tests::GATE.lock().await;
+    let (_replica, up) = older_primary_and_replica("1.1.0").await;
+    let h = harness_in("", Some(Arc::clone(&up.primary)));
+    // The primary has no tap, and neither do its files: turning "off" what nobody runs is ordinary.
+    let (s, _, v) = h.call("PUT", URL, Some(&json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = h
+        .call("PUT", URL, Some(&json!({ "sample_every": 10 })))
+        .await;
+    assert_eq!(s, StatusCode::OK, "a replacement that copies no more: {v}");
+    // Taking the row away would hand a replica's file back its tap, unreviewed.
+    for target in [format!("{URL}?dryRun=true"), URL.to_owned()] {
+        let (s, _, v) = h.call("DELETE", &target, None).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "guarded_only", "{v}");
+    }
+    assert_eq!(h.auth.state().managed("dnstap_settings").unwrap().len(), 1);
+    let _ = up.stop.send(true);
+    crate::upgrade_gate::forget_held();
 }

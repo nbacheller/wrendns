@@ -4368,6 +4368,7 @@ async fn write_inner(
                 simulate: None,
                 role: Some(p.role),
                 agent: p.agent.as_ref().map(|a| a.token_name.clone()),
+                origin: None,
             })
             .await;
         match judged {
@@ -4418,6 +4419,7 @@ async fn write_inner(
                 // REQ: API-014 (T23.2) — the backend holds credential changes to the role.
                 role: Some(p.role),
                 agent: p.agent.as_ref().map(|a| a.token_name.clone()),
+                origin: None,
             })
             .await
             .map(|c| serde_json::to_value(c).unwrap_or_default()),

@@ -296,6 +296,8 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                     // the role the entry node vouches for (none from an older node).
                     role,
                     agent,
+                    // REQ: OBS-007, API-905 - the node the write came from, by its certificate.
+                    origin: Some(peer.to_owned()),
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
@@ -805,6 +807,39 @@ mod tests {
         assert!(leaks(&audit).is_empty(), "{audit}");
     }
 
+    /// REQ: OBS-007, API-905 (T40.13, review) - a dnstap change forwarded from a replica is the
+    /// replica's: a tap turned off on its card removes the replica's own confirmed entry and leaves the
+    /// primary's alone (the primary reads the write as the node it came from, by its certificate).
+    #[tokio::test]
+    async fn obs_007_forwarded_tap_off_removes_the_senders_entry() {
+        use crate::credential_tests::harness;
+        use crate::dnstap_settings_tests::{entry_of, put_guarded_on};
+        let h = harness("");
+        crate::guarded::set_this_node("pi-a");
+        put_guarded_on("pi-a", &h, serde_json::json!({ "socket": "/run/a.sock" }));
+        put_guarded_on("pi-b", &h, serde_json::json!({ "socket": "/run/b.sock" }));
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let w = Write::Managed {
+            kind: ManagedKind::TelemetryDnstap,
+            name: "default".into(),
+            body: Some(serde_json::json!({})),
+            dry_run: false,
+            expect: None,
+            by: "alice".into(),
+            simulate: None,
+            role: Some(Role::Admin),
+            agent: None,
+        };
+        let Answer::Ok(c) = apply(&h.src, &local, "pi-b", "pi", w).await else {
+            panic!("refused")
+        };
+        assert_eq!(c["applied"], true, "{c}");
+        assert!(entry_of(&h, "pi-b").is_none(), "the sender's tap is off");
+        assert!(entry_of(&h, "pi-a").is_some(), "the primary's is untouched");
+    }
+
     /// REQ: API-014, CLU-010 (T23.2) — the primary checks the credential rules again for a
     /// forwarded write, with the role the entry node sends: an operator's or an agent's redirect
     /// is refused (403), and one forwarded without a role (an older node) gives 409
@@ -1149,6 +1184,7 @@ mod tests {
             }),
             role: Some(Role::Operator),
             agent: Some("helper".into()),
+            origin: None,
         }
         .into();
         let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();

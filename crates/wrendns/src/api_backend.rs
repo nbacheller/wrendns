@@ -5422,6 +5422,7 @@ pub(crate) fn spawn_rule_sweep(
                     // The node itself: a quick rule holds no credential.
                     role: Some(wrendns_api::auth::Role::Admin),
                     agent: None,
+                    origin: None,
                 };
                 match backend.write_managed(w).await {
                     Ok(c) if c.applied => auth.record(
@@ -6502,6 +6503,7 @@ fn singleton_change(
 /// field: 409 `set_by_file` for one the files set to another value); `DELETE` removes what the
 /// API stored. The admin-only fields are checked here (403 naming the field); the merged
 /// configuration must validate.
+#[allow(clippy::too_many_lines)] // one branch per settings kind
 fn plan_settings(
     src: &Sources,
     state: &wrendns_store::state::State,
@@ -6547,6 +6549,11 @@ fn plan_settings(
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
+    // REQ: OBS-007, API-905 (T40.13) - the row this write replaces or removes: what the other nodes
+    // read of it is judged against it (`dnstap_plan`), as the primary cannot see their files.
+    let old_row = (w.kind == ManagedKind::TelemetryDnstap)
+        .then(|| entries.telemetry_dnstap.clone())
+        .flatten();
     let stored = if let Some(v) = &w.body {
         let s = crate::settings_kinds::prepare(w.kind, v, &file_section, &file)?;
         // REQ: DSC-004 (review of T25.6, ADR-903 §4) - an SNMP credential's files are held to the
@@ -6587,7 +6594,13 @@ fn plan_settings(
         warnings.extend(public_range_warnings(&before_cfg, &merged));
     }
     let also = if w.kind == ManagedKind::TelemetryDnstap {
-        dnstap_plan(state, &before, &after, &mut warnings)?
+        dnstap_plan_of(
+            src,
+            state,
+            w,
+            (&before, &after, old_row.as_ref()),
+            &mut warnings,
+        )?
     } else {
         Vec::new()
     };
@@ -6672,6 +6685,10 @@ fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem>
 /// The write is judged against the section of the node that takes it (`before`, the primary's) and
 /// against the confirmed value of each node that has one (the guarded entries): a replica forwards its
 /// narrowing here, so the node whose tap it narrows is the one whose confirmed value it is compared to.
+/// The node a write is "of" is the one it came from (`ManagedWrite::origin`: the replica that forwarded
+/// it), else this one: a tap turned off on a replica's card removes that replica's confirmed entry and
+/// never the primary's. The stored row is judged against the row it replaces too, as the other nodes'
+/// files are not visible here: in a cluster the old row is not taken away while it holds something back.
 /// Each node applies the stored value only where it narrows that node's own section
 /// (`settings_kinds::overlay_dnstap`), so no node starts a tap or widens one because of it. The
 /// guarded entries a change narrows are rewritten to the narrower value (a confirmed value is laid
@@ -6679,10 +6696,34 @@ fn settings_feature_gate(src: &Sources, w: &ManagedWrite) -> Result<(), Problem>
 /// own confirmed tap included, is left as it is.
 fn dnstap_plan(
     state: &wrendns_store::state::State,
-    before: &serde_json::Value,
-    after: &serde_json::Value,
+    w: &DnstapWrite<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<AlsoStored, Problem> {
+    let DnstapWrite {
+        before,
+        after,
+        old_row,
+        node,
+        others,
+        deleting,
+        ..
+    } = *w;
+    // The row is taken away, and the files' values come back on the nodes that applied it. The primary
+    // cannot see a replica's files: in a cluster a row that holds something back is not taken away by
+    // an ordinary write (a replacement can never copy more than a node's own files, as each node reads
+    // a row only where it narrows them, and one that copies more than the primary runs is refused
+    // below).
+    if let Some(old) = old_row
+        && deleting
+        && others
+        && dnstap_row_narrows(old)
+    {
+        return Err(Problem::new(
+            Code::GuardedOnly,
+            "this takes back a narrowing that other nodes may have applied to their own dnstap settings, so it could copy more of the clients' queries (their addresses and names) than they do now: that is changed from the guarded review, node by node, with a preview, the phrase you type and a sign-in from the last 10 minutes",
+        )
+        .hint("Use Settings, System, dnstap output on each node in the web UI, or POST /api/v1/guarded/dnstap-output/preview and then /apply. A saved narrowing stays until then."));
+    }
     let entries: Vec<_> = crate::guarded::store::all(state)
         .into_iter()
         .filter(|e| {
@@ -6709,7 +6750,8 @@ fn dnstap_plan(
         };
         (s("socket"), s("address"))
     };
-    let this = crate::guarded::this_node();
+    // `node` is the node the write came from (the replica that forwarded it, or this one).
+    let this = node.map(str::to_owned);
     Ok(entries
         .into_iter()
         .filter(|e| e.value != *after && !widens(&e.value))
@@ -6730,6 +6772,67 @@ fn dnstap_plan(
             (crate::guarded::KIND, name, serde_json::to_string(&e).ok())
         })
         .collect())
+}
+
+/// REQ: OBS-007, API-905 (T40.13) - [`dnstap_plan`] for a write: the node it came from (the replica
+/// that forwarded it, else this one) and whether the cluster has other members.
+fn dnstap_plan_of(
+    src: &Sources,
+    state: &wrendns_store::state::State,
+    w: &ManagedWrite,
+    (before, after, old_row): (
+        &serde_json::Value,
+        &serde_json::Value,
+        Option<&serde_json::Value>,
+    ),
+    warnings: &mut Vec<String>,
+) -> Result<AlsoStored, Problem> {
+    let others = src
+        .cluster
+        .as_deref()
+        .is_some_and(|c| !c.members().is_empty());
+    let node = w.origin.clone().or_else(crate::guarded::this_node);
+    dnstap_plan(
+        state,
+        &DnstapWrite {
+            before,
+            after,
+            old_row,
+            node: node.as_deref(),
+            others,
+            deleting: w.body.is_none(),
+        },
+        warnings,
+    )
+}
+
+/// REQ: OBS-007, API-905 (T40.13) - what `dnstap_plan` judges: the section before and after, the row
+/// this write replaces or removes, the node it came from, and whether the cluster has
+/// other members (whose files the primary cannot see).
+#[derive(Clone, Copy)]
+struct DnstapWrite<'a> {
+    before: &'a serde_json::Value,
+    after: &'a serde_json::Value,
+    old_row: Option<&'a serde_json::Value>,
+    node: Option<&'a str>,
+    others: bool,
+    deleting: bool,
+}
+
+/// Whether a stored dnstap row holds something back from a node whose files copy more: no tap, a
+/// sampling rate below every query, or a feed (`forwarder`, `resolver`) left off.
+fn dnstap_row_narrows(row: &serde_json::Value) -> bool {
+    let set = |k: &str| {
+        row.get(k)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+    };
+    let on = |k: &str| row.get(k).and_then(serde_json::Value::as_bool) == Some(true);
+    let every = row
+        .get("sample_every")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    !(set("socket") || set("address")) || every > 1 || !on("forwarder") || !on("resolver")
 }
 
 /// REQ: OBS-007, API-905 (T40.13) - what a change to the dnstap settings says before it is applied: the
@@ -10445,6 +10548,7 @@ mod group_content_marker_tests {
             simulate: None,
             role: None,
             agent: agent.map(str::to_owned),
+            origin: None,
         };
         let e = plan_override(&src, &state, &write(Some("bot")))
             .err()
