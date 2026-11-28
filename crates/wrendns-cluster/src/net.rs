@@ -133,6 +133,51 @@ fn bounded_deference(wants: bool, primary_up: bool, since: &AtomicU64, now: u64)
     now.saturating_sub(first) < DEFER_MAX_MS
 }
 
+/// REQ: API-902 - the longest announced API URL a receiver keeps.
+const MAX_API_URL: usize = 256;
+
+/// REQ: API-902 - a peer's announced API URL is kept only when it is plain http(s), printable ASCII
+/// without spaces or control characters, and at most 256 bytes; anything else becomes empty.
+pub(crate) fn sane_api_url(url: String) -> String {
+    let lower = url.to_ascii_lowercase();
+    let scheme_ok = lower.starts_with("http://") || lower.starts_with("https://");
+    let rest_len = url.split_once("://").map_or(0, |(_, r)| r.len());
+    if scheme_ok
+        && rest_len > 0
+        && url.len() <= MAX_API_URL
+        && url.bytes().all(|b| b.is_ascii_graphic())
+    {
+        url
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod api_902_url_tests {
+    use super::sane_api_url;
+
+    #[test]
+    fn api_902_announced_api_url_must_be_a_plain_http_url() {
+        for ok in ["https://192.0.2.10:9443", "http://node.example.test:8080/"] {
+            assert_eq!(sane_api_url(ok.into()), ok);
+        }
+        let long = format!("https://{}", "a".repeat(260));
+        for bad in [
+            "javascript:alert(1)",
+            "ftp://192.0.2.10",
+            "https://",
+            "https://a b",
+            "https://a\nb",
+            "https://caf\u{e9}.test",
+            "//192.0.2.10",
+            long.as_str(),
+        ] {
+            assert_eq!(sane_api_url(bad.into()), "", "{bad}");
+        }
+    }
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2660,7 +2705,7 @@ impl Cluster {
                         site: h.site,
                         version: h.version,
                         features: h.features,
-                        api_url: h.api_url,
+                        api_url: sane_api_url(h.api_url),
                         advertise: h.advertise,
                         eligible: h.eligible,
                         primary: h.primary,
@@ -2797,7 +2842,7 @@ impl Cluster {
                     m.primary_silent_s = hb.primary_silent_s;
                     // REQ: API-902 (T27.14g0) - its API URL as it is now (absent from an older node).
                     if let Some(url) = hb.api_url.take() {
-                        m.api_url = url;
+                        m.api_url = sane_api_url(url);
                     }
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
