@@ -288,7 +288,8 @@ pub(crate) fn dns_delegation_reasons(failures: &[(String, String)]) -> Vec<Healt
                 DEGRADED,
                 "dns_provider_delegation_unverified",
                 format!(
-                    "the delegation of the DNS provider `{name}` is not verified: {why} DNS answers are unaffected"
+                    "the delegation of the DNS provider `{name}` is not verified: {}. DNS answers are unaffected",
+                    why.trim_end().trim_end_matches('.')
                 ),
                 "#/settings?tab=dns-providers",
             )

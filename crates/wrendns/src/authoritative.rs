@@ -17,8 +17,8 @@
 //! propagation check of the ACME order (T36.10d), which asks the same servers for the TXT value.
 //!
 //! Everything is bounded: a time per try, a number of tries, a total time, the number of servers and
-//! addresses asked, and the size of an answer. It runs on a task of its own off the DNS runtime,
-//! never on the query path (CLU-004), and a failure is a reason to show, never a DNS answer.
+//! addresses asked, and the size of an answer. It is async and runs on the management path (awaited in the API
+//! request that asked for it, sharing the node's runtime), never on the query path (CLU-004), and a failure is a reason to show, never a DNS answer.
 //! Addresses that are not public (loopback, private, link-local, unique-local, multicast,
 //! unspecified, shared address space) are never asked, whatever the upstreams say a name server's
 //! address is, so a hostile zone cannot aim the node at its own network (the recursor's rule too).

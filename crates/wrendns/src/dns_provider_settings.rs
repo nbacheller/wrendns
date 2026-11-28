@@ -110,7 +110,19 @@ fn gate(src: &Sources, after: &Config) -> Result<(), Problem> {
     crate::upgrade_gate::enforce_dns_providers(src.cluster.as_deref(), &before, after)
         .map_err(refuse)?;
     // REQ: CLD-904 (T36.10b step b5, ADR-1115) - a delegated entry also waits for the kind.
-    crate::upgrade_gate::enforce_dns_delegation(src.cluster.as_deref(), &before, after)
+    // While the hold keeps only the delegated entries out of what is served, the served `before`
+    // lacks them though `after` (rebuilt from the stored entries) has them: compare against the
+    // build kept before the strip, so an unchanged held entry is not taken for a new one.
+    let held_before;
+    let delegation_before = if crate::upgrade_gate::HOLD.active()
+        && let Some(c) = src.unheld.load_full()
+    {
+        held_before = c;
+        &held_before
+    } else {
+        &before
+    };
+    crate::upgrade_gate::enforce_dns_delegation(src.cluster.as_deref(), delegation_before, after)
         .map_err(refuse)
 }
 

@@ -398,7 +398,7 @@ impl Drop for ClearHold {
 /// upstreams are asked for the name servers only, never for the challenge name.
 #[tokio::test]
 async fn cld_904_delegation_verified_through_authoritative_not_local_data() {
-    let _ = &GATE;
+    let _turn = GATE.lock().await;
     let (f1, f2, port) = two(Mode::Cname(TARGET.into()), Mode::Cname(TARGET.into())).await;
     let up = ns2("example.net");
     let local = format!(
@@ -482,6 +482,7 @@ async fn cld_904_delegation_verified_through_authoritative_not_local_data() {
 /// REQ: CLD-904 - the glue path: the addresses come with the NS answer and are not asked for.
 #[tokio::test]
 async fn cld_904_delegation_uses_glue_and_asks_every_address_once() {
+    let _turn = GATE.lock().await;
     let (f1, f2, port) = two(Mode::Cname(TARGET.into()), Mode::Cname(TARGET.into())).await;
     let mut up = ns2("example.net");
     Arc::get_mut(&mut up).unwrap().glue = true;
@@ -498,14 +499,15 @@ async fn cld_904_delegation_uses_glue_and_asks_every_address_once() {
 /// each is a degraded health reason (never severe) that clears when the record is right.
 #[tokio::test]
 async fn cld_904_delegation_not_verified_says_why_and_is_health_only() {
+    let _turn = GATE.lock().await;
     let wrong = "elsewhere.example.org";
-    // A name the node answers itself, through the real pipeline, before and after every failure.
-    let node = crate::credential_tests::config(
-        "[[record]]\nname = \"nas.example.net\"\ntype = \"A\"\nvalue = \"10.0.0.10\"\n",
-    );
-    let pipe = crate::pipeline::tests_support::pipeline_from(&node);
-    let before =
-        crate::pipeline::tests_support::answer_bytes(&pipe, "nas.example.net", "10.0.0.9").unwrap();
+    // A name the node answers itself, through the harness node's own pipeline (the one whose
+    // health and verdict store a failed check changes), before and after every failure.
+    let node = "[[record]]
+name = \"nas.example.net\"
+type = \"A\"
+value = \"10.0.0.10\"
+";
     // (server 1, server 2, words the reason must contain)
     let cases: Vec<(Mode, Mode, &str)> = vec![
         (
@@ -546,7 +548,21 @@ async fn cld_904_delegation_not_verified_says_why_and_is_health_only() {
     ];
     for (i, (a, b, want)) in cases.into_iter().enumerate() {
         let (_f1, _f2, port) = two(a, b).await;
-        let h = harness(PROVIDERS);
+        let h = harness(&format!(
+            "{PROVIDERS}
+{node}"
+        ));
+        crate::pipeline::tests_support::serve_config(&h.src.pipeline, &h.src.config.load());
+        let before = crate::pipeline::tests_support::answer_bytes(
+            &h.src.pipeline,
+            "nas.example.net",
+            "10.0.0.9",
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8_lossy(&before).contains("nas"),
+            "case {i}: the harness node serves the name"
+        );
         let mut l = limits(port);
         if want.contains("512") {
             l.max_answer = 512;
@@ -573,9 +589,12 @@ async fn cld_904_delegation_not_verified_says_why_and_is_health_only() {
         assert_eq!(s, StatusCode::OK, "{e}");
         assert_eq!(e["delegation"]["records"][0]["verified"], false, "{e}");
         crate::dns_provider::delegation::record("godaddy-home", Vec::new());
-        let during =
-            crate::pipeline::tests_support::answer_bytes(&pipe, "nas.example.net", "10.0.0.9")
-                .unwrap();
+        let during = crate::pipeline::tests_support::answer_bytes(
+            &h.src.pipeline,
+            "nas.example.net",
+            "10.0.0.9",
+        )
+        .unwrap();
         assert_eq!(
             before, during,
             "case {i}: a failed check changed a DNS answer"
@@ -586,6 +605,7 @@ async fn cld_904_delegation_not_verified_says_why_and_is_health_only() {
 /// REQ: CLD-904 - a truncated UDP answer is asked again over TCP.
 #[tokio::test]
 async fn cld_904_delegation_follows_a_truncated_answer_over_tcp() {
+    let _turn = GATE.lock().await;
     let (_f1, _f2, port) = two(
         Mode::Truncated(TARGET.into()),
         Mode::Truncated(TARGET.into()),
@@ -602,6 +622,7 @@ async fn cld_904_delegation_follows_a_truncated_answer_over_tcp() {
 /// check fails with that reason; and a name server at a private address is never asked.
 #[tokio::test]
 async fn cld_904_delegation_lookup_failures_are_reasons() {
+    let _turn = GATE.lock().await;
     let h = harness(PROVIDERS);
     let mut down = ns2("example.net");
     Arc::get_mut(&mut down).unwrap().down = true;
@@ -638,6 +659,7 @@ async fn cld_904_delegation_lookup_failures_are_reasons() {
 /// nothing is looked up.
 #[tokio::test]
 async fn cld_904_delegation_with_no_location_shows_the_template_and_asks_nothing() {
+    let _turn = GATE.lock().await;
     let h = harness(
         "[[dns_provider]]\nname = \"godaddy-home\"\nkind = \"delegated\"\nzone = \"example.net\"\ndelegated_to = \"validation\"\n[[dns_provider]]\nname = \"validation\"\nkind = \"cloudflare\"\nzone = \"acme-validation.example.org\"\ncredential_ref = \"cf\"\n",
     );
@@ -1004,4 +1026,247 @@ fn dsc_908_the_delegation_feature_is_announced_under_its_own_name() {
         &["dns_providers".to_owned(), "dns_provider_ledger".to_owned()],
         Feature::DnsProviderDelegation
     ));
+}
+
+/// A fake configured upstream on loopback: answers the zone's `NS` and the server's `A` with canned
+/// data (the server at a loopback address) and records every question.
+async fn fake_upstream() -> (Arc<Mutex<Vec<(String, u16)>>>, std::net::SocketAddr) {
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = sock.local_addr().unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&asked);
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        while let Ok((n, from)) = sock.recv_from(&mut buf).await {
+            let Some((id, qname, qtype, _)) = parse_query(&buf[..n]) else {
+                continue;
+            };
+            log.lock().unwrap().push((qname.clone(), qtype));
+            let ans: Vec<Vec<u8>> = match (qname.as_str(), qtype) {
+                ("example.net", t) if t == rtype::NS => {
+                    vec![rr(&qname, rtype::NS, &wire("ns1.example.net"))]
+                }
+                ("ns1.example.net", t) if t == rtype::A => {
+                    vec![rr(&qname, rtype::A, &[127, 0, 0, 1])]
+                }
+                _ => Vec::new(),
+            };
+            let _ = sock
+                .send_to(
+                    &message(id, &qname, qtype, false, false, 0, &ans, &[]),
+                    from,
+                )
+                .await;
+        }
+    });
+    (asked, addr)
+}
+
+/// REQ: CLD-904 (ADR-1115 point 3) - the production path, with no test seam planted: the name
+/// servers are found through the node's configured default upstream group (a fake upstream on
+/// loopback is asked for the zone's `NS` and the server's address, and never for the challenge
+/// name), and the node's own record for the challenge name is not what decides. The default bounds
+/// refuse the loopback name server the upstream names, so the verdict is that refusal.
+#[tokio::test]
+async fn cld_904_delegation_production_path_asks_the_configured_upstream() {
+    let _turn = GATE.lock().await;
+    let (asked, addr) = fake_upstream().await;
+    let entry = "godaddy-prod";
+    let cfg = format!(
+        "{}\n[[record]]\nname = \"{CNAME_NAME}\"\ntype = \"CNAME\"\nvalue = \"{TARGET}\"\n[[upstream]]\nname = \"u\"\nurl = \"udp://{addr}\"\n[[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n",
+        PROVIDERS.replace("godaddy-home", entry)
+    );
+    let h = crate::credential_tests::harness_toml(
+        &cfg,
+        None,
+        vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()],
+        auth::Settings::default(),
+    );
+    crate::pipeline::tests_support::serve_config(&h.src.pipeline, &h.src.config.load());
+    let (s, _, v) = h
+        .call(
+            "POST",
+            &format!("/api/v1/dns-providers/{entry}/verify"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["ok"], false, "{v}");
+    assert!(
+        v["records"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("has a public address this node may ask"),
+        "the upstream's answer decided: {v}"
+    );
+    let asked = asked.lock().unwrap().clone();
+    assert!(
+        asked.contains(&("example.net".to_owned(), rtype::NS)),
+        "{asked:?}"
+    );
+    assert!(
+        asked.iter().all(|(n, _)| !n.starts_with("_acme-challenge")),
+        "{asked:?}"
+    );
+    crate::dns_provider::delegation::record(entry, Vec::new());
+}
+
+/// REQ: CLD-904 - a node with no upstream group cannot find the name servers: 503, nothing asked.
+#[tokio::test]
+async fn cld_904_delegation_with_no_upstream_is_unavailable() {
+    let _turn = GATE.lock().await;
+    let entry = "godaddy-none";
+    let h = harness(&PROVIDERS.replace("godaddy-home", entry));
+    let (s, _, v) = h
+        .call(
+            "POST",
+            &format!("/api/v1/dns-providers/{entry}/verify"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(
+        v["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no upstream to find the name servers through"),
+        "{v}"
+    );
+}
+
+/// REQ: CLD-904 - the health sentence reads as a sentence whether or not the reason ends in a stop.
+#[test]
+fn cld_904_the_health_summary_has_its_own_full_stop() {
+    for why in ["a: could not look the record up: x", "a: no CNAME there."] {
+        let r = crate::health::dns_delegation_reasons(&[("g".to_owned(), why.to_owned())]);
+        let sum = &r[0].summary;
+        assert!(sum.contains(". DNS answers are unaffected"), "{sum}");
+        assert!(!sum.contains(".."), "{sum}");
+    }
+}
+
+/// REQ: DSC-908, CLD-904 (ADR-1115 point 7) - while the start-up hold keeps only the delegated
+/// entries out, a write of another provider is judged on its own (it is not refused for the held
+/// entries the served configuration lacks), and a new delegated entry is still refused.
+#[tokio::test]
+async fn dsc_908_a_provider_write_during_the_delegation_hold_is_not_refused() {
+    let _turn = GATE.lock().await;
+    let _clear = ClearHold;
+    let without: Vec<String> = Feature::ALL
+        .iter()
+        .filter(|f| **f != Feature::DnsProviderDelegation)
+        .map(|f| f.name().to_owned())
+        .collect();
+    let old = pair_features("1.1.0", "1.1.0-edge.50", Some(without)).await;
+    let ph = harness_in("", Some(Arc::clone(&old.primary)));
+    crate::http::serve_peers(&ph.src);
+    store_cf(&ph).await;
+    let (s, _, v) = ph
+        .call(
+            "PUT",
+            "/api/v1/dns-providers/validation",
+            Some(&json!({"kind": "cloudflare", "zone": "acme-validation.example.org", "credential_ref": "cf"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // A delegated entry the cluster already published, stored as a node that led it would hold it.
+    ph.src
+        .auth
+        .get()
+        .unwrap()
+        .state()
+        .put_managed(
+            "dns_provider",
+            "g",
+            r#"{"name":"g","kind":"delegated","zone":"example.net","delegated_to":"validation"}"#,
+            None,
+            None,
+            crate::pipeline::unix_now(),
+            "test",
+        )
+        .unwrap();
+    let full = crate::managed::merge(
+        &ph.src.file_config.load(),
+        &crate::managed::entries(ph.src.auth.get().unwrap().state()),
+    )
+    .unwrap();
+    assert!(full.dns_provider.iter().any(|p| p.name.as_str() == "g"));
+    ph.src.unheld.store(Some(Arc::new(full.clone())));
+    crate::upgrade_gate::HOLD.begin_with(&[Feature::DnsProviderDelegation]);
+    let mut served = full;
+    crate::upgrade_gate::HOLD.apply(&mut served);
+    assert!(!served.dns_provider.iter().any(|p| p.name.as_str() == "g"));
+    ph.src.config.store(Arc::new(served));
+
+    let (s, _, v) = ph
+        .call(
+            "PUT",
+            "/api/v1/dns-providers/other",
+            Some(
+                &json!({"kind": "cloudflare", "zone": "other.example.org", "credential_ref": "cf"}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "an unrelated provider is not held: {v}");
+    let (s, _, v) = ph
+        .call(
+            "PUT",
+            "/api/v1/dns-providers/g2",
+            Some(
+                &json!({"kind": "delegated", "zone": "example.org", "delegated_to": "validation"}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "a new delegated entry waits: {v}");
+    assert_eq!(v["code"], "upgrade_required", "{v}");
+    let _ = old.stop.send(true);
+}
+
+/// REQ: DSC-908, CLD-904 - the replica's half of the gate: a current replica forwarding a
+/// `delegated` PUT to a primary that announces every feature but `dns_provider_delegation` is
+/// refused (409 `upgrade_required`) before anything is sent, while a forwarded cloudflare PUT to the
+/// same primary goes through.
+#[tokio::test(flavor = "multi_thread")]
+async fn dsc_908_a_delegated_write_is_not_forwarded_to_a_primary_that_lacks_the_kind() {
+    let _turn = GATE.lock().await;
+    crate::upgrade_gate::forget_held();
+    let without: Vec<String> = Feature::ALL
+        .iter()
+        .filter(|f| **f != Feature::DnsProviderDelegation)
+        .map(|f| f.name().to_owned())
+        .collect();
+    let (replica, primary) =
+        crate::credential_tests::older_primary_and_replica_features("1.1.0", Some(without), None)
+            .await;
+    let h = harness_in("", Some(replica));
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            "/api/v1/dns-providers/g",
+            Some(
+                &json!({"kind": "delegated", "zone": "example.net", "delegated_to": "validation"}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "upgrade_required", "{v}");
+    assert!(
+        v["detail"]
+            .as_str()
+            .unwrap()
+            .contains("does not know delegated DNS providers"),
+        "{v}"
+    );
+    assert_eq!(primary.got.lock().unwrap().len(), 0, "not forwarded");
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            "/api/v1/dns-providers/validation",
+            Some(&json!({"kind": "cloudflare", "zone": "acme-validation.example.org", "credential_ref": "cf"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(!primary.got.lock().unwrap().is_empty(), "forwarded");
+    let _ = primary.stop.send(true);
+    crate::upgrade_gate::forget_held();
 }

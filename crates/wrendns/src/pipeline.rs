@@ -3065,6 +3065,15 @@ pub(crate) mod tests_support {
         )
     }
 
+    /// Makes `p` serve `cfg`'s local data (as a reload would).
+    pub(crate) fn serve_config(p: &Arc<Pipeline>, cfg: &wrendns_config::Config) {
+        let (local, _) = wrendns_policy::LocalData::from_config(cfg);
+        p.reload(
+            Arc::new(wrendns_upstream::Router::from_config(cfg).unwrap_or_default()),
+            Policy::from_config(cfg, local),
+        );
+    }
+
     /// Whether `name` (A) from `client` is answered at once (without an upstream).
     pub(crate) fn answer(p: &Arc<Pipeline>, name: &str, client: &str) -> bool {
         answer_bytes(p, name, client).is_some_and(|m| m.len() > 12)
