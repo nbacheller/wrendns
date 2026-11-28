@@ -1362,7 +1362,7 @@ pub struct DnsProviderEntry {
     pub credential_secret: Option<String>,
     /// Whether this node stores a secret by that name (the value is never shown).
     pub credential_present: bool,
-    /// `not_used`: this build has no code for the kind yet (only the test provider has any);
+    /// `not_used`: this build has no code for the kind yet;
     /// `dry_run`: it computes and records changes and sends none, until its first successful test;
     /// `ready`: the first test passed and writes are sent.
     pub state: String,

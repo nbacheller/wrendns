@@ -22624,7 +22624,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`not_used`: this build has no code for the kind yet (only the test provider has any);\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
+            "description": "`not_used`: this build has no code for the kind yet;\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
           },
           "zone": {
             "type": "string",

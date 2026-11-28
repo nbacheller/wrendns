@@ -216,6 +216,8 @@
   const challenge = (f: Form) => `_acme-challenge.<location>.${f.zone.trim() || '<zone>'}`;
   const azureScope = (f: Form) =>
     `az role assignment create --assignee ${f.client_id.trim() || '<application id>'} --role "DNS Zone Contributor" --scope /subscriptions/${f.subscription.trim() || '<subscription>'}/resourceGroups/${f.resource_group.trim() || '<resource group>'}/providers/Microsoft.Network/dnszones/${f.zone.trim() || '<zone>'}/TXT/_acme-challenge.<location>`;
+  const azureReader = (f: Form) =>
+    `az role assignment create --assignee ${f.client_id.trim() || '<application id>'} --role "Reader" --scope /subscriptions/${f.subscription.trim() || '<subscription>'}/resourceGroups/${f.resource_group.trim() || '<resource group>'}/providers/Microsoft.Network/dnszones/${f.zone.trim() || '<zone>'}`;
   const route53Policy = (f: Form) =>
     JSON.stringify(
       {
@@ -346,13 +348,19 @@
         {#if form.kind === 'azure_dns'}
           <p>
             Give the application a role on one record set, not the zone. The record set must exist first (create an empty <code>TXT</code> record set
-            named <code>_acme-challenge.&lt;location&gt;</code>), then run:
+            named <code>_acme-challenge.&lt;location&gt;</code>: a role on one record set cannot create it), then run:
           </p>
           <pre class="mono">{azureScope(form)}</pre>
+          <p>
+            The node reads the zone before it writes, so also give the application the read-only <em>Reader</em> role on the zone:
+            <HelpButton id="dns-provider-azure" />
+          </p>
+          <pre class="mono">{azureReader(form)}</pre>
         {:else if form.kind === 'cloudflare'}
           <p>
-            Create an API token with <em>Zone, DNS, Edit</em> for this one zone only. Cloudflare cannot limit a token to one record, so if the zone holds
-            anything else that matters, delegate the challenge name to a separate zone instead (below).
+            Create an API token with <em>Zone, Zone, Read</em> and <em>Zone, DNS, Edit</em> for this one zone only (not all zones in the account).
+            Cloudflare cannot limit a token to one record, so if the zone holds anything else that matters, delegate the challenge name to a separate
+            zone instead (below). <HelpButton id="dns-provider-cloudflare" />
           </p>
         {:else if form.kind === 'route53'}
           <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records:</p>

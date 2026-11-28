@@ -2,9 +2,9 @@
 //! REQ: CLD-904 (T36.10b step b3; ADR-1084) - the registry: a configured entry (its kind, its zone
 //! and the stored credential) to the code that talks to that provider.
 //!
-//! No real provider exists yet: Azure DNS, Cloudflare, Route 53 and RFC 2136 are T36.10b step b4, and
-//! delegation step b5. Until each arrives its kind answers [`BuildError::NoCode`], and the Test route
-//! says so. Test builds (and the browser tests' build) hand an entry named `fake...` the in-memory
+//! Azure DNS and Cloudflare have code (T36.10b step b4a and b4b); Route 53 and RFC 2136 (the rest of
+//! step b4) and delegation (step b5) do not yet. Until each arrives its kind answers
+//! [`BuildError::NoCode`], and the Test route says so. Test builds (and the browser tests' build) hand an entry named `fake...` the in-memory
 //! fake instead; no release build does.
 
 use std::sync::Arc;
@@ -48,14 +48,22 @@ impl std::fmt::Display for BuildError {
     }
 }
 
-/// Whether this build has provider code for the entry: only the test provider so far.
+/// Whether this build has provider code for the entry: Azure DNS and Cloudflare so far.
 pub(crate) fn has_code(cfg: &DnsProviderConfig) -> bool {
     #[cfg(any(test, feature = "e2e"))]
     if super::fake::is_fake_name(cfg.name.as_str()) {
         return true;
     }
-    let _ = cfg;
-    false
+    // An entry named `nocode...` has no code in test builds, so the "no provider code" paths stay
+    // testable once every kind has some.
+    #[cfg(any(test, feature = "e2e"))]
+    if cfg.name.starts_with("nocode") {
+        return false;
+    }
+    matches!(
+        cfg.kind,
+        DnsProviderKind::AzureDns | DnsProviderKind::Cloudflare
+    )
 }
 
 /// The provider for `cfg`, built with `secret` (the stored credential's value, when the entry names
@@ -73,12 +81,89 @@ pub(crate) fn build(
             secret,
         });
     }
-    let _ = secret;
-    // Each real kind arrives with its own step; none has code here yet.
+    #[cfg(any(test, feature = "e2e"))]
+    if !has_code(cfg) {
+        return Err(BuildError::NoCode(cfg.kind.as_str()));
+    }
+    // Azure DNS and Cloudflare (T36.10b step b4). The provider keeps its own copy of the credential
+    // (it signs in with it); the handle keeps one to scrub errors with.
+    let copy = |s: &Option<SecretValue>| {
+        s.as_ref()
+            .map(|v| SecretValue::from_text(zeroize::Zeroizing::new(v.expose().to_owned())))
+    };
+    // Test builds only: an entry whose name has a replay base (see `set_replay_base`) talks to a
+    // local replay server instead of the provider.
+    #[cfg(test)]
+    if let Some(base) = replay_base(cfg.name.as_str()) {
+        match cfg.kind {
+            DnsProviderKind::AzureDns => {
+                return Ok(Handle {
+                    provider: Arc::new(super::azure::AzureDns::with_bases(
+                        cfg,
+                        copy(&secret),
+                        &base,
+                        &base,
+                    )),
+                    secret,
+                });
+            }
+            DnsProviderKind::Cloudflare => {
+                return Ok(Handle {
+                    provider: Arc::new(super::cloudflare::Cloudflare::with_base(
+                        cfg,
+                        copy(&secret),
+                        &base,
+                    )),
+                    secret,
+                });
+            }
+            DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
+        }
+    }
+    match cfg.kind {
+        DnsProviderKind::AzureDns => {
+            return Ok(Handle {
+                provider: Arc::new(super::azure::AzureDns::new(cfg, copy(&secret))),
+                secret,
+            });
+        }
+        DnsProviderKind::Cloudflare => {
+            return Ok(Handle {
+                provider: Arc::new(super::cloudflare::Cloudflare::new(cfg, copy(&secret))),
+                secret,
+            });
+        }
+        DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
+    }
+    // Each remaining kind arrives with its own step; none has code here yet.
     Err(BuildError::NoCode(match cfg.kind {
         DnsProviderKind::AzureDns => "azure_dns",
         DnsProviderKind::Cloudflare => "cloudflare",
         DnsProviderKind::Route53 => "route53",
         DnsProviderKind::Rfc2136 => "rfc2136",
     }))
+}
+
+/// Test seam: the base URL a named entry's provider talks to (a local replay server).
+#[cfg(test)]
+static REPLAY: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Point the entry `name` (`azure_dns` or `cloudflare` kind) at a replay server. Tests only.
+#[cfg(test)]
+pub(crate) fn set_replay_base(name: &str, base: &str) {
+    let mut r = REPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    r.retain(|(n, _)| n != name);
+    r.push((name.to_owned(), base.to_owned()));
+}
+
+#[cfg(test)]
+fn replay_base(name: &str) -> Option<String> {
+    REPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, b)| b.clone())
 }
