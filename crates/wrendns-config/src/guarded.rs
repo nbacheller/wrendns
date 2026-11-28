@@ -133,6 +133,22 @@ static REAL: &[Row] = &[
         weakens: never,
         test_only: false,
     },
+    // REQ: API-902, API-901 (T27.14g, ADR-1116; owner decision 2026-11-27) - `[api] public_url`, the
+    // value `{"url": "https://pi-a.example.com"}` (empty or null: back to the address the node works
+    // out). It replaces the address the node announces as its web UI and API, which the member list
+    // and the link that confirms a guarded change on this node use. `immediate`: nothing listens on it
+    // and no socket moves, so it cannot cut an admin off. Setting or changing it is weakening (a red
+    // mark and a sign-in within 10 minutes): the confirm link carries a single-use token to that
+    // address, so whoever controls the name receives it. Clearing it is not.
+    Row {
+        id: API_PUBLIC_URL,
+        label: "Public web UI address",
+        paths: &["api.public_url"],
+        mode: Mode::Immediate,
+        proof: None,
+        weakens: public_url_set,
+        test_only: false,
+    },
     // REQ: DNS-901, API-902 (T27.14, ADR-1090 point 1) — the known-ID gate of each DoT, DoH, DoH3
     // and DoQ listener: unset (the default), `true` or `false`. `immediate`: it moves no
     // address and touches no API socket, so it cannot lock an admin out; a reload applies it (a
@@ -199,6 +215,9 @@ static REAL: &[Row] = &[
         test_only: false,
     },
 ];
+
+/// The ID of the public web UI address row (T27.14g, ADR-1116).
+pub const API_PUBLIC_URL: &str = "api-public-url";
 
 /// The ID of the trusted proxies row (T27.14f).
 pub const TRUSTED_PROXIES: &str = "trusted-proxies";
@@ -535,6 +554,24 @@ pub fn proxies_added(old: &Value, new: &Value) -> bool {
     nets(new).into_iter().any(|n| !old.contains(&n))
 }
 
+/// REQ: API-902 (T27.14g, ADR-1116) - `api.public_url` set where there was none, or changed to another
+/// address: the link that confirms a guarded change on the node carries a single-use token to it, so a
+/// change of where it points is weakening. Clearing it, or writing the same address again, is not.
+/// The value is `{"url": ...}` (or the bare string).
+pub fn public_url_set(old: &Value, new: &Value) -> bool {
+    let url = |v: &Value| -> Option<String> {
+        v.get("url")
+            .unwrap_or(v)
+            .as_str()
+            .map(|s| s.trim().trim_end_matches('/').to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+    };
+    match (url(old), url(new)) {
+        (_, None) => false,
+        (o, Some(n)) => o.as_deref() != Some(n.as_str()),
+    }
+}
+
 /// A switch turned on (`allow_secrets_over_http`, `allow_insecure_basic`).
 pub fn turned_on(old: &Value, new: &Value) -> bool {
     old.as_bool() != Some(true) && new.as_bool() == Some(true)
@@ -654,6 +691,32 @@ pub fn role_removed(old: &Value, new: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // REQ: API-902 (T27.14g, ADR-1116) - the public address row is real, `immediate`, and weakening
+    // when an address is set or changed, not when it is cleared or written again.
+    #[test]
+    fn api_902_public_url_row_is_immediate_and_weakening_when_set() {
+        let r = row(API_PUBLIC_URL).expect("the row is real");
+        assert_eq!(r.paths, ["api.public_url"]);
+        assert_eq!(r.mode, Mode::Immediate);
+        assert!(r.proof.is_none());
+        assert_eq!(covering("api.public_url"), Some(API_PUBLIC_URL));
+        let w = r.weakens;
+        let none = json!({"url": null});
+        let a = json!({"url": "https://pi-a.example.com"});
+        assert!(w(&none, &a), "set where there was none");
+        assert!(
+            w(&a, &json!({"url": "https://other.example.com"})),
+            "changed"
+        );
+        assert!(!w(&a, &none), "cleared");
+        assert!(!w(&a, &json!({"url": ""})), "cleared with an empty string");
+        assert!(
+            !w(&a, &json!({"url": "HTTPS://pi-a.example.com/"})),
+            "the same address"
+        );
+        assert!(!w(&none, &none));
+    }
 
     // REQ: API-902 (ADR-914, ADR-956 §1) — every path ADR-914 calls guarded is in the registry or
     // in the list of rows still to come, under one ID, with the mode ADR-956 §1 gives it.

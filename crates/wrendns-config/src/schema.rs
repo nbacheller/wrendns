@@ -3207,6 +3207,16 @@ pub struct ApiConfig {
     /// or proxy list waits to be confirmed through the new address before it is rolled back, in
     /// seconds: 30 to 600. Read from this node's own files; the API can't set it.
     pub confirm_window_secs: u32,
+    /// REQ: API-902, API-901 (T27.14g, ADR-1116; owner decision 2026-11-27) - the address people open
+    /// this node's web UI and API at, when it is not the one the node would announce: a node behind
+    /// NAT or a load balancer's name, say `https://pi-a.example.com`. It replaces the address this
+    /// node announces to the cluster as its own, so the member list and the link that confirms a
+    /// guarded change on this node use it. Plain `http://` or `https://`, a host and an optional
+    /// port, no user name or password, no path, query or fragment, at most 255 bytes. Nothing listens
+    /// on it: it only has to reach this node's API. Default: the node works one out from `listen`,
+    /// `tls` and the cluster's `advertise` address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<SafeString>,
 }
 
 /// REQ: API-902 — `[api] confirm_window_secs` when not set (ADR-956 §3).
@@ -3222,6 +3232,7 @@ impl Default for ApiConfig {
             http_redirect: None,
             allow_secrets_over_http: false,
             confirm_window_secs: DEFAULT_CONFIRM_WINDOW_SECS,
+            public_url: None,
         }
     }
 }

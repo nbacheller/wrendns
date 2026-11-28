@@ -158,6 +158,12 @@ pub struct GuardedNodeStatus {
     /// node's own address from it (a guarded change is confirmed on the node itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
+    /// REQ: API-904 (T27.14g) - the node's build can take the confirm the primary relays (the
+    /// `guarded_confirm_relay` gate feature), as the primary sees it; absent for the node answering
+    /// and from an older build. The card offers "Confirm through the primary" only for a node that
+    /// says `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_relay: Option<bool>,
     pub supervisor: Supervisor,
     pub settings: Vec<GuardedSetting>,
     /// The window change waiting for confirmation, if any.
@@ -389,6 +395,15 @@ pub struct GuardedConfirmRequest {
     /// admin's session.
     #[serde(default)]
     pub confirm_token: Option<String>,
+}
+
+/// REQ: API-904 (T27.14g) - the body of `POST /api/v1/guarded/pending/{id}/confirm-relay`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GuardedRelayRequest {
+    /// The single-use token the apply answered with. Required: the admin's session alone cannot
+    /// confirm through the primary, so a stolen session cookie is not enough.
+    pub confirm_token: String,
 }
 
 /// One staged socket of a pending change, as `GET /api/v1/guarded/pending/{id}` shows it.

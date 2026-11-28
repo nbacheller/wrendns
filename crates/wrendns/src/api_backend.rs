@@ -910,6 +910,7 @@ pub(crate) fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiI
             .map(ToString::to_string)
             .collect(),
         http_redirect: cfg.api.http_redirect.map(|a| a.to_string()),
+        public_url: cfg.api.public_url.as_ref().map(|u| u.as_str().to_owned()),
     }
 }
 
@@ -4596,6 +4597,21 @@ impl Backend for ApiBackend {
         Box::pin(async move {
             match src.guarded.get() {
                 Some(e) => e.confirm(&caller, &id, token).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_confirm_relay(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: String,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.relay_confirm(&caller, &id, &token).await,
                 None => Err(guarded_unavailable()),
             }
         })

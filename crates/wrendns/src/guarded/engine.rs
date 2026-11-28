@@ -35,6 +35,9 @@ use super::host::{Host, Member, ProofSocket};
 use super::store::{self, EntryState, Stored};
 use super::{PREVIEW_SECS, ct_eq, hex, random_id};
 
+mod relay;
+pub(crate) use relay::value_digest;
+
 /// Requests (previews, applies, confirmations) one admin may make per minute: previews are
 /// rate-limited with the same limiter as writes (ADR-956 §6).
 pub(crate) const RATE_PER_MIN: usize = 30;
@@ -243,6 +246,14 @@ struct Pending {
     probe_loop: Option<ProbeLoop>,
     /// The expiry task; dropped (aborted) when the change ends.
     expiry: Option<tokio::task::JoinHandle<()>>,
+    /// REQ: API-904 (T27.14g) - the preview this change was applied from and the digest of its value:
+    /// what a relayed confirm's assertion is bound to.
+    preview_id: String,
+    value_digest: String,
+    /// Relayed confirms refused for this change (a probe that has not answered yet is not counted),
+    /// and the nonces of the assertions seen, kept for the life of the change.
+    relay_refusals: u32,
+    relay_nonces: std::collections::HashSet<String>,
 }
 
 impl Pending {
@@ -266,6 +277,11 @@ struct Inner {
     failures: HashMap<String, VecDeque<Instant>>,
     /// Forwarded assertions already used: nonce to the time they stop mattering.
     nonces: HashMap<String, u64>,
+    /// REQ: API-904 (T27.14g) - on the primary: the window changes it forwarded for other nodes
+    /// (pending ID to what it carried), kept until their window ends; and, by preview ID, whether a
+    /// forwarded preview was a weakening one.
+    carried: HashMap<String, relay::Carried>,
+    relay_weak: HashMap<String, (bool, Instant)>,
 }
 
 /// The guarded engine of one node.
@@ -686,6 +702,7 @@ impl Engine {
         GuardedNodeStatus {
             node: self.node.clone(),
             api_url: self.host.own_api_url(),
+            confirm_relay: None,
             supervisor: self.supervisor.clone(),
             settings,
             pending,
@@ -718,6 +735,8 @@ impl Engine {
                 if s.api_url.is_none() && !m.api_url.is_empty() {
                     s.api_url = Some(m.api_url.clone());
                 }
+                // REQ: API-904 - whether that member's build takes a relayed confirm.
+                s.confirm_relay = Some(m.relay);
                 nodes.push(s);
             }
         }
@@ -1053,7 +1072,11 @@ impl Engine {
             Err(e) => Err(e),
             Ok(Target::Remote(m)) => {
                 self.must_forward().map_err(|e| self.refuse(c, id, e))?;
-                self.forward_apply(c, &m, id, req).await
+                let digest = value_digest(&req.value);
+                let preview_id = req.preview_id.clone();
+                let done = self.forward_apply(c, &m, id, req).await?;
+                self.carry(c, &m, &preview_id, digest, &done);
+                Ok(done)
             }
             Ok(Target::Local) => self.apply_local(c, id, req).await,
         }
@@ -1575,6 +1598,10 @@ impl Engine {
                 probes,
                 probe_loop,
                 expiry: Some(expiry),
+                preview_id: req.preview_id.clone(),
+                value_digest: value_digest(&req.value),
+                relay_refusals: 0,
+                relay_nonces: std::collections::HashSet::new(),
             });
         }
         info!(setting = row.id, node = %self.node, window, "guarded change pending confirmation");
@@ -1616,6 +1643,18 @@ impl Engine {
         pending_id: &str,
         token: Option<String>,
     ) -> Result<GuardedResult, Problem> {
+        self.confirm_via(c, pending_id, token, None).await
+    }
+
+    /// [`confirm`](Self::confirm), for a confirm the primary relayed when `via` is set (API-904): the
+    /// same who, proof, probe and commit steps, and the audit says how it arrived.
+    async fn confirm_via(
+        self: &Arc<Self>,
+        c: &GuardedCaller,
+        pending_id: &str,
+        token: Option<String>,
+        via: Option<&relay::Via>,
+    ) -> Result<GuardedResult, Problem> {
         let key = Self::failure_key(c, pending_id);
         self.blocked(&key)?;
         self.rate_limit(c)?;
@@ -1649,7 +1688,7 @@ impl Engine {
             }
         };
         let result = self
-            .confirm_inner(c, pending_id, token, &key, snapshot)
+            .confirm_inner(c, pending_id, token, &key, snapshot, via)
             .await;
         lock(&self.inner).busy = false;
         result
@@ -1663,6 +1702,7 @@ impl Engine {
         token: Option<String>,
         key: &str,
         snap: ConfirmSnapshot,
+        via: Option<&relay::Via>,
     ) -> Result<GuardedResult, Problem> {
         let (setting, proof, admin, token_hash, proof_addr, probes) = snap;
         // Who: the single-use token (bound to the admin, node and change), or a session of the
@@ -1725,7 +1765,7 @@ impl Engine {
                 info!(setting = %setting, failures = ?failures, "guarded confirm refused: the node's own probe got no answer");
                 return Err(Problem::new(
                     Code::Forbidden,
-                    format!("the node's own query to {}", failures.join("; ")),
+                    format!("{}{}", relay::PROBE_REFUSAL, failures.join("; ")),
                 )
                 .hint("The change is still pending; it rolls back when the window ends. Check the address and the certificate, then confirm again."));
             }
@@ -1828,6 +1868,9 @@ impl Engine {
                 "before": redact(&before), "after": redact(&value),
                 "reason": reason, "weakening": weakening,
                 "confirmedFrom": c.remote.map(|r| r.to_string()),
+                "confirmedVia": via.map(|_| "primary"),
+                "relayedBy": via.map(|v| v.issuer.as_str()),
+                "relayNonce": via.map(|v| v.nonce.as_str()),
             }),
         );
         self.outcome(&setting, "confirmed", None);
@@ -2087,7 +2130,10 @@ impl Engine {
             assertion: Some(a),
         };
         match self.host.forward(&m.name, fwd).await? {
-            ForwardedAnswer::Preview(p) => Ok(p),
+            ForwardedAnswer::Preview(p) => {
+                self.note_preview(&p);
+                Ok(p)
+            }
             ForwardedAnswer::Refused {
                 code,
                 detail,
@@ -2177,6 +2223,15 @@ impl Engine {
         if matches!(f.op, ForwardedOp::Status) {
             return ForwardedAnswer::Status(self.status_local());
         }
+        // REQ: API-904 (T27.14g) - a relayed confirm carries its own assertion, of its own purpose.
+        if let ForwardedOp::ConfirmRelay {
+            pending,
+            token,
+            relay,
+        } = f.op
+        {
+            return self.handle_relay(sender, &pending, token, relay).await;
+        }
         // REQ: API-902 (T27.14g0) - the node's own settings are for an admin: the assertion proves one.
         let Some(signed) = f.assertion.as_ref() else {
             return refused(&Problem::new(
@@ -2189,7 +2244,9 @@ impl Engine {
             ForwardedOp::Apply { id, req } => ("apply", id.clone(), req.preview_id.clone()),
             ForwardedOp::Cancel { pending } => ("cancel", pending.clone(), String::new()),
             ForwardedOp::NodeApi => ("node_api", NODE_API.to_owned(), String::new()),
-            ForwardedOp::Status => return refused(&Problem::internal("unreachable")),
+            ForwardedOp::Status | ForwardedOp::ConfirmRelay { .. } => {
+                return refused(&Problem::internal("unreachable"));
+            }
         };
         let now = (self.now)();
         let want = Expect {
@@ -2257,7 +2314,9 @@ impl Engine {
                 Err(e) => refused(&e),
             },
             ForwardedOp::NodeApi => ForwardedAnswer::NodeApi(self.node_api_local()),
-            ForwardedOp::Status => refused(&Problem::internal("unreachable")),
+            ForwardedOp::Status | ForwardedOp::ConfirmRelay { .. } => {
+                refused(&Problem::internal("unreachable"))
+            }
         }
     }
 

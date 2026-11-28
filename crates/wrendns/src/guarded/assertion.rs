@@ -166,6 +166,27 @@ pub(crate) enum ForwardedOp {
     /// listeners, for an admin. It carries no value, but its answer is admin-only, so it carries the
     /// primary's signed assertion (action `node_api`, setting `api`) like the other operations.
     NodeApi,
+    /// REQ: API-904 (T27.14g, ADR-1116) - the admin's confirm of a `listen` change on this node,
+    /// passed on by the primary: the change's pending ID, its single-use confirm token and the
+    /// primary's signed [`RelayAssertion`]. It carries no [`Assertion`] (`assertion` is `None`):
+    /// the relay's own assertion, of its own purpose, is the one that is checked.
+    ConfirmRelay {
+        pending: String,
+        token: RelayToken,
+        relay: SignedRelay,
+    },
+}
+
+/// The confirm token on its way to the node. It never prints: the type's `Debug` hides it, so no log
+/// line or audit detail that formats a request can leak it (ADR-956 §3: a token is never logged).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RelayToken(pub(crate) String);
+
+impl std::fmt::Debug for RelayToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RelayToken(<hidden>)")
+    }
 }
 
 /// A forwarded request.
@@ -186,6 +207,14 @@ pub(crate) enum ForwardedAnswer {
     Status(wrendns_api::guarded::GuardedNodeStatus),
     /// The answer to [`ForwardedOp::NodeApi`].
     NodeApi(wrendns_api::guarded::GuardedNodeApi),
+    /// REQ: API-904 (T27.14g) - the node refused a relayed confirm. `counted` is false when the only
+    /// reason is that one of its own DNS probes has not answered yet: the admin did nothing wrong, so
+    /// the primary does not count it toward the session's failure block.
+    RelayRefused {
+        detail: String,
+        hint: Option<String>,
+        counted: bool,
+    },
     /// The target refused: a problem's code and text, to be returned as is.
     Refused {
         code: wrendns_api::problem::Code,
@@ -193,4 +222,134 @@ pub(crate) enum ForwardedAnswer {
         hint: Option<String>,
         retry_after: Option<u64>,
     },
+}
+
+// ---- the relayed confirm (API-904, T27.14g; ADR-956 §5 as amended, ADR-1098 point 3, ADR-1116) ----
+
+/// The longest a relayed-confirm assertion is good for, in seconds (design note 2.7).
+pub(crate) const RELAY_SECS: u64 = 30;
+/// The clock allowance the target gives an assertion, in seconds, on its own clock.
+pub(crate) const RELAY_SKEW_SECS: u64 = 5;
+/// The `purpose` of a relayed confirm; a forwarding [`Assertion`] has an `action` instead, so neither
+/// can be used as the other.
+pub(crate) const RELAY_PURPOSE: &str = "confirm";
+/// Prefixed to the bytes the primary signs, so a signature over a forwarding assertion (or anything
+/// else the cluster key signs) can never verify as a relayed confirm.
+const RELAY_DOMAIN: &[u8] = b"wrendns/guarded/relayed-confirm/v1\0";
+
+/// What the primary vouches for when it passes an admin's confirm on to the node holding the change.
+/// It names the change as closely as the node can check (the pending ID, the preview, the digest of the
+/// value), the admin and the session (by digest, never the session itself), and lives seconds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RelayAssertion {
+    /// Always `confirm`.
+    pub(crate) purpose: String,
+    /// Always `listen`: the one row a confirm is relayed for.
+    pub(crate) setting: String,
+    /// The node holding the change.
+    pub(crate) node: String,
+    pub(crate) pending_id: String,
+    pub(crate) preview_id: String,
+    /// The digest of the previewed value (`engine::value_digest`).
+    pub(crate) value_digest: String,
+    pub(crate) admin: String,
+    /// Always `admin`.
+    pub(crate) role: String,
+    /// The digest of the admin's session ID (never the session).
+    pub(crate) session_digest: String,
+    /// When the admin's session was created (Unix seconds).
+    pub(crate) signed_in_at: Option<u64>,
+    /// The browser's address as the primary saw it (reported by the primary, for the audit).
+    pub(crate) remote: Option<String>,
+    /// The node that signed: it must be the primary.
+    pub(crate) issuer: String,
+    pub(crate) issued_at: u64,
+    pub(crate) expires_at: u64,
+    /// 128 random bits, single use.
+    pub(crate) nonce: String,
+}
+
+impl RelayAssertion {
+    /// The bytes that are signed: a fixed prefix and the fields in their fixed order.
+    pub(crate) fn canonical(&self) -> Vec<u8> {
+        let mut v = RELAY_DOMAIN.to_vec();
+        v.extend(serde_json::to_vec(self).unwrap_or_default());
+        v
+    }
+}
+
+/// A relayed-confirm assertion and the primary's signature over it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SignedRelay {
+    pub(crate) assertion: RelayAssertion,
+    pub(crate) sig: Vec<u8>,
+}
+
+/// Why a relayed confirm's assertion is refused (never the content).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelayRefusal {
+    WrongPurpose,
+    WrongNode,
+    NotAnAdmin,
+    NotFromPrimary,
+    BadSignature,
+    Lifetime,
+    Expired,
+    FromTheFuture,
+}
+
+impl RelayRefusal {
+    pub(crate) const fn why(self) -> &'static str {
+        match self {
+            Self::WrongPurpose => "the assertion is not a relayed confirm",
+            Self::WrongNode => "the relayed confirm is for another node",
+            Self::NotAnAdmin => "a relayed confirm needs an admin",
+            Self::NotFromPrimary => "only the primary relays a confirm",
+            Self::BadSignature => "the relayed confirm's signature is not the primary's",
+            Self::Lifetime => "the relayed confirm's assertion lives longer than 30 seconds",
+            Self::Expired => "the relayed confirm's assertion has expired",
+            Self::FromTheFuture => "the relayed confirm's assertion is dated in the future",
+        }
+    }
+}
+
+impl SignedRelay {
+    /// The checks that need no pending change: the purpose, that it is for this node and an admin's,
+    /// that it comes from the primary (the issuer, the connection it arrived over and the signature),
+    /// and its lifetime on this node's clock (at most [`RELAY_SECS`] long, not past with a
+    /// [`RELAY_SKEW_SECS`] allowance, not dated later than that allowance).
+    pub(crate) fn check(
+        &self,
+        host: &dyn Host,
+        sender: &str,
+        now: u64,
+        me: &str,
+    ) -> Result<&RelayAssertion, RelayRefusal> {
+        let a = &self.assertion;
+        if a.purpose != RELAY_PURPOSE {
+            return Err(RelayRefusal::WrongPurpose);
+        }
+        if a.node != me {
+            return Err(RelayRefusal::WrongNode);
+        }
+        if a.role != "admin" || a.admin.is_empty() {
+            return Err(RelayRefusal::NotAnAdmin);
+        }
+        if host.primary_name().as_deref() != Some(a.issuer.as_str()) || sender != a.issuer {
+            return Err(RelayRefusal::NotFromPrimary);
+        }
+        if !host.verify(&a.issuer, &a.canonical(), &self.sig) {
+            return Err(RelayRefusal::BadSignature);
+        }
+        if a.expires_at < a.issued_at || a.expires_at - a.issued_at > RELAY_SECS {
+            return Err(RelayRefusal::Lifetime);
+        }
+        if now > a.expires_at.saturating_add(RELAY_SKEW_SECS) {
+            return Err(RelayRefusal::Expired);
+        }
+        if a.issued_at > now.saturating_add(RELAY_SKEW_SECS) {
+            return Err(RelayRefusal::FromTheFuture);
+        }
+        Ok(a)
+    }
 }

@@ -3788,6 +3788,14 @@ impl Backend for Federated {
     ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
         self.local.guarded_confirm(caller, id, token)
     }
+    fn guarded_confirm_relay(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: String,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
+        self.local.guarded_confirm_relay(caller, id, token)
+    }
     fn guarded_pending(
         &self,
         caller: wrendns_api::guarded::GuardedCaller,

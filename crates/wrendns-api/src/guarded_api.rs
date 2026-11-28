@@ -30,8 +30,8 @@ use crate::auth::routes::{principal, reason, remote, remote_under_proven};
 use crate::auth::{Auth, Principal, Role, Via};
 use crate::guarded::{
     ArrivedOn, GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedConfirmRequest,
-    GuardedNodeApi, GuardedPendingView, GuardedPreview, GuardedPreviewRequest, GuardedResult,
-    GuardedStatus,
+    GuardedNodeApi, GuardedPendingView, GuardedPreview, GuardedPreviewRequest, GuardedRelayRequest,
+    GuardedResult, GuardedStatus,
 };
 use crate::problem::{Code, Problem};
 use crate::{Backend, blocking};
@@ -52,6 +52,10 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
         .route("/api/v1/guarded/{id}/preview", post(guarded_preview))
         .route("/api/v1/guarded/{id}", post(guarded_apply))
         .route("/api/v1/guarded/pending/{id}/cancel", post(guarded_cancel))
+        .route(
+            "/api/v1/guarded/pending/{id}/confirm-relay",
+            post(guarded_confirm_relay),
+        )
         .with_state((backend, auth))
 }
 
@@ -296,6 +300,49 @@ pub(crate) async fn guarded_confirm(
     let c = confirm_caller(&backend, &auth, &headers, &ext, req.confirm_token.is_some()).await?;
     backend
         .guarded_confirm(c, id, req.confirm_token)
+        .await
+        .map(Json)
+}
+
+/// Confirms a pending `listen` change on another node through the primary.
+///
+/// For the admin whose browser cannot open the node's own web UI (its API listens on loopback or a
+/// cluster-only network, or the address is behind a shared Service). The primary passes the
+/// confirm on to the node over the cluster channel with a short-lived assertion of the admin's
+/// identity, bound to the change; the node checks it itself and still needs its own DNS probes to
+/// answer, exactly as for a direct confirm. Admin session only, with the change's single-use
+/// `confirmToken` in the body as well (a stolen session alone cannot do it): 403 `agent_not_allowed`
+/// for agent tokens, 403 `reauth_required` for other tokens, operators and viewers 403. Only the
+/// primary relays (a replica answers 421 `not_primary`) and only for `listen`, never for the primary
+/// itself or a standalone node, and never for `api-address`, `api-tls`, `trusted-proxies` or any other
+/// row (403 `relay_refused`, with the reason). A member whose build does not know the relay is 409
+/// `upgrade_required` naming it. A weakening change needs a sign-in within the last 10 minutes (403
+/// `reauth_required`). Audited as `settings.guarded_confirm_relayed` on the primary, before the relay
+/// is sent and after, and as `settings.guarded` with `confirmedVia: "primary"` on the node. No MCP tool.
+#[utoipa::path(post, path = "/api/v1/guarded/pending/{id}/confirm-relay", tag = "config",
+    params(("id" = String, Path, description = "The pending change's ID, as the apply answered it.")),
+    request_body = GuardedRelayRequest,
+    responses(
+        (status = 200, body = GuardedResult, description = "Confirmed on the node."),
+        (status = 403, body = Problem, description = "Not an admin session, an agent token, another token, a weakening change without a recent sign-in, or the relay was refused (`relay_refused`: the reason is in the detail; the window runs on)."),
+        (status = 404, body = Problem, description = "This primary forwarded no change under that ID, or it has rolled back."),
+        (status = 409, body = Problem, description = "The member's build does not know the relay (`upgrade_required`), or the node could not record the change (`primary_unreachable`)."),
+        (status = 421, body = Problem, description = "Ask the primary: only it relays a confirm."),
+        (status = 429, body = Problem, description = "Too many requests, or too many failed confirmations from this session."),
+    ))]
+pub(crate) async fn guarded_confirm_relay(
+    State((backend, auth)): State<Ctx>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    req: Result<Json<GuardedRelayRequest>, JsonRejection>,
+) -> Result<Json<GuardedResult>, Problem> {
+    let p = principal(&ext)?;
+    require_admin_session(&p)?;
+    let req = body(req)?;
+    let c = caller(&backend, &auth, &p, &ext, &headers).await?;
+    backend
+        .guarded_confirm_relay(c, id, req.confirm_token)
         .await
         .map(Json)
 }

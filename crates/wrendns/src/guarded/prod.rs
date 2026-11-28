@@ -429,6 +429,10 @@ impl Host for ProdHost {
                     &m.features,
                     wrendns_cluster::gate::Feature::MemberApiAddress,
                 ),
+                relay: wrendns_cluster::gate::knows(
+                    &m.features,
+                    wrendns_cluster::gate::Feature::GuardedConfirmRelay,
+                ),
                 api_url: m.api_url,
             })
             .collect()

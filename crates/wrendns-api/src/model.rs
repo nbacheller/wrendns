@@ -95,6 +95,10 @@ pub struct ApiInfo {
     /// The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_redirect: Option<String>,
+    /// REQ: API-902, API-901 (T27.14g, ADR-1116) - `[api] public_url` as in force now: the address the
+    /// node announces as its web UI and API, in place of the one it works out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
 }
 
 /// Node and build information.

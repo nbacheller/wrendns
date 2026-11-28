@@ -138,6 +138,8 @@ pub enum Code {
     PreviewStale,
     /// REQ: API-902 (T27.13, ADR-956) — the node can't reach the primary to record the change, so it was not kept (it rolls back when the window ends).
     PrimaryUnreachable,
+    /// REQ: API-904 (T27.14g, ADR-1098 point 3, ADR-1116) — the confirm the primary relayed was refused, by the primary or by the node itself; the detail says why and the window runs on.
+    RelayRefused,
     /// REQ: API-902 (T27.13, ADR-956) — the change would leave the node with no API listener or no DNS listener, or removes the listener this request came in on.
     WouldDisconnectYou,
     /// REQ: API-902 (T27.13, ADR-956) — no admin could sign in afterwards.
@@ -228,6 +230,7 @@ impl Code {
             Self::GuardedChangePending => "https://wrendns.com/problems/guarded_change_pending",
             Self::PreviewStale => "https://wrendns.com/problems/preview_stale",
             Self::PrimaryUnreachable => "https://wrendns.com/problems/primary_unreachable",
+            Self::RelayRefused => "https://wrendns.com/problems/relay_refused",
             Self::WouldDisconnectYou => "https://wrendns.com/problems/would_disconnect_you",
             Self::WouldLockOutAdmins => "https://wrendns.com/problems/would_lock_out_admins",
             Self::NoSupervisor => "https://wrendns.com/problems/no_supervisor",
@@ -302,6 +305,7 @@ impl Code {
             Self::GuardedChangePending => "A guarded change is already pending",
             Self::PreviewStale => "The preview is out of date",
             Self::PrimaryUnreachable => "The primary can't be reached",
+            Self::RelayRefused => "The relayed confirm was refused",
             Self::WouldDisconnectYou => "The change would cut you off",
             Self::WouldLockOutAdmins => "The change would lock every admin out",
             Self::NoSupervisor => "Nothing will restart the node",
@@ -333,6 +337,7 @@ impl Code {
             | Self::CsrfRejected
             | Self::InsecureTransport
             | Self::AgentNotAllowed
+            | Self::RelayRefused
             | Self::ReauthRequired => StatusCode::FORBIDDEN,
             Self::Conflict
             | Self::GitopsManaged

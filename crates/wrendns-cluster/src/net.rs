@@ -137,15 +137,19 @@ fn bounded_deference(wants: bool, primary_up: bool, since: &AtomicU64, now: u64)
 const MAX_API_URL: usize = 256;
 
 /// REQ: API-902 - a peer's announced API URL is kept only when it is plain http(s), printable ASCII
-/// without spaces or control characters, and at most 256 bytes; anything else becomes empty.
+/// without spaces, control characters, quotes, angle brackets, backticks or backslashes, with no
+/// user name or password in it, and at most 256 bytes; anything else becomes empty.
 pub(crate) fn sane_api_url(url: String) -> String {
     let lower = url.to_ascii_lowercase();
     let scheme_ok = lower.starts_with("http://") || lower.starts_with("https://");
-    let rest_len = url.split_once("://").map_or(0, |(_, r)| r.len());
+    let rest = url.split_once("://").map_or("", |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if scheme_ok
-        && rest_len > 0
+        && !rest.is_empty()
+        && !authority.contains('@')
         && url.len() <= MAX_API_URL
         && url.bytes().all(|b| b.is_ascii_graphic())
+        && !url.contains(['"', '\'', '<', '>', '`', '\\'])
     {
         url
     } else {
@@ -171,6 +175,12 @@ mod api_902_url_tests {
             "https://a\nb",
             "https://caf\u{e9}.test",
             "//192.0.2.10",
+            "https://user:pw@192.0.2.10:9443",
+            "https://user@192.0.2.10",
+            "https://192.0.2.10/\"onmouseover=x",
+            "https://192.0.2.10/<b>",
+            "https://192.0.2.10/`x`",
+            "https://192.0.2.10\\x",
             long.as_str(),
         ] {
             assert_eq!(sane_api_url(bad.into()), "", "{bad}");

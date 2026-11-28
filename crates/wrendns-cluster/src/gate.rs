@@ -42,11 +42,16 @@ pub enum Feature {
     /// (API-902, T27.14g0, ADR-1113). Nothing is replicated: an older member announces no URL and
     /// does not know the read, so a card says so plainly instead of asking it.
     MemberApiAddress,
+    /// The `listen` confirm the primary relays for an admin whose browser cannot open the node's own
+    /// web UI (API-904, T27.14g, ADR-1116). Nothing is replicated: the relay is one more operation on
+    /// the guarded forwarding channel, which an older member cannot decode, so the primary refuses to
+    /// send it to any member that does not announce this.
+    GuardedConfirmRelay,
 }
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 10] = [
+    pub const ALL: [Feature; 11] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
@@ -57,6 +62,7 @@ impl Feature {
         Self::OtlpCompression,
         Self::DnsProviderLedger,
         Self::MemberApiAddress,
+        Self::GuardedConfirmRelay,
     ];
 
     /// The name a build announces the feature under (wire: Hello `features`).
@@ -72,6 +78,7 @@ impl Feature {
             Self::OtlpCompression => "otlp_compression",
             Self::DnsProviderLedger => "dns_provider_ledger",
             Self::MemberApiAddress => "member_api_address",
+            Self::GuardedConfirmRelay => "guarded_confirm_relay",
         }
     }
 
@@ -88,6 +95,7 @@ impl Feature {
             Self::OtlpCompression => "gzip compression of the OpenTelemetry export",
             Self::DnsProviderLedger => "the DNS-provider ownership ledger",
             Self::MemberApiAddress => "the web UI and API address read",
+            Self::GuardedConfirmRelay => "the confirm relayed by the primary",
         }
     }
 }
@@ -102,7 +110,7 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 10] = [
+const ANNOUNCED: [Feature; 11] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
@@ -113,6 +121,7 @@ const ANNOUNCED: [Feature; 10] = [
     Feature::OtlpCompression,
     Feature::DnsProviderLedger,
     Feature::MemberApiAddress,
+    Feature::GuardedConfirmRelay,
 ];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
@@ -249,7 +258,8 @@ mod tests {
                 "rfc5011".to_owned(),
                 "otlp_compression".to_owned(),
                 "dns_provider_ledger".to_owned(),
-                "member_api_address".to_owned()
+                "member_api_address".to_owned(),
+                "guarded_confirm_relay".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));

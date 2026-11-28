@@ -45,6 +45,7 @@ fn weaken_flag(_old: &Value, new: &Value) -> bool {
 
 mod dns_proof_tests;
 mod listen_engine_tests;
+mod relay_tests;
 
 macro_rules! row {
     ($id:literal, $paths:expr, $mode:expr, $proof:expr, $weak:expr) => {
@@ -275,6 +276,11 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
             RowDef {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::LISTEN).unwrap(),
                 applier: Arc::new(super::listen::Listen),
+            },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::API_PUBLIC_URL)
+                    .unwrap(),
+                applier: Arc::new(super::appliers::ApiPublicUrl),
             },
             RowDef {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
@@ -2606,6 +2612,7 @@ fn cluster() -> (Node, Node, Node) {
             witness: false,
             api_url: format!("https://{n}.example.test:8080"),
             node_api: true,
+            relay: true,
         })
         .collect();
     let pstate = Arc::new(State::in_memory().unwrap());
@@ -3686,6 +3693,7 @@ fn api_902_restart_warning_counts_resolvers_of_the_same_site() {
         witness,
         api_url: String::new(),
         node_api: true,
+        relay: true,
     };
     // pi-a (site home) has a witness in its site and a resolver in another site: neither counts.
     *net.members.lock().unwrap() = vec![

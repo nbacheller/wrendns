@@ -1614,6 +1614,12 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
             r.err("api.http_redirect", "must differ from [api] listen");
         }
     }
+    // REQ: API-902, API-901 (T27.14g, ADR-1116) - the address announced as this node's own.
+    if let Some(u) = &cfg.api.public_url
+        && let Err(why) = check_public_url(u.as_str())
+    {
+        r.err("api.public_url", &why);
+    }
     // REQ: API-902 (ADR-956 §3) — the confirmation window of a guarded address change.
     if !(30..=600).contains(&cfg.api.confirm_window_secs) {
         r.err("api.confirm_window_secs", "must be 30 to 600 seconds");
@@ -3167,6 +3173,83 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
     }
 }
 
+/// The longest `[api] public_url` (what a receiving member keeps of an announced address).
+pub const MAX_PUBLIC_URL: usize = 255;
+
+/// REQ: API-902, API-901 (T27.14g, ADR-1116) - why `url` cannot be `[api] public_url`, or `Ok`. The
+/// address is announced to every member and linked from a card, so it must be a plain web address:
+/// `http://` or `https://`, a host (a name, an IPv4 address or a bracketed IPv6 address) and an
+/// optional port from 1 to 65535, nothing after them but a final `/`; no user name or password; printable
+/// ASCII with no quote, angle bracket, backtick, backslash or space; at most [`MAX_PUBLIC_URL`] bytes.
+///
+/// # Errors
+/// The reason, as a sentence that names the rule.
+pub fn check_public_url(url: &str) -> Result<(), String> {
+    if url.len() > MAX_PUBLIC_URL {
+        return Err(format!("must be at most {MAX_PUBLIC_URL} bytes"));
+    }
+    if !url.bytes().all(|b| b.is_ascii_graphic()) || url.contains(['"', '<', '>', '`', '\\', '\''])
+    {
+        return Err(
+            "must be printable ASCII without spaces, quotes, angle brackets, backticks or backslashes"
+                .to_owned(),
+        );
+    }
+    let lower = url.to_ascii_lowercase();
+    let rest = if let Some(r) = lower.strip_prefix("https://") {
+        r
+    } else if let Some(r) = lower.strip_prefix("http://") {
+        r
+    } else {
+        return Err("must start with http:// or https://".to_owned());
+    };
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
+    if authority.is_empty() {
+        return Err("needs a host after the scheme".to_owned());
+    }
+    if authority.contains(['/', '?', '#']) {
+        return Err("is an address, not a page: no path, query or fragment".to_owned());
+    }
+    if authority.contains('@') {
+        return Err("must not carry a user name or password".to_owned());
+    }
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let Some((ip, after)) = v6.split_once(']') else {
+            return Err("has an unclosed [ in the host".to_owned());
+        };
+        if ip.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err("has a bracketed host that is not an IPv6 address".to_owned());
+        }
+        if !after.is_empty() && !after.starts_with(':') {
+            return Err("has something after the closing ] other than a port".to_owned());
+        }
+        (ip, after.strip_prefix(':'))
+    } else if authority.matches(':').count() > 1 {
+        return Err("an IPv6 address needs brackets: https://[2001:db8::7]".to_owned());
+    } else {
+        match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return Err("needs a host after the scheme".to_owned());
+    }
+    if !authority.starts_with('[')
+        && !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Err("has a host with characters a name cannot have".to_owned());
+    }
+    if let Some(p) = port
+        && !(p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok_and(|n| n != 0))
+    {
+        return Err("has a port that is not 1 to 65535".to_owned());
+    }
+    Ok(())
+}
+
 /// REQ: API-003 (T24.44) - two listen addresses clash when they share a port and either the
 /// addresses are equal or one is the unspecified address (0.0.0.0 or [::], which covers the
 /// other).
@@ -3180,7 +3263,55 @@ pub fn addrs_clash(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_domain_name, valid_pem_certificate};
+    use super::{check_public_url, valid_domain_name, valid_pem_certificate};
+
+    // REQ: API-902, API-901 (T27.14g, ADR-1116) - `[api] public_url` is a plain web address: http or
+    // https, a name or an address with an optional port, no credentials, no path, bounded.
+    #[test]
+    fn api_902_public_url_is_a_plain_web_address() {
+        for ok in [
+            "https://pi-a.example.com",
+            "http://192.168.1.5:8053",
+            "https://lb.example.com/",
+            "HTTPS://Pi-A.Example.com:443",
+            "https://[2001:db8::7]:8443",
+            "http://[2001:db8::7]",
+            "http://pi_a",
+        ] {
+            assert_eq!(check_public_url(ok), Ok(()), "{ok}");
+        }
+        let long = format!("https://{}", "a".repeat(250));
+        for bad in [
+            "",
+            "pi-a.example.com",
+            "ftp://pi-a.example.com",
+            "javascript:alert(1)",
+            "https://",
+            "https:///",
+            "https://user@pi-a.example.com",
+            "https://user:pw@pi-a.example.com",
+            "https://pi-a.example.com/ui",
+            "https://pi-a.example.com/?a=1",
+            "https://pi-a.example.com/#x",
+            "https://pi-a.example.com:0",
+            "https://pi-a.example.com:65536",
+            "https://pi-a.example.com:80a",
+            "https://pi-a.example.com:",
+            "https://2001:db8::7",
+            "https://[2001:db8::7",
+            "https://[not-an-ip]",
+            "https://[2001:db8::7]x",
+            "https://pi a.example.com",
+            "https://pi-a.example.com\n",
+            "https://pi\"a.example.com",
+            "https://pi<a>.example.com",
+            "https://pi-a.example.com\\x",
+            "https://caf\u{e9}.example",
+            long.as_str(),
+        ] {
+            assert!(check_public_url(bad).is_err(), "{bad:?} should be refused");
+        }
+    }
 
     /// REQ: DNS-011 (T27.11) — negative trust anchors are domain names: a trailing dot is fine, a
     /// label that starts or ends with `-`, an empty label, the root, and spaces are not.
