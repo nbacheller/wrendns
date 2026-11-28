@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! REQ: OBS-006, OBS-017 (T7.17, issue #155) - the OTLP export against a local fake OTLP/HTTP
 //! receiver (an in-process TCP listener on loopback): metrics, logs and traces arrive at the paths
 //! a collector's `otlphttp` receiver serves (`/v1/metrics`, `/v1/logs`, `/v1/traces`), as JSON,
