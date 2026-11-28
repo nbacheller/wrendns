@@ -772,6 +772,24 @@ test('dns_901 listener gate is changed through the guarded review', async () => 
 // guarded status (set by file off) and the guarded routes, and drive the page the way an admin does.
 const LISTEN_BASE = { gatedByDefault: false, wildcardBind: false, canCarryKey: false, setting: 'unset', publicAddress: false, requireClientId: false, defaultOn: false, defaultReason: 'off, because the address is not public', publicExposure: false, proxyProtocol: false };
 
+// A handler that awaits route.fetch() and then fulfills races unstubListeners(): page.unroute() does not
+// wait for handlers in flight, and when the last handler for a URL goes, Playwright continues the request
+// itself. The handler's fulfill then throws "Route is already handled!" (the page polls these two URLs,
+// and on a loaded runner the fetch is slow enough to be caught mid-way). Reproduced by delaying the
+// fulfill by 1.5 s. The request already went to the server, so there is nothing left to answer: that one
+// error is swallowed. A route this helper already answered is never answered again, so a real double
+// answer still fails.
+const answered = new WeakSet<Route>();
+async function fulfillOnce(route: Route, options: Parameters<Route['fulfill']>[0]) {
+  if (answered.has(route)) throw new Error(`route answered twice: ${route.request().url()}`);
+  answered.add(route);
+  try {
+    await route.fulfill(options);
+  } catch (e) {
+    if (!/Route is already handled/.test(String(e))) throw e;
+  }
+}
+
 async function stubListeners(phase: { v: 'idle' | 'pending' | 'rolled_back' | 'confirmed' }, probes: { v: Array<{ listener: string; state: string; otherHosts: number }> }, seen: { preview?: { value?: { listeners?: Array<{ proto: string; addr: string }> } }; cancelled?: boolean }) {
   await page.route('**/api/v1/system/info', async (route) => {
     const res = await route.fetch();
@@ -780,7 +798,7 @@ async function stubListeners(phase: { v: 'idle' | 'pending' | 'rolled_back' | 'c
       { ...LISTEN_BASE, listener: 'udp://192.168.1.2:53' },
       { ...LISTEN_BASE, listener: 'tcp://192.168.1.2:53' },
     ];
-    await route.fulfill({ response: res, json: info });
+    await fulfillOnce(route, { response: res, json: info });
   });
   await page.route('**/api/v1/guarded', async (route) => {
     const res = await route.fetch();
@@ -793,7 +811,7 @@ async function stubListeners(phase: { v: 'idle' | 'pending' | 'rolled_back' | 'c
       delete n.pending;
       n.outcomes = [{ setting: 'listen', node: n.node, outcome: phase.v, reason: phase.v === 'rolled_back' ? 'expired' : undefined, at: Math.floor(Date.now() / 1000) }];
     }
-    await route.fulfill({ response: res, json: j });
+    await fulfillOnce(route, { response: res, json: j });
   });
   await page.route('**/api/v1/guarded/listen/preview', async (route) => {
     seen.preview = route.request().postDataJSON();
@@ -941,7 +959,7 @@ test('api_902 listener card keeps same-port rows apart and survives repeated war
       { ...LISTEN_BASE, listener: 'udp://192.168.1.2:53' },
       { ...LISTEN_BASE, listener: 'udp://10.0.0.1:53' },
     ];
-    await route.fulfill({ response: res, json: info });
+    await fulfillOnce(route, { response: res, json: info });
   });
   const probe = (target: string, ok: boolean, latencyMs: number) => ({ target, proto: 'udp', listener: true, ok, latencyMs, consecutiveFailures: ok ? 0 : 3, checkedUnixSeconds: 1 });
   await page.route('**/api/v1/system/probes', (route) => route.fulfill({ json: { items: [probe('udp://192.168.1.2:53', true, 1.5), probe('udp://10.0.0.1:53', false, 0)] } }));
