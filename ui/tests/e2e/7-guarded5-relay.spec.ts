@@ -52,13 +52,15 @@ interface Seen {
  * for it. `relay` says whether `pi-b`'s build takes a relayed confirm (the primary reports it in the listing);
  * `announces` whether it announces a web UI address at all.
  */
-async function members(page: Page, seen: Seen, opts: { relay: boolean; announces?: boolean; refuse?: boolean }) {
+async function members(page: Page, seen: Seen, opts: { relay: boolean; announces?: boolean; refuse?: boolean; noPublicRow?: boolean }) {
   await page.route('**/api/v1/guarded', async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
     const real = await (await route.fetch()).json();
     const me = real.nodes[0];
     // The e2e node's file sets `[[listen]]`, which locks its row; the member's own file does not.
-    const settings = me.settings.map((s: { id: string }) => (s.id === 'listen' ? { ...s, setByFile: false } : s));
+    const settings = me.settings
+      .filter((s: { id: string }) => !(opts.noPublicRow && s.id === 'api-public-url'))
+      .map((s: { id: string }) => (s.id === 'listen' ? { ...s, setByFile: false } : s));
     const other = { ...me, node: 'pi-b', apiUrl: opts.announces === false ? undefined : B_URL, confirmRelay: opts.relay, settings, pending: null, pendingRestart: [], restarting: false, outcomes: [] };
     await route.fulfill({ json: { nodes: [me, other] } });
   });
@@ -234,6 +236,22 @@ test.describe('api_902 confirm through the primary', () => {
       await expect(lst.getByTestId('guarded-pending')).toBeVisible({ timeout: 30_000 });
       await expect(lst.getByTestId('guarded-relay')).toHaveCount(0);
       await expect(lst.getByTestId('guarded-confirm-node-link')).toBeVisible();
+    } finally {
+      await page.close();
+    }
+  });
+  test('api_902 a node that does not know the public address is left alone', async ({ browser }) => {
+    test.setTimeout(180_000);
+    const seen: Seen = { relay: null, relayCalls: 0 };
+    const page = await signedIn(browser, FIFTH, (p) => members(p, seen, { relay: true, noPublicRow: true }));
+    try {
+      const lst = page.getByTestId('listeners-card');
+      await expect(lst).toBeVisible({ timeout: 30_000 });
+      await lst.getByTestId('listeners-node-select').selectOption('pi-b');
+      const box = page.getByTestId('api-public-url');
+      await expect(box.getByTestId('api-public-url-unknown')).toContainText('does not know the public address');
+      await expect(box.getByTestId('api-public-url-input')).toBeDisabled();
+      await expect(box.getByTestId('guarded-start-api-public-url')).toBeDisabled();
     } finally {
       await page.close();
     }

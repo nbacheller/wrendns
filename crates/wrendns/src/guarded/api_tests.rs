@@ -115,6 +115,11 @@ fn routes() -> Vec<(&'static str, String, Value)> {
         ),
         (
             "POST",
+            "/api/v1/guarded/pending/abc/confirm-relay".into(),
+            json!({"confirmToken": "t"}),
+        ),
+        (
+            "POST",
             "/api/v1/guarded/pending/abc/cancel".into(),
             json!({}),
         ),
@@ -124,6 +129,43 @@ fn routes() -> Vec<(&'static str, String, Value)> {
 // REQ: API-902 (ADR-956 §3, ADR-914), AGT-004 — table-driven over the routes: an agent token is
 // refused whatever its scopes (403 `agent_not_allowed`), an operator and a viewer are 403, any other
 // API token is 403 `reauth_required`, no credential is 401, and an admin session gets through.
+// REQ: API-902 (ADR-1116, AC 8) — the relay route alone: an agent is 403 `agent_not_allowed`, an
+// operator and a viewer 403 `forbidden`, an admin API token 403 `reauth_required`, no credential 401.
+// (The table below runs the same cases over every guarded route, this one included.)
+#[tokio::test]
+async fn api_902_relay_refuses_agents_and_tokens() {
+    let h = harness("");
+    let _n = install(&h);
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot", Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive", Role::Operator, None);
+    let viewer = token(&h, "vic", Role::Viewer, None);
+    let uri = "/api/v1/guarded/pending/abc/confirm-relay";
+    let body = json!({"confirmToken": "t"});
+    let (s, _, v) = call_as(&h, &agent, "POST", uri, Some(&body), &[]).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("agent_not_allowed")),
+        "{v}"
+    );
+    for t in [&op, &viewer] {
+        let (s, _, v) = call_as(&h, t, "POST", uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("forbidden")),
+            "{v}"
+        );
+    }
+    let (s, _, v) = call_as(&h, &h.bearer.clone(), "POST", uri, Some(&body), &[]).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauth_required")),
+        "{v}"
+    );
+    let (s, v) = json_of(&h, unauthenticated("POST", uri, Some(&body), None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+}
+
 #[tokio::test]
 async fn api_902_guarded_change_needs_admin_and_refuses_agents() {
     let h = harness("");

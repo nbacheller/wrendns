@@ -306,7 +306,7 @@ impl Engine {
         )
         .map_err(|e| {
             Problem::unavailable(format!(
-                "the audit log can'unix_now record the relay, so nothing was sent: {e}"
+                "the audit log can't record the relay, so nothing was sent: {e}"
             ))
         })?;
         let fwd = Forwarded {

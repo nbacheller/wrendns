@@ -106,11 +106,12 @@
       <p class="small" data-testid="api-public-url-announced">
         {#if announced}{target ?? 'This node'} announces <span class="mono">{announced}</span> ({setUrl ? 'set here' : 'worked out by the node'}).{:else}{target ?? 'This node'} announces no address: it is bound to a wildcard or loopback address and has no cluster address to borrow a host from.{/if}
       </p>
+      {#if !publicRow}<p class="small muted" data-testid="api-public-url-unknown">{target ?? 'This node'}'s build does not know the public address setting, so it is left as it is. Update the node to set it.</p>{/if}
       <label class="small">Public address (empty: let the node work it out)
-        <input bind:value={publicUrl} placeholder="https://pi-a.example.com" aria-label="Public web UI address" aria-invalid={urlBad} disabled={publicRow?.setByFile || nodeUnread} data-testid="api-public-url-input" />
+        <input bind:value={publicUrl} placeholder="https://pi-a.example.com" aria-label="Public web UI address" aria-invalid={urlBad} disabled={(publicRow?.setByFile ?? true) || nodeUnread} data-testid="api-public-url-input" />
       </label>
       {#if urlBad}<p class="small" role="alert" data-testid="api-public-url-bad">Not a plain web address: use http:// or https://, a name or an address and an optional port, with no user name, password or path (for example https://pi-a.example.com).</p>{/if}
-      <GuardedChange id="api-public-url" label="Public web UI address" value={{ url: publicUrl.trim() }} node={target} disabled={!urlDirty || urlBad || !!publicRow?.setByFile || nodeUnread} onDone={changed} />
+      <GuardedChange id="api-public-url" label="Public web UI address" value={{ url: publicUrl.trim() }} node={target} disabled={!urlDirty || urlBad || (publicRow?.setByFile ?? true) || nodeUnread} onDone={changed} />
     </div>
     <div data-testid="trusted-proxies" data-setting="api.trusted_proxies">
       <h3>Trusted proxies<HelpButton id="trusted-proxies" />{#if proxiesRow?.setByFile} <span class="muted small" data-testid="trusted-proxies-file">(set by file)</span>{/if}</h3>
