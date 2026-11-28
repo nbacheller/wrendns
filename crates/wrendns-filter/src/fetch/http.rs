@@ -139,6 +139,8 @@ impl std::fmt::Debug for Client {
 #[derive(Clone)]
 pub struct Client {
     tls: TlsConnector,
+    /// The same trust, offering HTTP/2 ([`Client::request_h2`]).
+    tls_h2: TlsConnector,
     resolver: Arc<dyn Resolve>,
     user_agent: String,
     /// Whether link-local and cloud-metadata addresses may be fetched ([`Client::allow_link_local`]).
@@ -163,6 +165,24 @@ pub(super) fn link_local(ip: IpAddr) -> bool {
 }
 
 impl Client {
+    /// The client for the TLS configuration `cfg` (ALPN `http/1.1`); the HTTP/2 connector
+    /// ([`Client::request_h2`]) is the same configuration offering `h2`.
+    fn assemble(cfg: ClientConfig, resolver: Arc<dyn Resolve>) -> Self {
+        let mut h2 = cfg.clone();
+        h2.alpn_protocols = vec![b"h2".to_vec()];
+        Self {
+            tls: TlsConnector::from(Arc::new(cfg)),
+            tls_h2: TlsConnector::from(Arc::new(h2)),
+            resolver,
+            user_agent: format!(
+                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
+                env!("CARGO_PKG_VERSION")
+            ),
+            link_local: false,
+            server_name: None,
+        }
+    }
+
     /// Trusts the built-in Mozilla roots (no CA files needed in a scratch image) plus
     /// `extra_roots` (private list servers, tests).
     pub fn new(
@@ -181,16 +201,7 @@ impl Client {
             .with_root_certificates(roots)
             .with_no_client_auth();
         cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(Self {
-            tls: TlsConnector::from(Arc::new(cfg)),
-            resolver,
-            user_agent: format!(
-                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
-                env!("CARGO_PKG_VERSION")
-            ),
-            link_local: false,
-            server_name: None,
-        })
+        Ok(Self::assemble(cfg, resolver))
     }
 
     /// Allows fetching from link-local addresses (refused by default: see [`link_local`]),
@@ -229,6 +240,27 @@ impl Client {
         Self::new(resolver, &roots)
     }
 
+    /// REQ: OBS-006 (T41.2) — a client that trusts the built-in public roots and, in addition, the
+    /// certificates in `pem` (a collector's private CA); without `pem` it is [`Client::new`]. A
+    /// text with no certificate in it is an error, so a wrong file never means "no extra trust"
+    /// silently. Errors name no key material.
+    pub fn with_extra_ca_pem(
+        resolver: Arc<dyn Resolve>,
+        pem: Option<&str>,
+    ) -> Result<Self, String> {
+        use rustls::pki_types::pem::PemObject;
+        let Some(pem) = pem else {
+            return Self::new(resolver, &[]);
+        };
+        let roots = CertificateDer::pem_slice_iter(pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("the CA PEM: {e}"))?;
+        if roots.is_empty() {
+            return Err("the CA PEM holds no certificate".to_owned());
+        }
+        Self::new(resolver, &roots)
+    }
+
     /// REQ: API-016 (T23.7, ADR-120) — a client that trusts only the certificates in `pem`
     /// (a router console's own certificate, or its private CA), not the built-in public roots:
     /// a certificate from a public CA is then refused for a console. Errors name no key material.
@@ -253,16 +285,7 @@ impl Client {
             .with_root_certificates(store)
             .with_no_client_auth();
         cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(Self {
-            tls: TlsConnector::from(Arc::new(cfg)),
-            resolver,
-            user_agent: format!(
-                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
-                env!("CARGO_PKG_VERSION")
-            ),
-            link_local: false,
-            server_name: None,
-        })
+        Ok(Self::assemble(cfg, resolver))
     }
 
     /// A client that skips certificate verification (signatures are still checked, so the
@@ -277,16 +300,7 @@ impl Client {
             .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
             .with_no_client_auth();
         cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(Self {
-            tls: TlsConnector::from(Arc::new(cfg)),
-            resolver,
-            user_agent: format!(
-                "WrenDNS/{} (+https://github.com/nbacheller/wrendns)",
-                env!("CARGO_PKG_VERSION")
-            ),
-            link_local: false,
-            server_name: None,
-        })
+        Ok(Self::assemble(cfg, resolver))
     }
 
     /// GETs `url`, following up to 5 redirects (never from https to http), and fails once
@@ -525,6 +539,75 @@ impl Client {
         Ok((parts, BodyStream(body)))
     }
 
+    /// REQ: OBS-006 (T41.2) - sends one request over HTTP/2 (TLS with ALPN `h2` for https, prior
+    /// knowledge for http) and returns the response head, its body (at most `max_bytes`) and its
+    /// trailers: what a gRPC unary call needs. No redirects. The caller applies a timeout.
+    pub async fn request_h2(
+        &self,
+        req: http::Request<Vec<u8>>,
+        max_bytes: u64,
+    ) -> Result<(http::response::Parts, Vec<u8>, Option<http::HeaderMap>), HttpError> {
+        let (parts, body) = req.into_parts();
+        let uri = parts.uri.clone();
+        let https = match uri.scheme_str() {
+            Some("https") => true,
+            Some("http") => false,
+            other => {
+                return Err(HttpError::fatal(format!(
+                    "unsupported scheme {}",
+                    other.unwrap_or("(none)")
+                )));
+            }
+        };
+        let host = uri
+            .host()
+            .ok_or_else(|| HttpError::fatal("URL has no host"))?;
+        let bare_host = host.trim_start_matches('[').trim_end_matches(']');
+        let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
+        let tcp = self.connect(bare_host, port).await?;
+        let mut out = Request::builder().method(parts.method).uri(uri.clone());
+        for (k, v) in &parts.headers {
+            out = out.header(k, v);
+        }
+        let req = out
+            .header(USER_AGENT, &self.user_agent)
+            .body(http_body_util::Full::new(Bytes::from(body)))
+            .map_err(|e| HttpError::fatal(format!("bad request: {e}")))?;
+        let resp = if https {
+            let name = self.tls_name(bare_host)?;
+            let tls = self
+                .tls_h2
+                .connect(name, tcp)
+                .await
+                .map_err(|e| HttpError::retry(format!("TLS with {bare_host}: {e}")))?;
+            send_h2(TokioIo::new(tls), req).await?
+        } else {
+            send_h2(TokioIo::new(tcp), req).await?
+        };
+        let (parts, mut body) = resp.into_parts();
+        let mut data = Vec::new();
+        let mut trailers = None;
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|e| HttpError::retry(format!("reading body: {e}")))?;
+            match frame.into_data() {
+                Ok(chunk) => {
+                    if data.len() as u64 + chunk.len() as u64 > max_bytes {
+                        return Err(HttpError::fatal(format!(
+                            "response larger than {max_bytes} bytes"
+                        )));
+                    }
+                    data.extend_from_slice(&chunk);
+                }
+                Err(frame) => {
+                    if let Ok(t) = frame.into_trailers() {
+                        trailers = Some(t);
+                    }
+                }
+            }
+        }
+        Ok((parts, data, trailers))
+    }
+
     async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, HttpError> {
         let mut ips = match host.parse::<IpAddr>() {
             Ok(ip) => vec![ip],
@@ -599,6 +682,26 @@ where
         .await
         .map_err(|e| HttpError::retry(format!("HTTP handshake: {e}")))?;
     // The connection task ends when the response body is consumed or dropped.
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    sender
+        .send_request(req)
+        .await
+        .map_err(|e| HttpError::retry(format!("request: {e}")))
+}
+
+async fn send_h2<I>(
+    io: I,
+    req: Request<http_body_util::Full<Bytes>>,
+) -> Result<http::Response<hyper::body::Incoming>, HttpError>
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+{
+    let (mut sender, conn) =
+        hyper::client::conn::http2::handshake(hyper_util::rt::TokioExecutor::new(), io)
+            .await
+            .map_err(|e| HttpError::retry(format!("HTTP/2 handshake: {e}")))?;
     tokio::spawn(async move {
         let _ = conn.await;
     });

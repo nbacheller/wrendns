@@ -231,6 +231,42 @@ pub(crate) fn resource(node: &str) -> Value {
     ]})
 }
 
+/// REQ: OBS-006 (T41.2) - the resource of the metrics and traces the export sends: the node's
+/// (see [`resource`]), the cluster's name when the node is a member (`wrendns.cluster.name`), and the
+/// attributes the owner added (`resource_attributes`; the reserved names were refused when
+/// they were set, and are skipped here too).
+pub(crate) fn resource_for(
+    cfg: &wrendns_config::Config,
+    cluster: Option<&str>,
+    node: &str,
+) -> Value {
+    let mut r = resource(node);
+    let Some(list) = r["attributes"].as_array_mut() else {
+        return r;
+    };
+    if let Some(name) = cluster.filter(|n| !n.is_empty()) {
+        list.push(json!({"key": "wrendns.cluster.name", "value": {"stringValue": name}}));
+    }
+    for (k, v) in &cfg.telemetry.otlp_effective().resource_attributes {
+        if wrendns_config::OTLP_RESERVED_ATTRIBUTES
+            .iter()
+            .any(|x| x.eq_ignore_ascii_case(k))
+        {
+            continue;
+        }
+        list.push(json!({"key": k.as_str(), "value": {"stringValue": v.as_str()}}));
+    }
+    r
+}
+
+/// The cluster's name for a node that is a member.
+pub(crate) fn cluster_name(sources: &crate::http::Sources) -> Option<String> {
+    sources
+        .cluster
+        .as_ref()
+        .map(|c| c.identity.meta.cluster_name.clone())
+}
+
 /// REQ: OBS-006 — query events (the API's query-row JSON, one per line) as OTLP log records:
 /// a one-line body, and the fields as attributes (`dns.question.name`, `client.address`, ...).
 pub(crate) fn logs_body(lines: &[String], resource: &Value) -> String {
@@ -289,7 +325,8 @@ pub(crate) fn endpoint(cfg: &wrendns_config::Config) -> Option<String> {
         .map(|e| e.trim_end_matches('/').to_owned())
 }
 
-/// The HTTP client the exports use.
+/// The HTTP client with the built-in public roots only (the tests' default).
+#[cfg(test)]
 pub(crate) fn client() -> Option<wrendns_filter::fetch::Client> {
     match wrendns_filter::fetch::Client::new(Arc::new(wrendns_filter::fetch::SystemResolver), &[]) {
         Ok(c) => Some(c),
@@ -300,19 +337,133 @@ pub(crate) fn client() -> Option<wrendns_filter::fetch::Client> {
     }
 }
 
-/// One OTLP/HTTP JSON request with the configured headers and a 10 s timeout. `Err`: why it
-/// wasn't delivered.
+/// REQ: OBS-006 (T41.2) - the private CA certificates (PEM text) the export trusts besides the
+/// public roots: a stored `pem` secret (`tls_ca_ref`, read now so a rotated one applies) or the
+/// file `tls_ca`; `None` when neither is set. `Err`: why they can't be read.
+pub(crate) fn ca_pem(
+    cfg: &wrendns_config::Config,
+    store: &crate::secrets::SecretStore,
+) -> Result<Option<String>, String> {
+    let o = cfg.telemetry.otlp_effective();
+    if let Some(name) = &o.tls_ca_ref {
+        let v = store
+            .get_pem(name.as_str())
+            .map_err(|e| format!("tls_ca_ref `{name}`: {e}"))?;
+        return Ok(Some(v.expose().to_owned()));
+    }
+    if let Some(path) = &o.tls_ca {
+        return std::fs::read_to_string(path.as_str())
+            .map(Some)
+            .map_err(|e| format!("tls_ca {path}: {e}"));
+    }
+    Ok(None)
+}
+
+/// REQ: OBS-006 (T41.2) - the client for the export as configured now: the public roots plus the
+/// private CA, if any. The client is rebuilt only when the CA's text changes.
+pub(crate) struct Clients {
+    built: Option<(Option<String>, wrendns_filter::fetch::Client)>,
+}
+
+impl Clients {
+    pub(crate) fn new() -> Self {
+        Self { built: None }
+    }
+
+    /// The client for `cfg`; `Err`: the CA can't be read or holds no certificate.
+    pub(crate) fn get(
+        &mut self,
+        cfg: &wrendns_config::Config,
+        store: &crate::secrets::SecretStore,
+    ) -> Result<&wrendns_filter::fetch::Client, String> {
+        let pem = ca_pem(cfg, store)?;
+        if self.built.as_ref().is_none_or(|(p, _)| *p != pem) {
+            let c = wrendns_filter::fetch::Client::with_extra_ca_pem(
+                Arc::new(wrendns_filter::fetch::SystemResolver),
+                pem.as_deref(),
+            )?;
+            self.built = Some((pem, c));
+        }
+        self.built
+            .as_ref()
+            .map(|(_, c)| c)
+            .ok_or_else(|| "no client".to_owned())
+    }
+}
+
+/// REQ: OBS-006 (T41.2) - where a signal goes: `<endpoint>/v1/metrics` (or `/v1/traces`) for
+/// OTLP/HTTP, the collector service's `Export` method for gRPC.
+pub(crate) fn signal_url(
+    endpoint: &str,
+    encoding: wrendns_config::OtlpEncoding,
+    signal: crate::otlp_proto::Signal,
+) -> String {
+    use crate::otlp_proto::Signal;
+    let endpoint = endpoint.trim_end_matches('/');
+    match (encoding, signal) {
+        (wrendns_config::OtlpEncoding::Grpc, Signal::Metrics) => {
+            format!("{endpoint}/opentelemetry.proto.collector.metrics.v1.MetricsService/Export")
+        }
+        (wrendns_config::OtlpEncoding::Grpc, Signal::Traces) => {
+            format!("{endpoint}/opentelemetry.proto.collector.trace.v1.TraceService/Export")
+        }
+        (_, Signal::Metrics) => format!("{endpoint}/v1/metrics"),
+        (_, Signal::Traces) => format!("{endpoint}/v1/traces"),
+    }
+}
+
+/// REQ: OBS-006 (T41.2) - the outcome of a gRPC call: the HTTP status must be 200 and
+/// `grpc-status` (in the trailers, or in the head of a "trailers only" answer) must be 0.
+fn grpc_result(
+    head: &http::response::Parts,
+    trailers: Option<&http::HeaderMap>,
+) -> Result<(), String> {
+    if !head.status.is_success() {
+        return Err(format!("HTTP {}", head.status));
+    }
+    let pick = |name: &str| {
+        trailers
+            .and_then(|t| t.get(name))
+            .or_else(|| head.headers.get(name))
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    match pick("grpc-status").as_deref() {
+        Some("0") => Ok(()),
+        Some(code) => Err(format!(
+            "gRPC status {code}{}",
+            pick("grpc-message").map_or_else(String::new, |m| format!(": {m}"))
+        )),
+        None => Err("no grpc-status in the answer: not a gRPC server".to_owned()),
+    }
+}
+
+/// One OTLP/HTTP request with the configured headers and a 10 s timeout: the document `doc` of
+/// `signal`, in the configured encoding (REQ: OBS-006, T41.2: JSON, or protobuf as
+/// `application/x-protobuf`) and compression. `Err`: why it wasn't delivered.
 pub(crate) async fn post(
     client: &wrendns_filter::fetch::Client,
     url: &str,
     cfg: &wrendns_config::Config,
-    body: String,
+    signal: crate::otlp_proto::Signal,
+    doc: &Value,
     store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
-    let mut req = http::Request::post(url)
-        .header("content-type", "application/json")
-        .header("user-agent", "WrenDNS");
     let o = cfg.telemetry.otlp_effective();
+    let grpc = o.encoding == wrendns_config::OtlpEncoding::Grpc;
+    let (content_type, body) = match o.encoding {
+        wrendns_config::OtlpEncoding::Json => ("application/json", doc.to_string().into_bytes()),
+        wrendns_config::OtlpEncoding::Protobuf => (
+            "application/x-protobuf",
+            crate::otlp_proto::encode(signal, doc),
+        ),
+        wrendns_config::OtlpEncoding::Grpc => {
+            ("application/grpc", crate::otlp_proto::encode(signal, doc))
+        }
+    };
+    let mut req = http::Request::post(url)
+        .header("content-type", content_type)
+        .header("user-agent", "WrenDNS");
     for (k, v) in &o.headers {
         req = req.header(k.as_str(), v.as_str());
     }
@@ -326,14 +477,46 @@ pub(crate) async fn post(
             req = req.header(k.as_str(), v.expose());
         }
     }
-    // REQ: OBS-006 (issue #155) - `compression = "gzip"`: the same JSON, gzip-framed.
-    let body = if o.compression == wrendns_config::OtlpCompression::Gzip {
+    // REQ: OBS-006 (issue #155) - `compression = "gzip"`: the same body, gzip-framed. gRPC
+    // compresses the message inside its frame (`grpc-encoding`), not the HTTP body.
+    let gzip = o.compression == wrendns_config::OtlpCompression::Gzip;
+    let body = if grpc {
+        req = req.header("te", "trailers");
+        let message = if gzip {
+            req = req.header("grpc-encoding", "gzip");
+            crate::archive::gzip(&body)
+        } else {
+            body
+        };
+        // The length-prefixed message: a compressed flag and a big-endian length.
+        let mut framed = Vec::with_capacity(message.len() + 5);
+        framed.push(u8::from(gzip));
+        framed.extend_from_slice(
+            &u32::try_from(message.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+        framed.extend_from_slice(&message);
+        framed
+    } else if gzip {
         req = req.header("content-encoding", "gzip");
-        crate::archive::gzip(body.as_bytes())
+        crate::archive::gzip(&body)
     } else {
-        body.into_bytes()
+        body
     };
     let req = req.body(body).map_err(|e| e.to_string())?;
+    if grpc {
+        return match tokio::time::timeout(
+            Duration::from_secs(10),
+            client.request_h2(req, 64 * 1024),
+        )
+        .await
+        {
+            Ok(Ok((head, _, trailers))) => grpc_result(&head, trailers.as_ref()),
+            Ok(Err(e)) => Err(e.message),
+            Err(_) => Err("timed out".into()),
+        };
+    }
     match tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024)).await {
         Ok(Ok(r)) if r.status().is_success() => Ok(()),
         Ok(Ok(r)) => Err(format!("HTTP {}", r.status())),
@@ -349,9 +532,7 @@ pub(crate) async fn run(
     sources: Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
-    let Some(client) = client() else {
-        return;
-    };
+    let mut clients = Clients::new();
     let start_ns = crate::pipeline::unix_now().saturating_mul(1_000_000_000);
     let mut failing = false;
     let mut said_pod = false;
@@ -361,7 +542,8 @@ pub(crate) async fn run(
         let interval = Duration::from_secs(u64::from(o.interval_secs.max(5)));
         let endpoint = endpoint(&cfg);
         // A resolver pod holds no stored secrets: an export that needs one isn't made here.
-        let pod_skips = cfg.cluster.ephemeral && !o.header_refs.is_empty();
+        let pod_skips =
+            cfg.cluster.ephemeral && (!o.header_refs.is_empty() || o.tls_ca_ref.is_some());
         if pod_skips && !said_pod {
             said_pod = true;
             info!(
@@ -388,17 +570,43 @@ pub(crate) async fn run(
         let Some(endpoint) = self::endpoint(&cfg) else {
             continue;
         };
-        let url = format!("{}/v1/metrics", endpoint.trim_end_matches('/'));
+        let url = signal_url(
+            &endpoint,
+            cfg.telemetry.otlp_effective().encoding,
+            crate::otlp_proto::Signal::Metrics,
+        );
         let text = crate::http::render(&sources);
         let now_ns = crate::pipeline::unix_now().saturating_mul(1_000_000_000);
-        let body = metrics_body(
+        let doc = metrics_body(
             &text,
-            &resource(&crate::http::node_name(&cfg)),
+            &resource_for(
+                &cfg,
+                cluster_name(&sources).as_deref(),
+                &crate::http::node_name(&cfg),
+            ),
             start_ns,
             now_ns,
+        );
+        let client = match clients.get(&cfg, &sources.secrets) {
+            Ok(c) => c,
+            Err(why) => {
+                if !failing {
+                    warn!(error = %why, "OTLP metrics not delivered: the collector's CA can't be used (logged once until it works again)");
+                }
+                failing = true;
+                continue;
+            }
+        };
+        match post(
+            client,
+            &url,
+            &cfg,
+            crate::otlp_proto::Signal::Metrics,
+            &doc,
+            &sources.secrets,
         )
-        .to_string();
-        match post(&client, &url, &cfg, body, &sources.secrets).await {
+        .await
+        {
             Ok(()) => {
                 if failing {
                     debug!("OTLP export: delivered again");

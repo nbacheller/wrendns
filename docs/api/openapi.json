@@ -31951,6 +31951,31 @@
         },
         "additionalProperties": false
       },
+      "OtlpCa": {
+        "type": "object",
+        "description": "REQ: OBS-006 (T41.2) — where the OTLP export's private CA comes from (never the certificate).",
+        "required": [
+          "source",
+          "readable"
+        ],
+        "properties": {
+          "readable": {
+            "type": "boolean",
+            "description": "Whether this node can read it now."
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored secret's name, when `source` is `stored`."
+          },
+          "source": {
+            "type": "string",
+            "description": "`stored` (a secret of the `pem` kind, by name) or `file` (set in the configuration file)."
+          }
+        }
+      },
       "OtlpEntry": {
         "type": "object",
         "description": "REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.",
@@ -31961,6 +31986,8 @@
           "tracesSampleEvery",
           "tracesSlowMs",
           "compression",
+          "encoding",
+          "resourceAttributes",
           "active"
         ],
         "properties": {
@@ -31970,7 +31997,11 @@
           },
           "compression": {
             "type": "string",
-            "description": "`none` or `gzip`: whether the metrics and traces requests are gzip compressed (the\nencoding is JSON either way)."
+            "description": "`none` or `gzip`: whether the metrics and traces requests are gzip compressed (a gRPC\ncall compresses its message)."
+          },
+          "encoding": {
+            "type": "string",
+            "description": "`json`, `protobuf` (`application/x-protobuf`) or `grpc`: the encoding of the metrics and traces\nrequests."
           },
           "endpoint": {
             "type": [
@@ -31997,9 +32028,30 @@
             ],
             "description": "Why it doesn't, when an endpoint is set."
           },
+          "resourceAttributes": {
+            "type": "object",
+            "description": "The extra resource attributes set on every exported signal (name to value).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "source": {
             "type": "string",
             "description": "`none` (no export), `file` (the configuration files set the destination; read-only here)\nor `api`."
+          },
+          "tlsCa": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OtlpCa",
+                "description": "The private CA the collector's TLS certificate may chain to, besides the public roots;\nabsent when none is set."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tracesSampleEvery": {
             "type": "integer",

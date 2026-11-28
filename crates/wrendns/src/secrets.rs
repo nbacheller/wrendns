@@ -35,7 +35,7 @@ use wrendns_config::Config;
 use zeroize::{Zeroize as _, Zeroizing};
 
 pub(crate) use credential::{Credential, Source};
-pub(crate) use store::SecretStore;
+pub(crate) use store::{SecretStore, Unavailable};
 pub(crate) use value::SecretValue;
 
 /// The data-directory key's file name.

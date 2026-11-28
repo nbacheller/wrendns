@@ -23,7 +23,7 @@
 use wrendns_api::ManagedKind;
 use wrendns_api::ManagedWrite;
 use wrendns_api::auth::Role;
-use wrendns_api::model::{OtlpEntry, OtlpHeader, SinkEntry, SinkList};
+use wrendns_api::model::{OtlpCa, OtlpEntry, OtlpHeader, SinkEntry, SinkList};
 use wrendns_api::problem::{Code, Problem};
 use wrendns_config::{Config, OtlpConfig, SinkConfig, SinkKind};
 
@@ -40,7 +40,9 @@ const MAX_BUFFER: u32 = 100_000;
 /// The largest set of kept batches a sink made through the API may ask for.
 const MAX_SPILL: u64 = 1 << 30;
 /// Headers the export sets itself (`content-encoding` when `compression = "gzip"`).
-const RESERVED_HEADERS: [&str; 7] = [
+const RESERVED_HEADERS: [&str; 9] = [
+    "te",
+    "grpc-encoding",
     "content-type",
     "content-encoding",
     "content-length",
@@ -233,6 +235,14 @@ pub(crate) fn parse_otlp(body: &serde_json::Value) -> Result<OtlpConfig, Problem
             ));
         }
     }
+    // REQ: OBS-006 (T41.2) - a CA file is a path the API would let an admin point at any file: the
+    // file sets it; the API names a stored `pem` secret (`tls_ca_ref`).
+    if obj.get("tls_ca").is_some_and(|v| !v.is_null()) {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            "`tls_ca`: a CA file is set in the configuration file; store the certificate as a secret of the `pem` kind and name it in `tls_ca_ref`",
+        ));
+    }
     let o = serde_json::from_value::<OtlpConfig>(body.clone())
         .map_err(|e| Problem::new(Code::InvalidConfig, format!("OTLP export: {e}")))?;
     let Some(endpoint) = o.endpoint.as_deref().filter(|e| !e.is_empty()) else {
@@ -247,7 +257,7 @@ pub(crate) fn parse_otlp(body: &serde_json::Value) -> Result<OtlpConfig, Problem
             return Err(Problem::new(
                 Code::InvalidConfig,
                 format!(
-                    "`header_refs.{h}`: the export sets this header itself (content-type, content-length, content-encoding when compression is gzip, host, user-agent, transfer-encoding and connection are reserved)"
+                    "`header_refs.{h}`: the export sets this header itself (content-type, content-length, content-encoding when compression is gzip, host, user-agent, transfer-encoding, connection, te and grpc-encoding are reserved)"
                 ),
             ));
         }
@@ -406,6 +416,19 @@ fn plan_otlp(
             return Err(Problem::new(Code::UpgradeRequired, why)
                 .hint("Upgrade the member named, then make this change again."));
         }
+        // REQ: OBS-006 (T41.2) - the protobuf encoding, resource attributes and a private CA wait
+        // the same way (an older member refuses an entry with fields it does not know).
+        if (o.encoding != wrendns_config::OtlpEncoding::Json
+            || !o.resource_attributes.is_empty()
+            || o.tls_ca_ref.is_some())
+            && let Err(why) = crate::upgrade_gate::enforce(
+                src.cluster.as_deref(),
+                wrendns_cluster::gate::Feature::OtlpOptions,
+            )
+        {
+            return Err(Problem::new(Code::UpgradeRequired, why)
+                .hint("Upgrade the member named, then make this change again."));
+        }
         entries.otlp = Some(o);
         (Some(text), redirect)
     } else {
@@ -454,6 +477,26 @@ fn otlp_references(
     current: &Config,
     o: &OtlpConfig,
 ) -> Result<Option<serde_json::Value>, Problem> {
+    // REQ: OBS-006 (T41.2) - the private CA is a stored secret of the `pem` kind (a certificate
+    // is parsed out of it and nothing is sent, so naming one is no redirect).
+    if let Some(n) = &o.tls_ca_ref {
+        let n = n.as_str();
+        if !src.secrets.exists(n) {
+            return Err(Problem::new(
+                Code::SecretMissing,
+                format!("`tls_ca_ref`: no stored secret is named `{n}` on this node"),
+            )
+            .hint("Store the CA certificate first (Settings -> Integrations & secrets, kind pem), then name it here."));
+        }
+        if let Err(e) = src.secrets.readable_pem(n)
+            && matches!(e, crate::secrets::Unavailable::NotPem)
+        {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                format!("`tls_ca_ref`: {e}"),
+            ));
+        }
+    }
     let used = wrendns_config::secret_refs::references(current);
     let before = current.telemetry.otlp_effective().header_refs.clone();
     let mut redirect = None;
@@ -666,7 +709,22 @@ pub(crate) fn otlp_entry(src: &Sources) -> OtlpEntry {
         readable: Some(src.secrets.readable(n.as_str()).is_ok()),
         value: None,
     }));
-    let pod_skips = cfg.cluster.ephemeral && !o.header_refs.is_empty();
+    let pod_skips = cfg.cluster.ephemeral && (!o.header_refs.is_empty() || o.tls_ca_ref.is_some());
+    // REQ: OBS-006 (T41.2) - where the private CA comes from (never its text), and whether this
+    // node can use it now.
+    let tls_ca = if let Some(n) = &o.tls_ca_ref {
+        Some(OtlpCa {
+            source: "stored".to_owned(),
+            secret: Some(n.to_string()),
+            readable: src.secrets.readable_pem(n.as_str()).is_ok(),
+        })
+    } else {
+        o.tls_ca.as_ref().map(|p| OtlpCa {
+            source: "file".to_owned(),
+            secret: None,
+            readable: std::fs::read_to_string(p.as_str()).is_ok(),
+        })
+    };
     let (active, reason) = match (&o.endpoint, pod_skips) {
         (None, _) => (false, None),
         (Some(_), true) => (
@@ -686,6 +744,13 @@ pub(crate) fn otlp_entry(src: &Sources) -> OtlpEntry {
         traces_sample_every: o.traces_sample_every,
         traces_slow_ms: o.traces_slow_ms,
         compression: o.compression.as_str().to_owned(),
+        encoding: o.encoding.as_str().to_owned(),
+        resource_attributes: o
+            .resource_attributes
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        tls_ca,
         active,
         reason,
     }

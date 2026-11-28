@@ -94,6 +94,7 @@ mod node_settings;
 mod node_settings_tests;
 mod oidc_settings;
 mod otlp;
+mod otlp_proto;
 mod own_networks;
 mod pihole;
 mod pihole_import;

@@ -5188,6 +5188,19 @@ pub struct OtlpHeader {
     pub value: Option<String>,
 }
 
+/// REQ: OBS-006 (T41.2) — where the OTLP export's private CA comes from (never the certificate).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpCa {
+    /// `stored` (a secret of the `pem` kind, by name) or `file` (set in the configuration file).
+    pub source: String,
+    /// The stored secret's name, when `source` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read it now.
+    pub readable: bool,
+}
+
 /// REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -5203,9 +5216,18 @@ pub struct OtlpEntry {
     /// Trace settings (a file's; read at start).
     pub traces_sample_every: u32,
     pub traces_slow_ms: u32,
-    /// `none` or `gzip`: whether the metrics and traces requests are gzip compressed (the
-    /// encoding is JSON either way).
+    /// `none` or `gzip`: whether the metrics and traces requests are gzip compressed (a gRPC
+    /// call compresses its message).
     pub compression: String,
+    /// `json`, `protobuf` (`application/x-protobuf`) or `grpc`: the encoding of the metrics and traces
+    /// requests.
+    pub encoding: String,
+    /// The extra resource attributes set on every exported signal (name to value).
+    pub resource_attributes: std::collections::BTreeMap<String, String>,
+    /// The private CA the collector's TLS certificate may chain to, besides the public roots;
+    /// absent when none is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<OtlpCa>,
     /// Whether the export runs on this node.
     pub active: bool,
     /// Why it doesn't, when an endpoint is set.

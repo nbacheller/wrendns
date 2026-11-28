@@ -421,6 +421,46 @@ fn tls_pair() -> (tokio_rustls::TlsAcceptor, CertificateDer<'static>) {
     (tokio_rustls::TlsAcceptor::from(Arc::new(cfg)), cert)
 }
 
+/// REQ: FLT-004, OBS-006 (T41.2) - the client now also has an HTTP/2 connector (for the OTLP/gRPC
+/// call), but a list download is unchanged: it offers `http/1.1` only, so a server that prefers
+/// `h2` still negotiates `http/1.1`. The test server speaks HTTP/1.1 only: had the client
+/// negotiated `h2`, its connection preface would not parse and the download would fail.
+#[tokio::test]
+async fn flt_004_list_download_still_negotiates_http1() {
+    let ck = rcgen::generate_simple_self_signed(vec!["lists.test".to_owned()]).unwrap();
+    let cert = CertificateDer::from(ck.cert.der().to_vec());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], key)
+        .unwrap();
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let srv = serve(
+        handler(|_, _| {
+            ok("a.com
+")
+        }),
+        Some(tokio_rustls::TlsAcceptor::from(Arc::new(cfg))),
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[cert]);
+    assert_eq!(
+        f.refresh_one(&spec("l", srv.url("https", "lists.test", "/l.txt")))
+            .await,
+        Outcome::Updated
+    );
+    assert_eq!(
+        f.store().read_source("l").unwrap(),
+        b"a.com
+"
+    );
+    assert_eq!(srv.requests().len(), 1);
+}
+
 #[tokio::test]
 async fn flt_004_https_verifies_and_refuses_downgrade() {
     let (acceptor, cert) = tls_pair();

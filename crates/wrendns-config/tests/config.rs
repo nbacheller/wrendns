@@ -2809,3 +2809,119 @@ stub_servers = {servers}
         "{w:?}"
     );
 }
+
+/// REQ: OBS-006 (T41.2) — the export's resource attributes and private CA are validated in a file
+/// as in the API: reserved names, bounds, a CA with a plain http endpoint, both CA forms; and a
+/// good set loads.
+#[test]
+fn obs_006_otlp_options_are_validated() {
+    let bad = |extra: &str, path: &str| {
+        let errs = load_str(&format!(
+            "[telemetry.otlp]\nendpoint = \"https://c:4318\"\n{extra}\n"
+        ))
+        .unwrap_err();
+        assert!(paths(&errs).contains(&path), "{extra}: {errs:?}");
+    };
+    bad(
+        "resource_attributes = { \"service.name\" = \"x\" }",
+        "telemetry.otlp.resource_attributes.service.name",
+    );
+    bad(
+        "resource_attributes = { \"Wrendns.Cluster.Name\" = \"x\" }",
+        "telemetry.otlp.resource_attributes.Wrendns.Cluster.Name",
+    );
+    bad(
+        "resource_attributes = { \"a b\" = \"x\" }",
+        "telemetry.otlp.resource_attributes.a b",
+    );
+    bad(
+        "resource_attributes = { a = \"\" }",
+        "telemetry.otlp.resource_attributes.a",
+    );
+    bad(
+        "tls_ca = \"/etc/ca.pem\"\ntls_ca_ref = \"otlp-ca\"",
+        "telemetry.otlp.tls_ca_ref",
+    );
+    bad("tls_ca_ref = \"Not A Name!\"", "telemetry.otlp.tls_ca_ref");
+    let many = (0..17)
+        .map(|i| format!("k{i} = \"v\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bad(
+        &format!("resource_attributes = {{ {many} }}"),
+        "telemetry.otlp.resource_attributes",
+    );
+    let errs =
+        load_str("[telemetry.otlp]\nendpoint = \"http://c:4318\"\ntls_ca_ref = \"otlp-ca\"\n")
+            .unwrap_err();
+    assert!(
+        paths(&errs).contains(&"telemetry.otlp.endpoint"),
+        "{errs:?}"
+    );
+    let ok = load_str(
+        "[telemetry.otlp]\nendpoint = \"https://c:4318\"\nencoding = \"protobuf\"\ntls_ca_ref = \"otlp-ca\"\nresource_attributes = { \"deployment.environment\" = \"home\" }\n",
+    )
+    .unwrap()
+    .config;
+    let o = &ok.telemetry.otlp;
+    assert_eq!(o.encoding, wrendns_config::OtlpEncoding::Protobuf);
+    assert_eq!(o.resource_attributes.len(), 1);
+    // The stored secret is among the references a secret's delete is held for.
+    assert!(
+        wrendns_config::secret_refs::references(&ok)
+            .iter()
+            .any(|r| r.kind == "otlp" && r.field == "tls_ca_ref" && r.name == "otlp-ca")
+    );
+}
+
+/// REQ: OBS-006 (T41.2) — a UI entry's encoding, attributes and CA reference are in effect over a
+/// file that sets no destination (the file's `tls_ca` path is replaced by the UI's reference); a file that sets one keeps its own.
+#[test]
+fn obs_006_otlp_effective_options_follow_the_destination_rule() {
+    use wrendns_config::{OtlpConfig, OtlpEncoding};
+    let ui: OtlpConfig = serde_json::from_value(serde_json::json!({
+        "endpoint": "https://ui:4318", "encoding": "protobuf", "tls_ca_ref": "ui-ca",
+        "resource_attributes": {"site": "ui"},
+    }))
+    .unwrap();
+    let mut cfg = load_str("[telemetry.otlp]\ninterval_secs = 30\ntls_ca = \"/etc/ca.pem\"\n")
+        .unwrap()
+        .config;
+    cfg.telemetry.managed_otlp = Some(ui.clone());
+    let o = cfg.telemetry.otlp_effective();
+    assert_eq!(o.encoding, OtlpEncoding::Protobuf);
+    assert_eq!(o.tls_ca_ref.as_deref(), Some("ui-ca"));
+    assert!(o.tls_ca.is_none());
+    assert_eq!(o.resource_attributes.len(), 1);
+    let mut cfg = load_str("[telemetry.otlp]\nendpoint = \"https://file:4318\"\n")
+        .unwrap()
+        .config;
+    cfg.telemetry.managed_otlp = Some(ui);
+    let o = cfg.telemetry.otlp_effective();
+    assert_eq!(o.encoding, OtlpEncoding::Json);
+    assert!(o.tls_ca_ref.is_none() && o.resource_attributes.is_empty());
+}
+
+/// REQ: OBS-006 (T41.2) — a file's `tls_ca` without a destination is not dropped: it applies to the
+/// destination made in the UI, unless the UI entry names its own `tls_ca_ref`.
+#[test]
+fn obs_006_otlp_effective_keeps_a_file_ca_without_a_destination() {
+    use wrendns_config::OtlpConfig;
+    let ui: OtlpConfig =
+        serde_json::from_value(serde_json::json!({"endpoint": "https://ui:4318"})).unwrap();
+    let mut cfg = load_str("[telemetry.otlp]\ntls_ca = \"/etc/ca.pem\"\n")
+        .unwrap()
+        .config;
+    cfg.telemetry.managed_otlp = Some(ui);
+    let o = cfg.telemetry.otlp_effective();
+    assert_eq!(o.tls_ca.as_deref(), Some("/etc/ca.pem"));
+    assert!(o.tls_ca_ref.is_none());
+    let ui: OtlpConfig = serde_json::from_value(
+        serde_json::json!({"endpoint": "https://ui:4318", "tls_ca_ref": "ui-ca"}),
+    )
+    .unwrap();
+    cfg.telemetry.managed_otlp = Some(ui);
+    let o = cfg.telemetry.otlp_effective();
+    assert!(o.tls_ca.is_none());
+    assert_eq!(o.tls_ca_ref.as_deref(), Some("ui-ca"));
+}
