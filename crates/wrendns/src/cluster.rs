@@ -520,6 +520,8 @@ pub(crate) fn view(
         cert_expires_at: Some(format_us(expires.saturating_mul(1_000_000))),
         config_source: Some(c.config_source()),
         host: crate::host::report(host.latest(), &host.history(), None),
+        // REQ: API-902 (T27.14g0) - the URL this node announces for its web UI and API.
+        api_url: Some(c.api_url()).filter(|u| !u.is_empty()),
         kube_node: Some(local.kube_node.clone()).filter(|s| !s.is_empty()),
         pod: Some(local.pod.clone()).filter(|s| !s.is_empty()),
         started_at: started_at(local.started_ms),
@@ -575,6 +577,7 @@ pub(crate) fn view(
                 &c.host_history(&p.node_id),
                 p.clock_offset_ms,
             ),
+            api_url: Some(p.api_url.clone()).filter(|u| !u.is_empty()),
             kube_node: Some(p.kube_node.clone()).filter(|s| !s.is_empty()),
             pod: Some(p.pod.clone()).filter(|s| !s.is_empty()),
             started_at: started_at(p.started_ms),

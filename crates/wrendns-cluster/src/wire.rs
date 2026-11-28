@@ -56,6 +56,11 @@ pub struct Hello {
     /// knows (`gate::own_features`). Empty from a build older than this field: it knows none.
     #[prost(string, repeated, tag = "14")]
     pub features: Vec<String>,
+    /// REQ: API-902 (T27.14g0, ADR-1113) - the URL this node's web UI and API answer on
+    /// (`https://host:port`), so a card can link to another node. Empty from a build older than this
+    /// field (prost skips unknown tags, so an older peer ignores it) and from a node that cannot name it.
+    #[prost(string, tag = "15")]
+    pub api_url: String,
 }
 
 /// A federated read (CLU-002, T5.6): `kind` names the call, `body` carries its arguments
@@ -225,6 +230,11 @@ pub struct Heartbeat {
     /// it learns that the other replicas are up. Absent from older nodes, which ignore the tag.
     #[prost(message, repeated, tag = "41")]
     pub peers: Vec<PeerHealth>,
+    /// REQ: API-902 (T27.14g0, ADR-1113) - the sender's API URL as it is now, so a change of the API
+    /// address (a confirmed move) reaches the others within a heartbeat. Absent from older nodes: the
+    /// URL a peer holds from its Hello stays. An empty string is "no URL".
+    #[prost(string, optional, tag = "42")]
+    pub api_url: Option<String>,
 }
 
 /// REQ: CLU-001 (ADR-960) — what a node tells its peers about another member it hears from (a relay).
@@ -425,6 +435,42 @@ mod tests {
         assert_eq!(back.features, Vec::<String>::new());
     }
 
+    // REQ: API-902 (T27.14g0) - the announced API URL round-trips in the Hello and in a heartbeat, and
+    // frames from a build older than the field decode with none (a Hello: empty; a heartbeat: absent).
+    #[test]
+    fn api_902_hello_and_heartbeat_api_url_round_trip_and_default_to_none() {
+        let h = Hello {
+            api_url: "https://192.0.2.7:8443".into(),
+            ..Hello::default()
+        };
+        assert_eq!(
+            Hello::decode(&h.encode_to_vec()[..]).unwrap().api_url,
+            h.api_url
+        );
+        let hb = Heartbeat {
+            api_url: Some("https://192.0.2.7:8443".into()),
+            ..Heartbeat::default()
+        };
+        assert_eq!(
+            Heartbeat::decode(&hb.encode_to_vec()[..]).unwrap().api_url,
+            hb.api_url
+        );
+        // A frame without the tags (what an older build sends) reads as empty and absent.
+        let old_hello = Hello::decode(&Hello::default().encode_to_vec()[..]).unwrap();
+        assert_eq!(old_hello.api_url, "");
+        let old_hb = Heartbeat::decode(&Heartbeat::default().encode_to_vec()[..]).unwrap();
+        assert_eq!(old_hb.api_url, None);
+        // Bytes an older sender wrote (no tag 15, no tag 42) are what `default()` encodes to.
+        let old = Hello {
+            version: "1.1.0-edge.40".into(),
+            ..Hello::default()
+        };
+        assert_eq!(
+            Hello::decode(&old.encode_to_vec()[..]).unwrap().api_url,
+            String::new()
+        );
+    }
+
     #[test]
     fn clu_010_frames_round_trip_in_pieces() {
         let hello = Frame {
@@ -443,6 +489,7 @@ mod tests {
                 config_source: String::new(),
                 instance: "0123456789abcdef".into(),
                 features: Vec::new(),
+                api_url: String::new(),
             })),
         };
         let hb = Frame {

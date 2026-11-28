@@ -30,7 +30,8 @@ use crate::auth::routes::{principal, reason, remote, remote_under_proven};
 use crate::auth::{Auth, Principal, Role, Via};
 use crate::guarded::{
     ArrivedOn, GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedConfirmRequest,
-    GuardedPendingView, GuardedPreview, GuardedPreviewRequest, GuardedResult, GuardedStatus,
+    GuardedNodeApi, GuardedPendingView, GuardedPreview, GuardedPreviewRequest, GuardedResult,
+    GuardedStatus,
 };
 use crate::problem::{Code, Problem};
 use crate::{Backend, blocking};
@@ -47,6 +48,7 @@ pub(crate) fn read_routes(backend: Arc<dyn Backend>) -> Router {
 /// Preview, apply and cancel: admins only (the handlers check again, and refuse every token).
 pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
     Router::new()
+        .route("/api/v1/guarded/nodes/{node}/api", get(guarded_node_api))
         .route("/api/v1/guarded/{id}/preview", post(guarded_preview))
         .route("/api/v1/guarded/{id}", post(guarded_apply))
         .route("/api/v1/guarded/pending/{id}/cancel", post(guarded_cancel))
@@ -150,6 +152,38 @@ pub(crate) async fn guarded_status(
     State(b): State<Arc<dyn Backend>>,
 ) -> Result<Json<GuardedStatus>, Problem> {
     b.guarded_status().await.map(Json)
+}
+
+/// Another node's own web UI and API settings and DNS listeners (admin sessions only).
+///
+/// The address, scheme, certificate name, trusted proxies and redirect of the node's API, its DNS
+/// listeners with the paths, limits and options only an admin sees, and the URL it announces for its
+/// web UI. The cards for the Web UI and API and for the Listeners show and stage the picked node's
+/// values from it. `node` is a node's name or ID (this node answers from its own configuration);
+/// another node is asked through the cluster by the primary. Admin session only: 403
+/// `agent_not_allowed` for agent tokens and 403 `reauth_required` for other tokens, which also covers
+/// a wall display. A member whose build does not announce the read is 409 `upgrade_required` naming
+/// it; a replica answers 421 `not_primary`. No MCP tool.
+#[utoipa::path(get, path = "/api/v1/guarded/nodes/{node}/api", tag = "config",
+    params(("node" = String, Path, description = "The node's name or ID.")),
+    responses(
+        (status = 200, body = GuardedNodeApi, description = "The node's settings."),
+        (status = 403, body = Problem, description = "Not an admin session, an agent token, or another token."),
+        (status = 404, body = Problem, description = "No such cluster node (`node_unknown`)."),
+        (status = 409, body = Problem, description = "The member's build does not know the read (`upgrade_required`)."),
+        (status = 421, body = Problem, description = "Ask the primary: only it forwards a request for another node."),
+        (status = 502, body = Problem, description = "The node did not answer."),
+    ))]
+pub(crate) async fn guarded_node_api(
+    State((backend, auth)): State<Ctx>,
+    Path(node): Path<String>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Result<Json<GuardedNodeApi>, Problem> {
+    let p = principal(&ext)?;
+    require_admin_session(&p)?;
+    let c = caller(&backend, &auth, &p, &ext, &headers).await?;
+    backend.guarded_node_api(c, node).await.map(Json)
 }
 
 /// The dry run of a guarded change: what it would do, and the phrase to type.

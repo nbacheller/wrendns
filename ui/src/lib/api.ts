@@ -363,6 +363,8 @@ export const api = {
     post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/confirm`, confirmToken ? { confirmToken } : {}),
   // The window's seconds left and the node's own probe of each staged DNS socket (T27.14b).
   guardedPending: (pending: string) => get<S['GuardedPendingView']>(`/guarded/pending/${encodeURIComponent(pending)}`),
+  // REQ: API-902, API-901 (T27.14g0) - another node's own web UI and API settings and listeners (admin).
+  guardedNodeApi: (node: string) => get<S['GuardedNodeApi']>(`/guarded/nodes/${encodeURIComponent(node)}/api`),
   guardedCancel: (pending: string) => post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/cancel`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),

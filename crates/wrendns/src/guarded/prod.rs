@@ -425,8 +425,22 @@ impl Host for ProdHost {
                 id: m.node_id,
                 is_primary: m.primary,
                 up: m.connected,
+                node_api: wrendns_cluster::gate::knows(
+                    &m.features,
+                    wrendns_cluster::gate::Feature::MemberApiAddress,
+                ),
+                api_url: m.api_url,
             })
             .collect()
+    }
+
+    fn own_api_url(&self) -> Option<String> {
+        let cfg = self.running_config();
+        let advertise = self
+            .cluster()
+            .map(|c| c.identity.meta.advertise.clone())
+            .unwrap_or_default();
+        Some(crate::api_url::announced(&cfg, &advertise)).filter(|u| !u.is_empty())
     }
 
     fn site(&self) -> String {

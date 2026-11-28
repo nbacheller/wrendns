@@ -7996,6 +7996,89 @@
         }
       }
     },
+    "/api/v1/guarded/nodes/{node}/api": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Another node's own web UI and API settings and DNS listeners (admin sessions only).",
+        "description": "The address, scheme, certificate name, trusted proxies and redirect of the node's API, its DNS\nlisteners with the paths, limits and options only an admin sees, and the URL it announces for its\nweb UI. The cards for the Web UI and API and for the Listeners show and stage the picked node's\nvalues from it. `node` is a node's name or ID (this node answers from its own configuration);\nanother node is asked through the cluster by the primary. Admin session only: 403\n`agent_not_allowed` for agent tokens and 403 `reauth_required` for other tokens, which also covers\na wall display. A member whose build does not announce the read is 409 `upgrade_required` naming\nit; a replica answers 421 `not_primary`. No MCP tool.",
+        "operationId": "guarded_node_api",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "description": "The node's name or ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node's settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedNodeApi"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin session, an agent token, or another token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such cluster node (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The member's build does not know the read (`upgrade_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Ask the primary: only it forwards a request for another node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The node did not answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/guarded/pending/{id}": {
       "get": {
         "tags": [
@@ -19808,6 +19891,13 @@
           "restarts"
         ],
         "properties": {
+          "apiUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on (`https://host:port`),\nas the node announces it; absent from an older node, from a node that cannot name one and from\none not heard from. A card links to the node's own address from it."
+          },
           "behindSeconds": {
             "type": [
               "integer",
@@ -24569,6 +24659,39 @@
           }
         }
       },
+      "GuardedNodeApi": {
+        "type": "object",
+        "description": "REQ: API-902, API-901 (T27.14g0, ADR-1113; owner decision, 2026-11-27) - what `GET\n/api/v1/guarded/nodes/{node}/api` answers: another node's own web UI and API settings and its DNS\nlisteners, as that node reports them to an admin. The cards for the Web UI and API and for the\nListeners show and stage these values when another node is picked. Admin only, like the `api`\nblock of `GET /api/v1/system/info`; a member that does not announce the read is refused with\n`409 upgrade_required` naming it, and the card says so.",
+        "required": [
+          "node",
+          "api",
+          "listeners"
+        ],
+        "properties": {
+          "api": {
+            "$ref": "#/components/schemas/ApiInfo",
+            "description": "The address, scheme, certificate name, trusted proxies and redirect it runs now."
+          },
+          "apiUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The URL its web UI and API answer on, as it announced it; absent when it announces none."
+          },
+          "listeners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListenerAccess"
+            },
+            "description": "Its DNS listeners as it runs them, with the paths, limits and options only an admin sees."
+          },
+          "node": {
+            "type": "string",
+            "description": "The node (the name it is listed under)."
+          }
+        }
+      },
       "GuardedNodeStatus": {
         "type": "object",
         "description": "`GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or\nconfirmation token is ever in it.",
@@ -24583,6 +24706,13 @@
           "confirmWindowSecs"
         ],
         "properties": {
+          "apiUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on, as the node announces\nit; absent from an older node and from one that cannot name an address. A card links to the\nnode's own address from it (a guarded change is confirmed on the node itself)."
+          },
           "confirmWindowSecs": {
             "type": "integer",
             "format": "int32",
