@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <script lang="ts">
   // REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) — Settings → DNS providers (admins): the accounts at a
   // DNS host (or a self-run server) the node may one day write record sets in. The table is stored and
