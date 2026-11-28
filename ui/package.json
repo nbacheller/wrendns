@@ -13,7 +13,8 @@
     "check:html": "node scripts/check-no-html.mjs",
     "check:help": "node scripts/check-help.mjs",
     "measure:compression": "node scripts/measure-compression.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:oidc": "playwright test --grep @oidc tests/e2e/1-ui.spec.ts tests/e2e/3-oidc.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",

@@ -417,7 +417,9 @@ jobs:
           done
           echo "Authentik did not serve $url within 300 s; the last answer was HTTP $code" >&2
           exit 1
-      - run: npm run test:e2e
+      # Only what the providers need (the first-run admin and ui/tests/e2e/3-oidc.spec.ts, tagged
+      # @oidc); the ui job runs the whole suite without providers.
+      - run: npm run test:e2e:oidc
         env:
           OIDC_E2E: keycloak,authentik
       - name: Provider logs
