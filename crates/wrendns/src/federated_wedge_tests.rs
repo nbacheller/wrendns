@@ -1144,6 +1144,7 @@ fn api_902_a_member_without_the_feature_announces_no_url_and_is_not_asked() {
         rt.shutdown_background();
         drop((replica, primary, dirs));
     });
+}
 
 /// REQ: CLD-904, CLD-919, CLU-002 (T36.10b b3) - a replica that can't reach its primary refuses a
 /// DNS provider action with 503 instead of running it: nothing is written to its own ledger.
