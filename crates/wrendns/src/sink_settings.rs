@@ -39,9 +39,10 @@ const MAX_SINKS: usize = 16;
 const MAX_BUFFER: u32 = 100_000;
 /// The largest set of kept batches a sink made through the API may ask for.
 const MAX_SPILL: u64 = 1 << 30;
-/// Headers the export sets itself.
-const RESERVED_HEADERS: [&str; 6] = [
+/// Headers the export sets itself (`content-encoding` when `compression = "gzip"`).
+const RESERVED_HEADERS: [&str; 7] = [
     "content-type",
+    "content-encoding",
     "content-length",
     "host",
     "user-agent",
@@ -245,7 +246,9 @@ pub(crate) fn parse_otlp(body: &serde_json::Value) -> Result<OtlpConfig, Problem
         if RESERVED_HEADERS.contains(&h.to_ascii_lowercase().as_str()) {
             return Err(Problem::new(
                 Code::InvalidConfig,
-                format!("`header_refs.{h}`: the export sets this header itself"),
+                format!(
+                    "`header_refs.{h}`: the export sets this header itself (content-type, content-length, content-encoding when compression is gzip, host, user-agent, transfer-encoding and connection are reserved)"
+                ),
             ));
         }
     }
@@ -392,6 +395,17 @@ fn plan_otlp(
         let o = parse_otlp(v)?;
         let redirect = otlp_references(src, &before_cfg, &o)?;
         let text = serde_json::to_string(&o).map_err(|e| Problem::internal(e.to_string()))?;
+        // REQ: OBS-006 (issue #155) - gzip waits until every member's build reads the field
+        // (the same feature gate as the dnstap settings; plain JSON is never held).
+        if o.compression != wrendns_config::OtlpCompression::None
+            && let Err(why) = crate::upgrade_gate::enforce(
+                src.cluster.as_deref(),
+                wrendns_cluster::gate::Feature::OtlpCompression,
+            )
+        {
+            return Err(Problem::new(Code::UpgradeRequired, why)
+                .hint("Upgrade the member named, then make this change again."));
+        }
         entries.otlp = Some(o);
         (Some(text), redirect)
     } else {
@@ -671,6 +685,7 @@ pub(crate) fn otlp_entry(src: &Sources) -> OtlpEntry {
         headers,
         traces_sample_every: o.traces_sample_every,
         traces_slow_ms: o.traces_slow_ms,
+        compression: o.compression.as_str().to_owned(),
         active,
         reason,
     }

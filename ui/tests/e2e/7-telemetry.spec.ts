@@ -112,6 +112,8 @@ test.describe('api_016 telemetry in the UI', () => {
       await secret.getByRole('button', { name: 'Save secret' }).click();
       await expect(secret).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
       await expect(page.locator('body')).not.toContainText('otlp-e2e-key-7788');
+      // REQ: OBS-006 (issue #155) — requests can go out gzip compressed.
+      await page.getByTestId('otlp-compression-select').selectOption('gzip');
       await page.getByTestId('otlp-save').click();
       await expect(page.getByTestId('otlp-notice')).toContainText('no restart', { timeout: 10_000 });
       const header = page.getByTestId('otlp-header').filter({ hasText: 'x-api-key' });
@@ -120,6 +122,8 @@ test.describe('api_016 telemetry in the UI', () => {
       await expect(page.getByTestId('otlp-endpoint')).toHaveText('http://127.0.0.1:9');
       const answer = await (await page.request.get('/api/v1/otlp')).text();
       expect(answer).toContain('otlp.default.header-x-api-key');
+      expect(JSON.parse(answer).compression).toBe('gzip');
+      await expect(page.getByTestId('otlp-compression')).toHaveText('gzip compressed');
       expect(answer).not.toContain('otlp-e2e-key-7788');
       // An inline value never comes back: here the list is mocked as a node whose file sets it.
       await page.route('**/api/v1/otlp', (route) =>

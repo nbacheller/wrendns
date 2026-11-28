@@ -11579,6 +11579,11 @@ export interface components {
         OtlpEntry: {
             /** @description Whether the export runs on this node. */
             active: boolean;
+            /**
+             * @description `none` or `gzip`: whether the metrics and traces requests are gzip compressed (the
+             *     encoding is JSON either way).
+             */
+            compression: string;
             /** @description The collector's address (a password in it removed); absent when there is none. */
             endpoint?: string | null;
             headers: components["schemas"]["OtlpHeader"][];

@@ -31209,12 +31209,17 @@
           "headers",
           "tracesSampleEvery",
           "tracesSlowMs",
+          "compression",
           "active"
         ],
         "properties": {
           "active": {
             "type": "boolean",
             "description": "Whether the export runs on this node."
+          },
+          "compression": {
+            "type": "string",
+            "description": "`none` or `gzip`: whether the metrics and traces requests are gzip compressed (the\nencoding is JSON either way)."
           },
           "endpoint": {
             "type": [

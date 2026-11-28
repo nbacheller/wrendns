@@ -65,6 +65,7 @@
     <li><b>Five opt-in category lists</b> from <code>blocklist.packettale.com</code>: stalkerware, typosquatting, violence and gore, remote-access tools and push notifications. <a href="guide-blocking.html#categories">How</a>.</li>
     <li><b>Syslog over TCP or TLS keeps events</b> while the collector is down, instead of losing them. <a href="guide-monitoring.html#export">How</a>.</li>
     <li><b>Set dnstap from the web UI.</b> An admin sets the dnstap output in <b>Settings → System</b>, for each node. Turning it on, or copying more of your devices' queries, goes through a review where you type a phrase, and a saved change takes effect after that node restarts. <a href="guide-monitoring.html#export">How</a>.</li>
+    <li><b>OTLP export can be gzip-compressed, and every signal names its node.</b> A <b>Compression</b> choice on the export card sends metrics and traces gzip-compressed (still JSON over HTTP), and each signal carries <code>service.instance.id</code>. A setup guide covers the Home Assistant OpenTelemetry Collector add-on. <a href="guide-monitoring.html#home-assistant-otel">How</a>.</li>
     <li><b>Safer upgrades of a cluster.</b> A new kind of shared setting is held back until every node can read it. <a href="guide-cluster.html#upgrade">How</a>.</li>
     <li><b>A smaller web UI.</b> The help text is fetched from the node when you first open a "?".</li>
   </ul>

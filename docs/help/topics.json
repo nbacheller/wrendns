@@ -1560,8 +1560,8 @@
       "term": "OTLP export",
       "summary": "The same metrics Prometheus scrapes can be pushed to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) every interval. A header such as an API key is a stored secret, read for every export.",
       "when": "Your metrics live in a hosted backend, or Prometheus can't reach this node.",
-      "example": "Collector http://otel-collector:4318, every 60 seconds, with the header x-api-key taken from the stored secret otlp.default.header-x-api-key.",
-      "caution": "Only an admin changes it, and it applies on every node without a restart. If the configuration file sets the collector, headers or header references, the file wins and the card is read-only; an inline header value in the file is never shown (it reads <redacted>). Trace settings stay in the file and are read at start.",
+      "example": "Collector http://otel-collector:4318, every 60 seconds, with the header x-api-key taken from the stored secret otlp.default.header-x-api-key. Choose gzip to send the requests compressed.",
+      "caution": "Only an admin changes it, and it applies on every node without a restart. If the configuration file sets the collector, headers or header references, the file wins and the card is read-only; an inline header value in the file is never shown (it reads <redacted>). Trace settings stay in the file and are read at start. Gzip keeps the JSON encoding and needs a receiver that accepts Content-Encoding: gzip (the OpenTelemetry Collector does); in a cluster it waits until every node knows the option. Event sinks and the Home Assistant add-on setup are described in the docs.",
       "docs": "opentelemetry-otlp"
     },
     {

@@ -6676,3 +6676,19 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 **Consequences:** An existing list reads as before (`auto`). A zone is the same rewrite rules a `$dnsrewrite` list gives, so a name an RPZ rewrites is rewritten whatever the group's other lists say; this is also why a passthru needs its exception rule. The compile benchmark is unchanged for `auto` lists (one branch per list, not per line). Response-IP triggers are listed as unsupported until a per-list response filter exists.
 
 **Open (owner):** (a) whether a primary should also hold an RPZ list from its file at start, with ADR-1104's start-up hold, or whether the reload and API gate is enough; (b) whether response-IP triggers should get a per-list path to FLT-015 in a later task (the count says how many a zone holds).
+
+## ADR-1111 — OTLP request compression: an option `compression = "gzip"` for the metrics and trace requests, JSON stays, gated by a feature, and `service.instance.id` on every resource (Proposed 2026-11-27; OBS-006, OBS-017, API-016, CLU-010; T41.1; GitHub issue #155)
+
+**Context:** Issue #155 asks for WrenDNS to work next to the Home Assistant OpenTelemetry Collector add-on. The add-on exports only (its documentation describes no OTLP receiver reachable from other machines), so the work is the exporter's gaps and a guide. The export sends OTLP/HTTP with JSON (ADR-076).
+
+**Decision (the design's own choices, not the owner's words):**
+1. **Gzip is an option, off by default.** `[telemetry.otlp] compression = "none" | "gzip"`, the same field in the `otlp` entry of the API and the UI. The request body is the same JSON, gzip-framed (RFC 1952) with `Content-Encoding: gzip`. A receiver that does not accept it answers an error status, which the export already reports. The encoding is not changed: protobuf and gRPC are not added (an open owner question).
+2. **It applies to the requests the export task makes** (metrics and traces). An event sink's logs have their own request path and settings and stay plain; a sink option is a separate piece of work.
+3. **No new dependency.** The deflate comes from `miniz_oxide`, already linked for the archive reader; the framing and checksum are in `archive.rs`.
+4. **Cluster gate.** An older node reads the stored entry with unknown fields refused, so the first save that uses gzip waits until every member announces the feature `otlp_compression` (409 `upgrade_required`, as ADR-1107 does for dnstap). The field is left out of the stored form while it is `none`, so plain JSON never needs the gate and an older member keeps reading the entry.
+5. **`service.instance.id`** is added to every OTLP resource, equal to the node name (as `host.name` is), so the nodes of a cluster are told apart in a backend.
+
+**Consequences:** The query path is untouched. The size effect of the option is the receiver's and the network's, not the node's. The image gains no dependency.
+
+**Open (owner):** whether WrenDNS should speak OTLP protobuf (a new dependency and its size) or gRPC, for backends that take neither JSON nor HTTP; a private CA file for the collector; resource attributes the owner sets (such as `deployment.environment`) and the cluster name as one.
+

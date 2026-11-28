@@ -302,6 +302,10 @@ async fn api_016_otlp_put_header_refs_and_refusals() {
             json!({"endpoint": "http://c:4318", "header_refs": {"Content-Type": "x"}}),
         ),
         (
+            "reserved header, gzip's",
+            json!({"endpoint": "http://c:4318", "compression": "gzip", "header_refs": {"Content-Encoding": "x"}}),
+        ),
+        (
             "short interval",
             json!({"endpoint": "http://c:4318", "interval_secs": 1}),
         ),
@@ -667,4 +671,91 @@ fn clu_004_replicated_sink_meets_api_limits() {
     let names: Vec<String> = ok.iter().map(|s| s.name.to_string()).collect();
     assert_eq!(names, vec!["ok"], "{bad:?}");
     assert_eq!(bad.len(), 5);
+}
+
+/// A cluster member with no planted settings (the OTLP export is not set by file).
+fn member_of(cluster: Arc<wrendns_cluster::net::Cluster>) -> Harness {
+    harness_toml(
+        "",
+        Some(cluster),
+        vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()],
+        wrendns_api::auth::Settings::default(),
+    )
+}
+
+/// REQ: OBS-006, CLU-010 (issue #155) - the OTLP export's `compression = "gzip"` waits until every
+/// member's build reads the field: with a member that does not announce it, the write is refused
+/// (409 `upgrade_required`, dry run too, naming the member) and stores nothing, plain JSON is
+/// still accepted, and a DELETE is not held; once every member announces it, gzip goes through.
+#[tokio::test(flavor = "multi_thread")]
+async fn obs_006_otlp_gzip_waits_for_every_members_build() {
+    // The refusals a gate records are process-wide: take the turn the other gate tests take.
+    let _turn = crate::secrets_api_tests::GATE.lock().await;
+    let gzip = json!({"endpoint": "http://c:4318", "compression": "gzip"});
+    let plain = json!({"endpoint": "http://c:4318"});
+    let (replica, old) = crate::credential_tests::older_primary_and_replica_features(
+        "1.1.0",
+        None,
+        Some(Vec::new()),
+    )
+    .await;
+    let member = replica.identity.meta.node_id.clone();
+    let h = member_of(Arc::clone(&old.primary));
+    for target in [format!("{OTLP_PUT}?dryRun=true"), OTLP_PUT.to_owned()] {
+        let (s, _, v) = h.call("PUT", &target, Some(&gzip)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "upgrade_required", "{v}");
+        let detail = v["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("gzip compression") && detail.contains(&member),
+            "{v}"
+        );
+    }
+    assert!(h.src.config.load_full().telemetry.managed_otlp.is_none());
+    // Plain JSON needs no new field, so an old member is no reason to hold it.
+    let (s, _, v) = h.call("PUT", OTLP_PUT, Some(&plain)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = h.call("DELETE", OTLP_PUT, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let _ = old.stop.send(true);
+
+    let (_replica, new) = crate::credential_tests::older_primary_and_replica("1.1.0").await;
+    let h = member_of(Arc::clone(&new.primary));
+    let (s, _, v) = h.call("PUT", OTLP_PUT, Some(&gzip)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let cfg = h.src.config.load_full();
+    assert_eq!(
+        cfg.telemetry.otlp_effective().compression,
+        wrendns_config::OtlpCompression::Gzip
+    );
+    let (_, _, e) = h.call("GET", OTLP_URL, None).await;
+    assert_eq!(e["compression"], "gzip", "{e}");
+    let _ = new.stop.send(true);
+    crate::upgrade_gate::forget_held();
+}
+
+/// REQ: OBS-006 (issue #155) - a blob entry without the field is plain, and one with plain
+/// compression stores no field at all (so an older node keeps reading it).
+#[test]
+fn obs_006_otlp_compression_is_stored_only_when_set() {
+    let plain: wrendns_config::OtlpConfig =
+        serde_json::from_value(json!({"endpoint": "http://c:4318"})).unwrap();
+    assert!(plain.compression.is_none());
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("compression")
+    );
+    let gz: wrendns_config::OtlpConfig =
+        serde_json::from_value(json!({"endpoint": "http://c:4318", "compression": "gzip"}))
+            .unwrap();
+    assert!(
+        serde_json::to_string(&gz)
+            .unwrap()
+            .contains("\"compression\":\"gzip\"")
+    );
+    assert!(
+        serde_json::from_value::<wrendns_config::OtlpConfig>(json!({"compression": "zstd"}))
+            .is_err()
+    );
 }
