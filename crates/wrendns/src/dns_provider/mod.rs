@@ -6,8 +6,9 @@
 //! - **The trait** ([`DnsProvider`]): `scope`, `list`, `ensure` and `delete`, for `TXT`, `A` and
 //!   `AAAA` record sets only, and only inside the entry's zone. The engine checks both before a
 //!   provider sees a request, so a provider can not be asked for anything else.
-//! - **The registry** ([`registry`]): a configured kind to a constructor. No real provider exists
-//!   yet (T36.10b steps b4 and b5), so a real kind answers "no provider code for this kind yet".
+//! - **The registry** ([`registry`]): a configured kind to a constructor. Azure DNS ([`azure`]) and
+//!   Cloudflare ([`cloudflare`]) have code (step b4a, b4b, over the shared [`http_json`] call); a kind
+//!   without code answers "no provider code for this kind yet".
 //! - **The fake** ([`fake`]): an in-memory zone for tests (and for the browser tests' build); never a
 //!   kind in the table.
 //! - **The engine** ([`engine`]): audit, dry run, the ownership ledger, per-entry rate limits and
@@ -16,9 +17,12 @@
 //! A provider's credential is held in a `SecretValue`: it prints as `<redacted>`, and every
 //! [`ProviderError`] is scrubbed of it before it leaves the engine.
 
+pub(crate) mod azure;
+pub(crate) mod cloudflare;
 pub(crate) mod engine;
 #[cfg(any(test, feature = "e2e"))]
 pub(crate) mod fake;
+pub(crate) mod http_json;
 pub(crate) mod ledger;
 pub(crate) mod registry;
 

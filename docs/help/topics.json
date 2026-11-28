@@ -650,6 +650,26 @@
       "docs": "dns-providers"
     },
     {
+      "id": "dns-provider-azure",
+      "title": "Give WrenDNS one Azure DNS record set",
+      "term": "Azure DNS provider",
+      "summary": "WrenDNS signs in to Microsoft Entra ID as an application (OAuth2 client credentials; the application's client secret is the stored secret) and changes record sets with the Azure DNS API. Azure can scope a role to a single record set, so the safe grant is DNS Zone Contributor on just the challenge record set, plus the read-only Reader role on the zone so WrenDNS can see what exists before it writes.",
+      "when": "You host the zone in Azure DNS and want certificates or a changing home address handled for you with the smallest permission.",
+      "example": "az role assignment create --assignee <application id> --role \"DNS Zone Contributor\" --scope /subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Network/dnszones/example.net/TXT/_acme-challenge.home, and the same command with --role Reader and the zone as the scope.",
+      "caution": "The record set must exist first: create an empty TXT record set with the challenge name before the first change, because a role on one record set cannot create it. A role on the whole zone works but Test flags it as broader than needed. The client secret expires on the date Entra gave it: store the new one under the same name before then.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-cloudflare",
+      "title": "Use a Cloudflare API token for one zone",
+      "term": "Cloudflare provider",
+      "summary": "WrenDNS uses a Cloudflare API token (the stored secret) to find the zone and to create, change and delete DNS records in it. Create the token with Zone: Zone: Read and Zone: DNS: Edit, limited to this one zone. Test checks the token and lists the zones it reaches, and warns when that is more than one.",
+      "when": "Your zone is at Cloudflare and you want certificates or a changing home address handled for you.",
+      "example": "A token for example.net only: Test shows the zone and warns about nothing. A token for all zones in the account: Test warns that it reaches every zone, so you create a narrower one.",
+      "caution": "Cloudflare cannot limit a token to one record: whoever holds it can change every record in the zone. If the zone holds anything else of value, delegate the challenge name to a small separate zone instead, so a leaked token can change nothing that matters.",
+      "docs": "dns-providers"
+    },
+    {
       "id": "api-tokens",
       "title": "Keys for scripts and dashboards",
       "term": "API tokens",

@@ -2,9 +2,9 @@
 //! REQ: CLD-904 (T36.10b step b3; ADR-1084) - the registry: a configured entry (its kind, its zone
 //! and the stored credential) to the code that talks to that provider.
 //!
-//! No real provider exists yet: Azure DNS, Cloudflare, Route 53 and RFC 2136 are T36.10b step b4, and
-//! delegation step b5. Until each arrives its kind answers [`BuildError::NoCode`], and the Test route
-//! says so. Test builds (and the browser tests' build) hand an entry named `fake...` the in-memory
+//! Azure DNS and Cloudflare have code (T36.10b step b4a and b4b); Route 53 and RFC 2136 (the rest of
+//! step b4) and delegation (step b5) do not yet. Until each arrives its kind answers
+//! [`BuildError::NoCode`], and the Test route says so. Test builds (and the browser tests' build) hand an entry named `fake...` the in-memory
 //! fake instead; no release build does.
 
 use std::sync::Arc;
@@ -54,8 +54,16 @@ pub(crate) fn has_code(cfg: &DnsProviderConfig) -> bool {
     if super::fake::is_fake_name(cfg.name.as_str()) {
         return true;
     }
-    let _ = cfg;
-    false
+    // An entry named `nocode...` has no code in test builds, so the "no provider code" paths stay
+    // testable once every kind has some.
+    #[cfg(any(test, feature = "e2e"))]
+    if cfg.name.starts_with("nocode") {
+        return false;
+    }
+    matches!(
+        cfg.kind,
+        DnsProviderKind::AzureDns | DnsProviderKind::Cloudflare
+    )
 }
 
 /// The provider for `cfg`, built with `secret` (the stored credential's value, when the entry names
@@ -73,8 +81,32 @@ pub(crate) fn build(
             secret,
         });
     }
-    let _ = secret;
-    // Each real kind arrives with its own step; none has code here yet.
+    #[cfg(any(test, feature = "e2e"))]
+    if !has_code(cfg) {
+        return Err(BuildError::NoCode(cfg.kind.as_str()));
+    }
+    // Azure DNS and Cloudflare (T36.10b step b4). The provider keeps its own copy of the credential
+    // (it signs in with it); the handle keeps one to scrub errors with.
+    let copy = |s: &Option<SecretValue>| {
+        s.as_ref()
+            .map(|v| SecretValue::from_text(zeroize::Zeroizing::new(v.expose().to_owned())))
+    };
+    match cfg.kind {
+        DnsProviderKind::AzureDns => {
+            return Ok(Handle {
+                provider: Arc::new(super::azure::AzureDns::new(cfg, copy(&secret))),
+                secret,
+            });
+        }
+        DnsProviderKind::Cloudflare => {
+            return Ok(Handle {
+                provider: Arc::new(super::cloudflare::Cloudflare::new(cfg, copy(&secret))),
+                secret,
+            });
+        }
+        DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
+    }
+    // Each remaining kind arrives with its own step; none has code here yet.
     Err(BuildError::NoCode(match cfg.kind {
         DnsProviderKind::AzureDns => "azure_dns",
         DnsProviderKind::Cloudflare => "cloudflare",

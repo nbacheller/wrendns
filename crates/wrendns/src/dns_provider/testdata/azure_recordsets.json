@@ -1,0 +1,96 @@
+{
+  "value": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/SOA/@",
+      "name": "@",
+      "type": "Microsoft.Network/dnszones/SOA",
+      "etag": "e1",
+      "properties": {
+        "TTL": 3600,
+        "fqdn": "example.net.",
+        "SOARecord": {
+          "host": "ns1-01.azure-dns.com."
+        }
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/NS/@",
+      "name": "@",
+      "type": "Microsoft.Network/dnszones/NS",
+      "etag": "e2",
+      "properties": {
+        "TTL": 172800,
+        "fqdn": "example.net.",
+        "NSRecords": [
+          {
+            "nsdname": "ns1-01.azure-dns.com."
+          }
+        ]
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/TXT/_acme-challenge.home",
+      "name": "_acme-challenge.home",
+      "type": "Microsoft.Network/dnszones/TXT",
+      "etag": "e3",
+      "properties": {
+        "TTL": 60,
+        "fqdn": "_acme-challenge.home.example.net.",
+        "TXTRecords": [
+          {
+            "value": [
+              "part-one-",
+              "part-two"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/A/Home",
+      "name": "Home",
+      "type": "Microsoft.Network/dnszones/A",
+      "etag": "e4",
+      "properties": {
+        "TTL": 300,
+        "fqdn": "home.example.net.",
+        "ARecords": [
+          {
+            "ipv4Address": "192.0.2.9"
+          },
+          {
+            "ipv4Address": "192.0.2.1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/AAAA/@",
+      "name": "@",
+      "type": "Microsoft.Network/dnszones/AAAA",
+      "etag": "e5",
+      "properties": {
+        "TTL": 300,
+        "fqdn": "example.net.",
+        "AAAARecords": [
+          {
+            "ipv6Address": "2001:DB8:0:0:0:0:0:1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/CNAME/www",
+      "name": "www",
+      "type": "Microsoft.Network/dnszones/CNAME",
+      "etag": "e6",
+      "properties": {
+        "TTL": 300,
+        "fqdn": "www.example.net.",
+        "CNAMERecord": {
+          "cname": "home.example.net"
+        }
+      }
+    }
+  ]
+}

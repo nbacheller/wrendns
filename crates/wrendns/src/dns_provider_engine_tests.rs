@@ -686,13 +686,13 @@ async fn cld_904_a_kind_without_code_says_so() {
     let (s, _, v) = h
         .call(
             "PUT",
-            "/api/v1/dns-providers/cf-home",
-            Some(&provider_body("cf-home")),
+            "/api/v1/dns-providers/nocode-home",
+            Some(&provider_body("nocode-home")),
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let (s, _, v) = h
-        .call("POST", "/api/v1/dns-providers/cf-home/test", None)
+        .call("POST", "/api/v1/dns-providers/nocode-home/test", None)
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["ok"], false);
@@ -706,13 +706,13 @@ async fn cld_904_a_kind_without_code_says_so() {
     );
     assert_eq!(v["dryRun"], true, "an unsupported test never ends dry run");
     let (s, _, v) = h
-        .call("GET", "/api/v1/dns-providers/cf-home/records", None)
+        .call("GET", "/api/v1/dns-providers/nocode-home/records", None)
         .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     let (s, _, v) = h
         .call(
             "POST",
-            "/api/v1/dns-providers/cf-home/records/adopt",
+            "/api/v1/dns-providers/nocode-home/records/adopt",
             Some(&json!({"name": "a.example.net", "recordType": "TXT"})),
         )
         .await;

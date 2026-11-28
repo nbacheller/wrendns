@@ -1,0 +1,13 @@
+{
+  "value": [
+    {
+      "actions": [
+        "Microsoft.Network/dnszones/*",
+        "Microsoft.Authorization/*/read"
+      ],
+      "notActions": [],
+      "dataActions": [],
+      "notDataActions": []
+    }
+  ]
+}

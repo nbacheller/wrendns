@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "AuthorizationFailed",
+    "message": "The client 'app' with object id 'oid' does not have authorization to perform action 'Microsoft.Network/dnsZones/TXT/write' over scope '/subscriptions/s/resourceGroups/rg-dns/providers/Microsoft.Network/dnszones/example.net/TXT/_acme-challenge.home'. Bearer tok-azure-access-5f2c"
+  }
+}
