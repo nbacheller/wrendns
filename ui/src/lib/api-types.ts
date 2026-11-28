@@ -11575,15 +11575,29 @@ export interface components {
             /** @description The code from the display's link. */
             code: string;
         };
+        /** @description REQ: OBS-006 (T41.2) — where the OTLP export's private CA comes from (never the certificate). */
+        OtlpCa: {
+            /** @description Whether this node can read it now. */
+            readable: boolean;
+            /** @description The stored secret's name, when `source` is `stored`. */
+            secret?: string | null;
+            /** @description `stored` (a secret of the `pem` kind, by name) or `file` (set in the configuration file). */
+            source: string;
+        };
         /** @description REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node. */
         OtlpEntry: {
             /** @description Whether the export runs on this node. */
             active: boolean;
             /**
-             * @description `none` or `gzip`: whether the metrics and traces requests are gzip compressed (the
-             *     encoding is JSON either way).
+             * @description `none` or `gzip`: whether the metrics and traces requests are gzip compressed (a gRPC
+             *     call compresses its message).
              */
             compression: string;
+            /**
+             * @description `json`, `protobuf` (`application/x-protobuf`) or `grpc`: the encoding of the metrics and traces
+             *     requests.
+             */
+            encoding: string;
             /** @description The collector's address (a password in it removed); absent when there is none. */
             endpoint?: string | null;
             headers: components["schemas"]["OtlpHeader"][];
@@ -11591,11 +11605,16 @@ export interface components {
             intervalSecs: number;
             /** @description Why it doesn't, when an endpoint is set. */
             reason?: string | null;
+            /** @description The extra resource attributes set on every exported signal (name to value). */
+            resourceAttributes: {
+                [key: string]: string;
+            };
             /**
              * @description `none` (no export), `file` (the configuration files set the destination; read-only here)
              *     or `api`.
              */
             source: string;
+            tlsCa?: components["schemas"]["OtlpCa"] | null;
             /**
              * Format: int32
              * @description Trace settings (a file's; read at start).
