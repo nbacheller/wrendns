@@ -5852,7 +5852,7 @@
           "config"
         ],
         "summary": "The DNS providers in the configuration.",
-        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state. The table is stored and validated: nothing calls a provider yet, so every entry\nreads `not_used`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
+        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are\nrecorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
         "operationId": "list_dns_providers",
         "responses": {
           "200": {
@@ -5915,7 +5915,7 @@
           "config"
         ],
         "summary": "Add or change a DNS provider.",
-        "description": "CLD-904 (T36.10b, ADR-1084, ADR-1104). The body has the fields of `[[dns_provider]]` (the name\ncomes from the path): `kind`, `zone`, `credential_ref` and the fields of the kind. The credential is\na name, never a value: `credential_ref` names a stored secret (422 `secret_missing` when none has\nthat name), entered through Settings, Integrations and secrets; the table has no inline credential\nand no file. The entry starts in `dry_run` (it only computes changes) unless the body says\notherwise. Admins only: an operator or an agent is refused (403). A provider the config files\ndefine is read-only here (409 `set_by_file`). The first provider waits until every cluster\nmember's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The\ntable is stored and validated; nothing calls a provider yet.",
+        "description": "CLD-904 (T36.10b, ADR-1084, ADR-1104). The body has the fields of `[[dns_provider]]` (the name\ncomes from the path): `kind`, `zone`, `credential_ref` and the fields of the kind. The credential is\na name, never a value: `credential_ref` names a stored secret (422 `secret_missing` when none has\nthat name), entered through Settings, Integrations and secrets; the table has no inline credential\nand no file. The entry starts in `dry_run` (it only computes changes) unless the body says\notherwise. Admins only: an operator or an agent is refused (403). A provider the config files\ndefine is read-only here (409 `set_by_file`). The first provider waits until every cluster\nmember's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The\ntable is stored and validated; a provider is written to only through the write engine (dry run\nuntil the first successful test, an ownership ledger, rate limits).",
         "operationId": "put_dns_provider",
         "parameters": [
           {
@@ -6106,6 +6106,215 @@
           },
           "412": {
             "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dns-providers/{name}/records": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The record sets at a DNS provider, and who owns each.",
+        "description": "CLD-919. `owner` is `created` (the node made it) or `adopted` (an admin took it over); a record set\nwith no owner is never changed or deleted by the node until it is adopted. Admin only, never for\nagents. Runs on the primary, which holds the ledger.",
+        "operationId": "dns_provider_records",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The zone's TXT, A and AAAA record sets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderRecords"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can read a provider's records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No provider code for the kind yet, or `upgrade_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provider refused or did not answer the call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dns-providers/{name}/records/adopt": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Adopt a record set: the node may then change and delete it.",
+        "description": "CLD-919 (ADR-1112 point 1). The node changes or deletes only the record sets it made itself or\nthat an admin adopted. Adopting records the claim in the ownership ledger (kept across restarts and\nreplicated) and sends nothing to the provider, so it works in dry run too. The body is the record\nset's `name` and `recordType`. Audited as `dns_provider.adopt`. Admin only, never for agents.",
+        "operationId": "adopt_dns_provider_record",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DnsProviderAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The record set is in the ledger.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderAdopted"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can adopt a record set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The name is outside the zone, the type is not A, AAAA or TXT, or the record set is not at the provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dns-providers/{name}/test": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Test a DNS provider: check the credential and show what it may change.",
+        "description": "CLD-904, CLD-919 (T36.10b step b3). The provider is asked what the credential can do and the\nanswer is the scope: the zone, the record types, the record sets it is limited to, and a warning\nwhen it reaches further than the node needs. Nothing is written, and the credential is never in\nthe answer or the audit entry (a failure's text is scrubbed of it). The first success ends the\nentry's dry run (an entry the config files define keeps the file's setting, and the answer says\nso). A kind without provider code in this build answers `supported: false`. It runs on the\nprimary (a replica forwards it). Admin only, never for agents.",
+        "operationId": "test_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the test found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderTestResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can test a DNS provider (agents never).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`upgrade_required`: a cluster member's build does not know the test yet.",
             "content": {
               "application/json": {
                 "schema": {
@@ -22401,6 +22610,56 @@
           }
         }
       },
+      "DnsProviderAdoptRequest": {
+        "type": "object",
+        "description": "REQ: CLD-919 (T36.10b step b3) - the body of `POST /api/v1/dns-providers/{name}/records/adopt`.",
+        "required": [
+          "name",
+          "recordType"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The record set's full name."
+          },
+          "recordType": {
+            "type": "string",
+            "description": "`A`, `AAAA` or `TXT`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DnsProviderAdopted": {
+        "type": "object",
+        "description": "REQ: CLD-919 (T36.10b step b3) - the record set an adopt took into the ledger.",
+        "required": [
+          "name",
+          "recordType",
+          "owner",
+          "by",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "by": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string",
+            "description": "`adopted`, or `created` when the node already owned it."
+          },
+          "recordType": {
+            "type": "string"
+          }
+        }
+      },
       "DnsProviderEntry": {
         "type": "object",
         "description": "REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings\n(the credential as a stored secret's name, never a value), where it comes from, and its state.",
@@ -22455,7 +22714,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`not_used`: the table stores and validates the entry; nothing calls the provider yet."
+            "description": "`not_used`: this build has no code for the kind yet (only the test provider has any);\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
           },
           "zone": {
             "type": "string",
@@ -22486,6 +22745,180 @@
             "items": {
               "$ref": "#/components/schemas/DnsProviderEntry"
             }
+          }
+        }
+      },
+      "DnsProviderRecord": {
+        "type": "object",
+        "description": "REQ: CLD-919 (T36.10b step b3) - one record set at a provider, with whether the node owns it.",
+        "required": [
+          "name",
+          "recordType",
+          "ttl",
+          "values"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When, Unix seconds.",
+            "minimum": 0
+          },
+          "by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made or adopted it."
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`created` (the node made it), `adopted` (an admin took it over); absent when the node does\nnot own it, so it is never changed or deleted until adopted."
+          },
+          "recordType": {
+            "type": "string",
+            "description": "`A`, `AAAA` or `TXT`."
+          },
+          "ttl": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DnsProviderRecords": {
+        "type": "object",
+        "description": "REQ: CLD-919 (T36.10b step b3) - `GET /api/v1/dns-providers/{name}/records`.",
+        "required": [
+          "items",
+          "dryRun"
+        ],
+        "properties": {
+          "dryRun": {
+            "type": "boolean",
+            "description": "Whether the entry is in dry run (writes are recorded, not sent)."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderRecord"
+            }
+          }
+        }
+      },
+      "DnsProviderScope": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b3) - what a provider credential may change, as the provider reports\nit. Never a secret.",
+        "required": [
+          "zone",
+          "summary",
+          "recordTypes",
+          "broaderThanNeeded",
+          "notes"
+        ],
+        "properties": {
+          "broaderThanNeeded": {
+            "type": "boolean",
+            "description": "The credential reaches further than the node needs: narrow it at the provider."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "More notes for the card."
+          },
+          "recordSets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The record sets it is limited to; absent when it may write any in the zone."
+          },
+          "recordTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The record types it may write (`A`, `AAAA`, `TXT`)."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One line that says it."
+          },
+          "zone": {
+            "type": "string",
+            "description": "The zone it was checked against."
+          }
+        }
+      },
+      "DnsProviderTestResult": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b3) - the answer of `POST /api/v1/dns-providers/{name}/test`.",
+        "required": [
+          "ok",
+          "supported",
+          "dryRun",
+          "dryRunCleared"
+        ],
+        "properties": {
+          "dryRun": {
+            "type": "boolean",
+            "description": "Whether the entry is in dry run now (after this test)."
+          },
+          "dryRunCleared": {
+            "type": "boolean",
+            "description": "True when this test was the first success and ended the entry's dry run."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why not, when `ok` is false. Never holds the credential."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A sentence for the card (for example, that dry run is set in a file)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "The credential was accepted and the scope is shown."
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DnsProviderScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "False when this build has no code for the provider's kind yet (`error` says so)."
           }
         }
       },

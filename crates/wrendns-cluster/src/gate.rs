@@ -34,6 +34,10 @@ pub enum Feature {
     /// `compression = "gzip"` in the OTLP export entry; a build that does not know the field
     /// refuses the whole entry (OBS-006, issue #155).
     OtlpCompression,
+    /// The DNS-provider write engine's ownership ledger and its test, records and adopt actions
+    /// (CLD-919, T36.10b step b3): the ledger rows ride the node-managed blob and the actions are
+    /// forwarded writes, which an older primary does not know.
+    DnsProviderLedger,
     /// The API URL a member announces and the per-node read of its web UI and API settings
     /// (API-902, T27.14g0, ADR-1113). Nothing is replicated: an older member announces no URL and
     /// does not know the read, so a card says so plainly instead of asking it.
@@ -42,7 +46,7 @@ pub enum Feature {
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 9] = [
+    pub const ALL: [Feature; 10] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
@@ -51,6 +55,7 @@ impl Feature {
         Self::RpzLists,
         Self::Rfc5011,
         Self::OtlpCompression,
+        Self::DnsProviderLedger,
         Self::MemberApiAddress,
     ];
 
@@ -65,6 +70,7 @@ impl Feature {
             Self::RpzLists => "rpz_lists",
             Self::Rfc5011 => "rfc5011",
             Self::OtlpCompression => "otlp_compression",
+            Self::DnsProviderLedger => "dns_provider_ledger",
             Self::MemberApiAddress => "member_api_address",
         }
     }
@@ -80,6 +86,7 @@ impl Feature {
             Self::RpzLists => "lists in the RPZ format",
             Self::Rfc5011 => "the trust anchor read",
             Self::OtlpCompression => "gzip compression of the OpenTelemetry export",
+            Self::DnsProviderLedger => "the DNS-provider ownership ledger",
             Self::MemberApiAddress => "the web UI and API address read",
         }
     }
@@ -95,7 +102,7 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 9] = [
+const ANNOUNCED: [Feature; 10] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
@@ -104,6 +111,7 @@ const ANNOUNCED: [Feature; 9] = [
     Feature::RpzLists,
     Feature::Rfc5011,
     Feature::OtlpCompression,
+    Feature::DnsProviderLedger,
     Feature::MemberApiAddress,
 ];
 
@@ -240,6 +248,7 @@ mod tests {
                 "rpz_lists".to_owned(),
                 "rfc5011".to_owned(),
                 "otlp_compression".to_owned(),
+                "dns_provider_ledger".to_owned(),
                 "member_api_address".to_owned()
             ]
         );

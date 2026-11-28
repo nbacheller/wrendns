@@ -2265,8 +2265,8 @@ export interface paths {
          * The DNS providers in the configuration.
          * @description Each one comes with its settings (the credential as the name of a stored secret, never a value),
          *     whether this node stores a secret by that name, where it comes from (the files or the API), and
-         *     its state. The table is stored and validated: nothing calls a provider yet, so every entry
-         *     reads `not_used`. `held` is true while the start-up hold keeps the providers out of what this
+         *     its state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are
+         *     recorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this
          *     node serves and publishes (a cluster member's build does not know them yet).
          */
         get: operations["list_dns_providers"];
@@ -2300,7 +2300,8 @@ export interface paths {
          *     otherwise. Admins only: an operator or an agent is refused (403). A provider the config files
          *     define is read-only here (409 `set_by_file`). The first provider waits until every cluster
          *     member's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The
-         *     table is stored and validated; nothing calls a provider yet.
+         *     table is stored and validated; a provider is written to only through the write engine (dry run
+         *     until the first successful test, an ownership ledger, rate limits).
          */
         put: operations["put_dns_provider"];
         post?: never;
@@ -2310,6 +2311,77 @@ export interface paths {
          *     config files define can't be removed here (409). Admins only.
          */
         delete: operations["delete_dns_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dns-providers/{name}/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The record sets at a DNS provider, and who owns each.
+         * @description CLD-919. `owner` is `created` (the node made it) or `adopted` (an admin took it over); a record set
+         *     with no owner is never changed or deleted by the node until it is adopted. Admin only, never for
+         *     agents. Runs on the primary, which holds the ledger.
+         */
+        get: operations["dns_provider_records"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dns-providers/{name}/records/adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adopt a record set: the node may then change and delete it.
+         * @description CLD-919 (ADR-1112 point 1). The node changes or deletes only the record sets it made itself or
+         *     that an admin adopted. Adopting records the claim in the ownership ledger (kept across restarts and
+         *     replicated) and sends nothing to the provider, so it works in dry run too. The body is the record
+         *     set's `name` and `recordType`. Audited as `dns_provider.adopt`. Admin only, never for agents.
+         */
+        post: operations["adopt_dns_provider_record"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dns-providers/{name}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test a DNS provider: check the credential and show what it may change.
+         * @description CLD-904, CLD-919 (T36.10b step b3). The provider is asked what the credential can do and the
+         *     answer is the scope: the zone, the record types, the record sets it is limited to, and a warning
+         *     when it reaches further than the node needs. Nothing is written, and the credential is never in
+         *     the answer or the audit entry (a failure's text is scrubbed of it). The first success ends the
+         *     entry's dry run (an entry the config files define keeps the file's setting, and the answer says
+         *     so). A kind without provider code in this build answers `supported: false`. It runs on the
+         *     primary (a replica forwards it). Admin only, never for agents.
+         */
+        post: operations["test_dns_provider"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -7822,6 +7894,23 @@ export interface components {
             expiresUnixSeconds: number;
             name: string;
         };
+        /** @description REQ: CLD-919 (T36.10b step b3) - the body of `POST /api/v1/dns-providers/{name}/records/adopt`. */
+        DnsProviderAdoptRequest: {
+            /** @description The record set's full name. */
+            name: string;
+            /** @description `A`, `AAAA` or `TXT`. */
+            recordType: string;
+        };
+        /** @description REQ: CLD-919 (T36.10b step b3) - the record set an adopt took into the ledger. */
+        DnsProviderAdopted: {
+            /** Format: int64 */
+            at: number;
+            by: string;
+            name: string;
+            /** @description `adopted`, or `created` when the node already owned it. */
+            owner: string;
+            recordType: string;
+        };
         /**
          * @description REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings
          *     (the credential as a stored secret's name, never a value), where it comes from, and its state.
@@ -7850,7 +7939,11 @@ export interface components {
             name: string;
             /** @description `file` (the configuration files define it; read-only here) or `api`. */
             source: string;
-            /** @description `not_used`: the table stores and validates the entry; nothing calls the provider yet. */
+            /**
+             * @description `not_used`: this build has no code for the kind yet (only the test provider has any);
+             *     `dry_run`: it computes and records changes and sends none, until its first successful test;
+             *     `ready`: the first test passed and writes are sent.
+             */
             state: string;
             /** @description The zone the provider serves. */
             zone: string;
@@ -7868,6 +7961,67 @@ export interface components {
              */
             heldReason?: string | null;
             items: components["schemas"]["DnsProviderEntry"][];
+        };
+        /** @description REQ: CLD-919 (T36.10b step b3) - one record set at a provider, with whether the node owns it. */
+        DnsProviderRecord: {
+            /**
+             * Format: int64
+             * @description When, Unix seconds.
+             */
+            at?: number | null;
+            /** @description Who made or adopted it. */
+            by?: string | null;
+            name: string;
+            /**
+             * @description `created` (the node made it), `adopted` (an admin took it over); absent when the node does
+             *     not own it, so it is never changed or deleted until adopted.
+             */
+            owner?: string | null;
+            /** @description `A`, `AAAA` or `TXT`. */
+            recordType: string;
+            /** Format: int32 */
+            ttl: number;
+            values: string[];
+        };
+        /** @description REQ: CLD-919 (T36.10b step b3) - `GET /api/v1/dns-providers/{name}/records`. */
+        DnsProviderRecords: {
+            /** @description Whether the entry is in dry run (writes are recorded, not sent). */
+            dryRun: boolean;
+            items: components["schemas"]["DnsProviderRecord"][];
+        };
+        /**
+         * @description REQ: CLD-904 (T36.10b step b3) - what a provider credential may change, as the provider reports
+         *     it. Never a secret.
+         */
+        DnsProviderScope: {
+            /** @description The credential reaches further than the node needs: narrow it at the provider. */
+            broaderThanNeeded: boolean;
+            /** @description More notes for the card. */
+            notes: string[];
+            /** @description The record sets it is limited to; absent when it may write any in the zone. */
+            recordSets?: string[] | null;
+            /** @description The record types it may write (`A`, `AAAA`, `TXT`). */
+            recordTypes: string[];
+            /** @description One line that says it. */
+            summary: string;
+            /** @description The zone it was checked against. */
+            zone: string;
+        };
+        /** @description REQ: CLD-904 (T36.10b step b3) - the answer of `POST /api/v1/dns-providers/{name}/test`. */
+        DnsProviderTestResult: {
+            /** @description Whether the entry is in dry run now (after this test). */
+            dryRun: boolean;
+            /** @description True when this test was the first success and ended the entry's dry run. */
+            dryRunCleared: boolean;
+            /** @description Why not, when `ok` is false. Never holds the credential. */
+            error?: string | null;
+            /** @description A sentence for the card (for example, that dry run is set in a file). */
+            note?: string | null;
+            /** @description The credential was accepted and the scope is shown. */
+            ok: boolean;
+            scope?: components["schemas"]["DnsProviderScope"] | null;
+            /** @description False when this build has no code for the provider's kind yet (`error` says so). */
+            supported: boolean;
         };
         /**
          * @description REQ: CLU-014 — `"all"`: every device (the node's infrastructure, cluster nodes, and
@@ -18572,6 +18726,169 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    dns_provider_records: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The provider's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The zone's TXT, A and AAAA record sets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProviderRecords"];
+                };
+            };
+            /** @description Only an admin can read a provider's records. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No DNS provider by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No provider code for the kind yet, or `upgrade_required`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The provider refused or did not answer the call. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    adopt_dns_provider_record: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The provider's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DnsProviderAdoptRequest"];
+            };
+        };
+        responses: {
+            /** @description The record set is in the ledger. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProviderAdopted"];
+                };
+            };
+            /** @description Only an admin can adopt a record set. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No DNS provider by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The name is outside the zone, the type is not A, AAAA or TXT, or the record set is not at the provider. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    test_dns_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The provider's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the test found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProviderTestResult"];
+                };
+            };
+            /** @description Only an admin can test a DNS provider (agents never). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No DNS provider by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `upgrade_required`: a cluster member's build does not know the test yet. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -613,10 +613,10 @@
       "id": "dns-providers",
       "title": "Let WrenDNS change a few records at your DNS host",
       "term": "DNS providers",
-      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may one day write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
+      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
       "when": "You want certificates or a changing home address to be handled for you, and you want to grant WrenDNS the smallest permission that does it.",
       "example": "Azure DNS for example.net, with a role on the single record set _acme-challenge.home (the form shows the az command), the application's client secret stored as dns.azure-home.credential, and the entry in dry run until it is tested.",
-      "caution": "Providers are stored and checked here, but nothing calls them yet: certificates and dynamic DNS come next, so nothing at your DNS host changes. Every new entry starts in dry run. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
+      "caution": "Every new entry starts in dry run: changes are recorded and none is sent until its first successful test, and WrenDNS changes only records it made or you adopt. No provider kind has its code yet, so a test says so and nothing at your DNS host changes. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
       "docs": "dns-providers"
     },
     {
@@ -627,6 +627,26 @@
       "when": "Your DNS host has no API, or only a key that can change the whole account or zone.",
       "example": "_acme-challenge.home.example.net CNAME home.acme-validation.example.org, with home.acme-validation.example.org the delegation of a provider entry for acme-validation.example.org.",
       "caution": "No GoDaddy key is ever stored: GoDaddy is served by this CNAME only. Delegation covers the challenge name only, not A or AAAA records. The CNAME is created by hand at your host, and a later release verifies it before use.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-test",
+      "title": "Test a provider and see what its credential can change",
+      "term": "Test and show scope",
+      "summary": "Test asks the provider what the stored credential may change and shows it: the zone, the record types, the record sets it is limited to, and a warning when it can change more than WrenDNS needs. Nothing is written and the credential is never shown. The first successful test ends the entry's dry run.",
+      "when": "After you add a provider, and after you change its credential or its grant at the provider.",
+      "example": "A Cloudflare token for one zone: the test shows the zone and TXT, A and AAAA, and warns that the token can change any record set in it, so you may prefer delegating the challenge name.",
+      "caution": "A kind with no provider code in this build says so and changes nothing. A test that fails shows the provider's answer with the credential taken out. An entry the configuration file defines keeps the file's dry-run setting.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-ownership",
+      "title": "Which records WrenDNS may change",
+      "term": "Owned records and Adopt",
+      "summary": "WrenDNS changes or deletes only record sets it created itself or that an admin adopted. The Records table lists the zone's TXT, A and AAAA record sets and who owns each; a record set nobody owns is never touched until you adopt it. Adopting sends nothing to the provider.",
+      "when": "A record set WrenDNS should keep up to date already exists at your DNS host, or you want to see what it manages.",
+      "example": "home.example.net A was made by hand: adopt it once, and the dynamic-DNS update may then change it.",
+      "caution": "Adopt only what WrenDNS should manage: after that it can replace or delete the record set. The list is for admins and never an agent.",
       "docs": "dns-providers"
     },
     {

@@ -15,7 +15,9 @@
 //!   `upgrade_required` naming the member; dry runs too): `Feature::DnsProviders` through
 //!   `upgrade_gate::enforce_dns_providers`.
 //! - **Not used yet.** The table stores and validates entries. The provider trait and the write
-//!   engine are later steps of T36.10b; the reads say every entry is `not_used`.
+//!   engine (T36.10b step b3) is in `dns_provider/`; its Test, records and adopt actions are in
+//!   `dns_provider_ops`. The reads say `not_used` for a kind with no provider code yet, `dry_run`
+//!   until the first successful test, then `ready`.
 
 use wrendns_api::ManagedWrite;
 use wrendns_api::auth::Role;
@@ -179,7 +181,7 @@ pub(crate) fn plan(
             == Some(true)
     {
         warnings.push(
-            "This provider only computes and records changes (`dry_run`): nothing calls a DNS provider yet, and a provider starts in dry run until its first successful test."
+            "This provider starts in dry run: changes are recorded in the audit log and nothing is sent to the DNS host until its first successful test (the Test button)."
                 .to_owned(),
         );
     }
@@ -189,7 +191,7 @@ pub(crate) fn plan(
         after,
         body: stored,
         recent_queries: 0,
-        impact: "Stored and shared by the cluster with no restart. Nothing calls a DNS provider yet, so no DNS answer changes; the entry is checked and kept for the certificate and dynamic-DNS work that uses it.".to_owned(),
+        impact: "Stored and shared by the cluster with no restart. No DNS answer changes: a provider is called only to write a record at the DNS host when an admin or a certificate or dynamic-DNS task asks, always through the write engine (dry run, ownership ledger, rate limits), and never on the query path.".to_owned(),
         warnings,
         also: Vec::new(),
         candidate: merged,
@@ -239,6 +241,24 @@ fn entry(src: &Sources, p: &DnsProviderConfig, file: &Config, held: bool) -> Dns
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
     let present = secret.as_deref().is_some_and(|n| src.secrets.exists(n));
+    // REQ: CLD-919 - what the entry does now: no code for its kind yet, dry run until the first
+    // successful test, or sending writes.
+    let (state, detail) = if !crate::dns_provider::registry::has_code(p) {
+        (
+            "not_used",
+            "Stored and validated. This build has no provider code for this kind yet, so Test says so and nothing is written at the DNS host.",
+        )
+    } else if p.dry_run {
+        (
+            "dry_run",
+            "Dry run: changes are recorded in the audit log and none is sent, until the first successful test.",
+        )
+    } else {
+        (
+            "ready",
+            "Tested. Changes are sent, within the entry's write limits, to records the node owns.",
+        )
+    };
     DnsProviderEntry {
         name: p.name.to_string(),
         kind: p.kind.as_str().to_owned(),
@@ -253,8 +273,8 @@ fn entry(src: &Sources, p: &DnsProviderConfig, file: &Config, held: bool) -> Dns
         dry_run: p.dry_run,
         credential_secret: secret,
         credential_present: present,
-        state: "not_used".to_owned(),
-        detail: "Stored and validated. Nothing calls a DNS provider yet; the certificate and dynamic-DNS work will use it.".to_owned(),
+        state: state.to_owned(),
+        detail: detail.to_owned(),
         held,
     }
 }

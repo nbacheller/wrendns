@@ -1362,7 +1362,9 @@ pub struct DnsProviderEntry {
     pub credential_secret: Option<String>,
     /// Whether this node stores a secret by that name (the value is never shown).
     pub credential_present: bool,
-    /// `not_used`: the table stores and validates the entry; nothing calls the provider yet.
+    /// `not_used`: this build has no code for the kind yet (only the test provider has any);
+    /// `dry_run`: it computes and records changes and sends none, until its first successful test;
+    /// `ready`: the first test passed and writes are sent.
     pub state: String,
     /// The sentence that goes with `state`.
     pub detail: String,
@@ -1385,6 +1387,101 @@ pub struct DnsProviderList {
     /// from yet); set with `held`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_reason: Option<String>,
+}
+
+/// REQ: CLD-904 (T36.10b step b3) - what a provider credential may change, as the provider reports
+/// it. Never a secret.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderScope {
+    /// The zone it was checked against.
+    pub zone: String,
+    /// One line that says it.
+    pub summary: String,
+    /// The record types it may write (`A`, `AAAA`, `TXT`).
+    pub record_types: Vec<String>,
+    /// The record sets it is limited to; absent when it may write any in the zone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_sets: Option<Vec<String>>,
+    /// The credential reaches further than the node needs: narrow it at the provider.
+    pub broader_than_needed: bool,
+    /// More notes for the card.
+    pub notes: Vec<String>,
+}
+
+/// REQ: CLD-904 (T36.10b step b3) - the answer of `POST /api/v1/dns-providers/{name}/test`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // the answer's flags, each a fact the card shows
+pub struct DnsProviderTestResult {
+    /// The credential was accepted and the scope is shown.
+    pub ok: bool,
+    /// False when this build has no code for the provider's kind yet (`error` says so).
+    pub supported: bool,
+    /// Whether the entry is in dry run now (after this test).
+    pub dry_run: bool,
+    /// True when this test was the first success and ended the entry's dry run.
+    pub dry_run_cleared: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<DnsProviderScope>,
+    /// Why not, when `ok` is false. Never holds the credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// A sentence for the card (for example, that dry run is set in a file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// REQ: CLD-919 (T36.10b step b3) - one record set at a provider, with whether the node owns it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderRecord {
+    pub name: String,
+    /// `A`, `AAAA` or `TXT`.
+    pub record_type: String,
+    pub ttl: u32,
+    pub values: Vec<String>,
+    /// `created` (the node made it), `adopted` (an admin took it over); absent when the node does
+    /// not own it, so it is never changed or deleted until adopted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Who made or adopted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// When, Unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+}
+
+/// REQ: CLD-919 (T36.10b step b3) - `GET /api/v1/dns-providers/{name}/records`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderRecords {
+    pub items: Vec<DnsProviderRecord>,
+    /// Whether the entry is in dry run (writes are recorded, not sent).
+    pub dry_run: bool,
+}
+
+/// REQ: CLD-919 (T36.10b step b3) - the body of `POST /api/v1/dns-providers/{name}/records/adopt`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DnsProviderAdoptRequest {
+    /// The record set's full name.
+    pub name: String,
+    /// `A`, `AAAA` or `TXT`.
+    pub record_type: String,
+}
+
+/// REQ: CLD-919 (T36.10b step b3) - the record set an adopt took into the ledger.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderAdopted {
+    pub name: String,
+    pub record_type: String,
+    /// `adopted`, or `created` when the node already owned it.
+    pub owner: String,
+    pub by: String,
+    pub at: u64,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.

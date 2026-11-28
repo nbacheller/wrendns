@@ -612,6 +612,17 @@ pub trait Backend: Send + Sync + 'static {
     fn dns_providers(&self) -> model::DnsProviderList {
         model::DnsProviderList::default()
     }
+    /// REQ: CLD-904, CLD-919 (T36.10b step b3) - a test, a record read or an adopt of a DNS provider,
+    /// run on the primary (a replica forwards it). The answer is the JSON of the model the route
+    /// documents.
+    fn dns_provider_op(&self, op: DnsProviderOp) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = op;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "DNS providers aren't available on this node",
+            ))
+        })
+    }
     /// REQ: API-016 (T23.7, T23.8) — the router integrations in the configuration, with each one's
     /// status on this node.
     fn router_entries(&self) -> Vec<model::RouterEntry> {
@@ -1485,6 +1496,37 @@ pub struct SnmpTestWrite {
     pub reason: Option<String>,
 }
 
+/// REQ: CLD-904, CLD-919 (T36.10b step b3, ADR-1112) - an action on a DNS provider that runs on the
+/// primary (it owns the ownership ledger and the audit log of provider writes): a test of the
+/// credential, a read of the zone with who owns each record set, or an adopt. As the API checked it
+/// (admin only), and as it crosses the cluster channel.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DnsProviderOp {
+    /// The provider's name.
+    pub name: String,
+    pub action: DnsProviderAction,
+    /// Who asked: the actor's name.
+    pub by: String,
+    /// Where from, for the audit entry.
+    #[serde(default)]
+    pub remote: Option<String>,
+    /// Why, as the user gave it (`X-Wrendns-Reason`), for the audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// What a [`DnsProviderOp`] does.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum DnsProviderAction {
+    /// Check the credential and report what it may change; a first success ends dry run.
+    Test,
+    /// The zone's record sets and who owns each.
+    Records,
+    /// Take a record set into the ledger.
+    Adopt { record: String, record_type: String },
+}
+
 /// REQ: OBS-014 — an acknowledge (`ack`) or unacknowledge of findings by ID.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnomalyAckWrite {
@@ -1644,7 +1686,10 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: DSC-913 (T36.10a) — the locations and the names each composes.
         .merge(locations_api::read_routes(Arc::clone(&backend)))
         // REQ: CLD-904 (T36.10b) - the DNS providers (the credential as a name, never a value).
-        .merge(dns_providers_api::read_routes(Arc::clone(&backend)))
+        .merge(dns_providers_api::read_routes(
+            Arc::clone(&backend),
+            Arc::clone(&auth),
+        ))
         // REQ: OBS-901 (T26.2, ADR-958) — the live network map: snapshot, stream, world, health.
         .merge(map_api::read_routes(Arc::clone(&backend)))
         // REQ: API-016 (T23.10) — OIDC providers and their status (admin-only, by the handler).
@@ -1874,7 +1919,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, locations_api::list_locations, locations_api::get_location, config_api::put_location, config_api::delete_location, dns_providers_api::list_dns_providers, dns_providers_api::get_dns_provider, config_api::put_dns_provider, config_api::delete_dns_provider, config_api::put_alert_destination,
+        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, locations_api::list_locations, locations_api::get_location, config_api::put_location, config_api::delete_location, dns_providers_api::list_dns_providers, dns_providers_api::get_dns_provider, config_api::put_dns_provider, config_api::delete_dns_provider, dns_providers_api::test_dns_provider, dns_providers_api::dns_provider_records, dns_providers_api::adopt_dns_provider_record, config_api::put_alert_destination,
         config_api::put_slo_settings, config_api::delete_slo_settings, config_api::put_probe_settings, config_api::delete_probe_settings,
         config_api::put_upstream_check_settings, config_api::delete_upstream_check_settings, config_api::put_anomaly_settings, config_api::delete_anomaly_settings,
         config_api::put_qlog_settings, config_api::delete_qlog_settings, config_api::put_metrics_settings, config_api::delete_metrics_settings, config_api::put_dnstap_settings, config_api::delete_dnstap_settings,
@@ -1884,7 +1929,7 @@ async fn fallback(
     components(schemas(
         guarded::GuardedStatus, guarded::GuardedNodeApi, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult, guarded::GuardedPendingView, guarded::GuardedProbeLine, guarded::GuardedListenerLine, guarded::ListenValue, guarded::ListenEntry, guarded::ListenTls,
         map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, model::GeoipStatus, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
-        model::DnsProviderEntry, model::DnsProviderList, model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
+        model::DnsProviderEntry, model::DnsProviderList, model::DnsProviderScope, model::DnsProviderTestResult, model::DnsProviderRecord, model::DnsProviderRecords, model::DnsProviderAdoptRequest, model::DnsProviderAdopted, model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::RecursorTrace, model::TrustAnchorKey, model::TrustAnchorStatus, model::RecursorTraceStep, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,

@@ -56,7 +56,7 @@ async fn replica_of_announcing(
     tokio::sync::watch::Sender<bool>,
     (tempfile::TempDir, tempfile::TempDir),
 ) {
-    replica_of_announcing_url(handler, features, "").await
+    replica_inner(handler, features, true, "").await
 }
 
 /// [`replica_of_announcing`] with a primary that announces `api_url` as its web UI and API address
@@ -64,6 +64,32 @@ async fn replica_of_announcing(
 async fn replica_of_announcing_url(
     handler: wrendns_cluster::net::RpcHandler,
     features: Option<Vec<String>>,
+    api_url: &str,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
+    replica_inner(handler, features, true, api_url).await
+}
+
+/// A replica that joined but never connected: it can't reach its primary.
+async fn replica_never_connected(
+    handler: wrendns_cluster::net::RpcHandler,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
+    replica_inner(handler, None, false, "").await
+}
+
+async fn replica_inner(
+    handler: wrendns_cluster::net::RpcHandler,
+    features: Option<Vec<String>>,
+    connect: bool,
     api_url: &str,
 ) -> (
     Arc<Cluster>,
@@ -117,6 +143,9 @@ async fn replica_of_announcing_url(
     let resp = join(&token, &req).await.unwrap();
     let rid = Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
     let replica = Cluster::new(rid, crate::build_info::VERSION);
+    if !connect {
+        return (replica, primary, stop_tx, (pdir, rdir));
+    }
     tokio::spawn(dial(Arc::clone(&replica), stop));
     for _ in 0..400 {
         if replica.reachable_primary().is_some() {
@@ -1115,4 +1144,48 @@ fn api_902_a_member_without_the_feature_announces_no_url_and_is_not_asked() {
         rt.shutdown_background();
         drop((replica, primary, dirs));
     });
+
+/// REQ: CLD-904, CLD-919, CLU-002 (T36.10b b3) - a replica that can't reach its primary refuses a
+/// DNS provider action with 503 instead of running it: nothing is written to its own ledger.
+#[test]
+fn cld_919_a_replica_without_its_primary_refuses_an_adopt() {
+    let (status, rows) = finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        let handler = counting_handler(
+            "none",
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            false,
+        );
+        let (replica, primary, _stop, dirs) = rt.block_on(replica_never_connected(handler));
+        let h = rt.block_on(async { harness_in("", Some(Arc::clone(&replica))) });
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let fed = Arc::new(crate::federated::Federated::new(
+            local,
+            Arc::clone(&replica),
+        ));
+        assert!(replica.reachable_primary().is_none(), "never connected");
+        let r = rt.block_on(fed.dns_provider_op(wrendns_api::DnsProviderOp {
+            name: "fake".into(),
+            action: wrendns_api::DnsProviderAction::Adopt {
+                record: "a.example.net".into(),
+                record_type: "TXT".into(),
+            },
+            by: "admin".into(),
+            remote: None,
+            reason: None,
+        }));
+        let status = r.map_or_else(|p| p.status, |_| 0);
+        let rows = h.src.auth.get().map_or(0, |a| {
+            crate::dns_provider::ledger::Ledger(a.state())
+                .list("fake")
+                .len()
+        });
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        (status, rows)
+    });
+    assert_eq!(status, 503);
+    assert_eq!(rows, 0, "no ledger row on the replica");
 }
