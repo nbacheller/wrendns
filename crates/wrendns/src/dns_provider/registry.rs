@@ -2,9 +2,11 @@
 //! REQ: CLD-904 (T36.10b step b3; ADR-1084) - the registry: a configured entry (its kind, its zone
 //! and the stored credential) to the code that talks to that provider.
 //!
-//! Azure DNS and Cloudflare have code (T36.10b step b4a and b4b); Route 53 and RFC 2136 (the rest of
-//! step b4) and delegation (step b5) do not yet. Until each arrives its kind answers
-//! [`BuildError::NoCode`], and the Test route says so. Test builds (and the browser tests' build) hand an entry named `fake...` the in-memory
+//! All four kinds have code: Azure DNS and Cloudflare (T36.10b step b4a and b4b) and Route 53 and
+//! RFC 2136 (the rest of step b4); delegation is step b5. Test builds (and the browser tests' build)
+//! also hand an entry named `nocode...` no code, so [`BuildError::NoCode`] and the Test route's
+//! "no provider code" answer stay testable; no release build has that seam. Test builds (and the
+//! browser tests' build) hand an entry named `fake...` the in-memory
 //! fake instead; no release build does.
 
 use std::sync::Arc;
@@ -36,7 +38,9 @@ impl Handle {
 /// Why no provider could be made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BuildError {
-    /// The kind has no code in this build yet.
+    /// The entry has no code in this build. Only the test-only `nocode...` seam produces it; every
+    /// real kind has code.
+    #[cfg_attr(not(any(test, feature = "e2e")), allow(dead_code))]
     NoCode(&'static str),
 }
 
@@ -48,28 +52,33 @@ impl std::fmt::Display for BuildError {
     }
 }
 
-/// Whether this build has provider code for the entry: Azure DNS and Cloudflare so far.
+/// Whether this build has provider code for the entry: every real kind has (the test-only `nocode...`
+/// seam aside).
 pub(crate) fn has_code(cfg: &DnsProviderConfig) -> bool {
     #[cfg(any(test, feature = "e2e"))]
     if super::fake::is_fake_name(cfg.name.as_str()) {
         return true;
     }
     // An entry named `nocode...` has no code in test builds, so the "no provider code" paths stay
-    // testable once every kind has some.
+    // testable now that every kind has some.
     #[cfg(any(test, feature = "e2e"))]
     if cfg.name.starts_with("nocode") {
         return false;
     }
     matches!(
         cfg.kind,
-        DnsProviderKind::AzureDns | DnsProviderKind::Cloudflare
+        DnsProviderKind::AzureDns
+            | DnsProviderKind::Cloudflare
+            | DnsProviderKind::Route53
+            | DnsProviderKind::Rfc2136
     )
 }
 
 /// The provider for `cfg`, built with `secret` (the stored credential's value, when the entry names
 /// one and this node can read it).
 // The handle owns the credential from here on; a real kind uses it, the fake only keeps it.
-#[allow(clippy::needless_pass_by_value)]
+// Release builds never fail (every kind has code); test builds fail for the `nocode...` seam.
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 pub(crate) fn build(
     cfg: &DnsProviderConfig,
     secret: Option<SecretValue>,
@@ -85,8 +94,8 @@ pub(crate) fn build(
     if !has_code(cfg) {
         return Err(BuildError::NoCode(cfg.kind.as_str()));
     }
-    // Azure DNS and Cloudflare (T36.10b step b4). The provider keeps its own copy of the credential
-    // (it signs in with it); the handle keeps one to scrub errors with.
+    // The provider keeps its own copy of the credential (it signs in with it); the handle keeps one
+    // to scrub errors with.
     let copy = |s: &Option<SecretValue>| {
         s.as_ref()
             .map(|v| SecretValue::from_text(zeroize::Zeroizing::new(v.expose().to_owned())))
@@ -120,28 +129,16 @@ pub(crate) fn build(
             DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
         }
     }
-    match cfg.kind {
-        DnsProviderKind::AzureDns => {
-            return Ok(Handle {
-                provider: Arc::new(super::azure::AzureDns::new(cfg, copy(&secret))),
-                secret,
-            });
-        }
+    // T36.10b step b4: every kind has code.
+    let provider: Arc<dyn DnsProvider> = match cfg.kind {
+        DnsProviderKind::AzureDns => Arc::new(super::azure::AzureDns::new(cfg, copy(&secret))),
         DnsProviderKind::Cloudflare => {
-            return Ok(Handle {
-                provider: Arc::new(super::cloudflare::Cloudflare::new(cfg, copy(&secret))),
-                secret,
-            });
+            Arc::new(super::cloudflare::Cloudflare::new(cfg, copy(&secret)))
         }
-        DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
-    }
-    // Each remaining kind arrives with its own step; none has code here yet.
-    Err(BuildError::NoCode(match cfg.kind {
-        DnsProviderKind::AzureDns => "azure_dns",
-        DnsProviderKind::Cloudflare => "cloudflare",
-        DnsProviderKind::Route53 => "route53",
-        DnsProviderKind::Rfc2136 => "rfc2136",
-    }))
+        DnsProviderKind::Route53 => Arc::new(super::route53::Route53::new(cfg, secret.as_ref())),
+        DnsProviderKind::Rfc2136 => Arc::new(super::rfc2136::Rfc2136::new(cfg, secret.as_ref())),
+    };
+    Ok(Handle { provider, secret })
 }
 
 /// Test seam: the base URL a named entry's provider talks to (a local replay server).

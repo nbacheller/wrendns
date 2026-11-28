@@ -6,9 +6,10 @@
 //! - **The trait** ([`DnsProvider`]): `scope`, `list`, `ensure` and `delete`, for `TXT`, `A` and
 //!   `AAAA` record sets only, and only inside the entry's zone. The engine checks both before a
 //!   provider sees a request, so a provider can not be asked for anything else.
-//! - **The registry** ([`registry`]): a configured kind to a constructor. Azure DNS ([`azure`]) and
-//!   Cloudflare ([`cloudflare`]) have code (step b4a, b4b, over the shared [`http_json`] call); a kind
-//!   without code answers "no provider code for this kind yet".
+//! - **The registry** ([`registry`]): a configured kind to a constructor. All four kinds have code
+//!   (T36.10b step b4): Azure DNS ([`azure`]) and Cloudflare ([`cloudflare`]) over the shared
+//!   [`http_json`] call, Route 53 ([`route53`]) and RFC 2136 ([`rfc2136`]). Only a test-only entry named
+//!   `nocode...` answers "no provider code for this kind yet".
 //! - **The fake** ([`fake`]): an in-memory zone for tests (and for the browser tests' build); never a
 //!   kind in the table.
 //! - **The engine** ([`engine`]): audit, dry run, the ownership ledger, per-entry rate limits and
@@ -25,6 +26,15 @@ pub(crate) mod fake;
 pub(crate) mod http_json;
 pub(crate) mod ledger;
 pub(crate) mod registry;
+pub(crate) mod rfc2136;
+#[cfg(test)]
+mod rfc2136_tests;
+pub(crate) mod route53;
+#[cfg(test)]
+mod route53_tests;
+pub(crate) mod sigv4;
+pub(crate) mod tsig;
+pub(crate) mod xml;
 
 use std::fmt;
 use std::future::Future;

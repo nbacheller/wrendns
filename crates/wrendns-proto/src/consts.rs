@@ -63,11 +63,15 @@ pub mod class {
     pub const IN: u16 = 1;
     pub const CH: u16 = 3;
     pub const ANY: u16 = 255;
+    /// "None" (RFC 2136 section 2.4: a prerequisite or delete naming a value that must not exist).
+    pub const NONE: u16 = 254;
 }
 
 /// Opcodes.
 pub mod opcode {
     pub const QUERY: u8 = 0;
+    /// Dynamic update (RFC 2136).
+    pub const UPDATE: u8 = 5;
 }
 
 /// Response codes. Values above 15 need an OPT record (extended RCODE).
@@ -78,6 +82,12 @@ pub mod rcode {
     pub const NXDOMAIN: u16 = 3;
     pub const NOTIMP: u16 = 4;
     pub const REFUSED: u16 = 5;
+    /// RFC 2136 update outcomes.
+    pub const YXDOMAIN: u16 = 6;
+    pub const YXRRSET: u16 = 7;
+    pub const NXRRSET: u16 = 8;
+    pub const NOTAUTH: u16 = 9;
+    pub const NOTZONE: u16 = 10;
     pub const BADVERS: u16 = 16;
 }
 

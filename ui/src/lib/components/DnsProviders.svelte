@@ -4,7 +4,7 @@
   // DNS host (or a self-run server) the node may write record sets in. T36.10b step b3 (CLD-919) adds the
   // **Test** button (the scope the credential has, never the secret; the first success ends the entry's
   // dry run), the dry-run state, and the **Records** table with **Adopt** (the node changes or deletes only
-  // record sets it made or an admin adopted). A kind with no provider code yet says so. A provider added, changed or removed applies on every node
+  // record sets it made or an admin adopted). An entry with no provider code (none of the four kinds has none) says so. A provider added, changed or removed applies on every node
   // within seconds; one the configuration file defines is read-only ("set by file"); the credential goes
   // through SecretField (write-only, stored by name) and the entry holds only its name; the first
   // provider waits until every cluster member's build knows the table, and the refusal is shown in the
@@ -231,16 +231,22 @@
               'ForAllValues:StringEquals': {
                 'route53:ChangeResourceRecordSetsNormalizedRecordNames': [challenge(f)],
                 'route53:ChangeResourceRecordSetsRecordTypes': ['TXT'],
+                'route53:ChangeResourceRecordSetsActions': ['UPSERT', 'DELETE'],
               },
             },
           },
-          { Effect: 'Allow', Action: ['route53:ListResourceRecordSets', 'route53:GetChange'], Resource: '*' },
+          {
+            Effect: 'Allow',
+            Action: ['route53:ListResourceRecordSets', 'route53:GetHostedZone', 'route53:GetChange', 'route53:ListHostedZonesByName'],
+            Resource: '*',
+          },
         ],
       },
       null,
       2,
     );
-  const bindPolicy = (f: Form) => `update-policy { grant ${f.key_name.trim() || '<key name>'} name ${challenge(f)}. TXT; };`;
+  const bindPolicy = (f: Form) => `update-policy { grant ${f.key_name.trim() || '<key name>'} name ${challenge(f)}. TXT; };
+allow-transfer { key ${f.key_name.trim() || '<key name>'}; };`;
 
   async function save() {
     if (!form) return;
@@ -363,12 +369,19 @@
             zone instead (below). <HelpButton id="dns-provider-cloudflare" />
           </p>
         {:else if form.kind === 'route53'}
-          <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records:</p>
+          <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records, only <code>UPSERT</code> and <code>DELETE</code>:</p>
           <pre class="mono">{route53Policy(form)}</pre>
+          <p>
+            Leave the hosted zone ID empty to look the zone up by name (the <code>ListHostedZonesByName</code> permission above); the policy's <code>Resource</code> line still needs the zone's ID, so replace <code>&lt;hosted zone ID&gt;</code> in it with the real one. Test reads the zone with the key and shows that it is accepted; Route 53 does not
+            report what a key may change, so a change the policy does not allow is refused when it is made. A record set that is an alias or has a routing policy is never changed.
+          </p>
         {:else}
-          <p>Limit the TSIG key to the challenge name on the server, for example in BIND:</p>
+          <p>Limit the TSIG key to the challenge name on the server, and let it read the zone (WrenDNS lists the zone with a transfer before every change), for example in BIND:</p>
           <pre class="mono">{bindPolicy(form)}</pre>
-          <p>The server does not report what a key may change, so a later test can only show that the key is accepted for the configured name.</p>
+          <p>
+            Test sends a signed update that changes nothing and a signed zone transfer, and shows whether the server accepts the key for both. The server does not report what a key may change, so the grant for a
+            name and a type is checked when a record is written, and a refusal then says so.
+          </p>
         {/if}
       </div>
 

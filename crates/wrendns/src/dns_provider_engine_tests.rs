@@ -677,7 +677,7 @@ async fn cld_904_secret_absent_from_logs_errors_api_audit_and_support_package() 
     }
 }
 
-/// A real kind has no provider code yet: Test says so (200, `supported: false`), records and adopt
+/// An entry without provider code (the test-only `nocode...` seam; every real kind has code): Test says so (200, `supported: false`), records and adopt
 /// answer 409, and the entry reads `not_used`.
 #[tokio::test]
 async fn cld_904_a_kind_without_code_says_so() {

@@ -125,7 +125,7 @@ pub(crate) async fn test_dns_provider(
         (status = 200, body = DnsProviderRecords, description = "The zone's TXT, A and AAAA record sets."),
         (status = 403, body = Problem, description = "Only an admin can read a provider's records."),
         (status = 404, body = Problem, description = "No DNS provider by that name."),
-        (status = 409, body = Problem, description = "No provider code for the kind yet, or `upgrade_required`."),
+        (status = 409, body = Problem, description = "No provider code for the entry (only a test-only entry has none), or `upgrade_required`."),
         (status = 503, body = Problem, description = "The provider refused or did not answer the call."),
     ))]
 pub(crate) async fn dns_provider_records(
@@ -181,7 +181,7 @@ pub(crate) async fn adopt_dns_provider_record(
 ///
 /// Each one comes with its settings (the credential as the name of a stored secret, never a value),
 /// whether this node stores a secret by that name, where it comes from (the files or the API), and
-/// its state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are
+/// its state: `not_used` (this build has no provider code for the entry; every real kind has code, so only a test-only entry reads this), `dry_run` (changes are
 /// recorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this
 /// node serves and publishes (a cluster member's build does not know them yet).
 #[utoipa::path(get, path = "/api/v1/dns-providers", tag = "config",

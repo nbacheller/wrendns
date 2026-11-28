@@ -51,8 +51,10 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('--role "Reader"');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('route53');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('route53:ChangeResourceRecordSets');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('ListHostedZonesByName');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('rfc2136');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('update-policy');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('allow-transfer');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('cloudflare');
       // b4b: the token needs zone read (to find the zone) and DNS edit, for one zone; delegation otherwise.
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('Zone, Zone, Read');
@@ -68,7 +70,7 @@ test.describe('cld_904 DNS providers in the UI', () => {
       const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' });
       await expect(card).toBeVisible({ timeout: 10_000 });
       await expect(card).toContainText('From the UI');
-      // Cloudflare has provider code (b4b), so the card is not marked "not used yet".
+      // Cloudflare has provider code, so the card is not marked "not used yet".
       await expect(card).not.toContainText('Not used yet');
       await expect(card).toContainText('Dry run');
       await expect(card).toContainText('dns.cf-e2e.credential');
@@ -146,7 +148,7 @@ test.describe('cld_904 DNS providers in the UI', () => {
     }
   });
 
-  test('cld_904 a kind with no provider code yet says so when tested', async ({ browser }) => {
+  test('cld_904 an entry with no provider code (the test-only nocode seam) says so when tested', async ({ browser }) => {
     const page = await signIn(browser, ADMIN);
     try {
       await page.getByTestId('dnsproviders-add').click();

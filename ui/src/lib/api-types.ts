@@ -2265,7 +2265,7 @@ export interface paths {
          * The DNS providers in the configuration.
          * @description Each one comes with its settings (the credential as the name of a stored secret, never a value),
          *     whether this node stores a secret by that name, where it comes from (the files or the API), and
-         *     its state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are
+         *     its state: `not_used` (this build has no provider code for the entry; every real kind has code, so only a test-only entry reads this), `dry_run` (changes are
          *     recorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this
          *     node serves and publishes (a cluster member's build does not know them yet).
          */
@@ -7907,7 +7907,8 @@ export interface components {
             /** @description `file` (the configuration files define it; read-only here) or `api`. */
             source: string;
             /**
-             * @description `not_used`: this build has no code for the kind yet;
+             * @description `not_used`: this build has no provider code for the entry (every real kind has code; only a
+             *     test-only entry reads this);
              *     `dry_run`: it computes and records changes and sends none, until its first successful test;
              *     `ready`: the first test passed and writes are sent.
              */
@@ -7987,7 +7988,7 @@ export interface components {
             /** @description The credential was accepted and the scope is shown. */
             ok: boolean;
             scope?: components["schemas"]["DnsProviderScope"] | null;
-            /** @description False when this build has no code for the provider's kind yet (`error` says so). */
+            /** @description False when this build has no provider code for the entry (`error` says so; every real kind has code). */
             supported: boolean;
         };
         /**
@@ -18717,7 +18718,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No provider code for the kind yet, or `upgrade_required`. */
+            /** @description No provider code for the entry (only a test-only entry has none), or `upgrade_required`. */
             409: {
                 headers: {
                     [name: string]: unknown;
