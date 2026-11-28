@@ -229,16 +229,22 @@
               'ForAllValues:StringEquals': {
                 'route53:ChangeResourceRecordSetsNormalizedRecordNames': [challenge(f)],
                 'route53:ChangeResourceRecordSetsRecordTypes': ['TXT'],
+                'route53:ChangeResourceRecordSetsActions': ['UPSERT', 'DELETE'],
               },
             },
           },
-          { Effect: 'Allow', Action: ['route53:ListResourceRecordSets', 'route53:GetChange'], Resource: '*' },
+          {
+            Effect: 'Allow',
+            Action: ['route53:ListResourceRecordSets', 'route53:GetHostedZone', 'route53:GetChange', 'route53:ListHostedZonesByName'],
+            Resource: '*',
+          },
         ],
       },
       null,
       2,
     );
-  const bindPolicy = (f: Form) => `update-policy { grant ${f.key_name.trim() || '<key name>'} name ${challenge(f)}. TXT; };`;
+  const bindPolicy = (f: Form) => `update-policy { grant ${f.key_name.trim() || '<key name>'} name ${challenge(f)}. TXT; };
+allow-transfer { key ${f.key_name.trim() || '<key name>'}; };`;
 
   async function save() {
     if (!form) return;
@@ -355,12 +361,19 @@
             anything else that matters, delegate the challenge name to a separate zone instead (below).
           </p>
         {:else if form.kind === 'route53'}
-          <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records:</p>
+          <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records, only <code>UPSERT</code> and <code>DELETE</code>:</p>
           <pre class="mono">{route53Policy(form)}</pre>
+          <p>
+            Leave the hosted zone ID empty to look the zone up by name (the <code>ListHostedZonesByName</code> permission above). Test reads the zone with the key and shows that it is accepted; Route 53 does not
+            report what a key may change, so a change the policy does not allow is refused when it is made. A record set that is an alias or has a routing policy is never changed.
+          </p>
         {:else}
-          <p>Limit the TSIG key to the challenge name on the server, for example in BIND:</p>
+          <p>Limit the TSIG key to the challenge name on the server, and let it read the zone (WrenDNS lists the zone with a transfer before every change), for example in BIND:</p>
           <pre class="mono">{bindPolicy(form)}</pre>
-          <p>The server does not report what a key may change, so a later test can only show that the key is accepted for the configured name.</p>
+          <p>
+            Test sends a signed update that changes nothing and a signed zone transfer, and shows whether the server accepts the key for both. The server does not report what a key may change, so the grant for a
+            name and a type is checked when a record is written, and a refusal then says so.
+          </p>
         {/if}
       </div>
 

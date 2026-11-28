@@ -46,8 +46,10 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('az role assignment create');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('route53');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('route53:ChangeResourceRecordSets');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('ListHostedZonesByName');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('rfc2136');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('update-policy');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('allow-transfer');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('cloudflare');
       // The credential goes through SecretField: typed once, stored by name, never shown again.
       const secret = page.getByTestId('dnsproviders-secret');
