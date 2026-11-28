@@ -780,3 +780,27 @@ fn cld_904_tsig_key_input_is_checked() {
     assert!(!format!("{k:?}").contains(&b64(KEY_BYTES)));
     let _ = (class::IN, Section::Answer);
 }
+
+#[tokio::test]
+async fn cld_904_rfc2136_the_largest_engine_record_set_fits_one_update() {
+    let (st, addr) = start().await;
+    let p = provider_with(&addr, KEY_BYTES);
+    let values: Vec<String> = (0..16)
+        .map(|i| format!("{i:x}{}", "x".repeat(1019)))
+        .collect();
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    p.ensure(&txt("_acme-challenge.example.net", 60, &refs))
+        .await
+        .unwrap();
+    let g = st.lock().unwrap();
+    let (_, vals) = &g.sets[&("_acme-challenge.example.net".to_owned(), rtype::TXT)];
+    assert_eq!(vals.len(), 16);
+}
+
+#[tokio::test]
+async fn cld_904_rfc2136_scope_does_not_claim_types_it_did_not_check() {
+    let (_st, addr) = start().await;
+    let s = provider_with(&addr, KEY_BYTES).scope().await.unwrap();
+    assert_eq!(s.record_types, vec![RecordType::Txt]);
+    assert!(s.summary.contains("NOT checked"), "{s:?}");
+}

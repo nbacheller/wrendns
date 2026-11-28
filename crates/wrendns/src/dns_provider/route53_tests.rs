@@ -976,3 +976,37 @@ async fn cld_904_route53_through_the_engine_with_the_audit_and_ledger() {
         .unwrap();
     assert!(matches!(o, Outcome::Written { .. }), "{o:?}");
 }
+
+#[tokio::test]
+async fn cld_904_route53_two_public_zones_of_one_name_need_the_zone_id() {
+    let (url, _) = serve(Arc::new(|_r: &Req| -> Reply {
+        let z = |id: &str| format!("<HostedZone><Id>/hostedzone/{id}</Id><Name>example.net.</Name><Config><PrivateZone>false</PrivateZone></Config></HostedZone>");
+        (
+            200,
+            format!(
+                "<ListHostedZonesByNameResponse xmlns=\"{NS}\"><HostedZones>{}{}</HostedZones></ListHostedZonesByNameResponse>",
+                z("ZONEA"),
+                z("ZONEB")
+            ),
+            vec![],
+        )
+    }))
+    .await;
+    let mut c = cfg(&json!({}));
+    c.hosted_zone_id = None;
+    let p = Route53::new(&c, Some(&secret(&format!("{KEY_ID}:{KEY_SECRET}")))).with_endpoint(&url);
+    let e = p.list().await.unwrap_err();
+    assert!(
+        e.to_string().contains("more than one") && e.to_string().contains("hosted zone ID"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn cld_904_route53_scope_does_not_claim_types_it_did_not_check() {
+    let zone: Arc<Mutex<Zone>> = Arc::default();
+    let (url, _) = serve(route53_handler(&zone, false)).await;
+    let s = provider(&json!({}), &url).scope().await.unwrap();
+    assert_eq!(s.record_types, vec![RecordType::Txt]);
+    assert!(s.summary.contains("NOT checked"), "{s:?}");
+}

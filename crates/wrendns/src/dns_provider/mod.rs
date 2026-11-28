@@ -6,8 +6,8 @@
 //! - **The trait** ([`DnsProvider`]): `scope`, `list`, `ensure` and `delete`, for `TXT`, `A` and
 //!   `AAAA` record sets only, and only inside the entry's zone. The engine checks both before a
 //!   provider sees a request, so a provider can not be asked for anything else.
-//! - **The registry** ([`registry`]): a configured kind to a constructor. No real provider exists
-//!   yet (T36.10b steps b4 and b5), so a real kind answers "no provider code for this kind yet".
+//! - **The registry** ([`registry`]): a configured kind to a constructor. Route 53 and RFC 2136
+//!   exist (T36.10b step b4); Azure DNS and Cloudflare answer "no provider code for this kind yet".
 //! - **The fake** ([`fake`]): an in-memory zone for tests (and for the browser tests' build); never a
 //!   kind in the table.
 //! - **The engine** ([`engine`]): audit, dry run, the ownership ledger, per-entry rate limits and

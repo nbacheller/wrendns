@@ -334,7 +334,8 @@ impl Rfc2136 {
         changes: &[UpdateChange<'_>],
     ) -> Result<(), ProviderError> {
         let zone = wire_name(&self.zone)?;
-        let mut buf = vec![0u8; 8192];
+        // A TCP message is at most 65535 bytes; leave room for the TSIG record (at most about 330).
+        let mut buf = vec![0u8; usize::from(u16::MAX) - 512];
         let id: u16 = rand::random();
         let len = build_update(&mut buf, id, &zone, prereqs, changes)
             .map_err(|_| err(ProviderErrorKind::Rejected, "the update is too long"))?;
@@ -515,14 +516,15 @@ impl DnsProvider for Rfc2136 {
             Ok(Scope {
                 zone: self.zone.clone(),
                 summary: format!(
-                    "The server accepted a signed update for {} with no change, and a signed zone transfer.",
+                    "The server accepted a signed update for {} with no change, and a signed zone transfer. What the key may change was NOT checked; the type listed is that of the grant shown when the provider was added.",
                     self.zone
                 ),
-                record_types: vec![RecordType::Txt, RecordType::A, RecordType::Aaaa],
+                // Not measured: the grant the form shows (TXT at the challenge name).
+                record_types: vec![RecordType::Txt],
                 record_sets: None,
                 broader_than_needed: false,
                 notes: vec![
-                    "A server does not report what a key may change: the grant for a name and a type is checked when a record is written, and a refusal then says so.".into(),
+                    "Not verified: a server does not report what a key may change: the grant for a name and a type is checked when a record is written, and a refusal then says so.".into(),
                     "Check the server's update-policy against the grant shown when the provider was added: it should name only the records WrenDNS writes.".into(),
                 ],
             })

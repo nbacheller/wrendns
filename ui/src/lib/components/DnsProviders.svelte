@@ -364,7 +364,7 @@ allow-transfer { key ${f.key_name.trim() || '<key name>'}; };`;
           <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records, only <code>UPSERT</code> and <code>DELETE</code>:</p>
           <pre class="mono">{route53Policy(form)}</pre>
           <p>
-            Leave the hosted zone ID empty to look the zone up by name (the <code>ListHostedZonesByName</code> permission above). Test reads the zone with the key and shows that it is accepted; Route 53 does not
+            Leave the hosted zone ID empty to look the zone up by name (the <code>ListHostedZonesByName</code> permission above); the policy's <code>Resource</code> line still needs the zone's ID, so replace <code>&lt;hosted zone ID&gt;</code> in it with the real one. Test reads the zone with the key and shows that it is accepted; Route 53 does not
             report what a key may change, so a change the policy does not allow is refused when it is made. A record set that is an alias or has a routing policy is never changed.
           </p>
         {:else}

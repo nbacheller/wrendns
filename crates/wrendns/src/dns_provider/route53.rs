@@ -489,17 +489,28 @@ impl Route53 {
                 None,
             )
             .await?;
-        let found = doc
+        let mut found: Vec<String> = doc
             .child("HostedZones")
             .into_iter()
             .flat_map(|z| z.all("HostedZone"))
-            .find(|z| {
+            .filter(|z| {
                 z.text_at(&["Name"])
                     .is_some_and(|n| n.eq_ignore_ascii_case(&want))
                     && z.text_at(&["Config", "PrivateZone"]) != Some("true")
             })
-            .and_then(|z| z.text_at(&["Id"]))
-            .map(|id| id.rsplit('/').next().unwrap_or(id).to_owned());
+            .filter_map(|z| z.text_at(&["Id"]))
+            .map(|id| id.rsplit('/').next().unwrap_or(id).to_owned())
+            .collect();
+        if found.len() > 1 {
+            return Err(err(
+                ProviderErrorKind::Rejected,
+                format!(
+                    "more than one public hosted zone is named `{}`; set the hosted zone ID of the one the domain is delegated to",
+                    self.zone
+                ),
+            ));
+        }
+        let found = found.pop();
         let id = found.ok_or_else(|| {
             err(
                 ProviderErrorKind::Rejected,
@@ -637,7 +648,7 @@ impl DnsProvider for Route53 {
             )
             .await?;
             let mut notes = vec![
-                "Route 53 does not report what a key may change: the IAM policy shown when the provider was added limits it to the challenge name and the TXT type, and a change the policy does not allow is refused when it is made.".to_owned(),
+                "Not verified: Route 53 does not report what a key may change: the IAM policy shown when the provider was added limits it to the challenge name and the TXT type, and a change the policy does not allow is refused when it is made.".to_owned(),
             ];
             if doc.text_at(&["HostedZone", "Config", "PrivateZone"]) == Some("true") {
                 notes.push("This is a private hosted zone: it is not served on the internet, so a public certificate cannot be validated through it.".into());
@@ -645,10 +656,11 @@ impl DnsProvider for Route53 {
             Ok(Scope {
                 zone: self.zone.clone(),
                 summary: format!(
-                    "The key is accepted for hosted zone {id} ({}): it may read the zone.",
+                    "The key is accepted for hosted zone {id} ({}): it may read the zone. What it may change was NOT checked; the types listed are those of the grant shown when the provider was added.",
                     self.zone
                 ),
-                record_types: vec![RecordType::Txt, RecordType::A, RecordType::Aaaa],
+                // Not measured: the grant the form shows (TXT at the challenge name).
+                record_types: vec![RecordType::Txt],
                 record_sets: None,
                 broader_than_needed: false,
                 notes,
