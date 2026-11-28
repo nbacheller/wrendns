@@ -920,9 +920,9 @@ mod tests {
         let reqs = rx.requests();
         assert_eq!(reqs.len(), 1, "{reqs:?}");
         assert!(
-            reqs[0]
-                .path()
-                .eq_ignore_ascii_case("/opentelemetry.proto.collector.trace.v1.TraceService/Export"),
+            reqs[0].path().eq_ignore_ascii_case(
+                "/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+            ),
             "{}",
             reqs[0].path()
         );

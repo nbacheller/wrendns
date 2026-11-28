@@ -203,10 +203,7 @@ fn obs_006_protobuf_metric_kind_wire_bytes() {
     let gauge = cat(&[ld(1, b"g"), ld(5, &ld(1, &number_point))]);
     let sum = cat(&[
         ld(1, b"s"),
-        ld(
-            7,
-            &cat(&[ld(1, &number_point), vi(2, 2), vi(3, 1)]),
-        ),
+        ld(7, &cat(&[ld(1, &number_point), vi(2, 2), vi(3, 1)])),
     ]);
     let packed_counts = cat(&[1_u64.to_le_bytes().to_vec(), 2_u64.to_le_bytes().to_vec()]);
     let hist_point = cat(&[
@@ -216,10 +213,7 @@ fn obs_006_protobuf_metric_kind_wire_bytes() {
         ld(6, &packed_counts),
         ld(7, &one.to_le_bytes()),
     ]);
-    let hist = cat(&[
-        ld(1, b"h"),
-        ld(9, &cat(&[ld(1, &hist_point), vi(2, 2)])),
-    ]);
+    let hist = cat(&[ld(1, b"h"), ld(9, &cat(&[ld(1, &hist_point), vi(2, 2)]))]);
     let scope_metrics = cat(&[ld(2, &gauge), ld(2, &sum), ld(2, &hist)]);
     // The three metrics together are longer than a one-byte length holds.
     let want = ld_long(1, &ld_long(2, &scope_metrics));

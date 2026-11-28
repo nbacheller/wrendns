@@ -667,24 +667,17 @@ async fn obs_006_private_ca_secret_trusts_the_collector() {
     assert!(crate::otlp::ca_pem(&other, &h.src.secrets).is_err());
     // An unrelated CA's collector is refused; after the secret is replaced with that CA, the next
     // `Clients::get` (same instance) reaches it and the first collector is refused.
-    let (ca2_pem, server2) = private_ca();
-    let rx2 = Receiver::tls(server2);
-    let url2 = format!("{}/v1/metrics", rx2.https_base());
+    let (other_ca_pem, other_server) = private_ca();
+    let other_rx = Receiver::tls(other_server);
+    let other_url = format!("{}/v1/metrics", other_rx.https_base());
     let (cfg, doc, _) = metrics_doc(&h);
     let mut clients = crate::otlp::Clients::new();
     let c = clients.get(&cfg, &h.src.secrets).unwrap();
-    let post = |c: &wrendns_filter::fetch::Client, url: &str| {
-        crate::otlp::post(
-            c,
-            url,
-            &cfg,
-            crate::otlp_proto::Signal::Metrics,
-            &doc,
-            &h.src.secrets,
-        )
-    };
-    assert!(post(c, &url2).await.is_err(), "an unrelated CA is refused");
-    assert!(rx2.requests().is_empty());
+    assert!(
+        post_metrics(c, &cfg, &doc, &h, &other_url).await.is_err(),
+        "an unrelated CA is refused"
+    );
+    assert!(other_rx.requests().is_empty());
     let before = rx.requests().len();
     h.src
         .secrets
@@ -693,7 +686,7 @@ async fn obs_006_private_ca_secret_trusts_the_collector() {
             crate::secrets::value::Kind::Pem,
             &crate::secrets::SecretValue::new(
                 crate::secrets::value::Kind::Pem,
-                zeroize::Zeroizing::new(ca2_pem),
+                zeroize::Zeroizing::new(other_ca_pem),
             )
             .unwrap(),
             0,
@@ -703,11 +696,37 @@ async fn obs_006_private_ca_secret_trusts_the_collector() {
         )
         .unwrap();
     let c = clients.get(&cfg, &h.src.secrets).unwrap();
-    post(c, &url2).await.unwrap();
-    assert_eq!(rx2.requests().len(), 1, "the rotated CA reaches its collector");
+    post_metrics(c, &cfg, &doc, &h, &other_url).await.unwrap();
+    assert_eq!(
+        other_rx.requests().len(),
+        1,
+        "the rotated CA reaches its collector"
+    );
     let old_url = format!("{}/v1/metrics", rx.https_base());
-    assert!(post(c, &old_url).await.is_err(), "the replaced CA is no longer trusted");
+    assert!(
+        post_metrics(c, &cfg, &doc, &h, &old_url).await.is_err(),
+        "the replaced CA is no longer trusted"
+    );
     assert_eq!(rx.requests().len(), before);
+}
+
+/// One metrics export of `doc` to `url` with `client`.
+async fn post_metrics(
+    client: &wrendns_filter::fetch::Client,
+    cfg: &wrendns_config::Config,
+    doc: &Value,
+    h: &Harness,
+    url: &str,
+) -> Result<(), String> {
+    crate::otlp::post(
+        client,
+        url,
+        cfg,
+        crate::otlp_proto::Signal::Metrics,
+        doc,
+        &h.src.secrets,
+    )
+    .await
 }
 
 /// A fake OTLP/gRPC collector: an HTTP/2 server (h2c, or TLS with ALPN `h2`) that keeps each call
