@@ -998,3 +998,55 @@ async fn obs_007_dnstap_widening_goes_through_the_guarded_flow() {
         .is_none()
     );
 }
+
+// REQ: API-902, API-901 (T27.14g0, ADR-1113; owner decision, 2026-11-27) - the per-node read of the
+// web UI and API settings and the listeners is an admin session's alone: an agent token (whatever
+// its scopes), an operator, a viewer and another API token are refused, no credential is 401, and an
+// admin session gets this node's own values (the address, scheme, trusted proxies, the listeners with
+// their admin fields) and a 404 for a node that is not in the cluster.
+#[tokio::test]
+async fn api_902_node_api_read_is_admin_session_only() {
+    let h = harness("");
+    let _n = install(&h);
+    let uri = "/api/v1/guarded/nodes/pi-a/api";
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot", Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive", Role::Operator, None);
+    let viewer = token(&h, "vic", Role::Viewer, None);
+    let (s, _, v) = call_as(&h, &agent, "GET", uri, None, &[]).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("agent_not_allowed")),
+        "{v}"
+    );
+    for (who, t) in [("operator", &op), ("viewer", &viewer)] {
+        let (s, _, v) = call_as(&h, t, "GET", uri, None, &[]).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{who}: {v}");
+    }
+    let (s, _, v) = call_as(&h, &h.bearer.clone(), "GET", uri, None, &[]).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauth_required")),
+        "{v}"
+    );
+    let (s, v) = json_of(&h, unauthenticated("GET", uri, None, None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    // An admin session reads this node's own values.
+    let (s, v) = json_of(&h, session_req(&h, 5, "GET", uri, None, None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["node"], "pi-a");
+    assert_eq!(v["api"]["scheme"], "http");
+    assert!(v["api"]["trustedProxies"].is_array(), "{v}");
+    assert!(v["listeners"].is_array(), "{v}");
+    // A node that is not in the cluster.
+    let (s, v) = json_of(
+        &h,
+        session_req(&h, 5, "GET", "/api/v1/guarded/nodes/nope/api", None, None),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("node_unknown")),
+        "{v}"
+    );
+}

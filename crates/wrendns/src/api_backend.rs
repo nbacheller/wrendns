@@ -839,8 +839,53 @@ impl ApiBackend {
     }
 }
 
+/// REQ: DNS-901 (T36.2) - each listener's known-ID gate and the facts it was bound with (admin fields
+/// included: the caller strips them for anyone else). Also what a member answers to the per-node read
+/// of T27.14g0.
+pub(crate) fn listener_access(
+    cfg: &wrendns_config::Config,
+) -> Vec<wrendns_api::model::ListenerAccess> {
+    cfg.listen
+        .iter()
+        .map(|l| {
+            // REQ: DNS-901 — what the socket does, and the facts it was bound with.
+            let host = crate::gate_host::facts_for(l);
+            wrendns_api::model::ListenerAccess {
+                listener: format!("{}://{}", label(&l.proto), l.addr),
+                require_client_id: crate::gate_host::effective_gate(l),
+                setting: match l.require_client_id {
+                    None => "unset",
+                    Some(true) => "true",
+                    Some(false) => "false",
+                }
+                .to_owned(),
+                gated_by_default: l.gated_by_default(host),
+                public_address: wrendns_config::is_public_address(l.addr.ip()),
+                wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
+                default_on: l.default_gate(host).on(),
+                default_reason: l.default_gate(host).describe().to_owned(),
+                public_exposure: l.default_gate(host).public_exposure(),
+                can_carry_key: l.proto.needs_tls(),
+                tls_cert: l.tls.as_ref().map(|t| t.cert.as_str().to_owned()),
+                tls_key: l.tls.as_ref().map(|t| t.key.as_str().to_owned()),
+                path: l.path.as_ref().map(|p| p.as_str().to_owned()),
+                max_connections: l.max_connections,
+                max_connections_per_address: l.max_connections_per_address,
+                proxy_protocol: Some(l.proxy_protocol),
+                tls_cert_name: l.tls.as_ref().and_then(|t| {
+                    t.cert
+                        .as_str()
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .map(str::to_owned)
+                }),
+            }
+        })
+        .collect()
+}
+
 /// REQ: API-902 (T27.14f) - how the web UI and API are served, as `system/info` reports it to admins.
-fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiInfo {
+pub(crate) fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiInfo {
     wrendns_api::model::ApiInfo {
         listen: cfg.api.listen.to_string(),
         scheme: if cfg.api.tls.is_some() {
@@ -903,44 +948,7 @@ impl Backend for ApiBackend {
                 .map(|l| format!("{}://{}", label(&l.proto), l.addr))
                 .collect(),
             // REQ: DNS-901 (T36.2) — the known-ID gate of each listener.
-            listener_access: cfg
-                .listen
-                .iter()
-                .map(|l| {
-                    // REQ: DNS-901 — what the socket does, and the facts it was bound with.
-                    let host = crate::gate_host::facts_for(l);
-                    wrendns_api::model::ListenerAccess {
-                        listener: format!("{}://{}", label(&l.proto), l.addr),
-                        require_client_id: crate::gate_host::effective_gate(l),
-                        setting: match l.require_client_id {
-                            None => "unset",
-                            Some(true) => "true",
-                            Some(false) => "false",
-                        }
-                        .to_owned(),
-                        gated_by_default: l.gated_by_default(host),
-                        public_address: wrendns_config::is_public_address(l.addr.ip()),
-                        wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
-                        default_on: l.default_gate(host).on(),
-                        default_reason: l.default_gate(host).describe().to_owned(),
-                        public_exposure: l.default_gate(host).public_exposure(),
-                        can_carry_key: l.proto.needs_tls(),
-                        tls_cert: l.tls.as_ref().map(|t| t.cert.as_str().to_owned()),
-                        tls_key: l.tls.as_ref().map(|t| t.key.as_str().to_owned()),
-                        path: l.path.as_ref().map(|p| p.as_str().to_owned()),
-                        max_connections: l.max_connections,
-                        max_connections_per_address: l.max_connections_per_address,
-                        proxy_protocol: Some(l.proxy_protocol),
-                        tls_cert_name: l.tls.as_ref().and_then(|t| {
-                            t.cert
-                                .as_str()
-                                .rsplit(['/', '\\'])
-                                .next()
-                                .map(str::to_owned)
-                        }),
-                    }
-                })
-                .collect(),
+            listener_access: listener_access(&cfg),
             query_log: self.src.qlog.is_some(),
             filter_snapshot: snap.as_ref().map(|s| s.manifest.version),
             filter_names: snap.as_ref().map_or(0, |s| {
@@ -3084,6 +3092,19 @@ impl Backend for ApiBackend {
                 .reason(self.src.cluster.as_deref())
                 .as_deref(),
         ));
+        // REQ: CLD-904, CLU-004 (T36.10b step b3) - a DNS provider whose latest call failed: degraded only.
+        // A deleted entry's failure goes with it (the engine drops slots of names no longer configured).
+        let provider_names: Vec<String> = self
+            .src
+            .config
+            .load()
+            .dns_provider
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
+        reasons.extend(crate::health::dns_provider_reasons(
+            &crate::dns_provider::engine::engine().failures_among(&provider_names),
+        ));
         // REQ: DNS-906 (T40.5) — a root key in its hold-down, or a revoked trust anchor.
         reasons.extend(crate::health::anchor_reasons(
             self.src
@@ -3295,6 +3316,15 @@ impl Backend for ApiBackend {
             .map(|r| router_entry(&self.src, r, &file, status.get(r.name.as_str())))
             .collect()
     }
+    // REQ: CLD-904, CLD-919 (T36.10b step b3) - a test, a record read or an adopt, run on this node.
+    fn dns_provider_op(
+        &self,
+        op: wrendns_api::DnsProviderOp,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move { crate::dns_provider_ops::run(&src, op).await })
+    }
+
     // REQ: CLD-904 (T36.10b) - the DNS providers in effect, and whether the start-up hold keeps them
     // out of what this node serves.
     fn dns_providers(&self) -> wrendns_api::model::DnsProviderList {
@@ -4522,6 +4552,20 @@ impl Backend for ApiBackend {
         Box::pin(async move {
             match src.guarded.get() {
                 Some(e) => e.preview(&caller, &id, req).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_node_api(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        node: String,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::guarded::GuardedNodeApi, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.node_api(&caller, &node).await,
                 None => Err(guarded_unavailable()),
             }
         })
@@ -6131,9 +6175,9 @@ pub(crate) fn managed_impact(
         (ManagedKind::OidcProvider, _) => {
             "Applied on every node within seconds, without a restart: its sign-in button appears or goes (a node without public_url shows it as inactive), and the sessions of a removed provider end.".into()
         }
-        // REQ: CLD-904 (T36.10b) - stored and validated only; nothing calls a provider yet.
+        // REQ: CLD-904, CLD-919 (T36.10b) - a provider is written to only through the write engine.
         (ManagedKind::DnsProvider, _) => {
-            "Stored and shared by the cluster with no restart. Nothing calls a DNS provider yet, so no DNS answer changes; the entry is checked and kept for the certificate and dynamic-DNS work that uses it.".into()
+            "Stored and shared by the cluster with no restart. No DNS answer changes: a provider is called only to write a record at the DNS host when an admin or a certificate or dynamic-DNS task asks, always through the write engine (dry run, ownership ledger, rate limits), and never on the query path.".into()
         }
         (ManagedKind::Router, _) => {
             "Polled by this node at its interval (by the primary, for a stored credential); the names it reports reach DNS after the next poll.".into()

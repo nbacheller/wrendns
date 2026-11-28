@@ -166,7 +166,7 @@
       }
     },
     "dns_provider": {
-      "description": "REQ: CLD-904 (T36.10b, ADR-1084) - DNS providers: accounts at a DNS host the node may write\nrecord sets in (ACME DNS-01, dynamic DNS). Shared by the cluster, admin only; the credential is\na stored secret named by `credential_ref`. The first entry waits for every member's build to\nknow the table (the compatibility gate). The table is stored and validated; nothing calls a\nprovider yet.",
+      "description": "REQ: CLD-904 (T36.10b, ADR-1084) - DNS providers: accounts at a DNS host the node may write\nrecord sets in (ACME DNS-01, dynamic DNS). Shared by the cluster, admin only; the credential is\na stored secret named by `credential_ref`. The first entry waits for every member's build to\nknow the table (the compatibility gate). A provider is written to only through the write\nengine: dry run until the first successful test, an ownership ledger, per-entry rate limits.",
       "type": "array",
       "default": [],
       "items": {

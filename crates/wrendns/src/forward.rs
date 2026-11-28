@@ -15,8 +15,8 @@ use wrendns_api::auth::{Actor, Role};
 use wrendns_api::model::{ClientChange, ClientInput, ConfigChange};
 use wrendns_api::problem::{Code, Problem};
 use wrendns_api::{
-    AnomalyAckWrite, ClientWrite, ListsRefreshWrite, ManagedKind, ManagedWrite, Shared,
-    SimulateOpts, SnmpTestWrite,
+    AnomalyAckWrite, ClientWrite, DnsProviderOp, ListsRefreshWrite, ManagedKind, ManagedWrite,
+    Shared, SimulateOpts, SnmpTestWrite,
 };
 use wrendns_cluster::net::Cluster;
 
@@ -77,6 +77,10 @@ pub(crate) enum Write {
     /// REQ: DSC-004 (ADR-1002) - the SNMP **Test** runs on the designated node, the primary unless
     /// `[discovery] node` names another. An older primary refuses the unknown write (503).
     SnmpTest(SnmpTestWrite),
+    /// REQ: CLD-904, CLD-919 (T36.10b step b3) - a test, a record read or an adopt of a DNS provider runs
+    /// on the primary, which owns the ownership ledger. Gated by `Feature::DnsProviderLedger` before it
+    /// is sent (an older primary refuses the unknown write).
+    DnsProvider(DnsProviderOp),
 }
 
 /// REQ: API-014 (ADR-903 §4) — what forward logging shows of a write: everything but a
@@ -127,6 +131,7 @@ impl std::fmt::Debug for Write {
             Self::AnomalyAck(a) => f.debug_tuple("AnomalyAck").field(a).finish(),
             Self::ListsRefresh(a) => f.debug_tuple("ListsRefresh").field(a).finish(),
             Self::SnmpTest(a) => f.debug_tuple("SnmpTest").field(a).finish(),
+            Self::DnsProvider(a) => f.debug_tuple("DnsProvider").field(a).finish(),
         }
     }
 }
@@ -338,6 +343,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
         Write::AnomalyAck(w) => return apply_ack(src, local, peer, via, w).await,
         Write::ListsRefresh(w) => return apply_lists_refresh(src, local, peer, via, w).await,
         Write::SnmpTest(w) => return apply_snmp_test(src, local, peer, via, w).await,
+        Write::DnsProvider(w) => return apply_dns_provider(local, peer, via, w).await,
     };
     match result {
         Ok(c) => {
@@ -483,6 +489,17 @@ async fn apply_snmp_test(
     }
     match r {
         Ok(res) => Answer::Ok(serde_json::to_value(res).unwrap_or_default()),
+        Err(p) => Answer::Err(p.into()),
+    }
+}
+
+/// REQ: CLD-904, CLD-919 - a forwarded DNS-provider action, run here (the primary): the engine audits it
+/// with the user and the entry node.
+async fn apply_dns_provider(local: &Shared, peer: &str, via: &str, mut w: DnsProviderOp) -> Answer {
+    w.by = format!("{} via {via}", w.by);
+    w.remote = Some(format!("node {peer}"));
+    match local.dns_provider_op(w).await {
+        Ok(v) => Answer::Ok(v),
         Err(p) => Answer::Err(p.into()),
     }
 }
@@ -747,6 +764,24 @@ pub(crate) async fn snmp_test(
     w: SnmpTestWrite,
 ) -> Result<wrendns_api::model::SnmpTestResult, Problem> {
     send(&cluster, primary, Write::SnmpTest(w)).await
+}
+
+/// REQ: CLD-904, CLD-919 - forwards a DNS-provider test, record read or adopt to the primary, after
+/// checking that every member's build knows the engine (an older primary refuses the unknown write).
+pub(crate) async fn dns_provider_op(
+    cluster: Arc<Cluster>,
+    primary: Option<String>,
+    op: DnsProviderOp,
+) -> Result<serde_json::Value, Problem> {
+    crate::upgrade_gate::enforce(
+        Some(&cluster),
+        wrendns_cluster::gate::Feature::DnsProviderLedger,
+    )
+    .map_err(|why| {
+        Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then repeat this. DNS is unaffected.")
+    })?;
+    send(&cluster, primary, Write::DnsProvider(op)).await
 }
 
 /// Forwards a device write.

@@ -56,6 +56,47 @@ async fn replica_of_announcing(
     tokio::sync::watch::Sender<bool>,
     (tempfile::TempDir, tempfile::TempDir),
 ) {
+    replica_inner(handler, features, true, "").await
+}
+
+/// [`replica_of_announcing`] with a primary that announces `api_url` as its web UI and API address
+/// from its first Hello (REQ: API-902, T27.14g0).
+async fn replica_of_announcing_url(
+    handler: wrendns_cluster::net::RpcHandler,
+    features: Option<Vec<String>>,
+    api_url: &str,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
+    replica_inner(handler, features, true, api_url).await
+}
+
+/// A replica that joined but never connected: it can't reach its primary.
+async fn replica_never_connected(
+    handler: wrendns_cluster::net::RpcHandler,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
+    replica_inner(handler, None, false, "").await
+}
+
+async fn replica_inner(
+    handler: wrendns_cluster::net::RpcHandler,
+    features: Option<Vec<String>>,
+    connect: bool,
+    api_url: &str,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let addr = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -77,6 +118,7 @@ async fn replica_of_announcing(
     if let Some(f) = features {
         primary.set_features(f);
     }
+    primary.set_api_url(api_url);
     primary.set_rpc_handler(handler);
     let (stop_tx, stop) = tokio::sync::watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
@@ -101,6 +143,9 @@ async fn replica_of_announcing(
     let resp = join(&token, &req).await.unwrap();
     let rid = Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
     let replica = Cluster::new(rid, crate::build_info::VERSION);
+    if !connect {
+        return (replica, primary, stop_tx, (pdir, rdir));
+    }
     tokio::spawn(dial(Arc::clone(&replica), stop));
     for _ in 0..400 {
         if replica.reachable_primary().is_some() {
@@ -1004,4 +1049,143 @@ fn dns_906_an_older_member_is_listed_as_not_supported() {
         v.get("missingNodes").is_none(),
         "not missing, not failed: {v}"
     );
+}
+
+/// REQ: API-902 (T27.14g0, ADR-1113), CLU-010 - a member announces its API URL in its Hello, the
+/// member list carries it, and a change of the address reaches the others in a heartbeat, without
+/// a reconnect. A member announcing no URL is listed with none; the gate feature is announced.
+#[test]
+fn api_902_a_members_api_url_is_announced_in_the_hello_and_refreshed_in_heartbeats() {
+    finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of_announcing_url(
+            anchors_handler(),
+            None,
+            "https://192.0.2.10:8443",
+        ));
+        let theirs = |c: &Arc<Cluster>| {
+            c.members()
+                .into_iter()
+                .find(|m| m.primary)
+                .map(|m| (m.api_url, m.features))
+        };
+        // The Hello carried it, and the gate feature with it.
+        let (url, features) = theirs(&replica).expect("the primary is a member");
+        assert_eq!(url, "https://192.0.2.10:8443");
+        assert!(wrendns_cluster::gate::knows(
+            &features,
+            wrendns_cluster::gate::Feature::MemberApiAddress
+        ));
+        // The cluster view lists it (this node's own, and the member's).
+        let view = crate::cluster::view(&replica, &crate::host::HostMonitor::default());
+        let primary_row = view.nodes.iter().find(|n| !n.this_node).unwrap();
+        assert_eq!(
+            primary_row.api_url.as_deref(),
+            Some("https://192.0.2.10:8443")
+        );
+        // A moved address (a confirmed change) is announced by the next heartbeat.
+        primary.set_api_url("https://192.0.2.10:9443");
+        let mut seen = String::new();
+        for _ in 0..400 {
+            seen = theirs(&replica).map(|t| t.0).unwrap_or_default();
+            if seen == "https://192.0.2.10:9443" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(seen, "https://192.0.2.10:9443", "a heartbeat refreshes it");
+        // No URL: announced as empty, listed as none.
+        primary.set_api_url("");
+        for _ in 0..400 {
+            seen = theirs(&replica).map(|t| t.0).unwrap_or_default();
+            if seen.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(seen.is_empty(), "an emptied URL is emptied: {seen}");
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((replica, primary, dirs));
+    });
+}
+
+/// REQ: API-902 (T27.14g0, AC 2), CLU-010 - a mixed cluster: a member whose feature list lacks
+/// `member_api_address` (an older build) announces no URL even when one is set, is listed with
+/// none, does not satisfy the gate, and so is not asked for its settings.
+#[test]
+fn api_902_a_member_without_the_feature_announces_no_url_and_is_not_asked() {
+    finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        let old: Vec<String> = wrendns_cluster::gate::own_features()
+            .into_iter()
+            .filter(|f| f != wrendns_cluster::gate::Feature::MemberApiAddress.name())
+            .collect();
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of_announcing_url(
+            anchors_handler(),
+            Some(old),
+            "https://192.0.2.10:8443",
+        ));
+        let (url, features) = replica
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| (m.api_url, m.features))
+            .expect("the primary is a member");
+        assert_eq!(url, "", "an older build announces none");
+        assert!(!wrendns_cluster::gate::knows(
+            &features,
+            wrendns_cluster::gate::Feature::MemberApiAddress
+        ));
+        let view = crate::cluster::view(&replica, &crate::host::HostMonitor::default());
+        let row = view.nodes.iter().find(|n| !n.this_node).unwrap();
+        assert_eq!(row.api_url, None, "listed with no address");
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((replica, primary, dirs));
+    });
+
+/// REQ: CLD-904, CLD-919, CLU-002 (T36.10b b3) - a replica that can't reach its primary refuses a
+/// DNS provider action with 503 instead of running it: nothing is written to its own ledger.
+#[test]
+fn cld_919_a_replica_without_its_primary_refuses_an_adopt() {
+    let (status, rows) = finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        let handler = counting_handler(
+            "none",
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            false,
+        );
+        let (replica, primary, _stop, dirs) = rt.block_on(replica_never_connected(handler));
+        let h = rt.block_on(async { harness_in("", Some(Arc::clone(&replica))) });
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let fed = Arc::new(crate::federated::Federated::new(
+            local,
+            Arc::clone(&replica),
+        ));
+        assert!(replica.reachable_primary().is_none(), "never connected");
+        let r = rt.block_on(fed.dns_provider_op(wrendns_api::DnsProviderOp {
+            name: "fake".into(),
+            action: wrendns_api::DnsProviderAction::Adopt {
+                record: "a.example.net".into(),
+                record_type: "TXT".into(),
+            },
+            by: "admin".into(),
+            remote: None,
+            reason: None,
+        }));
+        let status = r.map_or_else(|p| p.status, |_| 0);
+        let rows = h.src.auth.get().map_or(0, |a| {
+            crate::dns_provider::ledger::Ledger(a.state())
+                .list("fake")
+                .len()
+        });
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        (status, rows)
+    });
+    assert_eq!(status, 503);
+    assert_eq!(rows, 0, "no ledger row on the replica");
 }

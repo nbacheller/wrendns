@@ -10,7 +10,7 @@
   import { onDestroy } from 'svelte';
   import { api, ApiError, type S } from '../api';
   import { session, signedIn } from '../session.svelte';
-  import { guarded, hasSupervisor, reasonText, refreshGuarded, watchGuarded } from '../guarded.svelte';
+  import { guarded, hasSupervisor, nodeUrl, reasonText, refreshGuarded, watchGuarded } from '../guarded.svelte';
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
@@ -344,6 +344,17 @@
     }
   }
 
+  // REQ: API-902 (T27.14g0) - a change for another node is confirmed on that node itself (the primary cannot
+  // confirm for it: that relay is a later task). The link goes to the address the node announces, carrying the
+  // single-use token in its fragment; with no announced address the card says so.
+  const remote = $derived(!!node && !!guarded.nodes[0] && node !== guarded.nodes[0].node);
+  const nodeLink = $derived.by(() => {
+    if (!remote || !result?.pendingId) return '';
+    const base = nodeUrl(node);
+    if (!base) return '';
+    return `${base.replace(/\/$/, '')}/#/guarded-confirm?id=${encodeURIComponent(result.pendingId)}${result.confirmToken ? `&t=${encodeURIComponent(result.confirmToken)}` : ''}`;
+  });
+
   /** The new address with the confirm step in its fragment (never sent to a server or a log). */
   const confirmLink = $derived(
     result?.newAddress && result.pendingId && result.confirmToken
@@ -462,6 +473,15 @@
           <a class="button primary" href={confirmLink} data-testid="guarded-confirm-link">Open the new address and confirm</a>
         </p>
         <p class="small muted">The link carries a one-time token in its #fragment, which is never sent to a server or a log. If you can't reach the new address, do nothing: the change rolls back.</p>
+      {:else if remote}
+        {#if nodeLink}
+          <p>
+            <a class="button primary" href={nodeLink} target="_blank" rel="noopener noreferrer" data-testid="guarded-confirm-node-link">Open {node} and confirm</a>
+          </p>
+          <p class="small muted">The change is confirmed on {node} itself, where it must prove it works. The link carries a one-time token in its #fragment, which is never sent to a server or a log. If you can't confirm in time, do nothing: the change rolls back.</p>
+        {:else}
+          <p class="notice warn small" role="status" data-testid="guarded-confirm-node-unknown">{node} has not announced its web UI address (an older build, or it cannot name one). Open its web UI yourself and confirm there, signed in as the same admin, before the time runs out; otherwise the change rolls back.</p>
+        {/if}
       {:else}
         <button class="primary" disabled={busy || probeFailing} onclick={confirmHere} data-testid="guarded-confirm-here">{busy ? 'Working…' : 'Confirm'}</button>
       {/if}

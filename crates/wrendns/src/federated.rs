@@ -2471,6 +2471,34 @@ impl Backend for Federated {
             None => self.local.lists_refresh(w),
         }
     }
+    // REQ: CLD-904, CLD-919 (T36.10b step b3) - the ownership ledger and the audit entries of provider
+    // writes are the primary's: a replica forwards a test, a record read or an adopt to it.
+    fn dns_provider_op(
+        &self,
+        op: wrendns_api::DnsProviderOp,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        // No local run on a replica, and none on a primary without its lease (the same routing as a
+        // configuration write): the ledger is written only by the primary.
+        if self.cluster.is_primary() {
+            if !self.cluster.may_publish() {
+                return Box::pin(async { Err(no_lease()) });
+            }
+            return self.local.dns_provider_op(op);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::dns_provider_op(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                op,
+            )),
+            None => Box::pin(async {
+                Err(Problem::unavailable(
+                    "this node can't reach the primary, and DNS provider actions run there",
+                )
+                .hint("Try again when the primary is reachable; see the Cluster page."))
+            }),
+        }
+    }
     // REQ: DSC-004 (ADR-1002) - the SNMP poller runs on the designated node: this one when it runs
     // the inventory; else, with no `[discovery] node` named, the primary (a replica forwards). A
     // node that isn't designated and can't forward answers `discovery_not_here` itself.
@@ -3736,6 +3764,13 @@ impl Backend for Federated {
         req: wrendns_api::guarded::GuardedPreviewRequest,
     ) -> BoxFuture<Result<wrendns_api::guarded::GuardedPreview, Problem>> {
         self.local.guarded_preview(caller, id, req)
+    }
+    fn guarded_node_api(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        node: String,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedNodeApi, Problem>> {
+        self.local.guarded_node_api(caller, node)
     }
     fn guarded_apply(
         &self,

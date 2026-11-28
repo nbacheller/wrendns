@@ -479,6 +479,10 @@ wrendns cluster join tt_join_…</pre>
                     <div class="mono muted small" title={n.nodeId}>
                       {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
                     </div>
+                    <!-- REQ: API-902 (T27.14g0) - the web UI address the node announces (a plain http(s) URL only). -->
+                    {#if n.apiUrl && /^https?:\/\//.test(n.apiUrl)}
+                      <div class="small" data-testid="cluster-node-api"><a href={n.apiUrl} target="_blank" rel="noopener noreferrer">{n.apiUrl.replace(/^https?:\/\//, '')}</a></div>
+                    {/if}
                     <!-- REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a while (a silent split). -->
                     {#if n.primarySilentSeconds != null}
                       <div class="small" data-testid="cluster-node-primary-silent">

@@ -305,6 +305,8 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         up: true,
         site: "home".to_owned(),
         witness: true,
+        api_url: String::new(),
+        node_api: true,
     };
     let e = evaluate(
         &cfg,
@@ -326,6 +328,8 @@ fn api_902_listen_check_table_witness_and_cluster_warning() {
         up,
         site: "home".to_owned(),
         witness: false,
+        api_url: String::new(),
+        node_api: true,
     };
     let c = evaluate(
         &cfg,

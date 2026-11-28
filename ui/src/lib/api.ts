@@ -363,6 +363,8 @@ export const api = {
     post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/confirm`, confirmToken ? { confirmToken } : {}),
   // The window's seconds left and the node's own probe of each staged DNS socket (T27.14b).
   guardedPending: (pending: string) => get<S['GuardedPendingView']>(`/guarded/pending/${encodeURIComponent(pending)}`),
+  // REQ: API-902, API-901 (T27.14g0) - another node's own web UI and API settings and listeners (admin).
+  guardedNodeApi: (node: string) => get<S['GuardedNodeApi']>(`/guarded/nodes/${encodeURIComponent(node)}/api`),
   guardedCancel: (pending: string) => post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/cancel`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
@@ -631,12 +633,20 @@ export const api = {
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
   // REQ: CLD-904 (T36.10b) — the DNS providers (the credential as a stored secret's name), and an admin's
-  // create, replace and delete. Nothing calls a provider yet.
+  // create, replace and delete.
   dnsProviders: () => get<S['DnsProviderList']>('/dns-providers'),
   putDnsProvider: (name: string, b: Record<string, unknown>) =>
     call<S['ConfigChange']>('PUT', `/dns-providers/${encodeURIComponent(name)}`, { body: b, headers: { 'idempotency-key': newKey() } }),
   deleteDnsProvider: (name: string) =>
     call<S['ConfigChange']>('DELETE', `/dns-providers/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
+  // REQ: CLD-904, CLD-919 (T36.10b step b3) — Test a provider (the scope its credential has; the first success
+  // ends dry run), read its record sets with who owns each, and adopt one (admins; never an agent).
+  testDnsProvider: (name: string) =>
+    call<S['DnsProviderTestResult']>('POST', `/dns-providers/${encodeURIComponent(name)}/test`),
+  dnsProviderRecords: (name: string) =>
+    get<S['DnsProviderRecords']>(`/dns-providers/${encodeURIComponent(name)}/records`),
+  adoptDnsRecord: (name: string, record: { name: string; recordType: string }) =>
+    call<S['DnsProviderAdopted']>('POST', `/dns-providers/${encodeURIComponent(name)}/records/adopt`, { body: record }),
   // REQ: DSC-914 (T36.10c) — the locations with the names each composes, and a location's create, replace and
   // delete (the writes with a dry run; a reason goes in the audit record).
   locations: () => get<S['LocationList']>('/locations'),

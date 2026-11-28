@@ -294,7 +294,7 @@ Already in `spec/01`: DSC-908 to DSC-915, CLD-903, CLD-904. Rows added with the 
 |---|---|---|
 | DSC-916 | Flat-name migration: `flat_names`, its per-location switch (on by default) and the 7-day use count (§2.5). | Row in `spec/01` (decision 2). |
 | DSC-917 | Publishing a chosen local name publicly: per-name opt-in, off by default, audited, never to a private, CGNAT, link-local or reserved address (ADR-1083 point 7 asked for its own row). | Row in `spec/01` (decision 8). |
-| CLD-919 | Provider writes: ownership ledger and adopt, dry run, per-entry rate limits, the propagation check (§4.2, §4.5, §3.3). | Reserved; the row is written when these design points are decided (still open). |
+| CLD-919 | Provider writes: ownership ledger and adopt, dry run, per-entry rate limits (§4.2, §4.5). | Written 2026-11-27 in `spec/01` (owner decision, ADR-1112); the propagation check is built with the delegated kind (T36.10b step b5). |
 | CLD-920 | Certificate storage: the `pem` secret kind, the file install for serving nodes, the key not exportable (§3.4). | Row in `spec/01` (decisions 5 and 7; the reserved names are not in the row); the 100-secret ceiling is not in the row (still open). |
 
 Wording changes to existing rows: DSC-908 (rolling upgrade, decision 5), DSC-909 (collision rule, decision 3; the location from configuration and router reads, not the CMDB, decision 1), DSC-910 (where the override lives, decision 1), DSC-911 (subtree answer, decision 4) and CLD-904 (the provider set, decision 6) are made. DSC-912 (drop the cache sentence, finding 5) and DSC-915 (the new WAN read, finding 4) are still open.

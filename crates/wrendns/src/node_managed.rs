@@ -40,6 +40,8 @@ pub(crate) const KINDS: &[&str] = &[
     crate::managed::QLOG_SETTINGS,
     crate::managed::METRICS_SETTINGS,
     crate::guarded::KIND,
+    // REQ: CLD-919 (T36.10b step b3) - the DNS-provider ownership ledger: names and times only.
+    crate::dns_provider::ledger::KIND,
 ];
 /// REQ: CLU-015 (T24.37, ADR-1016) — the kinds of the shared configuration that the API stores:
 /// the blob also carries their rows, whole, so a replica that is promoted adopts exactly what the

@@ -612,6 +612,17 @@ pub trait Backend: Send + Sync + 'static {
     fn dns_providers(&self) -> model::DnsProviderList {
         model::DnsProviderList::default()
     }
+    /// REQ: CLD-904, CLD-919 (T36.10b step b3) - a test, a record read or an adopt of a DNS provider,
+    /// run on the primary (a replica forwards it). The answer is the JSON of the model the route
+    /// documents.
+    fn dns_provider_op(&self, op: DnsProviderOp) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = op;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "DNS providers aren't available on this node",
+            ))
+        })
+    }
     /// REQ: API-016 (T23.7, T23.8) — the router integrations in the configuration, with each one's
     /// status on this node.
     fn router_entries(&self) -> Vec<model::RouterEntry> {
@@ -1047,6 +1058,18 @@ pub trait Backend: Send + Sync + 'static {
             "guarded settings aren't available here",
         ))))
     }
+    /// REQ: API-902, API-901 (T27.14g0, ADR-1113) - the web UI and API settings and the DNS listeners
+    /// `node` runs now (admin only; the route has checked who is asking).
+    fn guarded_node_api(
+        &self,
+        caller: guarded::GuardedCaller,
+        node: String,
+    ) -> BoxFuture<Result<guarded::GuardedNodeApi, Problem>> {
+        let _ = (caller, node);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
     /// REQ: API-902 — makes a guarded change (the routes have checked who is asking).
     fn guarded_apply(
         &self,
@@ -1473,6 +1496,37 @@ pub struct SnmpTestWrite {
     pub reason: Option<String>,
 }
 
+/// REQ: CLD-904, CLD-919 (T36.10b step b3, ADR-1112) - an action on a DNS provider that runs on the
+/// primary (it owns the ownership ledger and the audit log of provider writes): a test of the
+/// credential, a read of the zone with who owns each record set, or an adopt. As the API checked it
+/// (admin only), and as it crosses the cluster channel.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DnsProviderOp {
+    /// The provider's name.
+    pub name: String,
+    pub action: DnsProviderAction,
+    /// Who asked: the actor's name.
+    pub by: String,
+    /// Where from, for the audit entry.
+    #[serde(default)]
+    pub remote: Option<String>,
+    /// Why, as the user gave it (`X-Wrendns-Reason`), for the audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// What a [`DnsProviderOp`] does.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum DnsProviderAction {
+    /// Check the credential and report what it may change; a first success ends dry run.
+    Test,
+    /// The zone's record sets and who owns each.
+    Records,
+    /// Take a record set into the ledger.
+    Adopt { record: String, record_type: String },
+}
+
 /// REQ: OBS-014 — an acknowledge (`ack`) or unacknowledge of findings by ID.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnomalyAckWrite {
@@ -1632,7 +1686,10 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: DSC-913 (T36.10a) — the locations and the names each composes.
         .merge(locations_api::read_routes(Arc::clone(&backend)))
         // REQ: CLD-904 (T36.10b) - the DNS providers (the credential as a name, never a value).
-        .merge(dns_providers_api::read_routes(Arc::clone(&backend)))
+        .merge(dns_providers_api::read_routes(
+            Arc::clone(&backend),
+            Arc::clone(&auth),
+        ))
         // REQ: OBS-901 (T26.2, ADR-958) — the live network map: snapshot, stream, world, health.
         .merge(map_api::read_routes(Arc::clone(&backend)))
         // REQ: API-016 (T23.10) — OIDC providers and their status (admin-only, by the handler).
@@ -1862,17 +1919,17 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, locations_api::list_locations, locations_api::get_location, config_api::put_location, config_api::delete_location, dns_providers_api::list_dns_providers, dns_providers_api::get_dns_provider, config_api::put_dns_provider, config_api::delete_dns_provider, config_api::put_alert_destination,
+        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, locations_api::list_locations, locations_api::get_location, config_api::put_location, config_api::delete_location, dns_providers_api::list_dns_providers, dns_providers_api::get_dns_provider, config_api::put_dns_provider, config_api::delete_dns_provider, dns_providers_api::test_dns_provider, dns_providers_api::dns_provider_records, dns_providers_api::adopt_dns_provider_record, config_api::put_alert_destination,
         config_api::put_slo_settings, config_api::delete_slo_settings, config_api::put_probe_settings, config_api::delete_probe_settings,
         config_api::put_upstream_check_settings, config_api::delete_upstream_check_settings, config_api::put_anomaly_settings, config_api::delete_anomaly_settings,
         config_api::put_qlog_settings, config_api::delete_qlog_settings, config_api::put_metrics_settings, config_api::delete_metrics_settings, config_api::put_dnstap_settings, config_api::delete_dnstap_settings,
-        config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, config_api::put_cmdb_settings, config_api::delete_cmdb_settings, cmdb_api::cmdb_status, cmdb_api::cmdb_cis, cmdb_api::cmdb_ci, cmdb_api::cmdb_proposals, cmdb_api::cmdb_link, cmdb_api::cmdb_unlink, cmdb_api::cmdb_merge, cmdb_api::cmdb_split, discovery_status, discovery_api::snmp_test, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, recursor_api::trace, recursor_api::anchors, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, upstream_presets, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_pending, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, node_settings_api::get_node_settings, node_settings_api::get_this_node_settings, config_api::put_cache_settings, config_api::delete_cache_settings, config_api::put_support_settings, config_api::delete_support_settings, config_api::put_updates_settings, config_api::delete_updates_settings, config_api::put_dnssec_settings, config_api::delete_dnssec_settings, config_api::put_filter_settings, config_api::delete_filter_settings, config_api::put_drill_settings, config_api::delete_drill_settings, config_api::put_access_settings, config_api::delete_access_settings, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune,
+        config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, config_api::put_cmdb_settings, config_api::delete_cmdb_settings, cmdb_api::cmdb_status, cmdb_api::cmdb_cis, cmdb_api::cmdb_ci, cmdb_api::cmdb_proposals, cmdb_api::cmdb_link, cmdb_api::cmdb_unlink, cmdb_api::cmdb_merge, cmdb_api::cmdb_split, discovery_status, discovery_api::snmp_test, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, recursor_api::trace, recursor_api::anchors, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, upstream_presets, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_node_api, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_pending, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, node_settings_api::get_node_settings, node_settings_api::get_this_node_settings, config_api::put_cache_settings, config_api::delete_cache_settings, config_api::put_support_settings, config_api::delete_support_settings, config_api::put_updates_settings, config_api::delete_updates_settings, config_api::put_dnssec_settings, config_api::delete_dnssec_settings, config_api::put_filter_settings, config_api::delete_filter_settings, config_api::put_drill_settings, config_api::delete_drill_settings, config_api::put_access_settings, config_api::delete_access_settings, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult, guarded::GuardedPendingView, guarded::GuardedProbeLine, guarded::GuardedListenerLine, guarded::ListenValue, guarded::ListenEntry, guarded::ListenTls,
+        guarded::GuardedStatus, guarded::GuardedNodeApi, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult, guarded::GuardedPendingView, guarded::GuardedProbeLine, guarded::GuardedListenerLine, guarded::ListenValue, guarded::ListenEntry, guarded::ListenTls,
         map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, model::GeoipStatus, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
-        model::DnsProviderEntry, model::DnsProviderList, model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader, model::OtlpCa,
+        model::DnsProviderEntry, model::DnsProviderList, model::DnsProviderScope, model::DnsProviderTestResult, model::DnsProviderRecord, model::DnsProviderRecords, model::DnsProviderAdoptRequest, model::DnsProviderAdopted, model::LocationInput, model::LocationInfo, model::LocationList, model::LocationDevice, model::LocationNetworkInfo, model::LocationCollision, model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader, model::OtlpCa,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::RecursorTrace, model::TrustAnchorKey, model::TrustAnchorStatus, model::RecursorTraceStep, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,

@@ -162,6 +162,10 @@ pub(crate) enum ForwardedOp {
     /// A read of the target's own status (its supervisor, what is pending): it carries no value, so
     /// any member may ask and no assertion is needed.
     Status,
+    /// REQ: API-902 (T27.14g0, ADR-1113) - a read of the target's own web UI and API settings and DNS
+    /// listeners, for an admin. It carries no value, but its answer is admin-only, so it carries the
+    /// primary's signed assertion (action `node_api`, setting `api`) like the other operations.
+    NodeApi,
 }
 
 /// A forwarded request.
@@ -180,6 +184,8 @@ pub(crate) enum ForwardedAnswer {
     Applied(GuardedApplied),
     Result(GuardedResult),
     Status(wrendns_api::guarded::GuardedNodeStatus),
+    /// The answer to [`ForwardedOp::NodeApi`].
+    NodeApi(wrendns_api::guarded::GuardedNodeApi),
     /// The target refused: a problem's code and text, to be returned as is.
     Refused {
         code: wrendns_api::problem::Code,

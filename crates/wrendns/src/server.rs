@@ -1593,6 +1593,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
     // REQ: DSC-901 (T31.2, ADR-1005 section 1) — the CMDB starts here only if `[cmdb]` is on and this
     // node is the one `[discovery]` designates (even when discovery itself is off).
     reconcile_cmdb(&sources, &pipeline, &cfg);
+    // REQ: API-902 (T27.14g0, ADR-1113) - announce the API URL to the cluster (the Hello and every
+    // heartbeat carry it); `reload` refreshes it when the API address or scheme changes.
+    if let Some(c) = sources.cluster.as_deref() {
+        c.set_api_url(&crate::api_url::announced(&cfg, &c.identity.meta.advertise));
+    }
     // REQ: DSC-901, DSC-906 (T31.2) - with no node named, the designated node is the cluster's
     // primary: when that changes (a failover), the CMDB and the inventory move with it, not only at
     // the next configuration reload.
@@ -2173,6 +2178,10 @@ async fn reload(
         drop(tokio::task::spawn_blocking(move || {
             crate::secrets::credential::warn_missing(&cfg, &store);
         }));
+    }
+    // REQ: API-902 (T27.14g0) - the announced API URL follows `[api] listen` and `[api] tls`.
+    if let Some(c) = sources.cluster.as_deref() {
+        c.set_api_url(&crate::api_url::announced(&new, &c.identity.meta.advertise));
     }
     // REQ: AGT-009 — the agent kill switch follows the (cluster-shared) configuration.
     if let Some(a) = sources.auth.get() {

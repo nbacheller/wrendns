@@ -613,10 +613,10 @@
       "id": "dns-providers",
       "title": "Let WrenDNS change a few records at your DNS host",
       "term": "DNS providers",
-      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may one day write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
+      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
       "when": "You want certificates or a changing home address to be handled for you, and you want to grant WrenDNS the smallest permission that does it.",
       "example": "Azure DNS for example.net, with a role on the single record set _acme-challenge.home (the form shows the az command), the application's client secret stored as dns.azure-home.credential, and the entry in dry run until it is tested.",
-      "caution": "Providers are stored and checked here, but nothing calls them yet: certificates and dynamic DNS come next, so nothing at your DNS host changes. Every new entry starts in dry run. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
+      "caution": "Every new entry starts in dry run: changes are recorded and none is sent until its first successful test, and WrenDNS changes only records it made or you adopt. No provider kind has its code yet, so a test says so and nothing at your DNS host changes. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
       "docs": "dns-providers"
     },
     {
@@ -627,6 +627,26 @@
       "when": "Your DNS host has no API, or only a key that can change the whole account or zone.",
       "example": "_acme-challenge.home.example.net CNAME home.acme-validation.example.org, with home.acme-validation.example.org the delegation of a provider entry for acme-validation.example.org.",
       "caution": "No GoDaddy key is ever stored: GoDaddy is served by this CNAME only. Delegation covers the challenge name only, not A or AAAA records. The CNAME is created by hand at your host, and a later release verifies it before use.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-test",
+      "title": "Test a provider and see what its credential can change",
+      "term": "Test and show scope",
+      "summary": "Test asks the provider what the stored credential may change and shows it: the zone, the record types, the record sets it is limited to, and a warning when it can change more than WrenDNS needs. Nothing is written and the credential is never shown. The first successful test ends the entry's dry run.",
+      "when": "After you add a provider, and after you change its credential or its grant at the provider.",
+      "example": "A Cloudflare token for one zone: the test shows the zone and TXT, A and AAAA, and warns that the token can change any record set in it, so you may prefer delegating the challenge name.",
+      "caution": "A kind with no provider code in this build says so and changes nothing. A test that fails shows the provider's answer with the credential taken out. An entry the configuration file defines keeps the file's dry-run setting.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-ownership",
+      "title": "Which records WrenDNS may change",
+      "term": "Owned records and Adopt",
+      "summary": "WrenDNS changes or deletes only record sets it created itself or that an admin adopted. The Records table lists the zone's TXT, A and AAAA record sets and who owns each; a record set nobody owns is never touched until you adopt it. Adopting sends nothing to the provider.",
+      "when": "A record set WrenDNS should keep up to date already exists at your DNS host, or you want to see what it manages.",
+      "example": "home.example.net A was made by hand: adopt it once, and the dynamic-DNS update may then change it.",
+      "caution": "Adopt only what WrenDNS should manage: after that it can replace or delete the record set. The list is for admins and never an agent.",
       "docs": "dns-providers"
     },
     {
@@ -1105,7 +1125,7 @@
       "id": "listeners",
       "title": "DNS listeners",
       "term": "Listeners",
-      "summary": "The addresses and ports this node answers DNS on. A change is tried next to the current listeners and kept only when you confirm it: the node asks every new listener a test question itself, and Confirm waits for each answer. That proves the listener works on this machine, not that your devices can reach it (a firewall, your router or a container's published ports may still be in the way). Add the new listener first, point your clients at it, and remove the old one in a later change. The node keeps answering port 53 for every family and transport it answers today, so a change that would leave none is refused. A certificate and key are files on the node (absolute paths, not symbolic links); their contents are never shown, and only an admin sees the paths, the limits and the options (everyone else sees the address, the protocol, the certificate's name and its expiry). A shortcut that fills in the web UI's own certificate is not here yet. A change that adds a socket reachable from the internet without a device key counts as weakening security.",
+      "summary": "The addresses and ports this node answers DNS on. A change is tried next to the current listeners and kept only when you confirm it: the node asks every new listener a test question itself, and Confirm waits for each answer. That proves the listener works on this machine, not that your devices can reach it (a firewall, your router or a container's published ports may still be in the way). Add the new listener first, point your clients at it, and remove the old one in a later change. The node keeps answering port 53 for every family and transport it answers today, so a change that would leave none is refused. A certificate and key are files on the node (absolute paths, not symbolic links); their contents are never shown, and only an admin sees the paths, the limits and the options (everyone else sees the address, the protocol, the certificate's name and its expiry). A shortcut that fills in the web UI's own certificate is not here yet. In a cluster, pick another node above the table (an admin, on the primary): the card then shows that node's listeners, read through the primary, and a change is staged for it. The node must confirm it itself, so the card links to the address that node announces for its web UI; a node that announces none, or runs an older build that cannot report its listeners, is said so plainly and nothing is changed for it from here. A change that adds a socket reachable from the internet without a device key counts as weakening security.",
       "when": "You add DoT, DoH or DoQ, move a listener to another address or port, or give a listener a new certificate.",
       "example": "Add DoT on 203.0.113.9:853 with /etc/ssl/dns.crt and /etc/ssl/dns.key, confirm when the test question is answered, then run dig or kdig from a device to check the path.",
       "caution": "Docker and Kubernetes publish ports themselves: this does not change them. An address on no interface of this host fails to bind unless it is a floating address (bind the wildcard instead). PROXY protocol stays in the configuration file, because a PROXY listener trusts any sender's header. A file that sets any [[listen]] wins and locks the card; the way back is the file, wrendns guarded clear listen, or WRENDNS_IGNORE_GUARDED=1.",
@@ -1882,7 +1902,7 @@
       "summary": "The hosts, usually your reverse proxy or ingress, whose X-Forwarded-For header the node believes. For a request that comes from one of them, the client's address is the last forwarded address that is not itself a trusted proxy; for everyone else the connection's own address is the client, whatever the header says. That address is what sign-in lockouts, the break-glass networks and the audit log use, and the same list decides whose X-Forwarded-Proto: https counts. You change the list as a whole: add or remove entries, review, type the phrase, and confirm within the window. Until you confirm, the new list is used only to judge the confirming request; everything else keeps the list in force, so a newly trusted host cannot spoof its address while the window is open.",
       "when": "You put a reverse proxy or an ingress in front of the web UI and API, you move it to another address, or everyone shows up in the audit log as the proxy.",
       "example": "Your Caddy on 192.168.1.5 forwards to the node: add 192.168.1.5, review (the review says what the server sees you as today), and confirm from a page that arrives through the proxy. The next sign-in is logged with your own address.",
-      "caution": "Adding an entry counts as weakening security: a trusted host can choose the address the node sees for its requests (a sign-in lockout, a break-glass check, the audit record), so list only hosts you run, never 0.0.0.0/0 or a public range. A change is kept when the confirming request passes under the new list (it arrived through a new proxy that forwarded your address), or when it reached the node directly, from a host in neither list. A request that came through a proxy the new list drops cannot confirm it, and the change rolls back. A file that sets trusted_proxies wins and locks the list; the way back is the file, wrendns guarded clear trusted-proxies, or WRENDNS_IGNORE_GUARDED=1.",
+      "caution": "Adding an entry counts as weakening security: a trusted host can choose the address the node sees for its requests (a sign-in lockout, a break-glass check, the audit record), so list only hosts you run, never 0.0.0.0/0 or a public range. A change is kept when the confirming request passes under the new list (it arrived through a new proxy that forwarded your address), or when it reached the node directly, from a host in neither list. A request that came through a proxy the new list drops cannot confirm it, and the change rolls back. In a cluster the card can show and change another node's list (pick the node above the card, as an admin on the primary): the list shown is that node's, read through the primary, and the confirm is done on that node itself, through the address it announces, because the node must see your request through its new list; a node that runs an older build cannot report its list, and the card says so instead of showing a list that is not its own. A file that sets trusted_proxies wins and locks the list; the way back is the file, wrendns guarded clear trusted-proxies, or WRENDNS_IGNORE_GUARDED=1.",
       "docs": "behind-a-reverse-proxy-or-ingress"
     },
     {

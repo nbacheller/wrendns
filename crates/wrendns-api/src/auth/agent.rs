@@ -423,10 +423,18 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
         .strip_prefix("/api/v1/groups/")
         .and_then(|r| r.strip_suffix("/sources"))
         .is_some_and(|g| !g.is_empty() && !g.contains('/'));
+    // REQ: CLD-919 - a provider's record list names what is in a zone: no agent reads it.
+    let provider_records = p
+        .strip_prefix("/api/v1/dns-providers/")
+        .is_some_and(|r| r.contains('/'));
     ((secret || pihole || providers) && write)
+        || provider_records
         || (guarded && *method != Method::GET && *method != Method::HEAD)
         // The read of one pending change (T27.14b) names the staged addresses and probe errors.
         || p.starts_with("/api/v1/guarded/pending/")
+        // REQ: API-902 (T27.14g0) - another node's own settings (trusted proxies, listener paths):
+        // an admin's, as the `api` block of the system info is.
+        || p.starts_with("/api/v1/guarded/nodes/")
         || (prune && write)
         || (sources && write)
         || (*method == Method::POST
