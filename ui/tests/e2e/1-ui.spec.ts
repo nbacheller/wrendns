@@ -8,6 +8,7 @@ import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
+import { signInSent as signInOn } from './signin';
 import { pick } from './picker';
 import { hoverRing, rectRing } from './svg-ring';
 import { alertConditions } from '../../src/lib/alert-conditions';
@@ -49,20 +50,7 @@ async function signIn(user: string, pass: string) {
 // REQ: API-003 — signIn, saying which part was lost when a sign-in does nothing under load: a field that
 // does not hold what was typed (the form was replaced after the fill), or a click that sent no request.
 async function signInSent(user: string, pass: string) {
-  const name = page.getByLabel('Username', { exact: true });
-  const word = page.getByLabel('Password', { exact: true });
-  await name.fill(user);
-  await word.fill(pass);
-  await expect(name, 'the username field holds what was typed').toHaveValue(user);
-  await expect(word, 'the password field holds what was typed').toHaveValue(pass);
-  const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/auth/login'), { timeout: 15_000 });
-  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/api/v1/auth/login'), { timeout: 15_000 });
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await sent;
-  // A 503 (password checks busy) or 429 (locked out) is reported by its status, not as a stall.
-  const res = await answered.catch(() => null);
-  const verdict = res === null ? 'no response within 15 s' : res.status() >= 500 || res.status() === 429 ? `status ${res.status()}` : 'answered';
-  expect(verdict, 'the sign-in request was answered').toBe('answered');
+  await signInOn(page, user, pass);
 }
 
 // REQ: API-005 (ADR-157) — the dashboard's top lists are plain sections, found by their heading.

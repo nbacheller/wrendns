@@ -6,6 +6,7 @@
 // e2e build serves an entry named fake-... with an in-memory provider (CLD-919, T36.10b step b3), so the
 // Test, Records and Adopt controls run end to end with nothing reachable.
 import { expect, test, type Browser, type Page } from '@playwright/test';
+import { signInSent } from './signin';
 
 const ADMIN = { user: 'admin', pass: 'correct horse battery' };
 const VIEWER = { user: 'viewer1', pass: 'another long password' };
@@ -23,9 +24,8 @@ async function dropSecret(page: Page, name: string): Promise<void> {
 async function signIn(browser: Browser, user: { user: string; pass: string }, wait = 'dnsproviders-tab'): Promise<Page> {
   const page = await browser.newPage();
   await page.goto('/#/settings?tab=dns-providers');
-  await page.getByLabel('Username', { exact: true }).fill(user.user);
-  await page.getByLabel('Password', { exact: true }).fill(user.pass);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  // Waits for the login response, so a sign-in that stalls says why (and is not a 30 s wait on the page).
+  await signInSent(page, user.user, user.pass);
   if (wait) await expect(page.getByTestId(wait)).toBeVisible({ timeout: 30_000 });
   return page;
 }

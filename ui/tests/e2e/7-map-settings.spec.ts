@@ -5,6 +5,7 @@
 // card previews); the settings themselves are written to the real server. These tests sign in as
 // the admin and the viewer `1-ui.spec.ts` created, so run the whole suite, not this file alone.
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { signInSent } from './signin';
 import type { Snapshot } from '../../src/lib/map';
 import { fromSettings, reclassify, type Thresholds } from '../../src/lib/map-thresholds';
 
@@ -153,9 +154,7 @@ test('obs_901 viewer sees map settings read-only', async ({ browser }) => {
   const page = await ctx.newPage();
   await mockMap(page);
   await page.goto('/#/settings?tab=queries');
-  await page.getByLabel('Username', { exact: true }).fill(VIEWER.user);
-  await page.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await signInSent(page, VIEWER.user, VIEWER.pass);
   const row = page.getByTestId('editor-map').getByTestId('entry-row');
   await expect(row).toContainText('lookups/s sampled', { timeout: 30_000 });
   await expect(row).toContainText('warning at 10% slow');
