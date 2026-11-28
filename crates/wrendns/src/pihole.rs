@@ -953,6 +953,7 @@ fn subtree_rule(domain: &str) -> Result<String, String> {
     let opts = ListOptions {
         kind: ListKind::Block,
         match_mode: ListMatch::Subtree,
+        ..ListOptions::default()
     };
     let mut parsed = Vec::new();
     match parse_line(domain, opts, &mut parsed) {
@@ -1832,6 +1833,7 @@ fn domain_rule(domain: &str, t: i64) -> Result<String, String> {
         } else {
             ListMatch::Subtree
         },
+        ..ListOptions::default()
     };
     let mut parsed = Vec::new();
     let mut rule = domain.to_owned();

@@ -321,6 +321,7 @@ pub(crate) fn explain(
     // Step 6: the filter.
     let group = clients.primary_group(ident);
     let mut winner = None;
+    let mut rewrite_rules = 0usize;
     match st.filter {
         Some(f) => {
             let ctx = ClientCtx {
@@ -330,7 +331,22 @@ pub(crate) fn explain(
             };
             let wire = q.qname.as_wire();
             let matches = f.matcher.matches(wire, q.qtype, &ctx, f.mask(ident));
-            let explained = explain_rules(&f.matcher, wire, &matches, source);
+            let mut explained = explain_rules(&f.matcher, wire, &matches, &source);
+            // REQ: FLT-906 (T40.9), FLT-013 - the rewrite rules (an RPZ's actions among them)
+            // are named with their lines too, ahead of the block decision they come before.
+            let rewrites = f
+                .matcher
+                .rewrite_matches(wire, q.qtype, &ctx, f.mask(ident));
+            if !rewrites.is_empty() {
+                let mut named = explain_rules(&f.matcher, wire, &rewrites, &source);
+                for r in &mut named.rules {
+                    r.winner = false;
+                }
+                rewrite_rules = named.rules.len();
+                named.rules.append(&mut explained.rules);
+                explained.rules = named.rules;
+                explained.notes.append(&mut named.notes);
+            }
             winner = explained
                 .rules
                 .iter()
@@ -376,7 +392,7 @@ pub(crate) fn explain(
                 .push("quick rules decide before lists: the list matches below don't apply".into());
         }
     } else if schedule_block(&mut e, st, clients, ident, group)
-        || list_rewrite_step(&mut e, st, &q, ident, req)
+        || list_rewrite_step(&mut e, st, &q, ident, req, rewrite_rules)
         || decide(&mut e, winner, group, st.pause)
     {
         return Ok(e);
@@ -544,6 +560,7 @@ fn list_rewrite_step(
     q: &Query<'_>,
     ident: wrendns_policy::Identity,
     req: &Request<'_>,
+    rewrite_rules: usize,
 ) -> bool {
     use wrendns_filter::rewrite::ListRewrite;
     let Some(f) = st.filter else { return false };
@@ -562,6 +579,15 @@ fn list_rewrite_step(
         .snapshot()
         .and_then(|s| s.list_name(list))
         .unwrap_or("?");
+    // REQ: FLT-906 - the first enabled rewrite rule listed (its line is in the rules) decides.
+    if let Some(fl) = e.filter.as_mut() {
+        for r in &mut fl.rules {
+            r.winner = false;
+        }
+        if let Some(r) = fl.rules.iter_mut().take(rewrite_rules).find(|r| r.enabled) {
+            r.winner = true;
+        }
+    }
     let by = format!("by a $dnsrewrite rule in list {list}, before blocking");
     match rewrite {
         ListRewrite::Rcode(rc) => {

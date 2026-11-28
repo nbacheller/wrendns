@@ -25,6 +25,9 @@ pub enum Feature {
     Access,
     /// The `dnstap_settings` kind, the whole `[telemetry.dnstap]` section (OBS-007, API-905, T40.13).
     Dnstap,
+    /// A list with `format = "rpz"` (FLT-906, T40.9): an older member reads the unknown field as
+    /// a refusal of the whole lists section (or, were it lenient, a zone file as plain lines).
+    RpzLists,
     /// The peer read of a node's root trust anchors (DNS-906, T40.5). Nothing is replicated: an
     /// older member does not know the read, and is listed as not supporting it.
     Rfc5011,
@@ -32,12 +35,13 @@ pub enum Feature {
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 6] = [
+    pub const ALL: [Feature; 7] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
         Self::Access,
         Self::Dnstap,
+        Self::RpzLists,
         Self::Rfc5011,
     ];
 
@@ -49,6 +53,7 @@ impl Feature {
             Self::PemSecrets => "pem_secrets",
             Self::Access => "access",
             Self::Dnstap => "dnstap",
+            Self::RpzLists => "rpz_lists",
             Self::Rfc5011 => "rfc5011",
         }
     }
@@ -61,6 +66,7 @@ impl Feature {
             Self::PemSecrets => "secrets of the `pem` kind",
             Self::Access => "the allowed networks",
             Self::Dnstap => "the dnstap settings",
+            Self::RpzLists => "lists in the RPZ format",
             Self::Rfc5011 => "the trust anchor read",
         }
     }
@@ -76,12 +82,13 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 6] = [
+const ANNOUNCED: [Feature; 7] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
     Feature::Access,
     Feature::Dnstap,
+    Feature::RpzLists,
     Feature::Rfc5011,
 ];
 
@@ -215,6 +222,7 @@ mod tests {
                 "pem_secrets".to_owned(),
                 "access".to_owned(),
                 "dnstap".to_owned(),
+                "rpz_lists".to_owned(),
                 "rfc5011".to_owned()
             ]
         );

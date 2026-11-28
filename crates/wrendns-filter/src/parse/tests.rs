@@ -203,6 +203,7 @@ fn flt_002_list_options_set_action_and_scope() {
     let allow_exact = ListOptions {
         kind: ListKind::Allow,
         match_mode: ListMatch::Exact,
+        ..ListOptions::default()
     };
     assert_eq!(
         one_with("good.example.com", allow_exact),
@@ -355,6 +356,7 @@ fn flt_003_fast_path_matches_the_general_parser() {
         ListOptions {
             kind: ListKind::Allow,
             match_mode: ListMatch::Exact,
+            ..ListOptions::default()
         },
     ];
     let mut fast_taken = 0usize;

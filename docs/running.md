@@ -1367,6 +1367,8 @@ Every common format works, and formats can be mixed in one list:
 | `(^\|\.)doubleclick\.net$` | Pi-hole regex; add `;querytype=A,AAAA` (or `=!A` to exclude) or `;invert` |
 | `# ...`, `! ...`, `[Adblock Plus 2.0]` | comments |
 
+(A response policy zone has its own syntax and is a list of its own: see [Response policy zones (RPZ)](#response-policy-zones-rpz).)
+
 **Rewrites in lists** (`$dnsrewrite`, AdGuard's syntax): a matching rewrite wins over blocking, and `$client`, `$dnstype`, and `$denyallow` narrow it as for other rules. Several address rewrites for one name answer together. A name rewritten only to IPv4 answers an IPv6 question with an empty NOERROR (and the other way round). A CNAME rewrite is resolved like any name. The query log shows the list. Rewrites of other record types (MX, TXT, HTTPS, …) are counted as unsupported. Rewrites in the configuration (`[[group.rewrite]]`) are per group, and come after list blocking.
 
 Names are lowercased, internationalized names are converted to punycode, and a trailing dot is ignored. Regexes match the lowercase query name and can't use backreferences or lookaround: the regex engine runs in linear time, so a pattern can't stall a query.
@@ -1383,7 +1385,7 @@ wrendns lists check -c wrendns.toml --list manual --rules   # every rule in cano
 It exits non-zero if any list has invalid lines.
 
 ### Compiling
-Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match` changes, WrenDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
+Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match`/`format` changes, WrenDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
 
 - Compiling runs in the background at the lowest CPU priority (`SCHED_IDLE` on Linux), and never pauses or locks query handling. The new snapshot replaces the old one atomically: queries in flight finish with the old one, and the old one is freed on a background thread.
 - **A list change answers before the snapshot is written.** Once the lists are parsed and merged, the new rules start answering ("filter active (new rules from the merge; writing the snapshot)" in the log), and the snapshot's files are written after that; the finished snapshot then takes over with the same lookup index. If writing it fails (a full disk), the previous rules answer again, so a node never serves rules it has no snapshot of. Cluster replicas get the finished snapshot, as before.
@@ -1481,6 +1483,34 @@ url = "https://example.com/rarely-changes.txt"
 stale_after_days = 0
 ```
 Files and inline rules change when you change them, so they're never stale. The days count from the last time the content changed (identical downloads don't count), which is also `wrendns_list_last_change_timestamp_seconds`.
+
+### Response policy zones (RPZ)
+A list can be a **response policy zone**: a DNS zone file (the format of threat feeds and of Unbound's `rpz` and BIND's `response-policy`) in which each record says what happens to a name. Choose **Format: rpz** in the list's form, or set `format` in the file; the list then needs a `url`, a `path` or inline `rules` as any list does (one record per rule).
+
+```toml
+[[list]]
+name = "threat-feed"
+url = "https://feeds.example.org/threats.rpz"
+format = "rpz"                          # auto (default: each line's syntax is detected) or rpz
+```
+
+A list with `format = "rpz"` must be a block list (`kind = "block"`, the default) and takes no `match`: each record says whether it covers the name only or the names below it, and a passthru record is the allow.
+
+| Record | What WrenDNS does |
+|---|---|
+| `bad.example.com CNAME .` | answers NXDOMAIN for `bad.example.com` (the name only) |
+| `bad.example.com CNAME *.` | answers NOERROR with no records (NODATA) |
+| `bad.example.com CNAME rpz-passthru.` | lets the name through: an exception to the zone's other records, to other block lists, and to `$dnsrewrite` rules of any list |
+| `bad.example.com CNAME rpz-drop.` | answers REFUSED (ADR-1110: a name the zone drops is blocked and the device gets an immediate refusal; WrenDNS never stays silent, so the device does not wait and look like an outage) |
+| `*.bad.example.com CNAME .` (or any action above) | the same for every name below `bad.example.com`, **not** for `bad.example.com` itself |
+| `www.example.com CNAME portal.example.net.` | answers with a CNAME to that name, resolved like any name |
+| `www.example.com A 192.0.2.7` / `AAAA 2001:db8::7` | answers with that address (several records answer together; the other family answers empty) |
+
+These are the same answers `$dnsrewrite` rules give (see [List syntax](#list-syntax)), so a name the zone rewrites is rewritten whatever the group's other lists say, and Explain names the list and the line of the record that decided. The zone's `$ORIGIN`, `$TTL`, SOA and NS records are read and set aside; an owner name left out reuses the previous one, a record may span lines in parentheses, and an owner written with the zone's own name on the end (`bad.example.org.rpz.example.net.` in a zone named `rpz.example.net`) is cut back to `bad.example.org`. The zone's name is learned from `$ORIGIN` or from the SOA record's owner; a zone that only writes `@` has no known name, and its absolute owners are counted as not applied instead of being guessed. An ordinary allow list does not undo an RPZ answer (a rewrite wins over blocking); to let a name through that a zone rewrites, add `@@||bad.example.com^$dnsrewrite` to a list or your custom rules.
+
+**What is not applied** is counted as *unsupported*, not as an error, and shown on the Lists row and in `GET /api/v1/lists` (`unsupported`): response-IP triggers (`32.1.2.0.192.rpz-ip`), NSDNAME and NSIP triggers (`.rpz-nsdname`, `.rpz-nsip`), client-IP triggers (`.rpz-client-ip`), `rpz-tcp-only.` and other `rpz-` actions, a wildcard for the whole zone (`* CNAME .`), a CNAME to a wildcard target (`x CNAME *.garden.example.`), `$INCLUDE` and `$GENERATE`, and every other record type (TXT, MX, and so on). The response-IP filter (FLT-015) is a per-group list of networks, not a per-list one, so an RPZ's response-IP triggers have nowhere to go yet. `wrendns lists check` and the check on the list form show the first few of them with the line.
+
+**In a cluster**, a list with `format = "rpz"` is replicated, and a member whose build does not know the format would refuse the whole lists section. So saving the first RPZ list (or editing one) answers 409 `upgrade_required` and names the member until every member's build announces `rpz_lists`; the same holds for a reload of a file that adds or changes one. DNS is unaffected. The zone is read as one piece, never split between compile threads.
 
 ### Trying a list first (shadow mode)
 Not sure a list is safe for your network? Add it in **shadow mode**: it's downloaded and checked like any other, but never blocks.

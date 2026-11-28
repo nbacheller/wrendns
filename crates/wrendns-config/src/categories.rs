@@ -903,6 +903,7 @@ pub fn expand(cfg: &Config) -> Config {
             path: None,
             rules: Vec::new(),
             kind: ListKind::Block,
+            format: crate::schema::ListFormat::Auto,
             match_mode: ListMatch::Subtree,
             enabled: true,
             mode,

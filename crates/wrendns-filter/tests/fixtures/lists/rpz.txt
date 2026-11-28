@@ -1,0 +1,31 @@
+; A response policy zone in the shape real feeds have (synthetic names).
+$TTL 300
+$ORIGIN rpz.example.net.
+@        IN SOA ns.rpz.example.net. hostmaster.example.net. (
+                2026112701 ; serial
+                3600 600 86400 300 )
+         IN NS  ns.rpz.example.net.
+
+; QNAME triggers
+malware.example.com          CNAME .
+*.malware.example.com        CNAME .
+nodata.example.com           CNAME *.
+allowed.example.com          CNAME rpz-passthru.
+dropped.example.com          CNAME rpz-drop.
+portal.example.com           CNAME walled.example.net.
+captive.example.com   300 IN A     192.0.2.80
+captive.example.com   300 IN AAAA  2001:db8::80
+
+; absolute owner, with the zone's name on the end
+bad.example.org.rpz.example.net. CNAME .
+
+; not applied: counted as unsupported
+32.1.2.0.192.rpz-ip          CNAME .
+ns.evil.example.rpz-nsdname  CNAME .
+24.0.2.0.192.rpz-nsip        CNAME .
+24.0.2.0.192.rpz-client-ip   CNAME rpz-passthru.
+tcp.example.com              CNAME rpz-tcp-only.
+info.example.com             TXT   "not a policy"
+
+; broken
+badaddr.example.com          A     not-an-address

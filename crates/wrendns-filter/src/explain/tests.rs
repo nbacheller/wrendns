@@ -21,6 +21,7 @@ fn setup(lists: &[(&str, ListKind, &str)]) -> (Matcher, HashMap<String, Vec<u8>>
             options: ListOptions {
                 kind: *kind,
                 match_mode: ListMatch::Subtree,
+                ..ListOptions::default()
             },
             data: ListData::Bytes(text.as_bytes().to_vec()),
             source_hash: content_hash(text.as_bytes()),
@@ -130,4 +131,58 @@ fn flt_013_unmatched_name_explains_nothing() {
     let (m, sources) = setup(&[("ads", ListKind::Block, "||ads.example.com^\n")]);
     let e = run(&m, &sources, "example.org", rtype::A, &ListMask::all(1));
     assert_eq!((e.rules.len(), e.notes.len()), (0, 0));
+}
+
+// REQ: FLT-906 - Explain names the RPZ record that decided, with its line.
+#[test]
+fn flt_906_explain_names_the_rpz_rule() {
+    use wrendns_config::ListFormat;
+    let zone = "$ORIGIN rpz.example.net.\n@ SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5\nnx.example.com CNAME .\n*.wild.example.com CNAME rpz-drop.\nok.example.com CNAME rpz-passthru.\n";
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("snap");
+    let input = ListInput {
+        name: "rpz".into(),
+        options: ListOptions {
+            format: ListFormat::Rpz,
+            ..ListOptions::default()
+        },
+        data: ListData::Bytes(zone.as_bytes().to_vec()),
+        source_hash: content_hash(zone.as_bytes()),
+        size: zone.len() as u64,
+    };
+    compile(vec![input], &out, &CompileOptions::default()).unwrap();
+    let snap = Arc::new(Snapshot::open(&out).unwrap());
+    let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
+    let sources: HashMap<String, Vec<u8>> = [("rpz".to_owned(), zone.as_bytes().to_vec())].into();
+    let all = ListMask::all(1);
+    let rw = |name: &str| {
+        let wire = NameBuf::from_presentation(name).unwrap().as_wire().to_vec();
+        let client = ClientCtx {
+            ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+            name: None,
+            client_id: None,
+        };
+        let matches = m.rewrite_matches(&wire, rtype::A, &client, &all);
+        summary(&explain(&m, &wire, &matches, |n| sources.get(n).cloned()))
+    };
+    assert_eq!(
+        rw("nx.example.com"),
+        ["* rpz Block Modifier on [L3 nx.example.com CNAME .]"]
+    );
+    assert_eq!(
+        rw("a.wild.example.com"),
+        ["* rpz Block Modifier on [L4 *.wild.example.com CNAME rpz-drop.]"]
+    );
+    // The apex of a wildcard is not touched.
+    assert_eq!(rw("wild.example.com"), Vec::<String>::new());
+    // A passthru is an exception to the zone's rewrites (and a plain allow, found below).
+    assert_eq!(
+        rw("ok.example.com"),
+        ["* rpz Allow Modifier on [L5 ok.example.com CNAME rpz-passthru.]"]
+    );
+    let e = run(&m, &sources, "ok.example.com", rtype::A, &all);
+    assert_eq!(
+        summary(&e),
+        ["* rpz Allow Domain on [L5 ok.example.com CNAME rpz-passthru.]"]
+    );
 }

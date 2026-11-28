@@ -105,6 +105,7 @@ fn setup_with(extra: &str) -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
                 options: ListOptions {
                     kind: l.kind,
                     match_mode: l.match_mode,
+                    format: l.format,
                 },
                 source_hash: wrendns_filter::fetch::content_hash(text.as_bytes()),
                 size: text.len() as u64,
@@ -584,6 +585,178 @@ answer = "cdn.example"
         assert_eq!(e.outcome, Outcome::Resolved, "{name}: {}", e.summary);
         assert!(served(&p, name, "10.0.0.9").is_none(), "{name}");
     }
+}
+
+/// REQ: FLT-906 (T40.9), FLT-013 - a list in the RPZ format: Explain names the record that
+/// decided (its list and line), the DROP is answered REFUSED, a passthru is the exception to a
+/// wildcard, and each outcome agrees with what the pipeline does with the same query.
+#[test]
+#[allow(clippy::too_many_lines)] // one table of actions, each checked against the pipeline
+fn flt_906_rpz_rules_are_named_in_the_explanation() {
+    let extra = r#"
+[[list]]
+name = "policy"
+format = "rpz"
+rules = [
+  "nx.example CNAME .",
+  "drop.example CNAME rpz-drop.",
+  "*.wild.example CNAME .",
+  "ok.wild.example CNAME rpz-passthru.",
+  "walled.example A 192.0.2.7",
+  "nodata.example CNAME *.",
+  "local.example CNAME portal.example.net.",
+]
+
+[[group]]
+name = "home"
+networks = ["10.0.0.128/25"]
+lists = ["policy"]
+"#;
+    let (p, sources) = setup_with(extra);
+    let home = "10.0.0.130";
+    for (name, text, line, record, bytes) in [
+        ("nx.example", "NXDOMAIN", 1, "nx.example CNAME .", &[][..]),
+        (
+            "drop.example",
+            "REFUSED",
+            2,
+            "drop.example CNAME rpz-drop.",
+            &[][..],
+        ),
+        (
+            "a.wild.example",
+            "NXDOMAIN",
+            3,
+            "*.wild.example CNAME .",
+            &[][..],
+        ),
+        (
+            "walled.example",
+            "192.0.2.7",
+            5,
+            "walled.example A 192.0.2.7",
+            &[192, 0, 2, 7][..],
+        ),
+    ] {
+        let e = ask(&p, &sources, name, home);
+        assert_eq!(e.outcome, Outcome::Local, "{name}: {}", e.summary);
+        assert!(e.summary.contains(text), "{name}: {}", e.summary);
+        let rules = &e.filter.as_ref().unwrap().rules;
+        let winner = rules.iter().find(|r| r.winner).unwrap();
+        assert_eq!(winner.list, "policy", "{name}");
+        assert_eq!(winner.lines[0].line, line, "{name}: {:?}", winner.lines);
+        assert_eq!(winner.lines[0].text, record, "{name}");
+        let a = served(&p, name, home).unwrap();
+        assert!(bytes.is_empty() || contains(&a, bytes), "{name}");
+    }
+    assert_eq!(
+        served(&p, "drop.example", home).unwrap()[3] & 0x0F,
+        5,
+        "REFUSED"
+    );
+    assert_eq!(
+        served(&p, "nx.example", home).unwrap()[3] & 0x0F,
+        3,
+        "NXDOMAIN"
+    );
+    // NODATA and a local CNAME: Explain names their records too (AC 1, every action).
+    for (name, line, record) in [
+        ("nodata.example", 6, "nodata.example CNAME *."),
+        (
+            "local.example",
+            7,
+            "local.example CNAME portal.example.net.",
+        ),
+    ] {
+        let e = ask(&p, &sources, name, home);
+        let rules = &e.filter.as_ref().unwrap().rules;
+        let winner = rules
+            .iter()
+            .find(|r| r.winner)
+            .unwrap_or_else(|| panic!("{name}: no winning rule in {rules:?}: {}", e.summary));
+        assert_eq!(winner.list, "policy", "{name}");
+        assert_eq!(winner.lines[0].line, line, "{name}: {:?}", winner.lines);
+        assert_eq!(winner.lines[0].text, record, "{name}");
+        // NODATA is answered at once; a CNAME to another name goes on to be resolved.
+        assert_eq!(
+            served(&p, name, home).is_some(),
+            name == "nodata.example",
+            "{name}"
+        );
+    }
+    // The apex of the wildcard and the passthru name are not rewritten: both go on.
+    for name in ["wild.example", "ok.wild.example"] {
+        let e = ask(&p, &sources, name, home);
+        assert_ne!(e.outcome, Outcome::Local, "{name}: {}", e.summary);
+        assert!(served(&p, name, home).is_none(), "{name}");
+    }
+    // The passthru is named as the rule that let the name through.
+    let e = ask(&p, &sources, "ok.wild.example", home);
+    let rules = &e.filter.as_ref().unwrap().rules;
+    assert!(
+        rules.iter().any(|r| r.list == "policy"
+            && r.lines
+                .iter()
+                .any(|l| l.text == "ok.wild.example CNAME rpz-passthru.")),
+        "{rules:?}"
+    );
+}
+
+/// REQ: FLT-906 (T40.9) - within one RPZ the most specific trigger decides: an exact name beats
+/// `*.parent` whichever actions they carry, and Explain names the record that was applied.
+#[test]
+fn flt_906_rpz_exact_trigger_beats_wildcard() {
+    let extra = r#"
+[[list]]
+name = "policy"
+format = "rpz"
+rules = [
+  "*.example.com CNAME .",
+  "x.example.com A 192.0.2.1",
+  "*.other.example A 192.0.2.2",
+  "y.other.example CNAME *.",
+  "*.corp.example CNAME rpz-passthru.",
+  "bad.corp.example CNAME .",
+  "*.deep.example CNAME .",
+  "*.a.deep.example CNAME rpz-passthru.",
+]
+
+[[group]]
+name = "home"
+networks = ["10.0.0.128/25"]
+lists = ["policy"]
+"#;
+    let (p, sources) = setup_with(extra);
+    let home = "10.0.0.130";
+    let rc = |name: &str| served(&p, name, home).map(|a| a[3] & 0x0F);
+    // (a) the local address, not the wildcard's NXDOMAIN
+    let e = ask(&p, &sources, "x.example.com", home);
+    assert!(e.summary.contains("192.0.2.1"), "{}", e.summary);
+    let rules = &e.filter.as_ref().unwrap().rules;
+    let winner = rules.iter().find(|r| r.winner).unwrap();
+    assert_eq!(winner.lines[0].text, "x.example.com A 192.0.2.1");
+    assert!(contains(
+        &served(&p, "x.example.com", home).unwrap(),
+        &[192, 0, 2, 1]
+    ));
+    assert_eq!(
+        rc("z.example.com"),
+        Some(3),
+        "the wildcard still covers the rest"
+    );
+    // (b) NODATA, not the wildcard's address
+    let a = served(&p, "y.other.example", home).unwrap();
+    assert_eq!((a[3] & 0x0F, a[7]), (0, 0), "NODATA: no answer");
+    assert!(contains(
+        &served(&p, "z.other.example", home).unwrap(),
+        &[192, 0, 2, 2]
+    ));
+    // (c) the exact block beats the wildcard's passthru
+    assert_eq!(rc("bad.corp.example"), Some(3));
+    assert_ne!(rc("fine.corp.example"), Some(3), "passthru wildcard");
+    // a deeper wildcard passthru beats the shallower block
+    assert_eq!(rc("q.deep.example"), Some(3));
+    assert_ne!(rc("q.a.deep.example"), Some(3));
 }
 
 /// REQ: DNS-019 (ADR-904) — iCloud Private Relay, resolver.arpa, and (switched on)

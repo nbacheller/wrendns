@@ -174,6 +174,7 @@ pub(crate) async fn list(cfg: &Config, body: serde_json::Value) -> Result<CheckR
     let opts = wrendns_filter::parse::ListOptions {
         kind: l.kind,
         match_mode: l.match_mode,
+        format: l.format,
     };
     let stats = wrendns_filter::parse::parse_list(&data, opts, |_, _| {});
     let warnings = stats

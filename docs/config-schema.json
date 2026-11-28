@@ -2401,6 +2401,10 @@
           "type": "boolean",
           "default": true
         },
+        "format": {
+          "description": "REQ: FLT-906 (T40.9) - `auto` (the default: each line's syntax is detected) or `rpz` (the\ntext is a response policy zone). A list with `rpz` is held back in a cluster until every\nmember's build can read it.",
+          "$ref": "#/$defs/ListFormat"
+        },
         "kind": {
           "$ref": "#/$defs/ListKind",
           "default": "block"
@@ -2935,6 +2939,14 @@
       "required": [
         "namespace",
         "group"
+      ]
+    },
+    "ListFormat": {
+      "description": "REQ: FLT-906 (T40.9, ADR-1110) - how a list's text is read. `auto` (the default) detects each\nline's syntax (hosts, domains, AdBlock, regex). `rpz` reads the whole text as a DNS response\npolicy zone in master-file format.",
+      "type": "string",
+      "enum": [
+        "auto",
+        "rpz"
       ]
     },
     "ListKind": {

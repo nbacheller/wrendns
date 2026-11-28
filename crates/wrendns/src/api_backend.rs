@@ -2169,6 +2169,8 @@ impl Backend for ApiBackend {
                 ListInfo {
                     name: l.name.to_string(),
                     kind: label(&l.kind),
+                    format: label(&l.format),
+                    unsupported: per.map_or(0, |s| s.unsupported),
                     enabled: l.enabled,
                     mode: label(&l.mode),
                     source,
@@ -7476,6 +7478,16 @@ pub(crate) fn plan_override(
     let (before, body) = step.map_err(|p| served_not_stored(src, w.kind, &name, p))?;
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    // REQ: FLT-906 (T40.9) - a list in the RPZ format waits until every member's build reads it
+    // (409 `upgrade_required`, naming the member; dry runs too, so the answer is the same).
+    if w.kind == ManagedKind::List && body_in.is_some() {
+        crate::upgrade_gate::enforce_rpz(src.cluster.as_deref(), &before_cfg, &merged).map_err(
+            |why| {
+                Problem::new(Code::UpgradeRequired, why)
+                    .hint("Upgrade the member named, then save the list again. DNS is unaffected.")
+            },
+        )?;
+    }
     let after = match w.kind {
         ManagedKind::Upstream => named_json(&merged.upstream, &name),
         ManagedKind::UpstreamGroup => named_json(&merged.upstream_group, &name),
@@ -9162,6 +9174,7 @@ mod stale_tests {
             path: None,
             rules: Vec::new(),
             kind: wrendns_config::ListKind::Block,
+            format: wrendns_config::ListFormat::Auto,
             match_mode: wrendns_config::ListMatch::Subtree,
             enabled: true,
             mode: wrendns_config::ListMode::Enforce,

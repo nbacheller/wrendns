@@ -2014,17 +2014,23 @@ pub(crate) fn reload_gate(
     if replica {
         return Ok(());
     }
-    // REQ: CLD-904 (T36.10b) - the first DNS provider is judged the same way. Both are judged
+    // REQ: CLD-904 (T36.10b) - the first DNS provider is judged the same way, and REQ: FLT-906
+    // (T40.9) - an RPZ list waits for every member's build to read the format. All are judged
     // every time (no early return), so every refused feature is recorded and a hold that follows
     // a promotion covers all of them.
-    let locations =
-        crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new);
-    let providers =
-        crate::upgrade_gate::enforce_dns_providers(sources.cluster.as_deref(), current, new);
-    match (locations, providers) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(a), Ok(())) | (Ok(()), Err(a)) => Err(a),
-        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+    let cluster = sources.cluster.as_deref();
+    let refused: Vec<String> = [
+        crate::upgrade_gate::enforce_locations(cluster, current, new),
+        crate::upgrade_gate::enforce_dns_providers(cluster, current, new),
+        crate::upgrade_gate::enforce_rpz(cluster, current, new),
+    ]
+    .into_iter()
+    .filter_map(Result::err)
+    .collect();
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(refused.join("; "))
     }
 }
 

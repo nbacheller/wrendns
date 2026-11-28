@@ -1904,6 +1904,24 @@ pub enum ListMatch {
     Exact,
 }
 
+/// REQ: FLT-906 (T40.9, ADR-1110) - how a list's text is read. `auto` (the default) detects each
+/// line's syntax (hosts, domains, AdBlock, regex). `rpz` reads the whole text as a DNS response
+/// policy zone in master-file format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ListFormat {
+    #[default]
+    Auto,
+    Rpz,
+}
+
+impl ListFormat {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 /// A filter list (`spec/05` §1). Exactly one source: `url`, `path`, or `rules`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1922,6 +1940,11 @@ pub struct FilterList {
     pub rules: Vec<SafeString>,
     #[serde(default)]
     pub kind: ListKind,
+    /// REQ: FLT-906 (T40.9) - `auto` (the default: each line's syntax is detected) or `rpz` (the
+    /// text is a response policy zone). A list with `rpz` is held back in a cluster until every
+    /// member's build can read it.
+    #[serde(default, skip_serializing_if = "ListFormat::is_auto")]
+    pub format: ListFormat,
     /// `subtree` (default) or `exact`.
     #[serde(default, rename = "match")]
     pub match_mode: ListMatch,

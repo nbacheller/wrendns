@@ -9519,6 +9519,11 @@ export interface components {
                 entries: number;
                 error?: string | null;
                 /**
+                 * @description REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or
+                 *     `rpz` (a response policy zone).
+                 */
+                format?: string;
+                /**
                  * Format: int64
                  * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
                  *     cluster, every node's added up.
@@ -9591,6 +9596,12 @@ export interface components {
                  * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
                  */
                 unique: number;
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:
+                 *     cosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.
+                 */
+                unsupported?: number;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -10299,6 +10310,11 @@ export interface components {
             entries: number;
             error?: string | null;
             /**
+             * @description REQ: FLT-906 (T40.9) - how the source is read: `auto` (each line's syntax is detected) or
+             *     `rpz` (a response policy zone).
+             */
+            format?: string;
+            /**
              * Format: int64
              * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
              *     cluster, every node's added up.
@@ -10371,6 +10387,12 @@ export interface components {
              * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
              */
             unique: number;
+            /**
+             * Format: int64
+             * @description REQ: FLT-906 (T40.9) - lines (records, for an RPZ) it holds that are valid but not applied:
+             *     cosmetic rules, URL rules, and an RPZ's response-IP, NSDNAME and NSIP triggers.
+             */
+            unsupported?: number;
         };
         /** @description REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others. */
         ListOverlapRow: {

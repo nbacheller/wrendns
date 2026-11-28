@@ -1481,6 +1481,8 @@ mod tests {
         let failing = ListInfo {
             name: "hagezi".into(),
             kind: "block".into(),
+            format: "auto".into(),
+            unsupported: 0,
             enabled: true,
             mode: "enforce".into(),
             source: "https://lists.example/hagezi.txt".into(),

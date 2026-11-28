@@ -2762,7 +2762,7 @@ fn rule_of(a: &wrendns_filter::matcher::Attribution, allow: bool) -> Rule {
         list: a.list,
         kind: match a.rule {
             RuleRef::Domain { .. } => RuleKind::Domain,
-            RuleRef::ModRule { .. } => RuleKind::Modifier,
+            RuleRef::ModRule { .. } | RuleRef::Rpz { .. } => RuleKind::Modifier,
             RuleRef::Regex { .. } => RuleKind::Regex,
         },
         allow,
@@ -4566,6 +4566,89 @@ groups = ["kids"]
             ),
             "the exception"
         );
+    }
+
+    /// REQ: FLT-906 (T40.9, ADR-1110) - a response policy zone as a list: NXDOMAIN, NODATA, a
+    /// DROP answered REFUSED, a wildcard that leaves its apex alone, a passthru that is the
+    /// exception to a wildcard, and local data (an address, a CNAME).
+    #[test]
+    fn flt_906_rpz_list_answers() {
+        use wrendns_filter::compile::{CompileOptions, ListData, ListInput, compile};
+        let zone = [
+            "$ORIGIN rpz.example.net.",
+            "@ SOA ns.rpz.example.net. a.example.net. 1 2 3 4 5",
+            "nx.example CNAME .",
+            "nodata.example CNAME *.",
+            "drop.example CNAME rpz-drop.",
+            "*.wild.example CNAME .",
+            "*.corp.example CNAME .",
+            "ok.corp.example CNAME rpz-passthru.",
+            "walled.example A 192.0.2.7",
+            "cn.example CNAME target.example.",
+            "32.7.2.0.192.rpz-ip CNAME .",
+            "",
+        ]
+        .join(
+            "
+",
+        );
+        let p = pipeline_with(
+            UPSTREAM,
+            "||nothing.example^
+",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("snap");
+        // The test configuration's lists are named `ads`: the groups' masks are built from it.
+        let input = ListInput {
+            name: "ads".into(),
+            options: wrendns_filter::parse::ListOptions {
+                format: wrendns_config::ListFormat::Rpz,
+                ..wrendns_filter::parse::ListOptions::default()
+            },
+            data: ListData::Bytes(zone.as_bytes().to_vec()),
+            source_hash: wrendns_filter::fetch::content_hash(zone.as_bytes()),
+            size: zone.len() as u64,
+        };
+        compile(vec![input], &out, &CompileOptions::default()).unwrap();
+        let snap = Arc::new(wrendns_filter::snapshot::Snapshot::open(&out).unwrap());
+        let m = Matcher::with_lookup(Some(snap), wrendns_filter::matcher::Lookup::Indexed).unwrap();
+        p.set_filter(Some(Arc::new(m)));
+        // An unblocked name goes upstream (nothing answers here), so it has no summary.
+        let code = |name: &str| {
+            summarize(&ask_from(&p, "10.0.0.5", name, rtype::A))
+                .ok()
+                .map(|s| s.rcode)
+        };
+        assert_eq!(code("nx.example"), Some(rcode::NXDOMAIN), "CNAME .");
+        // The trigger is the name only, not what is below it.
+        assert_ne!(code("www.nx.example"), Some(rcode::NXDOMAIN));
+        let s = summarize(&ask_from(&p, "10.0.0.5", "nodata.example", rtype::A)).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 0), "CNAME *.");
+        assert_eq!(
+            code("drop.example"),
+            Some(rcode::REFUSED),
+            "rpz-drop. is refused"
+        );
+        assert_eq!(
+            code("a.wild.example"),
+            Some(rcode::NXDOMAIN),
+            "wildcard: below"
+        );
+        assert_ne!(
+            code("wild.example"),
+            Some(rcode::NXDOMAIN),
+            "wildcard: not the apex"
+        );
+        assert_eq!(code("x.corp.example"), Some(rcode::NXDOMAIN));
+        assert_ne!(code("ok.corp.example"), Some(rcode::NXDOMAIN), "passthru");
+        assert!(contains(
+            &ask_from(&p, "10.0.0.5", "walled.example", rtype::A),
+            &[192, 0, 2, 7]
+        ));
+        cache_a(&p, "target.example", Ipv4Addr::new(198, 51, 100, 9));
+        let r = ask_from(&p, "10.0.0.5", "cn.example", rtype::A);
+        assert_eq!(summarize(&r).unwrap().answers, 2, "CNAME + the target's A");
     }
 
     /// REQ: DNS-016 (T9.10) — the exclusion set: an excluded (or IPv4-mapped) AAAA counts as

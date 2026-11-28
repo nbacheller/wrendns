@@ -119,6 +119,8 @@ pub enum RuleRef {
     ModRule { index: u32 },
     /// Index into the snapshot's regex rules.
     Regex { index: u32 },
+    /// REQ: FLT-906 - a plain response policy zone record (`rpz.bin`), by its line in the zone.
+    Rpz { scope: Scope, line: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +336,39 @@ struct CompiledMod {
     /// What a rewrite does (none for an exception's `$dnsrewrite`).
     action: Option<crate::rewrite::RewriteAction>,
     allow: bool,
+    /// REQ: FLT-906 - the rule comes from a response policy zone, where only the most specific
+    /// trigger for a name applies (see [`Matcher::rewrite_hits`]).
+    rpz: bool,
+}
+
+/// A rewrite rule or exception that applies to a name (see [`Matcher::rewrite_hits`]).
+struct Hit<'a> {
+    list: u16,
+    tier: Tier,
+    allow: bool,
+    action: Option<&'a crate::rewrite::RewriteAction>,
+    /// Labels of the trigger that matched (deeper is more specific).
+    labels: usize,
+    /// From a response policy zone: only its most specific trigger applies.
+    rpz: bool,
+    rule: RuleRef,
+    /// Listing order, for Explain.
+    order: usize,
+}
+
+/// What a plain zone record answers.
+fn rpz_rewrite(a: crate::snapshot::RpzAction) -> Option<&'static crate::rewrite::RewriteAction> {
+    use crate::rewrite::RewriteAction as R;
+    use crate::snapshot::RpzAction as A;
+    static NX: R = R::Rcode(wrendns_proto::rcode::NXDOMAIN);
+    static NODATA: R = R::Rcode(wrendns_proto::rcode::NOERROR);
+    static REFUSED: R = R::Rcode(wrendns_proto::rcode::REFUSED);
+    match a {
+        A::Nxdomain => Some(&NX),
+        A::Nodata => Some(&NODATA),
+        A::Refused => Some(&REFUSED),
+        A::Passthru => None,
+    }
 }
 
 fn scope_of(t: ScopeTag) -> Scope {
@@ -360,6 +395,7 @@ impl CompiledMod {
             rewrite: m.dnsrewrite.is_some(),
             action: m.dnsrewrite.as_deref().and_then(crate::rewrite::parse),
             allow: m.allow,
+            rpz: false,
         }
     }
 
@@ -796,7 +832,18 @@ impl Matcher {
     pub fn with_lookup(snapshot: Option<Arc<Snapshot>>, lookup: Lookup) -> Result<Self, String> {
         let (mods, regexes, index) = match &snapshot {
             Some(s) => (
-                s.modrules.iter().map(CompiledMod::new).collect(),
+                s.modrules
+                    .iter()
+                    .map(|m| {
+                        let mut c = CompiledMod::new(m);
+                        c.rpz = s
+                            .manifest
+                            .lists
+                            .get(usize::from(m.list))
+                            .is_some_and(|l| l.format == wrendns_config::ListFormat::Rpz);
+                        c
+                    })
+                    .collect(),
                 RegexSets::new(s.regexes.clone())?,
                 match lookup {
                     // A snapshot beyond the index's limits still works, just via the walk.
@@ -806,7 +853,8 @@ impl Matcher {
             ),
             None => (Vec::new(), RegexSets::new(Vec::new())?, None),
         };
-        let has_rewrites = mods.iter().any(|m: &CompiledMod| m.rewrite);
+        let has_rewrites = mods.iter().any(|m: &CompiledMod| m.rewrite)
+            || snapshot.as_ref().is_some_and(|s| !s.rpz.is_empty());
         Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             snapshot,
@@ -910,20 +958,43 @@ impl Matcher {
         client: &ClientCtx<'_>,
         mask: &ListMask,
     ) -> Option<(crate::rewrite::ListRewrite, u16)> {
+        let mut hits = self.rewrite_hits(qname, qtype, client, mask)?;
+        // An exception (`@@…$dnsrewrite`) turns rewrites off.
+        if hits.is_empty() || hits.iter().any(|h| h.allow) {
+            return None;
+        }
+        // Important rules first, then the most specific (exact, deeper) as listed.
+        hits.sort_by_key(|h| std::cmp::Reverse(matches!(h.tier, Tier::ImportantBlock)));
+        let actions: Vec<&crate::rewrite::RewriteAction> =
+            hits.iter().filter_map(|h| h.action).collect();
+        if actions.is_empty() {
+            return None;
+        }
+        Some((crate::rewrite::combine(&actions, qtype), hits[0].list))
+    }
+
+    /// The rewrite rules, and exceptions to them, that apply to this name for this client;
+    /// `None` when no list has rewrites.
+    fn rewrite_hits(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+    ) -> Option<Vec<Hit<'_>>> {
         if !self.has_rewrites {
             return None;
         }
         let name = Name::from_wire(qname)?;
-        let mut hits: Vec<&CompiledMod> = Vec::new();
         let take = |m: &'_ CompiledMod, labels: usize| {
             m.rewrite
                 && mask.contains(m.list)
                 && scope_applies(m.scope, labels, name.total)
                 && m.applies_to(name.key(), qtype, client)
         };
+        let mut found: Vec<Hit<'_>> = Vec::new();
         if let Some(s) = &self.snapshot {
             let mods = &self.mods;
-            let mut found: Vec<usize> = Vec::new();
             walk(
                 s.modrules_index.as_fst(),
                 &name,
@@ -935,26 +1006,88 @@ impl Matcher {
                     {
                         for (i, m) in mods.iter().enumerate().skip(start).take(count) {
                             if take(m, labels) {
-                                found.push(i);
+                                found.push(Hit {
+                                    list: m.list,
+                                    tier: m.tier,
+                                    allow: m.allow,
+                                    action: m.action.as_ref(),
+                                    labels,
+                                    rpz: m.rpz,
+                                    rule: RuleRef::ModRule {
+                                        index: u32::try_from(i).unwrap_or(u32::MAX),
+                                    },
+                                    order: i,
+                                });
                             }
                         }
                     }
                 },
             );
-            hits.extend(found.into_iter().filter_map(|i| mods.get(i)));
+            // REQ: FLT-906 (AC4) - the plain actions of response policy zones.
+            if !s.rpz.is_empty() {
+                let base = self.mods.len();
+                walk(s.rpz_index.as_fst(), &name, 1, name.labels, |labels, v| {
+                    for r in s.rpz_records(v) {
+                        let scope = scope_of(r.scope);
+                        if !mask.contains(r.list) || !scope_applies(scope, labels, name.total) {
+                            continue;
+                        }
+                        let allow = r.action == crate::snapshot::RpzAction::Passthru;
+                        found.push(Hit {
+                            list: r.list,
+                            tier: Tier::of(allow, false),
+                            allow,
+                            action: rpz_rewrite(r.action),
+                            labels,
+                            rpz: true,
+                            rule: RuleRef::Rpz {
+                                scope,
+                                line: r.line,
+                            },
+                            order: base + found.len(),
+                        });
+                    }
+                });
+            }
         }
-        // An exception (`@@…$dnsrewrite`) turns rewrites off.
-        if hits.is_empty() || hits.iter().any(|m| m.allow) {
-            return None;
+        // REQ: FLT-906 - within one response policy zone the most specific trigger wins: an
+        // exact name beats `*.parent`, a deeper wildcard beats a shallower one. Other lists'
+        // rules (AdGuard `$dnsrewrite`) all apply together, as before.
+        let mut deepest: Vec<(u16, usize)> = Vec::new();
+        for h in found.iter().filter(|h| h.rpz) {
+            match deepest.iter_mut().find(|(l, _)| *l == h.list) {
+                Some((_, d)) => *d = (*d).max(h.labels),
+                None => deepest.push((h.list, h.labels)),
+            }
         }
-        // Important rules first, then the most specific (exact, deeper) as listed.
-        hits.sort_by_key(|m| std::cmp::Reverse(matches!(m.tier, Tier::ImportantBlock)));
-        let actions: Vec<&crate::rewrite::RewriteAction> =
-            hits.iter().filter_map(|m| m.action.as_ref()).collect();
-        if actions.is_empty() {
-            return None;
-        }
-        Some((crate::rewrite::combine(&actions, qtype), hits[0].list))
+        found.retain(|h| !h.rpz || deepest.iter().any(|&(l, d)| l == h.list && d == h.labels));
+        Some(found)
+    }
+
+    /// REQ: FLT-906 (T40.9), FLT-013 - the rewrite rules (and exceptions) that apply to this
+    /// name, as matches, so Explain can name their lists and lines. They are not part of
+    /// [`Matcher::matches`], which is the blocking decision. Allocates: never the query path.
+    pub fn rewrite_matches(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+    ) -> Vec<Match> {
+        let mut hits = self
+            .rewrite_hits(qname, qtype, client, mask)
+            .unwrap_or_default();
+        hits.sort_by_key(|h| (h.tier, h.order));
+        hits.into_iter()
+            .map(|h| Match {
+                attribution: Attribution {
+                    list: h.list,
+                    tier: h.tier,
+                    rule: h.rule,
+                },
+                enabled: mask.contains(h.list),
+            })
+            .collect()
     }
 
     /// Every rule in every list that matches `qname` for this client and

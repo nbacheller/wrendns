@@ -40,9 +40,12 @@
   // REQ: API-002 (T7.5) — add and change lists here.
   const listFields: Field[] = [
     { key: 'url', label: 'Download from', type: 'text', placeholder: 'https://example.org/hosts.txt',
-      help: 'Hosts files, plain domain lists, and Adblock-style lists all work. Or leave this empty and write the rules below.' },
+      help: 'Hosts files, plain domain lists, Adblock-style lists, and response policy zones (set Format to rpz) all work. Or leave this empty and write the rules below.' },
     { key: 'rules', label: 'Rules', type: 'lines', placeholder: 'ads.example.com, ||tracker.example^ (one per line)' },
     { key: 'kind', label: 'Kind', type: 'select', options: ['block', 'allow'], initial: 'block' },
+    // REQ: FLT-906 (T40.9) — how the text is read: each line's syntax is detected (auto), or it is a response policy zone.
+    { key: 'format', label: 'Format', type: 'select', options: ['auto', 'rpz'], initial: 'auto', helpTopic: 'list-rpz',
+      help: 'auto: hosts, domain, and Adblock lines are told apart. rpz: the text is a response policy zone (a DNS zone file); it must be a block list, and each record says what happens to its name.' },
     { key: 'match', label: 'Plain names match', type: 'select', options: ['subtree', 'exact'], advanced: true,
       help: 'subtree: the name and everything below it. exact: only the name itself.' },
     { key: 'enabled', label: 'On', type: 'bool', initial: true },
@@ -507,7 +510,7 @@
               {@const redundant = redundantWith(l)}
               <tr class:off={!l.enabled}>
                 <td>
-                  <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}{#if l.mode === 'shadow'} <span class="badge info" title="Never blocks: what it would have blocked is counted below">shadow</span>{/if}
+                  <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}{#if l.format === 'rpz'} <span class="badge info" data-testid="list-format-rpz" title="Read as a response policy zone">RPZ</span>{/if}{#if l.mode === 'shadow'} <span class="badge info" title="Never blocks: what it would have blocked is counted below">shadow</span>{/if}
                   <!-- REQ: FLT-901 (T24.29) - a category list: taken from the catalog, never edited or deleted here. -->
                   {#each l.owners ?? [] as o (o.id)}<span class="badge info" data-testid="list-owner" title="This list comes from the catalog: it goes when no profile uses the category">Owned by category: {o.name}</span>{/each}
                   {#if (l.owners ?? []).length && can('operator')}
@@ -547,6 +550,8 @@
                       {/if}
                     </div>
                   {/if}
+                  <!-- REQ: FLT-906 (T40.9) — valid lines (RPZ: records) the list holds that are not applied. -->
+                  {#if (l.unsupported ?? 0) > 0}<div class="small muted" data-testid="list-unsupported">{num(l.unsupported ?? 0)} {l.format === 'rpz' ? (l.unsupported === 1 ? 'record' : 'records') : (l.unsupported === 1 ? 'line' : 'lines')} not applied (unsupported){#if l.format === 'rpz'}<HelpButton id="list-rpz" />{/if}</div>{/if}
                   <!-- REQ: FLT-003 (review 02-08) — regex rules the snapshot leaves out. -->
                   {#if l.regexSkipped > 0}<div class="small warn-text" data-testid="list-regex-skipped">{num(l.regexSkipped)} regex {l.regexSkipped === 1 ? 'rule' : 'rules'} left out (over the limit of <code>max_regexes</code>, or too large to compile)</div>{/if}
                 </td>
