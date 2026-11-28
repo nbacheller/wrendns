@@ -7,6 +7,9 @@
 //! next calls (401, 403, 429 with a Retry-After, 5xx, a timeout), waits a set time, and logs every
 //! call it receives.
 
+// The knobs are for the tests; the browser tests' build (the `e2e` feature) uses only some of them.
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -59,6 +62,10 @@ impl FakeProvider {
             .insert((set.name.clone(), set.rtype), set);
     }
 
+    #[allow(
+        dead_code,
+        reason = "a knob for the provider kinds' tests (T36.10b b4); nothing uses it yet"
+    )]
     /// What the credential may change, as `scope` reports it.
     pub(crate) fn set_scope(&self, scope: Scope) {
         lock(&self.inner).scope = Some(scope);
@@ -74,6 +81,10 @@ impl FakeProvider {
         lock(&self.inner).write_failures.push_back(e);
     }
 
+    #[allow(
+        dead_code,
+        reason = "a knob for the provider kinds' tests (T36.10b b4); nothing uses it yet"
+    )]
     /// Every call answers after this long.
     pub(crate) fn set_latency(&self, d: Duration) {
         lock(&self.inner).latency = d;

@@ -104,6 +104,10 @@ impl Ledger<'_> {
             .map_err(|e| e.to_string())
     }
 
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Forgets the record set (it was deleted at the provider). Not an error when it was not there.
     pub(crate) fn remove(
         &self,

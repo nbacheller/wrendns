@@ -3067,6 +3067,12 @@ pub(crate) mod tests_support {
 
     /// Whether `name` (A) from `client` is answered at once (without an upstream).
     pub(crate) fn answer(p: &Arc<Pipeline>, name: &str, client: &str) -> bool {
+        answer_bytes(p, name, client).is_some_and(|m| m.len() > 12)
+    }
+
+    /// The answer to `name` (A) from `client` when it is given at once (the id is fixed, so two
+    /// answers compare equal).
+    pub(crate) fn answer_bytes(p: &Arc<Pipeline>, name: &str, client: &str) -> Option<Vec<u8>> {
         let n = wrendns_proto::NameBuf::from_presentation(name).unwrap();
         let mut q = [0u8; 512];
         let len = wrendns_proto::build_query(&mut q, 7, &n, wrendns_proto::rtype::A, 1, true, None)
@@ -3079,10 +3085,10 @@ pub(crate) mod tests_support {
             gated: false,
         };
         let mut out = [0u8; 4096];
-        matches!(
-            Handler(Arc::clone(p)).handle(&q[..len], &meta, &mut out),
-            Response::Ready(l) if l > 12
-        )
+        match Handler(Arc::clone(p)).handle(&q[..len], &meta, &mut out) {
+            Response::Ready(l) => Some(out[..l].to_vec()),
+            _ => None,
+        }
     }
 }
 

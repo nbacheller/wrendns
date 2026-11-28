@@ -326,6 +326,27 @@ async fn cld_919_a_429_backs_off_by_retry_after() {
     let p = crate::dns_provider_ops::problem(&EngineError::Backoff(d));
     assert_eq!(p.status, 429);
     assert!(p.retry_after.is_some_and(|s| s >= 100));
+    // Reads wait too: the records table, adopt and Test do not reach the provider while it asked
+    // the node to slow down (ADR-1112 point 7).
+    assert!(matches!(
+        eng.records(&auth, &cfg, &handle).await,
+        Err(EngineError::Backoff(_))
+    ));
+    assert!(matches!(
+        eng.adopt(
+            &auth,
+            &cfg,
+            &handle,
+            &user(),
+            "a.example.net",
+            RecordType::Txt
+        )
+        .await,
+        Err(EngineError::Backoff(_))
+    ));
+    let t = eng.test(&auth, &cfg, &handle, &user()).await;
+    assert!(!t.ok && t.error.is_some(), "{t:?}");
+    assert_eq!(fake.calls().len(), calls, "still no call went out");
     eng.advance(Duration::from_secs(121));
     eng.ensure(&auth, &cfg, &handle, &user(), &want)
         .await
@@ -424,6 +445,17 @@ async fn cld_919_an_unowned_record_set_is_not_overwritten_until_adopted() {
 #[tokio::test]
 async fn clu_004_a_provider_failure_is_health_only() {
     let h = harness("");
+    // A name the node answers itself, asked through the real pipeline before and after.
+    let node = crate::credential_tests::config(
+        "[[record]]
+name = \"nas.example.net\"
+type = \"A\"
+value = \"10.0.0.10\"
+",
+    );
+    let pipe = crate::pipeline::tests_support::pipeline_from(&node);
+    let before = crate::pipeline::tests_support::answer_bytes(&pipe, "nas.example.net", "10.0.0.9")
+        .expect("the node answers the name itself");
     let cfg = entry("fake-down", &json!({}));
     let (auth, handle, fake) = parts(&h, &cfg);
     fake.fail_next(ProviderError::new(
@@ -448,11 +480,77 @@ async fn clu_004_a_provider_failure_is_health_only() {
     assert_eq!(r.code, "dns_provider_failing");
     assert_eq!(r.level, "degraded", "never severe: {r:?}");
     assert!(r.summary.contains("DNS answers are unaffected"));
+    let during =
+        crate::pipeline::tests_support::answer_bytes(&pipe, "nas.example.net", "10.0.0.9").unwrap();
+    assert_eq!(
+        before, during,
+        "the answer did not change while the provider failed"
+    );
     engine()
         .ensure(&auth, &cfg, &handle, &user(), &set("a.example.net", "v"))
         .await
         .unwrap();
     assert!(!engine().failures().iter().any(|(n, _)| n == "fake-down"));
+    let after =
+        crate::pipeline::tests_support::answer_bytes(&pipe, "nas.example.net", "10.0.0.9").unwrap();
+    assert_eq!(before, after);
+}
+
+// REQ: CLD-919 - the end of dry run never overwrites an edit saved while the test ran.
+#[tokio::test]
+async fn cld_919_ending_dry_run_does_not_overwrite_a_concurrent_edit() {
+    let h = harness("");
+    store_secret(&h).await;
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            "/api/v1/secrets/other",
+            Some(&json!({"value": "second-planted-credential-77", "kind": "text"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            "/api/v1/dns-providers/fake-race",
+            Some(&provider_body("fake-race")),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let loaded = h.src.config.load().dns_provider[0].clone();
+    assert!(loaded.dry_run);
+    let op = wrendns_api::DnsProviderOp {
+        name: "fake-race".to_owned(),
+        action: wrendns_api::DnsProviderAction::Test,
+        by: "ada".to_owned(),
+        remote: None,
+        reason: None,
+    };
+    // An admin saves a new credential name while the test (which loaded `loaded`) is running.
+    let mut edited = provider_body("fake-race");
+    edited["credential_ref"] = json!("other");
+    let (s, _, v) = h
+        .call("PUT", "/api/v1/dns-providers/fake-race", Some(&edited))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let why = crate::dns_provider_ops::end_dry_run(&h.src, &loaded, &op)
+        .await
+        .unwrap_err();
+    assert!(why.contains("changed while it ran"), "{why}");
+    let now = h.src.config.load().dns_provider[0].clone();
+    assert_eq!(now.credential_ref.as_deref(), Some("other"));
+    assert!(
+        now.dry_run,
+        "dry run stays on until a test of this entry passes"
+    );
+    // Nothing changed meanwhile: the same call ends dry run.
+    let current = now.clone();
+    crate::dns_provider_ops::end_dry_run(&h.src, &current, &op)
+        .await
+        .unwrap();
+    let ended = h.src.config.load().dns_provider[0].clone();
+    assert!(!ended.dry_run);
+    assert_eq!(ended.credential_ref.as_deref(), Some("other"));
 }
 
 // REQ: CLD-904, CLU-004 - a failure recorded before the entry was deleted is no health reason.

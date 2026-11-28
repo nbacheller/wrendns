@@ -16,11 +16,6 @@
 //! A provider's credential is held in a `SecretValue`: it prints as `<redacted>`, and every
 //! [`ProviderError`] is scrubbed of it before it leaves the engine.
 
-// The engine's `ensure` and `delete`, the other provider kinds' variants and the fake's knobs have no
-// caller in a release build yet: the providers are T36.10b step b4, the callers T36.10d (certificates) and
-// T36.10e (dynamic DNS). The tests exercise all of them.
-#![allow(dead_code)]
-
 pub(crate) mod engine;
 #[cfg(any(test, feature = "e2e"))]
 pub(crate) mod fake;
@@ -77,10 +72,22 @@ pub(crate) struct RecordSet {
     pub(crate) values: Vec<String>,
 }
 
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// The most TTL a write may ask for (a day).
 pub(crate) const MAX_TTL: u32 = 86_400;
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// The most values one record set may hold.
 const MAX_VALUES: usize = 16;
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// The longest TXT value (four character strings of 255).
 const MAX_TXT: usize = 1020;
 
@@ -103,6 +110,10 @@ pub(crate) fn name_in_zone(name: &str, zone: &str) -> Result<String, String> {
 }
 
 impl RecordSet {
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// A record set checked against `zone`: the name inside it, one to sixteen values that suit the
     /// type, a TTL from 1 to a day. Values are sorted and deduplicated.
     pub(crate) fn checked(
@@ -159,12 +170,20 @@ pub(crate) struct Scope {
     pub(crate) notes: Vec<String>,
 }
 
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// The provider's own identifier of a change (a request ID, a serial), when it gives one.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Change {
     pub(crate) id: Option<String>,
 }
 
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// Why a provider call failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderErrorKind {
@@ -206,11 +225,19 @@ pub(crate) struct ProviderError {
     detail: String,
 }
 
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// How much of a provider's text is kept until it is scrubbed, and how much is ever shown.
 const DETAIL_KEEP: usize = 8192;
 const DETAIL_SHOWN: usize = 300;
 
 impl ProviderError {
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     pub(crate) fn new(kind: ProviderErrorKind, detail: impl Into<String>) -> Self {
         let mut d: String = detail
             .into()
@@ -227,6 +254,10 @@ impl ProviderError {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     pub(crate) fn rate_limited(retry_after: Option<Duration>) -> Self {
         let mut e = Self::new(ProviderErrorKind::RateLimited, "");
         e.retry_after = retry_after;
@@ -271,14 +302,26 @@ impl std::error::Error for ProviderError {}
 /// A DNS host the node may write to. Implementations do the network call; the engine does
 /// everything around it (the zone and type rules, ownership, dry run, limits, audit).
 pub(crate) trait DnsProvider: Send + Sync + fmt::Debug {
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// The kind, as the table spells it.
     fn kind(&self) -> &'static str;
     /// Checks the credential and reports what it may change.
     fn scope(&self) -> Fut<'_, Scope>;
     /// Every `TXT`, `A` and `AAAA` record set in the zone.
     fn list(&self) -> Fut<'_, Vec<RecordSet>>;
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Makes the record set exactly `set` (creating or replacing it).
     fn ensure<'a>(&'a self, set: &'a RecordSet) -> Fut<'a, Change>;
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Removes the record set of this name and type.
     fn delete<'a>(&'a self, name: &'a str, rtype: RecordType) -> Fut<'a, Change>;
 }

@@ -40,7 +40,15 @@ const DEFAULT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_UNHINTED: Duration = Duration::from_mins(15);
 /// The longest a provider's `Retry-After` is honoured.
 const MAX_BACKOFF: Duration = Duration::from_secs(3600);
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 const MINUTE: Duration = Duration::from_secs(60);
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 const HOUR: Duration = Duration::from_secs(3600);
 
 /// Who asked for a change: the audit log's actor.
@@ -53,6 +61,10 @@ pub(crate) enum Who {
         remote: Option<String>,
         reason: Option<String>,
     },
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// The node itself, for a cause (`acme renewal of cert.cluster`, `dynamic DNS for lan`).
     System { cause: String },
 }
@@ -88,6 +100,10 @@ impl Who {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// What a change would be, or was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Plan {
@@ -97,6 +113,10 @@ pub(crate) struct Plan {
     pub(crate) new: Option<RecordSet>,
 }
 
+#[allow(
+    dead_code,
+    reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+)]
 /// What an engine call did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -116,8 +136,16 @@ pub(crate) enum Outcome {
 pub(crate) enum EngineError {
     /// The request itself is not allowed: outside the zone, another type, a bad value.
     Refused(String),
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// The record set exists and the node does not own it: an admin adopts it first.
     NotOwned(String),
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// The entry's own limit on writes: come back after `retry_after`.
     Limited {
         retry_after: Duration,
@@ -174,6 +202,10 @@ pub(crate) struct RecordView {
 
 #[derive(Debug, Default)]
 struct Slot {
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// When the entry's writes were attempted, within the last hour.
     writes: VecDeque<Instant>,
     /// A 429's Retry-After: no write before this.
@@ -285,6 +317,10 @@ impl Engine {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Forgets an entry that left the table.
     pub(crate) fn forget(&self, name: &str) {
         lock(&self.slots).remove(name);
@@ -314,6 +350,10 @@ impl Engine {
         slot.backoff_until = Some(self.now() + d);
     }
 
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Takes a place in the entry's per-minute and per-hour limits (ADR-1112 point 3).
     fn take_place(&self, cfg: &DnsProviderConfig) -> Result<(), EngineError> {
         let now = self.now();
@@ -358,6 +398,8 @@ impl Engine {
         cfg: &DnsProviderConfig,
         h: &Handle,
     ) -> Result<Vec<RecordSet>, EngineError> {
+        // ADR-1112 point 7: every call waits out a back-off, reads included.
+        self.check_backoff(cfg.name.as_str())?;
         match h.provider.list().await {
             Ok(v) => Ok(v),
             Err(e) => Err(self.provider_failed(cfg, h, e)),
@@ -399,6 +441,10 @@ impl Engine {
         blocking(move || Ledger(auth.state()).get(&p, rtype, &n)).await
     }
 
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Makes the record set exactly `want`.
     #[allow(clippy::too_many_lines)] // one pass of the numbered steps in the module comment
     pub(crate) async fn ensure(
@@ -418,7 +464,6 @@ impl Engine {
         )
         .map_err(EngineError::Refused)?;
         let tgt = target(cfg, &want.name, want.rtype);
-        self.check_backoff(cfg.name.as_str())?;
         let current = self
             .read_zone(cfg, h)
             .await?
@@ -507,6 +552,10 @@ impl Engine {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "unused until the provider kinds (T36.10b b4) and their callers (T36.10d, T36.10e) land; the tests use it"
+    )]
     /// Removes the record set of this name and type, when the node owns it.
     pub(crate) async fn delete(
         &self,
@@ -519,7 +568,6 @@ impl Engine {
     ) -> Result<Outcome, EngineError> {
         let name = super::name_in_zone(name, cfg.zone.as_str()).map_err(EngineError::Refused)?;
         let tgt = target(cfg, &name, rtype);
-        self.check_backoff(cfg.name.as_str())?;
         let current = self
             .read_zone(cfg, h)
             .await?
@@ -655,21 +703,30 @@ impl Engine {
         h: &Handle,
         who: &Who,
     ) -> TestReport {
-        let report = match h.provider.scope().await {
-            Ok(scope) => {
-                self.succeed(cfg.name.as_str());
-                TestReport {
-                    ok: true,
-                    scope: Some(scope),
-                    error: None,
-                }
+        // ADR-1112 point 7: a test waits out a back-off too.
+        let report = if let Err(wait) = self.check_backoff(cfg.name.as_str()) {
+            TestReport {
+                ok: false,
+                scope: None,
+                error: Some(wait.to_string()),
             }
-            Err(e) => {
-                let err = self.provider_failed(cfg, h, e);
-                TestReport {
-                    ok: false,
-                    scope: None,
-                    error: Some(err.to_string()),
+        } else {
+            match h.provider.scope().await {
+                Ok(scope) => {
+                    self.succeed(cfg.name.as_str());
+                    TestReport {
+                        ok: true,
+                        scope: Some(scope),
+                        error: None,
+                    }
+                }
+                Err(e) => {
+                    let err = self.provider_failed(cfg, h, e);
+                    TestReport {
+                        ok: false,
+                        scope: None,
+                        error: Some(err.to_string()),
+                    }
                 }
             }
         };
@@ -685,8 +742,10 @@ impl Engine {
         report
     }
 
-    /// Every record set at the provider with who owns it, and the rows the ledger keeps for sets that
-    /// are no longer there (the node made them and someone removed them).
+    /// Every record set at the provider with who owns it. A ledger row whose set is gone from the
+    /// provider is not listed: the table shows what is at the provider, and the row is cleared the
+    /// next time the node deletes that name (the engine's `delete` of a set that is gone forgets
+    /// the row) or recreates it. No admin action depends on seeing it, so no forget control exists.
     pub(crate) async fn records(
         &self,
         ctx: &Arc<Auth>,

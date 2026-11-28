@@ -244,7 +244,7 @@ fn json_of<T: serde::Serialize>(v: &T) -> Result<Value, Problem> {
 /// The first successful test ends the entry's dry run (ADR-1112 point 2): the same stored entry,
 /// `dry_run` false, written through the ordinary managed write (so every member gets it and the
 /// audit log shows it). An entry the files define keeps the file's setting.
-async fn end_dry_run(
+pub(crate) async fn end_dry_run(
     src: &Arc<Sources>,
     cfg: &DnsProviderConfig,
     op: &DnsProviderOp,
@@ -261,34 +261,73 @@ async fn end_dry_run(
                 .to_owned(),
         );
     }
-    let mut next = cfg.clone();
-    next.dry_run = false;
-    let body = serde_json::to_value(&next).map_err(|e| e.to_string())?;
     let backend = crate::api_backend::ApiBackend {
         src: Arc::clone(src),
     };
-    backend
-        .write_managed(ManagedWrite {
-            kind: ManagedKind::DnsProvider,
-            name: cfg.name.to_string(),
-            body: Some(body),
-            dry_run: false,
-            expect: None,
-            by: op.by.clone(),
-            simulate: None,
-            role: Some(Role::Admin),
-            agent: None,
-            origin: None,
-            node_view: None,
-        })
-        .await
-        .map(|_| ())
-        .map_err(|p| {
-            format!(
-                "The test passed, but dry run could not be ended: {}",
-                p.detail
-            )
-        })?;
+    let mut next = cfg.clone();
+    next.dry_run = false;
+    let body = serde_json::to_value(&next).map_err(|e| e.to_string())?;
+    // The write names the configuration version it was decided against, so an edit saved while the
+    // test ran is never overwritten with the entry as it was loaded: the entry is compared first
+    // (changed: no write, the admin tests again) and a version conflict re-reads and tries again.
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let still_same = src
+            .config
+            .load()
+            .dns_provider
+            .iter()
+            .find(|p| p.name == cfg.name)
+            == Some(cfg);
+        if !still_same {
+            return Err(
+                "The test passed, but the entry was changed while it ran, so dry run was left on: test it again."
+                    .to_owned(),
+            );
+        }
+        let version = match src.auth.get() {
+            Some(a) => {
+                let a = Arc::clone(a);
+                tokio::task::spawn_blocking(move || a.state().config_version().ok())
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            None => None,
+        };
+        let Some(version) = version else {
+            return Err(
+                "The test passed, but dry run could not be ended: the configuration version could not be read."
+                    .to_owned(),
+            );
+        };
+        let done = backend
+            .write_managed(ManagedWrite {
+                kind: ManagedKind::DnsProvider,
+                name: cfg.name.to_string(),
+                body: Some(body.clone()),
+                dry_run: false,
+                expect: Some(version),
+                by: op.by.clone(),
+                simulate: None,
+                role: Some(Role::Admin),
+                agent: None,
+                origin: None,
+                node_view: None,
+            })
+            .await;
+        match done {
+            Ok(_) => break,
+            Err(p) if p.code == Code::VersionConflict && attempt < 3 => {}
+            Err(p) => {
+                return Err(format!(
+                    "The test passed, but dry run could not be ended: {}",
+                    p.detail
+                ));
+            }
+        }
+    }
     if let Some(auth) = src.auth.get() {
         let who = who(op);
         crate::dns_provider::engine::note(
