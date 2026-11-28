@@ -77,10 +77,10 @@ async fn cld_904_azure_create_update_delete_against_recorded_api() {
             ok(TOKEN)
         } else if r.method == "GET" && r.target.contains("/recordsets") {
             ok(SETS)
+        } else if r.method == "PUT" && r.body.contains("\"TXTRecords\":[]") {
+            with_id(200, "req-del-1", "{}")
         } else if r.method == "PUT" {
             with_id(200, "req-put-1", "{}")
-        } else if r.method == "DELETE" {
-            with_id(200, "req-del-1", "")
         } else {
             status(404, "{}")
         }
@@ -127,8 +127,9 @@ async fn cld_904_azure_create_update_delete_against_recorded_api() {
     assert_eq!(change.id.as_deref(), Some("req-del-1"));
 
     let seen = server.seen();
+    assert!(seen.iter().all(|r| r.method != "DELETE"), "never a DELETE");
     let puts: Vec<&Seen> = seen.iter().filter(|r| r.method == "PUT").collect();
-    assert_eq!(puts.len(), 2);
+    assert_eq!(puts.len(), 3);
     assert_eq!(
         puts[0].target,
         format!("{ZONE_PATH}/TXT/_acme-challenge.home?api-version=2018-05-01")
@@ -147,10 +148,15 @@ async fn cld_904_azure_create_update_delete_against_recorded_api() {
         body,
         json!({ "properties": { "TTL": 300, "ARecords": [{ "ipv4Address": "192.0.2.7" }] } })
     );
-    let del = seen.iter().find(|r| r.method == "DELETE").unwrap();
+    // The delete empties the record set with a PUT on its own path.
     assert_eq!(
-        del.target,
+        puts[2].target,
         format!("{ZONE_PATH}/TXT/_acme-challenge.home?api-version=2018-05-01")
+    );
+    let body: Value = serde_json::from_str(&puts[2].body).unwrap();
+    assert_eq!(
+        body,
+        json!({ "properties": { "TTL": 60, "TXTRecords": [] } })
     );
     // Every call carried the bearer token, and the token was asked for once.
     for r in seen.iter().filter(|r| !is_token(r)) {
@@ -522,4 +528,61 @@ fn cld_904_azure_is_in_the_registry() {
     assert_eq!(h.provider.kind(), "azure_dns");
     let text = format!("{h:?}");
     assert!(!text.contains("Zk39"), "{text}");
+}
+
+/// A delete under a record-set-only grant empties the set (a PUT), so the next ensure still works
+/// against a server that refuses to create a record set.
+#[tokio::test]
+async fn cld_904_azure_delete_then_ensure_keeps_the_record_set() {
+    let server = start(|r| {
+        if is_token(r) {
+            ok(TOKEN)
+        } else if r.method == "PUT" || r.method == "GET" {
+            ok("{}")
+        } else {
+            // A DELETE would remove the set and its role assignment.
+            status(403, FORBIDDEN)
+        }
+    })
+    .await;
+    let p = provider(&server.base);
+    let n = "_acme-challenge.home.example.net";
+    p.ensure(&txt(n, 60, &["a"])).await.unwrap();
+    p.delete(n, RecordType::Txt).await.unwrap();
+    p.ensure(&txt(n, 60, &["b"])).await.unwrap();
+    let seen = server.seen();
+    assert!(seen.iter().all(|r| r.method != "DELETE"));
+    let puts: Vec<&Seen> = seen.iter().filter(|r| r.method == "PUT").collect();
+    assert_eq!(puts.len(), 3);
+    assert!(
+        puts[1].body.contains("\"TXTRecords\":[]"),
+        "{}",
+        puts[1].body
+    );
+}
+
+/// A listing that still has a next page at the page cap fails; it is never returned partial.
+#[tokio::test]
+async fn cld_919_azure_capped_listing_fails() {
+    let server = start(|r| {
+        if is_token(r) {
+            ok(TOKEN)
+        } else {
+            let host = r
+                .head
+                .lines()
+                .find_map(|l| {
+                    l.to_lowercase()
+                        .strip_prefix("host:")
+                        .map(|h| h.trim().to_owned())
+                })
+                .unwrap_or_default();
+            ok(&format!(
+                "{{\"value\":[],\"nextLink\":\"http://{host}{ZONE_PATH}/recordsets?next=1\"}}"
+            ))
+        }
+    })
+    .await;
+    let e = provider(&server.base).list().await.unwrap_err();
+    assert!(e.to_string().contains("more record sets"), "{e:?}");
 }

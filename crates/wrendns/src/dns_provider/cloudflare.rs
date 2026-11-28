@@ -227,6 +227,9 @@ impl Cloudflare {
             if !more_pages(&v, page) {
                 break;
             }
+            if page == MAX_PAGES {
+                return Err(too_many());
+            }
         }
         Ok(out)
     }
@@ -269,6 +272,9 @@ impl Cloudflare {
                 }
                 if !more_pages(&v, page) {
                     break;
+                }
+                if page == MAX_PAGES {
+                    return Err(too_many());
                 }
             }
         }
@@ -373,6 +379,7 @@ impl Cloudflare {
         Ok(Change { id: last })
     }
 
+    #[allow(clippy::too_many_lines)] // one walk through verify, the zone list and the report
     async fn do_scope(&self) -> Result<Scope, ProviderError> {
         let mut notes = Vec::new();
         // The verify call answers for a user API token; an account-owned token has its own verify
@@ -397,18 +404,40 @@ impl Cloudflare {
             });
         let mut zones: Vec<String> = Vec::new();
         let mut page = 1;
+        // Whether the zone list carries what the token may do per zone, and whether it was cut.
+        let mut edit_known = false;
+        let mut cut = false;
         loop {
             let path = format!("/zones?per_page=50&page={page}");
             match self.json("GET", &path, None, "").await {
                 Ok((v, _)) => {
-                    zones.extend(
-                        v.get("result")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|z| z.get("name")?.as_str().map(str::to_ascii_lowercase)),
-                    );
-                    if !more_pages(&v, page) || page >= 5 {
+                    for z in v
+                        .get("result")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(name) = z.get("name").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        // With a per-zone `permissions` array only zones the token can edit count.
+                        if let Some(p) = z.get("permissions").and_then(Value::as_array) {
+                            edit_known = true;
+                            if !p
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .any(|s| s == "#dns_records:edit" || s == "dns_records:edit")
+                            {
+                                continue;
+                            }
+                        }
+                        zones.push(name.to_ascii_lowercase());
+                    }
+                    if !more_pages(&v, page) {
+                        break;
+                    }
+                    if page >= 5 {
+                        cut = true;
                         break;
                     }
                     page += 1;
@@ -421,18 +450,20 @@ impl Cloudflare {
                 "Token verify did not accept it ({e}), but the zone list worked: an account-owned token is verified another way."
             ));
         }
+        // The entry's zone is looked up by name, not found in the (capped) list.
+        self.zone_id().await?;
         if !zones.contains(&self.zone) {
-            return Err(ProviderError::new(
-                ProviderErrorKind::Rejected,
-                format!(
-                    "the token cannot see the zone {}: it needs Zone:Zone:Read and Zone:DNS:Edit for it",
-                    self.zone
-                ),
-            ));
+            zones.push(self.zone.clone());
         }
         zones.sort();
         zones.dedup();
-        let many = zones.len() > 1;
+        let many = zones.len() > 1 || cut;
+        let verb = if edit_known { "can edit" } else { "can read" };
+        let count = if cut {
+            format!("more than {}", zones.len())
+        } else {
+            zones.len().to_string()
+        };
         let shown: Vec<&str> = zones
             .iter()
             .take(MAX_ZONES_SHOWN)
@@ -440,17 +471,18 @@ impl Cloudflare {
             .collect();
         if many {
             notes.push(format!(
-                "The token reaches {} zones ({}{}): create one for {} only, so a leaked token can change nothing else.",
-                zones.len(),
+                "The token {verb} {count} zones ({}{}): create one for {} only, so a leaked token can change nothing else.",
                 shown.join(", "),
                 if zones.len() > MAX_ZONES_SHOWN { ", and more" } else { "" },
                 self.zone
             ));
         }
-        notes.push(
-            "The zone list shows every zone the token can read, not only those it can edit."
-                .to_owned(),
-        );
+        if !edit_known {
+            notes.push(
+                "The zone list shows every zone the token can read; Cloudflare did not say which of them it can edit."
+                    .to_owned(),
+            );
+        }
         notes.push(
             "Cloudflare cannot limit a token to one record: it can change every record in the zone. If the zone holds anything else of value, delegate the challenge name to a small separate zone instead (see Challenge delegation).".to_owned(),
         );
@@ -458,8 +490,7 @@ impl Cloudflare {
             zone: self.zone.clone(),
             summary: if many {
                 format!(
-                    "Accepted, but the token reaches {} zones, not only {}.",
-                    zones.len(),
+                    "Accepted, but the token {verb} {count} zones, not only {}.",
                     self.zone
                 )
             } else {
@@ -474,6 +505,15 @@ impl Cloudflare {
             notes,
         })
     }
+}
+
+/// The error for a listing that is longer than the node reads: a partial zone would make a record
+/// beyond the cap read as absent, and the ownership check (CLD-919) would let a write through.
+fn too_many() -> ProviderError {
+    ProviderError::new(
+        ProviderErrorKind::Rejected,
+        "the zone holds more records than the node reads",
+    )
 }
 
 fn id_of(v: &Value) -> Option<String> {

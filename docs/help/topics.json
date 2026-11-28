@@ -656,7 +656,7 @@
       "summary": "WrenDNS signs in to Microsoft Entra ID as an application (OAuth2 client credentials; the application's client secret is the stored secret) and changes record sets with the Azure DNS API. Azure can scope a role to a single record set, so the safe grant is DNS Zone Contributor on just the challenge record set, plus the read-only Reader role on the zone so WrenDNS can see what exists before it writes.",
       "when": "You host the zone in Azure DNS and want certificates or a changing home address handled for you with the smallest permission.",
       "example": "az role assignment create --assignee <application id> --role \"DNS Zone Contributor\" --scope /subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Network/dnszones/example.net/TXT/_acme-challenge.home, and the same command with --role Reader and the zone as the scope.",
-      "caution": "The record set must exist first: create an empty TXT record set with the challenge name before the first change, because a role on one record set cannot create it. A role on the whole zone works but Test flags it as broader than needed. The client secret expires on the date Entra gave it: store the new one under the same name before then.",
+      "caution": "The record set must exist first: create an empty TXT record set with the challenge name before the first change, because a role on one record set cannot create it. WrenDNS never deletes the record set: a cleanup empties it, so the grant keeps working for the next change. A role on the whole zone works but Test flags it as broader than needed. The client secret expires on the date Entra gave it: store the new one under the same name before then.",
       "docs": "dns-providers"
     },
     {

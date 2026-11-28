@@ -7907,7 +7907,7 @@ export interface components {
             /** @description `file` (the configuration files define it; read-only here) or `api`. */
             source: string;
             /**
-             * @description `not_used`: this build has no code for the kind yet (only the test provider has any);
+             * @description `not_used`: this build has no code for the kind yet;
              *     `dry_run`: it computes and records changes and sends none, until its first successful test;
              *     `ready`: the first test passed and writes are sent.
              */

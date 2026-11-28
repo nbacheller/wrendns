@@ -218,10 +218,71 @@ async fn cld_904_cloudflare_multi_zone_token_warns() {
             .replace("example.net", "example.org")
             .into_boxed_str(),
     );
-    let server = start(api(other)).await;
+    let inner = api(other);
+    let server = start(move |r| {
+        if r.target.starts_with("/zones?name=") {
+            ok(other)
+        } else {
+            inner(r)
+        }
+    })
+    .await;
     let e = provider(&server.base).scope().await.unwrap_err();
     assert_eq!(e.kind, ProviderErrorKind::Rejected);
     assert!(format!("{e}").contains("example.net"), "{e}");
+}
+
+/// A token whose zone answer says what it may do per zone is counted by the zones it can edit;
+/// a long zone list is cut and reported, and does not fail a token that sees the zone.
+#[tokio::test]
+async fn cld_904_cloudflare_scope_counts_editable_zones_and_cuts_long_lists() {
+    // Two zones readable, one editable: not broader than needed.
+    let two: &'static str = Box::leak(
+        ZONES_TWO
+            .replace(
+                "\"name\": \"example.net\",",
+                "\"name\": \"example.net\", \"permissions\": [\"#dns_records:edit\", \"#zone:read\"],",
+            )
+            .replace(
+                "\"name\": \"example.org\",",
+                "\"name\": \"example.org\", \"permissions\": [\"#zone:read\"],",
+            )
+            .into_boxed_str(),
+    );
+    let server = start(api(two)).await;
+    let s = provider(&server.base).scope().await.unwrap();
+    assert!(!s.broader_than_needed, "{s:?}");
+
+    // An endless zone list that never includes the entry's zone: cut at five pages, the zone is
+    // found by name, and the answer says "more than".
+    let server = start(|r| {
+        let t = r.target.as_str();
+        if t.starts_with("/zones?per_page") {
+            ok(r#"{"success":true,"result":[{"id":"z","name":"other.test"}],"result_info":{"total_pages":99}}"#)
+        } else {
+            api(ZONES_ONE)(r)
+        }
+    })
+    .await;
+    let s = provider(&server.base).scope().await.unwrap();
+    assert!(s.broader_than_needed, "{s:?}");
+    assert!(s.summary.contains("more than"), "{}", s.summary);
+}
+
+/// A listing that still has pages at the page cap fails; it is never returned partial.
+#[tokio::test]
+async fn cld_919_cloudflare_capped_listing_fails() {
+    let server = start(|r| {
+        let t = r.target.as_str();
+        if t.starts_with("/zones?name=") {
+            ok(ZONES_ONE)
+        } else {
+            ok(r#"{"success":true,"result":[],"result_info":{"total_pages":9999}}"#)
+        }
+    })
+    .await;
+    let e = provider(&server.base).list().await.unwrap_err();
+    assert!(e.to_string().contains("more records"), "{e}");
 }
 
 /// An inactive token is refused; an account-owned token (verify refused, zones listed) is accepted

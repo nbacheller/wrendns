@@ -48,7 +48,7 @@ impl std::fmt::Display for BuildError {
     }
 }
 
-/// Whether this build has provider code for the entry: only the test provider so far.
+/// Whether this build has provider code for the entry: Azure DNS and Cloudflare so far.
 pub(crate) fn has_code(cfg: &DnsProviderConfig) -> bool {
     #[cfg(any(test, feature = "e2e"))]
     if super::fake::is_fake_name(cfg.name.as_str()) {
@@ -91,6 +91,35 @@ pub(crate) fn build(
         s.as_ref()
             .map(|v| SecretValue::from_text(zeroize::Zeroizing::new(v.expose().to_owned())))
     };
+    // Test builds only: an entry whose name has a replay base (see `set_replay_base`) talks to a
+    // local replay server instead of the provider.
+    #[cfg(test)]
+    if let Some(base) = replay_base(cfg.name.as_str()) {
+        match cfg.kind {
+            DnsProviderKind::AzureDns => {
+                return Ok(Handle {
+                    provider: Arc::new(super::azure::AzureDns::with_bases(
+                        cfg,
+                        copy(&secret),
+                        &base,
+                        &base,
+                    )),
+                    secret,
+                });
+            }
+            DnsProviderKind::Cloudflare => {
+                return Ok(Handle {
+                    provider: Arc::new(super::cloudflare::Cloudflare::with_base(
+                        cfg,
+                        copy(&secret),
+                        &base,
+                    )),
+                    secret,
+                });
+            }
+            DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
+        }
+    }
     match cfg.kind {
         DnsProviderKind::AzureDns => {
             return Ok(Handle {
@@ -113,4 +142,28 @@ pub(crate) fn build(
         DnsProviderKind::Route53 => "route53",
         DnsProviderKind::Rfc2136 => "rfc2136",
     }))
+}
+
+/// Test seam: the base URL a named entry's provider talks to (a local replay server).
+#[cfg(test)]
+static REPLAY: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Point the entry `name` (`azure_dns` or `cloudflare` kind) at a replay server. Tests only.
+#[cfg(test)]
+pub(crate) fn set_replay_base(name: &str, base: &str) {
+    let mut r = REPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    r.retain(|(n, _)| n != name);
+    r.push((name.to_owned(), base.to_owned()));
+}
+
+#[cfg(test)]
+fn replay_base(name: &str) -> Option<String> {
+    REPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, b)| b.clone())
 }

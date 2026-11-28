@@ -931,6 +931,88 @@ async fn dsc_908_the_dns_ledger_actions_wait_for_every_members_build() {
     crate::upgrade_gate::forget_held();
 }
 
+/// The real Azure and Cloudflare kinds, behind a replay server that echoes the credential, the
+/// access token and the bearer token in its errors: the Test answer, the audit rows, the health
+/// reasons and the engine's error carry none of them.
+#[tokio::test]
+async fn cld_904_real_kinds_keep_credentials_out_of_audit_health_and_api_answers() {
+    use crate::dns_provider::http_json::replay::{Answer, start};
+    const ACCESS: &str = "tok-azure-access-5f2c";
+    let h = harness("");
+    store_secret(&h).await;
+    let leak = format!("denied for {SECRET} and {ACCESS} and Bearer {SECRET}");
+    let body = json!({"error": {"code": "AuthorizationFailed", "message": leak}}).to_string();
+    // Cloudflare has no access token: its bearer token is the stored secret.
+    let cf_leak = format!("denied for {SECRET} and Bearer {SECRET}");
+    let cf_body =
+        json!({"success": false, "errors": [{"code": 10000, "message": cf_leak}]}).to_string();
+    let server = start(move |r| {
+        if r.target.starts_with("/tenant-1/oauth2/v2.0/token") {
+            Answer(
+                200,
+                vec![],
+                include_str!("dns_provider/testdata/azure_token.json").to_owned(),
+            )
+        } else if r.target.starts_with("/subscriptions") {
+            Answer(403, vec![], body.clone())
+        } else {
+            Answer(403, vec![], cf_body.clone())
+        }
+    })
+    .await;
+    let azure = json!({
+        "kind": "azure_dns", "zone": "example.net", "credential_ref": "cf",
+        "subscription": "00000000-0000-0000-0000-000000000001", "resource_group": "rg-dns",
+        "tenant": "tenant-1", "client_id": "app-1"
+    });
+    let cloud = json!({"kind": "cloudflare", "zone": "example.net", "credential_ref": "cf"});
+    let mut seen = Vec::new();
+    for (name, body) in [("replay-az", &azure), ("replay-cf", &cloud)] {
+        registry::set_replay_base(name, &server.base);
+        let (s, _, v) = h
+            .call("PUT", &format!("/api/v1/dns-providers/{name}"), Some(body))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let (s, _, bad) = h
+            .call("POST", &format!("/api/v1/dns-providers/{name}/test"), None)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{bad}");
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert_eq!(bad["supported"], true, "{bad}");
+        seen.push(bad.to_string());
+        let cfg = entry(name, &json!({"kind": body["kind"]}));
+        let mut cfg_v = serde_json::to_value(&cfg).unwrap();
+        for (k, x) in body.as_object().unwrap() {
+            cfg_v[k] = x.clone();
+        }
+        cfg_v["dry_run"] = json!(false);
+        let cfg: DnsProviderConfig = serde_json::from_value(cfg_v).unwrap();
+        let secret = crate::secrets::value::SecretValue::from_text(zeroize::Zeroizing::new(
+            SECRET.to_owned(),
+        ));
+        let handle = registry::build(&cfg, Some(secret)).unwrap();
+        let err = engine()
+            .ensure(
+                &h.auth,
+                &cfg,
+                &handle,
+                &user(),
+                &set("_acme-challenge.example.net", "tok"),
+            )
+            .await
+            .unwrap_err();
+        seen.push(format!("{err:?} {err}"));
+    }
+    let failures = engine().failures();
+    let reasons = crate::health::dns_provider_reasons(&failures);
+    seen.push(format!("{failures:?} {reasons:?}"));
+    seen.push(audit(&h));
+    for text in seen {
+        assert!(!text.contains(SECRET), "the credential came back: {text}");
+        assert!(!text.contains(ACCESS), "the access token came back: {text}");
+    }
+}
+
 /// The forwarded action survives the cluster channel intact.
 #[test]
 fn cld_919_the_forwarded_action_round_trips() {

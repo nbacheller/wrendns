@@ -350,7 +350,11 @@ impl AzureDns {
                     out.push(set);
                 }
             }
-            if out.len() > MAX_SETS {
+            if out.len() >= MAX_SETS
+                && v.get("nextLink")
+                    .and_then(Value::as_str)
+                    .is_some_and(|n| !n.is_empty())
+            {
                 return Err(ProviderError::new(
                     ProviderErrorKind::Rejected,
                     format!("the zone holds more than {MAX_SETS} record sets"),
@@ -371,7 +375,12 @@ impl AzureDns {
                 return Ok(out);
             }
         }
-        Ok(out)
+        // The page cap was reached with a next page still offered: a partial zone would make a
+        // record set beyond it read as absent (CLD-919), so it is an error.
+        Err(ProviderError::new(
+            ProviderErrorKind::Rejected,
+            "the zone holds more record sets than the node reads",
+        ))
     }
 
     /// One record set from a listing item; `None` for a type that is not written or an empty one.
@@ -488,9 +497,9 @@ impl AzureDns {
             },
             Some(false) => Scope {
                 zone: self.zone.clone(),
-                summary: "Accepted for the record sets it was granted a write role on; at the zone it can only read.".to_owned(),
+                summary: "Accepted for sign-in. At the zone it can only read; any write grant is on individual record sets, which Azure does not list here, and a write is refused until DNS Zone Contributor is given on the challenge record set.".to_owned(),
                 record_types: types,
-                record_sets: Some(vec!["only the record sets it was granted on (Azure does not list them here)".to_owned()]),
+                record_sets: Some(vec!["the record sets it was granted on, if any (Azure does not list them here)".to_owned()]),
                 broader_than_needed: false,
                 notes,
             },
@@ -617,11 +626,25 @@ impl DnsProvider for AzureDns {
     fn delete<'a>(&'a self, name: &'a str, rtype: RecordType) -> Fut<'a, Change> {
         Box::pin(async move {
             let rel = self.relative(name)?;
+            // The record set is emptied, not deleted: a role on one record set cannot create it
+            // again, and Azure removes a resource's role assignments with it. An empty set reads
+            // as absent (`parse_set` drops it).
+            let empty = RecordSet {
+                name: name.to_owned(),
+                rtype,
+                ttl: 60,
+                values: Vec::new(),
+            };
+            let body = serde_json::to_vec(&Self::body_of(&empty)).map_err(|_| {
+                ProviderError::new(
+                    ProviderErrorKind::Rejected,
+                    "the record set could not be encoded",
+                )
+            })?;
             let reply = self
-                .call("DELETE", &self.set_url(rtype, &rel), None)
+                .call("PUT", &self.set_url(rtype, &rel), Some(body))
                 .await?;
-            // 200 deleted, 204 there was none: either way it is gone.
-            if reply.ok() || reply.status == 404 {
+            if reply.ok() {
                 return Ok(Change {
                     id: reply.request_id,
                 });
