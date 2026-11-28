@@ -2428,6 +2428,14 @@ impl Cluster {
 
     /// The URL this node announces for its web UI and API (empty: none).
     pub fn api_url(&self) -> String {
+        // REQ: API-902 - a build without the feature announces none.
+        let knows = crate::gate::knows(
+            &self.features.lock().unwrap_or_else(PoisonError::into_inner),
+            crate::gate::Feature::MemberApiAddress,
+        );
+        if !knows {
+            return String::new();
+        }
         self.api_url
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -2548,6 +2556,8 @@ impl Cluster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        // Read before the literal below: its features guard lives to the end of the statement.
+        let api_url = self.api_url();
         Frame {
             body: Some(Body::Hello(Hello {
                 source_commit: l.source_commit.clone(),
@@ -2568,7 +2578,7 @@ impl Cluster {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone(),
-                api_url: self.api_url(),
+                api_url,
             })),
         }
     }

@@ -314,6 +314,8 @@ struct Net {
     /// The primary's `state.db` (where a replica's entry is written).
     primary_state: Mutex<Option<Arc<State>>>,
     primary_down: AtomicBool,
+    /// Every request a node was sent (target name), in order: what reached the wire.
+    forwarded: Mutex<Vec<String>>,
 }
 
 struct Fake {
@@ -513,6 +515,7 @@ impl Host for Fake {
             .get(node)
             .and_then(Weak::upgrade);
         let me = self.name.clone();
+        self.net.forwarded.lock().unwrap().push(node.to_owned());
         Box::pin(async move {
             let Some(t) = target else {
                 return Err(Problem::new(Code::NodeUnreachable, "no such node"));
@@ -4784,12 +4787,33 @@ async fn api_902_node_api_read_of_an_older_member_is_upgrade_required() {
     assert_eq!(e.code, Code::UpgradeRequired);
     assert!(e.detail.contains("pi-c"), "{}", e.detail);
     assert!(e.detail.contains("upgrade it first"), "{}", e.detail);
+    // Nothing was sent to pi-c: the fake network saw no request for it.
+    assert!(
+        !a.host
+            .net
+            .forwarded
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n == "pi-c"),
+        "the refusal comes before anything is sent"
+    );
     assert!(
         c.audits("settings.guarded").is_empty() && c.audits("settings.guarded_refused").is_empty()
     );
     assert_eq!(
         a.engine.node_api(&alice, "pi-b").await.unwrap().node,
         "pi-b"
+    );
+    // Control: a member that knows the feature is sent the request.
+    assert!(
+        a.host
+            .net
+            .forwarded
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n == "pi-b")
     );
     // A target that was sent the op anyway (a build that knows it) still answers only to the
     // primary's assertion, as below; an older build that does not know the op cannot decode it, so

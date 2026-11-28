@@ -1080,3 +1080,39 @@ fn api_902_a_members_api_url_is_announced_in_the_hello_and_refreshed_in_heartbea
         drop((replica, primary, dirs));
     });
 }
+
+/// REQ: API-902 (T27.14g0, AC 2), CLU-010 - a mixed cluster: a member whose feature list lacks
+/// `member_api_address` (an older build) announces no URL even when one is set, is listed with
+/// none, does not satisfy the gate, and so is not asked for its settings.
+#[test]
+fn api_902_a_member_without_the_feature_announces_no_url_and_is_not_asked() {
+    finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        let old: Vec<String> = wrendns_cluster::gate::own_features()
+            .into_iter()
+            .filter(|f| f != wrendns_cluster::gate::Feature::MemberApiAddress.name())
+            .collect();
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of_announcing_url(
+            anchors_handler(),
+            Some(old),
+            "https://192.0.2.10:8443",
+        ));
+        let (url, features) = replica
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| (m.api_url, m.features))
+            .expect("the primary is a member");
+        assert_eq!(url, "", "an older build announces none");
+        assert!(!wrendns_cluster::gate::knows(
+            &features,
+            wrendns_cluster::gate::Feature::MemberApiAddress
+        ));
+        let view = crate::cluster::view(&replica, &crate::host::HostMonitor::default());
+        let row = view.nodes.iter().find(|n| !n.this_node).unwrap();
+        assert_eq!(row.api_url, None, "listed with no address");
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((replica, primary, dirs));
+    });
+}
