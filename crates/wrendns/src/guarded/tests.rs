@@ -280,6 +280,11 @@ fn defs(key_fallback: bool) -> Vec<RowDef> {
                 row: *wrendns_config::guarded::row(wrendns_config::guarded::DNSTAP).unwrap(),
                 applier: Arc::new(super::dnstap::Dnstap),
             },
+            RowDef {
+                row: *wrendns_config::guarded::row(wrendns_config::guarded::TRUSTED_PROXIES)
+                    .unwrap(),
+                applier: Arc::new(super::trusted_proxies::TrustedProxies),
+            },
         ])
         .collect()
 }
@@ -745,6 +750,7 @@ fn admin(name: &str, age: u64) -> GuardedCaller {
         arrived_on: None,
         remote: Some("192.0.2.10".parse().unwrap()),
         remote_under_pending: None,
+        peer: None,
         tls: false,
     }
 }
@@ -1316,6 +1322,7 @@ async fn api_902_window_state_machine() {
         arrived_on: arrived,
         remote: None,
         remote_under_pending: None,
+        peer: None,
         tls: false,
     };
     let there = on_new_socket(anon(None), &r).arrived_on;
@@ -1553,6 +1560,181 @@ async fn api_902_pending_proxy_list_not_used_for_break_glass() {
         n.engine.pending_proxies().is_none(),
         "after the change ends nothing is pending"
     );
+}
+
+/// Puts `list` in the fake node's running configuration, as a reload that applied the entry would.
+fn run_proxies(n: &Node, list: &[&str]) {
+    let mut c = Config::default();
+    c.api.confirm_window_secs = 60;
+    c.api.trusted_proxies = list
+        .iter()
+        .map(|s| wrendns_config::Cidr::parse(s).unwrap())
+        .collect();
+    *n.host.cfg.lock().unwrap() = Arc::new(c);
+}
+
+// REQ: API-902 (T27.14f) - the `trusted-proxies` row: an entry added weakens (a red mark, a sign-in
+// within 10 minutes, refused with a stale one), and removing entries, or the same list again, does
+// not.
+#[tokio::test(start_paused = true)]
+async fn api_902_trusted_proxy_add_is_weakening() {
+    let n = solo();
+    let stale = admin("alice", 3600);
+    let add = json!({"proxies": ["10.0.0.0/8"]});
+    let p = preview(&n.engine, &stale, "trusted-proxies", add.clone())
+        .await
+        .unwrap();
+    assert!(p.weakening && p.needs_recent_sign_in, "{p:?}");
+    assert_eq!(p.mode, "window");
+    assert_eq!(p.phrase, "pi-a trusted-proxies");
+    assert_eq!(
+        code(
+            n.engine
+                .apply(&stale, "trusted-proxies", apply_req(&p, add.clone()))
+                .await
+        ),
+        Code::ReauthRequired
+    );
+    // A fresh sign-in applies it, as a window change that a `proxy_list` proof confirms.
+    let fresh = admin("alice", 5);
+    let r = change(&n.engine, &fresh, "trusted-proxies", add)
+        .await
+        .unwrap();
+    assert_eq!(r.status, "pending");
+    assert_eq!(r.proof.as_deref(), Some("proxy_list"));
+    assert!(r.new_address.is_none(), "no socket moves");
+    n.engine
+        .cancel(&fresh, r.pending_id.as_deref().unwrap())
+        .await
+        .unwrap();
+    // Narrowing never weakens: not even with a stale sign-in.
+    run_proxies(&n, &["10.0.0.0/8", "192.0.2.7"]);
+    for narrow in [
+        json!({"proxies": ["10.0.0.0/8"]}),
+        json!({"proxies": []}),
+        json!({"proxies": ["10.0.0.0/8", "192.0.2.7"]}),
+    ] {
+        let p = preview(&n.engine, &stale, "trusted-proxies", narrow.clone())
+            .await
+            .unwrap();
+        assert!(!p.weakening && !p.needs_recent_sign_in, "{narrow}");
+    }
+    let wider = json!({"proxies": ["10.0.0.0/8", "192.0.2.7", "198.51.100.1"]});
+    assert!(
+        preview(&n.engine, &stale, "trusted-proxies", wider)
+            .await
+            .unwrap()
+            .weakening
+    );
+}
+
+// REQ: API-902 (T27.14f) - the review says what the node sees for this request today; the confirm
+// shows the address it now sees; the entry is written and the node reloaded only at the confirm, and a
+// cancelled change leaves the list and the store as they were.
+#[tokio::test(start_paused = true)]
+async fn api_902_trusted_proxy_confirm_shows_seen_address() {
+    let n = solo();
+    let mut a = admin("alice", 5);
+    a.peer = Some("10.0.0.2".parse().unwrap());
+    a.remote = Some("192.0.2.10".parse().unwrap());
+    let value = json!({"proxies": ["10.0.0.2"]});
+    let p = preview(&n.engine, &a, "trusted-proxies", value.clone())
+        .await
+        .unwrap();
+    assert_eq!(p.seen_client.as_deref(), Some("192.0.2.10"));
+    // A request the primary relayed has no peer: the line is left out.
+    let relayed = GuardedCaller {
+        peer: None,
+        ..a.clone()
+    };
+    let q = preview(&n.engine, &relayed, "trusted-proxies", value.clone())
+        .await
+        .unwrap();
+    assert!(q.seen_client.is_none());
+    // Cancelled: nothing stored, no reload, the list in force untouched.
+    let r = n
+        .engine
+        .apply(&a, "trusted-proxies", apply_req(&p, value.clone()))
+        .await
+        .unwrap();
+    let pid = r.pending_id.clone().unwrap();
+    assert_eq!(n.engine.pending_proxies().unwrap().len(), 1);
+    assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
+    n.engine.cancel(&a, &pid).await.unwrap();
+    assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
+    assert_eq!(n.host.reloads.load(Ordering::SeqCst), 0);
+    assert!(n.host.running_config().api.trusted_proxies.is_empty());
+    // Confirmed: through the new list (the proxy forwards the real client)...
+    let r = change(&n.engine, &a, "trusted-proxies", value.clone())
+        .await
+        .unwrap();
+    let pid = r.pending_id.clone().unwrap();
+    assert_eq!(
+        code(n.engine.confirm(&a, &pid, None).await),
+        Code::Forbidden,
+        "a request the new list does not carry proves nothing"
+    );
+    run_proxies(&n, &["10.0.0.2"]);
+    let mut c = a.clone();
+    c.remote_under_pending = Some("203.0.113.7".parse().unwrap());
+    let ok = n.engine.confirm(&c, &pid, None).await.unwrap();
+    assert_eq!(ok.outcome, "confirmed");
+    assert_eq!(ok.seen_client.as_deref(), Some("203.0.113.7"));
+    let stored = store::for_node(&n.engine.state, "pi-a");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, "trusted-proxies");
+    assert_eq!(stored[0].value, value);
+    assert!(
+        n.host.reloads.load(Ordering::SeqCst) >= 1,
+        "the commit reloads the node"
+    );
+    // ... or directly (the owner's amendment): a request whose peer is in neither list carries
+    // `remote_under_pending` as its own address, and the confirm passes.
+    run_proxies(&n, &[]);
+    let direct = admin("alice", 5);
+    let r = change(
+        &n.engine,
+        &direct,
+        "trusted-proxies",
+        json!({"proxies": []}),
+    )
+    .await
+    .unwrap();
+    let mut d = direct.clone();
+    d.remote_under_pending = d.remote;
+    let ok = n
+        .engine
+        .confirm(&d, r.pending_id.as_deref().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(ok.seen_client.as_deref(), Some("192.0.2.10"));
+}
+
+// REQ: API-902 (T27.14f) - a commit that finds the node not running the new list (a file sets it, so
+// the entry is not applied) is a failed commit: rolled back, with the previous entry put back.
+#[tokio::test(start_paused = true)]
+async fn api_902_trusted_proxy_commit_fails_when_the_node_runs_another_list() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let mut c = a.clone();
+    c.remote_under_pending = c.remote;
+    let r = change(
+        &n.engine,
+        &a,
+        "trusted-proxies",
+        json!({"proxies": ["10.0.0.0/8"]}),
+    )
+    .await
+    .unwrap();
+    // The running configuration still has no proxies.
+    let err = n
+        .engine
+        .confirm(&c, r.pending_id.as_deref().unwrap(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::Internal, "{err:?}");
+    assert!(store::for_node(&n.engine.state, "pi-a").is_empty());
+    assert!(n.engine.pending_proxies().is_none(), "rolled back");
 }
 
 // REQ: API-902 (ADR-956 §6) — settings.guarded, settings.guarded_rolled_back and

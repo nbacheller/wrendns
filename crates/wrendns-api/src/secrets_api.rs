@@ -470,8 +470,7 @@ pub(crate) fn transport_ok(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("https"));
     let listed = peer.is_some_and(|ip| {
-        auth.settings()
-            .trusted_proxies
+        auth.trusted_proxies()
             .iter()
             .any(|(n, l)| crate::auth::in_network(ip, *n, *l))
     });

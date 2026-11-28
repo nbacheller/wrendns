@@ -21,6 +21,8 @@
   import ListenerGate from '../lib/components/ListenerGate.svelte';
   import Listeners from '../lib/components/Listeners.svelte';
   import AllowedNetworks from '../lib/components/AllowedNetworks.svelte';
+  // REQ: API-902, API-901 (T27.14f) — how the UI and API are served: the redirect and the trusted proxies (admins).
+  import WebApi from '../lib/components/WebApi.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
@@ -989,6 +991,9 @@
     {/if}
     <!-- REQ: DNS-014, API-901 (T27.14h) — the one cluster-wide list of allowed networks (admins change it). -->
     <AllowedNetworks />
+    {#if can('admin')}
+      <WebApi web={info?.api} probes={probes ?? []} onChanged={() => api.info().then((i) => (info = i)).catch(() => {})} />
+    {/if}
     <section class="card" data-testid="changes-list">
       <h2>Changes<HelpButton id="change-markers" /></h2>
       <div class="change-filters">

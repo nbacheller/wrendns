@@ -77,6 +77,26 @@ impl ListenerAccess {
     }
 }
 
+/// REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and
+/// API, for the Settings "Web UI and API" card. Admin only: absent from every other caller's answer,
+/// as the listener paths are, and absent from an older node's.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiInfo {
+    /// The address the API listens on (`[api] listen`).
+    pub listen: String,
+    /// `https` when `[api] tls` is set (the node serves HTTPS itself), else `http`.
+    pub scheme: String,
+    /// With HTTPS: `self-signed`, or the certificate file's name (never its path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    /// `[api] trusted_proxies`, as in force now: each address or network.
+    pub trusted_proxies: Vec<String>,
+    /// The plain-HTTP redirect listener's address (`[api] http_redirect`), when one is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_redirect: Option<String>,
+}
+
 /// Node and build information.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +141,11 @@ pub struct SystemInfo {
     /// REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
     /// link-local left out), which an upstream's `source` can name. They differ per node.
     pub addresses: Vec<NodeAddress>,
+    /// REQ: API-902 (T27.14f) - how this node serves the web UI and API: the address, the scheme,
+    /// the certificate's name, the trusted proxies and the redirect. Admin only (owner decision,
+    /// 2026-11-27); an older node omits it, so a reader must treat it as absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiInfo>,
 }
 
 /// One address this node holds, for the Upstreams form's `source` suggestions.
