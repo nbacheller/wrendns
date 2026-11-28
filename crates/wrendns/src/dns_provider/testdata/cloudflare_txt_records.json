@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": [
+    {
+      "id": "r-txt-1",
+      "type": "TXT",
+      "name": "_acme-challenge.home.example.net",
+      "content": "\"old-token\"",
+      "proxiable": false,
+      "proxied": false,
+      "ttl": 120,
+      "zone_id": "023e105f4ecef8ad9ca31a8372d0c353",
+      "zone_name": "example.net"
+    },
+    {
+      "id": "r-txt-2",
+      "type": "TXT",
+      "name": "_acme-challenge.home.example.net",
+      "content": "\"second-token\"",
+      "proxied": false,
+      "ttl": 60
+    }
+  ],
+  "result_info": {
+    "page": 1,
+    "per_page": 100,
+    "count": 2,
+    "total_count": 2,
+    "total_pages": 1
+  }
+}

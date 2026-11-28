@@ -616,7 +616,7 @@
       "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
       "when": "You want certificates or a changing home address to be handled for you, and you want to grant WrenDNS the smallest permission that does it.",
       "example": "Azure DNS for example.net, with a role on the single record set _acme-challenge.home (the form shows the az command), the application's client secret stored as dns.azure-home.credential, and the entry in dry run until it is tested.",
-      "caution": "Every new entry starts in dry run: changes are recorded and none is sent until its first successful test, and WrenDNS changes only records it made or you adopt. No provider kind has its code yet, so a test says so and nothing at your DNS host changes. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
+      "caution": "Every new entry starts in dry run: changes are recorded and none is sent until its first successful test, and WrenDNS changes only records it made or you adopt. All four kinds have provider code. For Route 53 store the access key as ACCESS_KEY_ID:SECRET and attach the IAM policy the form shows (it limits the key to the challenge name and TXT); for RFC 2136 store the TSIG secret (base64, HMAC-SHA256) and add the update-policy and allow-transfer lines the form shows to the server. Test shows that the key is accepted for the zone; neither service reports what a key may change, so a change the grant does not allow is refused when it is made. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
       "docs": "dns-providers"
     },
     {
@@ -636,7 +636,7 @@
       "summary": "Test asks the provider what the stored credential may change and shows it: the zone, the record types, the record sets it is limited to, and a warning when it can change more than WrenDNS needs. Nothing is written and the credential is never shown. The first successful test ends the entry's dry run.",
       "when": "After you add a provider, and after you change its credential or its grant at the provider.",
       "example": "A Cloudflare token for one zone: the test shows the zone and TXT, A and AAAA, and warns that the token can change any record set in it, so you may prefer delegating the challenge name.",
-      "caution": "A kind with no provider code in this build says so and changes nothing. A test that fails shows the provider's answer with the credential taken out. An entry the configuration file defines keeps the file's dry-run setting.",
+      "caution": "An entry with no provider code in this build (none of the four kinds) says so and changes nothing. A test that fails shows the provider's answer with the credential taken out. An entry the configuration file defines keeps the file's dry-run setting.",
       "docs": "dns-providers"
     },
     {
@@ -647,6 +647,26 @@
       "when": "A record set WrenDNS should keep up to date already exists at your DNS host, or you want to see what it manages.",
       "example": "home.example.net A was made by hand: adopt it once, and the dynamic-DNS update may then change it.",
       "caution": "Adopt only what WrenDNS should manage: after that it can replace or delete the record set. The list is for admins and never an agent.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-azure",
+      "title": "Give WrenDNS one Azure DNS record set",
+      "term": "Azure DNS provider",
+      "summary": "WrenDNS signs in to Microsoft Entra ID as an application (OAuth2 client credentials; the application's client secret is the stored secret) and changes record sets with the Azure DNS API. Azure can scope a role to a single record set, so the safe grant is DNS Zone Contributor on just the challenge record set, plus the read-only Reader role on the zone so WrenDNS can see what exists before it writes.",
+      "when": "You host the zone in Azure DNS and want certificates or a changing home address handled for you with the smallest permission.",
+      "example": "az role assignment create --assignee <application id> --role \"DNS Zone Contributor\" --scope /subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Network/dnszones/example.net/TXT/_acme-challenge.home, and the same command with --role Reader and the zone as the scope.",
+      "caution": "The record set must exist first: create an empty TXT record set with the challenge name before the first change, because a role on one record set cannot create it. WrenDNS never deletes the record set: a cleanup empties it, so the grant keeps working for the next change. A role on the whole zone works but Test flags it as broader than needed. The client secret expires on the date Entra gave it: store the new one under the same name before then.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-cloudflare",
+      "title": "Use a Cloudflare API token for one zone",
+      "term": "Cloudflare provider",
+      "summary": "WrenDNS uses a Cloudflare API token (the stored secret) to find the zone and to create, change and delete DNS records in it. Create the token with Zone: Zone: Read and Zone: DNS: Edit, limited to this one zone. Test checks the token and lists the zones it reaches, and warns when that is more than one.",
+      "when": "Your zone is at Cloudflare and you want certificates or a changing home address handled for you.",
+      "example": "A token for example.net only: Test shows the zone and warns about nothing. A token for all zones in the account: Test warns that it reaches every zone, so you create a narrower one.",
+      "caution": "Cloudflare cannot limit a token to one record: whoever holds it can change every record in the zone. If the zone holds anything else of value, delegate the challenge name to a small separate zone instead, so a leaked token can change nothing that matters.",
       "docs": "dns-providers"
     },
     {

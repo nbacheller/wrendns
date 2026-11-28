@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "r-new-1",
+    "type": "TXT",
+    "name": "_acme-challenge.home.example.net",
+    "content": "tok-1",
+    "ttl": 60,
+    "proxied": false
+  }
+}

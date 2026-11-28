@@ -16,7 +16,8 @@
 //!   `upgrade_gate::enforce_dns_providers`.
 //! - **Not used yet.** The table stores and validates entries. The provider trait and the write
 //!   engine (T36.10b step b3) is in `dns_provider/`; its Test, records and adopt actions are in
-//!   `dns_provider_ops`. The reads say `not_used` for a kind with no provider code yet, `dry_run`
+//!   `dns_provider_ops`. The reads say `not_used` for an entry with no provider code (every real kind has code; only the
+//!   test-only `nocode...` entry does), `dry_run`
 //!   until the first successful test, then `ready`.
 
 use wrendns_api::ManagedWrite;
@@ -241,12 +242,12 @@ fn entry(src: &Sources, p: &DnsProviderConfig, file: &Config, held: bool) -> Dns
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
     let present = secret.as_deref().is_some_and(|n| src.secrets.exists(n));
-    // REQ: CLD-919 - what the entry does now: no code for its kind yet, dry run until the first
+    // REQ: CLD-919 - what the entry does now: no provider code (test-only entries), dry run until the first
     // successful test, or sending writes.
     let (state, detail) = if !crate::dns_provider::registry::has_code(p) {
         (
             "not_used",
-            "Stored and validated. This build has no provider code for this kind yet, so Test says so and nothing is written at the DNS host.",
+            "Stored and validated. This build has no provider code for this entry, so Test says so and nothing is written at the DNS host.",
         )
     } else if p.dry_run {
         (

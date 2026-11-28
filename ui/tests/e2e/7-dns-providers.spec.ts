@@ -44,11 +44,21 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('Zone, DNS, Edit');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('azure_dns');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('az role assignment create');
+      // b4a: the record-set scope, the record set that must exist first, and Reader on the zone.
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('--role "DNS Zone Contributor"');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('dnszones/example.net/TXT/_acme-challenge.<location>');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('must exist first');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('--role "Reader"');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('route53');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('route53:ChangeResourceRecordSets');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('ListHostedZonesByName');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('rfc2136');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('update-policy');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('allow-transfer');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('cloudflare');
+      // b4b: the token needs zone read (to find the zone) and DNS edit, for one zone; delegation otherwise.
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('Zone, Zone, Read');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('delegate the challenge name');
       // The credential goes through SecretField: typed once, stored by name, never shown again.
       const secret = page.getByTestId('dnsproviders-secret');
       await secret.getByLabel('Credential', { exact: true }).fill(SECRET);
@@ -60,7 +70,8 @@ test.describe('cld_904 DNS providers in the UI', () => {
       const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' });
       await expect(card).toBeVisible({ timeout: 10_000 });
       await expect(card).toContainText('From the UI');
-      await expect(card).toContainText('Not used yet');
+      // Cloudflare has provider code, so the card is not marked "not used yet".
+      await expect(card).not.toContainText('Not used yet');
       await expect(card).toContainText('Dry run');
       await expect(card).toContainText('dns.cf-e2e.credential');
       await expect(page.getByTestId('dnsproviders-notice')).toContainText('starts in dry run');
@@ -137,18 +148,18 @@ test.describe('cld_904 DNS providers in the UI', () => {
     }
   });
 
-  test('cld_904 a kind with no provider code yet says so when tested', async ({ browser }) => {
+  test('cld_904 an entry with no provider code (the test-only nocode seam) says so when tested', async ({ browser }) => {
     const page = await signIn(browser, ADMIN);
     try {
       await page.getByTestId('dnsproviders-add').click();
-      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('cf-nocode');
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('nocode-cf');
       await page.getByRole('textbox', { name: 'Zone', exact: true }).fill('example.net');
       const secret = page.getByTestId('dnsproviders-secret');
       await secret.getByLabel('Credential', { exact: true }).fill(SECRET);
       await secret.getByRole('button', { name: 'Save secret' }).click();
       await expect(secret).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
       await page.getByTestId('dnsproviders-save').click();
-      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-nocode' });
+      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'nocode-cf' });
       await expect(card).toBeVisible({ timeout: 10_000 });
       await card.getByTestId('dnsproviders-test').click();
       await expect(card.getByTestId('dnsproviders-test-error')).toContainText('no provider code for the `cloudflare` kind yet', { timeout: 10_000 });
@@ -156,9 +167,30 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.locator('body')).not.toContainText(SECRET);
       await card.getByTestId('dnsproviders-delete').click();
       await page.getByTestId('dnsproviders-delete-confirm').click();
-      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-nocode' })).toHaveCount(0, { timeout: 10_000 });
+      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'nocode-cf' })).toHaveCount(0, { timeout: 10_000 });
     } finally {
-      await dropSecret(page, 'dns.cf-nocode.credential');
+      await dropSecret(page, 'dns.nocode-cf.credential');
+      await page.close();
+    }
+  });
+
+  test('cld_904 the Azure DNS and Cloudflare help entries say what to grant', async ({ browser }) => {
+    const page = await signIn(browser, ADMIN);
+    try {
+      await page.getByTestId('dnsproviders-add').click();
+      await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('azure_dns');
+      await page.getByTestId('dnsproviders-scope').locator('[data-help="dns-provider-azure"]').click();
+      const panel = page.getByTestId('help-panel');
+      await expect(panel).toContainText('read-only Reader role on the zone');
+      await expect(panel).toContainText('The record set must exist first');
+      await page.keyboard.press('Escape');
+      await expect(panel).toHaveCount(0);
+      await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('cloudflare');
+      await page.getByTestId('dnsproviders-scope').locator('[data-help="dns-provider-cloudflare"]').click();
+      await expect(panel).toContainText('Cloudflare cannot limit a token to one record');
+      await expect(panel).toContainText('delegate the challenge name');
+      await page.keyboard.press('Escape');
+    } finally {
       await page.close();
     }
   });

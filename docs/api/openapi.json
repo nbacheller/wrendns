@@ -5852,7 +5852,7 @@
           "config"
         ],
         "summary": "The DNS providers in the configuration.",
-        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are\nrecorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
+        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state: `not_used` (this build has no provider code for the entry; every real kind has code, so only a test-only entry reads this), `dry_run` (changes are\nrecorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
         "operationId": "list_dns_providers",
         "responses": {
           "200": {
@@ -6168,7 +6168,7 @@
             }
           },
           "409": {
-            "description": "No provider code for the kind yet, or `upgrade_required`.",
+            "description": "No provider code for the entry (only a test-only entry has none), or `upgrade_required`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -22714,7 +22714,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`not_used`: this build has no code for the kind yet (only the test provider has any);\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
+            "description": "`not_used`: this build has no provider code for the entry (every real kind has code; only a\ntest-only entry reads this);\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
           },
           "zone": {
             "type": "string",
@@ -22918,7 +22918,7 @@
           },
           "supported": {
             "type": "boolean",
-            "description": "False when this build has no code for the provider's kind yet (`error` says so)."
+            "description": "False when this build has no provider code for the entry (`error` says so; every real kind has code)."
           }
         }
       },

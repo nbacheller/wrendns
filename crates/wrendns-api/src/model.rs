@@ -1362,7 +1362,8 @@ pub struct DnsProviderEntry {
     pub credential_secret: Option<String>,
     /// Whether this node stores a secret by that name (the value is never shown).
     pub credential_present: bool,
-    /// `not_used`: this build has no code for the kind yet (only the test provider has any);
+    /// `not_used`: this build has no provider code for the entry (every real kind has code; only a
+    /// test-only entry reads this);
     /// `dry_run`: it computes and records changes and sends none, until its first successful test;
     /// `ready`: the first test passed and writes are sent.
     pub state: String,
@@ -1416,7 +1417,7 @@ pub struct DnsProviderScope {
 pub struct DnsProviderTestResult {
     /// The credential was accepted and the scope is shown.
     pub ok: bool,
-    /// False when this build has no code for the provider's kind yet (`error` says so).
+    /// False when this build has no provider code for the entry (`error` says so; every real kind has code).
     pub supported: bool,
     /// Whether the entry is in dry run now (after this test).
     pub dry_run: bool,
