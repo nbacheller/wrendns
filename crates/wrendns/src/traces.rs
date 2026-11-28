@@ -467,10 +467,8 @@ pub(crate) async fn run(
     let Some(endpoint) = crate::otlp::endpoint(&cfg) else {
         return;
     };
-    let Some(client) = crate::otlp::client() else {
-        return;
-    };
     drop(endpoint);
+    let mut clients = crate::otlp::Clients::new();
     let shared = &sources.traces;
     let mut failing = false;
     loop {
@@ -485,7 +483,11 @@ pub(crate) async fn run(
         let Some(endpoint) = crate::otlp::endpoint(&cfg) else {
             continue;
         };
-        let url = format!("{endpoint}/v1/traces");
+        let url = crate::otlp::signal_url(
+            &endpoint,
+            cfg.telemetry.otlp_effective().encoding,
+            crate::otlp_proto::Signal::Traces,
+        );
         let node = crate::http::node_name(&cfg);
         let state = sources.pipeline.current();
         let upstreams: Vec<(u16, String)> = state
@@ -506,16 +508,36 @@ pub(crate) async fn run(
             upstreams: &upstreams,
             groups: &groups,
         };
-        let resource = crate::otlp::resource(&node);
+        let resource =
+            crate::otlp::resource_for(&cfg, crate::otlp::cluster_name(&sources).as_deref(), &node);
+        let client = match clients.get(&cfg, &sources.secrets) {
+            Ok(c) => c,
+            Err(why) => {
+                if !failing {
+                    warn!(error = %why, "OTLP traces not delivered: the collector's CA can't be used (logged once until it works again)");
+                }
+                failing = true;
+                continue;
+            }
+        };
         // Up to the queue's size per round; a slow collector costs only what doesn't fit.
         for _ in 0..TRACE_QUEUE / TRACE_BATCH {
             let batch = shared.take(TRACE_BATCH);
             if batch.is_empty() {
                 break;
             }
-            let body = traces_body(&batch, &names, &resource).to_string();
+            let doc = traces_body(&batch, &names, &resource);
             let n = batch.len() as u64;
-            match crate::otlp::post(&client, &url, &cfg, body, &sources.secrets).await {
+            match crate::otlp::post(
+                client,
+                &url,
+                &cfg,
+                crate::otlp_proto::Signal::Traces,
+                &doc,
+                &sources.secrets,
+            )
+            .await
+            {
                 Ok(()) => {
                     shared.sent.fetch_add(n, Ordering::Relaxed);
                     if failing {
@@ -781,12 +803,19 @@ mod tests {
                 upstreams: &[(1, "quad9".to_owned())],
                 groups: &["lab".to_owned()],
             };
-            let body = traces_body(&[traced], &names, &crate::otlp::resource("pi-a")).to_string();
+            let doc = traces_body(&[traced], &names, &crate::otlp::resource("pi-a"));
             let url = format!("{}/v1/traces", crate::otlp::endpoint(&cfg).unwrap());
             let client = crate::otlp::client().unwrap();
-            crate::otlp::post(&client, &url, &cfg, body, &h.src.secrets)
-                .await
-                .unwrap();
+            crate::otlp::post(
+                &client,
+                &url,
+                &cfg,
+                crate::otlp_proto::Signal::Traces,
+                &doc,
+                &h.src.secrets,
+            )
+            .await
+            .unwrap();
             let r = rx.one("/v1/traces");
             assert_collector_headers(&r, gzip);
             let v = r.json();
@@ -795,6 +824,121 @@ mod tests {
             assert_eq!(spans.as_array().map(Vec::len), Some(2), "{gzip}");
             assert_eq!(spans[0]["traceId"], event::trace_hex(&traced.trace));
         }
+    }
+
+    /// REQ: OBS-017, OBS-006 (T41.2) - the trace export in protobuf reaches the receiver at
+    /// `/v1/traces` as `application/x-protobuf`, and the receiver reads back the spans the JSON
+    /// export carries: IDs as bytes, the parent link, times, the status and the attributes.
+    #[tokio::test]
+    async fn obs_017_receiver_gets_protobuf_traces() {
+        use crate::otlp::receiver_tests::{Receiver, assert_resource, node_at};
+        let rx = Receiver::new();
+        let h = node_at(&rx.url_base(), "encoding = \"protobuf\"");
+        let cfg = h.src.config.load_full();
+        let mut query = ev(1_791_000_000_000_000, 30_000, 25_000, Status::Forwarded);
+        query.rcode = Some(2);
+        let qname = name("shop.example");
+        let traced = Traced {
+            e: query,
+            name: qname,
+            trace: trace_of(&query, &qname),
+        };
+        let names = Names {
+            node: "pi-a",
+            upstreams: &[(1, "quad9".to_owned())],
+            groups: &["lab".to_owned()],
+        };
+        let doc = traces_body(&[traced], &names, &crate::otlp::resource("pi-a"));
+        let url = format!("{}/v1/traces", crate::otlp::endpoint(&cfg).unwrap());
+        let client = crate::otlp::client().unwrap();
+        crate::otlp::post(
+            &client,
+            &url,
+            &cfg,
+            crate::otlp_proto::Signal::Traces,
+            &doc,
+            &h.src.secrets,
+        )
+        .await
+        .unwrap();
+        let got = rx
+            .one("/v1/traces")
+            .proto(crate::otlp_proto::Signal::Traces);
+        assert_eq!(got, crate::otlp_proto::tests::norm(&doc));
+        assert_resource(&got["resourceSpans"][0]["resource"]);
+        let spans = &got["resourceSpans"][0]["scopeSpans"][0]["spans"];
+        assert_eq!(spans.as_array().map(Vec::len), Some(2));
+        assert_eq!(spans[0]["traceId"], event::trace_hex(&traced.trace));
+        assert_eq!(spans[1]["parentSpanId"], spans[0]["spanId"]);
+        assert_eq!(spans[0]["status"]["code"], 2);
+    }
+
+    /// REQ: OBS-017, OBS-006 (T41.2) - the trace export over gRPC: a unary call to
+    /// `opentelemetry.proto.collector.trace.v1.TraceService/Export` on the in-process h2c receiver,
+    /// whose message decodes to the spans the JSON export builds.
+    #[tokio::test]
+    async fn obs_017_receiver_gets_grpc_traces() {
+        use crate::otlp::receiver_tests::{GrpcReceiver, assert_resource, grpc_message, node_at};
+        let rx = GrpcReceiver::start(None, "0", "").await;
+        let h = node_at(&rx.url_base(), "encoding = \"grpc\"");
+        let cfg = h.src.config.load_full();
+        let mut query = ev(1_791_000_000_000_000, 30_000, 25_000, Status::Forwarded);
+        query.rcode = Some(2);
+        let qname = name("shop.example");
+        let traced = Traced {
+            e: query,
+            name: qname,
+            trace: trace_of(&query, &qname),
+        };
+        let names = Names {
+            node: "pi-a",
+            upstreams: &[(1, "quad9".to_owned())],
+            groups: &["lab".to_owned()],
+        };
+        let doc = traces_body(&[traced], &names, &crate::otlp::resource("pi-a"));
+        let url = crate::otlp::signal_url(
+            &crate::otlp::endpoint(&cfg).unwrap(),
+            wrendns_config::OtlpEncoding::Grpc,
+            crate::otlp_proto::Signal::Traces,
+        );
+        assert!(
+            url.ends_with("/opentelemetry.proto.collector.trace.v1.TraceService/Export"),
+            "{url}"
+        );
+        let mut clients = crate::otlp::Clients::new();
+        let client = clients.get(&cfg, &h.src.secrets).unwrap();
+        crate::otlp::post(
+            client,
+            &url,
+            &cfg,
+            crate::otlp_proto::Signal::Traces,
+            &doc,
+            &h.src.secrets,
+        )
+        .await
+        .unwrap();
+        let reqs = rx.requests();
+        assert_eq!(reqs.len(), 1, "{reqs:?}");
+        assert!(
+            reqs[0].path().eq_ignore_ascii_case(
+                "/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+            ),
+            "{}",
+            reqs[0].path()
+        );
+        assert_eq!(reqs[0].header("content-type"), Some("application/grpc"));
+        let got = crate::otlp_proto::reader::decode(
+            crate::otlp_proto::Signal::Traces,
+            &grpc_message(&reqs[0]),
+        );
+        assert_eq!(got, crate::otlp_proto::tests::norm(&doc));
+        assert_resource(&got["resourceSpans"][0]["resource"]);
+        assert_eq!(
+            got["resourceSpans"][0]["scopeSpans"][0]["spans"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
     }
 
     /// REQ: OBS-017 — a query becomes a server span (name, type, response code, client,

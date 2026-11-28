@@ -42,11 +42,14 @@ pub enum Feature {
     /// (API-902, T27.14g0, ADR-1113). Nothing is replicated: an older member announces no URL and
     /// does not know the read, so a card says so plainly instead of asking it.
     MemberApiAddress,
+    /// `encoding` (protobuf, grpc), `resource_attributes`, `tls_ca` and `tls_ca_ref` in the OTLP export entry; a
+    /// build that does not know the fields refuses the whole entry (OBS-006, T41.2).
+    OtlpOptions,
 }
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 10] = [
+    pub const ALL: [Feature; 11] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
@@ -57,6 +60,7 @@ impl Feature {
         Self::OtlpCompression,
         Self::DnsProviderLedger,
         Self::MemberApiAddress,
+        Self::OtlpOptions,
     ];
 
     /// The name a build announces the feature under (wire: Hello `features`).
@@ -72,6 +76,7 @@ impl Feature {
             Self::OtlpCompression => "otlp_compression",
             Self::DnsProviderLedger => "dns_provider_ledger",
             Self::MemberApiAddress => "member_api_address",
+            Self::OtlpOptions => "otlp_options",
         }
     }
 
@@ -88,6 +93,9 @@ impl Feature {
             Self::OtlpCompression => "gzip compression of the OpenTelemetry export",
             Self::DnsProviderLedger => "the DNS-provider ownership ledger",
             Self::MemberApiAddress => "the web UI and API address read",
+            Self::OtlpOptions => {
+                "the protobuf and gRPC encodings, resource attributes and private CA of the OpenTelemetry export"
+            }
         }
     }
 }
@@ -102,7 +110,7 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 10] = [
+const ANNOUNCED: [Feature; 11] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
@@ -113,6 +121,7 @@ const ANNOUNCED: [Feature; 10] = [
     Feature::OtlpCompression,
     Feature::DnsProviderLedger,
     Feature::MemberApiAddress,
+    Feature::OtlpOptions,
 ];
 
 /// Whether a peer that announced `features` knows `f`. An empty list (a peer older than the
@@ -249,7 +258,8 @@ mod tests {
                 "rfc5011".to_owned(),
                 "otlp_compression".to_owned(),
                 "dns_provider_ledger".to_owned(),
-                "member_api_address".to_owned()
+                "member_api_address".to_owned(),
+                "otlp_options".to_owned()
             ]
         );
         assert!(knows(&own, Feature::Locations));

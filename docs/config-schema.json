@@ -3660,8 +3660,12 @@
       "type": "object",
       "properties": {
         "compression": {
-          "description": "REQ: OBS-006 (T7.17, issue #155) — whether the metrics and traces requests are gzip\ncompressed (`Content-Encoding: gzip`, which every OTLP/HTTP receiver accepts). The\nencoding stays JSON. Left out of the stored form while `none`, so a node that does not\nknow the field keeps reading an entry that does not use it.",
+          "description": "REQ: OBS-006 (T7.17, issue #155) — whether the metrics and traces requests are gzip\ncompressed (`Content-Encoding: gzip`, which every OTLP/HTTP receiver accepts; for\n`encoding = \"grpc\"` the message is compressed inside its frame, `grpc-encoding: gzip`).\nLeft out of the stored form while `none`, so a node that does not\nknow the field keeps reading an entry that does not use it.",
           "$ref": "#/$defs/OtlpCompression"
+        },
+        "encoding": {
+          "description": "REQ: OBS-006 (T41.2, issue #155) — the encoding of the metrics and traces requests:\n`json` (the default), `protobuf` (`application/x-protobuf`, the OTLP/HTTP binary form\nevery collector accepts) or `grpc` (OTLP/gRPC over HTTP/2, usually port 4317). Left out of the stored form while `json`.",
+          "$ref": "#/$defs/OtlpEncoding"
         },
         "endpoint": {
           "description": "The collector's OTLP/HTTP base URL (`http://otel-collector:4318`); metrics go to\n`<endpoint>/v1/metrics`. Unset: no export.",
@@ -3700,6 +3704,33 @@
           "default": 60,
           "minimum": 0
         },
+        "resource_attributes": {
+          "description": "REQ: OBS-006 (T41.2) — extra resource attributes on every exported signal\n(`deployment.environment = \"home\"`), beside `service.name`, `service.version`,\n`host.name`, `service.instance.id` and, in a cluster, `wrendns.cluster.name`, which are\nreserved. At most [`OTLP_MAX_ATTRIBUTES`], names and values bounded.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]*$": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+            }
+          }
+        },
+        "tls_ca": {
+          "description": "REQ: OBS-006 (T41.2) — a file of PEM certificates (a private CA) the collector's TLS\ncertificate may chain to, in addition to the built-in public roots. File only: the API\ntakes `tls_ca_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "tls_ca_ref": {
+          "description": "REQ: OBS-006 (T41.2) — the name of a stored secret of kind `pem` holding the private CA's\ncertificate(s); trusted in addition to the built-in public roots.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "traces_sample_every": {
           "description": "REQ: OBS-017 (T11.6) — send 1 in this many queries as a trace to\n`<endpoint>/v1/traces` (0: none). Needs `endpoint`.",
           "type": "integer",
@@ -3716,6 +3747,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "OtlpEncoding": {
+      "description": "REQ: OBS-006 (T41.2) — the body encoding of the OTLP export.",
+      "oneOf": [
+        {
+          "description": "OTLP JSON (`application/json`).",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "OTLP protobuf (`application/x-protobuf`).",
+          "type": "string",
+          "const": "protobuf"
+        },
+        {
+          "description": "OTLP/gRPC: the same protobuf messages in a gRPC unary call over HTTP/2 (the collector's\nport 4317).",
+          "type": "string",
+          "const": "grpc"
+        }
+      ]
     },
     "ProbeConfig": {
       "description": "REQ: OBS-020 (T11.3, ADR-107, `spec/06` §9) — synthetic probes: every `interval_secs`,\neach DNS listener is asked `probe.wrendns.invalid` through its own protocol (UDP, TCP, DoT,\nDoH, DoH3, DoQ) from this node, and so is every extra target; each TLS listener's\ncertificate expiry is read from its file. Probes don't show in the query log or analytics.",

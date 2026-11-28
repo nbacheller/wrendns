@@ -13,6 +13,11 @@
 
   type Entry = S['OtlpEntry'];
   type Row = { header: string; ref: string | undefined };
+  type Attr = { key: string; value: string };
+
+  // REQ: OBS-006 (T41.2) — the names the export sets itself, and the bounds the server holds.
+  const RESERVED = ['service.name', 'service.version', 'service.instance.id', 'host.name', 'wrendns.cluster.name'];
+  const MAX_ATTRIBUTES = 16;
 
   let entry = $state<Entry | null>(null);
   let error = $state<unknown>(null);
@@ -37,6 +42,11 @@
   let endpoint = $state('');
   let interval = $state<number | string>(60);
   let compression = $state<'none' | 'gzip'>('none');
+  let encoding = $state<'json' | 'protobuf' | 'grpc'>('json');
+  let attrs = $state<Attr[]>([]);
+  // The private CA: the name of a stored secret of the pem kind ('' : the public roots only).
+  let caRef = $state('');
+  let pemNames = $state<string[]>([]);
   let rows = $state<Row[]>([]);
   let formError = $state('');
   let busy = $state(false);
@@ -53,7 +63,25 @@
     endpoint = entry.endpoint ?? 'http://';
     interval = entry.intervalSecs;
     compression = entry.compression === 'gzip' ? 'gzip' : 'none';
+    encoding = entry.encoding === 'protobuf' || entry.encoding === 'grpc' ? entry.encoding : 'json';
+    attrs = Object.entries(entry.resourceAttributes ?? {}).map(([key, value]) => ({ key, value }));
+    caRef = entry.tlsCa?.source === 'stored' ? (entry.tlsCa.secret ?? '') : '';
+    void loadPem();
     rows = entry.headers.filter((h) => h.source === 'stored').map((h) => ({ header: h.name, ref: h.secret ?? undefined }));
+  }
+  async function loadPem() {
+    try {
+      const st = await api.secrets();
+      pemNames = st.items.filter((i) => i.kind === 'pem' && i.set).map((i) => i.name).sort();
+    } catch {
+      pemNames = [];
+    }
+  }
+  function addAttr() {
+    attrs.push({ key: '', value: '' });
+  }
+  function dropAttr(i: number) {
+    attrs.splice(i, 1);
   }
   function closeForm() {
     editing = false;
@@ -76,6 +104,12 @@
     const body: Record<string, unknown> = { endpoint: endpoint.trim(), interval_secs: Number(interval) || 60, header_refs: refs };
     // Plain stays out of the body: an unchanged export never needs a member that reads the field.
     if (compression === 'gzip') body.compression = 'gzip';
+    // The same for the options a member must know to read the entry (cluster gate: otlp_options).
+    if (encoding !== 'json') body.encoding = encoding;
+    const extra: Record<string, string> = {};
+    for (const a of attrs) if (a.key.trim()) extra[a.key.trim()] = a.value.trim();
+    if (Object.keys(extra).length) body.resource_attributes = extra;
+    if (caRef) body.tls_ca_ref = caRef;
     return body;
   }
 
@@ -100,6 +134,31 @@
     }
     if (rows.some((r) => r.header.trim() && !r.ref)) {
       formError = 'Save a value for each header, or remove it.';
+      return;
+    }
+    const keys = attrs.map((a) => a.key.trim()).filter(Boolean);
+    if (keys.length > MAX_ATTRIBUTES) {
+      formError = `At most ${MAX_ATTRIBUTES} resource attributes.`;
+      return;
+    }
+    if (keys.some((k) => !/^[A-Za-z0-9._-]{1,64}$/.test(k))) {
+      formError = 'An attribute name is letters, digits, dot, dash or underscore, at most 64 characters.';
+      return;
+    }
+    if (keys.some((k) => RESERVED.includes(k.toLowerCase()))) {
+      formError = `The export sets ${RESERVED.join(', ')} itself; choose another attribute name.`;
+      return;
+    }
+    if (new Set(keys).size !== keys.length) {
+      formError = 'Each attribute is listed once.';
+      return;
+    }
+    if (attrs.some((a) => a.key.trim() && (!a.value.trim() || a.value.trim().length > 256))) {
+      formError = 'Each attribute has a value of 1 to 256 characters.';
+      return;
+    }
+    if (caRef && !endpoint.trim().startsWith('https://')) {
+      formError = 'A private CA is for TLS: the collector address must start with https://.';
       return;
     }
     busy = true;
@@ -131,6 +190,7 @@
     }
   }
 
+  const encodingLabel: Record<string, string> = { json: 'JSON', protobuf: 'protobuf', grpc: 'gRPC' };
   const sourceLabel: Record<string, string> = { none: 'Off', file: 'Set by file', api: 'From the UI' };
 </script>
 
@@ -149,8 +209,23 @@
   {#if entry}
     {#if entry.endpoint}
       <ul class="facts small">
-        <li>Collector: <span class="mono" data-testid="otlp-endpoint">{entry.endpoint}</span> (metrics go to <span class="mono">/v1/metrics</span>)</li>
-        <li>Every {entry.intervalSecs} seconds{#if entry.compression === 'gzip'}, <span data-testid="otlp-compression">gzip compressed</span>{/if}</li>
+        <li>Collector: <span class="mono" data-testid="otlp-endpoint">{entry.endpoint}</span> (metrics go to <span class="mono">{entry.encoding === 'grpc' ? 'the MetricsService Export method' : '/v1/metrics'}</span>)</li>
+        <li>
+          Every {entry.intervalSecs} seconds, <span data-testid="otlp-encoding">{encodingLabel[entry.encoding] ?? 'JSON'}</span>{#if entry.compression === 'gzip'}, <span data-testid="otlp-compression">gzip compressed</span>{/if}
+        </li>
+        {#if Object.keys(entry.resourceAttributes ?? {}).length}
+          <li data-testid="otlp-attributes">
+            Resource attributes:
+            {#each Object.entries(entry.resourceAttributes) as [k, v] (k)}<span class="mono" data-attribute={k}>{k}={v}</span>{' '}{/each}
+          </li>
+        {/if}
+        {#if entry.tlsCa}
+          <li data-testid="otlp-ca">
+            Private CA for the collector's certificate:
+            {#if entry.tlsCa.source === 'stored'}a stored PEM secret (<span class="mono">{entry.tlsCa.secret}</span>){:else}a file set in the configuration file{/if}
+            {#if entry.tlsCa.readable}<span class="badge ok">readable</span>{:else}<span class="badge bad" data-testid="otlp-ca-issue">can't be read on this node</span>{/if}
+          </li>
+        {/if}
         <li>
           {#if entry.active}<span class="badge ok" data-testid="otlp-state">Exporting from this node</span>{:else}<span class="badge bad" data-testid="otlp-state">Not exporting from this node</span>{/if}
           {#if entry.reason}<span class="bad-text" data-testid="otlp-reason">{entry.reason}</span>{/if}
@@ -210,6 +285,39 @@
             <option value="gzip">gzip</option>
           </select>
         </label>
+        <label>
+          <span>Encoding</span>
+          <select bind:value={encoding} data-testid="otlp-encoding-select" aria-label="Encoding">
+            <option value="json">JSON</option>
+            <option value="protobuf">Protobuf (application/x-protobuf)</option>
+            <option value="grpc">gRPC (HTTP/2, usually port 4317)</option>
+          </select>
+        </label>
+        <label>
+          <span>Private CA for the collector's certificate</span>
+          <select bind:value={caRef} data-testid="otlp-ca-select" aria-label="Private CA">
+            <option value="">None (the public roots only)</option>
+            {#if caRef && !pemNames.includes(caRef)}<option value={caRef}>{caRef} (not stored)</option>{/if}
+            {#each pemNames as n (n)}<option value={n}>{n}</option>{/each}
+          </select>
+        </label>
+      </div>
+      <p class="small muted">
+        A collector behind your own certificate authority: store the CA's certificate as a secret of the pem kind (Settings → Integrations & secrets), then pick it here. It is trusted in addition to the public roots, and the collector address must start with https://. Protobuf is smaller than JSON and gRPC sends the same protobuf messages over HTTP/2; with gRPC, use the collector's gRPC port (usually 4317). The collector address is the base address in every case.
+      </p>
+      <h4>Resource attributes</h4>
+      <p class="small muted">
+        Extra attributes on everything the export sends, for example deployment.environment = home. Up to {MAX_ATTRIBUTES}. The service, host and instance names are set by the export, and a cluster member adds wrendns.cluster.name.
+      </p>
+      {#each attrs as a, i (i)}
+        <div class="attr-row" data-testid="otlp-attr-row">
+          <input bind:value={a.key} placeholder="deployment.environment" autocomplete="off" aria-label={`Attribute name ${i + 1}`} />
+          <input bind:value={a.value} placeholder="home" autocomplete="off" aria-label={`Attribute value ${i + 1}`} />
+          <button type="button" class="btn" aria-label={`Remove attribute ${i + 1}`} onclick={() => dropAttr(i)}>Remove</button>
+        </div>
+      {/each}
+      <div class="row-actions">
+        <button type="button" class="btn" data-testid="otlp-add-attr" onclick={addAttr} disabled={attrs.length >= MAX_ATTRIBUTES}>Add an attribute</button>
       </div>
       <h4>Headers</h4>
       <p class="small muted">
@@ -279,6 +387,12 @@
     padding: 0.5rem;
     border: 1px dashed var(--border);
     border-radius: var(--radius-md);
+  }
+  .attr-row {
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: 1fr 1fr auto;
+    margin: 0.5rem 0;
   }
   .facts {
     list-style: none;

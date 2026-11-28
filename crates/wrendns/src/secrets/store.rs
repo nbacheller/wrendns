@@ -67,6 +67,15 @@ struct Cached {
     health: RowHealth,
 }
 
+/// Whether a row of `kind` is the wrong kind for a reader that wants `pem` (or, not, a credential).
+fn kind_mismatch(kind: &str, want_pem: bool) -> Option<Unavailable> {
+    match (kind == "pem", want_pem) {
+        (true, false) => Some(Unavailable::WrongKind),
+        (false, true) => Some(Unavailable::NotPem),
+        _ => None,
+    }
+}
+
 /// Why a secret's value isn't available on this node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Unavailable {
@@ -80,6 +89,8 @@ pub(crate) enum Unavailable {
     Orphaned,
     /// REQ: CLD-920 — a `pem` secret named by a credential field.
     WrongKind,
+    /// REQ: OBS-006 (T41.2) — a `text` secret named where a `pem` one is needed (a CA).
+    NotPem,
 }
 
 impl fmt::Display for Unavailable {
@@ -87,6 +98,9 @@ impl fmt::Display for Unavailable {
         match self {
             Self::WrongKind => f.write_str(
                 "it is a `pem` secret, which only WrenDNS's own listeners use; a credential takes a `text` secret",
+            ),
+            Self::NotPem => f.write_str(
+                "it is a `text` secret; a certificate is stored as a secret of the `pem` kind",
             ),
             Self::NotSet => f.write_str("no secret of that name is stored"),
             Self::Locked(why) => write!(f, "the secrets store is locked: {why}"),
@@ -715,6 +729,17 @@ impl SecretStore {
 
     /// REQ: OPS-014 — a stored secret's value, decrypted now.
     pub(crate) fn get(&self, name: &str) -> Result<SecretValue, Unavailable> {
+        self.get_kind(name, false)
+    }
+
+    /// REQ: OBS-006 (T41.2) — the value of a `pem` secret, for the one reader that only parses
+    /// certificates out of it and sends nothing (the OTLP export's private CA). A `text` secret
+    /// is refused here as a `pem` one is by [`Self::get`].
+    pub(crate) fn get_pem(&self, name: &str) -> Result<SecretValue, Unavailable> {
+        self.get_kind(name, true)
+    }
+
+    fn get_kind(&self, name: &str, pem: bool) -> Result<SecretValue, Unavailable> {
         if self.paths().ephemeral {
             return Err(Unavailable::Ephemeral);
         }
@@ -727,8 +752,8 @@ impl SecretStore {
         }
         // REQ: CLD-920 (ADR-1097 point 1) — a `pem` value is for WrenDNS's own listeners; a
         // credential field (`*_ref`) never gets one, so it can't be sent to another service.
-        if c.row.kind == "pem" {
-            return Err(Unavailable::WrongKind);
+        if let Some(e) = kind_mismatch(&c.row.kind, pem) {
+            return Err(e);
         }
         let Some(keys) = &g.keys else {
             return Err(Unavailable::Locked(
@@ -745,6 +770,15 @@ impl SecretStore {
     /// REQ: OPS-014 (ADR-903 §4) — whether this node can read the secret `name`, judged from the
     /// row's state (nothing is decrypted for it).
     pub(crate) fn readable(&self, name: &str) -> Result<(), Unavailable> {
+        self.readable_kind(name, false)
+    }
+
+    /// REQ: OBS-006 (T41.2) — as [`Self::readable`] for a `pem` secret (see [`Self::get_pem`]).
+    pub(crate) fn readable_pem(&self, name: &str) -> Result<(), Unavailable> {
+        self.readable_kind(name, true)
+    }
+
+    fn readable_kind(&self, name: &str, pem: bool) -> Result<(), Unavailable> {
         if self.paths().ephemeral {
             return Err(Unavailable::Ephemeral);
         }
@@ -756,8 +790,8 @@ impl SecretStore {
             return Err(Unavailable::Orphaned);
         }
         // REQ: CLD-920 - agrees with `get`: a `pem` secret is no credential's.
-        if c.row.kind == "pem" {
-            return Err(Unavailable::WrongKind);
+        if let Some(e) = kind_mismatch(&c.row.kind, pem) {
+            return Err(e);
         }
         if g.keys.is_none() {
             return Err(Unavailable::Locked(
