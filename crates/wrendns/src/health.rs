@@ -258,6 +258,25 @@ pub(crate) fn locations_held_reasons(held: Option<&str>) -> Vec<HealthReason> {
     .collect()
 }
 
+/// REQ: CLD-904, CLU-004 (T36.10b step b3) - a DNS provider whose latest call failed (a refused
+/// credential, a limit, an outage): degraded and nothing more, DNS answers are unaffected. `failures`
+/// are the entry names with the (credential-free) reason.
+pub(crate) fn dns_provider_reasons(failures: &[(String, String)]) -> Vec<HealthReason> {
+    failures
+        .iter()
+        .map(|(name, why)| {
+            reason(
+                DEGRADED,
+                "dns_provider_failing",
+                format!(
+                    "the DNS provider `{name}` failed its last call: {why}. DNS answers are unaffected"
+                ),
+                "#/settings?tab=dns-providers",
+            )
+        })
+        .collect()
+}
+
 /// REQ: DNS-906 (T40.5) - a root key in its add hold-down, or a trust anchor the root revoked:
 /// degraded, DNS unaffected. `items` are `Rollover::reasons`.
 pub(crate) fn anchor_reasons(items: Vec<(&'static str, String)>) -> Vec<HealthReason> {

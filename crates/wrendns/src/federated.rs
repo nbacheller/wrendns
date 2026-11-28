@@ -2471,6 +2471,24 @@ impl Backend for Federated {
             None => self.local.lists_refresh(w),
         }
     }
+    // REQ: CLD-904, CLD-919 (T36.10b step b3) - the ownership ledger and the audit entries of provider
+    // writes are the primary's: a replica forwards a test, a record read or an adopt to it.
+    fn dns_provider_op(
+        &self,
+        op: wrendns_api::DnsProviderOp,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.dns_provider_op(op);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::dns_provider_op(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                op,
+            )),
+            None => self.local.dns_provider_op(op),
+        }
+    }
     // REQ: DSC-004 (ADR-1002) - the SNMP poller runs on the designated node: this one when it runs
     // the inventory; else, with no `[discovery] node` named, the primary (a replica forwards). A
     // node that isn't designated and can't forward answers `discovery_not_here` itself.

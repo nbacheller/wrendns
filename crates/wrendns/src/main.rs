@@ -32,6 +32,10 @@ mod datadir;
 mod device_dns;
 mod devices;
 mod discovery;
+mod dns_provider;
+#[cfg(test)]
+mod dns_provider_engine_tests;
+mod dns_provider_ops;
 mod dns_provider_settings;
 #[cfg(test)]
 mod dns_provider_tests;

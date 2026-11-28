@@ -3084,6 +3084,10 @@ impl Backend for ApiBackend {
                 .reason(self.src.cluster.as_deref())
                 .as_deref(),
         ));
+        // REQ: CLD-904, CLU-004 (T36.10b step b3) - a DNS provider whose latest call failed: degraded only.
+        reasons.extend(crate::health::dns_provider_reasons(
+            &crate::dns_provider::engine::engine().failures(),
+        ));
         // REQ: DNS-906 (T40.5) — a root key in its hold-down, or a revoked trust anchor.
         reasons.extend(crate::health::anchor_reasons(
             self.src
@@ -3295,6 +3299,15 @@ impl Backend for ApiBackend {
             .map(|r| router_entry(&self.src, r, &file, status.get(r.name.as_str())))
             .collect()
     }
+    // REQ: CLD-904, CLD-919 (T36.10b step b3) - a test, a record read or an adopt, run on this node.
+    fn dns_provider_op(
+        &self,
+        op: wrendns_api::DnsProviderOp,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move { crate::dns_provider_ops::run(&src, op).await })
+    }
+
     // REQ: CLD-904 (T36.10b) - the DNS providers in effect, and whether the start-up hold keeps them
     // out of what this node serves.
     fn dns_providers(&self) -> wrendns_api::model::DnsProviderList {
@@ -6131,9 +6144,9 @@ pub(crate) fn managed_impact(
         (ManagedKind::OidcProvider, _) => {
             "Applied on every node within seconds, without a restart: its sign-in button appears or goes (a node without public_url shows it as inactive), and the sessions of a removed provider end.".into()
         }
-        // REQ: CLD-904 (T36.10b) - stored and validated only; nothing calls a provider yet.
+        // REQ: CLD-904, CLD-919 (T36.10b) - a provider is written to only through the write engine.
         (ManagedKind::DnsProvider, _) => {
-            "Stored and shared by the cluster with no restart. Nothing calls a DNS provider yet, so no DNS answer changes; the entry is checked and kept for the certificate and dynamic-DNS work that uses it.".into()
+            "Stored and shared by the cluster with no restart. No DNS answer changes: a provider is called only to write a record at the DNS host when an admin or a certificate or dynamic-DNS task asks, always through the write engine (dry run, ownership ledger, rate limits), and never on the query path.".into()
         }
         (ManagedKind::Router, _) => {
             "Polled by this node at its interval (by the primary, for a stored credential); the names it reports reach DNS after the next poll.".into()
