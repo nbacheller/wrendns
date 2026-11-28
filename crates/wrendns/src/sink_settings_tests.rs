@@ -389,13 +389,27 @@ async fn obs_006_otlp_header_ref_sent() {
     let client = crate::otlp::client().unwrap();
     let cfg = h.src.config.load_full();
     let url = format!("{}/v1/metrics", crate::otlp::endpoint(&cfg).unwrap());
-    crate::otlp::post(&client, &url, &cfg, "{}".to_owned(), &h.src.secrets)
-        .await
-        .unwrap();
+    crate::otlp::post(
+        &client,
+        &url,
+        &cfg,
+        crate::otlp_proto::Signal::Metrics,
+        &json!({}),
+        &h.src.secrets,
+    )
+    .await
+    .unwrap();
     store_secret(&h, "otlp-key", "second-key-9191");
-    crate::otlp::post(&client, &url, &cfg, "{}".to_owned(), &h.src.secrets)
-        .await
-        .unwrap();
+    crate::otlp::post(
+        &client,
+        &url,
+        &cfg,
+        crate::otlp_proto::Signal::Metrics,
+        &json!({}),
+        &h.src.secrets,
+    )
+    .await
+    .unwrap();
     let got = hook.heads();
     assert!(got[0].contains("x-api-key: first-key-4242"), "{:?}", got[0]);
     assert!(
@@ -758,4 +772,211 @@ fn obs_006_otlp_compression_is_stored_only_when_set() {
         serde_json::from_value::<wrendns_config::OtlpConfig>(json!({"compression": "zstd"}))
             .is_err()
     );
+}
+
+/// REQ: OBS-006, CLU-010 (T41.2) - the protobuf encoding, resource attributes and a private CA wait
+/// until every member's build reads the fields (feature `otlp_options`): with a member that does not
+/// announce it, each is refused (409 `upgrade_required`, dry run too, naming the member) and stores
+/// nothing; a plain entry (and gzip, which has its own feature) is still accepted; once every member
+/// announces it, they go through and the entry shows them.
+#[tokio::test(flavor = "multi_thread")]
+async fn obs_006_otlp_options_wait_for_every_members_build() {
+    let _turn = crate::secrets_api_tests::GATE.lock().await;
+    let bodies = [
+        json!({"endpoint": "http://c:4318", "encoding": "protobuf"}),
+        json!({"endpoint": "http://c:4318", "resource_attributes": {"deployment.environment": "home"}}),
+        json!({"endpoint": "https://c:4318", "tls_ca_ref": "otlp-ca"}),
+    ];
+    let plain = json!({"endpoint": "http://c:4318", "encoding": "json"});
+    let (replica, old) = crate::credential_tests::older_primary_and_replica_features(
+        "1.1.0",
+        None,
+        Some(Vec::new()),
+    )
+    .await;
+    let member = replica.identity.meta.node_id.clone();
+    let h = member_of(Arc::clone(&old.primary));
+    store_pem(&h, "otlp-ca", &ca_pem_text());
+    for body in &bodies {
+        for target in [format!("{OTLP_PUT}?dryRun=true"), OTLP_PUT.to_owned()] {
+            let (s, _, v) = h.call("PUT", &target, Some(body)).await;
+            assert_eq!(s, StatusCode::CONFLICT, "{body}: {v}");
+            assert_eq!(v["code"], "upgrade_required", "{v}");
+            let detail = v["detail"].as_str().unwrap();
+            assert!(
+                detail.contains("resource attributes") && detail.contains(&member),
+                "{v}"
+            );
+        }
+    }
+    assert!(h.src.config.load_full().telemetry.managed_otlp.is_none());
+    // The default encoding needs no new field.
+    let (s, _, v) = h.call("PUT", OTLP_PUT, Some(&plain)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let _ = old.stop.send(true);
+
+    let (_replica, new) = crate::credential_tests::older_primary_and_replica("1.1.0").await;
+    let h = member_of(Arc::clone(&new.primary));
+    store_pem(&h, "otlp-ca", &ca_pem_text());
+    let all = json!({
+        "endpoint": "https://c:4318", "encoding": "protobuf",
+        "resource_attributes": {"deployment.environment": "home"}, "tls_ca_ref": "otlp-ca",
+    });
+    let (s, _, v) = h.call("PUT", OTLP_PUT, Some(&all)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, _, e) = h.call("GET", OTLP_URL, None).await;
+    assert_eq!(e["encoding"], "protobuf", "{e}");
+    assert_eq!(
+        e["resourceAttributes"]["deployment.environment"], "home",
+        "{e}"
+    );
+    assert_eq!(e["tlsCa"]["source"], "stored", "{e}");
+    assert_eq!(e["tlsCa"]["secret"], "otlp-ca", "{e}");
+    assert_eq!(e["tlsCa"]["readable"], true, "{e}");
+    let _ = new.stop.send(true);
+    crate::upgrade_gate::forget_held();
+}
+
+/// REQ: OBS-006 (T41.2) - an entry with the defaults stores none of the new fields (so an older node
+/// keeps reading it); one that sets them stores exactly those; unknown spellings are refused.
+#[test]
+fn obs_006_otlp_options_are_stored_only_when_set() {
+    let plain: wrendns_config::OtlpConfig =
+        serde_json::from_value(json!({"endpoint": "http://c:4318"})).unwrap();
+    let text = serde_json::to_string(&plain).unwrap();
+    for field in ["encoding", "resource_attributes", "tls_ca"] {
+        assert!(!text.contains(field), "{text}");
+    }
+    let set: wrendns_config::OtlpConfig = serde_json::from_value(json!({
+        "endpoint": "https://c:4318", "encoding": "protobuf",
+        "resource_attributes": {"deployment.environment": "home"}, "tls_ca_ref": "otlp-ca",
+    }))
+    .unwrap();
+    let text = serde_json::to_string(&set).unwrap();
+    for part in [
+        "\"encoding\":\"protobuf\"",
+        "\"resource_attributes\":{\"deployment.environment\":\"home\"}",
+        "\"tls_ca_ref\":\"otlp-ca\"",
+    ] {
+        assert!(text.contains(part), "{text}");
+    }
+    assert!(
+        serde_json::from_value::<wrendns_config::OtlpConfig>(json!({"encoding": "xml"})).is_err()
+    );
+}
+
+/// REQ: OBS-006, API-016 (T41.2) - what the API refuses: a reserved or malformed resource
+/// attribute, too many, a value too long; a CA file path (the files set it), a CA with a plain
+/// http endpoint, a CA reference naming nothing or a `text` secret, and both a file and a reference.
+#[tokio::test]
+async fn obs_006_otlp_options_are_validated() {
+    let h = bare();
+    store_secret(&h, "otlp-key", "a-text-secret");
+    store_pem(&h, "otlp-ca", &ca_pem_text());
+    let many: serde_json::Map<String, Value> =
+        (0..17).map(|i| (format!("team.{i}"), json!("x"))).collect();
+    let cases = [
+        (
+            json!({"resource_attributes": {"service.name": "other"}}),
+            "service.name",
+        ),
+        (
+            json!({"resource_attributes": {"Host.Name": "other"}}),
+            "reserved",
+        ),
+        (
+            json!({"resource_attributes": {"wrendns.cluster.name": "x"}}),
+            "reserved",
+        ),
+        (
+            json!({"resource_attributes": {"bad key": "x"}}),
+            "letters, digits",
+        ),
+        (json!({"resource_attributes": {"a": ""}}), "1 to 256"),
+        (
+            json!({"resource_attributes": {"a": "x".repeat(257)}}),
+            "1 to 256",
+        ),
+        (
+            json!({"resource_attributes": Value::Object(many)}),
+            "at most 16",
+        ),
+        (
+            json!({"tls_ca": "/etc/ssl/certs/ca.pem"}),
+            "configuration file",
+        ),
+        (json!({"tls_ca_ref": "missing-ca"}), "no stored secret"),
+        (json!({"tls_ca_ref": "otlp-key"}), "`pem` kind"),
+        (
+            json!({"tls_ca_ref": "otlp-ca", "endpoint": "http://c:4318"}),
+            "https://",
+        ),
+        (json!({"encoding": "xml"}), "xml"),
+    ];
+    for (extra, expect) in cases {
+        let mut body = json!({"endpoint": "https://c:4318"});
+        for (k, v) in extra.as_object().unwrap() {
+            if k == "endpoint" {
+                body["endpoint"] = v.clone();
+            } else {
+                body[k] = v.clone();
+            }
+        }
+        let (s, _, out) = h.call("PUT", OTLP_PUT, Some(&body)).await;
+        assert!(
+            s == StatusCode::UNPROCESSABLE_ENTITY || s == StatusCode::BAD_REQUEST,
+            "{body}: {s} {out}"
+        );
+        assert!(out.to_string().contains(expect), "{body}: {out}");
+    }
+    assert!(h.src.config.load_full().telemetry.managed_otlp.is_none());
+    // A valid set goes through, and the entry shows the options but never the certificate.
+    let ok = json!({
+        "endpoint": "https://c:4318", "encoding": "protobuf", "tls_ca_ref": "otlp-ca",
+        "resource_attributes": {"deployment.environment": "home", "team": "net"},
+    });
+    let (s, _, out) = h.call("PUT", OTLP_PUT, Some(&ok)).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (_, _, e) = h.call("GET", OTLP_URL, None).await;
+    assert_eq!(e["encoding"], "protobuf", "{e}");
+    assert_eq!(e["resourceAttributes"]["team"], "net", "{e}");
+    assert!(!e.to_string().contains("BEGIN CERTIFICATE"), "{e}");
+    // The secret is in use: it can't be deleted from under the export.
+    let (s, _, out) = h.call("DELETE", "/api/v1/secrets/otlp-ca", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{out}");
+}
+
+/// REQ: OBS-006, CLU-015 (T41.2) - a CA file path is never taken from the replicated blob: the
+/// entry's `tls_ca` is left out when exporting and cleared when read.
+#[test]
+fn clu_015_otlp_blob_carries_no_ca_path() {
+    let blob = node_managed::encode(&rows(&[(
+        OTLP,
+        "default",
+        json!({"endpoint": "https://c:4318", "tls_ca": "/etc/planted-ca.pem", "tls_ca_ref": "otlp-ca"}),
+    )]));
+    let text = String::from_utf8(blob).unwrap();
+    assert!(!text.contains("planted-ca"), "{text}");
+    assert!(text.contains("otlp-ca"), "{text}");
+}
+
+fn store_pem(h: &Harness, name: &str, pem: &str) {
+    h.src
+        .secrets
+        .put(
+            name,
+            Kind::Pem,
+            &crate::secrets::SecretValue::new(Kind::Pem, zeroize::Zeroizing::new(pem.to_owned()))
+                .unwrap(),
+            0,
+            "root",
+            "local",
+            1,
+        )
+        .unwrap();
+}
+
+/// A throwaway CA certificate as PEM text.
+fn ca_pem_text() -> String {
+    crate::otlp::receiver_tests::private_ca().0
 }

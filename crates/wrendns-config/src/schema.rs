@@ -2731,8 +2731,8 @@ impl TelemetryConfig {
     }
 
     /// The OTLP settings in effect: the files', or, when they set no destination, the UI's
-    /// `endpoint`, `interval_secs`, `header_refs` and `compression` over the files' trace
-    /// settings. A file that sets only `compression` (or `interval_secs`) is not a destination,
+    /// `endpoint`, `interval_secs`, `header_refs`, `compression`, `encoding`,
+    /// `resource_attributes` and `tls_ca_ref` over the files' trace settings. A file that sets only `compression` (or `interval_secs`) is not a destination,
     /// so the UI entry's value wins over it; a file that sets a destination wins whole,
     /// `compression` included.
     #[must_use]
@@ -2744,6 +2744,10 @@ impl TelemetryConfig {
                 o.interval_secs = m.interval_secs;
                 o.header_refs.clone_from(&m.header_refs);
                 o.compression = m.compression;
+                o.encoding = m.encoding;
+                o.resource_attributes.clone_from(&m.resource_attributes);
+                o.tls_ca_ref.clone_from(&m.tls_ca_ref);
+                o.tls_ca = None;
                 std::borrow::Cow::Owned(o)
             }
             _ => std::borrow::Cow::Borrowed(&self.otlp),
@@ -2909,11 +2913,79 @@ pub struct OtlpConfig {
     /// REQ: OBS-017 (T11.6) — also send every query that took at least this long (ms; 0: none).
     pub traces_slow_ms: u32,
     /// REQ: OBS-006 (T7.17, issue #155) — whether the metrics and traces requests are gzip
-    /// compressed (`Content-Encoding: gzip`, which every OTLP/HTTP receiver accepts). The
-    /// encoding stays JSON. Left out of the stored form while `none`, so a node that does not
+    /// compressed (`Content-Encoding: gzip`, which every OTLP/HTTP receiver accepts; for
+    /// `encoding = "grpc"` the message is compressed inside its frame, `grpc-encoding: gzip`).
+    /// Left out of the stored form while `none`, so a node that does not
     /// know the field keeps reading an entry that does not use it.
     #[serde(skip_serializing_if = "OtlpCompression::is_none")]
     pub compression: OtlpCompression,
+    /// REQ: OBS-006 (T41.2, issue #155) — the encoding of the metrics and traces requests:
+    /// `json` (the default), `protobuf` (`application/x-protobuf`, the OTLP/HTTP binary form
+    /// every collector accepts) or `grpc` (OTLP/gRPC over HTTP/2, usually port 4317). Left out of the stored form while `json`.
+    #[serde(skip_serializing_if = "OtlpEncoding::is_json")]
+    pub encoding: OtlpEncoding,
+    /// REQ: OBS-006 (T41.2) — extra resource attributes on every exported signal
+    /// (`deployment.environment = "home"`), beside `service.name`, `service.version`,
+    /// `host.name`, `service.instance.id` and, in a cluster, `wrendns.cluster.name`, which are
+    /// reserved. At most [`OTLP_MAX_ATTRIBUTES`], names and values bounded.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub resource_attributes: BTreeMap<SafeString, SafeString>,
+    /// REQ: OBS-006 (T41.2) — a file of PEM certificates (a private CA) the collector's TLS
+    /// certificate may chain to, in addition to the built-in public roots. File only: the API
+    /// takes `tls_ca_ref`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<SafeString>,
+    /// REQ: OBS-006 (T41.2) — the name of a stored secret of kind `pem` holding the private CA's
+    /// certificate(s); trusted in addition to the built-in public roots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ca_ref: Option<SafeString>,
+}
+
+/// REQ: OBS-006 (T41.2) — the most resource attributes an export may add.
+pub const OTLP_MAX_ATTRIBUTES: usize = 16;
+/// The longest resource attribute name and value, in bytes.
+pub const OTLP_MAX_ATTRIBUTE_KEY: usize = 64;
+pub const OTLP_MAX_ATTRIBUTE_VALUE: usize = 256;
+/// Resource attribute names the export sets itself; a configured one of these is refused.
+pub const OTLP_RESERVED_ATTRIBUTES: [&str; 5] = [
+    "service.name",
+    "service.version",
+    "service.instance.id",
+    "host.name",
+    "wrendns.cluster.name",
+];
+
+/// REQ: OBS-006 (T41.2) — the body encoding of the OTLP export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpEncoding {
+    /// OTLP JSON (`application/json`).
+    #[default]
+    Json,
+    /// OTLP protobuf (`application/x-protobuf`).
+    Protobuf,
+    /// OTLP/gRPC: the same protobuf messages in a gRPC unary call over HTTP/2 (the collector's
+    /// port 4317).
+    Grpc,
+}
+
+impl OtlpEncoding {
+    /// Whether the encoding is the default.
+    #[must_use]
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+    pub fn is_json(&self) -> bool {
+        matches!(self, Self::Json)
+    }
+
+    /// The name used in the API and the files.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Protobuf => "protobuf",
+            Self::Grpc => "grpc",
+        }
+    }
 }
 
 /// REQ: OBS-006 (issue #155) — request compression of the OTLP export.
@@ -2954,6 +3026,10 @@ impl Default for OtlpConfig {
             traces_sample_every: 0,
             traces_slow_ms: 0,
             compression: OtlpCompression::None,
+            encoding: OtlpEncoding::Json,
+            resource_attributes: BTreeMap::new(),
+            tls_ca: None,
+            tls_ca_ref: None,
         }
     }
 }
