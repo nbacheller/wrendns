@@ -264,6 +264,13 @@ impl Engine {
         v
     }
 
+    /// The failures of the entries still in the table; a slot whose entry was deleted is dropped
+    /// first, so its failure, limit and back-off do not outlive it (or reach a new entry of that name).
+    pub(crate) fn failures_among(&self, names: &[String]) -> Vec<(String, String)> {
+        lock(&self.slots).retain(|n, _| names.contains(n));
+        self.failures()
+    }
+
     fn fail(&self, name: &str, text: &str) {
         lock(&self.slots)
             .entry(name.to_owned())

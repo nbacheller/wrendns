@@ -3085,8 +3085,17 @@ impl Backend for ApiBackend {
                 .as_deref(),
         ));
         // REQ: CLD-904, CLU-004 (T36.10b step b3) - a DNS provider whose latest call failed: degraded only.
+        // A deleted entry's failure goes with it (the engine drops slots of names no longer configured).
+        let provider_names: Vec<String> = self
+            .src
+            .config
+            .load()
+            .dns_provider
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
         reasons.extend(crate::health::dns_provider_reasons(
-            &crate::dns_provider::engine::engine().failures(),
+            &crate::dns_provider::engine::engine().failures_among(&provider_names),
         ));
         // REQ: DNS-906 (T40.5) — a root key in its hold-down, or a revoked trust anchor.
         reasons.extend(crate::health::anchor_reasons(

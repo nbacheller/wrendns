@@ -2477,7 +2477,12 @@ impl Backend for Federated {
         &self,
         op: wrendns_api::DnsProviderOp,
     ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        // No local run on a replica, and none on a primary without its lease (the same routing as a
+        // configuration write): the ledger is written only by the primary.
         if self.cluster.is_primary() {
+            if !self.cluster.may_publish() {
+                return Box::pin(async { Err(no_lease()) });
+            }
             return self.local.dns_provider_op(op);
         }
         match self.cluster.reachable_primary() {
@@ -2486,7 +2491,12 @@ impl Backend for Federated {
                 Some(primary),
                 op,
             )),
-            None => self.local.dns_provider_op(op),
+            None => Box::pin(async {
+                Err(Problem::unavailable(
+                    "this node can't reach the primary, and DNS provider actions run there",
+                )
+                .hint("Try again when the primary is reachable; see the Cluster page."))
+            }),
         }
     }
     // REQ: DSC-004 (ADR-1002) - the SNMP poller runs on the designated node: this one when it runs

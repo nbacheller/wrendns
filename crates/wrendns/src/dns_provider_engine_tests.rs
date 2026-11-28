@@ -455,6 +455,32 @@ async fn clu_004_a_provider_failure_is_health_only() {
     assert!(!engine().failures().iter().any(|(n, _)| n == "fake-down"));
 }
 
+// REQ: CLD-904, CLU-004 - a failure recorded before the entry was deleted is no health reason.
+#[tokio::test]
+async fn clu_004_a_deleted_entrys_failure_leaves_the_health_reasons() {
+    let h = harness("");
+    let cfg = entry("fake-gone", &json!({}));
+    let (auth, handle, fake) = parts(&h, &cfg);
+    fake.fail_next(ProviderError::new(
+        ProviderErrorKind::Unavailable,
+        "bad gateway",
+    ));
+    let _ = engine()
+        .ensure(&auth, &cfg, &handle, &user(), &set("a.example.net", "v"))
+        .await
+        .unwrap_err();
+    let kept = vec!["fake-gone".to_owned()];
+    assert!(
+        engine()
+            .failures_among(&kept)
+            .iter()
+            .any(|(n, _)| n == "fake-gone")
+    );
+    // The entry is deleted: its name is no longer in the configuration.
+    let left = engine().failures_among(&[]);
+    assert!(!left.iter().any(|(n, _)| n == "fake-gone"), "{left:?}");
+}
+
 fn provider_body(name: &str) -> Value {
     let _ = name;
     json!({"kind": "cloudflare", "zone": "example.net", "credential_ref": "cf"})

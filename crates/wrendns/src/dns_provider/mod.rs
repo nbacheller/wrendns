@@ -206,6 +206,10 @@ pub(crate) struct ProviderError {
     detail: String,
 }
 
+/// How much of a provider's text is kept until it is scrubbed, and how much is ever shown.
+const DETAIL_KEEP: usize = 8192;
+const DETAIL_SHOWN: usize = 300;
+
 impl ProviderError {
     pub(crate) fn new(kind: ProviderErrorKind, detail: impl Into<String>) -> Self {
         let mut d: String = detail
@@ -213,7 +217,9 @@ impl ProviderError {
             .chars()
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
-        d.truncate(d.floor_char_boundary(300));
+        // Cut to the shown length only after scrubbing (`redacted`): a credential straddling a cut
+        // would survive as a prefix no piece matches.
+        d.truncate(d.floor_char_boundary(DETAIL_KEEP));
         Self {
             kind,
             retry_after: None,
@@ -237,6 +243,8 @@ impl ProviderError {
                 self.detail = self.detail.replace(p, "<redacted>");
             }
         }
+        self.detail
+            .truncate(self.detail.floor_char_boundary(DETAIL_SHOWN));
         self
     }
 }
@@ -246,7 +254,8 @@ impl fmt::Display for ProviderError {
         if self.detail.is_empty() {
             f.write_str(self.kind.label())
         } else {
-            write!(f, "{}: {}", self.kind.label(), self.detail)
+            let d = &self.detail[..self.detail.floor_char_boundary(DETAIL_SHOWN)];
+            write!(f, "{}: {}", self.kind.label(), d)
         }
     }
 }
@@ -312,5 +321,18 @@ mod tests {
         let text = format!("{e} {e:?}");
         assert!(!text.contains("s3cr3t"), "{text}");
         assert!(!text.contains("AKIAEXAMPLE"), "{text}");
+    }
+
+    #[test]
+    fn cld_904_a_credential_straddling_the_cut_is_scrubbed() {
+        let secret = "s3cr3t-value-xyz-0123456789";
+        let body = format!("{}{secret} tail", "x".repeat(290));
+        let e = ProviderError::new(ProviderErrorKind::Unauthorized, body).redacted(secret);
+        let text = format!("{e} {e:?}");
+        assert!(!text.contains("s3cr3t"), "{text}");
+        assert!(!text.contains("s3cr"), "{text}");
+        // An unscrubbed error is still never longer than the shown length.
+        let long = ProviderError::new(ProviderErrorKind::Unavailable, "y".repeat(2000));
+        assert!(format!("{long}").len() < 400);
     }
 }
