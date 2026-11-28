@@ -2733,7 +2733,8 @@ impl TelemetryConfig {
     /// The OTLP settings in effect: the files', or, when they set no destination, the UI's
     /// `endpoint`, `interval_secs`, `header_refs`, `compression`, `encoding`,
     /// `resource_attributes` and `tls_ca_ref` over the files' trace settings. A file that sets only `compression` (or `interval_secs`) is not a destination,
-    /// so the UI entry's value wins over it; a file that sets a destination wins whole,
+    /// so the UI entry's value wins over it; a file's private CA (`tls_ca`, `tls_ca_ref`) stays in
+    /// effect unless the UI entry names its own `tls_ca_ref`; a file that sets a destination wins whole,
     /// `compression` included.
     #[must_use]
     pub fn otlp_effective(&self) -> std::borrow::Cow<'_, OtlpConfig> {
@@ -2746,8 +2747,12 @@ impl TelemetryConfig {
                 o.compression = m.compression;
                 o.encoding = m.encoding;
                 o.resource_attributes.clone_from(&m.resource_attributes);
-                o.tls_ca_ref.clone_from(&m.tls_ca_ref);
-                o.tls_ca = None;
+                // A CA the UI names wins; without one, the files' `tls_ca` / `tls_ca_ref` still
+                // apply (a CA is not a destination, like `compression` before it, ADR-040).
+                if m.tls_ca_ref.is_some() {
+                    o.tls_ca_ref.clone_from(&m.tls_ca_ref);
+                    o.tls_ca = None;
+                }
                 std::borrow::Cow::Owned(o)
             }
             _ => std::borrow::Cow::Borrowed(&self.otlp),

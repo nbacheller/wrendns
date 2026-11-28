@@ -421,6 +421,75 @@ fn tls_pair() -> (tokio_rustls::TlsAcceptor, CertificateDer<'static>) {
     (tokio_rustls::TlsAcceptor::from(Arc::new(cfg)), cert)
 }
 
+/// REQ: FLT-004, OBS-006 (T41.2) - the client now also has an HTTP/2 connector (for the OTLP/gRPC
+/// call), but a list download is unchanged: it offers `http/1.1` only, so a server that prefers
+/// `h2` still negotiates `http/1.1` and the download is plain HTTP/1.1.
+#[tokio::test]
+async fn flt_004_list_download_still_negotiates_http1() {
+    let ck = rcgen::generate_simple_self_signed(vec!["lists.test".to_owned()]).unwrap();
+    let cert = CertificateDer::from(ck.cert.der().to_vec());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], key)
+        .unwrap();
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let negotiated = Arc::new(Mutex::new(Vec::new()));
+    let seen = negotiated.clone();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            let (acceptor, seen) = (acceptor.clone(), seen.clone());
+            tokio::spawn(async move {
+                let Ok(mut s) = acceptor.accept(sock).await else {
+                    return;
+                };
+                seen.lock()
+                    .unwrap()
+                    .push(s.get_ref().1.alpn_protocol().map(<[u8]>::to_vec));
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"
+
+") {
+                    match s.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                assert!(buf.starts_with(b"GET /l.txt HTTP/1.1
+"), "{buf:?}");
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK
+Content-Length: 6
+Connection: close
+
+a.com
+",
+                    )
+                    .await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[cert]);
+    let url = format!("https://lists.test:{port}/l.txt");
+    assert_eq!(f.refresh_one(&spec("l", url)).await, Outcome::Updated);
+    assert_eq!(f.store().read_source("l").unwrap(), b"a.com
+");
+    assert_eq!(
+        *negotiated.lock().unwrap(),
+        vec![Some(b"http/1.1".to_vec())]
+    );
+}
+
 #[tokio::test]
 async fn flt_004_https_verifies_and_refuses_downgrade() {
     let (acceptor, cert) = tls_pair();

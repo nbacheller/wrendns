@@ -923,10 +923,15 @@ async fn obs_006_otlp_options_are_validated() {
             }
         }
         let (s, _, out) = h.call("PUT", OTLP_PUT, Some(&body)).await;
-        assert!(
-            s == StatusCode::UNPROCESSABLE_ENTITY || s == StatusCode::BAD_REQUEST,
-            "{body}: {s} {out}"
-        );
+        // The acceptance criteria: 422, `secret_missing` for a name that is stored nowhere and
+        // `invalid_config` for every other refusal.
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {s} {out}");
+        let code = if body["tls_ca_ref"] == "missing-ca" {
+            "secret_missing"
+        } else {
+            "invalid_config"
+        };
+        assert_eq!(out["code"], code, "{body}: {out}");
         assert!(out.to_string().contains(expect), "{body}: {out}");
     }
     assert!(h.src.config.load_full().telemetry.managed_otlp.is_none());

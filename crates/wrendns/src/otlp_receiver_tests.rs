@@ -598,8 +598,10 @@ async fn obs_006_private_ca_file_trusts_the_collector() {
 }
 
 /// REQ: OBS-006 (T41.2) - the CA as a stored `pem` secret (`tls_ca_ref`, set through the API): the
-/// export task delivers metrics to the TLS collector, with the public roots still trusted; a
-/// rotated secret is read at the next export.
+/// export task delivers metrics to the TLS collector; a collector signed by an unrelated CA is
+/// refused; a rotated secret is read at the next export (the same `Clients`, the old collector
+/// refused and the new one reached); a reference naming nothing is an error. (That the built-in
+/// public roots stay trusted is `Client::new`'s own; no test reaches a public server.)
 #[tokio::test]
 async fn obs_006_private_ca_secret_trusts_the_collector() {
     let (ca_pem, server) = private_ca();
@@ -663,6 +665,49 @@ async fn obs_006_private_ca_secret_trusts_the_collector() {
         ..wrendns_config::OtlpConfig::default()
     });
     assert!(crate::otlp::ca_pem(&other, &h.src.secrets).is_err());
+    // An unrelated CA's collector is refused; after the secret is replaced with that CA, the next
+    // `Clients::get` (same instance) reaches it and the first collector is refused.
+    let (ca2_pem, server2) = private_ca();
+    let rx2 = Receiver::tls(server2);
+    let url2 = format!("{}/v1/metrics", rx2.https_base());
+    let (cfg, doc, _) = metrics_doc(&h);
+    let mut clients = crate::otlp::Clients::new();
+    let c = clients.get(&cfg, &h.src.secrets).unwrap();
+    let post = |c: &wrendns_filter::fetch::Client, url: &str| {
+        crate::otlp::post(
+            c,
+            url,
+            &cfg,
+            crate::otlp_proto::Signal::Metrics,
+            &doc,
+            &h.src.secrets,
+        )
+    };
+    assert!(post(c, &url2).await.is_err(), "an unrelated CA is refused");
+    assert!(rx2.requests().is_empty());
+    let before = rx.requests().len();
+    h.src
+        .secrets
+        .put(
+            "otlp-ca",
+            crate::secrets::value::Kind::Pem,
+            &crate::secrets::SecretValue::new(
+                crate::secrets::value::Kind::Pem,
+                zeroize::Zeroizing::new(ca2_pem),
+            )
+            .unwrap(),
+            0,
+            "root",
+            "local",
+            2,
+        )
+        .unwrap();
+    let c = clients.get(&cfg, &h.src.secrets).unwrap();
+    post(c, &url2).await.unwrap();
+    assert_eq!(rx2.requests().len(), 1, "the rotated CA reaches its collector");
+    let old_url = format!("{}/v1/metrics", rx.https_base());
+    assert!(post(c, &old_url).await.is_err(), "the replaced CA is no longer trusted");
+    assert_eq!(rx.requests().len(), before);
 }
 
 /// A fake OTLP/gRPC collector: an HTTP/2 server (h2c, or TLS with ALPN `h2`) that keeps each call
@@ -790,7 +835,7 @@ impl Drop for GrpcReceiver {
 
 /// The protobuf message inside a gRPC request body (flag, length, message), gunzipped when the
 /// frame says it is compressed.
-fn grpc_message(r: &Req) -> Vec<u8> {
+pub(crate) fn grpc_message(r: &Req) -> Vec<u8> {
     assert!(r.raw.len() >= 5, "a length-prefixed message");
     let len = u32::from_be_bytes(r.raw[1..5].try_into().unwrap()) as usize;
     assert_eq!(

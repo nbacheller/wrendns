@@ -2875,7 +2875,7 @@ fn obs_006_otlp_options_are_validated() {
 }
 
 /// REQ: OBS-006 (T41.2) — a UI entry's encoding, attributes and CA reference are in effect over a
-/// file that sets no destination (its `tls_ca` path is dropped); a file that sets one keeps its own.
+/// file that sets no destination (the file's `tls_ca` path is replaced by the UI's reference); a file that sets one keeps its own.
 #[test]
 fn obs_006_otlp_effective_options_follow_the_destination_rule() {
     use wrendns_config::{OtlpConfig, OtlpEncoding};
@@ -2900,4 +2900,28 @@ fn obs_006_otlp_effective_options_follow_the_destination_rule() {
     let o = cfg.telemetry.otlp_effective();
     assert_eq!(o.encoding, OtlpEncoding::Json);
     assert!(o.tls_ca_ref.is_none() && o.resource_attributes.is_empty());
+}
+
+/// REQ: OBS-006 (T41.2) — a file's `tls_ca` without a destination is not dropped: it applies to the
+/// destination made in the UI, unless the UI entry names its own `tls_ca_ref`.
+#[test]
+fn obs_006_otlp_effective_keeps_a_file_ca_without_a_destination() {
+    use wrendns_config::OtlpConfig;
+    let ui: OtlpConfig =
+        serde_json::from_value(serde_json::json!({"endpoint": "https://ui:4318"})).unwrap();
+    let mut cfg = load_str("[telemetry.otlp]\ntls_ca = \"/etc/ca.pem\"\n")
+        .unwrap()
+        .config;
+    cfg.telemetry.managed_otlp = Some(ui);
+    let o = cfg.telemetry.otlp_effective();
+    assert_eq!(o.tls_ca.as_deref(), Some("/etc/ca.pem"));
+    assert!(o.tls_ca_ref.is_none());
+    let ui: OtlpConfig = serde_json::from_value(
+        serde_json::json!({"endpoint": "https://ui:4318", "tls_ca_ref": "ui-ca"}),
+    )
+    .unwrap();
+    cfg.telemetry.managed_otlp = Some(ui);
+    let o = cfg.telemetry.otlp_effective();
+    assert!(o.tls_ca.is_none());
+    assert_eq!(o.tls_ca_ref.as_deref(), Some("ui-ca"));
 }

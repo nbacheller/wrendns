@@ -132,3 +132,110 @@ fn obs_006_protobuf_skips_what_it_cannot_encode() {
         json!({"resourceSpans": [{"scopeSpans": [{"spans": [{"name": "x"}]}]}]})
     );
 }
+
+/// Wire bytes written without the encoder's table, from `opentelemetry/proto/*.proto`: a field's
+/// tag is `number << 3 | wire type`; `ld` is a length-delimited field (wire type 2), `f64` a
+/// `fixed64` or `double` (wire type 1, little-endian) and `vi` a varint (wire type 0).
+fn ld(number: u8, body: &[u8]) -> Vec<u8> {
+    assert!(number < 16 && body.len() < 128, "one-byte tag and length");
+    let mut out = vec![number << 3 | 2, u8::try_from(body.len()).unwrap()];
+    out.extend_from_slice(body);
+    out
+}
+
+fn f64_field(number: u8, bits: u64) -> Vec<u8> {
+    let mut out = vec![number << 3 | 1];
+    out.extend_from_slice(&bits.to_le_bytes());
+    out
+}
+
+fn vi(number: u8, v: u8) -> Vec<u8> {
+    vec![number << 3, v]
+}
+
+fn cat(parts: &[Vec<u8>]) -> Vec<u8> {
+    parts.concat()
+}
+
+/// REQ: OBS-017, OBS-006 (T41.2) - a span's wire bytes from the proto file's numbers, not the
+/// encoder's table (`Span`: `trace_id` 1, `span_id` 2, `parent_span_id` 4, `name` 5, `kind` 6,
+/// `start_time_unix_nano` 7, `end_time_unix_nano` 8, `status` 15; `Status.code` 3;
+/// `ScopeSpans.spans` 2; `ResourceSpans.scope_spans` 2; the request's `resource_spans` 1).
+#[test]
+fn obs_017_protobuf_span_wire_bytes() {
+    let doc = json!({"resourceSpans": [{"scopeSpans": [{"spans": [{
+        "traceId": "01".repeat(16), "spanId": "02".repeat(8), "parentSpanId": "03".repeat(8),
+        "name": "s", "kind": 2, "startTimeUnixNano": "1", "endTimeUnixNano": "2",
+        "status": {"code": 2},
+    }]}]}]});
+    let span = cat(&[
+        ld(1, &[1; 16]),
+        ld(2, &[2; 8]),
+        ld(4, &[3; 8]),
+        ld(5, b"s"),
+        vi(6, 2),
+        f64_field(7, 1),
+        f64_field(8, 2),
+        ld(15, &vi(3, 2)),
+    ]);
+    let want = ld(1, &ld(2, &ld(2, &span)));
+    assert_eq!(encode(Signal::Traces, &doc), want);
+}
+
+/// REQ: OBS-006 (T41.2) - the three metric kinds' wire bytes from the proto file's numbers
+/// (`Metric`: `name` 1, `gauge` 5, `sum` 7, `histogram` 9; `Gauge`/`Sum`/`Histogram`
+/// `data_points` 1; `Sum.aggregation_temporality` 2, `is_monotonic` 3; `NumberDataPoint`
+/// `time_unix_nano` 3, `as_double` 4; `HistogramDataPoint` `time_unix_nano` 3, `count` 4,
+/// `sum` 5, `bucket_counts` 6, `explicit_bounds` 7; `ScopeMetrics.metrics` 2;
+/// `ResourceMetrics.scope_metrics` 2).
+#[test]
+fn obs_006_protobuf_metric_kind_wire_bytes() {
+    let doc = json!({"resourceMetrics": [{"scopeMetrics": [{"metrics": [
+        {"name": "g", "gauge": {"dataPoints": [{"timeUnixNano": "2", "asDouble": 1.0}]}},
+        {"name": "s", "sum": {"aggregationTemporality": 2, "isMonotonic": true,
+            "dataPoints": [{"timeUnixNano": "2", "asDouble": 1.0}]}},
+        {"name": "h", "histogram": {"aggregationTemporality": 2, "dataPoints": [{
+            "timeUnixNano": "2", "count": "3", "sum": 1.0,
+            "bucketCounts": ["1", "2"], "explicitBounds": [1.0]}]}},
+    ]}]}]});
+    let one = 1.0_f64.to_bits();
+    let number_point = cat(&[f64_field(3, 2), f64_field(4, one)]);
+    let gauge = cat(&[ld(1, b"g"), ld(5, &ld(1, &number_point))]);
+    let sum = cat(&[
+        ld(1, b"s"),
+        ld(
+            7,
+            &cat(&[ld(1, &number_point), vi(2, 2), vi(3, 1)]),
+        ),
+    ]);
+    let packed_counts = cat(&[1_u64.to_le_bytes().to_vec(), 2_u64.to_le_bytes().to_vec()]);
+    let hist_point = cat(&[
+        f64_field(3, 2),
+        f64_field(4, 3),
+        f64_field(5, one),
+        ld(6, &packed_counts),
+        ld(7, &one.to_le_bytes()),
+    ]);
+    let hist = cat(&[
+        ld(1, b"h"),
+        ld(9, &cat(&[ld(1, &hist_point), vi(2, 2)])),
+    ]);
+    let scope_metrics = cat(&[ld(2, &gauge), ld(2, &sum), ld(2, &hist)]);
+    // The three metrics together are longer than a one-byte length holds.
+    let want = ld_long(1, &ld_long(2, &scope_metrics));
+    assert_eq!(encode(Signal::Metrics, &doc), want);
+}
+
+/// A length-delimited field whose length takes one or two varint bytes.
+fn ld_long(number: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![number << 3 | 2];
+    let n = body.len();
+    if n < 128 {
+        out.push(u8::try_from(n).unwrap());
+    } else {
+        out.push(u8::try_from(n & 0x7f).unwrap() | 0x80);
+        out.push(u8::try_from(n >> 7).unwrap());
+    }
+    out.extend_from_slice(body);
+    out
+}

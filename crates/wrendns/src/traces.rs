@@ -873,6 +873,74 @@ mod tests {
         assert_eq!(spans[0]["status"]["code"], 2);
     }
 
+    /// REQ: OBS-017, OBS-006 (T41.2) - the trace export over gRPC: a unary call to
+    /// `opentelemetry.proto.collector.trace.v1.TraceService/Export` on the in-process h2c receiver,
+    /// whose message decodes to the spans the JSON export builds.
+    #[tokio::test]
+    async fn obs_017_receiver_gets_grpc_traces() {
+        use crate::otlp::receiver_tests::{GrpcReceiver, assert_resource, grpc_message, node_at};
+        let rx = GrpcReceiver::start(None, "0", "").await;
+        let h = node_at(&rx.url_base(), "encoding = \"grpc\"");
+        let cfg = h.src.config.load_full();
+        let mut query = ev(1_791_000_000_000_000, 30_000, 25_000, Status::Forwarded);
+        query.rcode = Some(2);
+        let qname = name("shop.example");
+        let traced = Traced {
+            e: query,
+            name: qname,
+            trace: trace_of(&query, &qname),
+        };
+        let names = Names {
+            node: "pi-a",
+            upstreams: &[(1, "quad9".to_owned())],
+            groups: &["lab".to_owned()],
+        };
+        let doc = traces_body(&[traced], &names, &crate::otlp::resource("pi-a"));
+        let url = crate::otlp::signal_url(
+            &crate::otlp::endpoint(&cfg).unwrap(),
+            wrendns_config::OtlpEncoding::Grpc,
+            crate::otlp_proto::Signal::Traces,
+        );
+        assert!(
+            url.ends_with("/opentelemetry.proto.collector.trace.v1.TraceService/Export"),
+            "{url}"
+        );
+        let mut clients = crate::otlp::Clients::new();
+        let client = clients.get(&cfg, &h.src.secrets).unwrap();
+        crate::otlp::post(
+            client,
+            &url,
+            &cfg,
+            crate::otlp_proto::Signal::Traces,
+            &doc,
+            &h.src.secrets,
+        )
+        .await
+        .unwrap();
+        let reqs = rx.requests();
+        assert_eq!(reqs.len(), 1, "{reqs:?}");
+        assert!(
+            reqs[0]
+                .path()
+                .eq_ignore_ascii_case("/opentelemetry.proto.collector.trace.v1.TraceService/Export"),
+            "{}",
+            reqs[0].path()
+        );
+        assert_eq!(reqs[0].header("content-type"), Some("application/grpc"));
+        let got = crate::otlp_proto::reader::decode(
+            crate::otlp_proto::Signal::Traces,
+            &grpc_message(&reqs[0]),
+        );
+        assert_eq!(got, crate::otlp_proto::tests::norm(&doc));
+        assert_resource(&got["resourceSpans"][0]["resource"]);
+        assert_eq!(
+            got["resourceSpans"][0]["scopeSpans"][0]["spans"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+    }
+
     /// REQ: OBS-017 — a query becomes a server span (name, type, response code, client,
     /// group) and, when upstreams were asked, a client span for the wait, under one trace ID.
     #[test]
