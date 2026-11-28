@@ -439,8 +439,10 @@ async fn flt_004_list_download_still_negotiates_http1() {
         .unwrap();
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let srv = serve(
-        handler(|_, _| ok("a.com
-")),
+        handler(|_, _| {
+            ok("a.com
+")
+        }),
         Some(tokio_rustls::TlsAcceptor::from(Arc::new(cfg))),
     )
     .await;
@@ -451,8 +453,11 @@ async fn flt_004_list_download_still_negotiates_http1() {
             .await,
         Outcome::Updated
     );
-    assert_eq!(f.store().read_source("l").unwrap(), b"a.com
-");
+    assert_eq!(
+        f.store().read_source("l").unwrap(),
+        b"a.com
+"
+    );
     assert_eq!(srv.requests().len(), 1);
 }
 
