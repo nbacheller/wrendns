@@ -6574,7 +6574,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** whether the flat-name count should survive a restart and be summed across nodes (point 9). Decided 2026-11-26: node names wait for T36.10d (point 2), the start-up hold (point 5), both tools and the scope and both scopes for a device pin (point 4), the order of the core and the page (above).
 
-## ADR-1105 — Aggressive NSEC3: ranges kept per zone with the zone's hash parameters, answered by hashing a few names, never from an opt-out span (Proposed 2026-11-27; DNS-907; T40.6; amends ADR-092; fork #114)
+## ADR-1105 — Aggressive NSEC3: ranges kept per zone with the zone's hash parameters, answered by hashing a few names, never from an opt-out span (Accepted 2026-11-27, accepted on merge after the main run passed; DNS-907; T40.6; amends ADR-092; fork #114)
 
 **Context:** ADR-092 left NSEC3 for later: "synthesis needs the zone's hash parameters and a hash per lookup, and opt-out spans prove nothing for unsigned delegations". Many signed zones use NSEC3 (the .com and .net zones among them), so the stray and made-up names under them still went upstream each time. T40.1 (ADR-1094) since set the iteration limit the validator applies (50, `NSEC3_SOFT_LIMIT`; RFC 9276 asks for 0 and a low ceiling), and the offline fixtures in `crates/wrendns-upstream/tests/dnssec_offline.rs` can now build an NSEC3-signed zone.
 
@@ -6617,7 +6617,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** none. The two questions this ADR left open were decided on 2026-11-27 (a restart applies it; a widening goes through the guarded flow). **Left as the conservative option, not asked (2026-11-27):** a node never copies more than was confirmed with the phrase on that node (a node's tap, a new target, a feed on or more sampling is confirmed on that node, and no other node's value is ever read); an answer of success means the change is in force after the restart of that node; the `socket` path must be absolute for a value from the API or the card, while a file with a relative one still loads with a warning (as for `buffer`); and the view a replica sends with a forwarded write is taken as that replica's own word.
 
-## ADR-1108 — RFC 5011 trust anchor rollover: one shared state for each node, a fixed 30-day hold-down, a read of the root through the default group, and a gated peer read (Proposed 2026-11-27; DNS-906, DNS-011; T40.5; amends ADR-086)
+## ADR-1108 — RFC 5011 trust anchor rollover: one shared state for each node, a fixed 30-day hold-down, a read of the root through the default group, and a gated peer read (Accepted 2026-11-27, accepted on merge after the main run passed; DNS-906, DNS-011; T40.5; amends ADR-086)
 
 **Context:** ADR-086 deferred RFC 5011 because the root changes its key every several years and the build carries the current keys. The gap audit of fork #114 (`docs/design/unbound-parity.md`) marks it "build": a node left alone for years, or one that runs a build older than the next rollover, would stop validating. The records leave open how the reading is made, what is kept, where, and how it meets the cluster. hickory-net's `TrustAnchors` can be rebuilt from a key list, so no change to the library is needed.
 
@@ -6636,7 +6636,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** none that blocks. **Left as the conservative option, not asked:** whether the hold-down should be a setting (no: the RFC's value is kept, and it is what Unbound does by default); whether a node with validation off should still follow the root so that turning validation on starts from current keys (no: it reads nothing while off, and a node that was off for years starts from the built-ins plus the file it has, which is what any build would do).
 
-## ADR-1109 — The DNS-provider table: stored and validated only, one start-up hold for a set of tables, reads open to any role, credentials by name (Proposed 2026-11-27; CLD-904, DSC-908; T36.10b steps 1 and 2; follows ADR-1084 as amended 2026-11-26, ADR-1096 and ADR-1104)
+## ADR-1109 — The DNS-provider table: stored and validated only, one start-up hold for a set of tables, reads open to any role, credentials by name (Accepted 2026-11-27, accepted on merge after the main run passed; CLD-904, DSC-908; T36.10b steps 1 and 2; follows ADR-1084 as amended 2026-11-26, ADR-1096 and ADR-1104)
 
 **Context:** Steps b1 and b2 of T36.10b build the `[[dns_provider]]` table with its gate, its managed kind and API, the MCP read tool and the Settings tab. The provider trait, the providers, the write engine, the ownership ledger, dry-run behaviour and rate limits are later steps and wait for an owner decision. Building the table met places the records leave open; each is settled here in the most conservative way and listed for the owner.
 
@@ -6653,7 +6653,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** whether reads of the provider list should be admin only rather than open to any role (point 4); whether `delegated` should be a kind with no credential (point 2).
 
-## ADR-1110 — RPZ as a list source: a `format` on the list, QNAME triggers mapped onto the rewrite machinery, a DROP answered REFUSED, and the format held back until every member reads it (Proposed 2026-11-27; owner decision 2026-11-27 through the question tool; FLT-906; T40.9; follows ADR-017 and ADR-1096)
+## ADR-1110 — RPZ as a list source: a `format` on the list, QNAME triggers mapped onto the rewrite machinery, a DROP answered REFUSED, and the format held back until every member reads it (Accepted 2026-11-27, accepted on merge after the main run passed; owner decision 2026-11-27 through the question tool; FLT-906; T40.9; follows ADR-017 and ADR-1096)
 
 **Context:** T40.9 asks for RPZ zone files (a file or a URL) as a list format, with QNAME triggers mapped to WrenDNS's rules, response-IP triggers mapped to FLT-015 where they fit, and everything else counted as `unsupported`. The list parser reads one line at a time and detects each line's syntax (ADR-017); a zone file is a DNS master file in which a record can span lines, leave its owner out and depend on `$ORIGIN`. Lists replicate, and a build that does not know a new list field refuses the whole lists section (`deny_unknown_fields`).
 
@@ -6679,7 +6679,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** (a) whether a primary should also hold an RPZ list from its file at start, with ADR-1104's start-up hold, or whether the reload and API gate is enough; (b) whether response-IP triggers should get a per-list path to FLT-015 in a later task (the count says how many a zone holds).
 
-## ADR-1111 — OTLP request compression: an option `compression = "gzip"` for the metrics and trace requests, JSON stays, gated by a feature, and `service.instance.id` on every resource (Proposed 2026-11-27; OBS-006, OBS-017, API-016, CLU-010; T41.1; GitHub issue #155)
+## ADR-1111 — OTLP request compression: an option `compression = "gzip"` for the metrics and trace requests, JSON stays, gated by a feature, and `service.instance.id` on every resource (Accepted 2026-11-27, accepted on merge after the main run passed; OBS-006, OBS-017, API-016, CLU-010; T41.1; GitHub issue #155)
 
 **Context:** Issue #155 asks for WrenDNS to work next to the Home Assistant OpenTelemetry Collector add-on. The add-on exports only (its documentation describes no OTLP receiver reachable from other machines), so the work is the exporter's gaps and a guide. The export sends OTLP/HTTP with JSON (ADR-076).
 
