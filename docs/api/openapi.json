@@ -5852,7 +5852,7 @@
           "config"
         ],
         "summary": "The DNS providers in the configuration.",
-        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are\nrecorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
+        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state: `not_used` (this build has no provider code for the entry; every real kind has code, so only a test-only entry reads this), `dry_run` (changes are\nrecorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
         "operationId": "list_dns_providers",
         "responses": {
           "200": {
@@ -6168,7 +6168,7 @@
             }
           },
           "409": {
-            "description": "No provider code for the kind yet, or `upgrade_required`.",
+            "description": "No provider code for the entry (only a test-only entry has none), or `upgrade_required`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6315,6 +6315,79 @@
           },
           "409": {
             "description": "`upgrade_required`: a cluster member's build does not know the test yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dns-providers/{name}/verify": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Verify the delegation CNAME of a `delegated` provider.",
+        "description": "CLD-904 (T36.10b step b5, ADR-1115). For each location whose domain is in the provider's zone the\nnode asks the zone's own authoritative name servers (found through the configured upstreams, never\nits own local data or cache) whether `_acme-challenge.<slug>.<domain>` is a CNAME to\n`<slug>.<validation zone>`. Every name server must answer with authority and with exactly that\ntarget. The answer lists each record with the verdict and the reason; a failure is a health\nreason only and changes no DNS answer. Nothing is written anywhere. It runs on the node asked.\nAdmin only, never for agents.",
+        "operationId": "verify_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Each record with its verdict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderVerifyResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can verify a DNS provider (agents never).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entry is not a `delegated` provider, or it is held back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node has no upstream to find the name servers through.",
             "content": {
               "application/json": {
                 "schema": {
@@ -22761,6 +22834,82 @@
           }
         }
       },
+      "DnsProviderDelegation": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b5, ADR-1115) - the delegation of a `delegated` provider: the\nprovider that holds the validation zone and the CNAME records the operator creates by hand at\nthe DNS host, each with this node's latest check.",
+        "required": [
+          "validationProvider",
+          "records"
+        ],
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderDelegationRecord"
+            },
+            "description": "The CNAME records to create, one per location in the zone; one template with `<slug>` when\nno location is in the zone yet."
+          },
+          "validationProvider": {
+            "type": "string",
+            "description": "The provider entry that takes the challenge TXT (`delegated_to`)."
+          },
+          "validationZone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That provider's zone (absent when the entry it names is missing)."
+          }
+        }
+      },
+      "DnsProviderDelegationRecord": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b5) - one `_acme-challenge` CNAME to create at the DNS host, and\nwhether this node has verified it at the zone's authoritative servers.",
+        "required": [
+          "name",
+          "target"
+        ],
+        "properties": {
+          "checkedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When that check ran, Unix seconds.",
+            "minimum": 0
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The location it is for; absent for the template shown before any location uses the zone."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name to create the CNAME at: `_acme-challenge.<slug>.<domain>` (no trailing dot)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, from the latest check on this node."
+          },
+          "target": {
+            "type": "string",
+            "description": "What it points to: `<slug>.<validation zone>` (no trailing dot)."
+          },
+          "verified": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` verified, `false` not verified; absent when this node has not checked it yet."
+          }
+        }
+      },
       "DnsProviderEntry": {
         "type": "object",
         "description": "REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings\n(the credential as a stored secret's name, never a value), where it comes from, and its state.",
@@ -22790,6 +22939,17 @@
           "definition": {
             "description": "The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the\nname of a stored secret."
           },
+          "delegation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DnsProviderDelegation",
+                "description": "A `delegated` entry only: the record to create at its DNS host and whether this node has\nverified it (T36.10b step b5, ADR-1115)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "detail": {
             "type": "string",
             "description": "The sentence that goes with `state`."
@@ -22804,7 +22964,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`azure_dns`, `cloudflare`, `route53` or `rfc2136`."
+            "description": "`azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated`."
           },
           "name": {
             "type": "string"
@@ -22815,7 +22975,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`not_used`: this build has no code for the kind yet (only the test provider has any);\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
+            "description": "`not_used`: this build has no provider code for the entry (every real kind has code; only a\ntest-only entry reads this);\n`dry_run`: it computes and records changes and sends none, until its first successful test;\n`ready`: the first test passed and writes are sent."
           },
           "zone": {
             "type": "string",
@@ -23019,7 +23179,35 @@
           },
           "supported": {
             "type": "boolean",
-            "description": "False when this build has no code for the provider's kind yet (`error` says so)."
+            "description": "False when this build has no provider code for the entry (`error` says so; every real kind has code)."
+          }
+        }
+      },
+      "DnsProviderVerifyResult": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b5) - the answer of `POST /api/v1/dns-providers/{name}/verify`.",
+        "required": [
+          "ok",
+          "records"
+        ],
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A sentence for the card (for example, that no location uses the zone yet so nothing was\nchecked)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Every record is verified."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderDelegationRecord"
+            },
+            "description": "Each record with its verdict and reason."
           }
         }
       },
@@ -31885,6 +32073,31 @@
         },
         "additionalProperties": false
       },
+      "OtlpCa": {
+        "type": "object",
+        "description": "REQ: OBS-006 (T41.2) — where the OTLP export's private CA comes from (never the certificate).",
+        "required": [
+          "source",
+          "readable"
+        ],
+        "properties": {
+          "readable": {
+            "type": "boolean",
+            "description": "Whether this node can read it now."
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored secret's name, when `source` is `stored`."
+          },
+          "source": {
+            "type": "string",
+            "description": "`stored` (a secret of the `pem` kind, by name) or `file` (set in the configuration file)."
+          }
+        }
+      },
       "OtlpEntry": {
         "type": "object",
         "description": "REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.",
@@ -31895,6 +32108,8 @@
           "tracesSampleEvery",
           "tracesSlowMs",
           "compression",
+          "encoding",
+          "resourceAttributes",
           "active"
         ],
         "properties": {
@@ -31904,7 +32119,11 @@
           },
           "compression": {
             "type": "string",
-            "description": "`none` or `gzip`: whether the metrics and traces requests are gzip compressed (the\nencoding is JSON either way)."
+            "description": "`none` or `gzip`: whether the metrics and traces requests are gzip compressed (a gRPC\ncall compresses its message)."
+          },
+          "encoding": {
+            "type": "string",
+            "description": "`json`, `protobuf` (`application/x-protobuf`) or `grpc`: the encoding of the metrics and traces\nrequests."
           },
           "endpoint": {
             "type": [
@@ -31931,9 +32150,30 @@
             ],
             "description": "Why it doesn't, when an endpoint is set."
           },
+          "resourceAttributes": {
+            "type": "object",
+            "description": "The extra resource attributes set on every exported signal (name to value).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "source": {
             "type": "string",
             "description": "`none` (no export), `file` (the configuration files set the destination; read-only here)\nor `api`."
+          },
+          "tlsCa": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OtlpCa",
+                "description": "The private CA the collector's TLS certificate may chain to, besides the public roots;\nabsent when none is set."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tracesSampleEvery": {
             "type": "integer",

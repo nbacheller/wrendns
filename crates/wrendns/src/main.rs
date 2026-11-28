@@ -14,6 +14,7 @@ mod api_tls;
 mod api_url;
 mod archive;
 mod auth_setup;
+mod authoritative;
 mod backup;
 #[cfg(test)]
 mod backup_api_tests;
@@ -34,6 +35,8 @@ mod device_dns;
 mod devices;
 mod discovery;
 mod dns_provider;
+#[cfg(test)]
+mod dns_provider_delegation_tests;
 #[cfg(test)]
 mod dns_provider_engine_tests;
 mod dns_provider_ops;
@@ -91,6 +94,7 @@ mod node_settings;
 mod node_settings_tests;
 mod oidc_settings;
 mod otlp;
+mod otlp_proto;
 mod own_networks;
 mod pihole;
 mod pihole_import;

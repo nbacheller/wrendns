@@ -4,11 +4,14 @@
   // DNS host (or a self-run server) the node may write record sets in. T36.10b step b3 (CLD-919) adds the
   // **Test** button (the scope the credential has, never the secret; the first success ends the entry's
   // dry run), the dry-run state, and the **Records** table with **Adopt** (the node changes or deletes only
-  // record sets it made or an admin adopted). A kind with no provider code yet says so. A provider added, changed or removed applies on every node
+  // record sets it made or an admin adopted). An entry with no provider code (none of the four kinds has none) says so. A provider added, changed or removed applies on every node
   // within seconds; one the configuration file defines is read-only ("set by file"); the credential goes
   // through SecretField (write-only, stored by name) and the entry holds only its name; the first
   // provider waits until every cluster member's build knows the table, and the refusal is shown in the
-  // form with the member named.
+  // form with the member named. T36.10b step b5 (ADR-1115) adds the **delegated** kind for a DNS host with no
+  // usable API (GoDaddy and others): no credential is stored; the card shows the exact CNAME to create at the host
+  // (`_acme-challenge.<slug>.<domain>` to `<slug>.<validation zone>`) and a **Verify** button that asks the zone's
+  // own authoritative servers whether it is there, with the reason when it is not.
   import { api, ApiError, type S } from '../api';
   import { poll } from '../poll';
   import ErrorNote from './ErrorNote.svelte';
@@ -17,13 +20,14 @@
   import { href } from '../router.svelte';
 
   type Entry = S['DnsProviderEntry'];
-  type Kind = 'azure_dns' | 'cloudflare' | 'route53' | 'rfc2136';
+  type Kind = 'azure_dns' | 'cloudflare' | 'route53' | 'rfc2136' | 'delegated';
 
   const KINDS: { id: Kind; label: string; secret: string }[] = [
     { id: 'azure_dns', label: 'Azure DNS', secret: 'the application\'s client secret' },
     { id: 'cloudflare', label: 'Cloudflare', secret: 'the API token' },
     { id: 'route53', label: 'Amazon Route 53', secret: 'the access key ID and secret joined with a colon (AKIA…:secret)' },
     { id: 'rfc2136', label: 'RFC 2136 (BIND, Knot, PowerDNS)', secret: 'the TSIG key\'s secret (HMAC-SHA256, base64)' },
+    { id: 'delegated', label: 'Delegated (GoDaddy and any host with no API)', secret: '' },
   ];
   const kindLabel = (id: string) => KINDS.find((k) => k.id === id)?.label ?? id;
 
@@ -39,6 +43,31 @@
   let tests = $state<Record<string, S['DnsProviderTestResult'] | { failed: string }>>({});
   let recordsOf = $state<Record<string, S['DnsProviderRecords'] | { failed: string }>>({});
   let recordsBusy = $state<string | null>(null);
+  // REQ: CLD-904 (step b5) — the latest Verify of each delegated provider.
+  let verifying = $state<string | null>(null);
+  let verifies = $state<Record<string, S['DnsProviderVerifyResult'] | { failed: string }>>({});
+
+  async function runVerify(name: string) {
+    verifying = name;
+    try {
+      verifies[name] = await api.verifyDnsProvider(name);
+    } catch (e) {
+      verifies[name] = { failed: e instanceof ApiError ? e.message : 'The check could not be run.' };
+    } finally {
+      verifying = null;
+    }
+    await load();
+  }
+
+  /** The record as the latest Verify on this page saw it, else as the node last stored it. */
+  function shown(name: string, r: S['DnsProviderDelegationRecord']): S['DnsProviderDelegationRecord'] {
+    const v = verifies[name];
+    if (v && !('failed' in v)) {
+      const m = v.records.find((x) => x.name === r.name && x.target === r.target);
+      if (m && m.verified !== undefined) return m;
+    }
+    return r;
+  }
 
   async function runTest(name: string) {
     testing = name;
@@ -186,6 +215,10 @@
       max_writes_per_hour: f.max_writes_per_hour,
       max_writes_per_minute: f.max_writes_per_minute,
     };
+    if (f.kind === 'delegated') {
+      // A delegated entry stores no credential, and has no writes to limit or dry-run.
+      return { kind: f.kind, zone: b.zone, delegated_to: f.delegated_to.trim() };
+    }
     if (f.credential_ref) b.credential_ref = f.credential_ref;
     const set = (k: string, v: string) => {
       if (v.trim()) b[k] = v.trim();
@@ -201,7 +234,6 @@
       set('server', f.server);
       set('key_name', f.key_name);
     }
-    set('delegated_to', f.delegated_to.replace(/\.$/, ''));
     return b;
   }
 
@@ -213,9 +245,14 @@
 
   // What to grant, shown before the secret field. The record set names the challenge only: the
   // ACME DNS-01 name for a location, `_acme-challenge.<label>` in the zone.
+  /** The providers a delegated entry may name: those that hold a zone and a credential. */
+  const validators = $derived(items.filter((i) => i.kind !== 'delegated'));
+  const validationZone = (f: Form) => validators.find((v) => v.name === f.delegated_to)?.zone ?? '<validation zone>';
   const challenge = (f: Form) => `_acme-challenge.<location>.${f.zone.trim() || '<zone>'}`;
   const azureScope = (f: Form) =>
     `az role assignment create --assignee ${f.client_id.trim() || '<application id>'} --role "DNS Zone Contributor" --scope /subscriptions/${f.subscription.trim() || '<subscription>'}/resourceGroups/${f.resource_group.trim() || '<resource group>'}/providers/Microsoft.Network/dnszones/${f.zone.trim() || '<zone>'}/TXT/_acme-challenge.<location>`;
+  const azureReader = (f: Form) =>
+    `az role assignment create --assignee ${f.client_id.trim() || '<application id>'} --role "Reader" --scope /subscriptions/${f.subscription.trim() || '<subscription>'}/resourceGroups/${f.resource_group.trim() || '<resource group>'}/providers/Microsoft.Network/dnszones/${f.zone.trim() || '<zone>'}`;
   const route53Policy = (f: Form) =>
     JSON.stringify(
       {
@@ -229,16 +266,22 @@
               'ForAllValues:StringEquals': {
                 'route53:ChangeResourceRecordSetsNormalizedRecordNames': [challenge(f)],
                 'route53:ChangeResourceRecordSetsRecordTypes': ['TXT'],
+                'route53:ChangeResourceRecordSetsActions': ['UPSERT', 'DELETE'],
               },
             },
           },
-          { Effect: 'Allow', Action: ['route53:ListResourceRecordSets', 'route53:GetChange'], Resource: '*' },
+          {
+            Effect: 'Allow',
+            Action: ['route53:ListResourceRecordSets', 'route53:GetHostedZone', 'route53:GetChange', 'route53:ListHostedZonesByName'],
+            Resource: '*',
+          },
         ],
       },
       null,
       2,
     );
-  const bindPolicy = (f: Form) => `update-policy { grant ${f.key_name.trim() || '<key name>'} name ${challenge(f)}. TXT; };`;
+  const bindPolicy = (f: Form) => `update-policy { grant ${f.key_name.trim() || '<key name>'} name ${challenge(f)}. TXT; };
+allow-transfer { key ${f.key_name.trim() || '<key name>'}; };`;
 
   async function save() {
     if (!form) return;
@@ -256,14 +299,22 @@
       formError = 'Enter the zone the provider serves, such as example.net.';
       return;
     }
-    if (!form.credential_ref) {
+    if (form.kind === 'delegated') {
+      if (!form.delegated_to) {
+        formError = 'Choose the provider whose zone takes the challenge.';
+        return;
+      }
+    } else if (!form.credential_ref) {
       formError = 'Store the credential first: a provider names a stored secret and holds no credential itself.';
       return;
     }
     busy = true;
     try {
       await api.putDnsProvider(name, bodyOf(form));
-      notice = `Saved ${name}. It is stored and shared with the cluster, and it starts in dry run until its first successful test.`;
+      notice =
+        form.kind === 'delegated'
+          ? `Saved ${name}. Create the CNAME shown on its card at your DNS host, then press Verify.`
+          : `Saved ${name}. It is stored and shared with the cluster, and it starts in dry run until its first successful test.`;
       closeForm();
       await load();
     } catch (e) {
@@ -328,7 +379,15 @@
           <span>Zone</span>
           <input bind:value={form.zone} placeholder="example.net" autocomplete="off" aria-label="Zone" />
         </label>
-        {#if form.kind === 'azure_dns'}
+        {#if form.kind === 'delegated'}
+          <label>
+            <span>Delegate the challenge to</span>
+            <select bind:value={form.delegated_to} aria-label="Delegate the challenge to">
+              <option value="">Choose a provider…</option>
+              {#each validators as v (v.name)}<option value={v.name}>{v.name} ({v.zone})</option>{/each}
+            </select>
+          </label>
+        {:else if form.kind === 'azure_dns'}
           <label><span>Subscription ID</span><input bind:value={form.subscription} autocomplete="off" aria-label="Subscription ID" /></label>
           <label><span>Resource group</span><input bind:value={form.resource_group} autocomplete="off" aria-label="Resource group" /></label>
           <label><span>Tenant ID</span><input bind:value={form.tenant} autocomplete="off" aria-label="Tenant ID" /></label>
@@ -341,29 +400,55 @@
         {/if}
       </div>
 
-      <h4>What to grant first</h4>
+      <h4>{form.kind === 'delegated' ? 'What to create at your DNS host' : 'What to grant first'}</h4>
       <div class="small" data-testid="dnsproviders-scope">
-        {#if form.kind === 'azure_dns'}
+        {#if form.kind === 'delegated'}
+          <p>
+            No credential is stored for this host. Create one CNAME at it, once for each location, pointing the challenge name into a small zone you
+            control at a provider that can limit a key narrowly (add that provider first; it is the one chosen above):
+            <HelpButton id="dns-provider-delegation" />
+          </p>
+          <pre class="mono" data-testid="dnsproviders-cname">_acme-challenge.&lt;slug&gt;.{form.zone.trim() || '<zone>'}.   CNAME   &lt;slug&gt;.{validationZone(form)}.</pre>
+          <p>
+            <code>&lt;slug&gt;</code> is a location's slug (<code>home</code>, <code>lab</code>). After you save, the card lists the exact record for each location
+            in this zone, and <strong>Verify</strong> asks the zone's own name servers whether it is there. Only the challenge name is delegated:
+            this host's other records are never written. There is no GoDaddy kind, and no GoDaddy key is ever stored.
+          </p>
+        {:else if form.kind === 'azure_dns'}
           <p>
             Give the application a role on one record set, not the zone. The record set must exist first (create an empty <code>TXT</code> record set
-            named <code>_acme-challenge.&lt;location&gt;</code>), then run:
+            named <code>_acme-challenge.&lt;location&gt;</code>: a role on one record set cannot create it), then run:
           </p>
           <pre class="mono">{azureScope(form)}</pre>
+          <p>
+            The node reads the zone before it writes, so also give the application the read-only <em>Reader</em> role on the zone:
+            <HelpButton id="dns-provider-azure" />
+          </p>
+          <pre class="mono">{azureReader(form)}</pre>
         {:else if form.kind === 'cloudflare'}
           <p>
-            Create an API token with <em>Zone, DNS, Edit</em> for this one zone only. Cloudflare cannot limit a token to one record, so if the zone holds
-            anything else that matters, delegate the challenge name to a separate zone instead (below).
+            Create an API token with <em>Zone, Zone, Read</em> and <em>Zone, DNS, Edit</em> for this one zone only (not all zones in the account).
+            Cloudflare cannot limit a token to one record, so if the zone holds anything else that matters, delegate the challenge name to a separate
+            zone instead (below). <HelpButton id="dns-provider-cloudflare" />
           </p>
         {:else if form.kind === 'route53'}
-          <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records:</p>
+          <p>Attach this policy to the IAM user whose access key you store. It allows changing only the challenge name, only <code>TXT</code> records, only <code>UPSERT</code> and <code>DELETE</code>:</p>
           <pre class="mono">{route53Policy(form)}</pre>
+          <p>
+            Leave the hosted zone ID empty to look the zone up by name (the <code>ListHostedZonesByName</code> permission above); the policy's <code>Resource</code> line still needs the zone's ID, so replace <code>&lt;hosted zone ID&gt;</code> in it with the real one. Test reads the zone with the key and shows that it is accepted; Route 53 does not
+            report what a key may change, so a change the policy does not allow is refused when it is made. A record set that is an alias or has a routing policy is never changed.
+          </p>
         {:else}
-          <p>Limit the TSIG key to the challenge name on the server, for example in BIND:</p>
+          <p>Limit the TSIG key to the challenge name on the server, and let it read the zone (WrenDNS lists the zone with a transfer before every change), for example in BIND:</p>
           <pre class="mono">{bindPolicy(form)}</pre>
-          <p>The server does not report what a key may change, so a later test can only show that the key is accepted for the configured name.</p>
+          <p>
+            Test sends a signed update that changes nothing and a signed zone transfer, and shows whether the server accepts the key for both. The server does not report what a key may change, so the grant for a
+            name and a type is checked when a record is written, and a refusal then says so.
+          </p>
         {/if}
       </div>
 
+      {#if form.kind !== 'delegated'}
       <h4>Credential</h4>
       <p class="small muted">
         {KINDS.find((k) => k.id === form!.kind)?.secret}. Entered once, stored encrypted on the node and replicated to the other nodes, and never shown
@@ -384,12 +469,8 @@
       {/if}
       {#if secretDirty}<p class="notice warn small" role="status">Save or discard the secret you typed first; Save the provider waits for it.</p>{/if}
 
-      <h4>Delegation and limits<HelpButton id="dns-provider-delegation" /></h4>
+      <h4>Limits</h4>
       <div class="grid">
-        <label>
-          <span>Delegate the challenge to (optional)</span>
-          <input bind:value={form.delegated_to} placeholder="home.acme-validation.example.org" autocomplete="off" aria-label="Delegate the challenge to" />
-        </label>
         <label class="check">
           <input type="checkbox" bind:checked={form.dry_run} />
           <span>Dry run: compute and record changes, never write</span>
@@ -403,6 +484,7 @@
           <input type="number" min="1" max="60" bind:value={form.max_writes_per_minute} aria-label="Most writes a minute" />
         </label>
       </div>
+      {/if}
 
       {#if formError}<p class="bad-text" role="alert" data-testid="dnsproviders-form-error">{formError}</p>{/if}
       <div class="row-actions">
@@ -423,14 +505,69 @@
         <span class="small">{kindLabel(e.kind)}</span>
         <span class="mono small">{e.zone}</span>
         {#if e.source === 'file'}<span class="badge warn" data-testid="dnsproviders-file">Set by file</span>{:else}<span class="badge">From the UI</span>{/if}
-        {#if e.state === 'not_used'}
+        {#if e.state === 'delegated'}
+          <span class="badge" data-testid="dnsproviders-state">Delegated</span>
+        {:else if e.state === 'not_used'}
           <span class="badge" data-testid="dnsproviders-state">Not used yet</span>
         {:else if e.state === 'ready'}
           <span class="badge ok" data-testid="dnsproviders-state">Ready</span>
         {/if}
-        {#if e.dryRun}<span class="badge" data-testid="dnsproviders-dry">Dry run</span>{/if}
+        {#if e.dryRun && e.kind !== 'delegated'}<span class="badge" data-testid="dnsproviders-dry">Dry run</span>{/if}
         {#if e.held}<span class="badge warn" data-testid="dnsproviders-card-held">Held back</span>{/if}
       </div>
+      {#if e.delegation}
+        {@const d = e.delegation}
+        <ul class="facts small">
+          <li>
+            Delegated to <span class="mono" data-testid="dnsproviders-delegate">{d.validationProvider}</span>
+            {#if d.validationZone}(zone <span class="mono">{d.validationZone}</span>){:else}<span class="badge bad">not in the configuration</span>{/if}.
+            No credential is stored for this host.
+          </li>
+        </ul>
+        <p class="small muted" data-testid="dnsproviders-detail">{e.detail}</p>
+        <div class="small" data-testid="dnsproviders-delegation">
+          <p>Create {d.records.length === 1 && !d.records[0].location ? 'this record' : 'these records'} at your DNS host (once):</p>
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Points to</th><th>Verified</th></tr></thead>
+            <tbody>
+              {#each d.records as r0 (r0.name)}
+                {@const r = shown(e.name, r0)}
+                <tr data-testid="dnsproviders-delegation-record">
+                  <td class="mono">{r.name}.</td>
+                  <td>CNAME</td>
+                  <td class="mono">{r.target}.</td>
+                  <td>
+                    {#if r.verified === true}
+                      <span class="badge ok" data-testid="dnsproviders-verified">Verified</span>
+                    {:else if r.verified === false}
+                      <span class="badge bad" data-testid="dnsproviders-unverified">Not verified</span>
+                    {:else if !r.location}
+                      <span class="muted">Waiting for a location in this zone</span>
+                    {:else}
+                      <span class="muted" data-testid="dnsproviders-unchecked">Not checked yet</span>
+                    {/if}
+                    {#if r.reason}<div class="muted" data-testid="dnsproviders-reason">{r.reason}</div>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="btn" data-testid="dnsproviders-verify" onclick={() => runVerify(e.name)} disabled={verifying !== null || e.held}>
+            {verifying === e.name ? 'Verifying…' : 'Verify'}
+          </button>
+          <HelpButton id="dns-provider-delegation" />
+        </div>
+        {#if verifies[e.name]}
+          {@const v = verifies[e.name]}
+          {#if failedOf(v)}
+            <p class="bad-text small" data-testid="dnsproviders-verify-error">{failedOf(v)}</p>
+          {:else if (v as S['DnsProviderVerifyResult']).note}
+            <p class="muted small" data-testid="dnsproviders-verify-note">{(v as S['DnsProviderVerifyResult']).note}</p>
+          {/if}
+        {/if}
+      {:else}
       <ul class="facts small">
         <li>
           Credential: stored secret <span class="mono">{e.credentialSecret ?? 'none'}</span>
@@ -450,6 +587,7 @@
           <HelpButton id="dns-provider-ownership" />
         {/if}
       </div>
+      {/if}
       {#if tests[e.name]}
         {@const t = tests[e.name]}
         <div class="test-result small" data-testid="dnsproviders-test-result" role="status">

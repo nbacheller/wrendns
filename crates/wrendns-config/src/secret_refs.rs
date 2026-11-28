@@ -200,6 +200,12 @@ pub fn references(cfg: &Config) -> Vec<Reference> {
     for (h, n) in &cfg.telemetry.otlp_effective().header_refs {
         add("otlp", "default", &format!("header_refs.{h}"), Some(n));
     }
+    add(
+        "otlp",
+        "default",
+        "tls_ca_ref",
+        cfg.telemetry.otlp_effective().tls_ca_ref.as_ref(),
+    );
     if let Some(g) = &cfg.cluster.git {
         add(
             "git",

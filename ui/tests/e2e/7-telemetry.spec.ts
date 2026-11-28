@@ -114,6 +114,11 @@ test.describe('api_016 telemetry in the UI', () => {
       await expect(page.locator('body')).not.toContainText('otlp-e2e-key-7788');
       // REQ: OBS-006 (issue #155) — requests can go out gzip compressed.
       await page.getByTestId('otlp-compression-select').selectOption('gzip');
+      // REQ: OBS-006 (T41.2) — the protobuf encoding and an extra resource attribute.
+      await page.getByTestId('otlp-encoding-select').selectOption('protobuf');
+      await page.getByTestId('otlp-add-attr').click();
+      await page.getByRole('textbox', { name: 'Attribute name 1' }).fill('deployment.environment');
+      await page.getByRole('textbox', { name: 'Attribute value 1' }).fill('home');
       await page.getByTestId('otlp-save').click();
       await expect(page.getByTestId('otlp-notice')).toContainText('no restart', { timeout: 10_000 });
       const header = page.getByTestId('otlp-header').filter({ hasText: 'x-api-key' });
@@ -123,7 +128,11 @@ test.describe('api_016 telemetry in the UI', () => {
       const answer = await (await page.request.get('/api/v1/otlp')).text();
       expect(answer).toContain('otlp.default.header-x-api-key');
       expect(JSON.parse(answer).compression).toBe('gzip');
+      expect(JSON.parse(answer).encoding).toBe('protobuf');
+      expect(JSON.parse(answer).resourceAttributes).toEqual({ 'deployment.environment': 'home' });
       await expect(page.getByTestId('otlp-compression')).toHaveText('gzip compressed');
+      await expect(page.getByTestId('otlp-encoding')).toHaveText('protobuf');
+      await expect(page.getByTestId('otlp-attributes')).toContainText('deployment.environment=home');
       expect(answer).not.toContain('otlp-e2e-key-7788');
       // An inline value never comes back: here the list is mocked as a node whose file sets it.
       await page.route('**/api/v1/otlp', (route) =>
@@ -147,6 +156,54 @@ test.describe('api_016 telemetry in the UI', () => {
       await page.getByTestId('otlp-off-button').click();
       await page.getByTestId('otlp-off-confirm').click();
       await expect(page.getByTestId('otlp-off')).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await page.close();
+    }
+  });
+
+  // REQ: OBS-006 (T41.2) — a collector behind a private CA: the CA is a stored secret of the pem
+  // kind picked on the card; it needs an https address; the answer shows where it comes from and
+  // never the certificate; reserved attribute names are refused before anything is sent.
+  test('obs_006 otlp private ca from a stored pem secret', async ({ browser }) => {
+    const page = await signIn(browser, ADMIN);
+    const pem = '-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUZGVtby1jYS1mb3ItZTJlLW9ubHkwCgYIKoZIzj0EAwIw\n-----END CERTIFICATE-----';
+    try {
+      const csrf = await csrfOf(page);
+      const put = await page.request.put('/api/v1/secrets/otlp-e2e-ca', { headers: { 'x-csrf-token': csrf }, data: { value: pem, kind: 'pem' } });
+      expect(put.status()).toBe(200);
+      await page.reload();
+      await expect(page.getByTestId('otlp-off')).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId('otlp-edit').click();
+      await page.getByRole('textbox', { name: 'Collector address' }).fill('http://127.0.0.1:9');
+      await page.getByTestId('otlp-ca-select').selectOption('otlp-e2e-ca');
+      // A CA is for TLS: an http address is refused on the page.
+      await page.getByTestId('otlp-save').click();
+      await expect(page.getByTestId('otlp-error')).toContainText('https://');
+      // A reserved attribute name is refused too.
+      await page.getByRole('textbox', { name: 'Collector address' }).fill('https://127.0.0.1:9');
+      await page.getByTestId('otlp-add-attr').click();
+      await page.getByRole('textbox', { name: 'Attribute name 1' }).fill('service.name');
+      await page.getByRole('textbox', { name: 'Attribute value 1' }).fill('x');
+      await page.getByTestId('otlp-save').click();
+      await expect(page.getByTestId('otlp-error')).toContainText('sets service.name');
+      await page.getByRole('textbox', { name: 'Attribute name 1' }).fill('deployment.environment');
+      await page.getByTestId('otlp-save').click();
+      await expect(page.getByTestId('otlp-notice')).toContainText('no restart', { timeout: 10_000 });
+      await expect(page.getByTestId('otlp-ca')).toContainText('otlp-e2e-ca');
+      const answer = await (await page.request.get('/api/v1/otlp')).text();
+      expect(JSON.parse(answer).tlsCa.source).toBe('stored');
+      expect(JSON.parse(answer).tlsCa.secret).toBe('otlp-e2e-ca');
+      expect(answer).not.toContain('BEGIN CERTIFICATE');
+      // The server refuses a CA file path in a body (the files set it) and a text secret as a CA.
+      const csrf2 = await csrfOf(page);
+      const file = await page.request.put('/api/v1/otlp/default', { headers: { 'x-csrf-token': csrf2 }, data: { endpoint: 'https://127.0.0.1:9', tls_ca: '/etc/ssl/ca.pem' } });
+      expect(file.status()).toBe(422);
+      // Turn it off, then the secret can go.
+      await page.getByTestId('otlp-off-button').click();
+      await page.getByTestId('otlp-off-confirm').click();
+      await expect(page.getByTestId('otlp-off')).toBeVisible({ timeout: 10_000 });
+      const del = await page.request.delete('/api/v1/secrets/otlp-e2e-ca', { headers: { 'x-csrf-token': await csrfOf(page) } });
+      expect(del.status()).toBe(200);
     } finally {
       await page.close();
     }

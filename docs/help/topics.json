@@ -613,20 +613,20 @@
       "id": "dns-providers",
       "title": "Let WrenDNS change a few records at your DNS host",
       "term": "DNS providers",
-      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
+      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token). A host with no usable API is added as Delegated: you create one CNAME there by hand and no credential is stored.",
       "when": "You want certificates or a changing home address to be handled for you, and you want to grant WrenDNS the smallest permission that does it.",
       "example": "Azure DNS for example.net, with a role on the single record set _acme-challenge.home (the form shows the az command), the application's client secret stored as dns.azure-home.credential, and the entry in dry run until it is tested.",
-      "caution": "Every new entry starts in dry run: changes are recorded and none is sent until its first successful test, and WrenDNS changes only records it made or you adopt. No provider kind has its code yet, so a test says so and nothing at your DNS host changes. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
+      "caution": "Every new entry starts in dry run: changes are recorded and none is sent until its first successful test, and WrenDNS changes only records it made or you adopt. All four kinds have provider code. For Route 53 store the access key as ACCESS_KEY_ID:SECRET and attach the IAM policy the form shows (it limits the key to the challenge name and TXT); for RFC 2136 store the TSIG secret (base64, HMAC-SHA256) and add the update-policy and allow-transfer lines the form shows to the server. Test shows that the key is accepted for the zone; neither service reports what a key may change, so a change the grant does not allow is refused when it is made. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
       "docs": "dns-providers"
     },
     {
       "id": "dns-provider-delegation",
-      "title": "Delegate the challenge name instead of storing a key",
+      "title": "Delegate the challenge name instead of storing a key (GoDaddy and others)",
       "term": "Challenge delegation",
-      "summary": "Some hosts (GoDaddy, Cloudflare for a zone that holds more than the challenge) cannot limit a key to one record. Instead you create one CNAME at that host, once, that points _acme-challenge.<name> at a small zone you control at a provider that can limit a key narrowly. The certificate authority follows the CNAME, and WrenDNS writes only in the small zone, so a leaked key can change nothing else. Enter that zone's name as the challenge delegation.",
+      "summary": "Some DNS hosts have no usable API (GoDaddy) or only a key that can change the whole account or zone. For such a host you add a provider of the kind Delegated: no credential is stored. You create one CNAME at that host, once for each location, _acme-challenge.<slug>.<domain>. CNAME <slug>.<validation zone>., pointing at a small zone you control at a provider that can limit a key narrowly (a provider you add first, and name as the one to delegate to). The certificate authority follows the CNAME, and WrenDNS writes only in the small zone, so a leaked key can change nothing else. The card shows the exact record for each location in the zone, and Verify asks the zone's own authoritative name servers (found through your upstreams, never WrenDNS's own data or cache) whether it is there, and why not when it is not.",
       "when": "Your DNS host has no API, or only a key that can change the whole account or zone.",
-      "example": "_acme-challenge.home.example.net CNAME home.acme-validation.example.org, with home.acme-validation.example.org the delegation of a provider entry for acme-validation.example.org.",
-      "caution": "No GoDaddy key is ever stored: GoDaddy is served by this CNAME only. Delegation covers the challenge name only, not A or AAAA records. The CNAME is created by hand at your host, and a later release verifies it before use.",
+      "example": "_acme-challenge.home.example.net. CNAME home.acme-validation.example.org., created at GoDaddy, with a Cloudflare provider for acme-validation.example.org and a Delegated provider for example.net that names it.",
+      "caution": "There is no GoDaddy kind and no GoDaddy key is ever stored. Delegation covers the challenge name only, not A or AAAA records. Verified means every authoritative name server of your zone answers with the CNAME; a name server that answers without it, or with another target, or that cannot be reached, shows as the reason. A check that fails is a health warning only and never changes a DNS answer. The result shown is from the node you asked; the check reads DNS and writes nothing. The first delegated provider waits until every cluster member runs a build that knows the kind.",
       "docs": "dns-providers"
     },
     {
@@ -636,7 +636,7 @@
       "summary": "Test asks the provider what the stored credential may change and shows it: the zone, the record types, the record sets it is limited to, and a warning when it can change more than WrenDNS needs. Nothing is written and the credential is never shown. The first successful test ends the entry's dry run.",
       "when": "After you add a provider, and after you change its credential or its grant at the provider.",
       "example": "A Cloudflare token for one zone: the test shows the zone and TXT, A and AAAA, and warns that the token can change any record set in it, so you may prefer delegating the challenge name.",
-      "caution": "A kind with no provider code in this build says so and changes nothing. A test that fails shows the provider's answer with the credential taken out. An entry the configuration file defines keeps the file's dry-run setting.",
+      "caution": "An entry with no provider code in this build (none of the four kinds) says so and changes nothing. A test that fails shows the provider's answer with the credential taken out. An entry the configuration file defines keeps the file's dry-run setting. A Delegated provider has no credential to test: its card has Verify instead.",
       "docs": "dns-providers"
     },
     {
@@ -647,6 +647,26 @@
       "when": "A record set WrenDNS should keep up to date already exists at your DNS host, or you want to see what it manages.",
       "example": "home.example.net A was made by hand: adopt it once, and the dynamic-DNS update may then change it.",
       "caution": "Adopt only what WrenDNS should manage: after that it can replace or delete the record set. The list is for admins and never an agent.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-azure",
+      "title": "Give WrenDNS one Azure DNS record set",
+      "term": "Azure DNS provider",
+      "summary": "WrenDNS signs in to Microsoft Entra ID as an application (OAuth2 client credentials; the application's client secret is the stored secret) and changes record sets with the Azure DNS API. Azure can scope a role to a single record set, so the safe grant is DNS Zone Contributor on just the challenge record set, plus the read-only Reader role on the zone so WrenDNS can see what exists before it writes.",
+      "when": "You host the zone in Azure DNS and want certificates or a changing home address handled for you with the smallest permission.",
+      "example": "az role assignment create --assignee <application id> --role \"DNS Zone Contributor\" --scope /subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Network/dnszones/example.net/TXT/_acme-challenge.home, and the same command with --role Reader and the zone as the scope.",
+      "caution": "The record set must exist first: create an empty TXT record set with the challenge name before the first change, because a role on one record set cannot create it. WrenDNS never deletes the record set: a cleanup empties it, so the grant keeps working for the next change. A role on the whole zone works but Test flags it as broader than needed. The client secret expires on the date Entra gave it: store the new one under the same name before then.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-cloudflare",
+      "title": "Use a Cloudflare API token for one zone",
+      "term": "Cloudflare provider",
+      "summary": "WrenDNS uses a Cloudflare API token (the stored secret) to find the zone and to create, change and delete DNS records in it. Create the token with Zone: Zone: Read and Zone: DNS: Edit, limited to this one zone. Test checks the token and lists the zones it reaches, and warns when that is more than one.",
+      "when": "Your zone is at Cloudflare and you want certificates or a changing home address handled for you.",
+      "example": "A token for example.net only: Test shows the zone and warns about nothing. A token for all zones in the account: Test warns that it reaches every zone, so you create a narrower one.",
+      "caution": "Cloudflare cannot limit a token to one record: whoever holds it can change every record in the zone. If the zone holds anything else of value, delegate the challenge name to a small separate zone instead, so a leaked token can change nothing that matters.",
       "docs": "dns-providers"
     },
     {
@@ -1580,8 +1600,8 @@
       "term": "OTLP export",
       "summary": "The same metrics Prometheus scrapes can be pushed to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) every interval. A header such as an API key is a stored secret, read for every export.",
       "when": "Your metrics live in a hosted backend, or Prometheus can't reach this node.",
-      "example": "Collector http://otel-collector:4318, every 60 seconds, with the header x-api-key taken from the stored secret otlp.default.header-x-api-key. Choose gzip to send the requests compressed.",
-      "caution": "Only an admin changes it, and it applies on every node without a restart. If the configuration file sets the collector, headers or header references, the file wins and the card is read-only; an inline header value in the file is never shown (it reads <redacted>). Trace settings stay in the file and are read at start. Gzip keeps the JSON encoding and needs a receiver that accepts Content-Encoding: gzip (the OpenTelemetry Collector does); in a cluster it waits until every node knows the option. Event sinks and the Home Assistant add-on setup are described in the docs.",
+      "example": "Collector http://otel-collector:4318, every 60 seconds, with the header x-api-key taken from the stored secret otlp.default.header-x-api-key. Choose gzip to send the requests compressed, protobuf or gRPC for a backend that wants them, an attribute such as deployment.environment = home to tag everything the export sends, and a private CA when the collector's certificate comes from your own authority.",
+      "caution": "Only an admin changes it, and it applies on every node without a restart. If the configuration file sets the collector, headers or header references, the file wins and the card is read-only; an inline header value in the file is never shown (it reads <redacted>). Trace settings stay in the file and are read at start. Gzip needs a receiver that accepts Content-Encoding: gzip (the OpenTelemetry Collector does). Encoding is JSON, protobuf (application/x-protobuf, smaller) or gRPC (HTTP/2, the collector's gRPC port, usually 4317); the address is the base address either way. Resource attributes are at most 16, with names the export does not set itself (service.name, service.version, service.instance.id, host.name and wrendns.cluster.name are reserved); a cluster member adds wrendns.cluster.name on its own. A private CA is a stored secret of the pem kind holding the CA certificate (Settings, Integrations and secrets), trusted besides the public roots, and it needs an https address. In a cluster gzip, a different encoding, attributes and a private CA wait until every node knows them. Event sinks (logs) and the Home Assistant add-on setup are described in the docs.",
       "docs": "opentelemetry-otlp"
     },
     {

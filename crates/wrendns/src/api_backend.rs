@@ -275,6 +275,26 @@ fn csv(v: Option<&String>) -> Vec<String> {
 }
 
 impl ApiBackend {
+    /// REQ: CLD-904, CLU-004 (T36.10b step b3) - a DNS provider whose latest call failed: degraded only.
+    /// A deleted entry's failure goes with it (the engine drops slots of names no longer configured).
+    /// REQ: CLD-904 (T36.10b step b5) - and a delegated provider whose CNAME this node checked and
+    /// found missing or wrong: degraded only too.
+    fn dns_provider_reasons(&self) -> Vec<wrendns_api::model::HealthReason> {
+        let cfg = self.src.config.load();
+        let names: Vec<String> = cfg
+            .dns_provider
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
+        let mut out = crate::health::dns_provider_reasons(
+            &crate::dns_provider::engine::engine().failures_among(&names),
+        );
+        out.extend(crate::health::dns_delegation_reasons(
+            &crate::dns_provider::delegation::failures_among(&cfg),
+        ));
+        out
+    }
+
     /// The latency keys `by` breaks down into, with their names.
     fn latency_keys(&self, by: LatencyBy) -> Vec<(String, LatencyKey)> {
         match by {
@@ -3093,19 +3113,7 @@ impl Backend for ApiBackend {
                 .reason(self.src.cluster.as_deref())
                 .as_deref(),
         ));
-        // REQ: CLD-904, CLU-004 (T36.10b step b3) - a DNS provider whose latest call failed: degraded only.
-        // A deleted entry's failure goes with it (the engine drops slots of names no longer configured).
-        let provider_names: Vec<String> = self
-            .src
-            .config
-            .load()
-            .dns_provider
-            .iter()
-            .map(|p| p.name.to_string())
-            .collect();
-        reasons.extend(crate::health::dns_provider_reasons(
-            &crate::dns_provider::engine::engine().failures_among(&provider_names),
-        ));
+        reasons.extend(self.dns_provider_reasons());
         // REQ: DNS-906 (T40.5) — a root key in its hold-down, or a revoked trust anchor.
         reasons.extend(crate::health::anchor_reasons(
             self.src

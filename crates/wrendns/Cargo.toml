@@ -27,7 +27,7 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 # REQ: API-003 (ADR-149) — the API listener over TLS (and a plain-HTTP redirect on the same
 # port) serves connections itself; hyper and hyper-util are already in the tree (axum,
 # wrendns-net, wrendns-cluster).
-hyper = { version = "1.11.1", default-features = false, features = ["server", "http1"] }
+hyper = { version = "1.11.1", default-features = false, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "service"] }
 # REQ: API-003 (ADR-149) — the API's self-signed certificate; already in the tree
 # (wrendns-cluster's PKI).

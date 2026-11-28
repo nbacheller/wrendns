@@ -806,6 +806,75 @@ fn otlp_one(o: &crate::OtlpConfig, r: &mut Report<'_>) {
     if o.interval_secs < 5 {
         r.err("telemetry.otlp.interval_secs", "at least 5 seconds");
     }
+    // REQ: OBS-006 (T41.2) — resource attributes the owner adds: few, short, not ours.
+    if o.resource_attributes.len() > crate::OTLP_MAX_ATTRIBUTES {
+        r.err(
+            "telemetry.otlp.resource_attributes",
+            format!("at most {} attributes", crate::OTLP_MAX_ATTRIBUTES),
+        );
+    }
+    for (k, v) in &o.resource_attributes {
+        let p = format!("telemetry.otlp.resource_attributes.{k}");
+        if k.is_empty()
+            || k.len() > crate::OTLP_MAX_ATTRIBUTE_KEY
+            || !k
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            r.err(
+                &p,
+                format!(
+                    "a name of letters, digits, `.`, `_` or `-`, at most {} characters",
+                    crate::OTLP_MAX_ATTRIBUTE_KEY
+                ),
+            );
+        } else if crate::OTLP_RESERVED_ATTRIBUTES
+            .iter()
+            .any(|x| x.eq_ignore_ascii_case(k))
+        {
+            r.err(
+                &p,
+                format!(
+                    "the export sets this attribute itself ({} are reserved)",
+                    crate::OTLP_RESERVED_ATTRIBUTES.join(", ")
+                ),
+            );
+        }
+        if v.is_empty() || v.len() > crate::OTLP_MAX_ATTRIBUTE_VALUE {
+            r.err(
+                &p,
+                format!(
+                    "a value of 1 to {} characters",
+                    crate::OTLP_MAX_ATTRIBUTE_VALUE
+                ),
+            );
+        }
+    }
+    // REQ: OBS-006 (T41.2) — a private CA for the collector's TLS.
+    if o.tls_ca.is_some() && o.tls_ca_ref.is_some() {
+        r.err(
+            "telemetry.otlp.tls_ca_ref",
+            "set a CA file (`tls_ca`) or a stored PEM secret (`tls_ca_ref`), not both",
+        );
+    }
+    if let Some(n) = &o.tls_ca_ref
+        && !crate::secret_refs::valid_name(n.as_str())
+    {
+        r.err(
+            "telemetry.otlp.tls_ca_ref",
+            "not a valid stored secret name",
+        );
+    }
+    if (o.tls_ca.is_some() || o.tls_ca_ref.is_some())
+        && o.endpoint
+            .as_ref()
+            .is_some_and(|e| e.starts_with("http://"))
+    {
+        r.err(
+            "telemetry.otlp.endpoint",
+            "a CA is for TLS: the endpoint must be an https:// URL when `tls_ca` or `tls_ca_ref` is set",
+        );
+    }
     // REQ: OBS-017 (T11.6) — traces go to the same collector.
     if o.endpoint.is_none() {
         for (field, on) in [

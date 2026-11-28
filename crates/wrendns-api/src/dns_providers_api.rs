@@ -7,7 +7,9 @@
 //! T36.10b step b3 adds the actions that go through the write engine and run on the primary, all
 //! admin only and never for agents: `POST .../test` (check the credential, show its scope, end dry
 //! run on the first success), `GET .../records` (the zone's record sets and who owns each) and
-//! `POST .../records/adopt` (take a record set into the ownership ledger, CLD-919).
+//! `POST .../records/adopt` (take a record set into the ownership ledger, CLD-919). Step b5 adds
+//! `POST .../verify` for a `delegated` provider: it looks the hand-made CNAME up at the zone's own
+//! authoritative servers (admin only, never for agents; a read that runs on the node asked).
 
 use std::sync::Arc;
 
@@ -20,7 +22,7 @@ use crate::auth::Auth;
 use crate::auth::routes::{principal, reason, remote};
 use crate::model::{
     DnsProviderAdoptRequest, DnsProviderAdopted, DnsProviderEntry, DnsProviderList,
-    DnsProviderRecords, DnsProviderTestResult,
+    DnsProviderRecords, DnsProviderTestResult, DnsProviderVerifyResult,
 };
 use crate::problem::{Code, Problem};
 use crate::{DnsProviderAction, DnsProviderOp, Shared};
@@ -36,6 +38,10 @@ pub(crate) fn read_routes(backend: Shared, auth: Arc<Auth>) -> axum::Router {
         .merge(
             axum::Router::new()
                 .route("/api/v1/dns-providers/{name}/test", post(test_dns_provider))
+                .route(
+                    "/api/v1/dns-providers/{name}/verify",
+                    post(verify_dns_provider),
+                )
                 .route(
                     "/api/v1/dns-providers/{name}/records",
                     get(dns_provider_records),
@@ -56,7 +62,7 @@ fn admin_only(ext: &axum::http::Extensions) -> Result<crate::auth::Principal, Pr
     if p.role != crate::auth::Role::Admin || p.agent.is_some() {
         return Err(Problem::new(
             Code::Forbidden,
-            "only an admin can test a DNS provider, read its records or adopt one",
+            "only an admin can test a DNS provider, verify its delegation, read its records or adopt one",
         ));
     }
     Ok(p)
@@ -114,6 +120,35 @@ pub(crate) async fn test_dns_provider(
     typed(b.dns_provider_op(o).await?)
 }
 
+/// Verify the delegation CNAME of a `delegated` provider.
+///
+/// CLD-904 (T36.10b step b5, ADR-1115). For each location whose domain is in the provider's zone the
+/// node asks the zone's own authoritative name servers (found through the configured upstreams, never
+/// its own local data or cache) whether `_acme-challenge.<slug>.<domain>` is a CNAME to
+/// `<slug>.<validation zone>`. Every name server must answer with authority and with exactly that
+/// target. The answer lists each record with the verdict and the reason; a failure is a health
+/// reason only and changes no DNS answer. Nothing is written anywhere. It runs on the node asked.
+/// Admin only, never for agents.
+#[utoipa::path(post, path = "/api/v1/dns-providers/{name}/verify", tag = "config",
+    params(("name" = String, Path, description = "The provider's name.")),
+    responses(
+        (status = 200, body = DnsProviderVerifyResult, description = "Each record with its verdict."),
+        (status = 403, body = Problem, description = "Only an admin can verify a DNS provider (agents never)."),
+        (status = 404, body = Problem, description = "No DNS provider by that name."),
+        (status = 409, body = Problem, description = "The entry is not a `delegated` provider, or it is held back."),
+        (status = 503, body = Problem, description = "This node has no upstream to find the name servers through."),
+    ))]
+pub(crate) async fn verify_dns_provider(
+    State((b, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Result<Json<DnsProviderVerifyResult>, Problem> {
+    let p = admin_only(&ext)?;
+    let o = op(&auth, &p, &ext, &headers, name, DnsProviderAction::Verify);
+    typed(b.dns_provider_op(o).await?)
+}
+
 /// The record sets at a DNS provider, and who owns each.
 ///
 /// CLD-919. `owner` is `created` (the node made it) or `adopted` (an admin took it over); a record set
@@ -125,7 +160,7 @@ pub(crate) async fn test_dns_provider(
         (status = 200, body = DnsProviderRecords, description = "The zone's TXT, A and AAAA record sets."),
         (status = 403, body = Problem, description = "Only an admin can read a provider's records."),
         (status = 404, body = Problem, description = "No DNS provider by that name."),
-        (status = 409, body = Problem, description = "No provider code for the kind yet, or `upgrade_required`."),
+        (status = 409, body = Problem, description = "No provider code for the entry (only a test-only entry has none), or `upgrade_required`."),
         (status = 503, body = Problem, description = "The provider refused or did not answer the call."),
     ))]
 pub(crate) async fn dns_provider_records(
@@ -181,7 +216,7 @@ pub(crate) async fn adopt_dns_provider_record(
 ///
 /// Each one comes with its settings (the credential as the name of a stored secret, never a value),
 /// whether this node stores a secret by that name, where it comes from (the files or the API), and
-/// its state: `not_used` (this build has no code for the kind yet), `dry_run` (changes are
+/// its state: `not_used` (this build has no provider code for the entry; every real kind has code, so only a test-only entry reads this), `dry_run` (changes are
 /// recorded and not sent until the first successful test) or `ready`. `held` is true while the start-up hold keeps the providers out of what this
 /// node serves and publishes (a cluster member's build does not know them yet).
 #[utoipa::path(get, path = "/api/v1/dns-providers", tag = "config",

@@ -1,0 +1,24 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": [
+    {
+      "id": "023e105f4ecef8ad9ca31a8372d0c353",
+      "name": "example.net",
+      "status": "active"
+    },
+    {
+      "id": "99aa105f4ecef8ad9ca31a8372d0c999",
+      "name": "example.org",
+      "status": "active"
+    }
+  ],
+  "result_info": {
+    "page": 1,
+    "per_page": 50,
+    "count": 2,
+    "total_count": 2,
+    "total_pages": 1
+  }
+}

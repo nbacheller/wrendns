@@ -2027,6 +2027,7 @@ pub(crate) fn reload_gate(
     let refused: Vec<String> = [
         crate::upgrade_gate::enforce_locations(cluster, current, new),
         crate::upgrade_gate::enforce_dns_providers(cluster, current, new),
+        crate::upgrade_gate::enforce_dns_delegation(cluster, current, new),
         crate::upgrade_gate::enforce_rpz(cluster, current, new),
     ]
     .into_iter()

@@ -82,7 +82,7 @@ async fn cld_904_a_dns_provider_is_created_read_replaced_and_removed() {
     assert_eq!(item["dryRun"], true);
     assert_eq!(item["credentialSecret"], "cf");
     assert_eq!(item["credentialPresent"], true);
-    assert_eq!(item["state"], "not_used", "{item}");
+    assert_eq!(item["state"], "dry_run", "{item}");
     assert_eq!(item["definition"]["credential_ref"], "cf");
     assert!(list.get("held").is_none());
     let (s, _, one) = h.call("GET", "/api/v1/dns-providers/cf-home", None).await;
@@ -227,7 +227,7 @@ async fn cld_904_the_files_win() {
     let (s, _, v) = h.call("GET", "/api/v1/dns-providers", None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["items"][0]["source"], "file", "{v}");
-    assert_eq!(v["items"][0]["state"], "not_used");
+    assert_eq!(v["items"][0]["state"], "dry_run");
 }
 
 /// REQ: CLD-904, AGT-004 - an admin writes; an operator and a viewer are refused (403); an agent

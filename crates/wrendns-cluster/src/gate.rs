@@ -42,6 +42,13 @@ pub enum Feature {
     /// (API-902, T27.14g0, ADR-1113). Nothing is replicated: an older member announces no URL and
     /// does not know the read, so a card says so plainly instead of asking it.
     MemberApiAddress,
+    /// `encoding` (protobuf, grpc), `resource_attributes`, `tls_ca` and `tls_ca_ref` in the OTLP export entry; a
+    /// build that does not know the fields refuses the whole entry (OBS-006, T41.2).
+    OtlpOptions,
+    /// The `delegated` DNS-provider kind (CLD-904, T36.10b step b5, ADR-1115): a build that does
+    /// not know the kind refuses the whole `[[dns_provider]]` section, so the first delegated
+    /// entry waits for every member to announce it, though they all know the table.
+    DnsProviderDelegation,
     /// The `listen` confirm the primary relays for an admin whose browser cannot open the node's own
     /// web UI (API-904, T27.14g, ADR-1116). Nothing is replicated: the relay is one more operation on
     /// the guarded forwarding channel, which an older member cannot decode, so the primary refuses to
@@ -51,7 +58,7 @@ pub enum Feature {
 
 impl Feature {
     /// Every gated feature.
-    pub const ALL: [Feature; 11] = [
+    pub const ALL: [Feature; 13] = [
         Self::Locations,
         Self::DnsProviders,
         Self::PemSecrets,
@@ -62,6 +69,8 @@ impl Feature {
         Self::OtlpCompression,
         Self::DnsProviderLedger,
         Self::MemberApiAddress,
+        Self::OtlpOptions,
+        Self::DnsProviderDelegation,
         Self::GuardedConfirmRelay,
     ];
 
@@ -78,6 +87,8 @@ impl Feature {
             Self::OtlpCompression => "otlp_compression",
             Self::DnsProviderLedger => "dns_provider_ledger",
             Self::MemberApiAddress => "member_api_address",
+            Self::OtlpOptions => "otlp_options",
+            Self::DnsProviderDelegation => "dns_provider_delegation",
             Self::GuardedConfirmRelay => "guarded_confirm_relay",
         }
     }
@@ -95,6 +106,10 @@ impl Feature {
             Self::OtlpCompression => "gzip compression of the OpenTelemetry export",
             Self::DnsProviderLedger => "the DNS-provider ownership ledger",
             Self::MemberApiAddress => "the web UI and API address read",
+            Self::OtlpOptions => {
+                "the protobuf and gRPC encodings, resource attributes and private CA of the OpenTelemetry export"
+            }
+            Self::DnsProviderDelegation => "delegated DNS providers",
             Self::GuardedConfirmRelay => "the confirm relayed by the primary",
         }
     }
@@ -110,7 +125,7 @@ pub fn own_features() -> Vec<String> {
 /// The features this build handles end to end. `DnsProviders` joined the list in the commit that
 /// brought its table (T36.10b): a build cut before then does not know it, and announcing it would
 /// let the gate pass a section such a member refuses. `Locations` joined with T36.10a.
-const ANNOUNCED: [Feature; 11] = [
+const ANNOUNCED: [Feature; 13] = [
     Feature::Locations,
     Feature::DnsProviders,
     Feature::PemSecrets,
@@ -121,6 +136,8 @@ const ANNOUNCED: [Feature; 11] = [
     Feature::OtlpCompression,
     Feature::DnsProviderLedger,
     Feature::MemberApiAddress,
+    Feature::OtlpOptions,
+    Feature::DnsProviderDelegation,
     Feature::GuardedConfirmRelay,
 ];
 
@@ -259,6 +276,8 @@ mod tests {
                 "otlp_compression".to_owned(),
                 "dns_provider_ledger".to_owned(),
                 "member_api_address".to_owned(),
+                "otlp_options".to_owned(),
+                "dns_provider_delegation".to_owned(),
                 "guarded_confirm_relay".to_owned()
             ]
         );

@@ -44,11 +44,21 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('Zone, DNS, Edit');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('azure_dns');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('az role assignment create');
+      // b4a: the record-set scope, the record set that must exist first, and Reader on the zone.
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('--role "DNS Zone Contributor"');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('dnszones/example.net/TXT/_acme-challenge.<location>');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('must exist first');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('--role "Reader"');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('route53');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('route53:ChangeResourceRecordSets');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('ListHostedZonesByName');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('rfc2136');
       await expect(page.getByTestId('dnsproviders-scope')).toContainText('update-policy');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('allow-transfer');
       await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('cloudflare');
+      // b4b: the token needs zone read (to find the zone) and DNS edit, for one zone; delegation otherwise.
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('Zone, Zone, Read');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('delegate the challenge name');
       // The credential goes through SecretField: typed once, stored by name, never shown again.
       const secret = page.getByTestId('dnsproviders-secret');
       await secret.getByLabel('Credential', { exact: true }).fill(SECRET);
@@ -60,7 +70,8 @@ test.describe('cld_904 DNS providers in the UI', () => {
       const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' });
       await expect(card).toBeVisible({ timeout: 10_000 });
       await expect(card).toContainText('From the UI');
-      await expect(card).toContainText('Not used yet');
+      // Cloudflare has provider code, so the card is not marked "not used yet".
+      await expect(card).not.toContainText('Not used yet');
       await expect(card).toContainText('Dry run');
       await expect(card).toContainText('dns.cf-e2e.credential');
       await expect(page.getByTestId('dnsproviders-notice')).toContainText('starts in dry run');
@@ -137,18 +148,18 @@ test.describe('cld_904 DNS providers in the UI', () => {
     }
   });
 
-  test('cld_904 a kind with no provider code yet says so when tested', async ({ browser }) => {
+  test('cld_904 an entry with no provider code (the test-only nocode seam) says so when tested', async ({ browser }) => {
     const page = await signIn(browser, ADMIN);
     try {
       await page.getByTestId('dnsproviders-add').click();
-      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('cf-nocode');
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('nocode-cf');
       await page.getByRole('textbox', { name: 'Zone', exact: true }).fill('example.net');
       const secret = page.getByTestId('dnsproviders-secret');
       await secret.getByLabel('Credential', { exact: true }).fill(SECRET);
       await secret.getByRole('button', { name: 'Save secret' }).click();
       await expect(secret).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
       await page.getByTestId('dnsproviders-save').click();
-      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-nocode' });
+      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'nocode-cf' });
       await expect(card).toBeVisible({ timeout: 10_000 });
       await card.getByTestId('dnsproviders-test').click();
       await expect(card.getByTestId('dnsproviders-test-error')).toContainText('no provider code for the `cloudflare` kind yet', { timeout: 10_000 });
@@ -156,9 +167,136 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.locator('body')).not.toContainText(SECRET);
       await card.getByTestId('dnsproviders-delete').click();
       await page.getByTestId('dnsproviders-delete-confirm').click();
-      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-nocode' })).toHaveCount(0, { timeout: 10_000 });
+      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'nocode-cf' })).toHaveCount(0, { timeout: 10_000 });
     } finally {
-      await dropSecret(page, 'dns.cf-nocode.credential');
+      await dropSecret(page, 'dns.nocode-cf.credential');
+      await page.close();
+    }
+  });
+
+  // REQ: CLD-904 (T36.10b step b5, ADR-1115) - a DNS host with no usable API (GoDaddy and others): the kind
+  // Delegated stores no credential, and the card shows the exact CNAME to create at the host. The verdict of
+  // Verify is a route stub in the browser (the check itself asks the zone's authoritative servers and is covered
+  // by the Rust tests with fake servers); no real DNS host is reached.
+  test('cld_904 a delegated provider shows the CNAME to create', async ({ browser }) => {
+    const page = await signIn(browser, ADMIN);
+    const key = () => `e2e-${Math.random().toString(36).slice(2)}`;
+    try {
+      const status = await page.request.get('/api/v1/auth/status');
+      const csrf = (await status.json()).csrfToken as string;
+      const h = () => ({ 'x-csrf-token': csrf, 'idempotency-key': key() });
+      // The validation zone's provider (a stored secret by name, never shown) and a location in the delegated zone.
+      const sec = await page.request.put('/api/v1/secrets/dns.val-e2e.credential', { headers: h(), data: { value: SECRET, kind: 'text' } });
+      expect(sec.status()).toBe(200);
+      const val = await page.request.put('/api/v1/dns-providers/val-e2e', {
+        headers: h(),
+        data: { kind: 'cloudflare', zone: 'acme-validation.example.org', credential_ref: 'dns.val-e2e.credential' },
+      });
+      expect(val.status()).toBe(200);
+      await page.reload();
+      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'val-e2e' })).toBeVisible({ timeout: 10_000 });
+
+      await page.getByTestId('dnsproviders-add').click();
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('host-e2e');
+      await page.getByRole('textbox', { name: 'Zone', exact: true }).fill('example.net');
+      await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('delegated');
+      await page.getByRole('combobox', { name: 'Delegate the challenge to', exact: true }).selectOption('val-e2e');
+      // The record to create comes before anything is entered, and there is no credential to enter.
+      const cname = page.getByTestId('dnsproviders-cname');
+      await expect(cname).toContainText('_acme-challenge.<slug>.example.net.');
+      await expect(cname).toContainText('CNAME');
+      await expect(cname).toContainText('<slug>.acme-validation.example.org.');
+      await expect(page.getByTestId('dnsproviders-scope')).toContainText('no GoDaddy kind');
+      await expect(page.getByTestId('dnsproviders-secret')).toHaveCount(0);
+      await page.getByTestId('dnsproviders-save').click();
+      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'host-e2e' });
+      await expect(card).toBeVisible({ timeout: 10_000 });
+      await expect(card.getByTestId('dnsproviders-state')).toContainText('Delegated');
+      await expect(card.getByTestId('dnsproviders-delegate')).toHaveText('val-e2e');
+      await expect(card).toContainText('No credential is stored for this host');
+      // Before a location is in the zone: the template.
+      const row = card.getByTestId('dnsproviders-delegation-record');
+      await expect(row).toContainText('_acme-challenge.<slug>.example.net.');
+      await expect(row).toContainText('CNAME');
+      await expect(row).toContainText('<slug>.acme-validation.example.org.');
+      // No credential and no account to test: no Test, no Records, no dry-run mark.
+      await expect(card.getByTestId('dnsproviders-test')).toHaveCount(0);
+      await expect(card.getByTestId('dnsproviders-records')).toHaveCount(0);
+      await expect(card.getByTestId('dnsproviders-dry')).toHaveCount(0);
+      // The server stored no credential reference for it.
+      const one = await page.request.get('/api/v1/dns-providers/host-e2e');
+      const body = await one.json();
+      expect(body.kind).toBe('delegated');
+      expect(body.credentialSecret).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(SECRET);
+
+      // A location in the zone: the card shows its exact record.
+      const loc = await page.request.put('/api/v1/locations/deleg-e2e', {
+        headers: h(),
+        data: { networks: ['203.0.113.0/28'], domain: 'example.net' },
+      });
+      expect(loc.status()).toBe(200);
+      await page.reload();
+      const card2 = page.getByTestId('dnsproviders-card').filter({ hasText: 'host-e2e' });
+      const row2 = card2.getByTestId('dnsproviders-delegation-record');
+      await expect(row2).toContainText('_acme-challenge.deleg-e2e.example.net.', { timeout: 15_000 });
+      await expect(row2).toContainText('deleg-e2e.acme-validation.example.org.');
+      await expect(row2.getByTestId('dnsproviders-unchecked')).toBeVisible();
+      // Verify: the verdict and its reason are shown (a stubbed answer in the browser).
+      await page.route('**/api/v1/dns-providers/host-e2e/verify', (route) =>
+        route.fulfill({
+          json: {
+            ok: false,
+            records: [
+              {
+                location: 'deleg-e2e',
+                name: '_acme-challenge.deleg-e2e.example.net',
+                target: 'deleg-e2e.acme-validation.example.org',
+                verified: false,
+                reason: '1 of 2 authoritative name servers have the CNAME to deleg-e2e.acme-validation.example.org: ns2.example.net has no CNAME there (asked at 192.0.2.2).',
+                checkedAt: 1,
+              },
+            ],
+          },
+        }),
+      );
+      await card2.getByTestId('dnsproviders-verify').click();
+      await expect(card2.getByTestId('dnsproviders-unverified')).toBeVisible({ timeout: 10_000 });
+      await expect(card2.getByTestId('dnsproviders-reason')).toContainText('ns2.example.net has no CNAME there');
+      // The help topic names the record and the check.
+      await card2.locator('[data-help="dns-provider-delegation"]').first().click();
+      await expect(page.getByTestId('help-panel')).toContainText('authoritative');
+      await page.keyboard.press('Escape');
+      await page.unroute('**/api/v1/dns-providers/host-e2e/verify');
+    } finally {
+      const status = await page.request.get('/api/v1/auth/status');
+      const csrf = (await status.json()).csrfToken as string;
+      for (const url of ['/api/v1/dns-providers/host-e2e', '/api/v1/locations/deleg-e2e', '/api/v1/dns-providers/val-e2e']) {
+        const res = await page.request.delete(url, { headers: { 'x-csrf-token': csrf, 'idempotency-key': key() } });
+        expect([200, 204, 404]).toContain(res.status());
+      }
+      await dropSecret(page, 'dns.val-e2e.credential');
+      await page.close();
+    }
+  });
+
+  test('cld_904 the Azure DNS and Cloudflare help entries say what to grant', async ({ browser }) => {
+    const page = await signIn(browser, ADMIN);
+    try {
+      await page.getByTestId('dnsproviders-add').click();
+      await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('azure_dns');
+      await page.getByTestId('dnsproviders-scope').locator('[data-help="dns-provider-azure"]').click();
+      const panel = page.getByTestId('help-panel');
+      await expect(panel).toContainText('read-only Reader role on the zone');
+      await expect(panel).toContainText('The record set must exist first');
+      await page.keyboard.press('Escape');
+      await expect(panel).toHaveCount(0);
+      await page.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('cloudflare');
+      await page.getByTestId('dnsproviders-scope').locator('[data-help="dns-provider-cloudflare"]').click();
+      await expect(panel).toContainText('Cloudflare cannot limit a token to one record');
+      await expect(panel).toContainText('delegate the challenge name');
+      await page.keyboard.press('Escape');
+    } finally {
       await page.close();
     }
   });

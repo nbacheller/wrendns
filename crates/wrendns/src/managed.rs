@@ -359,6 +359,7 @@ impl Entries {
         o.headers.clear();
         o.traces_sample_every = 0;
         o.traces_slow_ms = 0;
+        o.tls_ca = None;
         let errs = wrendns_config::otlp_errors(&o);
         if errs.is_empty() {
             Some(o)

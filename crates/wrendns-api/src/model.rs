@@ -1350,7 +1350,7 @@ pub struct LocationList {
 #[serde(rename_all = "camelCase")]
 pub struct DnsProviderEntry {
     pub name: String,
-    /// `azure_dns`, `cloudflare`, `route53` or `rfc2136`.
+    /// `azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated`.
     pub kind: String,
     /// The zone the provider serves.
     pub zone: String,
@@ -1366,7 +1366,8 @@ pub struct DnsProviderEntry {
     pub credential_secret: Option<String>,
     /// Whether this node stores a secret by that name (the value is never shown).
     pub credential_present: bool,
-    /// `not_used`: this build has no code for the kind yet (only the test provider has any);
+    /// `not_used`: this build has no provider code for the entry (every real kind has code; only a
+    /// test-only entry reads this);
     /// `dry_run`: it computes and records changes and sends none, until its first successful test;
     /// `ready`: the first test passed and writes are sent.
     pub state: String,
@@ -1376,6 +1377,63 @@ pub struct DnsProviderEntry {
     /// cluster member's build does not know DNS providers yet).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// A `delegated` entry only: the record to create at its DNS host and whether this node has
+    /// verified it (T36.10b step b5, ADR-1115).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DnsProviderDelegation>,
+}
+
+/// REQ: CLD-904 (T36.10b step b5, ADR-1115) - the delegation of a `delegated` provider: the
+/// provider that holds the validation zone and the CNAME records the operator creates by hand at
+/// the DNS host, each with this node's latest check.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderDelegation {
+    /// The provider entry that takes the challenge TXT (`delegated_to`).
+    pub validation_provider: String,
+    /// That provider's zone (absent when the entry it names is missing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_zone: Option<String>,
+    /// The CNAME records to create, one per location in the zone; one template with `<slug>` when
+    /// no location is in the zone yet.
+    pub records: Vec<DnsProviderDelegationRecord>,
+}
+
+/// REQ: CLD-904 (T36.10b step b5) - one `_acme-challenge` CNAME to create at the DNS host, and
+/// whether this node has verified it at the zone's authoritative servers.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderDelegationRecord {
+    /// The location it is for; absent for the template shown before any location uses the zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// The name to create the CNAME at: `_acme-challenge.<slug>.<domain>` (no trailing dot).
+    pub name: String,
+    /// What it points to: `<slug>.<validation zone>` (no trailing dot).
+    pub target: String,
+    /// `true` verified, `false` not verified; absent when this node has not checked it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    /// Why, from the latest check on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When that check ran, Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
+}
+
+/// REQ: CLD-904 (T36.10b step b5) - the answer of `POST /api/v1/dns-providers/{name}/verify`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderVerifyResult {
+    /// Every record is verified.
+    pub ok: bool,
+    /// Each record with its verdict and reason.
+    pub records: Vec<DnsProviderDelegationRecord>,
+    /// A sentence for the card (for example, that no location uses the zone yet so nothing was
+    /// checked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`).
@@ -1420,7 +1478,7 @@ pub struct DnsProviderScope {
 pub struct DnsProviderTestResult {
     /// The credential was accepted and the scope is shown.
     pub ok: bool,
-    /// False when this build has no code for the provider's kind yet (`error` says so).
+    /// False when this build has no provider code for the entry (`error` says so; every real kind has code).
     pub supported: bool,
     /// Whether the entry is in dry run now (after this test).
     pub dry_run: bool,
@@ -5134,6 +5192,19 @@ pub struct OtlpHeader {
     pub value: Option<String>,
 }
 
+/// REQ: OBS-006 (T41.2) — where the OTLP export's private CA comes from (never the certificate).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpCa {
+    /// `stored` (a secret of the `pem` kind, by name) or `file` (set in the configuration file).
+    pub source: String,
+    /// The stored secret's name, when `source` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read it now.
+    pub readable: bool,
+}
+
 /// REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -5149,9 +5220,18 @@ pub struct OtlpEntry {
     /// Trace settings (a file's; read at start).
     pub traces_sample_every: u32,
     pub traces_slow_ms: u32,
-    /// `none` or `gzip`: whether the metrics and traces requests are gzip compressed (the
-    /// encoding is JSON either way).
+    /// `none` or `gzip`: whether the metrics and traces requests are gzip compressed (a gRPC
+    /// call compresses its message).
     pub compression: String,
+    /// `json`, `protobuf` (`application/x-protobuf`) or `grpc`: the encoding of the metrics and traces
+    /// requests.
+    pub encoding: String,
+    /// The extra resource attributes set on every exported signal (name to value).
+    pub resource_attributes: std::collections::BTreeMap<String, String>,
+    /// The private CA the collector's TLS certificate may chain to, besides the public roots;
+    /// absent when none is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<OtlpCa>,
     /// Whether the export runs on this node.
     pub active: bool,
     /// Why it doesn't, when an endpoint is set.
