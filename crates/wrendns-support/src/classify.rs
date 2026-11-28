@@ -64,6 +64,7 @@ const TABLE: &[(&str, Class)] = &[
     ("anomaly_mute[].note", Free),
     ("api.http_redirect", Scan),
     ("api.listen", Scan),
+    ("api.public_url", Scan),
     ("api.tls.cert", Scan),
     ("api.tls.key", Scan),
     ("api.trusted_proxies[]", Scan),
