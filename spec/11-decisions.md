@@ -6694,7 +6694,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** whether WrenDNS should speak OTLP protobuf (a new dependency and its size) or gRPC, for backends that take neither JSON nor HTTP; a private CA file for the collector; resource attributes the owner sets (such as `deployment.environment`) and the cluster name as one.
 
-## ADR-1112 — The DNS-provider write engine: a trait the engine wraps, an ownership ledger in the node-managed state, dry run until the first test, per-entry limits and a Test action on the primary (Proposed 2026-11-27; CLD-904, CLD-919, CLU-004; T36.10b step b3; follows ADR-1084 as amended 2026-11-27, ADR-1109 and ADR-1096)
+## ADR-1112 — The DNS-provider write engine: a trait the engine wraps, an ownership ledger in the node-managed state, dry run until the first test, per-entry limits and a Test action on the primary (Accepted 2026-11-28, accepted on merge after the main run passed; CLD-904, CLD-919, CLU-004; T36.10b step b3; follows ADR-1084 as amended 2026-11-27, ADR-1109 and ADR-1096)
 
 **Context:** Step b3 of T36.10b brings the provider trait and registry, a fake provider for tests, the write engine and the Test action. The owner decided on 2026-11-27 (question tool) to build the ownership ledger with Adopt, dry run until the first successful test, and per-entry rate limits, and to keep reads of the provider list open to any signed-in role with writes, test and adopt admin only (ADR-1084 as amended). No real provider (step b4) and no delegated kind (step b5) exist yet. Where the records were silent, each point below is the most conservative choice and is listed for the owner.
 
@@ -6712,7 +6712,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** (a) whether the Records view should be open to operators (the zone's contents are shown to admins only); (b) whether a successful test should be required again after a credential change; (c) whether the ledger should forget a provider's rows when the provider entry is removed (it keeps them today, so a re-added entry with the same name finds its ownership); (d) the limits count attempts, not only successful writes, so a failing provider still uses places.
 
-## ADR-1113 — A member announces its API URL behind its own gate feature, and an admin reads another node's web UI and API settings through the primary (Proposed 2026-11-27; owner decision 2026-11-27 through the question tool; API-902, API-901, CLU-010; T27.14g0; follows ADR-956 §5, ADR-977, ADR-1098)
+## ADR-1113 — A member announces its API URL behind its own gate feature, and an admin reads another node's web UI and API settings through the primary (Accepted 2026-11-28, accepted on merge after the main run passed; owner decision 2026-11-27 through the question tool; API-902, API-901, CLU-010; T27.14g0; follows ADR-956 §5, ADR-977, ADR-1098)
 
 **Context:** The listener editor's design note assumed "the node's own API URL, from the cluster's member list", but a cluster member carried only its cluster `advertise` URL and its gated features. The owner decided that the trusted-proxies card must be able to change any node's list from one UI, which needs that node's current values, and the rule that a window change is confirmed on the node itself needs the node's web UI address.
 
@@ -6729,7 +6729,7 @@ Owner decisions (2026-11-26, through the question tool): point 4 (the dnstap edi
 
 **Open (owner):** (a) whether the cluster node list should show the announced URL to viewers and operators or to admins only; (b) whether a replica should be able to read another node's settings itself, rather than answering 421 (the primary is the only node that signs); (c) the host chosen when `[api] listen` is a wildcard comes from the cluster `advertise` URL, which may be a different address from the one an admin's browser reaches (a NAT or a load-balancer name); a per-node `[api] public_url` would override it.
 
-## ADR-1114 — OTLP export, second slice: owner resource attributes and the cluster name, a private CA for the collector, and the protobuf and gRPC encodings, all gated by one feature (Proposed 2026-11-27; owner decisions 2026-11-27 through the question tool; OBS-006, OBS-017, API-016, CLU-010; T41.2; GitHub issue #155; follows ADR-1111, ADR-1096 and ADR-1097)
+## ADR-1114 — OTLP export, second slice: owner resource attributes and the cluster name, a private CA for the collector, and the protobuf and gRPC encodings, all gated by one feature (Accepted 2026-11-28, accepted on merge after the main run passed; owner decisions 2026-11-27 through the question tool; OBS-006, OBS-017, API-016, CLU-010; T41.2; GitHub issue #155; follows ADR-1111, ADR-1096 and ADR-1097)
 
 **Context:** ADR-1111 left four items open for the owner: resource attributes the owner sets and the cluster name as one, a private CA for the collector, and OTLP protobuf or gRPC. The owner decided all three on 2026-11-27: build the attributes (bounded, checked against reserved keys) and the cluster name; build the CA as a stored PEM secret or a file trusted besides the system roots; build protobuf over HTTP as a selectable encoding, and gRPC only if it needs no heavy dependency, with the size of each measured against the image gate (ADR-916).
 
