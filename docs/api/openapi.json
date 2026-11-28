@@ -5846,6 +5846,277 @@
         }
       }
     },
+    "/api/v1/dns-providers": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The DNS providers in the configuration.",
+        "description": "Each one comes with its settings (the credential as the name of a stored secret, never a value),\nwhether this node stores a secret by that name, where it comes from (the files or the API), and\nits state. The table is stored and validated: nothing calls a provider yet, so every entry\nreads `not_used`. `held` is true while the start-up hold keeps the providers out of what this\nnode serves and publishes (a cluster member's build does not know them yet).",
+        "operationId": "list_dns_providers",
+        "responses": {
+          "200": {
+            "description": "The DNS providers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dns-providers/{name}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "One DNS provider by name.",
+        "description": "The same entry `GET /api/v1/dns-providers` lists. No credential is in the answer.",
+        "operationId": "get_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderEntry"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change a DNS provider.",
+        "description": "CLD-904 (T36.10b, ADR-1084, ADR-1104). The body has the fields of `[[dns_provider]]` (the name\ncomes from the path): `kind`, `zone`, `credential_ref` and the fields of the kind. The credential is\na name, never a value: `credential_ref` names a stored secret (422 `secret_missing` when none has\nthat name), entered through Settings, Integrations and secrets; the table has no inline credential\nand no file. The entry starts in `dry_run` (it only computes changes) unless the body says\notherwise. Admins only: an operator or an agent is refused (403). A provider the config files\ndefine is read-only here (409 `set_by_file`). The first provider waits until every cluster\nmember's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The\ntable is stored and validated; nothing calls a provider yet.",
+        "operationId": "put_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change a DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define this provider, which is read-only here; or `upgrade_required`: a cluster member's build does not know DNS providers yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, the credential reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a DNS provider that the API added.",
+        "description": "CLD-904 (T36.10b). Nothing else refers to a provider yet, so nothing else changes. A provider the\nconfig files define can't be removed here (409). Admins only.",
+        "operationId": "delete_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can remove a DNS provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dnssec-settings/default": {
       "put": {
         "tags": [
@@ -22037,6 +22308,94 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "DnsProviderEntry": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings\n(the credential as a stored secret's name, never a value), where it comes from, and its state.",
+        "required": [
+          "name",
+          "kind",
+          "zone",
+          "source",
+          "definition",
+          "dryRun",
+          "credentialPresent",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "credentialPresent": {
+            "type": "boolean",
+            "description": "Whether this node stores a secret by that name (the value is never shown)."
+          },
+          "credentialSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the stored secret that holds the credential."
+          },
+          "definition": {
+            "description": "The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the\nname of a stored secret."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The sentence that goes with `state`."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Whether it only computes changes and records them (`dry_run`)."
+          },
+          "held": {
+            "type": "boolean",
+            "description": "True while the start-up hold keeps the entry out of what this node serves and publishes (a\ncluster member's build does not know DNS providers yet)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`azure_dns`, `cloudflare`, `route53` or `rfc2136`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (the configuration files define it; read-only here) or `api`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`not_used`: the table stores and validates the entry; nothing calls the provider yet."
+          },
+          "zone": {
+            "type": "string",
+            "description": "The zone the provider serves."
+          }
+        }
+      },
+      "DnsProviderList": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`).",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "held": {
+            "type": "boolean",
+            "description": "True while the start-up hold keeps the providers out of the answers this node serves: the\nlist is what is configured."
+          },
+          "heldReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why they are held (the member that does not know them, or that the members are not heard\nfrom yet); set with `held`."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderEntry"
+            }
           }
         }
       },

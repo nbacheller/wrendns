@@ -600,6 +600,26 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "dns-providers",
+      "title": "Let WrenDNS change a few records at your DNS host",
+      "term": "DNS providers",
+      "summary": "A DNS provider is an account at a DNS host (Azure DNS, Cloudflare, Amazon Route 53) or a self-run server (RFC 2136 with a TSIG key) where WrenDNS may one day write a few record sets, such as the challenge that proves it owns a certificate's name. The entry holds the zone, the kind's settings and the NAME of a stored secret; the credential itself is never in it. The cluster shares the table, and only an admin changes it (never an agent token).",
+      "when": "You want certificates or a changing home address to be handled for you, and you want to grant WrenDNS the smallest permission that does it.",
+      "example": "Azure DNS for example.net, with a role on the single record set _acme-challenge.home (the form shows the az command), the application's client secret stored as dns.azure-home.credential, and the entry in dry run until it is tested.",
+      "caution": "Providers are stored and checked here, but nothing calls them yet: certificates and dynamic DNS come next, so nothing at your DNS host changes. Every new entry starts in dry run. The first provider waits until every cluster member runs a build that knows the table, and the form names the member to upgrade. A provider the configuration file defines is read-only here.",
+      "docs": "dns-providers"
+    },
+    {
+      "id": "dns-provider-delegation",
+      "title": "Delegate the challenge name instead of storing a key",
+      "term": "Challenge delegation",
+      "summary": "Some hosts (GoDaddy, Cloudflare for a zone that holds more than the challenge) cannot limit a key to one record. Instead you create one CNAME at that host, once, that points _acme-challenge.<name> at a small zone you control at a provider that can limit a key narrowly. The certificate authority follows the CNAME, and WrenDNS writes only in the small zone, so a leaked key can change nothing else. Enter that zone's name as the challenge delegation.",
+      "when": "Your DNS host has no API, or only a key that can change the whole account or zone.",
+      "example": "_acme-challenge.home.example.net CNAME home.acme-validation.example.org, with home.acme-validation.example.org the delegation of a provider entry for acme-validation.example.org.",
+      "caution": "No GoDaddy key is ever stored: GoDaddy is served by this CNAME only. Delegation covers the challenge name only, not A or AAAA records. The CNAME is created by hand at your host, and a later release verifies it before use.",
+      "docs": "dns-providers"
+    },
+    {
       "id": "api-tokens",
       "title": "Keys for scripts and dashboards",
       "term": "API tokens",

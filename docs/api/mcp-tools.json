@@ -368,6 +368,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The DNS providers in the configuration (Azure DNS, Cloudflare, Route 53, RFC 2136): each one's name, kind and zone, its settings with the stored secret that holds the credential named (never its value), whether this node stores a secret by that name, whether the configuration files define it, whether it only computes changes (`dry_run`), and its state. Providers are stored and validated but not used yet, so every entry reads `not_used`. While `held` is true a cluster member's build does not know DNS providers yet: the list is what is configured, and the node serves and publishes without them until the hold ends. There is no tool to add, change, test or remove a provider, and no plan tool: an admin does that in Settings, DNS providers. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_dns_providers"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Where this node sends query events and metrics: each event sink (file, syslog or webhook) with its settings (a webhook token named, never valued), whether the configuration files define it, whether this node runs it and why not, and how many events it dropped since start; and the OTLP export (collector address, interval, header names, whether it runs). Use it to answer why events are not reaching a collector.",
     "inputSchema": {
       "additionalProperties": false,

@@ -630,6 +630,13 @@ export const api = {
       query: { dryRun: dryRun || undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
+  // REQ: CLD-904 (T36.10b) — the DNS providers (the credential as a stored secret's name), and an admin's
+  // create, replace and delete. Nothing calls a provider yet.
+  dnsProviders: () => get<S['DnsProviderList']>('/dns-providers'),
+  putDnsProvider: (name: string, b: Record<string, unknown>) =>
+    call<S['ConfigChange']>('PUT', `/dns-providers/${encodeURIComponent(name)}`, { body: b, headers: { 'idempotency-key': newKey() } }),
+  deleteDnsProvider: (name: string) =>
+    call<S['ConfigChange']>('DELETE', `/dns-providers/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
   // REQ: DSC-914 (T36.10c) — the locations with the names each composes, and a location's create, replace and
   // delete (the writes with a dry run; a reason goes in the audit record).
   locations: () => get<S['LocationList']>('/locations'),

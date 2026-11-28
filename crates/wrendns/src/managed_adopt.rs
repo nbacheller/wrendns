@@ -255,6 +255,15 @@ fn strip_tuning(cfg: &mut Config, e: &Entry, own: &Config) {
             }
             return;
         }
+        // REQ: CLD-904 (T36.10b) - a DNS provider by name goes back to the files' provider of that
+        // name (or goes).
+        managed::DNS_PROVIDER => {
+            cfg.dns_provider.retain(|p| p.name.as_str() != e.name);
+            if let Some(o) = own.dns_provider.iter().find(|p| p.name.as_str() == e.name) {
+                cfg.dns_provider.push(o.clone());
+            }
+            return;
+        }
         managed::DNSSEC => K::Dnssec,
         managed::FILTER => K::Filter,
         managed::DRILL => K::Drill,
@@ -305,6 +314,7 @@ pub(crate) const ADOPTED_KINDS: &[&str] = &[
     managed::ACCESS,
     managed::ZONE,
     managed::LOCATION,
+    managed::DNS_PROVIDER,
     managed::SLO,
     managed::PROBE,
     managed::UPSTREAM_CHECK,
@@ -723,6 +733,16 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
             push(&mut out, managed::LOCATION, l.slug.as_str(), b);
         }
     }
+    // REQ: CLD-904 (T36.10b) - DNS providers by name; the files' win. A provider holds no credential
+    // (`credential_ref` names a stored secret), so a row carries nothing to refuse.
+    for p in &served.dns_provider {
+        if own.dns_provider.iter().any(|o| o.name == p.name) {
+            continue;
+        }
+        if let Ok(b) = serde_json::to_value(p) {
+            push(&mut out, managed::DNS_PROVIDER, p.name.as_str(), b);
+        }
+    }
     // Sections the API replaces whole.
     macro_rules! whole {
         ($kind:expr, $a:expr, $b:expr) => {
@@ -866,6 +886,7 @@ pub(crate) fn strip(cfg: &mut Config, entries: &[Entry], own: &Config) {
             managed::CLIENTS => cfg.clients.mdns = own.clients.mdns,
             managed::ZONE
             | managed::LOCATION
+            | managed::DNS_PROVIDER
             | managed::DNSSEC
             | managed::FILTER
             | managed::DRILL

@@ -660,6 +660,13 @@ async fn clu_015_t24_40_derive_covers_every_adopted_kind() {
         "home",
         &json!({"slug": "home", "networks": ["192.0.2.0/24"], "domain": "example.net"}),
     );
+    // REQ: CLD-904 (T36.10b) - a DNS provider by name.
+    put_row(
+        &a,
+        "dns_provider",
+        "cf-home",
+        &json!({"name": "cf-home", "kind": "cloudflare", "zone": "example.net", "credential_ref": "cf"}),
+    );
     let file = crate::managed_adopt_tests::file_of(&a);
     let merged = crate::managed::merge(&file, &entries(a.auth.state())).unwrap();
     let derived = crate::managed_adopt::derive(&merged, &file);

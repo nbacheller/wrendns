@@ -17,6 +17,7 @@ pub mod categories;
 pub mod cmdb;
 pub mod credentials;
 pub mod discovery;
+pub mod dns_provider;
 mod env;
 pub mod gate;
 pub mod guarded;
@@ -41,6 +42,7 @@ pub use discovery::{
     CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
     SnmpVersion, UnifiReads,
 };
+pub use dns_provider::{DnsProviderConfig, DnsProviderKind};
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use gate::{DefaultGate, HostFacts, default_gate, gate_warnings, is_wildcard};
 pub use location::{LocationConfig, LocationNet, LocationVisibility, device_label};

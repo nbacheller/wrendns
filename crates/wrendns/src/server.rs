@@ -1343,10 +1343,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, mut cfg: Config) -> io::Result<()
     // out of what it serves and publishes until the members have been heard and all know them.
     let primary = crate::replication::is_clustered_primary(&cfg);
     let before_hold = cfg.clone();
-    let already = crate::replication::published_uses_locations(&cfg);
-    if crate::upgrade_gate::HOLD.at_start(&mut cfg, primary, already) {
+    // REQ: CLD-904 (T36.10b) - the same hold covers the DNS providers (the set of gated tables the
+    // configuration uses and the last published version did not already carry).
+    let already = crate::replication::published_features(&cfg);
+    if crate::upgrade_gate::HOLD.at_start_for(&mut cfg, primary, &already) {
         warn!(
-            "locations: held until every cluster member is heard from and knows them; DNS is served without them"
+            "locations and DNS providers: held until every cluster member is heard from and knows them; DNS is served without them"
         );
     }
     let unheld_at_start = crate::upgrade_gate::HOLD.active().then_some(before_hold);
@@ -2012,7 +2014,18 @@ pub(crate) fn reload_gate(
     if replica {
         return Ok(());
     }
-    crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new)
+    // REQ: CLD-904 (T36.10b) - the first DNS provider is judged the same way. Both are judged
+    // every time (no early return), so every refused feature is recorded and a hold that follows
+    // a promotion covers all of them.
+    let locations =
+        crate::upgrade_gate::enforce_locations(sources.cluster.as_deref(), current, new);
+    let providers =
+        crate::upgrade_gate::enforce_dns_providers(sources.cluster.as_deref(), current, new);
+    match (locations, providers) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(a), Ok(())) | (Ok(()), Err(a)) => Err(a),
+        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+    }
 }
 
 /// REQ: DNS-014, API-901 (T27.14h) - the list the web UI and the API gate on follows the configuration
