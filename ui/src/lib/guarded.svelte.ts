@@ -36,6 +36,53 @@ export function targetNode(): string | undefined {
   return guarded.node && first && guarded.node.node !== first.node ? guarded.node.node : undefined;
 }
 
+// REQ: API-902, API-901 (T27.14g0; owner decision, 2026-11-27) - the picked node's own web UI and API settings
+// and DNS listeners, read through the primary (admin only), so the Web UI and API card and the Listeners card
+// show and stage that node's values instead of this node's. Empty for this node (its values are in the system
+// information the page already has).
+export type NodeApi = S['GuardedNodeApi'];
+export const nodeApi = $state<{ node: string; data: NodeApi | null; loading: boolean; error: string; code: string }>({
+  node: '',
+  data: null,
+  loading: false,
+  error: '',
+  code: '',
+});
+let nodeApiSeq = 0;
+
+/** Reads the values of `node` (another node; `undefined` clears). A repeat for the same node is not asked again unless forced. */
+export async function loadNodeApi(node: string | undefined, force = false): Promise<void> {
+  if (!node) {
+    nodeApiSeq += 1;
+    Object.assign(nodeApi, { node: '', data: null, loading: false, error: '', code: '' });
+    return;
+  }
+  if (!force && nodeApi.node === node && (nodeApi.loading || nodeApi.data || nodeApi.error)) return;
+  const mine = ++nodeApiSeq;
+  Object.assign(nodeApi, { node, data: null, loading: true, error: '', code: '' });
+  try {
+    const d = await api.guardedNodeApi(node);
+    if (mine === nodeApiSeq) Object.assign(nodeApi, { data: d, loading: false });
+  } catch (e) {
+    if (mine !== nodeApiSeq) return;
+    const code = e instanceof ApiError ? e.code : '';
+    Object.assign(nodeApi, { loading: false, code, error: nodeApiMessage(node, code, e instanceof ApiError ? e.message : String(e)) });
+  }
+}
+
+/** What to tell the admin when another node's values cannot be read, in plain words. */
+function nodeApiMessage(node: string, code: string, text: string): string {
+  if (code === 'upgrade_required') return `${node} runs an older build that cannot report its web UI and API settings, so they are not shown or changed from here. Upgrade it first, or change them on that node itself. (${text})`;
+  if (code === 'not_primary') return `Only the primary reads another node's settings: ${text}`;
+  return `${node}'s settings could not be read: ${text}`;
+}
+
+/** The web UI address a node announces, as a plain http(s) URL, or an empty string when it announces none. */
+export function nodeUrl(name: string | undefined): string {
+  const url = guarded.nodes.find((n) => n.node === name)?.apiUrl ?? '';
+  return /^https?:\/\//.test(url) ? url : '';
+}
+
 /** Whether a node has anything the admin should see (a pending window, a restart waiting, a restart under way). */
 export const hasItems = (n: GuardedNode): boolean => !!n.pending || n.pendingRestart.length > 0 || n.restarting;
 

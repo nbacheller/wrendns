@@ -120,6 +120,15 @@ fn api_902_guarded_routes_not_in_mcp_or_plans() {
         required(&Method::GET, "/api/v1/guarded"),
         Need::Scope("config:read")
     );
+    // REQ: API-902 (T27.14g0) - another node's own settings are an admin's: never an agent's.
+    assert!(never_for_agents(
+        &Method::GET,
+        "/api/v1/guarded/nodes/pi-b/api"
+    ));
+    assert_eq!(
+        required(&Method::GET, "/api/v1/guarded/nodes/pi-b/api"),
+        Need::Forbidden
+    );
     // The plan store: a plan for a guarded path comes back discarded and is never kept.
     let plans = crate::plans::Plans::default();
     let mut p = crate::plans::tests_plan("g1", "token:a", "ready", crate::plans::now() + 600);

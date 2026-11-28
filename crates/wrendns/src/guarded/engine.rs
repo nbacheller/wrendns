@@ -18,9 +18,9 @@ use wrendns_api::BoxFuture;
 use wrendns_api::auth::Actor;
 use wrendns_api::guarded::{
     GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedCheck, GuardedListenerLine,
-    GuardedNodeStatus, GuardedOutcome, GuardedPending, GuardedPendingView, GuardedPreview,
-    GuardedPreviewRequest, GuardedProbeLine, GuardedResult, GuardedSetting, GuardedStatus,
-    Supervisor,
+    GuardedNodeApi, GuardedNodeStatus, GuardedOutcome, GuardedPending, GuardedPendingView,
+    GuardedPreview, GuardedPreviewRequest, GuardedProbeLine, GuardedResult, GuardedSetting,
+    GuardedStatus, Supervisor,
 };
 use wrendns_api::problem::{Code, Problem};
 use wrendns_config::Config;
@@ -685,6 +685,7 @@ impl Engine {
         });
         GuardedNodeStatus {
             node: self.node.clone(),
+            api_url: self.host.own_api_url(),
             supervisor: self.supervisor.clone(),
             settings,
             pending,
@@ -711,7 +712,12 @@ impl Engine {
                 op: ForwardedOp::Status,
                 assertion: None,
             };
-            if let Ok(ForwardedAnswer::Status(s)) = self.host.forward(&m.name, ask).await {
+            if let Ok(ForwardedAnswer::Status(mut s)) = self.host.forward(&m.name, ask).await {
+                // REQ: API-902 (T27.14g0) - the URL the member announced in its Hello and heartbeats
+                // (an older member's own status carries none).
+                if s.api_url.is_none() && !m.api_url.is_empty() {
+                    s.api_url = Some(m.api_url.clone());
+                }
                 nodes.push(s);
             }
         }
@@ -2171,6 +2177,7 @@ impl Engine {
         if matches!(f.op, ForwardedOp::Status) {
             return ForwardedAnswer::Status(self.status_local());
         }
+        // REQ: API-902 (T27.14g0) - the node's own settings are for an admin: the assertion proves one.
         let Some(signed) = f.assertion.as_ref() else {
             return refused(&Problem::new(
                 Code::Forbidden,
@@ -2181,6 +2188,7 @@ impl Engine {
             ForwardedOp::Preview { id, .. } => ("preview", id.clone(), String::new()),
             ForwardedOp::Apply { id, req } => ("apply", id.clone(), req.preview_id.clone()),
             ForwardedOp::Cancel { pending } => ("cancel", pending.clone(), String::new()),
+            ForwardedOp::NodeApi => ("node_api", NODE_API.to_owned(), String::new()),
             ForwardedOp::Status => return refused(&Problem::internal("unreachable")),
         };
         let now = (self.now)();
@@ -2248,10 +2256,74 @@ impl Engine {
                 Ok(r) => ForwardedAnswer::Result(r),
                 Err(e) => refused(&e),
             },
+            ForwardedOp::NodeApi => ForwardedAnswer::NodeApi(self.node_api_local()),
             ForwardedOp::Status => refused(&Problem::internal("unreachable")),
         }
     }
+
+    /// REQ: API-902 (T27.14g0, ADR-1113) - `GET /api/v1/guarded/nodes/{node}/api`: the web UI and API
+    /// settings and the DNS listeners `node` runs now, for an admin (the route has checked who is
+    /// asking). This node answers from its own configuration; another node is asked through the
+    /// forwarding path with a signed assertion, by the primary only (a replica answers 421), and a
+    /// member whose build does not announce the read is refused 409 `upgrade_required` before anything
+    /// is sent.
+    pub(crate) async fn node_api(
+        self: &Arc<Self>,
+        c: &GuardedCaller,
+        node: &str,
+    ) -> Result<GuardedNodeApi, Problem> {
+        let m = match self.resolve(Some(node))? {
+            Target::Local => return Ok(self.node_api_local()),
+            Target::Remote(m) => m,
+        };
+        self.must_forward()?;
+        if !m.node_api {
+            return Err(Problem::new(
+                Code::UpgradeRequired,
+                format!(
+                    "node {} runs a build that does not know {}; upgrade it first",
+                    m.name,
+                    wrendns_cluster::gate::Feature::MemberApiAddress.what()
+                ),
+            ));
+        }
+        self.rate_limit(c)?;
+        let a = self.assertion_for(c, &m.name, "node_api", NODE_API, "")?;
+        let fwd = Forwarded {
+            op: ForwardedOp::NodeApi,
+            assertion: Some(a),
+        };
+        match self.host.forward(&m.name, fwd).await? {
+            ForwardedAnswer::NodeApi(mut r) => {
+                if r.api_url.is_none() && !m.api_url.is_empty() {
+                    r.api_url = Some(m.api_url.clone());
+                }
+                Ok(r)
+            }
+            ForwardedAnswer::Refused {
+                code,
+                detail,
+                hint,
+                retry_after,
+            } => Err(problem_of(code, detail, hint, retry_after)),
+            _ => Err(Problem::internal("unexpected answer from the node")),
+        }
+    }
+
+    /// This node's own answer to the per-node read.
+    fn node_api_local(&self) -> GuardedNodeApi {
+        let cfg = self.host.running_config();
+        GuardedNodeApi {
+            node: self.node.clone(),
+            api_url: self.host.own_api_url(),
+            api: crate::api_backend::api_info(&cfg),
+            listeners: crate::api_backend::listener_access(&cfg),
+        }
+    }
 }
+
+/// The setting name the per-node read's assertion is bound to.
+const NODE_API: &str = "api";
 
 /// Seconds left until `deadline` on the monotonic clock, rounded up.
 fn remaining(deadline: Instant) -> u64 {

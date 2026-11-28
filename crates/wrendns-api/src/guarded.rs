@@ -153,6 +153,11 @@ pub struct GuardedOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct GuardedNodeStatus {
     pub node: String,
+    /// REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on, as the node announces
+    /// it; absent from an older node and from one that cannot name an address. A card links to the
+    /// node's own address from it (a guarded change is confirmed on the node itself).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
     pub supervisor: Supervisor,
     pub settings: Vec<GuardedSetting>,
     /// The window change waiting for confirmation, if any.
@@ -434,4 +439,24 @@ pub struct GuardedResult {
     /// For a `proxy_list` proof: the client address the node now sees for this request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seen_client: Option<String>,
+}
+
+/// REQ: API-902, API-901 (T27.14g0, ADR-1113; owner decision, 2026-11-27) - what `GET
+/// /api/v1/guarded/nodes/{node}/api` answers: another node's own web UI and API settings and its DNS
+/// listeners, as that node reports them to an admin. The cards for the Web UI and API and for the
+/// Listeners show and stage these values when another node is picked. Admin only, like the `api`
+/// block of `GET /api/v1/system/info`; a member that does not announce the read is refused with
+/// `409 upgrade_required` naming it, and the card says so.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardedNodeApi {
+    /// The node (the name it is listed under).
+    pub node: String,
+    /// The URL its web UI and API answer on, as it announced it; absent when it announces none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+    /// The address, scheme, certificate name, trusted proxies and redirect it runs now.
+    pub api: crate::model::ApiInfo,
+    /// Its DNS listeners as it runs them, with the paths, limits and options only an admin sees.
+    pub listeners: Vec<crate::model::ListenerAccess>,
 }
