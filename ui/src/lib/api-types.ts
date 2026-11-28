@@ -2913,6 +2913,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/guarded/pending/{id}/confirm-relay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirms a pending `listen` change on another node through the primary.
+         * @description For the admin whose browser cannot open the node's own web UI (its API listens on loopback or a
+         *     cluster-only network, or the address is behind a shared Service). The primary passes the
+         *     confirm on to the node over the cluster channel with a short-lived assertion of the admin's
+         *     identity, bound to the change; the node checks it itself and still needs its own DNS probes to
+         *     answer, exactly as for a direct confirm. Admin session only, with the change's single-use
+         *     `confirmToken` in the body as well (a stolen session alone cannot do it): 403 `agent_not_allowed`
+         *     for agent tokens, 403 `reauth_required` for other tokens, operators and viewers 403. Only the
+         *     primary relays (a replica answers 421 `not_primary`) and only for `listen`, never for the primary
+         *     itself or a standalone node, and never for `api-address`, `api-tls`, `trusted-proxies` or any other
+         *     row (403 `relay_refused`, with the reason). A member whose build does not know the relay is 409
+         *     `upgrade_required` naming it. A weakening change needs a sign-in within the last 10 minutes (403
+         *     `reauth_required`). Audited as `settings.guarded_confirm_relayed` on the primary, before the relay
+         *     is sent and after, and as `settings.guarded` with `confirmedVia: "primary"` on the node. No MCP tool.
+         */
+        post: operations["guarded_confirm_relay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/guarded/{id}": {
         parameters: {
             query?: never;
@@ -5741,6 +5773,11 @@ export interface components {
             httpRedirect?: string | null;
             /** @description The address the API listens on (`[api] listen`). */
             listen: string;
+            /**
+             * @description REQ: API-902, API-901 (T27.14g, ADR-1116) - `[api] public_url` as in force now: the address the
+             *     node announces as its web UI and API, in place of the one it works out.
+             */
+            publicUrl?: string | null;
             /** @description `https` when `[api] tls` is set (the node serves HTTPS itself), else `http`. */
             scheme: string;
             /** @description `[api] trusted_proxies`, as in force now: each address or network. */
@@ -7354,7 +7391,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "discovery_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary" | "owned_by_category" | "budget_refused" | "confirm_required";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "discovery_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "relay_refused" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary" | "owned_by_category" | "budget_refused" | "confirm_required";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -8783,6 +8820,13 @@ export interface components {
              */
             apiUrl?: string | null;
             /**
+             * @description REQ: API-904 (T27.14g) - the node's build can take the confirm the primary relays (the
+             *     `guarded_confirm_relay` gate feature), as the primary sees it; absent for the node answering
+             *     and from an older build. The card offers "Confirm through the primary" only for a node that
+             *     says `true`.
+             */
+            confirmRelay?: boolean | null;
+            /**
              * Format: int32
              * @description The seconds a window change waits (`[api] confirm_window_secs`).
              */
@@ -8947,6 +8991,14 @@ export interface components {
              *     refusal, the expected answer on a gated listener) or `no_answer`.
              */
             state: string;
+        };
+        /** @description REQ: API-904 (T27.14g) - the body of `POST /api/v1/guarded/pending/{id}/confirm-relay`. */
+        GuardedRelayRequest: {
+            /**
+             * @description The single-use token the apply answered with. Required: the admin's session alone cannot
+             *     confirm through the primary, so a stolen session cookie is not enough.
+             */
+            confirmToken: string;
         };
         /** @description The answer of a confirmation or a cancellation. */
         GuardedResult: {
@@ -20325,6 +20377,78 @@ export interface operations {
                 };
             };
             /** @description Too many failed confirmations. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_confirm_relay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID, as the apply answered it. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedRelayRequest"];
+            };
+        };
+        responses: {
+            /** @description Confirmed on the node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedResult"];
+                };
+            };
+            /** @description Not an admin session, an agent token, another token, a weakening change without a recent sign-in, or the relay was refused (`relay_refused`: the reason is in the detail; the window runs on). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description This primary forwarded no change under that ID, or it has rolled back. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The member's build does not know the relay (`upgrade_required`), or the node could not record the change (`primary_unreachable`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Ask the primary: only it relays a confirm. */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many requests, or too many failed confirmations from this session. */
             429: {
                 headers: {
                     [name: string]: unknown;

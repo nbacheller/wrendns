@@ -59,7 +59,10 @@ export async function loadNodeApi(node: string | undefined, force = false): Prom
   }
   if (!force && nodeApi.node === node && (nodeApi.loading || nodeApi.data || nodeApi.error)) return;
   const mine = ++nodeApiSeq;
-  Object.assign(nodeApi, { node, data: null, loading: true, error: '', code: '' });
+  // A forced read of the node already shown keeps what is on screen until the new values arrive: the card that
+  // asked for it (a change was just kept) must not lose the outcome it is still showing.
+  const keep = force && nodeApi.node === node ? nodeApi.data : null;
+  Object.assign(nodeApi, { node, data: keep, loading: true, error: '', code: '' });
   try {
     const d = await api.guardedNodeApi(node);
     if (mine === nodeApiSeq) Object.assign(nodeApi, { data: d, loading: false });

@@ -1173,6 +1173,14 @@
           "type": "string",
           "default": "0.0.0.0:8053"
         },
+        "public_url": {
+          "description": "REQ: API-902, API-901 (T27.14g, ADR-1116; owner decision 2026-11-27) - the address people open\nthis node's web UI and API at, when it is not the one the node would announce: a node behind\nNAT or a load balancer's name, say `https://pi-a.example.com`. It replaces the address this\nnode announces to the cluster as its own, so the member list and the link that confirms a\nguarded change on this node use it. Plain `http://` or `https://`, a host and an optional\nport, no user name or password, no path, query or fragment, at most 255 bytes. Nothing listens\non it: it only has to reach this node's API. Default: the node works one out from `listen`,\n`tls` and the cluster's `advertise` address.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "tls": {
           "description": "REQ: API-003 (ADR-149) — serve the web UI and API over HTTPS on `listen`: with\n`{ self_signed = true }` a certificate is made on first start and kept in the data\ndirectory (browsers warn until you trust it); with `{ cert = \"...\", key = \"...\" }`, your\nown PEM files (re-read within 10 s of a change, like the DNS listeners'). A plain\n`http://` request on the same port is redirected to `https://`, except the health\nprobes. Default: none (plain HTTP, for a TLS proxy or ingress in front).",
           "anyOf": [

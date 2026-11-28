@@ -167,13 +167,13 @@ impl Engine {
         let now = Instant::now();
         let (carried, here) = {
             let mut g = lock(&self.inner);
-            g.carried.retain(|_, k| k.deadline > now);
+            g.carried.retain(|_, held| held.deadline > now);
             (
                 g.carried.get(pending_id).cloned(),
                 g.pending.as_ref().is_some_and(|p| p.id == pending_id),
             )
         };
-        let Some(k) = carried else {
+        let Some(held) = carried else {
             if here {
                 return Err(self.refuse(
                     c,
@@ -192,70 +192,69 @@ impl Engine {
             if counted {
                 self.failed(&key);
             }
-            self.refuse(c, &k.setting, Problem::new(Code::RelayRefused, why))
+            self.refuse(c, &held.setting, Problem::new(Code::RelayRefused, why))
         };
         // The row: only `listen` is relayed, whatever the pending change is.
-        if k.setting != LISTEN {
+        if held.setting != LISTEN {
             return Err(refuse(
                 false,
                 "only a change to the DNS listeners can be confirmed through the primary",
             ));
         }
-        if c.username.is_empty() || c.username != k.admin {
+        if c.username.is_empty() || c.username != held.admin {
             return Err(refuse(
                 true,
                 "this change was made by another admin: only they can confirm it",
             ));
         }
-        if !ct_eq(blake3::hash(token.as_bytes()).as_bytes(), &k.token_hash) {
+        if !ct_eq(blake3::hash(token.as_bytes()).as_bytes(), &held.token_hash) {
             return Err(refuse(true, "the confirmation token is wrong"));
         }
-        let left = super::remaining(k.deadline);
+        let left = super::remaining(held.deadline);
         if left == 0 {
             return Err(refuse(false, "the window for this change has ended"));
         }
         // Recency, asked again: the relay can come minutes after the apply.
-        let t = now_secs();
-        if k.weakening
-            && !c
-                .signed_in_at
-                .is_some_and(|s| t.saturating_sub(s) <= RECENT_SIGN_IN_SECS)
+        let unix_now = now_secs();
+        if held.weakening
+            && c.signed_in_at
+                .is_none_or(|s| unix_now.saturating_sub(s) > RECENT_SIGN_IN_SECS)
         {
             return Err(self.refuse(
                 c,
-                &k.setting,
+                &held.setting,
                 Problem::new(
                     Code::ReauthRequired,
                     "this change weakens security: sign in again (within the last 10 minutes) to confirm it through the primary",
                 ),
             ));
         }
-        let Some(m) = self
+        let Some(member) = self
             .host
             .members()
             .into_iter()
-            .find(|m| m.name == k.node || m.id == k.node)
+            .find(|member| member.name == held.node || member.id == held.node)
         else {
             return Err(Problem::new(
                 Code::NodeUnknown,
-                format!("no cluster node `{}`", k.node),
+                format!("no cluster node `{}`", held.node),
             ));
         };
-        if m.is_primary || m.name == self.node || m.id == self.node {
+        if member.is_primary || member.name == self.node || member.id == self.node {
             return Err(refuse(
                 false,
                 "the primary confirms its own changes itself: open it directly",
             ));
         }
-        if !m.relay {
+        if !member.relay {
             return Err(self.refuse(
                 c,
-                &k.setting,
+                &held.setting,
                 Problem::new(
                     Code::UpgradeRequired,
                     format!(
                         "node {} runs a build that does not know {}; upgrade it first",
-                        m.name,
+                        member.name,
                         wrendns_cluster::gate::Feature::GuardedConfirmRelay.what()
                     ),
                 ),
@@ -264,12 +263,12 @@ impl Engine {
         let nonce = random_id(16);
         let assertion = RelayAssertion {
             purpose: RELAY_PURPOSE.to_owned(),
-            setting: k.setting.clone(),
-            node: m.name.clone(),
+            setting: held.setting.clone(),
+            node: member.name.clone(),
             pending_id: pending_id.to_owned(),
-            preview_id: k.preview_id.clone(),
-            value_digest: k.value_digest.clone(),
-            admin: k.admin.clone(),
+            preview_id: held.preview_id.clone(),
+            value_digest: held.value_digest.clone(),
+            admin: held.admin.clone(),
             role: "admin".to_owned(),
             session_digest: hex(
                 &blake3::hash(c.session.as_deref().unwrap_or_default().as_bytes()).as_bytes()[..16],
@@ -290,11 +289,11 @@ impl Engine {
         })?;
         // Audit first: no record, no relay. The token is in no record.
         let actor = Self::actor_of(c);
-        let target = self.target_name(&k.setting);
+        let target = self.target_name(&held.setting);
         let detail = |outcome: &str, why: Option<&str>| {
             json!({
-                "setting": k.setting, "node": m.name, "pendingId": pending_id,
-                "previewId": k.preview_id, "valueDigest": k.value_digest,
+                "setting": held.setting, "node": member.name, "pendingId": pending_id,
+                "previewId": held.preview_id, "valueDigest": held.value_digest,
                 "nonce": nonce, "outcome": outcome, "detail": why,
                 "confirmedFrom": c.remote.map(|r| r.to_string()),
             })
@@ -307,7 +306,7 @@ impl Engine {
         )
         .map_err(|e| {
             Problem::unavailable(format!(
-                "the audit log can't record the relay, so nothing was sent: {e}"
+                "the audit log can'unix_now record the relay, so nothing was sent: {e}"
             ))
         })?;
         let fwd = Forwarded {
@@ -318,7 +317,7 @@ impl Engine {
             },
             assertion: None,
         };
-        match self.host.forward(&m.name, fwd).await {
+        match self.host.forward(&member.name, fwd).await {
             Ok(ForwardedAnswer::Result(r)) => {
                 self.audit_best_effort(
                     &actor,
@@ -521,9 +520,8 @@ fn relay_checks(
     }
     // 7. A weakening change needs a recent sign-in.
     if p.weakening
-        && !a
-            .signed_in_at
-            .is_some_and(|s| now.saturating_sub(s) <= RECENT_SIGN_IN_SECS)
+        && a.signed_in_at
+            .is_none_or(|s| now.saturating_sub(s) > RECENT_SIGN_IN_SECS)
     {
         return Err("this change weakens security and the sign-in is older than 10 minutes");
     }

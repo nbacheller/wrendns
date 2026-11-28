@@ -2209,6 +2209,7 @@ impl Engine {
     /// (ADR-956 §5): the assertion's signature, its issuer (the primary), its node, action and
     /// preview, its expiry and that it has not been used; then the same engine runs as for a local
     /// request, with the admin the assertion names.
+    #[allow(clippy::too_many_lines)] // one ordered list of checks, then one arm per operation
     pub(crate) async fn handle_forwarded(
         self: &Arc<Self>,
         sender: &str,

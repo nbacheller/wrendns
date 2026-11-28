@@ -376,11 +376,12 @@ async fn api_902_relay_assertion_stale_refused() {
 #[tokio::test(start_paused = true)]
 async fn api_902_relay_binding_checked() {
     let c = case().await;
-    let alter: [(&str, Box<dyn Fn(&mut RelayAssertion)>); 4] = [
-        ("pending", Box::new(|a| a.pending_id = "other".to_owned())),
-        ("preview", Box::new(|a| a.preview_id = "other".to_owned())),
-        ("digest", Box::new(|a| a.value_digest = "00".to_owned())),
-        ("admin", Box::new(|a| a.admin = "bob".to_owned())),
+    type Alter = fn(&mut RelayAssertion);
+    let alter: [(&str, Alter); 4] = [
+        ("pending", |a| a.pending_id = "other".to_owned()),
+        ("preview", |a| a.preview_id = "other".to_owned()),
+        ("digest", |a| a.value_digest = "00".to_owned()),
+        ("admin", |a| a.admin = "bob".to_owned()),
     ];
     for (what, f) in alter {
         let mut a = assertion(&c);
@@ -729,7 +730,10 @@ async fn api_902_public_url_is_set_for_another_node_and_overlaid() {
         false,
     );
     assert_eq!(
-        cfg.api.public_url.as_ref().map(|u| u.as_str()),
+        cfg.api
+            .public_url
+            .as_ref()
+            .map(wrendns_config::SafeString::as_str),
         Some("https://pi-b.example.com")
     );
     assert_eq!(
