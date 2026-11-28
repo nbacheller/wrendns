@@ -21,6 +21,15 @@ pub(crate) mod engine;
 pub(crate) mod fake;
 pub(crate) mod ledger;
 pub(crate) mod registry;
+pub(crate) mod rfc2136;
+#[cfg(test)]
+mod rfc2136_tests;
+pub(crate) mod route53;
+#[cfg(test)]
+mod route53_tests;
+pub(crate) mod sigv4;
+pub(crate) mod tsig;
+pub(crate) mod xml;
 
 use std::fmt;
 use std::future::Future;

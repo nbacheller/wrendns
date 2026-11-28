@@ -2,8 +2,8 @@
 //! REQ: CLD-904 (T36.10b step b3; ADR-1084) - the registry: a configured entry (its kind, its zone
 //! and the stored credential) to the code that talks to that provider.
 //!
-//! No real provider exists yet: Azure DNS, Cloudflare, Route 53 and RFC 2136 are T36.10b step b4, and
-//! delegation step b5. Until each arrives its kind answers [`BuildError::NoCode`], and the Test route
+//! Route 53 and RFC 2136 have provider code (T36.10b step b4); Azure DNS and Cloudflare arrive with
+//! their own step b4 branches, and delegation is step b5. Until each arrives its kind answers [`BuildError::NoCode`], and the Test route
 //! says so. Test builds (and the browser tests' build) hand an entry named `fake...` the in-memory
 //! fake instead; no release build does.
 
@@ -54,8 +54,10 @@ pub(crate) fn has_code(cfg: &DnsProviderConfig) -> bool {
     if super::fake::is_fake_name(cfg.name.as_str()) {
         return true;
     }
-    let _ = cfg;
-    false
+    matches!(
+        cfg.kind,
+        DnsProviderKind::Route53 | DnsProviderKind::Rfc2136
+    )
 }
 
 /// The provider for `cfg`, built with `secret` (the stored credential's value, when the entry names
@@ -70,6 +72,19 @@ pub(crate) fn build(
     if super::fake::is_fake_name(cfg.name.as_str()) {
         return Ok(Handle {
             provider: super::fake::for_entry(cfg.name.as_str(), cfg.zone.as_str()),
+            secret,
+        });
+    }
+    // T36.10b step b4: Route 53 and RFC 2136.
+    if cfg.kind == DnsProviderKind::Route53 {
+        return Ok(Handle {
+            provider: Arc::new(super::route53::Route53::new(cfg, secret.as_ref())),
+            secret,
+        });
+    }
+    if cfg.kind == DnsProviderKind::Rfc2136 {
+        return Ok(Handle {
+            provider: Arc::new(super::rfc2136::Rfc2136::new(cfg, secret.as_ref())),
             secret,
         });
     }
